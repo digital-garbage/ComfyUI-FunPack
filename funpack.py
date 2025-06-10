@@ -17,12 +17,13 @@ import os
 import torch
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from huggingface_hub import hf_hub_download, snapshot_download
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file, save_file, safe_open
 import glob
 import comfy.model_management as mm
 import comfy.sd as sd
 import folder_paths
 import nodes
+import tempfile
 
 class FunPackImg2LatentInterpolation:
     @classmethod
@@ -91,6 +92,7 @@ class FunPackCLIPLoader:
                     'encoder_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
                     'vision_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load LLM+vision model from pretrained_path"}),
                     'load_te': ("BOOLEAN", {"default": True, "tooltip": "If off, does not load separate model as text encoder, using only llm_vision_model_name"}),
+                    'patch_vision': ("BOOLEAN", {"default": False, "tooltip": "Try to patch vision model for HYV compatibility (experimental)"}),
                     'system_prompt': ("STRING", {
                         "multiline": True,
                         "default": "You are a creative assistant optimized for generating vivid, detailed descriptions for video generation."
@@ -108,7 +110,7 @@ class FunPackCLIPLoader:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, load_te=None):
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, load_te=None, patch_vision=None):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -130,14 +132,71 @@ class FunPackCLIPLoader:
         # Load LLM with vision capabilities (expected llava-llama-3-8b_v1_1)
         if vision_from_pretrained == True:
             print("Loading LLM+vision from", vision_pretrained_path)
+            
+            # Oho-ho! A funny part! Patching model to force ComfyUI into thinking we are working with LLaVA!
+            
+            def model_patch(path):
+                def load_safetensors_dict(path):
+                    print("Loading original LLaMA to patch your custom vision model...")
+                    tensors = {}
+                    with safe_open(path, framework="pt", device="cpu") as f:
+                        for key in f.keys():
+                            tensors[key] = f.get_tensor(key)
+                    return tensors
+                    
+                def patch_safetensors_for_llava(tensors: dict, model_dim=4096):
+                    print("Creating dummy tensors...")
+                    dummy_tensor = lambda shape: torch.zeros(shape, dtype=torch.float16)
+
+                    required_keys = [
+                        "vision_tower.0.dummy",  # placeholder for vision module
+                        "mm_projector.0.weight",  # dummy projector
+                        "mm_projector.0.bias",
+                        "model.embed_tokens.weight",
+                        "model.norm.weight",
+                    ]
+
+                    for i in range(32):  # LLaMA-3 32-layer
+                        base = f"model.layers.{i}"
+                        tensors[f"{base}.self_attn.q_proj.weight"] = dummy_tensor((model_dim, model_dim))
+                        tensors[f"{base}.self_attn.k_proj.weight"] = dummy_tensor((model_dim, model_dim))
+                        tensors[f"{base}.self_attn.v_proj.weight"] = dummy_tensor((model_dim, model_dim))
+                        tensors[f"{base}.self_attn.o_proj.weight"] = dummy_tensor((model_dim, model_dim))
+                        tensors[f"{base}.mlp.gate_proj.weight"] = dummy_tensor((model_dim*4, model_dim))
+                        tensors[f"{base}.mlp.up_proj.weight"] = dummy_tensor((model_dim*4, model_dim))
+                        tensors[f"{base}.mlp.down_proj.weight"] = dummy_tensor((model_dim, model_dim*4))
+                        tensors[f"{base}.input_layernorm.weight"] = dummy_tensor((model_dim,))
+                        tensors[f"{base}.post_attention_layernorm.weight"] = dummy_tensor((model_dim,))
+
+                    # Add the minimum essential keys if they don't exist
+                    for key in required_keys:
+                        if key not in tensors:
+                            tensors[key] = dummy_tensor((model_dim, model_dim))
+                    return tensors
+                    
+                def write_temp_safetensors(tensors):
+                    print("Writing temporary model into memory...")
+                    fd, path = tempfile.mkstemp(suffix=".safetensors")
+                    os.close(fd)
+                    save_file(tensors, path)
+                    return path
+                    
+                vision_weights = load_safetensors_dict(encoder_path)
+                patched = patch_safetensors_for_llava(vision_weights)
+                vision_path_patched = write_temp_safetensors(patched)
+                print("Patching completed successfully.")
+                return vision_path_patched
+            
             if os.path.exists(pvlp_model):
                 print("Model already saved in a single file. Loading from local path...")
                 model_dir = snapshot_download(repo_id=vision_pretrained_path)
                 vision_path = pretrained_vision_local_path + "/model.safetensors"
+                if patch_vision:
+                    vision_path = model_patch(vision_path)
                 print ("Loading from", vision_path)
             else:
                 print("Local model does not exist. Loading, merging and saving it locally..")
-                model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, trust_remote_code=True)
+                model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
                 model_dir = snapshot_download(repo_id=vision_pretrained_path)
                 shard_paths = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
                 shard_paths = [p for p in shard_paths if "index" not in p]
@@ -157,9 +216,9 @@ class FunPackCLIPLoader:
                 save_file(combined_state_dict, output_safetensors)
                 
                 print("Shards successfully transformed into single model.")
-                
                 vision_path = pretrained_vision_local_path + "/model.safetensors"
-            
+                if patch_vision:
+                    vision_path = model_patch(vision_path)
         else:
             print("Loading LLM+vision from existing local safetensors file...")
             vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
@@ -175,6 +234,7 @@ class FunPackCLIPLoader:
                     print("Custom text encoder from safetensors file loaded successfully!")
                 else:
                     print("Loading custom text encoder from the path:", encoder_pretrained_path)
+                    config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     model.eval().to(torch.float16).requires_grad_(False)
@@ -208,6 +268,7 @@ class FunPackCLIPLoader:
         if load_te == True:
             clip_model.text = InstructWrapper()
         print("Current TE:", clip_model.text)  # Check if encoder is replaced 
+        print(dir(clip_model))
         return (clip_model,)
 
 
