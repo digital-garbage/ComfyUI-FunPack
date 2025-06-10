@@ -3,7 +3,7 @@ A set of custom nodes designed for experiments with video diffusion models.
 
 **FunPack DualCLIP Instruct Loader**
 
-![image](https://github.com/user-attachments/assets/915463ac-d6e3-4107-b73c-bc979032de88)
+![image](https://github.com/user-attachments/assets/de7e08ae-8ee7-4cb4-a7a5-6ced069a786c)
 
 
 This node is designed specifically for FramePack/HunyuanVideo, aiming to replace text encoder module with LLama-3 Instruct model.
@@ -14,11 +14,11 @@ Inputs:
 - llama_instruct_model_name - your Llama-3 8B instruct model. Currently does not support loading as from_pretrained, expects .safetensors file;
 - llama3_model_name - your llava-llama-3 model you usually use with Hunyuan/FramePack (e.g. llava-llama-3-8b-v1_1)
 - type - select "hunyuan_video", left for compatibility;
-- pretrained_path - !MODEL WEIGHTS WILL NOT LOAD FROM THERE! Provide a HuggingFace path for config and tokenizer for your model;
+- pretrained_path - Provide a HuggingFace path for config and tokenizer for your model;
+- instruct_from_pretrained - if enabled, loads model weights from pretrained_path as well, ignoring "llama_instruct_model_name";
 - system_prompt - your system prompt that Instruct model is going to be using.
 
 Technically speaking, it's possible to load just any model as instruct one. It might not even be an instruct model.
-Just make sure whatever you are loading as "llama_instruct_model_name" is matching with config provided in "pretrained_path".
 
 Outputs:
 Just CLIP. Pass it through your nodes like you will do with regular DualCLIPLoader.
