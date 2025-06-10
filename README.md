@@ -2,7 +2,10 @@
 A set of custom nodes designed for experiments with video diffusion models.
 
 **FunPack DualCLIP Instruct Loader**
+
 ![image](https://github.com/user-attachments/assets/915463ac-d6e3-4107-b73c-bc979032de88)
+
+
 This node is designed specifically for FramePack/HunyuanVideo, aiming to replace text encoder module with LLama-3 Instruct model.
 Not entirely, just text encoder. Vision module stays the same, so you'll need original llava-llama-3 as well.
 
