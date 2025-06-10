@@ -1,5 +1,5 @@
 """
-olivv's FunPack v1.1.1
+olivv's FunPack v1.1.2
 
 Changelog:
 
@@ -95,7 +95,7 @@ class FunPackCLIPLoader:
                     'patch_vision': ("BOOLEAN", {"default": False, "tooltip": "Try to patch vision model for HYV compatibility (experimental)"}),
                     'system_prompt': ("STRING", {
                         "multiline": True,
-                        "default": "You are a creative assistant optimized for generating vivid, detailed descriptions for video generation."
+                        "default": "<image>You are an expert visual describer for AI video generation. Your task is to interpret user prompts and transform them into detailed, vivid descriptions optimized for image-to-video synthesis. Ensure your descriptions prioritize visual consistency, dynamic actions, and coherent scene elements to guide the generative model in creating smooth, logical video sequences from an initial image. Do not include conversational filler or explanations; just the descriptive text:<|eot_id|>"
                     })
                 }
             }
@@ -227,7 +227,7 @@ class FunPackCLIPLoader:
             try:
                 if encoder_from_pretrained == False:
                     print("Loading custom text encoder from the path:", encoder_path)
-                    model = LlamaForCausalLM.from_pretrained(config_source, trust_remote_code=True)
+                    model = LlamaForCausalLM.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
                     state_dict = load_file(encoder_path, device="cuda")
                     model.load_state_dict(state_dict, strict=False)
                     model.eval().to(torch.float16).requires_grad_(False)
@@ -235,7 +235,7 @@ class FunPackCLIPLoader:
                 else:
                     print("Loading custom text encoder from the path:", encoder_pretrained_path)
                     config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
                     tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from transformers loaded successfully!")
@@ -259,16 +259,16 @@ class FunPackCLIPLoader:
             def encode_from_tokens(self, tokens, return_pooled=True):
                 with torch.no_grad():
                     output = model(input_ids=tokens, output_hidden_states=True)
-                    hidden = output.hidden_states[-1]  # final layer
-                    pooled = hidden[:, -1, :]  # use last token for pooled
-                return hidden, pooled
+                    hidden_states = output.hidden_states[-1]
+                    pooled_output = hidden_states.mean(dim=1)
+                    # pooled = hidden[:, -1, :]  # use last token for pooled
+                return pooled_output
 
         # Replace text encoder in CLIP model
-        clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={})
+        clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes" = True})
         if load_te == True:
             clip_model.text = InstructWrapper()
-        print("Current TE:", clip_model.text)  # Check if encoder is replaced 
-        print(dir(clip_model))
+        print("Current TE:", clip_model.text)  # Check if encoder is replaced
         return (clip_model,)
 
 
