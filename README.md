@@ -1,9 +1,9 @@
 # ComfyUI-FunPack
 A set of custom nodes designed for experiments with video diffusion models.
 
-**FunPack DualCLIP Instruct Loader**
+**FunPack CLIP Loader**
 
-![image](https://github.com/user-attachments/assets/de7e08ae-8ee7-4cb4-a7a5-6ced069a786c)
+![image](https://github.com/user-attachments/assets/77b86531-159d-4a76-a980-d4daeae511f7)
 
 
 This node is designed specifically for FramePack/HunyuanVideo, aiming to replace text encoder module with LLama-3 Instruct model.
@@ -11,11 +11,14 @@ Not entirely, just text encoder. Vision module stays the same, so you'll need or
 
 Inputs:
 - clip_model_name - your CLIP-L model that you usually use with Hunyuan/FramePack (e.g. clip-vit-large-patch14);
-- llama_instruct_model_name - your Llama-3 8B instruct model. Expects .safetensors file, if "instruct_from_pretrained" is on - ignores this;
-- llama3_model_name - your llava-llama-3 model you usually use with Hunyuan/FramePack (e.g. llava-llama-3-8b-v1_1)
+- text_encoder_model_name - your instruct (or any other LLM?) model. Expects .safetensors file, if "instruct_from_pretrained" is on - ignores this;
+- llm_vision_model_name - your llava-llama-3 model you usually use with Hunyuan/FramePack (e.g. llava-llama-3-8b-v1_1). Also it's possible to load any other LLM, with or without vision capabilities (I guess);
 - type - select "hunyuan_video", left for compatibility;
-- pretrained_path - Provide a HuggingFace path for config and tokenizer for your model;
-- instruct_from_pretrained - if enabled, loads model weights from pretrained_path as well, ignoring "llama_instruct_model_name";
+- encoder_pretrained_path - Provide a HuggingFace path for config and tokenizer for your encoder model (or for weights as well, if encoder_from_pretrained=True);
+- vision_pretrained_path - Provide a HuggingFace path for LLM+vision model (only used if vision_from_pretrained=True);
+- encoder_from_pretrained - if enabled, loads encoder model weights from encoder_pretrained_path as well, ignoring local "text_encoder_model_name";
+- vision_from_pretrained - if enabled, loads LLM+vision model weights from vision_pretrained_path, ignoring local "llm_vision_model_name";
+- load_te - if enabled, loads your custom text encoder model. If disabled, uses only vision one (e.g. llava-llama-3-8b-v1_1);
 - system_prompt - your system prompt that Instruct model is going to be using.
 
 Technically speaking, it's possible to load just any model as instruct one. It might not even be an instruct model.
