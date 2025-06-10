@@ -21,8 +21,13 @@ Outputs:
 Just CLIP. Pass it through your nodes like you will do with regular DualCLIPLoader.
 
 **FunPack img2latent Interpolation**
+
+![image](https://github.com/user-attachments/assets/1f84d00b-e835-4b0a-96da-e8fb9a1c1366)
+
+
 Inputs:
-A batch of images (e.g. from Load Image, Load Video (Upload), Load Video (Path) et cetera.
+ - images - a batch of images (e.g. from Load Image, Load Video (Upload), Load Video (Path) et cetera.
+ - frame_count - same as frame count in HunyuanVideoEmptyLatent or similar. Actually, works better with WAN.
 
 Outputs:
 - img_batch_for_encode - latent output with interpolated image, resize if needed and put it into VAE Encode, pass as latent_image into your sampler;
