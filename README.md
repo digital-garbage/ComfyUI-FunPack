@@ -17,6 +17,9 @@ Inputs:
 - pretrained_path - !MODEL WEIGHTS WILL NOT LOAD FROM THERE! Provide a HuggingFace path for config and tokenizer for your model;
 - system_prompt - your system prompt that Instruct model is going to be using.
 
+Technically speaking, it's possible to load just any model as instruct one. It might not even be an instruct model.
+Just make sure whatever you are loading as "llama_instruct_model_name" is matching with config provided in "pretrained_path".
+
 Outputs:
 Just CLIP. Pass it through your nodes like you will do with regular DualCLIPLoader.
 
