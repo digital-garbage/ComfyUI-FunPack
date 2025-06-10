@@ -3,6 +3,7 @@ olivv's FunPack v1.1.1
 
 Changelog:
 
+v1.1.2 - Added "instruct_from_pretrained"
 v1.1.1 - Added DualCLIP Instruct loader node for experimenting with Instruct models in FramePack.
 v1.1.0 - Changed interpolation logic.
 
@@ -84,6 +85,7 @@ class FunPackDualCLIPLoaderInstruct:
                     'llama3_model_name':(s.get_filename_list(),),
                     'type': base['required']['type'],
                     'pretrained_path': ("STRING", {"multiline": False, "default": "HiTZ/Latxa-Llama-3.1-8B-Instruct"}),
+                    'instruct_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
                     'system_prompt': ("STRING", {
                         "multiline": True,
                         "default": "You are a creative assistant optimized for generating vivid, detailed descriptions for video generation."
@@ -101,7 +103,7 @@ class FunPackDualCLIPLoaderInstruct:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, llama_instruct_model_name, llama3_model_name, type, system_prompt, pretrained_path):
+    def load(self, clip_model_name, llama_instruct_model_name, llama3_model_name, type, system_prompt, pretrained_path, instruct_from_pretrained):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -120,7 +122,10 @@ class FunPackDualCLIPLoaderInstruct:
         tokenizer = AutoTokenizer.from_pretrained(config_source)
         config = LlamaConfig.from_pretrained(config_source)
         
-        model = LlamaForCausalLM(config)
+        if instruct_from_pretrained == True:
+            model = LlamaForCausalLM.from_pretrained(config_source)
+        else:
+            model = LlamaForCausalLM(config)
         
         try:
             print("Loading Instruct LLaMA from the path:", llama_path)
