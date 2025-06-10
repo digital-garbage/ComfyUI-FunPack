@@ -265,7 +265,7 @@ class FunPackCLIPLoader:
                 return pooled_output
 
         # Replace text encoder in CLIP model
-        clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes" = True})
+        clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
             clip_model.text = InstructWrapper()
         print("Current TE:", clip_model.text)  # Check if encoder is replaced
