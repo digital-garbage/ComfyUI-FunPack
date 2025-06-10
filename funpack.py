@@ -16,7 +16,9 @@ but without frame prediction.
 import os
 import torch
 from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, AutoModelForCausalLM, AutoTokenizer, AutoConfig
-from safetensors.torch import load_file
+from huggingface_hub import hf_hub_download, snapshot_download
+from safetensors.torch import load_file, save_file
+import glob
 import comfy.model_management as mm
 import comfy.sd as sd
 import folder_paths
@@ -118,7 +120,8 @@ class FunPackCLIPLoader:
         encoder_path = folder_paths.get_full_path('clip', text_encoder_model_name)
         config_source = encoder_pretrained_path
         
-        pretrained_vision_saving_path = folder_paths.get_full_path('clip', vision_pretrained_path)
+        pretrained_vision_local_path = snapshot_download(repo_id=vision_pretrained_path)
+        pvlp_model = pretrained_vision_local_path + "/model.safetensors"
         
         print("Loading TE from pretrained is set to", encoder_from_pretrained)
         print("Loading LLM+vision from pretrained is set to", vision_from_pretrained)
@@ -127,11 +130,36 @@ class FunPackCLIPLoader:
         # Load LLM with vision capabilities (expected llava-llama-3-8b_v1_1)
         if vision_from_pretrained == True:
             print("Loading LLM+vision from", vision_pretrained_path)
-            model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, trust_remote_code=True)
-            print("Saving model file to", pretrained_vision_saving_path)
-            model.save_pretrained(f"{pretrained_vision_saving_path}")
-            print("Pretrained model saved successfully.")
-            vision_path = folder_paths.get_full_path('clip', vision_pretrained_path)
+            if os.path.exists(pvlp_model):
+                print("Model already saved in a single file. Loading from local path...")
+                model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                vision_path = pretrained_vision_local_path + "/model.safetensors"
+                print ("Loading from", vision_path)
+            else:
+                print("Local model does not exist. Loading, merging and saving it locally..")
+                model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, trust_remote_code=True)
+                model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                shard_paths = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
+                shard_paths = [p for p in shard_paths if "index" not in p]
+                print("Shard files:", shard_paths)
+                # Step 3: Load and combine shards
+                combined_state_dict = {}
+                for shard_path in shard_paths:
+                    print(shard_path)
+                    # Load shard to CPU to minimize memory usage
+                    shard_state_dict = load_file(shard_path, device="cpu")
+                    combined_state_dict.update(shard_state_dict)
+                    # Free memory
+                    del shard_state_dict
+                
+                output_safetensors = os.path.join(pretrained_vision_local_path, "model.safetensors")
+                print("Model output path:", output_safetensors)
+                save_file(combined_state_dict, output_safetensors)
+                
+                print("Shards successfully transformed into single model.")
+                
+                vision_path = pretrained_vision_local_path + "/model.safetensors"
+            
         else:
             print("Loading LLM+vision from existing local safetensors file...")
             vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
@@ -149,7 +177,6 @@ class FunPackCLIPLoader:
                     print("Loading custom text encoder from the path:", encoder_pretrained_path)
                     model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    model.load_state_dict(model, strict=False)
                     model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from transformers loaded successfully!")
             except Exception as e:
