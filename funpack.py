@@ -91,6 +91,7 @@ class FunPackCLIPLoader:
                     'vision_pretrained_path': ("STRING", {"multiline": False, "default": "qresearch/llama-3.1-8B-vision-378"}),
                     'encoder_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
                     'vision_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load LLM+vision model from pretrained_path"}),
+                    'vision_from_pretrained_comfy': ("BOOLEAN", {"default": False, "tooltip": "Checks for the model in models/LLM instead of HuggingFace"}),
                     'load_te': ("BOOLEAN", {"default": True, "tooltip": "If off, does not load separate model as text encoder, using only llm_vision_model_name"}),
                     'patch_vision': ("BOOLEAN", {"default": False, "tooltip": "Try to patch vision model for HYV compatibility (experimental)"}),
                     'system_prompt': ("STRING", {
@@ -110,7 +111,7 @@ class FunPackCLIPLoader:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, load_te=None, patch_vision=None):
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None, patch_vision=None):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -122,8 +123,13 @@ class FunPackCLIPLoader:
         encoder_path = folder_paths.get_full_path('clip', text_encoder_model_name)
         config_source = encoder_pretrained_path
         
-        pretrained_vision_local_path = snapshot_download(repo_id=vision_pretrained_path)
-        pvlp_model = pretrained_vision_local_path + "/model.safetensors"
+        if not vision_from_pretrained_comfy:
+            pretrained_vision_local_path = snapshot_download(repo_id=vision_pretrained_path)
+            pvlp_model = pretrained_vision_local_path + "/model.safetensors"
+        else:
+            pretrained_vision_local_path = folder_paths.models_dir + "/clip/" + vision_pretrained_path
+            print(pretrained_vision_local_path)
+            pvlp_model = pretrained_vision_local_path + "/model.safetensors"
         
         print("Loading TE from pretrained is set to", encoder_from_pretrained)
         print("Loading LLM+vision from pretrained is set to", vision_from_pretrained)
@@ -196,8 +202,11 @@ class FunPackCLIPLoader:
                 print ("Loading from", vision_path)
             else:
                 print("Local model does not exist. Loading, merging and saving it locally..")
-                model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
-                model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                if not vision_from_pretrained_comfy:
+                    model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                    model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
+                else:
+                    model_dir = folder_paths.models_dir + "/clip/" + vision_pretrained_path
                 shard_paths = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
                 shard_paths = [p for p in shard_paths if "index" not in p]
                 print("Shard files:", shard_paths)
@@ -225,7 +234,7 @@ class FunPackCLIPLoader:
         
         if load_te == True:
             try:
-                if encoder_from_pretrained == False:
+                if not encoder_from_pretrained:
                     print("Loading custom text encoder from the path:", encoder_path)
                     model = LlamaForCausalLM.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
                     state_dict = load_file(encoder_path, device="cuda")
@@ -268,7 +277,7 @@ class FunPackCLIPLoader:
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
             clip_model.text = InstructWrapper()
-        print("Current TE:", clip_model.text)  # Check if encoder is replaced
+            print("Current TE:", clip_model.text)  # Check if encoder is replaced
         return (clip_model,)
 
 
