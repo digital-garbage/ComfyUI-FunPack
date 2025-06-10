@@ -29,7 +29,7 @@ Just CLIP. Pass it through your nodes like you will do with regular DualCLIPLoad
 
 
 Inputs:
- - images - a batch of images (e.g. from Load Image, Load Video (Upload), Load Video (Path) et cetera.
+ - images - a batch of images e.g. from Load Image, Load Video (Upload), Load Video (Path) et cetera.
  - frame_count - same as frame count in HunyuanVideoEmptyLatent or similar. Actually, works better with WAN.
 
 Outputs:
