@@ -255,15 +255,11 @@ class FunPackCLIPLoader:
                     return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
 
                 def encode_from_tokens(self, tokens, return_pooled=True):
-                        with torch.no_grad():
-                            out = model(input_ids=tokens, output_hidden_states=True)
-                            hidden = out.hidden_states[-1]  # (batch, seq_len, dim)
-                            pooled = hidden.mean(dim=1)  # pooled representation
-                            if return_pooled:
-                                # Return (cond, pooled)
-                                return hidden, pooled
-                            else:
-                                return hidden
+                    with torch.no_grad():
+                        output = model(input_ids=tokens, output_hidden_states=True)
+                        hidden = output.hidden_states[-1]  # final layer
+                        pooled = hidden[:, -1, :]  # use last token for pooled
+                    return hidden, pooled
 
             class CustomCLIP:
                 def __init__(self, text_encoder):
