@@ -11,7 +11,7 @@ Not entirely, just text encoder. Vision module stays the same, so you'll need or
 
 Inputs:
 - clip_model_name - your CLIP-L model that you usually use with Hunyuan/FramePack (e.g. clip-vit-large-patch14);
-- llama_instruct_model_name - your Llama-3 8B instruct model. Currently does not support loading as from_pretrained, expects .safetensors file;
+- llama_instruct_model_name - your Llama-3 8B instruct model. Expects .safetensors file, if "instruct_from_pretrained" is on - ignores this;
 - llama3_model_name - your llava-llama-3 model you usually use with Hunyuan/FramePack (e.g. llava-llama-3-8b-v1_1)
 - type - select "hunyuan_video", left for compatibility;
 - pretrained_path - Provide a HuggingFace path for config and tokenizer for your model;
