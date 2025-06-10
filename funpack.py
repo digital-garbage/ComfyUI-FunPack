@@ -15,8 +15,10 @@ but without frame prediction.
 """
 import os
 import torch
-from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM
-from safetensors.torch import load_file
+from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from huggingface_hub import hf_hub_download, snapshot_download
+from safetensors.torch import load_file, save_file
+import glob
 import comfy.model_management as mm
 import comfy.sd as sd
 import folder_paths
@@ -73,7 +75,7 @@ def list_clip_files():
     model_dir = os.path.join(mm.model_path, "clip")
     return sorted(f for f in os.listdir(model_dir) if f.endswith(".safetensors"))
 
-class FunPackDualCLIPLoaderInstruct:
+class FunPackCLIPLoader:
     @classmethod
     def INPUT_TYPES(s):
         base = nodes.DualCLIPLoader.INPUT_TYPES()
@@ -81,11 +83,14 @@ class FunPackDualCLIPLoaderInstruct:
             'required': 
                 {
                     'clip_model_name': (s.get_filename_list(),),
-                    'llama_instruct_model_name': (s.get_filename_list(),),
-                    'llama3_model_name':(s.get_filename_list(),),
+                    'text_encoder_model_name': (s.get_filename_list(),),
+                    'llm_vision_model_name':(s.get_filename_list(),),
                     'type': base['required']['type'],
-                    'pretrained_path': ("STRING", {"multiline": False, "default": "HiTZ/Latxa-Llama-3.1-8B-Instruct"}),
-                    'instruct_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
+                    'encoder_pretrained_path': ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
+                    'vision_pretrained_path': ("STRING", {"multiline": False, "default": "qresearch/llama-3.1-8B-vision-378"}),
+                    'encoder_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
+                    'vision_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load LLM+vision model from pretrained_path"}),
+                    'load_te': ("BOOLEAN", {"default": True, "tooltip": "If off, does not load separate model as text encoder, using only llm_vision_model_name"}),
                     'system_prompt': ("STRING", {
                         "multiline": True,
                         "default": "You are a creative assistant optimized for generating vivid, detailed descriptions for video generation."
@@ -103,7 +108,7 @@ class FunPackDualCLIPLoaderInstruct:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, llama_instruct_model_name, llama3_model_name, type, system_prompt, pretrained_path, instruct_from_pretrained):
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, load_te=None):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -111,36 +116,77 @@ class FunPackDualCLIPLoaderInstruct:
             print("Detected clip type:", clip_type)
             return clip_type
         
-        # Load LLaMA-3.1-Instruct from weights
-        llama_path = folder_paths.get_full_path('clip', llama_instruct_model_name)
-        config_source = pretrained_path
-
-        # Load regular LLaMA3 for compatibility
-        llama3_path = folder_paths.get_full_path('clip', llama3_model_name)
-
-        # Load tokenizer and config
-        tokenizer = AutoTokenizer.from_pretrained(config_source)
-        config = LlamaConfig.from_pretrained(config_source)
+        # Load TE model from weights
+        encoder_path = folder_paths.get_full_path('clip', text_encoder_model_name)
+        config_source = encoder_pretrained_path
         
-        if instruct_from_pretrained == True:
-            model = LlamaForCausalLM.from_pretrained(config_source)
+        pretrained_vision_local_path = snapshot_download(repo_id=vision_pretrained_path)
+        pvlp_model = pretrained_vision_local_path + "/model.safetensors"
+        
+        print("Loading TE from pretrained is set to", encoder_from_pretrained)
+        print("Loading LLM+vision from pretrained is set to", vision_from_pretrained)
+        print("Loading custom TE is set to", load_te)
+
+        # Load LLM with vision capabilities (expected llava-llama-3-8b_v1_1)
+        if vision_from_pretrained == True:
+            print("Loading LLM+vision from", vision_pretrained_path)
+            if os.path.exists(pvlp_model):
+                print("Model already saved in a single file. Loading from local path...")
+                model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                vision_path = pretrained_vision_local_path + "/model.safetensors"
+                print ("Loading from", vision_path)
+            else:
+                print("Local model does not exist. Loading, merging and saving it locally..")
+                model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, trust_remote_code=True)
+                model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                shard_paths = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
+                shard_paths = [p for p in shard_paths if "index" not in p]
+                print("Shard files:", shard_paths)
+                # Step 3: Load and combine shards
+                combined_state_dict = {}
+                for shard_path in shard_paths:
+                    print(shard_path)
+                    # Load shard to CPU to minimize memory usage
+                    shard_state_dict = load_file(shard_path, device="cpu")
+                    combined_state_dict.update(shard_state_dict)
+                    # Free memory
+                    del shard_state_dict
+                
+                output_safetensors = os.path.join(pretrained_vision_local_path, "model.safetensors")
+                print("Model output path:", output_safetensors)
+                save_file(combined_state_dict, output_safetensors)
+                
+                print("Shards successfully transformed into single model.")
+                
+                vision_path = pretrained_vision_local_path + "/model.safetensors"
+            
         else:
-            model = LlamaForCausalLM(config)
+            print("Loading LLM+vision from existing local safetensors file...")
+            vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
         
-        try:
-            print("Loading Instruct LLaMA from the path:", llama_path)
-            state_dict = load_file(llama_path, device="cuda")
-            model.load_state_dict(state_dict, strict=False)
-            model.eval().to(torch.float16).requires_grad_(False)
-            print("Llama Instruct model loaded successfully!")
-        except Exception as e:
-            print(f"Error loading LLaMA Instruct model: {e}")
-            raise
+        if load_te == True:
+            try:
+                if encoder_from_pretrained == False:
+                    print("Loading custom text encoder from the path:", encoder_path)
+                    model = LlamaForCausalLM.from_pretrained(config_source, trust_remote_code=True)
+                    state_dict = load_file(encoder_path, device="cuda")
+                    model.load_state_dict(state_dict, strict=False)
+                    model.eval().to(torch.float16).requires_grad_(False)
+                    print("Custom text encoder from safetensors file loaded successfully!")
+                else:
+                    print("Loading custom text encoder from the path:", encoder_pretrained_path)
+                    model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    model.eval().to(torch.float16).requires_grad_(False)
+                    print("Custom text encoder from transformers loaded successfully!")
+            except Exception as e:
+                print(f"Error loading custom text encoder: {e}")
+                raise
 
         # Wrap it like a CLIP-compatible text encoder
         class InstructWrapper:
             def __init__(self):
-                print("InstructWrapper initialized!")
+                print("TEWrapper initialized!")
                 self.system_prompt = system_prompt
                 print("System prompt is set to:", self.system_prompt)
             def tokenize(self, text):
@@ -158,18 +204,19 @@ class FunPackDualCLIPLoaderInstruct:
                 return hidden, pooled
 
         # Replace text encoder in CLIP model
-        clip_model = sd.load_clip(ckpt_paths=[clip_path, llama3_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={})
-        clip_model.text = InstructWrapper()
+        clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={})
+        if load_te == True:
+            clip_model.text = InstructWrapper()
         print("Current TE:", clip_model.text)  # Check if encoder is replaced 
         return (clip_model,)
 
 
 NODE_CLASS_MAPPINGS = {
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
-    "FunPackDualCLIPLoaderInstruct": FunPackDualCLIPLoaderInstruct,
+    "FunPackCLIPLoader": FunPackCLIPLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackImg2LatentInterpolation": "FunPack img2latent Interpolation",
-    "FunPackDualCLIPLoaderInstruct": "FunPack DualCLIP Instruct Loader"
+    "FunPackCLIPLoader": "FunPack CLIP Loader"
 }
