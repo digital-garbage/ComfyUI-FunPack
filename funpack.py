@@ -198,10 +198,10 @@ class FunPackCLIPLoader:
                 raise
 
         # Wrap it like a CLIP-compatible text encoder
-        class InstructWrapper:
-            def __init__(self, model, tokenizer, system_prompt, top_p, top_k, temperature, generate_assist_prompt=None):
-                print("TEWrapper initialized!")
-                self.model = model
+        class PromptEnhancer:
+            def __init__(self, te, tokenizer, system_prompt, top_p, top_k, temperature, generate_assist_prompt=None):
+                print("Prompt Enhancer initialized!")
+                self.model = te
                 self.tokenizer = tokenizer
                 self.system_prompt = system_prompt
                 self.top_p = top_p
@@ -243,7 +243,16 @@ class FunPackCLIPLoader:
                     {"role": "user", "content": text}
                     ]
                 
-                return self.tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
+                tokens = self.tokenizer.apply_chat_template(
+                        messages,
+                        add_generation_prompt=False,
+                        return_tensors="pt",
+                        padding="max_length",
+                        truncation=True,
+                        max_length=77
+                    )
+                    
+                return tokens
                 
             def generate(self, text):
                 print("Calling generate() from tokenize()")
@@ -252,11 +261,15 @@ class FunPackCLIPLoader:
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": text}
                 ]
+                
                 tokens = self.tokenizer.apply_chat_template(
                     messages,
                     add_generation_prompt=True,  # Important for generation
-                    return_tensors="pt"
-                )
+                    return_tensors="pt",
+                    padding="max_length",
+                    truncation=True,
+                    max_length=77
+                    )
 
                 with torch.no_grad():
                     generated_ids = self.model.generate(
@@ -270,43 +283,63 @@ class FunPackCLIPLoader:
                     )
                     output_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
                     return output_text
+        
+        class PromptRewriter:
+            
+            def __init__(self, enhancer, clip_model):
+                self.enhancer = enhancer
+                self.clip_model = clip_model
+                self.tokenizer = clip_model.tokenizer
+                self.ep = None
+                self.enhanced_prompts = {}
+                
+            def tokenize(self, prompt):
+                # Let your LLM rewrite the prompt
+                
+                if self.ep not in self.enhanced_prompts:
+                    print("Generating enhanced prompt..")
+                    self.enhanced_prompt = self.enhancer.generate(prompt)
+                    self.enhanced_prompts[self.ep] = self.enhanced_prompt
+                    print("Assistant generated:", self.enhanced_prompt, flush=True)
+                elif self.ep in self.enhanced_prompts:
+                    print("Using cached enhanced prompt.")
+                    self.enhanced_prompt = self.enhanced_prompts[self.ep]
+                else:
+                    print("Enhanced prompt is broken or somehow has been disabled.")
+                
+                print(f"[PromptRewriter] Rewritten prompt: {self.enhanced_prompt}")
+                # Now pass it to CLIP tokenizer
+                return self.clip_model.tokenize(enhanced_prompt)
 
             def encode_from_tokens(self, tokens, return_pooled=True):
-                with torch.no_grad():
-                    output = self.model(input_ids=tokens, output_hidden_states=True)
-                    hidden_states = output.hidden_states[-1]
-                    pooled_output = hidden_states.mean(dim=1)
-                    # pooled = hidden[:, -1, :]  # use last token for pooled
-                return {"l": pooled_output, "hidden_states": hidden_states}
-            
+                return self.clip_model.encode_from_tokens(tokens, return_pooled)
+
             def encode_token_weights(self, tokens):
-                # This method is expected to return (hidden_states, pooled_output)
-                # where hidden_states is usually (batch_size, sequence_length, hidden_size)
-                # and pooled_output is (batch_size, hidden_size).
-
-                # Since your encode_from_tokens already calculates these, we can reuse it.
-                # However, encode_from_tokens returns pooled_output directly,
-                # so we need to adjust to return both.
-                with torch.no_grad():
-                    output = self.model(input_ids=tokens, output_hidden_states=True)
-                    hidden_states = output.hidden_states[-1]
-                    pooled_output = hidden_states.mean(dim=1) # Or choose the last token's embedding for pooling
-
-                return {"l": pooled_output, "hidden_states": hidden_states}
-            
-            def reset_clip_options(self):
-                return
-
+                return self.clip_model.encode_token_weights(tokens)
+        
+        
         # Replace text encoder in CLIP model
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
+        
         if load_te == True:
-            te = InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)
-            #clip_model.tokenizer = te.tokenizer
-            #clip_model.cond_stage_model = model
-            #clip_model.tokenize = te.tokenize
-            clip_model.text = te.generate
+            
+            enhancer = PromptEnhancer(te, tokenizer, system_prompt, top_p, top_k, temperature)
+            
+            wrapped_clip = PromptRewriter(enhancer, clip_model)
+            
+            clip_model.tokenize = wrapped_clip.tokenize
+            
+            clip_model.tokenizer = wrapped_clip.tokenizer
+            
+            clip_model.encode_from_tokens = wrapped_clip.encode_from_tokens
+            
+            clip_model.encode_token_weights = wrapped_clip.encode_token_weights
+            
             print("Current TE:", clip_model.cond_stage_model)  # Check if encoder is replaced
+            
+            
             return (clip_model,)
+        
         else:
             return (clip_model,)
 
