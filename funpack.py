@@ -176,6 +176,7 @@ class FunPackCLIPLoader:
         if load_te:
             try:
                 if not encoder_from_pretrained:
+                    te = None
                     print("Loading custom text encoder from the path:", encoder_path)
                     config = AutoConfig.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
                     model = AutoModelForCausalLM.from_config(config)
@@ -184,20 +185,23 @@ class FunPackCLIPLoader:
                     model.load_state_dict(state_dict, strict=False)
                     model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from safetensors file loaded successfully!")
+                    return te
                 else:
+                    te = None
                     print("Loading custom text encoder from the path:", encoder_pretrained_path)
                     config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
                     tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from transformers loaded successfully!")
+                    return te
             except Exception as e:
                 print(f"Error loading custom text encoder: {e}")
                 raise
 
         # Wrap it like a CLIP-compatible text encoder
         class InstructWrapper:
-            def __init__(self, model, tokenizer, system_prompt, top_p, top_k, temperature):
+            def __init__(self, model, tokenizer):
                 print("TEWrapper initialized!")
                 self.model = model
                 self.tokenizer = tokenizer
@@ -259,7 +263,7 @@ class FunPackCLIPLoader:
         # Replace text encoder in CLIP model
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
-            text_encoder = sd.load_text_encoder_state_dicts(state_dicts = [InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)], embedding_directory=None, clip_type = get_clip_type(type), model_options={})
+            text_encoder = sd.load_text_encoder_state_dicts(state_dicts = [te], embedding_directory=None, clip_type = get_clip_type(type), model_options={})
             #clip_model.text = InstructWrapper(
             #    model=model,
             #    tokenizer=tokenizer,
