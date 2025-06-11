@@ -169,7 +169,7 @@ class PromptEnhancerClipWrapper:
         self.top_p = top_p
         self.top_k = top_k
         self.temperature = temperature
-        self.max_new_tokens = 77 # Adjusted to try and fit CLIP's typical 77-token limit
+        self.max_new_tokens = 256 # Setting to 256 to allow full detailed LLM output
         self.assistant_reply = None # For conversational context if generate_assist_prompt is true
         self.generate_assist_prompt = generate_assist_prompt
         
@@ -179,7 +179,7 @@ class PromptEnhancerClipWrapper:
         print("[PromptEnhancerClipWrapper] Initialized with LLM and CLIP.")
         print(f"top_p: {self.top_p}, top_k: {self.top_k}, temperature: {self.temperature}")
         print(f"System prompt: {self.system_prompt}")
-        print(f"LLM max_new_tokens set to: {self.max_new_tokens} for CLIP compatibility.")
+        print(f"LLM max_new_tokens set to: {self.max_new_tokens} for full detail.")
 
     def _generate_enhanced_prompt(self, user_prompt):
         print("[PromptEnhancerClipWrapper] Calling _generate_enhanced_prompt for LLM inference...")
@@ -247,7 +247,9 @@ class PromptEnhancerClipWrapper:
         print(f"[PromptEnhancerClipWrapper] Final prompt being passed to CLIP: {enhanced_text}")
         
         # Pass the enhanced text to the original CLIP's tokenize method.
-        # The 'max_new_tokens' setting on the LLM should now ensure the string length is suitable.
+        # With max_new_tokens at 256, the LLM will generate more detailed text.
+        # CLIP's tokenizer will then handle its own internal truncation if the text is still too long,
+        # but the truncated result should be of higher quality.
         return self.original_clip.tokenize(enhanced_text)
 
     # These methods simply delegate to the original CLIP model
