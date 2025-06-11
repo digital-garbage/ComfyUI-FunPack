@@ -259,7 +259,7 @@ class FunPackCLIPLoader:
         # Replace text encoder in CLIP model
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
-            text_encoder = sd.load_text_encoder_state_dicts(state_dicts = [InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)], embedding_directory=None, clip_type = CLIPType.STABLE_DIFFUSION, model_options={})
+            text_encoder = sd.load_text_encoder_state_dicts(state_dicts = [InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)], embedding_directory=None, clip_type = get_clip_type(type), model_options={})
             #clip_model.text = InstructWrapper(
             #    model=model,
             #    tokenizer=tokenizer,
