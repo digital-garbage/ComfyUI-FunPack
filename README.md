@@ -5,7 +5,7 @@ You have been warned.
 
 **FunPack CLIP Loader**
 
-![image](https://github.com/user-attachments/assets/667bb349-c9b8-44ae-b099-3776b310b353)
+![image](https://github.com/user-attachments/assets/780de28e-4d69-4048-8dab-e1f80c847eb8)
 
 
 Update: This node now serves as... I guess, prompt enhancer? It processes user input, adds an enhanced prompt, then does tokenizing using regular CLIP.
@@ -16,21 +16,11 @@ Inputs:
 - llm_vision_model_name - your llava-llama-3 model you usually use with Hunyuan/FramePack (e.g. llava-llama-3-8b-v1_1). Also it's possible to load any other LLM, with or without vision capabilities (I guess);
 - type - select "hunyuan_video", left for compatibility;
 - encoder_pretrained_path - Provide a HuggingFace path for config and tokenizer for your encoder model (or for weights as well, if encoder_from_pretrained=True);
-- vision_pretrained_path - Provide a HuggingFace path for LLM+vision model (only used if vision_from_pretrained=True);
 - encoder_from_pretrained - if enabled, loads encoder model weights from encoder_pretrained_path as well, ignoring local "text_encoder_model_name";
-- vision_from_pretrained - if enabled, loads LLM+vision model weights from vision_pretrained_path, ignoring local "llm_vision_model_name";
 - load_te - if enabled, loads your custom text encoder model. If disabled, uses only vision one (e.g. llava-llama-3-8b-v1_1);
 - system_prompt - your system prompt that Instruct model is going to be using.
-- top_p, top_k, temperature - these are parameters for generating an "assistant prompt". It goes here:
-
-    def tokenize(self, text):
-                assistant_reply = self.generate(text)
-                messages = [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": text},
-                    {"role": "assistant", "content": assistant_reply}
-                ]
-                return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
+- top_p, top_k, temperature - these are parameters for generating an "assistant prompt";
+- generate_assist_prompt - if disabled, bypasses generation of "assistant prompt", if enable - does it with a model that is load as your text_encoder (might be a custom or a standard one).
 
 Technically speaking, it's possible to load just any model as text encoder.
 
