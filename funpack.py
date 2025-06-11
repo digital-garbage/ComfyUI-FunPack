@@ -228,7 +228,6 @@ class PromptEnhancerClipWrapper:
             # Decode only the newly generated part
             output_text = self.llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True)
             self.assistant_reply = output_text # Store for next turn
-        
         # Unloading model. Don't worry, if it's CUDA, it doesn't take too much time to load again, does it?
         
         del self.llm_model
