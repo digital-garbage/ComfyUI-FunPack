@@ -157,7 +157,7 @@ class PromptEnhancerClipWrapper:
         self.top_p = top_p
         self.top_k = top_k
         self.temperature = temperature
-        self.max_new_tokens = 256 # Setting to 256 to allow full detailed LLM output
+        self.max_new_tokens = 1024 # Setting to 256 to allow full detailed LLM output
         self.assistant_reply = None # For conversational context if generate_assist_prompt is true
         self.generate_assist_prompt = generate_assist_prompt
         
@@ -196,10 +196,6 @@ class PromptEnhancerClipWrapper:
                     self.llm_model = AutoModelForCausalLM.from_pretrained(self.encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
                     self.llm_model = self.llm_model.eval().to(torch.float16).requires_grad_(False) # Convert to float16 on CPU
                     print(f"Custom text encoder from transformers loaded successfully to CPU!")
-                
-                self.llm_model_device = mm.get_torch_device() # Get the actual GPU device
-                self.llm_model.to(self.llm_model_device) # Move to GPU for inference
-                print(f"[PromptEnhancerClipWrapper] LLM moved to {self.llm_model.device} for generation.")
 
             except Exception as e:
                 print(f"Error loading LLM model for enhancement: {e}")
@@ -209,7 +205,7 @@ class PromptEnhancerClipWrapper:
             messages,
             add_generation_prompt=True,
             return_tensors="pt",
-        ).to(self.llm_model.device)
+        )
 
         with torch.no_grad():
             self._is_llm_generating = True # Set flag before LLM generation
@@ -229,17 +225,6 @@ class PromptEnhancerClipWrapper:
             # Decode only the newly generated part
             output_text = self.llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True)
             self.assistant_reply = output_text # Store for next turn
-            
-        # Fully unload LLM model and tokenizer after use
-        print("[PromptEnhancerClipWrapper] Attempting to fully unload LLM model...")
-        if self.llm_model:
-            self.llm_model.cpu() # Ensure it's on CPU before deletion
-            del self.llm_model
-            self.llm_model = None
-        if self.llm_tokenizer:
-            del self.llm_tokenizer
-            self.llm_tokenizer = None
-        
         torch.cuda.empty_cache() # Clear GPU cache
         gc.collect() # Force Python garbage collection
         print(f"[PromptEnhancerClipWrapper] LLM model fully unloaded (from GPU and attempting to free RAM).")
