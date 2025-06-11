@@ -31,7 +31,7 @@ Inputs:
                 ]
                 return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
 
-Technically speaking, it's possible to load just any model as instruct one. It might not even be an instruct model.
+Technically speaking, it's possible to load just any model as text encoder.
 
 Outputs:
 Just CLIP. Pass it through your nodes like you will do with regular DualCLIPLoader.
