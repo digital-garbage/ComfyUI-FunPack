@@ -96,7 +96,10 @@ class FunPackCLIPLoader:
                     'system_prompt': ("STRING", {
                         "multiline": True,
                         "default": "<image>You are an expert visual describer for AI video generation. Your task is to interpret user prompts and transform them into detailed, vivid descriptions optimized for image-to-video synthesis. Ensure your descriptions prioritize visual consistency, dynamic actions, and coherent scene elements to guide the generative model in creating smooth, logical video sequences from an initial image. Do not include conversational filler or explanations; just the descriptive text:<|eot_id|>"
-                    })
+                    }),
+                    'top_p': ("FLOAT", {"min": 0.0, "max": 10.0, "step": 0.05, "default": 0.75}),
+                    'top_k': ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
+                    'temperature': ("FLOAT", {"min": 0.0, "max": 10.0, "step": 0.01, "default": 0.6})
                 }
             }
     RETURN_TYPES = 'CLIP',
@@ -110,7 +113,7 @@ class FunPackCLIPLoader:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None):
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, top_p, top_k, temperature, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -174,7 +177,8 @@ class FunPackCLIPLoader:
             try:
                 if not encoder_from_pretrained:
                     print("Loading custom text encoder from the path:", encoder_path)
-                    model = AutoModelForCausalLM.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
+                    config = AutoConfig.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
+                    model = AutoModelForCausalLM.from_config(config)
                     state_dict = load_file(encoder_path, device="cuda")
                     model.load_state_dict(state_dict, strict=False)
                     model.eval().to(torch.float16).requires_grad_(False)
@@ -195,13 +199,41 @@ class FunPackCLIPLoader:
             def __init__(self):
                 print("TEWrapper initialized!")
                 self.system_prompt = system_prompt
+                self.top_p = top_p
+                self.top_k = top_k
+                self.temperature = temperature
+                self.max_new_tokens = 128
+                print("top_p:", self.top_p)
+                print("top_k:", self.top_k)
+                print("temperature:", self.temperature)
+                print("max new tokens is hardcoded to", self.max_new_tokens)
                 print("System prompt is set to:", self.system_prompt)
+                
             def tokenize(self, text):
+                
+                assistant_reply = self.generate(text)
+                
                 messages = [
                     {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": text}
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": assistant_reply}
                 ]
                 return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
+                
+            def generate(self, prompt_text):
+                tokens = self.tokenize(prompt_text)
+                with torch.no_grad():
+                    generated_ids = model.generate(
+                    input_ids=tokens,
+                    do_sample=True,
+                    top_p=self.top_p,
+                    top_k=self.top_k,
+                    temperature=self.temperature,
+                    max_new_tokens=self.max_new_tokens,
+                    pad_token_id=tokenizer.pad_token_id
+                    )
+                    output_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+                    return output_text
 
             def encode_from_tokens(self, tokens, return_pooled=True):
                 with torch.no_grad():
