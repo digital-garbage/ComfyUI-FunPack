@@ -99,7 +99,8 @@ class FunPackCLIPLoader:
                     }),
                     'top_p': ("FLOAT", {"min": 0.0, "max": 10.0, "step": 0.05, "default": 0.75}),
                     'top_k': ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
-                    'temperature': ("FLOAT", {"min": 0.0, "max": 10.0, "step": 0.01, "default": 0.6})
+                    'temperature': ("FLOAT", {"min": 0.0, "max": 10.0, "step": 0.01, "default": 0.6}),
+                    'generate_assist_prompt': ("BOOLEAN", {"default": False})
                 }
             }
     RETURN_TYPES = 'CLIP',
@@ -113,7 +114,7 @@ class FunPackCLIPLoader:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, top_p, top_k, temperature, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None):
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, top_p, top_k, temperature, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None, generate_assist_prompt=None):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -197,7 +198,7 @@ class FunPackCLIPLoader:
 
         # Wrap it like a CLIP-compatible text encoder
         class InstructWrapper:
-            def __init__(self, model, tokenizer, system_prompt, top_p, top_k, temperature):
+            def __init__(self, model, tokenizer, system_prompt, top_p, top_k, temperature, generate_assist_prompt=None):
                 print("TEWrapper initialized!")
                 self.model = model
                 self.tokenizer = tokenizer
@@ -208,6 +209,7 @@ class FunPackCLIPLoader:
                 self.max_new_tokens = 256
                 self.assistant_reply = None
                 self.assistant_replies = {}
+                self.generate_assist_prompt = generate_assist_prompt
                 print("top_p:", self.top_p)
                 print("top_k:", self.top_k)
                 print("temperature:", self.temperature)
@@ -216,16 +218,30 @@ class FunPackCLIPLoader:
                 
             def tokenize(self, text):
                 print("Calling tokenize()", flush=True)
-                if text not in self.assistant_replies:
+                if text not in self.assistant_replies and self.generate_assist_prompt:
                     print("Generating assistant reply..")
                     self.assistant_reply = self.generate(text)
                     self.assistant_replies[text] = self.assistant_reply
-                    print("Assistant generated:", assistant_reply, flush=True)
-                messages = [
+                    print("Assistant generated:", self.assistant_reply, flush=True)
+                elif text in self.assistant_replies and self.generate_assist_prompt:
+                    print("Using cached assistant reply.")
+                    self.assistant_reply = self.assistant_replies[text]
+                else:
+                    print("Assistant prompt has been disabled.")
+                
+                if self.generate_assist_prompt:
+                    messages = [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": self.assistant_reply}
-                ]
+                    ]
+                
+                else:
+                    messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": text}
+                    ]
+                
                 return self.tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
                 
             def generate(self, text):
