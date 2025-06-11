@@ -1,18 +1,3 @@
-"""
-olivv's FunPack v1.1.2
-
-Changelog:
-
-v1.1.2 - Added "instruct_from_pretrained"
-v1.1.1 - Added DualCLIP Instruct loader node for experimenting with Instruct models in FramePack.
-v1.1.0 - Changed interpolation logic.
-
-Custom ComfyUI node created specifically to imitate FramePack's approach, but using WAN2.1 models.
-It takes the last frame of a video, then multiplies it many times,
-gradually increasing denoising to the end, somewhat similar to what FramePack does,
-but without frame prediction.
-
-"""
 import os
 import torch
 from transformers import LlamaConfig, LlamaForCausalLM, LlavaForConditionalGeneration, AutoModelForCausalLM, AutoTokenizer, AutoConfig
@@ -85,13 +70,10 @@ class FunPackCLIPLoader:
                 {
                     'clip_model_name': (s.get_filename_list(),),
                     'text_encoder_model_name': (s.get_filename_list(),),
-                    'llm_vision_model_name':(s.get_filename_list(),),
+                    'llm_vision_model_name':(s.get_filename_list(),), # Retained for local loading
                     'type': base['required']['type'],
                     'encoder_pretrained_path': ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
-                    'vision_pretrained_path': ("STRING", {"multiline": False, "default": "huihui-ai/Llama-3.2-11B-Vision-Instruct-abliterated"}),
                     'encoder_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
-                    'vision_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load LLM+vision model from pretrained_path"}),
-                    'vision_from_pretrained_comfy': ("BOOLEAN", {"default": False, "tooltip": "Checks for the model in models/LLM instead of HuggingFace"}),
                     'load_te': ("BOOLEAN", {"default": True, "tooltip": "If off, does not load separate model as text encoder, using only llm_vision_model_name"}),
                     'system_prompt': ("STRING", {
                         "multiline": True,
@@ -114,7 +96,7 @@ class FunPackCLIPLoader:
         files += folder_paths.get_filename_list('clip')
         return sorted(files)
     
-    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, top_p, top_k, temperature, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None, generate_assist_prompt=None):
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, system_prompt, top_p, top_k, temperature, encoder_from_pretrained=None, load_te=None, generate_assist_prompt=None):
         # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
         def get_clip_type(type):
@@ -124,224 +106,156 @@ class FunPackCLIPLoader:
         
         # Load TE model from weights
         encoder_path = folder_paths.get_full_path('clip', text_encoder_model_name)
-        config_source = encoder_pretrained_path
         
-        if not vision_from_pretrained_comfy:
-            pretrained_vision_local_path = snapshot_download(repo_id=vision_pretrained_path)
-            pvlp_model = pretrained_vision_local_path + "/model.safetensors"
-        else:
-            pretrained_vision_local_path = folder_paths.models_dir + "/clip/" + vision_pretrained_path
-            print(pretrained_vision_local_path)
-            pvlp_model = pretrained_vision_local_path + "/model.safetensors"
+        # Simplified LLM+vision model loading: always load from existing local safetensors file
+        print("Loading LLM+vision from existing local safetensors file:", llm_vision_model_name)
+        vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
         
         print("Loading TE from pretrained is set to", encoder_from_pretrained)
-        print("Loading LLM+vision from pretrained is set to", vision_from_pretrained)
         print("Loading custom TE is set to", load_te)
 
-        # Load LLM with vision capabilities (expected llava-llama-3-8b_v1_1)
-        if vision_from_pretrained:
-            print("Loading LLM+vision from", vision_pretrained_path)            
-            if os.path.exists(pvlp_model):
-                print("Model already saved in a single file. Loading from local path...")
-                model_dir = snapshot_download(repo_id=vision_pretrained_path)
-                vision_path = pretrained_vision_local_path + "/model.safetensors"
-                print ("Loading from", vision_path)
-            else:
-                print("Local model does not exist. Loading, merging and saving it locally..")
-                if not vision_from_pretrained_comfy:
-                    model_dir = snapshot_download(repo_id=vision_pretrained_path)
-                    model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
-                else:
-                    model_dir = folder_paths.models_dir + "/clip/" + vision_pretrained_path
-                shard_paths = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
-                shard_paths = [p for p in shard_paths if "index" not in p]
-                print("Shard files:", shard_paths)
-                # Step 3: Load and combine shards
-                combined_state_dict = {}
-                for shard_path in shard_paths:
-                    print(shard_path)
-                    # Load shard to CPU to minimize memory usage
-                    shard_state_dict = load_file(shard_path, device="cpu")
-                    combined_state_dict.update(shard_state_dict)
-                    # Free memory
-                    del shard_state_dict
-                output_safetensors = os.path.join(pretrained_vision_local_path, "model.safetensors")
-                print("Model output path:", output_safetensors)
-                save_file(combined_state_dict, output_safetensors)
-                print("Shards successfully transformed into single model.")
-                vision_path = pretrained_vision_local_path + "/model.safetensors"
-        else:
-            print("Loading LLM+vision from existing local safetensors file...")
-            vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
-        
+        # Initialize tokenizer outside the PromptEnhancer for the LLM
+        llm_tokenizer = None
+        te = None # This will hold the LLM model
         if load_te:
             try:
                 if not encoder_from_pretrained:
-                    te = None
                     print("Loading custom text encoder from the path:", encoder_path)
-                    tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                    llm_tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
                     model = LlamaForCausalLM.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
                     state_dict = load_file(encoder_path, device="cuda")
                     model.load_state_dict(state_dict, strict=False)
                     te = model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from safetensors file loaded successfully!")
                 else:
-                    te = None
                     print("Loading custom text encoder from the path:", encoder_pretrained_path)
-                    config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    llm_tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
-                    tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
                     te = model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from transformers loaded successfully!")
             except Exception as e:
                 print(f"Error loading custom text encoder: {e}")
                 raise
 
-        # Wrap it like a CLIP-compatible text encoder
-        class PromptEnhancer:
-            def __init__(self, te, tokenizer, system_prompt, top_p, top_k, temperature, generate_assist_prompt=None):
-                print("Prompt Enhancer initialized!")
-                self.model = te
-                self.tokenizer = tokenizer
-                self.system_prompt = system_prompt
-                self.top_p = top_p
-                self.top_k = top_k
-                self.temperature = temperature
-                self.max_new_tokens = 256
-                self.assistant_reply = None
-                self.assistant_replies = {}
-                self.generate_assist_prompt = generate_assist_prompt
-                print("top_p:", self.top_p)
-                print("top_k:", self.top_k)
-                print("temperature:", self.temperature)
-                print("max new tokens is hardcoded to", self.max_new_tokens)
-                print("System prompt is set to:", self.system_prompt)
-                
-            def tokenize(self, text):
-                print("Calling tokenize()", flush=True)
-                if text not in self.assistant_replies and self.generate_assist_prompt:
-                    print("Generating assistant reply..")
-                    self.assistant_reply = self.generate(text)
-                    self.assistant_replies[text] = self.assistant_reply
-                    print("Assistant generated:", self.assistant_reply, flush=True)
-                elif text in self.assistant_replies and self.generate_assist_prompt:
-                    print("Using cached assistant reply.")
-                    self.assistant_reply = self.assistant_replies[text]
-                else:
-                    print("Assistant prompt has been disabled.")
-                
-                if self.generate_assist_prompt:
-                    messages = [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": text},
-                    {"role": "assistant", "content": self.assistant_reply}
-                    ]
-                
-                else:
-                    messages = [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": text}
-                    ]
-                
-                tokens = self.tokenizer.apply_chat_template(
-                        messages,
-                        add_generation_prompt=False,
-                        return_tensors="pt",
-                        padding="max_length",
-                        truncation=True,
-                        max_length=77
-                    )
-                    
-                return tokens
-                
-            def generate(self, text):
-                print("Calling generate() from tokenize()")
-                # Prepare chat messages for assistant generation
-                messages = [
-                    {"role": "system", "content": self.system_prompt},
-                    {"role": "user", "content": text}
-                ]
-                
-                tokens = self.tokenizer.apply_chat_template(
-                    messages,
-                    add_generation_prompt=True,  # Important for generation
-                    return_tensors="pt",
-                    padding="max_length",
-                    truncation=True,
-                    max_length=77
-                    )
-
-                with torch.no_grad():
-                    generated_ids = self.model.generate(
-                        input_ids=tokens,
-                        do_sample=True,
-                        top_p=self.top_p,
-                        top_k=self.top_k,
-                        temperature=self.temperature,
-                        max_new_tokens=self.max_new_tokens,
-                        pad_token_id=tokenizer.pad_token_id
-                    )
-                    output_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-                    return output_text
-        
-        class PromptRewriter:
-            
-            def __init__(self, enhancer, clip_model):
-                self.enhancer = enhancer
-                self.clip_model = clip_model
-                self.tokenizer = clip_model.tokenizer
-                self.ep = None
-                self.enhanced_prompts = {}
-                
-            def tokenize(self, prompt):
-                # Let your LLM rewrite the prompt
-                
-                if self.ep not in self.enhanced_prompts:
-                    print("Generating enhanced prompt..")
-                    self.enhanced_prompt = self.enhancer.generate(prompt)
-                    self.enhanced_prompts[self.ep] = self.enhanced_prompt
-                    print("Assistant generated:", self.enhanced_prompt, flush=True)
-                elif self.ep in self.enhanced_prompts:
-                    print("Using cached enhanced prompt.")
-                    self.enhanced_prompt = self.enhanced_prompts[self.ep]
-                else:
-                    print("Enhanced prompt is broken or somehow has been disabled.")
-                
-                print(f"[PromptRewriter] Rewritten prompt: {self.enhanced_prompt}")
-                # Now pass it to CLIP tokenizer
-                return self.clip_model.tokenize(enhanced_prompt)
-
-            def encode_from_tokens(self, tokens, return_pooled=True):
-                return self.clip_model.encode_from_tokens(tokens, return_pooled)
-
-            def encode_token_weights(self, tokens):
-                return self.clip_model.encode_token_weights(tokens)
-        
-        
-        # Replace text encoder in CLIP model
+        # Load the base CLIP model first
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         
         if load_te == True:
+            # Wrap the original CLIP model with our prompt enhancer
+            wrapped_clip_with_enhancement = PromptEnhancerClipWrapper(
+                original_clip_model=clip_model,
+                llm_model=te,
+                llm_tokenizer=llm_tokenizer,
+                system_prompt=system_prompt,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature,
+                generate_assist_prompt=generate_assist_prompt
+            )
             
-            enhancer = PromptEnhancer(te, tokenizer, system_prompt, top_p, top_k, temperature)
-            
-            wrapped_clip = PromptRewriter(enhancer, clip_model)
-            
-            clip_model.tokenize = wrapped_clip.tokenize
-            
-            clip_model.tokenizer = wrapped_clip.tokenizer
-            
-            clip_model.encode_from_tokens = wrapped_clip.encode_from_tokens
-            
-            clip_model.encode_token_weights = wrapped_clip.encode_token_weights
-            
-            print("Current TE:", clip_model.cond_stage_model)  # Check if encoder is replaced
-            
-            
-            return (clip_model,)
+            # Return our wrapper instance directly. ComfyUI will then call methods on it.
+            return (wrapped_clip_with_enhancement,)
         
         else:
+            # If no TE, return the original CLIP model without enhancement
             return (clip_model,)
+
+class PromptEnhancerClipWrapper:
+    def __init__(self, original_clip_model, llm_model, llm_tokenizer, system_prompt, top_p, top_k, temperature, generate_assist_prompt):
+        self.original_clip = original_clip_model # Keep a reference to the actual CLIP object
+        self.llm_model = llm_model
+        self.llm_tokenizer = llm_tokenizer
+        self.system_prompt = system_prompt
+        self.top_p = top_p
+        self.top_k = top_k
+        self.temperature = temperature
+        self.max_new_tokens = 77 # Adjusted to try and fit CLIP's typical 77-token limit
+        self.assistant_reply = None # For conversational context if generate_assist_prompt is true
+        self.generate_assist_prompt = generate_assist_prompt
+        
+        self.enhanced_prompts_cache = {} # Stores original_user_prompt -> enhanced_text
+        self._is_llm_generating = False # Flag to prevent recursive LLM calls if LLM's own tokenization process calls us
+
+        print("[PromptEnhancerClipWrapper] Initialized with LLM and CLIP.")
+        print(f"top_p: {self.top_p}, top_k: {self.top_k}, temperature: {self.temperature}")
+        print(f"System prompt: {self.system_prompt}")
+        print(f"LLM max_new_tokens set to: {self.max_new_tokens} for CLIP compatibility.")
+
+    def _generate_enhanced_prompt(self, user_prompt):
+        print("[PromptEnhancerClipWrapper] Calling _generate_enhanced_prompt for LLM inference...")
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        # If generate_assist_prompt is true and we have a previous assistant reply, add it
+        if self.generate_assist_prompt and self.assistant_reply:
+            messages.append({"role": "assistant", "content": self.assistant_reply})
+        
+        # This part of tokenization is for the LLM itself
+        llm_tokens = self.llm_tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        ).to(self.llm_model.device)
+
+        with torch.no_grad():
+            self._is_llm_generating = True # Set flag before LLM generation
+            try:
+                generated_ids = self.llm_model.generate(
+                    input_ids=llm_tokens,
+                    do_sample=True,
+                    top_p=self.top_p,
+                    top_k=self.top_k,
+                    temperature=self.temperature,
+                    max_new_tokens=self.max_new_tokens,
+                    pad_token_id=self.llm_tokenizer.pad_token_id
+                )
+            finally:
+                self._is_llm_generating = False # Always reset flag
+
+            # Decode only the newly generated part
+            output_text = self.llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True)
+            self.assistant_reply = output_text # Store for next turn
+            return output_text
+
+    def tokenize(self, prompt):
+        print(f"[PromptEnhancerClipWrapper] Received prompt for tokenization: '{prompt}'")
+
+        # If LLM is currently generating, this call is likely from LLM's internal tokenization (e.g. from tokenizer.apply_chat_template).
+        # Pass through to original CLIP tokenizer directly.
+        if self._is_llm_generating:
+            print(f"[PromptEnhancerClipWrapper] LLM generation in progress. Passing directly to original CLIP tokenizer: '{prompt}'")
+            return self.original_clip.tokenize(prompt)
+
+        # Check if the prompt is an already enhanced prompt (a value in our cache)
+        # This prevents re-enhancing text that was already LLM-generated.
+        if prompt in self.enhanced_prompts_cache.values():
+            print(f"[PromptEnhancerClipWrapper] Prompt '{prompt}' is an already enhanced prompt. Passing directly to original CLIP tokenizer.")
+            return self.original_clip.tokenize(prompt)
+        
+        # If it's a new, original user prompt (key not in cache)
+        if prompt not in self.enhanced_prompts_cache:
+            print(f"[PromptEnhancerClipWrapper] Prompt '{prompt}' NOT in cache. Calling LLM for enhancement...")
+            enhanced_text = self._generate_enhanced_prompt(prompt)
+            self.enhanced_prompts_cache[prompt] = enhanced_text
+            print(f"[PromptEnhancerClipWrapper] LLM enhanced and cached for '{prompt}': {enhanced_text}")
+        else:
+            print(f"[PromptEnhancerClipWrapper] Using cached enhanced prompt for '{prompt}'.")
+            enhanced_text = self.enhanced_prompts_cache[prompt]
+        
+        print(f"[PromptEnhancerClipWrapper] Final prompt being passed to CLIP: {enhanced_text}")
+        
+        # Pass the enhanced text to the original CLIP's tokenize method.
+        # The 'max_new_tokens' setting on the LLM should now ensure the string length is suitable.
+        return self.original_clip.tokenize(enhanced_text)
+
+    # These methods simply delegate to the original CLIP model
+    def encode_from_tokens(self, tokens, return_pooled=True):
+        return self.original_clip.encode_from_tokens(tokens, return_pooled)
+
+    def encode_token_weights(self, tokens):
+        return self.original_clip.encode_token_weights(tokens)
 
 
 NODE_CLASS_MAPPINGS = {
