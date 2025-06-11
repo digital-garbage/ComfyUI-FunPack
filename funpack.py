@@ -179,6 +179,7 @@ class FunPackCLIPLoader:
                     print("Loading custom text encoder from the path:", encoder_path)
                     config = AutoConfig.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
                     model = AutoModelForCausalLM.from_config(config)
+                    tokenizer = AutoTokenizer.from_pretrained(config_source, trust_remote_code=True)
                     state_dict = load_file(encoder_path, device="cuda")
                     model.load_state_dict(state_dict, strict=False)
                     model.eval().to(torch.float16).requires_grad_(False)
@@ -196,8 +197,10 @@ class FunPackCLIPLoader:
 
         # Wrap it like a CLIP-compatible text encoder
         class InstructWrapper:
-            def __init__(self):
+            def __init__(self, model, tokenizer, system_prompt, top_p, top_k, temperature):
                 print("TEWrapper initialized!")
+                self.model = model
+                self.tokenizer = tokenizer
                 self.system_prompt = system_prompt
                 self.top_p = top_p
                 self.top_k = top_k
@@ -210,34 +213,44 @@ class FunPackCLIPLoader:
                 print("System prompt is set to:", self.system_prompt)
                 
             def tokenize(self, text):
-                
+                print("Calling generate() from tokenize()", flush=True)
                 assistant_reply = self.generate(text)
-                
+                print("Assistant generated:", assistant_reply, flush=True)
                 messages = [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": assistant_reply}
                 ]
-                return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
+                return self.tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
                 
-            def generate(self, prompt_text):
-                tokens = self.tokenize(prompt_text)
+            def generate(self, text):
+                # Prepare chat messages for assistant generation
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": text}
+                ]
+                tokens = self.tokenizer.apply_chat_template(
+                    messages,
+                    add_generation_prompt=True,  # Important for generation
+                    return_tensors="pt"
+                ).to("cuda")
+
                 with torch.no_grad():
-                    generated_ids = model.generate(
-                    input_ids=tokens,
-                    do_sample=True,
-                    top_p=self.top_p,
-                    top_k=self.top_k,
-                    temperature=self.temperature,
-                    max_new_tokens=self.max_new_tokens,
-                    pad_token_id=tokenizer.pad_token_id
+                    generated_ids = self.model.generate(
+                        input_ids=tokens,
+                        do_sample=True,
+                        top_p=self.top_p,
+                        top_k=self.top_k,
+                        temperature=self.temperature,
+                        max_new_tokens=self.max_new_tokens,
+                        pad_token_id=tokenizer.pad_token_id
                     )
-                    output_text = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+                    output_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
                     return output_text
 
             def encode_from_tokens(self, tokens, return_pooled=True):
                 with torch.no_grad():
-                    output = model(input_ids=tokens, output_hidden_states=True)
+                    output = self.model(input_ids=tokens, output_hidden_states=True)
                     hidden_states = output.hidden_states[-1]
                     pooled_output = hidden_states.mean(dim=1)
                     # pooled = hidden[:, -1, :]  # use last token for pooled
@@ -246,7 +259,14 @@ class FunPackCLIPLoader:
         # Replace text encoder in CLIP model
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
-            clip_model.text = InstructWrapper()
+            clip_model.text = InstructWrapper(
+                model=model,
+                tokenizer=tokenizer,
+                system_prompt=system_prompt,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature
+            )
             print("Current TE:", clip_model.text)  # Check if encoder is replaced
         return (clip_model,)
 
