@@ -9,7 +9,7 @@ import comfy.sd as sd
 import folder_paths
 import nodes
 import tempfile
-# import gc # No longer needed for aggressive unloading
+import gc # Import garbage collector
 
 class FunPackImg2LatentInterpolation:
     @classmethod
@@ -115,38 +115,17 @@ class FunPackCLIPLoader:
         print("Loading TE from pretrained is set to", encoder_from_pretrained)
         print("Loading custom TE is set to", load_te)
 
-        # Initialize tokenizer outside the PromptEnhancer for the LLM
-        llm_tokenizer = None
-        te = None # This will hold the LLM model
-        if load_te:
-            try:
-                if not encoder_from_pretrained:
-                    print("Loading custom text encoder from the path:", encoder_path)
-                    llm_tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
-                    model = LlamaForCausalLM.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
-                    state_dict = load_file(encoder_path, device="cuda") # Load directly to GPU
-                    model.load_state_dict(state_dict, strict=False)
-                    te = model.eval().to(torch.float16).requires_grad_(False)
-                    print("Custom text encoder from safetensors file loaded successfully!")
-                else:
-                    print("Loading custom text encoder from the path:", encoder_pretrained_path)
-                    llm_tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
-                    te = model.eval().to(torch.float16).requires_grad_(False)
-                    print("Custom text encoder from transformers loaded successfully!")
-            except Exception as e:
-                print(f"Error loading custom text encoder: {e}")
-                raise
-
         # Load the base CLIP model first
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         
         if load_te == True:
             # Wrap the original CLIP model with our prompt enhancer
+            # Pass loading parameters instead of actual model/tokenizer instances
             wrapped_clip_with_enhancement = PromptEnhancerClipWrapper(
                 original_clip_model=clip_model,
-                llm_model=te, # Pass the loaded LLM model
-                llm_tokenizer=llm_tokenizer, # Pass the loaded LLM tokenizer
+                encoder_path=encoder_path,
+                encoder_pretrained_path=encoder_pretrained_path,
+                encoder_from_pretrained=encoder_from_pretrained,
                 system_prompt=system_prompt,
                 top_p=top_p,
                 top_k=top_k,
@@ -162,32 +141,33 @@ class FunPackCLIPLoader:
             return (clip_model,)
 
 class PromptEnhancerClipWrapper:
-    def __init__(self, original_clip_model, llm_model, llm_tokenizer, system_prompt, top_p, top_k, temperature, generate_assist_prompt):
+    def __init__(self, original_clip_model, encoder_path, encoder_pretrained_path, encoder_from_pretrained, system_prompt, top_p, top_k, temperature, generate_assist_prompt):
         self.original_clip = original_clip_model # Keep a reference to the actual CLIP object
-        self.llm_model = llm_model # LLM model is now passed directly
-        self.llm_tokenizer = llm_tokenizer # LLM tokenizer is now passed directly
         
-        # Store the device where the LLM model is initially loaded
-        # This is where the model will be moved to for inference
-        self.llm_model_device = llm_model.device 
-
+        # Store loading parameters for on-demand loading
+        self.encoder_path = encoder_path
+        self.encoder_pretrained_path = encoder_pretrained_path
+        self.encoder_from_pretrained = encoder_from_pretrained
+        
+        self.llm_model = None # Will be loaded on demand
+        self.llm_tokenizer = None # Will be loaded on demand
+        self.llm_model_device = None # Will be set upon loading
+        
         self.system_prompt = system_prompt
         self.top_p = top_p
         self.top_k = top_k
         self.temperature = temperature
-        self.max_new_tokens = 1024 # Corrected token limit back to 1024 as per the original file
+        self.max_new_tokens = 1024 # Setting to 256 to allow full detailed LLM output
         self.assistant_reply = None # For conversational context if generate_assist_prompt is true
         self.generate_assist_prompt = generate_assist_prompt
         
         self.enhanced_prompts_cache = {} # Stores original_user_prompt -> enhanced_text
         self._is_llm_generating = False # Flag to prevent recursive LLM calls if LLM's own tokenization process calls us
 
-        print("[PromptEnhancerClipWrapper] Initialized with LLM and CLIP.")
+        print("[PromptEnhancerClipWrapper] Initialized for on-demand LLM loading/unloading.")
         print(f"top_p: {self.top_p}, top_k: {self.top_k}, temperature: {self.temperature}")
         print(f"System prompt: {self.system_prompt}")
         print(f"LLM max_new_tokens set to: {self.max_new_tokens} for full detail.")
-        print(f"LLM will be moved to/from: {self.llm_model_device}")
-
 
     def _generate_enhanced_prompt(self, user_prompt):
         print("[PromptEnhancerClipWrapper] Calling _generate_enhanced_prompt for LLM inference...")
@@ -200,26 +180,38 @@ class PromptEnhancerClipWrapper:
         if self.generate_assist_prompt and self.assistant_reply:
             messages.append({"role": "assistant", "content": self.assistant_reply})
         
-        # Move LLM to its designated device before generation
-        self.llm_model.to(self.llm_model_device)
-        print(f"[PromptEnhancerClipWrapper] LLM moved to {self.llm_model.device} for generation.")
+        # Load LLM model and tokenizer only if not already loaded (e.g., first call in a generation cycle)
+        if self.llm_model is None or self.llm_tokenizer is None:
+            print("[PromptEnhancerClipWrapper] LLM model and tokenizer not loaded. Loading now...")
+            try:
+                if not self.encoder_from_pretrained:
+                    self.llm_tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                    model_base = LlamaForCausalLM.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                    state_dict = load_file(self.encoder_path, device="cpu") # Load to CPU initially to control device
+                    model_base.load_state_dict(state_dict, strict=False)
+                    self.llm_model = model_base.eval().to(torch.float16).requires_grad_(False) # Convert to float16 on CPU
+                    print(f"Custom text encoder from safetensors file loaded successfully to CPU!")
+                else:
+                    self.llm_tokenizer = AutoTokenizer.from_pretrained(self.encoder_pretrained_path, trust_remote_code=True)
+                    self.llm_model = AutoModelForCausalLM.from_pretrained(self.encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
+                    self.llm_model = self.llm_model.eval().to(torch.float16).requires_grad_(False) # Convert to float16 on CPU
+                    print(f"Custom text encoder from transformers loaded successfully to CPU!")
 
-        # This part of tokenization is for the LLM itself
-        # Unpack the dictionary to get input_ids and attention_mask
-        chat_template_output = self.llm_tokenizer.apply_chat_template(
+            except Exception as e:
+                print(f"Error loading LLM model for enhancement: {e}")
+                raise
+
+        llm_tokens = self.llm_tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
             return_tensors="pt",
         )
-        llm_input_ids = chat_template_output["input_ids"].to(self.llm_model.device)
-        llm_attention_mask = chat_template_output["attention_mask"].to(self.llm_model.device)
 
         with torch.no_grad():
             self._is_llm_generating = True # Set flag before LLM generation
             try:
                 generated_ids = self.llm_model.generate(
-                    input_ids=llm_input_ids,           # Use the unpacked input_ids
-                    attention_mask=llm_attention_mask, # Pass the attention_mask
+                    input_ids=llm_tokens,
                     do_sample=True,
                     top_p=self.top_p,
                     top_k=self.top_k,
@@ -231,12 +223,11 @@ class PromptEnhancerClipWrapper:
                 self._is_llm_generating = False # Always reset flag
 
             # Decode only the newly generated part
-            output_text = self.llm_tokenizer.decode(generated_ids[0][llm_input_ids.shape[1]:], skip_special_tokens=True)
+            output_text = self.llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True)
             self.assistant_reply = output_text # Store for next turn
-            
-        # Move LLM back to CPU after generation (reverted from full unload)
-        self.llm_model.to("cpu")
-        print(f"[PromptEnhancerClipWrapper] LLM moved back to CPU.")
+        torch.cuda.empty_cache() # Clear GPU cache
+        gc.collect() # Force Python garbage collection
+        print(f"[PromptEnhancerClipWrapper] LLM model fully unloaded (from GPU and attempting to free RAM).")
 
         return output_text
 
@@ -268,7 +259,7 @@ class PromptEnhancerClipWrapper:
         print(f"[PromptEnhancerClipWrapper] Final prompt being passed to CLIP: {enhanced_text}")
         
         # Pass the enhanced text to the original CLIP's tokenize method.
-        # With max_new_tokens at 1024, the LLM will generate more detailed text.
+        # With max_new_tokens at 256, the LLM will generate more detailed text.
         # CLIP's tokenizer will then handle its own internal truncation if the text is still too long,
         # but the truncated result should be of higher quality.
         return self.original_clip.tokenize(enhanced_text)
