@@ -157,7 +157,7 @@ class PromptEnhancerClipWrapper:
         self.top_p = top_p
         self.top_k = top_k
         self.temperature = temperature
-        self.max_new_tokens = 1024 # Setting to 256 to allow full detailed LLM output
+        self.max_new_tokens = 1024 # Setting to 1024 because Gemini forgot
         self.assistant_reply = None # For conversational context if generate_assist_prompt is true
         self.generate_assist_prompt = generate_assist_prompt
         
@@ -189,13 +189,15 @@ class PromptEnhancerClipWrapper:
                     model_base = LlamaForCausalLM.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
                     state_dict = load_file(self.encoder_path, device="cpu") # Load to CPU initially to control device
                     model_base.load_state_dict(state_dict, strict=False)
-                    self.llm_model = model_base.eval().to(torch.float16).requires_grad_(False) # Convert to float16 on CPU
-                    print(f"Custom text encoder from safetensors file loaded successfully to CPU!")
+                    self.llm_model = model_base.eval().to(torch.bfloat16).requires_grad_(False).to("cuda") # Convert to float16 on CPU
+                    self.llm_model_device = self.llm_model.device
+                    print(f"Custom text encoder from safetensors file loaded successfully to CUDA(?)!")
                 else:
                     self.llm_tokenizer = AutoTokenizer.from_pretrained(self.encoder_pretrained_path, trust_remote_code=True)
                     self.llm_model = AutoModelForCausalLM.from_pretrained(self.encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
-                    self.llm_model = self.llm_model.eval().to(torch.float16).requires_grad_(False) # Convert to float16 on CPU
-                    print(f"Custom text encoder from transformers loaded successfully to CPU!")
+                    self.llm_model = self.llm_model.eval().to(torch.bfloat16).requires_grad_(False).to("cuda") # Convert to float16 on CPU
+                    self.llm_model_device = self.llm_model.device
+                    print(f"Custom text encoder from transformers loaded successfully to CUDA(?)!")
 
             except Exception as e:
                 print(f"Error loading LLM model for enhancement: {e}")
@@ -205,7 +207,8 @@ class PromptEnhancerClipWrapper:
             messages,
             add_generation_prompt=True,
             return_tensors="pt",
-        )
+            device=self.llm_model_device
+        ).to(self.llm_model_device)
 
         with torch.no_grad():
             self._is_llm_generating = True # Set flag before LLM generation
@@ -225,6 +228,13 @@ class PromptEnhancerClipWrapper:
             # Decode only the newly generated part
             output_text = self.llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True)
             self.assistant_reply = output_text # Store for next turn
+        # Unloading model. Don't worry, if it's CUDA, it doesn't take too much time to load again, does it?
+        
+        del self.llm_model
+        del self.llm_tokenizer
+        self.llm_model = None
+        self.llm_tokenizer = None
+        self.llm_model_device = None
         torch.cuda.empty_cache() # Clear GPU cache
         gc.collect() # Force Python garbage collection
         print(f"[PromptEnhancerClipWrapper] LLM model fully unloaded (from GPU and attempting to free RAM).")
@@ -259,7 +269,7 @@ class PromptEnhancerClipWrapper:
         print(f"[PromptEnhancerClipWrapper] Final prompt being passed to CLIP: {enhanced_text}")
         
         # Pass the enhanced text to the original CLIP's tokenize method.
-        # With max_new_tokens at 256, the LLM will generate more detailed text.
+        # With max_new_tokens at 1024, the LLM will generate more detailed text.
         # CLIP's tokenizer will then handle its own internal truncation if the text is still too long,
         # but the truncated result should be of higher quality.
         return self.original_clip.tokenize(enhanced_text)
