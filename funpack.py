@@ -259,16 +259,20 @@ class FunPackCLIPLoader:
         # Replace text encoder in CLIP model
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
-            clip_model.text = InstructWrapper(
-                model=model,
-                tokenizer=tokenizer,
-                system_prompt=system_prompt,
-                top_p=top_p,
-                top_k=top_k,
-                temperature=temperature
-            )
-            print("Current TE:", clip_model.text)  # Check if encoder is replaced
-        return (clip_model,)
+            text_encoder = sd.load_text_encoder_state_dicts(state_dicts = [InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)], embedding_directory=None, clip_type = CLIPType.STABLE_DIFFUSION, model_options={})
+            #clip_model.text = InstructWrapper(
+            #    model=model,
+            #    tokenizer=tokenizer,
+            #    system_prompt=system_prompt,
+            #    top_p=top_p,
+            #    top_k=top_k,
+            #    temperature=temperature
+            #)
+            #print("Current TE:", clip_model.text)  # Check if encoder is replaced
+            print("Current TE:", text_encoder)
+            return (clip_model, text_encoder,)
+        else:
+            return (clip_model,)
 
 
 NODE_CLASS_MAPPINGS = {
