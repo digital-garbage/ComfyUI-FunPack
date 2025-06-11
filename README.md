@@ -1,5 +1,7 @@
 # ComfyUI-FunPack
 A set of custom nodes designed for experiments with video diffusion models.
+EXPERIMENTAL, and I mean it. Constantly updating, changing, adding and removing, just for sake of making something work.
+You have been warned.
 
 **FunPack CLIP Loader**
 
