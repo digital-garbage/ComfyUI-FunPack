@@ -1,9 +1,8 @@
 """
-olivv's FunPack v1.2
+olivv's FunPack v1.1.2
 
 Changelog:
 
-v1.2 - Major changes. Custom CLIP loader for whatever your needs are.
 v1.1.2 - Added "instruct_from_pretrained"
 v1.1.1 - Added DualCLIP Instruct loader node for experimenting with Instruct models in FramePack.
 v1.1.0 - Changed interpolation logic.
@@ -82,172 +81,147 @@ class FunPackCLIPLoader:
     def INPUT_TYPES(s):
         base = nodes.DualCLIPLoader.INPUT_TYPES()
         return {
-            'required': {
-                'clip_model_name': (s.get_filename_list(),),
-                'text_encoder_model_name': (s.get_filename_list(),),
-                'llm_vision_model_name': (s.get_filename_list(),),
-                'type': base['required']['type'],
-                'encoder_pretrained_path': ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
-                'vision_pretrained_path': ("STRING", {"multiline": False, "default": "huihui-ai/Llama-3.2-11B-Vision-Instruct-abliterated"}),
-                'encoder_from_pretrained': ("BOOLEAN", {"default": False}),
-                'vision_from_pretrained': ("BOOLEAN", {"default": False}),
-                'vision_from_pretrained_comfy': ("BOOLEAN", {"default": False}),
-                'load_te': ("BOOLEAN", {"default": True}),
-                'patch_vision': ("BOOLEAN", {"default": False}),
-                'use_custom_loader': ("BOOLEAN", {"default": False, "tooltip": "Bypass sd.load_clip and use internal loader logic."}),
-                'system_prompt': ("STRING", {
-                    "multiline": True,
-                    "default": "<image>You are an expert visual describer for AI video generation..."
-                }),
+            'required': 
+                {
+                    'clip_model_name': (s.get_filename_list(),),
+                    'text_encoder_model_name': (s.get_filename_list(),),
+                    'llm_vision_model_name':(s.get_filename_list(),),
+                    'type': base['required']['type'],
+                    'encoder_pretrained_path': ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
+                    'vision_pretrained_path': ("STRING", {"multiline": False, "default": "huihui-ai/Llama-3.2-11B-Vision-Instruct-abliterated"}),
+                    'encoder_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load Instruct model from pretrained_path"}),
+                    'vision_from_pretrained': ("BOOLEAN", {"default": False, "tooltip": "Load LLM+vision model from pretrained_path"}),
+                    'vision_from_pretrained_comfy': ("BOOLEAN", {"default": False, "tooltip": "Checks for the model in models/LLM instead of HuggingFace"}),
+                    'load_te': ("BOOLEAN", {"default": True, "tooltip": "If off, does not load separate model as text encoder, using only llm_vision_model_name"}),
+                    'system_prompt': ("STRING", {
+                        "multiline": True,
+                        "default": "<image>You are an expert visual describer for AI video generation. Your task is to interpret user prompts and transform them into detailed, vivid descriptions optimized for image-to-video synthesis. Ensure your descriptions prioritize visual consistency, dynamic actions, and coherent scene elements to guide the generative model in creating smooth, logical video sequences from an initial image. Do not include conversational filler or explanations; just the descriptive text:<|eot_id|>"
+                    })
+                }
             }
-        }
-
     RETURN_TYPES = 'CLIP',
     RETURN_NAMES = 'clip',
     FUNCTION = "load"
     CATEGORY = "conditioning"
-
+    
     @classmethod
     def get_filename_list(s):
-        return sorted(folder_paths.get_filename_list('clip'))
-
-    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name,
-             encoder_pretrained_path, vision_pretrained_path, system_prompt,
-             encoder_from_pretrained, vision_from_pretrained, vision_from_pretrained_comfy,
-             load_te, patch_vision, use_custom_loader):
-
+        files = []
+        files += folder_paths.get_filename_list('clip')
+        return sorted(files)
+    
+    def load(self, clip_model_name, type, text_encoder_model_name, llm_vision_model_name, encoder_pretrained_path, vision_pretrained_path, system_prompt, encoder_from_pretrained=None, vision_from_pretrained=None, vision_from_pretrained_comfy=None, load_te=None):
+        # Load CLIP model using ComfyUI
         clip_path = folder_paths.get_full_path('clip', clip_model_name)
-        encoder_path = folder_paths.get_full_path('clip', text_encoder_model_name)
-        vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
-
         def get_clip_type(type):
             clip_type = getattr(sd.CLIPType, type.upper(), sd.CLIPType.HUNYUAN_VIDEO)
             print("Detected clip type:", clip_type)
             return clip_type
-
-        if use_custom_loader:
-            return self.custom_clip_loader(
-                clip_model_name, get_clip_type(type), clip_path, encoder_path, llm_vision_model_name, vision_path, encoder_pretrained_path,
-                vision_pretrained_path, system_prompt, encoder_from_pretrained,
-                vision_from_pretrained, vision_from_pretrained_comfy, load_te, patch_vision
-            )
-        else:
-            print("Using Comfy's sd.load_clip...")
-            clip_model = sd.load_clip(
-                ckpt_paths=[clip_path, vision_path],
-                embedding_directory=None,
-                clip_type=get_clip_type(type),
-                model_options={"ignore_mismatched_sizes": True}
-            )
-            return (clip_model,)
-
-    def custom_clip_loader(self, clip_model_name, clip_type, clip_path, encoder_path, llm_vision_model_name, vision_path, encoder_pretrained_path,
-                           vision_pretrained_path, system_prompt, encoder_from_pretrained,
-                           vision_from_pretrained, vision_from_pretrained_comfy, load_te, patch_vision):
-
-        print("Using custom CLIP loader pipeline...")
-
-        print(f"Loading base CLIP-L from: {clip_model_name}")
-        base_clip = sd.load_clip(
-            ckpt_paths=[clip_path],
-            embedding_directory=None,
-            clip_type=clip_type,
-            model_options={"ignore_mismatched_sizes": True}
-        )
-
-        # Load or patch vision model
+        
+        # Load TE model from weights
+        encoder_path = folder_paths.get_full_path('clip', text_encoder_model_name)
+        config_source = encoder_pretrained_path
+        
         if not vision_from_pretrained_comfy:
             pretrained_vision_local_path = snapshot_download(repo_id=vision_pretrained_path)
+            pvlp_model = pretrained_vision_local_path + "/model.safetensors"
         else:
             pretrained_vision_local_path = folder_paths.models_dir + "/clip/" + vision_pretrained_path
+            print(pretrained_vision_local_path)
+            pvlp_model = pretrained_vision_local_path + "/model.safetensors"
+        
+        print("Loading TE from pretrained is set to", encoder_from_pretrained)
+        print("Loading LLM+vision from pretrained is set to", vision_from_pretrained)
+        print("Loading custom TE is set to", load_te)
 
+        # Load LLM with vision capabilities (expected llava-llama-3-8b_v1_1)
         if vision_from_pretrained:
-            print("Loading vision from pretrained:", vision_pretrained_path)
-            vision_tokenizer = AutoTokenizer.from_pretrained(vision_pretrained_path, trust_remote_code=True)
-            vision_config = AutoConfig.from_pretrained(vision_pretrained_path, trust_remote_code=True)
-            vision_model = AutoModelForCausalLM.from_config(vision_config)
-            #model = AutoModelForCausalLM.from_pretrained(
-            #    vision_pretrained_path,
-            #    ignore_mismatched_sizes=True,
-            #    trust_remote_code=True
-            #    )
-            vision_model = vision_model.to(torch.float16).eval()
+            print("Loading LLM+vision from", vision_pretrained_path)            
+            if os.path.exists(pvlp_model):
+                print("Model already saved in a single file. Loading from local path...")
+                model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                vision_path = pretrained_vision_local_path + "/model.safetensors"
+                print ("Loading from", vision_path)
+            else:
+                print("Local model does not exist. Loading, merging and saving it locally..")
+                if not vision_from_pretrained_comfy:
+                    model_dir = snapshot_download(repo_id=vision_pretrained_path)
+                    model = AutoModelForCausalLM.from_pretrained(vision_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
+                else:
+                    model_dir = folder_paths.models_dir + "/clip/" + vision_pretrained_path
+                shard_paths = sorted(glob.glob(os.path.join(model_dir, "*.safetensors")))
+                shard_paths = [p for p in shard_paths if "index" not in p]
+                print("Shard files:", shard_paths)
+                # Step 3: Load and combine shards
+                combined_state_dict = {}
+                for shard_path in shard_paths:
+                    print(shard_path)
+                    # Load shard to CPU to minimize memory usage
+                    shard_state_dict = load_file(shard_path, device="cpu")
+                    combined_state_dict.update(shard_state_dict)
+                    # Free memory
+                    del shard_state_dict
+                output_safetensors = os.path.join(pretrained_vision_local_path, "model.safetensors")
+                print("Model output path:", output_safetensors)
+                save_file(combined_state_dict, output_safetensors)
+                print("Shards successfully transformed into single model.")
+                vision_path = pretrained_vision_local_path + "/model.safetensors"
         else:
-            print("Using local safetensors file as vision model:", llm_vision_model_name)
+            print("Loading LLM+vision from existing local safetensors file...")
             vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
-
-        # Load or initialize TE
+        
         if load_te:
             try:
-                if encoder_from_pretrained:
-                    print("Loading text encoder from pretrained:", encoder_pretrained_path)
-                    encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    #encoder_config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    #encoder_model = AutoModelForCausalLM.from_config(encoder_config)
-                    encoder_model = AutoModelForCausalLM.from_pretrained(
-                        encoder_pretrained_path,
-                        ignore_mismatched_sizes=True,
-                        trust_remote_code=True
-                    )
-                    encoder_model = encoder_model.to(torch.float16).eval()
+                if not encoder_from_pretrained:
+                    print("Loading custom text encoder from the path:", encoder_path)
+                    model = AutoModelForCausalLM.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
+                    state_dict = load_file(encoder_path, device="cuda")
+                    model.load_state_dict(state_dict, strict=False)
+                    model.eval().to(torch.float16).requires_grad_(False)
+                    print("Custom text encoder from safetensors file loaded successfully!")
                 else:
-                    print("Loading text encoder from local:", encoder_pretrained_path)
-                    encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    encoder_model = AutoModelForCausalLM.from_pretrained(
-                        encoder_pretrained_path,
-                        trust_remote_code=True,
-                        ignore_mismatched_sizes=True
-                    )
-                    state_dict = load_file(encoder_path)
-                    encoder_model.load_state_dict(state_dict, strict=False)
-                    encoder_model = encoder_model.to(torch.float16).eval()
-                    
+                    print("Loading custom text encoder from the path:", encoder_pretrained_path)
+                    config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    model = AutoModelForCausalLM.from_pretrained(encoder_pretrained_path, ignore_mismatched_sizes=True, trust_remote_code=True)
+                    tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    model.eval().to(torch.float16).requires_grad_(False)
+                    print("Custom text encoder from transformers loaded successfully!")
             except Exception as e:
-                print(f"Error loading text encoder: {e}")
+                print(f"Error loading custom text encoder: {e}")
                 raise
 
-            class InstructWrapper:
-                def __init__(self):
-                    self.system_prompt = system_prompt
-                    print("System prompt set.")
+        # Wrap it like a CLIP-compatible text encoder
+        class InstructWrapper:
+            def __init__(self):
+                print("TEWrapper initialized!")
+                self.system_prompt = system_prompt
+                print("System prompt is set to:", self.system_prompt)
+            def tokenize(self, text):
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": text}
+                ]
+                return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
 
-                def tokenize(self, text):
-                    messages = [
-                        {"role": "system", "content": self.system_prompt},
-                        {"role": "user", "content": text}
-                    ]
-                    return encoder_tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
+            def encode_from_tokens(self, tokens, return_pooled=True):
+                with torch.no_grad():
+                    output = model(input_ids=tokens, output_hidden_states=True)
+                    hidden_states = output.hidden_states[-1]
+                    pooled_output = hidden_states.mean(dim=1)
+                    # pooled = hidden[:, -1, :]  # use last token for pooled
+                return pooled_output
 
-                def encode_from_tokens(self, tokens, return_pooled=True):
-                    with torch.no_grad():
-                        output = encoder_model(input_ids=tokens, output_hidden_states=True)
-                        hidden = output.hidden_states[-1]  # final layer
-                        pooled = hidden[:, -1, :]  # use last token for pooled
-                        return hidden, pooled
-
-            class CustomCLIP:
-                def __init__(self, text_encoder):
-                    self.text = text_encoder
-                def tokenize(self, text):
-                    return self.text.tokenize(text)
-                def encode_from_tokens(self, tokens, return_pooled=True):
-                    return self.text.encode_from_tokens(tokens, return_pooled)
-
-            return (CustomCLIP(InstructWrapper()),)
-        else:
-            print("TE loading disabled. Returning vision model only.")
-            clip_model = sd.load_clip(
-                ckpt_paths=[clip_path, vision_path],
-                embedding_directory=None,
-                clip_type=clip_type,
-                model_options={"ignore_mismatched_sizes": True}
-            )
-            return (clip_model,)  # You could wrap this later as needed
+        # Replace text encoder in CLIP model
+        clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
+        if load_te == True:
+            clip_model.text = InstructWrapper()
+            print("Current TE:", clip_model.text)  # Check if encoder is replaced
+        return (clip_model,)
 
 
 NODE_CLASS_MAPPINGS = {
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
-    "FunPackCLIPLoader": FunPackCLIPLoader
+    "FunPackCLIPLoader": FunPackCLIPLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
