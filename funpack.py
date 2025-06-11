@@ -178,11 +178,9 @@ class FunPackCLIPLoader:
                 if not encoder_from_pretrained:
                     te = None
                     print("Loading custom text encoder from the path:", encoder_path)
-                    config = AutoConfig.from_pretrained(config_source, ignore_mismatched_sizes=True, trust_remote_code=True)
-                    model = AutoModelForCausalLM.from_config(config)
                     tokenizer = AutoTokenizer.from_pretrained(config_source, trust_remote_code=True)
-                    state_dict = load_file(encoder_path, device="cuda")
-                    model.load_state_dict(state_dict, strict=False)
+                    model = load_file(encoder_path, device="cuda")
+                    state_dict = model.load_state_dict(state_dict, strict=False)
                     te = model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from safetensors file loaded successfully!")
                 else:
@@ -207,7 +205,9 @@ class FunPackCLIPLoader:
                 self.top_p = top_p
                 self.top_k = top_k
                 self.temperature = temperature
-                self.max_new_tokens = 128
+                self.max_new_tokens = 256
+                self.assistant_reply = None
+                self.assistant_replies = {}
                 print("top_p:", self.top_p)
                 print("top_k:", self.top_k)
                 print("temperature:", self.temperature)
@@ -215,17 +215,21 @@ class FunPackCLIPLoader:
                 print("System prompt is set to:", self.system_prompt)
                 
             def tokenize(self, text):
-                print("Calling generate() from tokenize()", flush=True)
-                assistant_reply = self.generate(text)
-                print("Assistant generated:", assistant_reply, flush=True)
+                print("Calling tokenize()", flush=True)
+                if text not in self.assistant_replies:
+                    print("Generating assistant reply..")
+                    self.assistant_reply = self.generate(text)
+                    self.assistant_replies[text] = self.assistant_reply
+                    print("Assistant generated:", assistant_reply, flush=True)
                 messages = [
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": text},
-                    {"role": "assistant", "content": assistant_reply}
+                    {"role": "assistant", "content": self.assistant_reply}
                 ]
                 return self.tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
                 
             def generate(self, text):
+                print("Calling generate() from tokenize()")
                 # Prepare chat messages for assistant generation
                 messages = [
                     {"role": "system", "content": self.system_prompt},
@@ -257,16 +261,33 @@ class FunPackCLIPLoader:
                     pooled_output = hidden_states.mean(dim=1)
                     # pooled = hidden[:, -1, :]  # use last token for pooled
                 return pooled_output
+            
+            def encode_token_weights(self, tokens):
+                # This method is expected to return (hidden_states, pooled_output)
+                # where hidden_states is usually (batch_size, sequence_length, hidden_size)
+                # and pooled_output is (batch_size, hidden_size).
+
+                # Since your encode_from_tokens already calculates these, we can reuse it.
+                # However, encode_from_tokens returns pooled_output directly,
+                # so we need to adjust to return both.
+                with torch.no_grad():
+                    output = self.model(input_ids=tokens, output_hidden_states=True)
+                    hidden_states = output.hidden_states[-1]
+                    pooled_output = hidden_states.mean(dim=1) # Or choose the last token's embedding for pooling
+
+                return (hidden_states, pooled_output)
+            
+            def reset_clip_options(self):
+                return
 
         # Replace text encoder in CLIP model
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
             te = InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)
-            clip_model.cond_stage_model = te
             clip_model.tokenizer = te.tokenizer
+            clip_model.cond_stage_model = te
             clip_model.tokenize = te.tokenize
             print("Current TE:", clip_model.cond_stage_model)  # Check if encoder is replaced
-            print("clip_model attributes:", dir(clip_model))
             return (clip_model,)
         else:
             return (clip_model,)
