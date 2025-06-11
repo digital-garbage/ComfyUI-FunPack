@@ -22,6 +22,9 @@ Inputs:
 - top_p, top_k, temperature - these are parameters for generating an "assistant prompt";
 - generate_assist_prompt - if disabled, bypasses generation of "assistant prompt", if enable - does it with a model that is load as your text_encoder (might be a custom or a standard one).
 
+Please notice: the encoding runs on CPU because I'm stupid and I have two to three extra minutes to wait for it. You might not have them, but that's you.
+Also if you have 24GB of VRAM or less, you might go OOM in Comfy - that's expected, just run the sequence again and it will use cached enhanced prompt.
+
 Technically speaking, it's possible to load just any model as text encoder.
 
 Outputs:
