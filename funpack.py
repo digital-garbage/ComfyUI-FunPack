@@ -127,7 +127,7 @@ class FunPackCLIPLoader:
 
         if use_custom_loader:
             return self.custom_clip_loader(
-                clip_path, encoder_path, vision_path, encoder_pretrained_path,
+                clip_model_name, get_clip_type(type), clip_path, encoder_path, llm_vision_model_name, vision_path, encoder_pretrained_path,
                 vision_pretrained_path, system_prompt, encoder_from_pretrained,
                 vision_from_pretrained, vision_from_pretrained_comfy, load_te, patch_vision
             )
@@ -141,11 +141,19 @@ class FunPackCLIPLoader:
             )
             return (clip_model,)
 
-    def custom_clip_loader(self, clip_path, encoder_path, vision_path, encoder_pretrained_path,
+    def custom_clip_loader(self, clip_model_name, clip_type, clip_path, encoder_path, llm_vision_model_name, vision_path, encoder_pretrained_path,
                            vision_pretrained_path, system_prompt, encoder_from_pretrained,
                            vision_from_pretrained, vision_from_pretrained_comfy, load_te, patch_vision):
 
         print("Using custom CLIP loader pipeline...")
+
+        print(f"Loading base CLIP-L from: {clip_model_name}")
+        base_clip = sd.load_clip(
+            ckpt_paths=[clip_path],
+            embedding_directory=None,
+            clip_type=clip_type,
+            model_options={"ignore_mismatched_sizes": True}
+        )
 
         # Load or patch vision model
         if not vision_from_pretrained_comfy:
@@ -153,90 +161,46 @@ class FunPackCLIPLoader:
         else:
             pretrained_vision_local_path = folder_paths.models_dir + "/clip/" + vision_pretrained_path
 
-        pvlp_model = os.path.join(pretrained_vision_local_path, "model.safetensors")
-
-        def model_patch(path):
-            def load_safetensors_dict(path):
-                print("Loading original vision model to patch...")
-                tensors = {}
-                with safe_open(path, framework="pt", device="cpu") as f:
-                    for key in f.keys():
-                        tensors[key] = f.get_tensor(key)
-                return tensors
-
-            def patch_safetensors_for_llava(tensors: dict, model_dim=4096):
-                print("Patching for LLaVA compatibility...")
-                dummy = lambda shape: torch.zeros(shape, dtype=torch.float16)
-                required_keys = [
-                    "vision_tower.0.dummy",
-                    "mm_projector.0.weight",
-                    "mm_projector.0.bias",
-                    "model.embed_tokens.weight",
-                    "model.norm.weight",
-                ]
-                for i in range(32):
-                    base = f"model.layers.{i}"
-                    tensors[f"{base}.self_attn.q_proj.weight"] = dummy((model_dim, model_dim))
-                    tensors[f"{base}.self_attn.k_proj.weight"] = dummy((model_dim, model_dim))
-                    tensors[f"{base}.self_attn.v_proj.weight"] = dummy((model_dim, model_dim))
-                    tensors[f"{base}.self_attn.o_proj.weight"] = dummy((model_dim, model_dim))
-                    tensors[f"{base}.mlp.gate_proj.weight"] = dummy((model_dim*4, model_dim))
-                    tensors[f"{base}.mlp.up_proj.weight"] = dummy((model_dim*4, model_dim))
-                    tensors[f"{base}.mlp.down_proj.weight"] = dummy((model_dim, model_dim*4))
-                    tensors[f"{base}.input_layernorm.weight"] = dummy((model_dim,))
-                    tensors[f"{base}.post_attention_layernorm.weight"] = dummy((model_dim,))
-                for key in required_keys:
-                    if key not in tensors:
-                        tensors[key] = dummy((model_dim, model_dim))
-                return tensors
-
-            def write_temp_safetensors(tensors):
-                fd, path = tempfile.mkstemp(suffix=".safetensors")
-                os.close(fd)
-                save_file(tensors, path)
-                return path
-
-            tensors = load_safetensors_dict(path)
-            patched = patch_safetensors_for_llava(tensors)
-            return write_temp_safetensors(patched)
-
         if vision_from_pretrained:
-            if not os.path.exists(pvlp_model):
-                print("Merging vision model shards...")
-                model_dir = pretrained_vision_local_path
-                shard_paths = [p for p in sorted(glob.glob(os.path.join(model_dir, "*.safetensors"))) if "index" not in p]
-                combined = {}
-                for shard_path in shard_paths:
-                    print(f"Loading {shard_path}")
-                    shard = load_file(shard_path, device="cpu")
-                    combined.update(shard)
-                save_file(combined, pvlp_model)
-            if patch_vision:
-                pvlp_model = model_patch(pvlp_model)
+            print("Loading vision from pretrained:", vision_pretrained_path)
+            vision_tokenizer = AutoTokenizer.from_pretrained(vision_pretrained_path, trust_remote_code=True)
+            vision_config = AutoConfig.from_pretrained(vision_pretrained_path, trust_remote_code=True)
+            vision_model = AutoModelForCausalLM.from_config(vision_config)
+            #model = AutoModelForCausalLM.from_pretrained(
+            #    vision_pretrained_path,
+            #    ignore_mismatched_sizes=True,
+            #    trust_remote_code=True
+            #    )
+            vision_model = vision_model.to(torch.float16).eval()
         else:
-            print("Using local safetensors file as vision model.")
+            print("Using local safetensors file as vision model:", llm_vision_model_name)
+            vision_path = folder_paths.get_full_path('clip', llm_vision_model_name)
 
         # Load or initialize TE
         if load_te:
             try:
                 if encoder_from_pretrained:
-                    tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    model = AutoModelForCausalLM.from_pretrained(
+                    print("Loading text encoder from pretrained:", encoder_pretrained_path)
+                    encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    #encoder_config = AutoConfig.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    #encoder_model = AutoModelForCausalLM.from_config(encoder_config)
+                    encoder_model = AutoModelForCausalLM.from_pretrained(
                         encoder_pretrained_path,
                         ignore_mismatched_sizes=True,
                         trust_remote_code=True
                     )
-                    model = model.to(torch.float16).eval()
+                    encoder_model = encoder_model.to(torch.float16).eval()
                 else:
-                    tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
-                    model = AutoModelForCausalLM.from_pretrained(
+                    print("Loading text encoder from local:", encoder_pretrained_path)
+                    encoder_tokenizer = AutoTokenizer.from_pretrained(encoder_pretrained_path, trust_remote_code=True)
+                    encoder_model = AutoModelForCausalLM.from_pretrained(
                         encoder_pretrained_path,
                         trust_remote_code=True,
                         ignore_mismatched_sizes=True
                     )
                     state_dict = load_file(encoder_path)
-                    model.load_state_dict(state_dict, strict=False)
-                    model = model.to(torch.float16).eval()
+                    encoder_model.load_state_dict(state_dict, strict=False)
+                    encoder_model = encoder_model.to(torch.float16).eval()
                     
             except Exception as e:
                 print(f"Error loading text encoder: {e}")
@@ -252,14 +216,14 @@ class FunPackCLIPLoader:
                         {"role": "system", "content": self.system_prompt},
                         {"role": "user", "content": text}
                     ]
-                    return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
+                    return encoder_tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
 
                 def encode_from_tokens(self, tokens, return_pooled=True):
                     with torch.no_grad():
-                        output = model(input_ids=tokens, output_hidden_states=True)
+                        output = encoder_model(input_ids=tokens, output_hidden_states=True)
                         hidden = output.hidden_states[-1]  # final layer
                         pooled = hidden[:, -1, :]  # use last token for pooled
-                    return hidden, pooled
+                        return hidden, pooled
 
             class CustomCLIP:
                 def __init__(self, text_encoder):
@@ -271,8 +235,14 @@ class FunPackCLIPLoader:
 
             return (CustomCLIP(InstructWrapper()),)
         else:
-            print("TE loading disabled. Returning vision model only (not wrapped).")
-            return (pvlp_model,)  # You could wrap this later as needed
+            print("TE loading disabled. Returning vision model only.")
+            clip_model = sd.load_clip(
+                ckpt_paths=[clip_path, vision_path],
+                embedding_directory=None,
+                clip_type=clip_type,
+                model_options={"ignore_mismatched_sizes": True}
+            )
+            return (clip_model,)  # You could wrap this later as needed
 
 
 NODE_CLASS_MAPPINGS = {
