@@ -3,7 +3,7 @@ A set of custom nodes designed for experiments with video diffusion models.
 
 **FunPack CLIP Loader**
 
-![image](https://github.com/user-attachments/assets/77b86531-159d-4a76-a980-d4daeae511f7)
+![image](https://github.com/user-attachments/assets/667bb349-c9b8-44ae-b099-3776b310b353)
 
 
 This node is designed specifically for FramePack/HunyuanVideo, aiming to replace text encoder module with LLama-3 Instruct model.
@@ -20,6 +20,16 @@ Inputs:
 - vision_from_pretrained - if enabled, loads LLM+vision model weights from vision_pretrained_path, ignoring local "llm_vision_model_name";
 - load_te - if enabled, loads your custom text encoder model. If disabled, uses only vision one (e.g. llava-llama-3-8b-v1_1);
 - system_prompt - your system prompt that Instruct model is going to be using.
+- top_p, top_k, temperature - these are parameters for generating an "assistant prompt". It goes here:
+
+    def tokenize(self, text):
+                assistant_reply = self.generate(text)
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": assistant_reply}
+                ]
+                return tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
 
 Technically speaking, it's possible to load just any model as instruct one. It might not even be an instruct model.
 
