@@ -223,7 +223,7 @@ class FunPackCLIPLoader:
                     {"role": "user", "content": text},
                     {"role": "assistant", "content": assistant_reply}
                 ]
-                return self.tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt").to("cuda")
+                return self.tokenizer.apply_chat_template(messages, add_generation_prompt=False, return_tensors="pt")
                 
             def generate(self, text):
                 # Prepare chat messages for assistant generation
@@ -235,7 +235,7 @@ class FunPackCLIPLoader:
                     messages,
                     add_generation_prompt=True,  # Important for generation
                     return_tensors="pt"
-                ).to("cuda")
+                )
 
                 with torch.no_grad():
                     generated_ids = self.model.generate(
@@ -247,14 +247,14 @@ class FunPackCLIPLoader:
                         max_new_tokens=self.max_new_tokens,
                         pad_token_id=tokenizer.pad_token_id
                     )
-                    output_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True).to("cuda")
+                    output_text = self.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
                     return output_text
 
             def encode_from_tokens(self, tokens, return_pooled=True):
                 with torch.no_grad():
                     output = self.model(input_ids=tokens, output_hidden_states=True)
                     hidden_states = output.hidden_states[-1]
-                    pooled_output = hidden_states.mean(dim=1).to("cuda")
+                    pooled_output = hidden_states.mean(dim=1)
                     # pooled = hidden[:, -1, :]  # use last token for pooled
                 return pooled_output
 
