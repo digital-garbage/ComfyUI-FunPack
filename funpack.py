@@ -15,7 +15,7 @@ but without frame prediction.
 """
 import os
 import torch
-from transformers import AutoTokenizer, LlamaConfig, LlamaForCausalLM, AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import LlamaConfig, LlamaForCausalLM, LlavaForConditionalGeneration, AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from huggingface_hub import hf_hub_download, snapshot_download
 from safetensors.torch import load_file, save_file, safe_open
 import glob
@@ -179,9 +179,10 @@ class FunPackCLIPLoader:
                 if not encoder_from_pretrained:
                     te = None
                     print("Loading custom text encoder from the path:", encoder_path)
-                    tokenizer = AutoTokenizer.from_pretrained(config_source, trust_remote_code=True)
-                    model = load_file(encoder_path, device="cuda")
-                    state_dict = model.load_state_dict(state_dict, strict=False)
+                    tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                    model = LlamaForCausalLM.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                    state_dict = load_file(encoder_path, device="cuda")
+                    model.load_state_dict(state_dict, strict=False)
                     te = model.eval().to(torch.float16).requires_grad_(False)
                     print("Custom text encoder from safetensors file loaded successfully!")
                 else:
@@ -276,7 +277,7 @@ class FunPackCLIPLoader:
                     hidden_states = output.hidden_states[-1]
                     pooled_output = hidden_states.mean(dim=1)
                     # pooled = hidden[:, -1, :]  # use last token for pooled
-                return pooled_output
+                return {"l": pooled_output, "hidden_states": hidden_states}
             
             def encode_token_weights(self, tokens):
                 # This method is expected to return (hidden_states, pooled_output)
@@ -291,7 +292,7 @@ class FunPackCLIPLoader:
                     hidden_states = output.hidden_states[-1]
                     pooled_output = hidden_states.mean(dim=1) # Or choose the last token's embedding for pooling
 
-                return (hidden_states, pooled_output)
+                return {"l": pooled_output, "hidden_states": hidden_states}
             
             def reset_clip_options(self):
                 return
@@ -300,9 +301,10 @@ class FunPackCLIPLoader:
         clip_model = sd.load_clip(ckpt_paths=[clip_path, vision_path], embedding_directory=None, clip_type=get_clip_type(type), model_options={"ignore_mismatched_sizes": True})
         if load_te == True:
             te = InstructWrapper(model, tokenizer, system_prompt, top_p, top_k, temperature)
-            clip_model.tokenizer = te.tokenizer
-            clip_model.cond_stage_model = te
-            clip_model.tokenize = te.tokenize
+            #clip_model.tokenizer = te.tokenizer
+            #clip_model.cond_stage_model = model
+            #clip_model.tokenize = te.tokenize
+            clip_model.text = te.generate
             print("Current TE:", clip_model.cond_stage_model)  # Check if encoder is replaced
             return (clip_model,)
         else:
