@@ -203,10 +203,10 @@ class FunPackPromptEnhancer:
                 "user_prompt": ("STRING", {"multiline": True, "default": "A photo of a [subject] in a [setting]. [action]."}),
                 "system_prompt": ("STRING", {
                     "multiline": True,
-                    "default": "<image>You are an expert visual describer for AI video generation. Your task is to interpret user prompts and transform them into detailed, vivid descriptions optimized for image-to-video synthesis. Ensure your descriptions prioritize visual consistency, dynamic actions, and coherent scene elements to guide the generative model in creating smooth, logical video sequences from an initial image. Do not include conversational filler or explanations; just the descriptive text:<|eot_id|>"
+                    "default": "<|start_header_id|>system<|end_header_id|>\n\nYou are a creative AI assistant tasked with describing videos.\n\nDescribe the video by detailing the following aspects:\n1. The main content and theme of the video.\n2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects.\n3. Actions, events, behaviors temporal relationships, physical movement changes of the objects.\n4. background environment, light, style and atmosphere.\n5. camera angles, movements, and transitions used in the video:<|eot_id|>"
                 }),
                 "model_path_type": (["Local Safetensors", "HuggingFace Pretrained"],),
-                "model_path": ("STRING", {"multiline": False, "default": "xtuner/llava-llama-3-8b-v1_1-transformers"}),
+                "model_path": ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
                 "llm_safetensors_file": (folder_paths.get_filename_list('clip'),), 
                 "top_p": ("FLOAT", {"min": 0.0, "max": 1.0, "step": 0.05, "default": 0.75}),
                 "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
