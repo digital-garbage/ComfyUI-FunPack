@@ -22,7 +22,7 @@ Also if you have 24GB of VRAM or less, you might go OOM in Comfy - that's expect
 Technically speaking, it's possible to load just any model as text encoder.
 
 Outputs:
-Just CLIP. Pass it through your nodes like you will do with regular DualCLIPLoader.
+Just text. Pass it to any node that accepts text as input.
 
 **FunPack img2latent Interpolation**
 
