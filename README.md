@@ -3,25 +3,18 @@ A set of custom nodes designed for experiments with video diffusion models.
 EXPERIMENTAL, and I mean it. Constantly updating, changing, adding and removing, just for sake of making something work.
 You have been warned.
 
-**FunPack CLIP Loader**
+**FunPack Prompt Enhancer (Standalone)**
 
-![image](https://github.com/user-attachments/assets/f6a7d63f-a5c9-42e5-8572-b52725442b6f)
-
-
-Update: This node now serves as... I guess, prompt enhancer? It processes user input, adds an enhanced prompt, then does tokenizing using regular CLIP.
+![image](https://github.com/user-attachments/assets/2768efc5-35f1-4897-811e-dc3b334356d5)
 
 Inputs:
-- clip_model_name - your CLIP-L model that you usually use with Hunyuan/FramePack (e.g. clip-vit-large-patch14);
-- text_encoder_model_name - your instruct (or any other LLM?) model. Expects .safetensors file, if "instruct_from_pretrained" is on - ignores this;
-- llm_vision_model_name - your llava-llama-3 model you usually use with Hunyuan/FramePack (e.g. llava-llama-3-8b-v1_1). Also it's possible to load any other LLM, with or without vision capabilities (I guess);
-- type - select "hunyuan_video", left for compatibility;
-- encoder_pretrained_path - Provide a HuggingFace path for config and tokenizer for your encoder model (or for weights as well, if encoder_from_pretrained=True);
-- encoder_from_pretrained - if enabled, loads encoder model weights from encoder_pretrained_path as well, ignoring local "text_encoder_model_name";
-- load_te - if enabled, loads your custom text encoder model. If disabled, uses only vision one (e.g. llava-llama-3-8b-v1_1);
-- system_prompt - your system prompt that Instruct model is going to be using.
-- top_p, top_k, temperature - these are parameters for generating an "assistant prompt";
-- generate_assist_prompt - if disabled, bypasses generation of "assistant prompt", if enable - does it with a model that is load as your text_encoder (might be a custom or a standard one).
-- negative_enabled - ENSURE TO DISABLE IF THERE IS NO NEGATIVE PROMPT. IF YOU HAVE ONE - ENABLE.
+- Prompt - here you add your prompt to be enhanced;
+- System prompt - here you pass an instruction on how your LLM should interpret the given prompt. Basic system prompt works fine but you can change it however you like;
+- Model path type - choose if you want to load a local .safetensors file from ComfyUI/models/clip or load a HuggingFace pretrained model;
+- Model path - path for a model on HuggingFace;
+- LLM safetensors path - selector for a local model;
+- top_p, top_k, temperature, max_new_tokens - these parameters are responsible for your "enhanced prompt" being creative or strict, short or long. Better watch some video to know how it works.
+  For the regular system prompt these settings work really well. If you are not aiming at "extremely creative" or "strictly short" prompts - I won't recommend changing it.
 
 Please notice: after changing a prompt, it's better to call model unloading in Comfy. Believe me.
 Also if you have 24GB of VRAM or less, you might go OOM in Comfy - that's expected, just run the sequence again and it will use cached enhanced prompt.
@@ -43,3 +36,5 @@ Inputs:
 Outputs:
 - img_batch_for_encode - latent output with interpolated image, resize if needed and put it into VAE Encode, pass as latent_image into your sampler;
 - img_for_start_images - takes exactly the last image from the batch. You can pass it to your CLIP Vision and encoders as start_image. Or end_image. Who am I to tell you.
+
+FunPackCLIPLoader node is currently in development and seems like not functioning at all. Please don't use it until otherwise is stated.
