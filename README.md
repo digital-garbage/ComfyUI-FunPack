@@ -38,3 +38,16 @@ Outputs:
 - img_for_start_images - takes exactly the last image from the batch. You can pass it to your CLIP Vision and encoders as start_image. Or end_image. Who am I to tell you.
 
 FunPackCLIPLoader node is currently in development and seems like not functioning at all. Please don't use it until otherwise is stated.
+
+
+**FunPack Video Stitch**
+
+<img width="288" height="242" alt="{F4541DBC-58EC-41BD-BF5B-99E5AC1EF072}" src="https://github.com/user-attachments/assets/c1ce3b61-c7ea-40bc-b5c9-13153cb587cb" />
+
+
+Inputs:
+- images - connect up to 8 image batches
+- blend_frames - amount of frames to blend between batches, takes this many frames from the end of first video to blend with this many frames from the beginning of the next video.
+
+Outputs:
+- stitched - an image batch containing stitched image batches with cross-section blending.
