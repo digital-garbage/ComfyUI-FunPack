@@ -316,6 +316,10 @@ class FunPackVideoStitch:
     }
 
     def linear_blend(self, batch_a, batch_b, blend_frames):
+        if blend_frames == 1:
+            blended_frame = 0.5 * batch_a[-1] + 0.5 * batch_b[0]
+            return blended_frame.unsqueeze(0)
+
         blended = []
         for i in range(blend_frames):
             alpha = i / (blend_frames - 1)
@@ -350,7 +354,27 @@ class FunPackVideoStitch:
 
         final_video = torch.cat(output_frames, dim=0)
         return (final_video,)
+        
+class FunPackContinueVideo:
+    CATEGORY = "FunPack"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("CONTINUED",)
+    FUNCTION = "continue_video"
+    INPUT_TYPES = lambda: {
+        "required": {
+            "images": ("IMAGE",),
+            "frame_count": ("INT", {"default": 1, "min": 1, "max": 9999}),
+        }
+    }
 
+    def continue_video(self, images, frame_count):
+        total_frames = images.shape[0]
+
+        if frame_count > total_frames:
+            raise ValueError(f"Cannot extract {frame_count} frames from video with only {total_frames} frames.")
+
+        continued = images[-frame_count:]
+        return (continued,)
 
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS = {
@@ -358,11 +382,13 @@ NODE_CLASS_MAPPINGS = {
     "FunPackCLIPLoader": FunPackCLIPLoader,
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
     "FunPackVideoStitch": FunPackVideoStitch,
+    "FunPackContinueVideo": FunPackContinueVideo,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
     "FunPackCLIPLoader": "FunPack CLIP Loader",
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
-    "FunPackVideoStitch": "FunPack Video Stitch"
+    "FunPackVideoStitch": "FunPack Video Stitch",
+    "FunPackContinueVideo": "FunPack Continue Video"
 }
