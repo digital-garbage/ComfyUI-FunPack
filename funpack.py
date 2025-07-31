@@ -24,7 +24,7 @@ class FunPackImg2LatentInterpolation:
     RETURN_TYPES = ("IMAGE", "IMAGE")
     RETURN_NAMES = ("img_batch_for_encode", "img_for_start_image")
     FUNCTION = "process"
-    CATEGORY = "WANPack/Video"
+    CATEGORY = "FunPack"
 
     def process(self, images, frame_count):
         device = images.device
@@ -132,7 +132,7 @@ class FunPackCLIPLoader:
     RETURN_TYPES = ("CLIP",)
     RETURN_NAMES = ("clip",)
     FUNCTION = "load"
-    CATEGORY = "conditioning"
+    CATEGORY = "FunPack"
 
     @classmethod
     def get_filename_list(s):
@@ -218,7 +218,7 @@ class FunPackPromptEnhancer:
     RETURN_TYPES = ("STRING",)
     RETURN_NAMES = ("enhanced_prompt",)
     FUNCTION = "enhance_prompt"
-    CATEGORY = "FunPack/Text"
+    CATEGORY = "FunPack"
 
     def enhance_prompt(self, user_prompt, system_prompt, model_path_type, model_path, llm_safetensors_file, top_p, top_k, temperature, max_new_tokens):
         llm_model = None
@@ -292,6 +292,64 @@ class FunPackPromptEnhancer:
                 torch.cuda.empty_cache()
             gc.collect() 
             print("[FunPackPromptEnhancer] LLM model and tokenizer unloaded and memory cleared.")
+            
+            
+class FunPackVideoStitch:
+    CATEGORY = "FunPack"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("STITCHED",)
+    FUNCTION = "stitch"
+    INPUT_TYPES = lambda: {
+        "required": {
+            "blend_frames": ("INT", {"default": 8, "min": 1, "max": 64}),
+        },
+        "optional": {
+            "video1": ("IMAGE",),
+            "video2": ("IMAGE",),
+            "video3": ("IMAGE",),
+            "video4": ("IMAGE",),
+            "video5": ("IMAGE",),
+            "video6": ("IMAGE",),
+            "video7": ("IMAGE",),
+            "video8": ("IMAGE",),
+        }
+    }
+
+    def linear_blend(self, batch_a, batch_b, blend_frames):
+        blended = []
+        for i in range(blend_frames):
+            alpha = i / (blend_frames - 1)
+            blended_frame = (1 - alpha) * batch_a[-blend_frames + i] + alpha * batch_b[i]
+            blended.append(blended_frame.unsqueeze(0))
+        return torch.cat(blended, dim=0)
+
+    def stitch(self, blend_frames, video1=None, video2=None, video3=None, video4=None, video5=None, video6=None, video7=None, video8=None):
+        input_videos = [video1, video2, video3, video4, video5, video6, video7, video8]
+        video_batches = [v for v in input_videos if v is not None]
+
+        if len(video_batches) < 2:
+            raise ValueError("VideoStitch requires at least 2 connected video inputs.")
+
+        output_frames = []
+
+        for i in range(len(video_batches) - 1):
+            batch_a = video_batches[i]
+            batch_b = video_batches[i + 1]
+
+            if batch_a.shape[0] < blend_frames or batch_b.shape[0] < blend_frames:
+                raise ValueError(f"Each video batch must have at least {blend_frames} frames.")
+
+            stable_a = batch_a[:-blend_frames]
+            stable_b = batch_b[blend_frames:]
+            transition = self.linear_blend(batch_a, batch_b, blend_frames)
+
+            if i == 0:
+                output_frames.append(stable_a)
+            output_frames.append(transition)
+            output_frames.append(stable_b if i == len(video_batches) - 2 else batch_b[blend_frames:-blend_frames])
+
+        final_video = torch.cat(output_frames, dim=0)
+        return (final_video,)
 
 
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
@@ -299,10 +357,12 @@ NODE_CLASS_MAPPINGS = {
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
     "FunPackCLIPLoader": FunPackCLIPLoader,
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
+    "FunPackVideoStitch": FunPackVideoStitch,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
     "FunPackCLIPLoader": "FunPack CLIP Loader",
-    "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)"
+    "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
+    "FunPackVideoStitch": "FunPack Video Stitch"
 }
