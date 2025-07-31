@@ -51,3 +51,16 @@ Inputs:
 
 Outputs:
 - stitched - an image batch containing stitched image batches with cross-section blending.
+
+
+**FunPack Continue Video**
+
+<img width="354" height="153" alt="{45F68EBC-D1BA-4028-BBFF-74DC27637A6B}" src="https://github.com/user-attachments/assets/63120304-6d0a-4e23-b689-84f7da2572b8" />
+
+
+Inputs:
+- images - connect an image batch with your frames
+- frame_count - select N frames from the end of the batch to pass forward
+
+Outputs:
+- continued - image batch containing N frames from the end of the batch
