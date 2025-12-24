@@ -368,18 +368,31 @@ class FunPackStoryMemKeyframeExtractor:
     
     @torch.no_grad()
     def get_clip_similarity(self, frame1: torch.Tensor, frame2: torch.Tensor, clip_vision) -> float:
+    
         # Preprocess frames to [1, H, W, C] format
         x1 = self.clip_preprocess(frame1, clip_vision)
         x2 = self.clip_preprocess(frame2, clip_vision)
     
-        # Get CLIP Vision embeddings using ComfyUI's encode_image
-        # encode_image expects [B, H, W, C] and returns embeddings
+        # Get CLIP Vision embeddings
         z1 = clip_vision.encode_image(x1)
         z2 = clip_vision.encode_image(x2)
     
-        # Extract the actual tensor from the CLIP vision output
-        z1 = z1['clip_vision_output'] if isinstance(z1, dict) else z1[0]  # Handle dict or tuple
-        z2 = z2['clip_vision_output'] if isinstance(z2, dict) else z2[0]  # Handle dict or tuple
+        # Extract tensor if wrapped in ComfyUI's CLIP_VISION_OUTPUT (single-element tuple)
+        if isinstance(z1, (tuple, list)):
+            if len(z1) == 1:
+                z1 = z1[0]
+            else:
+                raise ValueError(f"Unexpected CLIP vision output structure: tuple/list of length {len(z1)}")
+        if isinstance(z2, (tuple, list)):
+            if len(z2) == 1:
+                z2 = z2[0]
+            else:
+                raise ValueError(f"Unexpected CLIP vision output structure: tuple/list of length {len(z2)}")
+    
+        # Ensure we have actual tensors
+        if not isinstance(z1, torch.Tensor) or not isinstance(z2, torch.Tensor):
+            raise TypeError("CLIP vision encoding did not return a tensor. "
+                            "Ensure 'clip_vision' input is connected to CLIP Vision Loader (not Encode node).")
     
         # Normalize and compute cosine similarity
         z1 = F.normalize(z1, dim=-1)
@@ -634,5 +647,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
