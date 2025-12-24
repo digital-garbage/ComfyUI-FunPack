@@ -368,8 +368,6 @@ class FunPackStoryMemKeyframeExtractor:
     
     @torch.no_grad()
     def get_clip_similarity(self, frame1: torch.Tensor, frame2: torch.Tensor, clip_vision) -> float:
-    """Calculate CLIP embedding cosine similarity between two frames using ComfyUI CLIP Vision"""
-    
         # Preprocess frames to [1, H, W, C] format
         x1 = self.clip_preprocess(frame1, clip_vision)
         x2 = self.clip_preprocess(frame2, clip_vision)
@@ -636,4 +634,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
