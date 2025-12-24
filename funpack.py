@@ -374,25 +374,42 @@ class FunPackStoryMemKeyframeExtractor:
         x2 = self.clip_preprocess(frame2, clip_vision)
     
         # Get CLIP Vision embeddings
-        z1 = clip_vision.encode_image(x1)
-        z2 = clip_vision.encode_image(x2)
+        z1_raw = clip_vision.encode_image(x1)
+        z2_raw = clip_vision.encode_image(x2)
     
-        # Extract tensor if wrapped in ComfyUI's CLIP_VISION_OUTPUT (single-element tuple)
-        if isinstance(z1, (tuple, list)):
-            if len(z1) == 1:
-                z1 = z1[0]
-            else:
-                raise ValueError(f"Unexpected CLIP vision output structure: tuple/list of length {len(z1)}")
-        if isinstance(z2, (tuple, list)):
-            if len(z2) == 1:
-                z2 = z2[0]
-            else:
-                raise ValueError(f"Unexpected CLIP vision output structure: tuple/list of length {len(z2)}")
+        # Extract the actual embedding tensor from various possible return formats
+        def extract_embedding(output):
+            # Case 1: Direct tensor (older models)
+            if isinstance(output, torch.Tensor):
+                return output
+        
+            # Case 2: Dictionary with common keys (most modern projection models)
+            if isinstance(output, dict):
+                if 'image_embeds' in output:
+                    return output['image_embeds']
+                if 'pooled_output' in output:
+                    return output['pooled_output']
+                if 'last_hidden_state' in output:
+                    # Some models return full sequence — use pooled or mean
+                    return output['last_hidden_state'][:, 0]  # CLS token equivalent
+                # Fallback: return first tensor value
+                for v in output.values():
+                    if isinstance(v, torch.Tensor) and v.ndim >= 2:
+                        return v if v.shape[1] == 1 else v.mean(dim=1)  # pool if needed
+                raise ValueError(f"No embedding tensor found in dict: {list(output.keys())}")
+        
+            # Case 3: Tuple wrapper (shouldn't happen here, but safe)
+            if isinstance(output, (tuple, list)) and len(output) == 1:
+                return extract_embedding(output[0])
+        
+            raise TypeError(f"Unexpected output from encode_image: {type(output)}")
+
+        z1 = extract_embedding(z1_raw)
+        z2 = extract_embedding(z2_raw)
     
-        # Ensure we have actual tensors
-        if not isinstance(z1, torch.Tensor) or not isinstance(z2, torch.Tensor):
-            raise TypeError("CLIP vision encoding did not return a tensor. "
-                            "Ensure 'clip_vision' input is connected to CLIP Vision Loader (not Encode node).")
+        # Final sanity check
+        if not (isinstance(z1, torch.Tensor) and isinstance(z2, torch.Tensor)):
+            raise RuntimeError(f"Failed to extract valid embeddings: {type(z1)}, {type(z2)}")
     
         # Normalize and compute cosine similarity
         z1 = F.normalize(z1, dim=-1)
@@ -647,6 +664,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
