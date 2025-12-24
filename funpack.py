@@ -368,22 +368,26 @@ class FunPackStoryMemKeyframeExtractor:
     
     @torch.no_grad()
     def get_clip_similarity(self, frame1: torch.Tensor, frame2: torch.Tensor, clip_vision) -> float:
-        """Calculate CLIP embedding cosine similarity between two frames using ComfyUI CLIP Vision"""
-        
+    """Calculate CLIP embedding cosine similarity between two frames using ComfyUI CLIP Vision"""
+    
         # Preprocess frames to [1, H, W, C] format
         x1 = self.clip_preprocess(frame1, clip_vision)
         x2 = self.clip_preprocess(frame2, clip_vision)
-        
+    
         # Get CLIP Vision embeddings using ComfyUI's encode_image
         # encode_image expects [B, H, W, C] and returns embeddings
         z1 = clip_vision.encode_image(x1)
         z2 = clip_vision.encode_image(x2)
-        
+    
+        # Extract the actual tensor from the CLIP vision output
+        z1 = z1['clip_vision_output'] if isinstance(z1, dict) else z1[0]  # Handle dict or tuple
+        z2 = z2['clip_vision_output'] if isinstance(z2, dict) else z2[0]  # Handle dict or tuple
+    
         # Normalize and compute cosine similarity
         z1 = F.normalize(z1, dim=-1)
         z2 = F.normalize(z2, dim=-1)
         similarity = (z1 * z2).sum(dim=-1).item()
-        
+    
         return similarity
     
     def is_low_quality(self, frame: torch.Tensor, threshold: float) -> bool:
@@ -632,3 +636,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
