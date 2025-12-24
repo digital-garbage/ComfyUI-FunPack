@@ -379,37 +379,48 @@ class FunPackStoryMemKeyframeExtractor:
     
         # Extract the actual embedding tensor from various possible return formats
         def extract_embedding(output):
-            # Case 1: Direct tensor (older models)
+            # Case 1: Direct tensor (older/basic models)
             if isinstance(output, torch.Tensor):
                 return output
         
-            # Case 2: Dictionary with common keys (most modern projection models)
+            # Case 2: ComfyUI's custom Output wrapper (common with projection models)
+            if isinstance(output, comfy.clip_vision.Output):  # Import at top if needed: import comfy.clip_vision
+                if hasattr(output, 'image_embeds'):
+                    return output.image_embeds
+                elif hasattr(output, 'pooled_output'):
+                    return output.pooled_output
+                # Fallback: treat like dict
+                try:
+                    return output['image_embeds']
+                except:
+                    pass
+        
+            # Case 3: Dictionary (some models)
             if isinstance(output, dict):
                 if 'image_embeds' in output:
                     return output['image_embeds']
                 if 'pooled_output' in output:
                     return output['pooled_output']
                 if 'last_hidden_state' in output:
-                    # Some models return full sequence — use pooled or mean
-                    return output['last_hidden_state'][:, 0]  # CLS token equivalent
-                # Fallback: return first tensor value
+                    return output['last_hidden_state'][:, 0]  # CLS token if sequence
+                # Fallback: first tensor value
                 for v in output.values():
                     if isinstance(v, torch.Tensor) and v.ndim >= 2:
-                        return v if v.shape[1] == 1 else v.mean(dim=1)  # pool if needed
-                raise ValueError(f"No embedding tensor found in dict: {list(output.keys())}")
+                        return v
         
-            # Case 3: Tuple wrapper (shouldn't happen here, but safe)
+            # Case 4: Tuple (rare here, but safe)
             if isinstance(output, (tuple, list)) and len(output) == 1:
                 return extract_embedding(output[0])
         
-            raise TypeError(f"Unexpected output from encode_image: {type(output)}")
+            raise TypeError(f"Unexpected output from encode_image: {type(output)}. "
+                            "Supported: tensor, dict, or comfy.clip_vision.Output with 'image_embeds'.")
 
         z1 = extract_embedding(z1_raw)
         z2 = extract_embedding(z2_raw)
     
-        # Final sanity check
+        # Final check
         if not (isinstance(z1, torch.Tensor) and isinstance(z2, torch.Tensor)):
-            raise RuntimeError(f"Failed to extract valid embeddings: {type(z1)}, {type(z2)}")
+            raise RuntimeError(f"Failed to extract tensor embeddings: {type(z1)}, {type(z2)}")
     
         # Normalize and compute cosine similarity
         z1 = F.normalize(z1, dim=-1)
@@ -664,6 +675,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
