@@ -19,6 +19,7 @@ from comfy.utils import ProgressBar
 import comfy.clip_vision
 import math
 
+
 # Constants from StoryMem
 IMAGE_FACTOR = 28
 VIDEO_MIN_PIXELS = 48 * IMAGE_FACTOR * IMAGE_FACTOR  # 37,632
@@ -26,6 +27,107 @@ MIN_FRAME_SIMILARITY = 0.9
 MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
+
+class FunPackStoryMemJSONConverter:
+    """
+    FunPack StoryMem LoRA JSON Converter for WAN2.2
+    Manually input all story elements and get 3 separate JSON outputs (one per sampler)
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "story_name": ("STRING", {"default": "My Story Title"}),
+                "story_overview": ("STRING", {"multiline": True, "default": "Brief description of the overall story..."}),
+
+                # Scene 1 (Sampler 1)
+                "scene1_video_prompts": ("STRING", {"multiline": True, "default": "prompt 1\nprompt 2\nprompt 3"}),
+                "scene1_first_frames": ("STRING", {"multiline": True, "default": "first frame 1\nfirst frame 2\nfirst frame 3"}),
+                "scene1_cuts": ("STRING", {"default": "true, false, true", "tooltip": "comma-separated: true,false,true,... (one less than number of prompts)"}),
+
+                # Scene 2 (Sampler 2)
+                "scene2_video_prompts": ("STRING", {"multiline": True, "default": ""}),
+                "scene2_first_frames": ("STRING", {"multiline": True, "default": ""}),
+                "scene2_cuts": ("STRING", {"default": "", "tooltip": "comma-separated boolean values"}),
+
+                # Scene 3 (Sampler 3)
+                "scene3_video_prompts": ("STRING", {"multiline": True, "default": ""}),
+                "scene3_first_frames": ("STRING", {"multiline": True, "default": ""}),
+                "scene3_cuts": ("STRING", {"default": "", "tooltip": "comma-separated boolean values"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("json_sampler_1", "json_sampler_2", "json_sampler_3")
+    OUTPUT_NODE = True
+    FUNCTION = "format_json"
+    CATEGORY = "FunPack"
+
+    def format_json(self,
+                    story_name,
+                    story_overview,
+
+                    scene1_video_prompts, scene1_first_frames, scene1_cuts,
+                    scene2_video_prompts, scene2_first_frames, scene2_cuts,
+                    scene3_video_prompts, scene3_first_frames, scene3_cuts):
+
+        scenes_input = [
+            (scene1_video_prompts, scene1_first_frames, scene1_cuts, 1),
+            (scene2_video_prompts, scene2_first_frames, scene2_cuts, 2),
+            (scene3_video_prompts, scene3_first_frames, scene3_cuts, 3),
+        ]
+
+        outputs = ["", "", ""]
+
+        for i, (video_text, first_text, cuts_text, scene_num) in enumerate(scenes_input):
+            if not video_text.strip():
+                outputs[i] = ""  # empty → skip / no output for this sampler
+                continue
+
+            # Split by newlines
+            video_prompts = [p.strip() for p in video_text.split("\n") if p.strip()]
+            first_prompts = [f.strip() for f in first_text.split("\n") if f.strip()]
+
+            if len(video_prompts) != len(first_prompts):
+                raise ValueError(f"Scene {scene_num}: Number of video prompts and first frame prompts must match!")
+
+            # Parse cuts
+            if cuts_text.strip():
+                cuts_str = [c.strip().lower() for c in cuts_text.split(",") if c.strip()]
+                cuts = []
+                for c in cuts_str:
+                    if c in ("true", "t", "1", "yes"):
+                        cuts.append(True)
+                    elif c in ("false", "f", "0", "no", ""):
+                        cuts.append(False)
+                    else:
+                        raise ValueError(f"Invalid cut value in scene {scene_num}: '{c}' (use true/false)")
+            else:
+                # Default: no cut after first prompt, cut before each subsequent one
+                cuts = [False] + [True] * (len(video_prompts) - 1)
+
+            if len(cuts) != len(video_prompts) - 1:
+                raise ValueError(
+                    f"Scene {scene_num}: Number of cut values ({len(cuts)}) should be "
+                    f"one less than number of prompts ({len(video_prompts)})"
+                )
+
+            scene = {
+                "scene_num": scene_num,
+                "video_prompts": video_prompts,
+                "first_frame_prompt": first_prompts,
+                "cut": cuts
+            }
+
+            full_json = {
+                "story_name": story_name.strip(),
+                "story_overview": story_overview.strip(),
+                "scenes": [scene]  # single scene per sampler
+            }
+
+            outputs[i] = json.dumps(full_json, indent=2, ensure_ascii=False)
+
+        return tuple(outputs)
 
 class FunPackImg2LatentInterpolation:
     @classmethod
@@ -658,6 +760,7 @@ class FunPackStoryMemLastFrameExtractor:
 
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS = {
+    "FunPackStoryMemJSONConverter": FunPackStoryMemJSONConverter,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
@@ -667,6 +770,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "FunPackStoryMemJSONConverter": "FunPack StoryMem JSON Converter",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
@@ -675,6 +779,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
