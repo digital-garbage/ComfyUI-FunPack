@@ -29,35 +29,18 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
-class FunPackStoryMemJSONConverter:
+class FunPackStoryMemJSONConverterQwenOutput:
     """
     FunPack StoryMem LoRA JSON Converter - supports both manual input and Qwen-generated output.
     
-    If 'use_qwen_output' is enabled:
-      - Takes 'qwen_output' (string) from Kijai's WanVideoPromptExtender/Qwen node
-      - Parses the full story JSON (as produced by StoryMem-style system prompt)
-      - Splits into up to 3 separate scene JSONs (one per output)
-      - Each output contains story_name, story_overview + exactly ONE scene
-      - Extra scenes beyond 3 are ignored
-      - Handles 'cut' as single bool by replicating it across all prompts in the scene
-      - Forces first cut to True per StoryMem guidelines
+    Features:
+    - Lenient parsing: auto-adjusts mismatched lengths for cut/first_frame_prompt
+    - Handles 'cut' as single bool (replicates) or list
+    - NO forced first cut=True (user can control via prompt or manual input)
+    - Safe defaults on invalid data → no crashes
+    - Splits full Qwen story into up to 3 separate scene JSONs
     
-    If 'use_qwen_output' is false → falls back to original manual scene inputs.
-    
-    Expected Qwen output structure (example: black.json):
-    {
-      "story_name": str,
-      "story_overview": str,
-      "scenes": [
-        {
-          "scene_num": int,
-          "video_prompts": list[str],
-          "first_frame_prompt": list[str],
-          "cut": list[bool] or bool  # Now supports single bool
-        },
-        ...
-      ]
-    }
+    When use_qwen_output=False → uses manual per-scene inputs with the same leniency.
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -92,11 +75,11 @@ class FunPackStoryMemJSONConverter:
                 "scene1_first_frame_prompts": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "tooltip": "First frame description per prompt (must match count)"
+                    "tooltip": "First frame description per prompt (will auto-adjust to match count)"
                 }),
                 "scene1_cut_values": ("STRING", {
                     "default": "",
-                    "tooltip": "Comma-separated booleans: true,false,true,... (must match prompt count; first usually true)"
+                    "tooltip": "Comma-separated booleans: true,false,true,... (will auto-adjust to match prompt count)"
                 }),
                 # Scene 2
                 "scene2_video_prompts": ("STRING", {
@@ -107,11 +90,11 @@ class FunPackStoryMemJSONConverter:
                 "scene2_first_frame_prompts": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "tooltip": "First frame description per prompt (must match count)"
+                    "tooltip": "First frame description per prompt (will auto-adjust to match count)"
                 }),
                 "scene2_cut_values": ("STRING", {
                     "default": "",
-                    "tooltip": "Comma-separated booleans: true,false,true,... (must match prompt count; first usually true)"
+                    "tooltip": "Comma-separated booleans: true,false,true,... (will auto-adjust to match prompt count)"
                 }),
                 # Scene 3
                 "scene3_video_prompts": ("STRING", {
@@ -122,11 +105,11 @@ class FunPackStoryMemJSONConverter:
                 "scene3_first_frame_prompts": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "tooltip": "First frame description per prompt (must match count)"
+                    "tooltip": "First frame description per prompt (will auto-adjust to match count)"
                 }),
                 "scene3_cut_values": ("STRING", {
                     "default": "",
-                    "tooltip": "Comma-separated booleans: true,false,true,... (must match prompt count; first usually true)"
+                    "tooltip": "Comma-separated booleans: true,false,true,... (will auto-adjust to match prompt count)"
                 }),
             },
             "optional": {
@@ -179,7 +162,7 @@ class FunPackStoryMemJSONConverter:
 
                 scene_num = scene.get("scene_num", i+1)
                 video_prompts = scene.get("video_prompts", [])
-                first_frame_prompt = scene.get("first_frame_prompt", [])  # Note: renamed from first_frame_prompts for consistency
+                first_frame_prompt = scene.get("first_frame_prompt", [])
                 cut = scene.get("cut", [])
 
                 if not video_prompts:
@@ -187,29 +170,27 @@ class FunPackStoryMemJSONConverter:
 
                 num_prompts = len(video_prompts)
 
-                if len(first_frame_prompt) != num_prompts:
-                    raise ValueError(
-                        f"Scene {scene_num}: video_prompts ({num_prompts}) ≠ "
-                        f"first_frame_prompt ({len(first_frame_prompt)})"
-                    )
+                # Lenient: adjust first_frame_prompt
+                if len(first_frame_prompt) < num_prompts:
+                    if first_frame_prompt:
+                        first_frame_prompt += [first_frame_prompt[-1]] * (num_prompts - len(first_frame_prompt))
+                    else:
+                        first_frame_prompt = [""] * num_prompts
+                elif len(first_frame_prompt) > num_prompts:
+                    first_frame_prompt = first_frame_prompt[:num_prompts]
 
-                # Handle cut: if single bool, replicate across all prompts
+                # Lenient: handle cut (single bool or mismatched list)
                 if isinstance(cut, bool):
                     cut = [cut] * num_prompts
-                elif not isinstance(cut, list):
-                    raise ValueError(f"Scene {scene_num}: 'cut' must be bool or list of bools, got {type(cut)}")
+                elif not isinstance(cut, list) or not all(isinstance(c, bool) for c in cut):
+                    cut = [False] * num_prompts  # Default to no cuts
+                else:
+                    if len(cut) < num_prompts:
+                        cut += [cut[-1] if cut else False] * (num_prompts - len(cut))
+                    elif len(cut) > num_prompts:
+                        cut = cut[:num_prompts]
 
-                # Check length after potential conversion
-                if len(cut) != num_prompts:
-                    raise ValueError(
-                        f"Scene {scene_num}: 'cut' length ({len(cut)}) ≠ "
-                        f"prompt count ({num_prompts})"
-                    )
-
-                # Force first cut to True (per StoryMem: "The first prompt in the story must always have True")
-                # Note: This applies per scene, but if the whole story is multi-scene, the first of scene 1 is the global first
-                if num_prompts > 0:
-                    cut[0] = True
+                # NO forced first cut=True anymore
 
                 single_scene_data = {
                     "scene_num": scene_num,
@@ -230,7 +211,7 @@ class FunPackStoryMemJSONConverter:
             return tuple(outputs)
 
         else:
-            # ── Original manual mode ───────────────────────────────────────
+            # Manual mode - same leniency
             scenes_input = [
                 (scene1_video_prompts, scene1_first_frame_prompts, scene1_cut_values, 1),
                 (scene2_video_prompts, scene2_first_frame_prompts, scene2_cut_values, 2),
@@ -247,37 +228,38 @@ class FunPackStoryMemJSONConverter:
                 if not video_prompts:
                     continue
 
-                first_prompts = [f.strip() for f in first_text.split("\n") if f.strip()]
-
-                if len(first_prompts) != len(video_prompts):
-                    raise ValueError(
-                        f"Manual scene {scene_num}: video prompts ({len(video_prompts)}) ≠ "
-                        f"first frames ({len(first_prompts)})"
-                    )
-
                 num_prompts = len(video_prompts)
 
+                first_prompts = [f.strip() for f in first_text.split("\n") if f.strip()]
+
+                # Lenient adjust first_prompts
+                if len(first_prompts) < num_prompts:
+                    if first_prompts:
+                        first_prompts += [first_prompts[-1]] * (num_prompts - len(first_prompts))
+                    else:
+                        first_prompts = [""] * num_prompts
+                elif len(first_prompts) > num_prompts:
+                    first_prompts = first_prompts[:num_prompts]
+
+                # Parse cuts leniently
                 if cuts_text.strip():
                     cuts_str = [c.strip().lower() for c in cuts_text.split(",") if c.strip()]
                     cuts = []
                     for c in cuts_str:
                         if c in ("true", "t", "1", "yes"):
                             cuts.append(True)
-                        elif c in ("false", "f", "0", "no"):
-                            cuts.append(False)
                         else:
-                            raise ValueError(f"Invalid cut value in manual scene {scene_num}: '{c}'")
+                            cuts.append(False)  # default for invalid or false
                 else:
                     cuts = [False] * num_prompts
 
-                if len(cuts) != num_prompts:
-                    raise ValueError(
-                        f"Manual scene {scene_num}: cut count ({len(cuts)}) ≠ prompt count"
-                    )
+                # Lenient adjust cuts
+                if len(cuts) < num_prompts:
+                    cuts += [cuts[-1] if cuts else False] * (num_prompts - len(cuts))
+                elif len(cuts) > num_prompts:
+                    cuts = cuts[:num_prompts]
 
-                # Force first cut to True for consistency
-                if num_prompts > 0:
-                    cuts[0] = True
+                # NO forced first cut=True
 
                 scene = {
                     "scene_num": scene_num,
@@ -287,14 +269,15 @@ class FunPackStoryMemJSONConverter:
                 }
 
                 full_json = {
-                    "story_name": story_name.strip(),
-                    "story_overview": story_overview.strip(),
+                    "story_name": story_name.strip() or "Manual Story",
+                    "story_overview": story_overview.strip() or "Manual overview",
                     "scenes": [scene]
                 }
 
                 outputs[i] = json.dumps(full_json, indent=2, ensure_ascii=False)
 
             return tuple(outputs)
+            
 class FunPackImg2LatentInterpolation:
     @classmethod
     def INPUT_TYPES(cls):
@@ -945,6 +928,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
