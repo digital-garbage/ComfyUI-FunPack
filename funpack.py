@@ -29,7 +29,7 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
-class FunPackStoryMemJSONConverterQwenOutput:
+class FunPackStoryMemJSONConverter:
     """
     FunPack StoryMem LoRA JSON Converter - supports both manual input and Qwen-generated output.
     
@@ -928,6 +928,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
