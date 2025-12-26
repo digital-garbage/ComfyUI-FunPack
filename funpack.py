@@ -29,8 +29,7 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
-
-class FunPackStoryMemJSONConverter:
+class FunPackStoryMemJSONConverterQwenOutput:
     """
     FunPack StoryMem LoRA JSON Converter - supports both manual input and Qwen-generated output.
     
@@ -40,6 +39,8 @@ class FunPackStoryMemJSONConverter:
       - Splits into up to 3 separate scene JSONs (one per output)
       - Each output contains story_name, story_overview + exactly ONE scene
       - Extra scenes beyond 3 are ignored
+      - Handles 'cut' as single bool by replicating it across all prompts in the scene
+      - Forces first cut to True per StoryMem guidelines
     
     If 'use_qwen_output' is false → falls back to original manual scene inputs.
     
@@ -52,7 +53,7 @@ class FunPackStoryMemJSONConverter:
           "scene_num": int,
           "video_prompts": list[str],
           "first_frame_prompt": list[str],
-          "cut": list[bool]
+          "cut": list[bool] or bool  # Now supports single bool
         },
         ...
       ]
@@ -64,38 +65,75 @@ class FunPackStoryMemJSONConverter:
             "required": {
                 "use_qwen_output": ("BOOLEAN", {
                     "default": False,
-                    "label_on": "Use Qwen Output",
-                    "label_off": "Manual Input",
-                    "tooltip": "When enabled: ignores all manual scene inputs below! Uses 'qwen_output' string instead."
+                    "label_on": "Use Qwen Output (ignores manual scenes below)",
+                    "label_off": "Use Manual Scene Inputs",
+                    "tooltip": "Toggle between Qwen-generated full story JSON or classic manual per-scene setup"
                 }),
-                # ── Qwen mode inputs ───────────────────────────────────────
                 "qwen_output": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "tooltip": "Paste/connect the raw string output from Kijai's Qwen prompt enhancer node here"
+                    "tooltip": "Connect STRING output from Kijai's WanVideoPromptExtender / Qwen enhancer here.\nDrag wire onto the left side of this box to convert to input socket."
                 }),
-
-                # ── Manual mode inputs (hidden in practice by warning) ─────
-                "story_name": ("STRING", {"default": "My Story Title"}),
-                "story_overview": ("STRING", {"multiline": True, "default": "Brief description..."}),
-
-                "scene1_video_prompts": ("STRING", {"multiline": True, "default": "prompt 1\nprompt 2\nprompt 3"}),
-                "scene1_first_frames": ("STRING", {"multiline": True, "default": "frame 1\nframe 2\nframe 3"}),
-                "scene1_cuts": ("STRING", {"default": "true, false, false"}),
-
-                "scene2_video_prompts": ("STRING", {"multiline": True, "default": ""}),
-                "scene2_first_frames": ("STRING", {"multiline": True, "default": ""}),
-                "scene2_cuts": ("STRING", {"default": ""}),
-
-                "scene3_video_prompts": ("STRING", {"multiline": True, "default": ""}),
-                "scene3_first_frames": ("STRING", {"multiline": True, "default": ""}),
-                "scene3_cuts": ("STRING", {"default": ""}),
+                "story_name": ("STRING", {
+                    "default": "",
+                    "tooltip": "Story title (used in all output JSONs)"
+                }),
+                "story_overview": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Overall story summary (shared across all scenes)"
+                }),
+                # Scene 1
+                "scene1_video_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One prompt per line (each = 5-sec clip)"
+                }),
+                "scene1_first_frame_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "First frame description per prompt (must match count)"
+                }),
+                "scene1_cut_values": ("STRING", {
+                    "default": "",
+                    "tooltip": "Comma-separated booleans: true,false,true,... (must match prompt count; first usually true)"
+                }),
+                # Scene 2
+                "scene2_video_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One prompt per line (each = 5-sec clip)"
+                }),
+                "scene2_first_frame_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "First frame description per prompt (must match count)"
+                }),
+                "scene2_cut_values": ("STRING", {
+                    "default": "",
+                    "tooltip": "Comma-separated booleans: true,false,true,... (must match prompt count; first usually true)"
+                }),
+                # Scene 3
+                "scene3_video_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One prompt per line (each = 5-sec clip)"
+                }),
+                "scene3_first_frame_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "First frame description per prompt (must match count)"
+                }),
+                "scene3_cut_values": ("STRING", {
+                    "default": "",
+                    "tooltip": "Comma-separated booleans: true,false,true,... (must match prompt count; first usually true)"
+                }),
             },
             "optional": {
-                "qwen_warning": ("STRING", {
+                "qwen_mode_notice": ("STRING", {
                     "multiline": True,
-                    "default": "!!! QWEN MODE ACTIVE !!!\nAll inputs below are IGNORED\nConnect Qwen output above.",
-                    "tooltip": "Visible reminder - only relevant when use_qwen_output = True"
+                    "default": "!!! QWEN MODE ACTIVE !!!\nAll manual inputs below are completely ignored\nConnect the Qwen JSON string above.",
+                    "tooltip": "Reminder - only visible/meaningful when use_qwen_output = True"
                 })
             }
         }
@@ -110,10 +148,10 @@ class FunPackStoryMemJSONConverter:
                 use_qwen_output,
                 qwen_output,
                 story_name, story_overview,
-                scene1_video_prompts, scene1_first_frames, scene1_cuts,
-                scene2_video_prompts, scene2_first_frames, scene2_cuts,
-                scene3_video_prompts, scene3_first_frames, scene3_cuts,
-                qwen_warning=""):
+                scene1_video_prompts, scene1_first_frame_prompts, scene1_cut_values,
+                scene2_video_prompts, scene2_first_frame_prompts, scene2_cut_values,
+                scene3_video_prompts, scene3_first_frame_prompts, scene3_cut_values,
+                qwen_mode_notice=""):
 
         if use_qwen_output:
             if not qwen_output.strip():
@@ -141,19 +179,37 @@ class FunPackStoryMemJSONConverter:
 
                 scene_num = scene.get("scene_num", i+1)
                 video_prompts = scene.get("video_prompts", [])
-                first_frame_prompt = scene.get("first_frame_prompt", [])
+                first_frame_prompt = scene.get("first_frame_prompt", [])  # Note: renamed from first_frame_prompts for consistency
                 cut = scene.get("cut", [])
 
-                # Basic validation
                 if not video_prompts:
                     continue
-                if len(video_prompts) != len(first_frame_prompt) or len(video_prompts) != len(cut):
+
+                num_prompts = len(video_prompts)
+
+                if len(first_frame_prompt) != num_prompts:
                     raise ValueError(
-                        f"Scene {scene_num}: lengths mismatch → "
-                        f"video_prompts({len(video_prompts)}), "
-                        f"first_frame_prompt({len(first_frame_prompt)}), "
-                        f"cut({len(cut)})"
+                        f"Scene {scene_num}: video_prompts ({num_prompts}) ≠ "
+                        f"first_frame_prompt ({len(first_frame_prompt)})"
                     )
+
+                # Handle cut: if single bool, replicate across all prompts
+                if isinstance(cut, bool):
+                    cut = [cut] * num_prompts
+                elif not isinstance(cut, list):
+                    raise ValueError(f"Scene {scene_num}: 'cut' must be bool or list of bools, got {type(cut)}")
+
+                # Check length after potential conversion
+                if len(cut) != num_prompts:
+                    raise ValueError(
+                        f"Scene {scene_num}: 'cut' length ({len(cut)}) ≠ "
+                        f"prompt count ({num_prompts})"
+                    )
+
+                # Force first cut to True (per StoryMem: "The first prompt in the story must always have True")
+                # Note: This applies per scene, but if the whole story is multi-scene, the first of scene 1 is the global first
+                if num_prompts > 0:
+                    cut[0] = True
 
                 single_scene_data = {
                     "scene_num": scene_num,
@@ -176,9 +232,9 @@ class FunPackStoryMemJSONConverter:
         else:
             # ── Original manual mode ───────────────────────────────────────
             scenes_input = [
-                (scene1_video_prompts, scene1_first_frames, scene1_cuts, 1),
-                (scene2_video_prompts, scene2_first_frames, scene2_cuts, 2),
-                (scene3_video_prompts, scene3_first_frames, scene3_cuts, 3),
+                (scene1_video_prompts, scene1_first_frame_prompts, scene1_cut_values, 1),
+                (scene2_video_prompts, scene2_first_frame_prompts, scene2_cut_values, 2),
+                (scene3_video_prompts, scene3_first_frame_prompts, scene3_cut_values, 3),
             ]
 
             outputs = ["", "", ""]
@@ -199,23 +255,29 @@ class FunPackStoryMemJSONConverter:
                         f"first frames ({len(first_prompts)})"
                     )
 
+                num_prompts = len(video_prompts)
+
                 if cuts_text.strip():
-                    cuts_str = [c.strip().lower() for c in cuts_text.split(",")]
+                    cuts_str = [c.strip().lower() for c in cuts_text.split(",") if c.strip()]
                     cuts = []
                     for c in cuts_str:
                         if c in ("true", "t", "1", "yes"):
                             cuts.append(True)
-                        elif c in ("false", "f", "0", "no", ""):
+                        elif c in ("false", "f", "0", "no"):
                             cuts.append(False)
                         else:
                             raise ValueError(f"Invalid cut value in manual scene {scene_num}: '{c}'")
                 else:
-                    cuts = [False] * len(video_prompts)
+                    cuts = [False] * num_prompts
 
-                if len(cuts) != len(video_prompts):
+                if len(cuts) != num_prompts:
                     raise ValueError(
                         f"Manual scene {scene_num}: cut count ({len(cuts)}) ≠ prompt count"
                     )
+
+                # Force first cut to True for consistency
+                if num_prompts > 0:
+                    cuts[0] = True
 
                 scene = {
                     "scene_num": scene_num,
@@ -233,7 +295,6 @@ class FunPackStoryMemJSONConverter:
                 outputs[i] = json.dumps(full_json, indent=2, ensure_ascii=False)
 
             return tuple(outputs)
-
 class FunPackImg2LatentInterpolation:
     @classmethod
     def INPUT_TYPES(cls):
@@ -884,6 +945,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
