@@ -19,6 +19,7 @@ from comfy.utils import ProgressBar
 import comfy.clip_vision
 import math
 import json
+from comfy.utils import ProgressBar
 
 # Constants from StoryMem
 IMAGE_FACTOR = 28
@@ -28,117 +29,210 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
+
 class FunPackStoryMemJSONConverter:
     """
-    FunPack StoryMem LoRA JSON Converter for WAN2.2
-    Strict matching: video_prompts count == first_frame_prompt count == cut count
-    (as per official examples)
+    FunPack StoryMem LoRA JSON Converter - supports both manual input and Qwen-generated output.
+    
+    If 'use_qwen_output' is enabled:
+      - Takes 'qwen_output' (string) from Kijai's WanVideoPromptExtender/Qwen node
+      - Parses the full story JSON (as produced by StoryMem-style system prompt)
+      - Splits into up to 3 separate scene JSONs (one per output)
+      - Each output contains story_name, story_overview + exactly ONE scene
+      - Extra scenes beyond 3 are ignored
+    
+    If 'use_qwen_output' is false → falls back to original manual scene inputs.
+    
+    Expected Qwen output structure (example: black.json):
+    {
+      "story_name": str,
+      "story_overview": str,
+      "scenes": [
+        {
+          "scene_num": int,
+          "video_prompts": list[str],
+          "first_frame_prompt": list[str],
+          "cut": list[bool]
+        },
+        ...
+      ]
+    }
     """
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
+                "use_qwen_output": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "Use Qwen Output",
+                    "label_off": "Manual Input",
+                    "tooltip": "When enabled: ignores all manual scene inputs below! Uses 'qwen_output' string instead."
+                }),
+                # ── Qwen mode inputs ───────────────────────────────────────
+                "qwen_output": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Paste/connect the raw string output from Kijai's Qwen prompt enhancer node here"
+                }),
+
+                # ── Manual mode inputs (hidden in practice by warning) ─────
                 "story_name": ("STRING", {"default": "My Story Title"}),
-                "story_overview": ("STRING", {"multiline": True, "default": "Brief description of the overall story..."}),
+                "story_overview": ("STRING", {"multiline": True, "default": "Brief description..."}),
 
-                # Scene 1 (Sampler 1)
                 "scene1_video_prompts": ("STRING", {"multiline": True, "default": "prompt 1\nprompt 2\nprompt 3"}),
-                "scene1_first_frames": ("STRING", {"multiline": True, "default": "first frame 1\nfirst frame 2\nfirst frame 3"}),
-                "scene1_cuts": ("STRING", {"default": "true, false, false", "tooltip": "comma-separated booleans — must match # of prompts"}),
+                "scene1_first_frames": ("STRING", {"multiline": True, "default": "frame 1\nframe 2\nframe 3"}),
+                "scene1_cuts": ("STRING", {"default": "true, false, false"}),
 
-                # Scene 2 (Sampler 2)
                 "scene2_video_prompts": ("STRING", {"multiline": True, "default": ""}),
                 "scene2_first_frames": ("STRING", {"multiline": True, "default": ""}),
-                "scene2_cuts": ("STRING", {"default": "", "tooltip": "comma-separated boolean values"}),
+                "scene2_cuts": ("STRING", {"default": ""}),
 
-                # Scene 3 (Sampler 3)
                 "scene3_video_prompts": ("STRING", {"multiline": True, "default": ""}),
                 "scene3_first_frames": ("STRING", {"multiline": True, "default": ""}),
-                "scene3_cuts": ("STRING", {"default": "", "tooltip": "comma-separated boolean values"}),
+                "scene3_cuts": ("STRING", {"default": ""}),
+            },
+            "optional": {
+                "qwen_warning": ("STRING", {
+                    "multiline": True,
+                    "default": "!!! QWEN MODE ACTIVE !!!\nAll inputs below are IGNORED\nConnect Qwen output above.",
+                    "tooltip": "Visible reminder - only relevant when use_qwen_output = True"
+                })
             }
         }
 
     RETURN_TYPES = ("STRING", "STRING", "STRING")
-    RETURN_NAMES = ("json_sampler_1", "json_sampler_2", "json_sampler_3")
+    RETURN_NAMES = ("json_scene_1", "json_scene_2", "json_scene_3")
     OUTPUT_NODE = True
-    FUNCTION = "format_json"
+    FUNCTION = "convert"
     CATEGORY = "FunPack"
 
-    def format_json(self,
-                    story_name,
-                    story_overview,
+    def convert(self,
+                use_qwen_output,
+                qwen_output,
+                story_name, story_overview,
+                scene1_video_prompts, scene1_first_frames, scene1_cuts,
+                scene2_video_prompts, scene2_first_frames, scene2_cuts,
+                scene3_video_prompts, scene3_first_frames, scene3_cuts,
+                qwen_warning=""):
 
-                    scene1_video_prompts, scene1_first_frames, scene1_cuts,
-                    scene2_video_prompts, scene2_first_frames, scene2_cuts,
-                    scene3_video_prompts, scene3_first_frames, scene3_cuts):
+        if use_qwen_output:
+            if not qwen_output.strip():
+                raise ValueError("Qwen mode enabled but 'qwen_output' is empty! Connect Kijai's prompt enhancer output.")
 
-        scenes_input = [
-            (scene1_video_prompts, scene1_first_frames, scene1_cuts, 1),
-            (scene2_video_prompts, scene2_first_frames, scene2_cuts, 2),
-            (scene3_video_prompts, scene3_first_frames, scene3_cuts, 3),
-        ]
+            pbar = ProgressBar(2)
 
-        outputs = ["", "", ""]
+            try:
+                full_data = json.loads(qwen_output)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Failed to parse Qwen output as JSON:\n{str(e)}\n\nMake sure system prompt instructs Qwen to return **only** valid JSON.")
 
-        for i, (video_text, first_text, cuts_text, scene_num) in enumerate(scenes_input):
-            if not video_text.strip():
-                outputs[i] = ""
-                continue
+            story_name = full_data.get("story_name", "Generated Story")
+            story_overview = full_data.get("story_overview", "Generated overview")
+            scenes = full_data.get("scenes", [])
 
-            # Split prompts (skip empty lines)
-            video_prompts = [p.strip() for p in video_text.split("\n") if p.strip()]
-            first_prompts = [f.strip() for f in first_text.split("\n") if f.strip()]
+            if not isinstance(scenes, list) or not scenes:
+                raise ValueError("Qwen JSON must contain non-empty 'scenes' list.")
 
-            num_prompts = len(video_prompts)
-            if num_prompts == 0:
-                outputs[i] = ""
-                continue
+            outputs = ["", "", ""]
 
-            # Enforce matching lengths for prompts and first-frames (per examples)
-            if len(first_prompts) != num_prompts:
-                raise ValueError(
-                    f"Scene {scene_num}: Number of video prompts ({num_prompts}) "
-                    f"must match number of first frame prompts ({len(first_prompts)})"
-                )
+            for i, scene in enumerate(scenes[:3]):
+                if not isinstance(scene, dict):
+                    continue
 
-            # Parse cuts
-            if cuts_text.strip():
-                cuts_str = [c.strip().lower() for c in cuts_text.split(",") if c.strip()]
-                cuts = []
-                for c in cuts_str:
-                    if c in ("true", "t", "1", "yes"):
-                        cuts.append(True)
-                    elif c in ("false", "f", "0", "no", ""):
-                        cuts.append(False)
-                    else:
-                        raise ValueError(f"Invalid cut value in scene {scene_num}: '{c}' (use true/false)")
-            else:
-                # Default: all False (no cuts), matching common safe starting point
-                cuts = [False] * num_prompts
+                scene_num = scene.get("scene_num", i+1)
+                video_prompts = scene.get("video_prompts", [])
+                first_frame_prompt = scene.get("first_frame_prompt", [])
+                cut = scene.get("cut", [])
 
-            # Enforce: cuts must match number of prompts exactly (per examples)
-            if len(cuts) != num_prompts:
-                raise ValueError(
-                    f"Scene {scene_num}: Number of cut values ({len(cuts)}) "
-                    f"must match number of prompts ({num_prompts})"
-                )
+                # Basic validation
+                if not video_prompts:
+                    continue
+                if len(video_prompts) != len(first_frame_prompt) or len(video_prompts) != len(cut):
+                    raise ValueError(
+                        f"Scene {scene_num}: lengths mismatch → "
+                        f"video_prompts({len(video_prompts)}), "
+                        f"first_frame_prompt({len(first_frame_prompt)}), "
+                        f"cut({len(cut)})"
+                    )
 
-            scene = {
-                "scene_num": scene_num,
-                "video_prompts": video_prompts,
-                "first_frame_prompt": first_prompts,
-                "cut": cuts
-            }
+                single_scene_data = {
+                    "scene_num": scene_num,
+                    "video_prompts": video_prompts,
+                    "first_frame_prompt": first_frame_prompt,
+                    "cut": cut
+                }
 
-            full_json = {
-                "story_name": story_name.strip(),
-                "story_overview": story_overview.strip(),
-                "scenes": [scene]
-            }
+                json_data = {
+                    "story_name": story_name,
+                    "story_overview": story_overview,
+                    "scenes": [single_scene_data]
+                }
 
-            outputs[i] = json.dumps(full_json, indent=2, ensure_ascii=False)
+                outputs[i] = json.dumps(json_data, indent=2, ensure_ascii=False)
 
-        return tuple(outputs)
+            pbar.update(2)
+            return tuple(outputs)
+
+        else:
+            # ── Original manual mode ───────────────────────────────────────
+            scenes_input = [
+                (scene1_video_prompts, scene1_first_frames, scene1_cuts, 1),
+                (scene2_video_prompts, scene2_first_frames, scene2_cuts, 2),
+                (scene3_video_prompts, scene3_first_frames, scene3_cuts, 3),
+            ]
+
+            outputs = ["", "", ""]
+
+            for i, (video_text, first_text, cuts_text, scene_num) in enumerate(scenes_input):
+                if not video_text.strip():
+                    continue
+
+                video_prompts = [p.strip() for p in video_text.split("\n") if p.strip()]
+                if not video_prompts:
+                    continue
+
+                first_prompts = [f.strip() for f in first_text.split("\n") if f.strip()]
+
+                if len(first_prompts) != len(video_prompts):
+                    raise ValueError(
+                        f"Manual scene {scene_num}: video prompts ({len(video_prompts)}) ≠ "
+                        f"first frames ({len(first_prompts)})"
+                    )
+
+                if cuts_text.strip():
+                    cuts_str = [c.strip().lower() for c in cuts_text.split(",")]
+                    cuts = []
+                    for c in cuts_str:
+                        if c in ("true", "t", "1", "yes"):
+                            cuts.append(True)
+                        elif c in ("false", "f", "0", "no", ""):
+                            cuts.append(False)
+                        else:
+                            raise ValueError(f"Invalid cut value in manual scene {scene_num}: '{c}'")
+                else:
+                    cuts = [False] * len(video_prompts)
+
+                if len(cuts) != len(video_prompts):
+                    raise ValueError(
+                        f"Manual scene {scene_num}: cut count ({len(cuts)}) ≠ prompt count"
+                    )
+
+                scene = {
+                    "scene_num": scene_num,
+                    "video_prompts": video_prompts,
+                    "first_frame_prompt": first_prompts,
+                    "cut": cuts
+                }
+
+                full_json = {
+                    "story_name": story_name.strip(),
+                    "story_overview": story_overview.strip(),
+                    "scenes": [scene]
+                }
+
+                outputs[i] = json.dumps(full_json, indent=2, ensure_ascii=False)
+
+            return tuple(outputs)
 
 class FunPackImg2LatentInterpolation:
     @classmethod
@@ -790,6 +884,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video"
 
 }
+
 
 
 
