@@ -10,7 +10,274 @@ import folder_paths
 import nodes
 import tempfile
 import gc # Import garbage collector
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+from PIL import Image
+import folder_paths
+from comfy.utils import ProgressBar
+import comfy.clip_vision
+import math
+import json
+from comfy.utils import ProgressBar
 
+# Constants from StoryMem
+IMAGE_FACTOR = 28
+VIDEO_MIN_PIXELS = 48 * IMAGE_FACTOR * IMAGE_FACTOR  # 37,632
+MIN_FRAME_SIMILARITY = 0.9
+MAX_KEYFRAME_NUM = 3
+ADAPTIVE_ALPHA = 0.01
+HPSV3_QUALITY_THRESHOLD = 3.0
+
+class FunPackStoryMemJSONConverter:
+    """
+    FunPack StoryMem LoRA JSON Converter - supports both manual input and Qwen-generated output.
+    
+    Features:
+    - Lenient parsing: auto-adjusts mismatched lengths for cut/first_frame_prompt
+    - Handles 'cut' as single bool (replicates) or list
+    - NO forced first cut=True (user can control via prompt or manual input)
+    - Safe defaults on invalid data → no crashes
+    - Splits full Qwen story into up to 3 separate scene JSONs
+    
+    When use_qwen_output=False → uses manual per-scene inputs with the same leniency.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "use_qwen_output": ("BOOLEAN", {
+                    "default": False,
+                    "label_on": "Use Qwen Output (ignores manual scenes below)",
+                    "label_off": "Use Manual Scene Inputs",
+                    "tooltip": "Toggle between Qwen-generated full story JSON or classic manual per-scene setup"
+                }),
+                "qwen_output": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Connect STRING output from Kijai's WanVideoPromptExtender / Qwen enhancer here.\nDrag wire onto the left side of this box to convert to input socket."
+                }),
+                "story_name": ("STRING", {
+                    "default": "",
+                    "tooltip": "Story title (used in all output JSONs)"
+                }),
+                "story_overview": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Overall story summary (shared across all scenes)"
+                }),
+                # Scene 1
+                "scene1_video_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One prompt per line (each = 5-sec clip)"
+                }),
+                "scene1_first_frame_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "First frame description per prompt (will auto-adjust to match count)"
+                }),
+                "scene1_cut_values": ("STRING", {
+                    "default": "",
+                    "tooltip": "Comma-separated booleans: true,false,true,... (will auto-adjust to match prompt count)"
+                }),
+                # Scene 2
+                "scene2_video_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One prompt per line (each = 5-sec clip)"
+                }),
+                "scene2_first_frame_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "First frame description per prompt (will auto-adjust to match count)"
+                }),
+                "scene2_cut_values": ("STRING", {
+                    "default": "",
+                    "tooltip": "Comma-separated booleans: true,false,true,... (will auto-adjust to match prompt count)"
+                }),
+                # Scene 3
+                "scene3_video_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "One prompt per line (each = 5-sec clip)"
+                }),
+                "scene3_first_frame_prompts": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "First frame description per prompt (will auto-adjust to match count)"
+                }),
+                "scene3_cut_values": ("STRING", {
+                    "default": "",
+                    "tooltip": "Comma-separated booleans: true,false,true,... (will auto-adjust to match prompt count)"
+                }),
+            },
+            "optional": {
+                "qwen_mode_notice": ("STRING", {
+                    "multiline": True,
+                    "default": "!!! QWEN MODE ACTIVE !!!\nAll manual inputs below are completely ignored\nConnect the Qwen JSON string above.",
+                    "tooltip": "Reminder - only visible/meaningful when use_qwen_output = True"
+                })
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("json_scene_1", "json_scene_2", "json_scene_3")
+    OUTPUT_NODE = True
+    FUNCTION = "convert"
+    CATEGORY = "FunPack"
+
+    def convert(self,
+                use_qwen_output,
+                qwen_output,
+                story_name, story_overview,
+                scene1_video_prompts, scene1_first_frame_prompts, scene1_cut_values,
+                scene2_video_prompts, scene2_first_frame_prompts, scene2_cut_values,
+                scene3_video_prompts, scene3_first_frame_prompts, scene3_cut_values,
+                qwen_mode_notice=""):
+
+        if use_qwen_output:
+            if not qwen_output.strip():
+                raise ValueError("Qwen mode enabled but 'qwen_output' is empty! Connect Kijai's prompt enhancer output.")
+
+            pbar = ProgressBar(2)
+
+            try:
+                full_data = json.loads(qwen_output)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Failed to parse Qwen output as JSON:\n{str(e)}\n\nMake sure system prompt instructs Qwen to return **only** valid JSON.")
+
+            story_name = full_data.get("story_name", "Generated Story")
+            story_overview = full_data.get("story_overview", "Generated overview")
+            scenes = full_data.get("scenes", [])
+
+            if not isinstance(scenes, list) or not scenes:
+                raise ValueError("Qwen JSON must contain non-empty 'scenes' list.")
+
+            outputs = ["", "", ""]
+
+            for i, scene in enumerate(scenes[:3]):
+                if not isinstance(scene, dict):
+                    continue
+
+                scene_num = scene.get("scene_num", i+1)
+                video_prompts = scene.get("video_prompts", [])
+                first_frame_prompt = scene.get("first_frame_prompt", [])
+                cut = scene.get("cut", [])
+
+                if not video_prompts:
+                    continue
+
+                num_prompts = len(video_prompts)
+
+                # Lenient: adjust first_frame_prompt
+                if len(first_frame_prompt) < num_prompts:
+                    if first_frame_prompt:
+                        first_frame_prompt += [first_frame_prompt[-1]] * (num_prompts - len(first_frame_prompt))
+                    else:
+                        first_frame_prompt = [""] * num_prompts
+                elif len(first_frame_prompt) > num_prompts:
+                    first_frame_prompt = first_frame_prompt[:num_prompts]
+
+                # Lenient: handle cut (single bool or mismatched list)
+                if isinstance(cut, bool):
+                    cut = [cut] * num_prompts
+                elif not isinstance(cut, list) or not all(isinstance(c, bool) for c in cut):
+                    cut = [False] * num_prompts  # Default to no cuts
+                else:
+                    if len(cut) < num_prompts:
+                        cut += [cut[-1] if cut else False] * (num_prompts - len(cut))
+                    elif len(cut) > num_prompts:
+                        cut = cut[:num_prompts]
+
+                # NO forced first cut=True anymore
+
+                single_scene_data = {
+                    "scene_num": scene_num,
+                    "video_prompts": video_prompts,
+                    "first_frame_prompt": first_frame_prompt,
+                    "cut": cut
+                }
+
+                json_data = {
+                    "story_name": story_name,
+                    "story_overview": story_overview,
+                    "scenes": [single_scene_data]
+                }
+
+                outputs[i] = json.dumps(json_data, indent=2, ensure_ascii=False)
+
+            pbar.update(2)
+            return tuple(outputs)
+
+        else:
+            # Manual mode - same leniency
+            scenes_input = [
+                (scene1_video_prompts, scene1_first_frame_prompts, scene1_cut_values, 1),
+                (scene2_video_prompts, scene2_first_frame_prompts, scene2_cut_values, 2),
+                (scene3_video_prompts, scene3_first_frame_prompts, scene3_cut_values, 3),
+            ]
+
+            outputs = ["", "", ""]
+
+            for i, (video_text, first_text, cuts_text, scene_num) in enumerate(scenes_input):
+                if not video_text.strip():
+                    continue
+
+                video_prompts = [p.strip() for p in video_text.split("\n") if p.strip()]
+                if not video_prompts:
+                    continue
+
+                num_prompts = len(video_prompts)
+
+                first_prompts = [f.strip() for f in first_text.split("\n") if f.strip()]
+
+                # Lenient adjust first_prompts
+                if len(first_prompts) < num_prompts:
+                    if first_prompts:
+                        first_prompts += [first_prompts[-1]] * (num_prompts - len(first_prompts))
+                    else:
+                        first_prompts = [""] * num_prompts
+                elif len(first_prompts) > num_prompts:
+                    first_prompts = first_prompts[:num_prompts]
+
+                # Parse cuts leniently
+                if cuts_text.strip():
+                    cuts_str = [c.strip().lower() for c in cuts_text.split(",") if c.strip()]
+                    cuts = []
+                    for c in cuts_str:
+                        if c in ("true", "t", "1", "yes"):
+                            cuts.append(True)
+                        else:
+                            cuts.append(False)  # default for invalid or false
+                else:
+                    cuts = [False] * num_prompts
+
+                # Lenient adjust cuts
+                if len(cuts) < num_prompts:
+                    cuts += [cuts[-1] if cuts else False] * (num_prompts - len(cuts))
+                elif len(cuts) > num_prompts:
+                    cuts = cuts[:num_prompts]
+
+                # NO forced first cut=True
+
+                scene = {
+                    "scene_num": scene_num,
+                    "video_prompts": video_prompts,
+                    "first_frame_prompt": first_prompts,
+                    "cut": cuts
+                }
+
+                full_json = {
+                    "story_name": story_name.strip() or "Manual Story",
+                    "story_overview": story_overview.strip() or "Manual overview",
+                    "scenes": [scene]
+                }
+
+                outputs[i] = json.dumps(full_json, indent=2, ensure_ascii=False)
+
+            return tuple(outputs)
+            
 class FunPackImg2LatentInterpolation:
     @classmethod
     def INPUT_TYPES(cls):
@@ -56,143 +323,6 @@ class FunPackImg2LatentInterpolation:
         preview = interpolated[0].clone()
         
         return (output, preview)
-
-# Removed the problematic list_clip_files() helper function
-
-class FunPackCLIPLoader:
-    class _CLIPAdapter:
-        def __init__(self, clip_l_model, llama_te_model, optional_secondary_clip=None, optional_merge_mode="None"):
-            self.clip_l_model = clip_l_model
-            self.llama_te_model = llama_te_model
-            self.optional_secondary_clip = optional_secondary_clip
-            self.optional_merge_mode = optional_merge_mode
-            
-            print(f"[_CLIPAdapter] Initialized with CLIP-L and LLaMA text encoder.")
-            if self.optional_secondary_clip:
-                print(f"[_CLIPAdapter] Optional secondary CLIP also loaded. Merge mode: {self.optional_merge_mode}")
-            else:
-                print("[_CLIPAdapter] No optional secondary CLIP provided.")
-
-        def tokenize(self, prompt):
-            # Use the CLIP-L model's tokenizer
-            return self.clip_l_model.tokenize(prompt)
-
-        def encode_from_tokens(self, tokens, return_pooled=True):
-            # 1. Get embeddings from the primary CLIP-L model
-            clip_l_cond, clip_l_pooled = self.clip_l_model.encode_from_tokens(tokens, return_pooled=True)
-
-            # 2. Get embeddings from the LLaMA text encoder
-            llama_cond, llama_pooled = self.llama_te_model.encode_from_tokens(tokens, return_pooled=True)
-
-            # 3. Handle optional secondary CLIP merge specifically with CLIP-L's output
-            final_clip_l_cond = clip_l_cond
-            final_clip_l_pooled = clip_l_pooled
-
-            if self.optional_secondary_clip and self.optional_merge_mode != "None":
-                print(f"[_CLIPAdapter] Merging optional secondary CLIP embeddings (Mode: {self.optional_merge_mode}).")
-                secondary_cond, secondary_pooled = self.optional_secondary_clip.encode_from_tokens(tokens, return_pooled=True)
-
-                if self.optional_merge_mode == "Concatenate Pooled with CLIP-L":
-                    final_clip_l_pooled = torch.cat([clip_l_pooled, secondary_pooled], dim=-1)
-                    print(f"[_CLIPAdapter] Optional CLIP pooled embeddings concatenated with CLIP-L pooled. New CLIP-L pooled dim: {final_clip_l_pooled.shape[-1]}")
-                elif self.optional_merge_mode == "Concatenate Unpooled with CLIP-L":
-                    if clip_l_cond.shape[1] != secondary_cond.shape[1]:
-                        print("[_CLIPAdapter] WARNING: Unpooled embeddings have different sequence lengths for CLIP-L and optional secondary CLIP. Skipping unpooled concatenation.")
-                    else:
-                        final_clip_l_cond = torch.cat([clip_l_cond, secondary_cond], dim=-1)
-                        print(f"[_CLIPAdapter] Optional CLIP unpooled embeddings concatenated with CLIP-L unpooled. New CLIP-L unpooled dim: {final_clip_l_cond.shape[-1]}")
-            
-            # 4. Final combination: Concatenate the (potentially merged) CLIP-L output with LLaMA output
-            final_cond = torch.cat([final_clip_l_cond, llama_cond], dim=-1)
-            final_pooled = torch.cat([final_clip_l_pooled, llama_pooled], dim=-1)
-
-            if return_pooled:
-                return final_cond, final_pooled
-            else:
-                return final_cond
-
-        def encode_token_weights(self, tokens):
-            return self.clip_l_model.encode_token_weights(tokens)
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "clip_l_model_name": (s.get_filename_list(), {"default": "clip_l.safetensors"}),
-                "llama_text_encoder_name": (s.get_filename_list(), {"default": "clip_g.safetensors"}),
-                "clip_type": (["HUNYUAN_VIDEO"], {"default": "HUNYUAN_VIDEO"}),
-            },
-            "optional": {
-                "optional_secondary_clip_model_name": (s.get_filename_list(), {"default": "None"}),
-                "optional_secondary_clip_type": (["CLIP_G", "CLIP_L", "T5_XXL"], {"default": "CLIP_G"}),
-                "optional_merge_mode": (["None", "Concatenate Pooled with CLIP-L", "Concatenate Unpooled with CLIP-L"], {"default": "None"})
-            }
-        }
-
-    RETURN_TYPES = ("CLIP",)
-    RETURN_NAMES = ("clip",)
-    FUNCTION = "load"
-    CATEGORY = "FunPack"
-
-    @classmethod
-    def get_filename_list(s):
-        return folder_paths.get_filename_list("clip")
-
-    def load(self, clip_l_model_name, llama_text_encoder_name, clip_type,
-             optional_secondary_clip_model_name="None", optional_secondary_clip_type="CLIP_G", optional_merge_mode="None"):
-        
-        # Load CLIP-L model with HUNYUAN_VIDEO type
-        clip_l_path = folder_paths.get_full_path('clip', clip_l_model_name)
-        loaded_clip_l = sd.load_clip(
-            ckpt_paths=[clip_l_path],
-            clip_type=sd.CLIPType.HUNYUAN_VIDEO,
-            embedding_directory=None,
-            model_options={"ignore_mismatched_sizes": True}
-        )
-        print(f"[FunPackCLIPLoader] Loaded CLIP-L model: {clip_l_model_name}")
-
-        # Load LLaMA text encoder (using CLIP_G as it's part of the Hunyuan architecture)
-        llama_te_path = folder_paths.get_full_path('clip', llama_text_encoder_name)
-        loaded_llama_te = sd.load_clip(
-            ckpt_paths=[llama_te_path],
-            clip_type=sd.CLIPType.HUNYUAN_VIDEO,
-            embedding_directory=None,
-            model_options={"ignore_mismatched_sizes": True}
-        )
-        print(f"[FunPackCLIPLoader] Loaded LLaMA text encoder: {llama_text_encoder_name}")
-
-        # Load optional secondary CLIP
-        loaded_optional_secondary_clip = None
-        if optional_secondary_clip_model_name != "None":
-            optional_secondary_clip_path = folder_paths.get_full_path('clip', optional_secondary_clip_model_name)
-            
-            # Map the input type to CLIPType enum
-            clip_type_mapping = {
-                "CLIP_G": sd.CLIPType.STABLE_CASCADE,
-                "CLIP_L": sd.CLIPType.STABLE_DIFFUSION,
-                "T5_XXL": sd.CLIPType.SD3
-            }
-            secondary_clip_type = clip_type_mapping.get(optional_secondary_clip_type, sd.CLIPType.STABLE_DIFFUSION)
-            
-            loaded_optional_secondary_clip = sd.load_clip(
-                ckpt_paths=[optional_secondary_clip_path],
-                clip_type=secondary_clip_type,
-                embedding_directory=None,
-                model_options={"ignore_mismatched_sizes": True}
-            )
-            print(f"[FunPackCLIPLoader] Loaded optional secondary CLIP model: {optional_secondary_clip_model_name}")
-        else:
-            print("[FunPackCLIPLoader] No optional secondary CLIP model specified.")
-
-        # Create the adapter
-        clip_adapter = FunPackCLIPLoader._CLIPAdapter(
-            clip_l_model=loaded_clip_l,
-            llama_te_model=loaded_llama_te,
-            optional_secondary_clip=loaded_optional_secondary_clip,
-            optional_merge_mode=optional_merge_mode
-        )
-        
-        return (clip_adapter,)
 
 # The standalone FunPackPromptEnhancer remains completely unchanged as requested
 class FunPackPromptEnhancer:
@@ -376,19 +506,513 @@ class FunPackContinueVideo:
         continued = images[-frame_count:]
         return (continued,)
 
+class FunPackStoryMemKeyframeExtractor:
+    """
+    Extracts keyframes from video frames using:
+    1. HPSv3 for quality assessment (optional)
+    2. CLIP Vision for frame similarity
+    3. Adaptive threshold to limit keyframe count
+    """
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "frames": ("IMAGE",),  # ComfyUI IMAGE format [B, H, W, C]
+                "clip_vision": (folder_paths.get_filename_list("clip_vision"),),
+                "max_keyframes": ("INT", {
+                    "default": 3,
+                    "min": 1,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Maximum number of keyframes to extract"
+                }),
+                "similarity_threshold": ("FLOAT", {
+                    "default": 0.9,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "tooltip": "CLIP similarity threshold (lower = more keyframes)"
+                }),
+                "use_quality_filter": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Use HPSv3 to filter low-quality frames (requires hpsv3 package)"
+                }),
+                "quality_threshold": ("FLOAT", {
+                    "default": 3.0,
+                    "min": 0.0,
+                    "max": 10.0,
+                    "step": 0.1,
+                    "tooltip": "HPSv3 quality threshold (higher = stricter)"
+                }),
+            },
+            "optional": {
+                "memory_frames": ("IMAGE", {
+                    "tooltip": "Previous keyframes to compare against (avoid duplicates)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "INT",)
+    RETURN_NAMES = ("keyframes", "keyframe_count",)
+    FUNCTION = "extract_keyframes"
+    CATEGORY = "FunPack"
+    DESCRIPTION = "Extract keyframes using CLIP similarity + HPSv3 quality (StoryMem algorithm)"
+
+    def __init__(self):
+        self.quality_model = None
+        
+    def load_clip_model(self, clip_vision_name):
+        """Load CLIP Vision model from ComfyUI models/clip_vision folder"""
+        clip_path = folder_paths.get_full_path("clip_vision", clip_vision_name)
+        clip_vision = comfy.clip_vision.load(clip_path)
+        return clip_vision
+        
+    def load_quality_model(self):
+        """Load HPSv3 quality assessment model"""
+        if self.quality_model is not None:
+            return
+            
+        try:
+            from hpsv3 import HPSv3RewardInferencer
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.quality_model = HPSv3RewardInferencer(device=device)
+        except ImportError:
+            print("WARNING: HPSv3 not installed. Install with: pip install hpsv3")
+            print("Quality filtering will be disabled.")
+            self.quality_model = None
+    
+    def smart_resize(self, height: int, width: int) -> tuple:
+        """Resize frame to efficient size for processing"""
+        factor = IMAGE_FACTOR
+        min_pixels = VIDEO_MIN_PIXELS
+        max_pixels = 256 * IMAGE_FACTOR * IMAGE_FACTOR
+        
+        h_bar = max(factor, round(height / factor) * factor)
+        w_bar = max(factor, round(width / factor) * factor)
+        
+        if h_bar * w_bar > max_pixels:
+            beta = math.sqrt((height * width) / max_pixels)
+            h_bar = math.floor(height / beta / factor) * factor
+            w_bar = math.floor(width / beta / factor) * factor
+        elif h_bar * w_bar < min_pixels:
+            beta = math.sqrt(min_pixels / (height * width))
+            h_bar = math.ceil(height * beta / factor) * factor
+            w_bar = math.ceil(width * beta / factor) * factor
+            
+        return max(h_bar, factor), max(w_bar, factor)
+    
+    def clip_preprocess(self, frame_chw: torch.Tensor, clip_vision) -> torch.Tensor:
+        """Preprocess frame for CLIP Vision model"""
+        # ComfyUI CLIP Vision expects [B, H, W, C] format in range [0, 1]
+        # Convert from [C, H, W] to [1, H, W, C]
+        frame = frame_chw.permute(1, 2, 0).unsqueeze(0)
+        
+        # Ensure [0, 1] range
+        if not torch.is_floating_point(frame):
+            frame = frame.float()
+        if frame.max() > 1.5:
+            frame = frame / 255.0
+        frame = frame.clamp(0.0, 1.0)
+        
+        return frame
+    
+    @torch.no_grad()
+    def get_clip_similarity(self, frame1: torch.Tensor, frame2: torch.Tensor, clip_vision) -> float:
+    
+        # Preprocess frames to [1, H, W, C] format
+        x1 = self.clip_preprocess(frame1, clip_vision)
+        x2 = self.clip_preprocess(frame2, clip_vision)
+    
+        # Get CLIP Vision embeddings
+        z1_raw = clip_vision.encode_image(x1)
+        z2_raw = clip_vision.encode_image(x2)
+    
+        # Extract the actual embedding tensor from various possible return formats
+        def extract_embedding(output):
+            # Case 1: Direct tensor (older/basic models)
+            if isinstance(output, torch.Tensor):
+                return output
+        
+            # Case 2: ComfyUI's custom Output wrapper (common with projection models)
+            if isinstance(output, comfy.clip_vision.Output):  # Import at top if needed: import comfy.clip_vision
+                if hasattr(output, 'image_embeds'):
+                    return output.image_embeds
+                elif hasattr(output, 'pooled_output'):
+                    return output.pooled_output
+                # Fallback: treat like dict
+                try:
+                    return output['image_embeds']
+                except:
+                    pass
+        
+            # Case 3: Dictionary (some models)
+            if isinstance(output, dict):
+                if 'image_embeds' in output:
+                    return output['image_embeds']
+                if 'pooled_output' in output:
+                    return output['pooled_output']
+                if 'last_hidden_state' in output:
+                    return output['last_hidden_state'][:, 0]  # CLS token if sequence
+                # Fallback: first tensor value
+                for v in output.values():
+                    if isinstance(v, torch.Tensor) and v.ndim >= 2:
+                        return v
+        
+            # Case 4: Tuple (rare here, but safe)
+            if isinstance(output, (tuple, list)) and len(output) == 1:
+                return extract_embedding(output[0])
+        
+            raise TypeError(f"Unexpected output from encode_image: {type(output)}. "
+                            "Supported: tensor, dict, or comfy.clip_vision.Output with 'image_embeds'.")
+
+        z1 = extract_embedding(z1_raw)
+        z2 = extract_embedding(z2_raw)
+    
+        # Final check
+        if not (isinstance(z1, torch.Tensor) and isinstance(z2, torch.Tensor)):
+            raise RuntimeError(f"Failed to extract tensor embeddings: {type(z1)}, {type(z2)}")
+    
+        # Normalize and compute cosine similarity
+        z1 = F.normalize(z1, dim=-1)
+        z2 = F.normalize(z2, dim=-1)
+        similarity = (z1 * z2).sum(dim=-1).item()
+    
+        return similarity
+    
+    def is_low_quality(self, frame: torch.Tensor, threshold: float) -> bool:
+        """Check if frame quality is below threshold using HPSv3"""
+        if self.quality_model is None:
+            return False  # Skip quality check if model not available
+        
+        # Convert to PIL Image
+        frame_np = frame.permute(1, 2, 0).cpu().numpy()
+        frame_np = (frame_np * 255).astype(np.uint8).clip(0, 255)
+        pil_image = Image.fromarray(frame_np)
+        
+        # Get quality score
+        try:
+            rewards = self.quality_model.reward(image_paths=[pil_image], prompts=[""])
+            score = rewards[0][0].item()
+            return score < threshold
+        except Exception as e:
+            print(f"Quality check failed: {e}")
+            return False
+    
+    def extract_keyframe_indices(self, frames: torch.Tensor, threshold: float,
+                                  quality_threshold: float, use_quality: bool, clip_vision) -> list:
+        """
+        Extract keyframe indices using CLIP similarity and quality filtering
+        
+        Args:
+            frames: [N, C, H, W] tensor
+            threshold: CLIP similarity threshold
+            quality_threshold: HPSv3 quality threshold
+            use_quality: Whether to use quality filtering
+            clip_vision: ComfyUI CLIP Vision model
+            
+        Returns:
+            List of keyframe indices
+        """
+        num_frames, _, height, width = frames.shape
+        
+        # Resize frames for efficient processing
+        resized_h, resized_w = self.smart_resize(height, width)
+        resized_frames = F.interpolate(
+            frames,
+            size=(resized_h, resized_w),
+            mode="bilinear",
+            align_corners=False
+        ).float()
+        
+        # Load quality model if needed
+        if use_quality:
+            self.load_quality_model()
+        
+        # Find first high-quality frame
+        first_idx = 0
+        if use_quality and self.quality_model is not None:
+            while first_idx < num_frames:
+                if not self.is_low_quality(resized_frames[first_idx], quality_threshold):
+                    break
+                first_idx += 1
+            
+            if first_idx >= num_frames:
+                return []  # No high-quality frames found
+        
+        # Initialize keyframes
+        keyframe_indices = [first_idx]
+        last_keyframe = resized_frames[first_idx]
+        
+        # Iterate through remaining frames
+        pbar = ProgressBar(num_frames - first_idx - 1)
+        for i in range(first_idx + 1, num_frames):
+            current_frame = resized_frames[i]
+            
+            # Calculate similarity with last keyframe
+            similarity = self.get_clip_similarity(last_keyframe, current_frame, clip_vision)
+            
+            # Check if frame is different enough and high quality
+            is_different = similarity < threshold
+            is_quality = True
+            if use_quality and self.quality_model is not None:
+                is_quality = not self.is_low_quality(current_frame, quality_threshold)
+            
+            if is_different and is_quality:
+                keyframe_indices.append(i)
+                last_keyframe = current_frame
+            
+            pbar.update(1)
+        
+        return keyframe_indices
+    
+    def check_memory_duplicates(self, keyframes: torch.Tensor, 
+                                memory_frames: torch.Tensor,
+                                clip_vision,
+                                threshold: float = 0.9) -> list:
+        """
+        Filter out keyframes that are too similar to memory frames
+        
+        Returns:
+            List of boolean flags (True = keep, False = duplicate)
+        """
+        keep_flags = []
+        
+        for keyframe in keyframes:
+            is_duplicate = False
+            for memory_frame in memory_frames:
+                similarity = self.get_clip_similarity(keyframe, memory_frame, clip_vision)
+                if similarity > threshold:
+                    is_duplicate = True
+                    break
+            keep_flags.append(not is_duplicate)
+        
+        return keep_flags
+    
+    def extract_keyframes(self, frames, clip_vision, max_keyframes, similarity_threshold,
+                         use_quality_filter, quality_threshold, memory_frames=None):
+        """
+        Main extraction function
+        
+        Args:
+            frames: ComfyUI IMAGE format [B, H, W, C] in range [0, 1]
+            clip_vision: CLIP Vision model name from dropdown
+            max_keyframes: Maximum number of keyframes
+            similarity_threshold: Initial CLIP similarity threshold
+            use_quality_filter: Whether to use HPSv3 filtering
+            quality_threshold: HPSv3 threshold
+            memory_frames: Optional previous keyframes to avoid duplicates
+            
+        Returns:
+            (keyframes, keyframe_count)
+        """
+        # Load CLIP Vision model from ComfyUI models folder
+        clip_vision_model = self.load_clip_model(clip_vision)
+        
+        # Convert ComfyUI format [B, H, W, C] to PyTorch [B, C, H, W]
+        frames_tensor = frames.permute(0, 3, 1, 2).contiguous()
+        
+        # Adaptive threshold loop
+        threshold = similarity_threshold
+        while True:
+            keyframe_indices = self.extract_keyframe_indices(
+                frames_tensor,
+                threshold,
+                quality_threshold,
+                use_quality_filter,
+                clip_vision_model
+            )
+            
+            # Check if we have too many keyframes
+            if len(keyframe_indices) <= max_keyframes:
+                break
+            
+            # Increase threshold to get fewer keyframes
+            threshold -= ADAPTIVE_ALPHA
+            
+            # Safety check
+            if threshold < 0.5:
+                # Take first N keyframes
+                keyframe_indices = keyframe_indices[:max_keyframes]
+                break
+        
+        print(f"Extracted {len(keyframe_indices)} keyframes at threshold {threshold:.3f}")
+        
+        # Extract keyframes
+        if len(keyframe_indices) == 0:
+            # Return first frame as fallback
+            keyframes_out = frames[:1]
+            return (keyframes_out, 1)
+        
+        keyframes_tensor = frames_tensor[keyframe_indices]
+        
+        # Check against memory frames to avoid duplicates
+        if memory_frames is not None:
+            memory_tensor = memory_frames.permute(0, 3, 1, 2).contiguous()
+            keep_flags = self.check_memory_duplicates(
+                keyframes_tensor,
+                memory_tensor,
+                clip_vision_model,
+                threshold=MIN_FRAME_SIMILARITY
+            )
+            
+            # Filter keyframes
+            kept_indices = [i for i, keep in enumerate(keep_flags) if keep]
+            if len(kept_indices) > 0:
+                keyframes_tensor = keyframes_tensor[kept_indices]
+            else:
+                # Keep at least one keyframe
+                keyframes_tensor = keyframes_tensor[:1]
+        
+        # Convert back to ComfyUI format [B, H, W, C]
+        keyframes_out = keyframes_tensor.permute(0, 2, 3, 1).contiguous()
+        
+        return (keyframes_out, keyframes_out.shape[0])
+
+
+class FunPackStoryMemLastFrameExtractor:
+    """Extract last frame and last N frames for MI2V/MM2V continuity"""
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "frames": ("IMAGE",),
+                "n_frames": ("INT", {
+                    "default": 5,
+                    "min": 1,
+                    "max": 20,
+                    "step": 1,
+                    "tooltip": "Number of frames to extract from end (for MM2V)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "IMAGE",)
+    RETURN_NAMES = ("last_frame", "motion_frames",)
+    FUNCTION = "extract"
+    CATEGORY = "FunPack"
+    DESCRIPTION = "Extract last frame and last N frames for shot continuity (MI2V/MM2V)"
+    
+    def extract(self, frames, n_frames):
+        """
+        Extract last frame and last N frames
+        
+        Returns:
+            (last_frame [1, H, W, C], motion_frames [N, H, W, C])
+        """
+        last_frame = frames[-1:]
+        motion_frames = frames[-n_frames:]
+        
+        return (last_frame, motion_frames)
+
+import os
+import json
+
+class FunPackCreativeTemplate:
+    @classmethod
+    def INPUT_TYPES(s):
+        # Path to templates.json in the same directory as this script
+        template_file = os.path.join(os.path.dirname(__file__), "templates.json")
+        templates = {}
+        if os.path.exists(template_file):
+            with open(template_file, 'r') as f:
+                try:
+                    templates = json.load(f)
+                except json.JSONDecodeError:
+                    templates = {}
+        template_names = sorted(list(templates.keys())) + ["Custom"]
+        default_template = template_names[0] if template_names else "Custom"
+
+        return {
+            "required": {
+                "template_name": (template_names, {"default": default_template}),
+                "template_text": ("STRING", {"multiline": True, "default": ""}),
+                "replacements": ("STRING", {"multiline": True, "default": ""}),
+            },
+            "optional": {
+                "save_name": ("STRING", {"default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    FUNCTION = "replace"
+    CATEGORY = "FunPack/Text"
+    DESCRIPTION = "Select or create text templates, replace placeholders, and output the result."
+
+    def replace(self, template_name, template_text, replacements, save_name=""):
+        # Load templates
+        template_file = os.path.join(os.path.dirname(__file__), "templates.json")
+        templates = {}
+        if os.path.exists(template_file):
+            with open(template_file, 'r') as f:
+                try:
+                    templates = json.load(f)
+                except json.JSONDecodeError:
+                    templates = {}
+
+        # Get the template string
+        if template_name == "Custom":
+            if not template_text.strip():
+                return ("",)  # Empty if no custom text provided
+            template_str = template_text
+        else:
+            template_str = templates.get(template_name, "")
+
+        # Parse replacements (format: KEY: value per line)
+        replace_dict = {}
+        for line in replacements.splitlines():
+            if ':' in line:
+                key, val = line.split(':', 1)
+                replace_dict[key.strip()] = val.strip()
+
+        # Perform replacements
+        for key, val in replace_dict.items():
+            template_str = template_str.replace(f"[{key}]", val)
+
+        # Save new template if save_name provided and using Custom
+        if save_name and template_name == "Custom" and template_text.strip():
+            templates[save_name] = template_text
+            # Create directories if needed (though unlikely)
+            os.makedirs(os.path.dirname(template_file), exist_ok=True)
+            with open(template_file, 'w') as f:
+                json.dump(templates, f, indent=4)
+
+        return (template_str,)
+
+
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS = {
+    "FunPackStoryMemJSONConverter": FunPackStoryMemJSONConverter,
+    "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
+    "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
-    "FunPackCLIPLoader": FunPackCLIPLoader,
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
     "FunPackVideoStitch": FunPackVideoStitch,
     "FunPackContinueVideo": FunPackContinueVideo,
+    "FunPackCreativeTemplate": FunPackCreativeTemplate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "FunPackStoryMemJSONConverter": "FunPack StoryMem JSON Converter",
+    "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
+    "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
-    "FunPackCLIPLoader": "FunPack CLIP Loader",
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
     "FunPackVideoStitch": "FunPack Video Stitch",
-    "FunPackContinueVideo": "FunPack Continue Video"
+    "FunPackContinueVideo": "FunPack Continue Video",
+    "FunPackCreativeTemplate": "FunPack Creative Template"
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
