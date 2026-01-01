@@ -906,6 +906,80 @@ class FunPackStoryMemLastFrameExtractor:
         
         return (last_frame, motion_frames)
 
+import os
+import json
+
+class FunPackCreativeTemplate:
+    @classmethod
+    def INPUT_TYPES(s):
+        # Path to templates.json in the same directory as this script
+        template_file = os.path.join(os.path.dirname(__file__), "templates.json")
+        templates = {}
+        if os.path.exists(template_file):
+            with open(template_file, 'r') as f:
+                try:
+                    templates = json.load(f)
+                except json.JSONDecodeError:
+                    templates = {}
+        template_names = sorted(list(templates.keys())) + ["Custom"]
+        default_template = template_names[0] if template_names else "Custom"
+
+        return {
+            "required": {
+                "template_name": (template_names, {"default": default_template}),
+                "template_text": ("STRING", {"multiline": True, "default": ""}),
+                "replacements": ("STRING", {"multiline": True, "default": ""}),
+            },
+            "optional": {
+                "save_name": ("STRING", {"default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    FUNCTION = "replace"
+    CATEGORY = "FunPack/Text"
+    DESCRIPTION = "Select or create text templates, replace placeholders, and output the result."
+
+    def replace(self, template_name, template_text, replacements, save_name=""):
+        # Load templates
+        template_file = os.path.join(os.path.dirname(__file__), "templates.json")
+        templates = {}
+        if os.path.exists(template_file):
+            with open(template_file, 'r') as f:
+                try:
+                    templates = json.load(f)
+                except json.JSONDecodeError:
+                    templates = {}
+
+        # Get the template string
+        if template_name == "Custom":
+            if not template_text.strip():
+                return ("",)  # Empty if no custom text provided
+            template_str = template_text
+        else:
+            template_str = templates.get(template_name, "")
+
+        # Parse replacements (format: KEY: value per line)
+        replace_dict = {}
+        for line in replacements.splitlines():
+            if ':' in line:
+                key, val = line.split(':', 1)
+                replace_dict[key.strip()] = val.strip()
+
+        # Perform replacements
+        for key, val in replace_dict.items():
+            template_str = template_str.replace(f"[{key}]", val)
+
+        # Save new template if save_name provided and using Custom
+        if save_name and template_name == "Custom" and template_text.strip():
+            templates[save_name] = template_text
+            # Create directories if needed (though unlikely)
+            os.makedirs(os.path.dirname(template_file), exist_ok=True)
+            with open(template_file, 'w') as f:
+                json.dump(templates, f, indent=4)
+
+        return (template_str,)
+
 
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS = {
@@ -916,6 +990,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
     "FunPackVideoStitch": FunPackVideoStitch,
     "FunPackContinueVideo": FunPackContinueVideo,
+    "FunPackCreativeTemplate": FunPackCreativeTemplate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -925,9 +1000,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
     "FunPackVideoStitch": "FunPack Video Stitch",
-    "FunPackContinueVideo": "FunPack Continue Video"
-
+    "FunPackContinueVideo": "FunPack Continue Video",
+    "FunPackCreativeTemplate": "FunPack Creative Template"
 }
+
 
 
 
