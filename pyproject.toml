@@ -11,5 +11,5 @@ Repository = "https://github.com/aimfordeb/ComfyUI-FunPack"
 
 [tool.comfy]
 PublisherId = "aimfordeb" # TODO (fill in Publisher ID from Comfy Registry Website).
-DisplayName = "ComfyUI-FunPack" # Display name for the Custom Node. Can be changed later.
+DisplayName = "FunPack" # Display name for the Custom Node. Can be changed later.
 Icon = "https://example.com/icon.png" # SVG, PNG, JPG or GIF (MAX. 800x400px)
