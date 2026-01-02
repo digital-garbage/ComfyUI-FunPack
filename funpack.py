@@ -33,8 +33,9 @@ HPSV3_QUALITY_THRESHOLD = 3.0
 
 class FunPackLorebookEnhancer:
     """
-    Injects context from SillyTavern-style lorebook JSON files based on keywords in the prompt.
-    Supports multiple lorebooks, constant entries, selective filtering, probability, etc.
+    Injects context from SillyTavern-style lorebook JSON files.
+    Always appends activated entries to the END of the prompt.
+    Supports multiple lorebooks, constants, selective filtering, probability, etc.
     """
     @classmethod
     def INPUT_TYPES(cls):
@@ -94,35 +95,11 @@ class FunPackLorebookEnhancer:
             secs = [s.strip() for s in secs.split(",") if s.strip()]
         matches = [self._match_keys([s], text) for s in secs]
         
-        if logic == 0:   # ANY
-            return any(matches)
-        elif logic == 1: # ALL
-            return all(matches)
-        elif logic == 2: # NOT ANY
-            return not any(matches)
-        elif logic == 3: # NOT ALL
-            return not all(matches)
+        if logic == 0:   return any(matches)
+        elif logic == 1: return all(matches)
+        elif logic == 2: return not any(matches)
+        elif logic == 3: return not all(matches)
         return True
-
-    def _get_effective_position(self, pos):
-        """Convert SillyTavern numeric position codes or strings to a safe insertion strategy."""
-        if isinstance(pos, int):
-            # Common SillyTavern numeric positions
-            if pos == 0:
-                return "before_char"
-            elif pos in (1, 3):  # 1=after char, 3=after examples / in-chat (most used for constants)
-                return "after_char"
-            elif pos == 2:
-                return "before_examples"
-            else:
-                print(f"[Lorebook Enhancer] Warning: Unknown numeric position {pos} → defaulting to after_char")
-                return "after_char"
-        
-        if isinstance(pos, str):
-            return pos.lower()
-        
-        print(f"[Lorebook Enhancer] Warning: Invalid position type {type(pos)} → defaulting to after_char")
-        return "after_char"
 
     def _process_lorebook(self, path, scan_text, activated):
         if not path or not os.path.exists(path):
@@ -185,20 +162,18 @@ class FunPackLorebookEnhancer:
         activated.sort(key=lambda e: e.get("insertion_order", e.get("order", 0)))
 
         injected = []
-        enhanced = prompt
+        enhanced = prompt.strip()  # clean up any trailing space
 
         for entry in activated:
             content = entry.get("content", "").strip()
             if not content:
                 continue
 
-            # Safely handle position (now supports int <-> string mapping)
-            position = self._get_effective_position(entry.get("position", "after_char"))
-
-            if position in ["after_char", "append", "bottom"]:
+            # Always append to the end - this is the requested behavior
+            if enhanced:
                 enhanced += "\n" + content
             else:
-                enhanced = content + "\n" + enhanced
+                enhanced = content
 
             source = entry.get("comment") or entry.get("name") or f"uid:{entry.get('uid','?')}" or "unnamed"
             injected.append(f"[{source}] {content}")
@@ -1181,6 +1156,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
