@@ -52,7 +52,7 @@ class FunPackLorebookEnhancer:
     RETURN_TYPES = ("STRING", "STRING")
     RETURN_NAMES = ("enhanced_prompt", "injected_details")
     FUNCTION = "enhance"
-    CATEGORY = "FunPack/Prompt"
+    CATEGORY = "FunPack"
     OUTPUT_NODE = True
 
     def _match_keys(self, keys, text):
@@ -1127,6 +1127,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
