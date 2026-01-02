@@ -104,6 +104,26 @@ class FunPackLorebookEnhancer:
             return not all(matches)
         return True
 
+    def _get_effective_position(self, pos):
+        """Convert SillyTavern numeric position codes or strings to a safe insertion strategy."""
+        if isinstance(pos, int):
+            # Common SillyTavern numeric positions
+            if pos == 0:
+                return "before_char"
+            elif pos in (1, 3):  # 1=after char, 3=after examples / in-chat (most used for constants)
+                return "after_char"
+            elif pos == 2:
+                return "before_examples"
+            else:
+                print(f"[Lorebook Enhancer] Warning: Unknown numeric position {pos} → defaulting to after_char")
+                return "after_char"
+        
+        if isinstance(pos, str):
+            return pos.lower()
+        
+        print(f"[Lorebook Enhancer] Warning: Invalid position type {type(pos)} → defaulting to after_char")
+        return "after_char"
+
     def _process_lorebook(self, path, scan_text, activated):
         if not path or not os.path.exists(path):
             print(f"[Lorebook Enhancer] File not found: {path}")
@@ -113,7 +133,6 @@ class FunPackLorebookEnhancer:
             with open(path, 'r', encoding='utf-8') as f:
                 lorebook = json.load(f)
             
-            # Support both list and dict format for entries
             entries = lorebook.get("entries", [])
             if isinstance(entries, dict):
                 entries = list(entries.values())
@@ -151,7 +170,6 @@ class FunPackLorebookEnhancer:
                 lorebook_1="", lorebook_2="", lorebook_3="", lorebook_4="",
                 context_history="", scan_depth=4):
         
-        # Prepare scan text
         full_text = (context_history + "\n" + prompt).lower()
         lines = full_text.splitlines()
         scan_text = "\n".join(lines[-scan_depth:]) if scan_depth > 0 else full_text
@@ -174,8 +192,10 @@ class FunPackLorebookEnhancer:
             if not content:
                 continue
 
-            position = entry.get("position", "after_char").lower()
-            if position in ["after_char", "append", "bottom", "3"]:
+            # Safely handle position (now supports int <-> string mapping)
+            position = self._get_effective_position(entry.get("position", "after_char"))
+
+            if position in ["after_char", "append", "bottom"]:
                 enhanced += "\n" + content
             else:
                 enhanced = content + "\n" + enhanced
@@ -1161,6 +1181,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
