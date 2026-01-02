@@ -36,7 +36,7 @@ class FunPackLorebookEnhancer:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "prompt": ("STRING", {"multiline": True, "default": "A passionate NSFW scene in the bedroom"}),
+                "prompt": ("STRING", {"multiline": True, "default": "A passionate scene in the bedroom"}),
                 "scan_depth": ("INT", {"default": 1, "min": 1, "max": 10}),
             },
             "optional": {
@@ -1127,6 +1127,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
