@@ -31,7 +31,7 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
-lass FunPackLorebookEnhancer:
+class FunPackLorebookEnhancer:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1127,6 +1127,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
