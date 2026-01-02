@@ -20,6 +20,8 @@ import comfy.clip_vision
 import math
 import json
 from comfy.utils import ProgressBar
+import random
+import re
 
 # Constants from StoryMem
 IMAGE_FACTOR = 28
@@ -28,6 +30,121 @@ MIN_FRAME_SIMILARITY = 0.9
 MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
+
+class FunPackLorebookEnhancer:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {"multiline": True, "default": "A passionate NSFW scene in the bedroom"}),
+                "lorebook_path": ("STRING", {"default": "nsfw_lorebook.json", "multiline": False}),
+                "scan_depth": ("INT", {"default": 1, "min": 1, "max": 10}),
+            },
+            "optional": {
+                "context_history": ("STRING", {"multiline": True, "default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("enhanced_prompt", "injected_details")
+    FUNCTION = "enhance"
+    CATEGORY = "FunPack/Prompt"
+    OUTPUT_NODE = True
+
+    def _match_keys(self, keys, text):
+        if not keys:
+            return False
+        if isinstance(keys, str):
+            keys = [k.strip() for k in keys.split(",") if k.strip()]
+        for key in keys:
+            if key.startswith("/") and key.endswith("/"):
+                try:
+                    pattern = re.compile(key[1:-1], re.IGNORECASE)
+                    if pattern.search(text):
+                        return True
+                except:
+                    pass
+            elif key.lower() in text.lower():
+                return True
+        return False
+
+    def _match_secondary(self, secs, text, logic):
+        if not secs:
+            return True
+        if isinstance(secs, str):
+            secs = [s.strip() for s in secs.split(",") if s.strip()]
+        matches = [self._match_keys([s], text) for s in secs]
+        if logic == 0:  # ANY
+            return any(matches)
+        if logic == 1:  # ALL
+            return all(matches)
+        if logic == 2:  # NOT ANY
+            return not any(matches)
+        if logic == 3:  # NOT ALL
+            return not all(matches)
+        return True
+
+    def enhance(self, prompt, lorebook_path, scan_depth, context_history=""):
+        if not os.path.exists(lorebook_path):
+            return (prompt, "ERROR: Lorebook file not found")
+
+        with open(lorebook_path, 'r', encoding="utf-8") as f:
+            try:
+                lorebook = json.load(f)
+            except:
+                return (prompt, "ERROR: Invalid JSON in lorebook")
+
+        entries = lorebook.get("entries", [])
+        if not entries:
+            return (prompt, "No entries in lorebook")
+
+        # Prepare text to scan
+        scan_text = (context_history + "\n" + prompt).lower()
+        lines = scan_text.split("\n")
+        recent_lines = "\n".join(lines[-scan_depth:])
+        scan_text = recent_lines
+
+        activated = []
+        for entry in entries:
+            if not entry.get("enabled", True):
+                continue
+
+            if entry.get("constant", False):
+                activated.append(entry)
+                continue
+
+            if not self._match_keys(entry.get("key"), scan_text):
+                continue
+
+            if entry.get("selective", False):
+                if not self._match_secondary(entry.get("keysecondary"), scan_text, entry.get("selectiveLogic", 0)):
+                    continue
+
+            prob = entry.get("extensions", {}).get("probability", 100)
+            if random.randint(1, 100) > prob:
+                continue
+
+            activated.append(entry)
+
+        # Sort by insertion_order (higher = later = stronger recency)
+        activated.sort(key=lambda e: e.get("insertion_order", 0))
+
+        # Inject content
+        injected = []
+        enhanced_prompt = prompt
+        for entry in activated:
+            content = entry.get("content", "").strip()
+            if not content:
+                continue
+            position = entry.get("position", "after_char")
+            if position in ["after_char", "append"]:
+                enhanced_prompt += "\n" + content
+            else:  # before_char or prepend
+                enhanced_prompt = content + "\n" + enhanced_prompt
+            injected.append(content)
+
+        injected_text = "\n\n".join(injected) if injected else "No lorebook entries triggered"
+        return (enhanced_prompt, injected_text)
 
 class FunPackStoryMemJSONConverter:
     """
@@ -991,6 +1108,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackVideoStitch": FunPackVideoStitch,
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackCreativeTemplate": FunPackCreativeTemplate,
+    "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1001,8 +1119,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
     "FunPackVideoStitch": "FunPack Video Stitch",
     "FunPackContinueVideo": "FunPack Continue Video",
-    "FunPackCreativeTemplate": "FunPack Creative Template"
+    "FunPackCreativeTemplate": "FunPack Creative Template",
+    "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
