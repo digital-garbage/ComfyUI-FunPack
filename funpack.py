@@ -20,6 +20,8 @@ import comfy.clip_vision
 import math
 import json
 from comfy.utils import ProgressBar
+import random
+import re
 
 # Constants from StoryMem
 IMAGE_FACTOR = 28
@@ -28,6 +30,156 @@ MIN_FRAME_SIMILARITY = 0.9
 MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
+
+class FunPackLorebookEnhancer:
+    """
+    Injects context from SillyTavern-style lorebook JSON files.
+    Always appends activated entries to the END of the prompt.
+    Supports multiple lorebooks, constants, selective filtering, probability, etc.
+    """
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "The brave explorer enters an ancient forest temple at twilight, discovering glowing runes on the walls."
+                }),
+            },
+            "optional": {
+                "lorebook_1": ("STRING", {"default": "", "multiline": False}),
+                "lorebook_2": ("STRING", {"default": "", "multiline": False}),
+                "lorebook_3": ("STRING", {"default": "", "multiline": False}),
+                "lorebook_4": ("STRING", {"default": "", "multiline": False}),
+                "context_history": ("STRING", {"multiline": True, "default": ""}),
+                "scan_depth": ("INT", {
+                    "default": 4,
+                    "min": 1,
+                    "max": 12,
+                    "step": 1
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("enhanced_prompt", "injected_content")
+    FUNCTION = "enhance"
+    CATEGORY = "FunPack"
+    OUTPUT_NODE = True
+
+    def _match_keys(self, keys, text):
+        if not keys:
+            return False
+        if isinstance(keys, str):
+            keys = [k.strip() for k in keys.split(",") if k.strip()]
+        text = text.lower()
+        for key in keys:
+            key = key.strip()
+            if not key:
+                continue
+            if key.startswith("/") and key.endswith("/"):
+                try:
+                    pattern = re.compile(key[1:-1], re.IGNORECASE)
+                    if pattern.search(text):
+                        return True
+                except:
+                    continue
+            elif key.lower() in text:
+                return True
+        return False
+
+    def _match_secondary(self, secs, text, logic):
+        if not secs:
+            return True
+        if isinstance(secs, str):
+            secs = [s.strip() for s in secs.split(",") if s.strip()]
+        matches = [self._match_keys([s], text) for s in secs]
+        
+        if logic == 0:   return any(matches)
+        elif logic == 1: return all(matches)
+        elif logic == 2: return not any(matches)
+        elif logic == 3: return not all(matches)
+        return True
+
+    def _process_lorebook(self, path, scan_text, activated):
+        if not path or not os.path.exists(path):
+            print(f"[Lorebook Enhancer] File not found: {path}")
+            return activated
+        
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                lorebook = json.load(f)
+            
+            entries = lorebook.get("entries", [])
+            if isinstance(entries, dict):
+                entries = list(entries.values())
+            
+            for entry in entries:
+                if not entry.get("enabled", True):
+                    continue
+                
+                is_constant = entry.get("constant", False)
+                
+                if not is_constant:
+                    if not self._match_keys(entry.get("key", []), scan_text):
+                        continue
+                
+                if entry.get("selective", False):
+                    sec_keys = entry.get("keysecondary", []) or entry.get("secondary_keys", [])
+                    logic = entry.get("selectiveLogic", 0)
+                    if not self._match_secondary(sec_keys, scan_text, logic):
+                        continue
+                
+                prob = entry.get("extensions", {}).get("probability", 100)
+                if random.randint(1, 100) > prob:
+                    continue
+                
+                activated.append(entry)
+                
+        except json.JSONDecodeError as e:
+            print(f"[Lorebook Enhancer] JSON decode error in {path}: {str(e)}")
+        except Exception as e:
+            print(f"[Lorebook Enhancer] Failed to process {path}: {type(e).__name__}: {str(e)}")
+            
+        return activated
+
+    def enhance(self, prompt,
+                lorebook_1="", lorebook_2="", lorebook_3="", lorebook_4="",
+                context_history="", scan_depth=4):
+        
+        full_text = (context_history + "\n" + prompt).lower()
+        lines = full_text.splitlines()
+        scan_text = "\n".join(lines[-scan_depth:]) if scan_depth > 0 else full_text
+
+        activated = []
+        for path in [lorebook_1, lorebook_2, lorebook_3, lorebook_4]:
+            if path.strip():
+                activated = self._process_lorebook(path.strip(), scan_text, activated)
+
+        if not activated:
+            return (prompt, "No lorebook entries were triggered.")
+
+        activated.sort(key=lambda e: e.get("insertion_order", e.get("order", 0)))
+
+        injected = []
+        enhanced = prompt.strip()  # clean up any trailing space
+
+        for entry in activated:
+            content = entry.get("content", "").strip()
+            if not content:
+                continue
+
+            # Always append to the end - this is the requested behavior
+            if enhanced:
+                enhanced += "\n" + content
+            else:
+                enhanced = content
+
+            source = entry.get("comment") or entry.get("name") or f"uid:{entry.get('uid','?')}" or "unnamed"
+            injected.append(f"[{source}] {content}")
+
+        injected_text = "\n\n".join(injected) if injected else "No content injected"
+        return (enhanced, injected_text)
 
 class FunPackStoryMemJSONConverter:
     """
@@ -324,7 +476,6 @@ class FunPackImg2LatentInterpolation:
         
         return (output, preview)
 
-# The standalone FunPackPromptEnhancer remains completely unchanged as requested
 class FunPackPromptEnhancer:
     @classmethod
     def INPUT_TYPES(s):
@@ -991,6 +1142,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackVideoStitch": FunPackVideoStitch,
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackCreativeTemplate": FunPackCreativeTemplate,
+    "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1001,8 +1153,17 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
     "FunPackVideoStitch": "FunPack Video Stitch",
     "FunPackContinueVideo": "FunPack Continue Video",
-    "FunPackCreativeTemplate": "FunPack Creative Template"
+    "FunPackCreativeTemplate": "FunPack Creative Template",
+    "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
+
+
+
+
+
+
+
 
 
 
