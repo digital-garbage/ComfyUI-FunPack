@@ -617,8 +617,8 @@ class FunPackStoryWriter:
             }
         }
 
-    RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING","STRING")
-    RETURN_NAMES = ("prompt1","prompt2","prompt3","prompt4","prompt5","recommended_loras")
+    RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING",)
+    RETURN_NAMES = ("prompt1","prompt2","prompt3","prompt4","prompt5",)
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
@@ -796,7 +796,6 @@ class FunPackStoryWriter:
                         )
 
                     recommended_loras = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
-                    outputs[5] = recommended_loras
                     print(f"[FunPackStoryWriter] LLM recommended to use this list of LoRAs: {recommended_loras}")
             
             return tuple(outputs)
@@ -1400,6 +1399,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
