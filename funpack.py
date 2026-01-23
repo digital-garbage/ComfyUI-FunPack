@@ -694,7 +694,7 @@ class FunPackStoryWriter:
             # ── Now generate sequences — only add new instruction + append output ─────
             for seq_idx in range(prompt_count):
                 # Add **only** the fresh sequence instruction each time
-                messages.append({"role: "system", "content": f"""You are now generating sequence ID {sed_idx +1} (out of total {prompt_count} sequences)"""}
+                messages.append({"role: "system", "content": f"""You are now generating sequence ID {sed_idx +1} (out of total {prompt_count} sequences)"""})
                 messages.append({"role": "user", "content": sequence_system_prompt})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
@@ -1366,6 +1366,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
