@@ -582,7 +582,153 @@ class FunPackPromptEnhancer:
                 torch.cuda.empty_cache()
             gc.collect() 
             print("[FunPackPromptEnhancer] LLM model and tokenizer unloaded and memory cleared.")
+
+
+class FunPackStoryWriter:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "user_prompt": ("STRING", {"multiline": True, "default": "A photo of a [subject] in a [setting]. [action]."}),
+                "story_system_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": ""
+                }),
+                "sequence_system_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": ""
+                }),
+                "model_path_type": (["Local Safetensors", "HuggingFace Pretrained"],),
+                "model_path": ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
+                "llm_safetensors_file": (folder_paths.get_filename_list('clip'),), 
+                "prompt_count": ("INT", {"min": 1, "max": 5, "step": 1, "default": 3}),
+                "top_p": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.05, "default": 0.75}),
+                "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
+                "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
+                "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
+                "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING","STRING","STRING","STRING","STRING",)
+    RETURN_NAMES = ("prompt1","prompt2","prompt3","prompt4","prompt5",)
+    FUNCTION = "write_story"
+    CATEGORY = "FunPack"
+
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty):
+        llm_model = None
+        llm_tokenizer = None
+        llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        print(f"[FunPackPromptEnhancer] Making initial story...")
+
+        try:
+            if model_path_type == "HuggingFace Pretrained":
+                print(f"[FunPackStoryWriter] Loading LLM from HuggingFace pretrained: {model_path}")
+                llm_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+                llm_model = AutoModelForCausalLM.from_pretrained(model_path, ignore_mismatched_sizes=True, trust_remote_code=True)
+            elif model_path_type == "Local Safetensors":
+                print(f"[FunPackStoryWriter] Loading LLM from local safetensors file: {llm_safetensors_file}")
+                full_safetensors_path = folder_paths.get_full_path('clip', llm_safetensors_file)
+                
+                llm_tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                
+                config = AutoConfig.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                model_base = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
+                
+                state_dict = load_file(full_safetensors_path, device="cpu") 
+                model_base.load_state_dict(state_dict, strict=False)
+                llm_model = model_base
             
+            llm_model = llm_model.eval().to(torch.bfloat16 if llm_model_device == "cuda" else torch.float32).to(llm_model_device).requires_grad_(False)
+            print(f"[FunPackStoryWriter] LLM model loaded successfully to {llm_model_device}!")
+
+            # Applying correct chat template
+            llm_tokenizer.chat_template = """{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' %}{% if loop.first %}{{ '<|begin_of_text|>' + content }}{% else %}{{ content }}{% endif %}{% endfor %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' if add_generation_prompt else '' }}"""
+
+            # Inside write_story method, after model loading and template/pad fix
+
+            outputs = [""] * 5
+
+            # ── Generate story (goes only into memory, not outputs) ────────
+            messages = [
+                {"role": "system", "content": story_system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+
+            llm_tokens = llm_tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
+            ).to(llm_model_device)
+
+            print("[FunPackStoryWriter] Generating hidden story...")
+            with torch.no_grad():
+                generated_ids = llm_model.generate(
+                    input_ids=llm_tokens,
+                    do_sample=True,
+                    top_p=top_p, 
+                    top_k=top_k, 
+                    temperature=temperature,
+                    max_new_tokens=max_new_tokens,
+                    repetition_penalty=repetition_penalty,
+                    pad_token_id=llm_tokenizer.pad_token_id,
+                    eos_token_id=llm_tokenizer.eos_token_id,
+                )
+
+            story = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+            print(f"[FunPackStoryWriter] Story generated (hidden): {story[:150]}...")
+
+            # Append story to conversation history
+            messages.append({"role": "assistant", "content": story})
+
+            # ── Generate requested number of sequences ─────────────────────
+            for seq_idx in range(prompt_count):
+                # Tell the model to generate the next sequence
+                messages.append({"role": "user", "content": sequence_system_prompt})
+
+                llm_tokens = llm_tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
+                ).to(llm_model_device)
+
+                print(f"[FunPackStoryWriter] Generating sequence {seq_idx + 1}/{prompt_count}...")
+                with torch.no_grad():
+                    generated_ids = llm_model.generate(
+                        input_ids=llm_tokens,
+                        do_sample=True,
+                        top_p=top_p, top_k=top_k, temperature=temperature,
+                        max_new_tokens=max_new_tokens,
+                        repetition_penalty=repetition_penalty,
+                        pad_token_id=llm_tokenizer.pad_token_id,
+                        eos_token_id=llm_tokenizer.eos_token_id,
+                    )
+
+                seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+    
+                # Store in output slot (0 = first sequence, 1 = second, etc.)
+                outputs[seq_idx] = seq_text
+    
+                print(f"[FunPackStoryWriter] Sequence {seq_idx + 1}: {seq_text[:150]}...")
+
+                # Append this sequence so the next one sees it
+                messages.append({"role": "assistant", "content": seq_text})
+
+            # Return exactly 5 strings (remaining slots stay "")
+            return tuple(outputs)
+
+        except Exception as e:
+            print(f"[FunPackStoryWriter] Error during prompt enhancement: {e}")
+            raise 
+
+        finally:
+            if llm_model is not None:
+                del llm_model
+                llm_model = None
+            if llm_tokenizer is not None:
+                del llm_tokenizer
+                llm_tokenizer = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect() 
+            print("[FunPackStoryWriter] LLM model and tokenizer unloaded and memory cleared.")
             
 class FunPackVideoStitch:
     CATEGORY = "FunPack"
@@ -1165,6 +1311,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
