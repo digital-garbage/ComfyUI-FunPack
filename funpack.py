@@ -608,6 +608,11 @@ class FunPackStoryWriter:
                 "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
                 "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
                 "mode": (["Sequences from story", "Sequences from user prompt"],),
+                "sanity_check": ("BOOLEAN", {"default": True, "label": "Enable Sanity Check"}),
+                "sequence_system_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "Analyze the given sequence and perform a correction, if the sequence does not match the given requirements:\n1. The sequence is related to given user's prompt.\n2. The sequence contains only physically possible actions.\n3. The sequence contains information about characters, their appearances, positioning, actions, camera angle, focus and zoom.\n4. The sequence is fully describing the requested action.\n\nOutput ONLY corrected sequence, or return it unchanged if it matches the requirements. No additional text except for sequence is allowed."
+                }), 
             }
         }
 
@@ -616,7 +621,7 @@ class FunPackStoryWriter:
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
-    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode):
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode, sanity_check):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -710,9 +715,50 @@ class FunPackStoryWriter:
                     )
 
                 seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
-                outputs[seq_idx] = seq_text
+                
+                if sanity_check == False:
+                    print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check skipped): {seq_text}...")
 
-                print(f"[FunPackStoryWriter] Sequence {seq_idx + 1}: {seq_text[:150]}...")
+                # Performing sanity check - comparing sequence text to user's prompt according to rules in sanity check system prompt.
+                if sanity_check == True:
+                    if mode == "Sequences from story":
+                        sanity_messages = [
+                            {"role": "system", "content": sanity_check_system_prompt},
+                            {"role": "user", "content": f"""Original story: {story}
+                            Original user prompt: {user_prompt}
+                             Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
+                             Sequence to validate and correct if needed: {seq_text}}"""
+                        ]
+                    else:
+                        sanity_messages = [
+                            {"role": "system", "content": sanity_check_system_prompt},
+                            {"role": "user", "content": f"""Original user prompt: {user_prompt}
+                             Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
+                             Sequence to validate and correct if needed: {seq_text}}"""
+                        ]
+                    sanity_messages.append({"role": "user", "content": seq_text})
+                    llm_tokens = llm_tokenizer.apply_chat_template(
+                        sanity_messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
+                        ).to(llm_model_device)
+
+                    print(f"[FunPackStoryWriter] Performing sanity check on sequence {seq_idx + 1}/{prompt_count}...")
+                    with torch.no_grad():
+                        generated_ids = llm_model.generate(
+                            input_ids=llm_tokens,
+                            do_sample=False,
+                            top_p=0.95,
+                            top_k=top_k,
+                            temperature=0.2,
+                            max_new_tokens=1024,
+                            repetition_penalty=1.05,
+                            pad_token_id=llm_tokenizer.pad_token_id,
+                            eos_token_id=llm_tokenizer.eos_token_id,
+                        )
+
+                    seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                    print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check performed): {seq_text}...")
+                
+                outputs[seq_idx] = seq_text
 
                 # Append generated sequence — this is what chains everything
                 messages.append({"role": "assistant", "content": seq_text})
@@ -1318,6 +1364,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
