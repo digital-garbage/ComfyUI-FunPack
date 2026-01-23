@@ -484,7 +484,7 @@ class FunPackPromptEnhancer:
                 "user_prompt": ("STRING", {"multiline": True, "default": "A photo of a [subject] in a [setting]. [action]."}),
                 "system_prompt": ("STRING", {
                     "multiline": True,
-                    "default": "<|start_header_id|>system<|end_header_id|>\n\nYou are a creative AI assistant tasked with describing videos.\n\nDescribe the video by detailing the following aspects:\n1. The main content and theme of the video.\n2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects.\n3. Actions, events, behaviors temporal relationships, physical movement changes of the objects.\n4. background environment, light, style and atmosphere.\n5. camera angles, movements, and transitions used in the video:<|eot_id|>"
+                    "default": "<You are a creative AI assistant tasked with describing videos.\n\nDescribe the video by detailing the following aspects:\n1. The main content and theme of the video.\n2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects.\n3. Actions, events, behaviors temporal relationships, physical movement changes of the objects.\n4. background environment, light, style and atmosphere.\n5. camera angles, movements, and transitions used in the video:"
                 }),
                 "model_path_type": (["Local Safetensors", "HuggingFace Pretrained"],),
                 "model_path": ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
@@ -493,6 +493,7 @@ class FunPackPromptEnhancer:
                 "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
                 "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
                 "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
+                "repetition_penalty": ("FLOAT", {"min": "0.0", "max": "3.0", "step": 0.01, "default": 1.0}),
             }
         }
 
@@ -501,7 +502,7 @@ class FunPackPromptEnhancer:
     FUNCTION = "enhance_prompt"
     CATEGORY = "FunPack"
 
-    def enhance_prompt(self, user_prompt, system_prompt, model_path_type, model_path, llm_safetensors_file, top_p, top_k, temperature, max_new_tokens):
+    def enhance_prompt(self, user_prompt, system_prompt, model_path_type, model_path, llm_safetensors_file, top_p, top_k, temperature, max_new_tokens, repetition_penalty):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -529,6 +530,9 @@ class FunPackPromptEnhancer:
             llm_model = llm_model.eval().to(torch.bfloat16 if llm_model_device == "cuda" else torch.float32).to(llm_model_device).requires_grad_(False)
             print(f"[FunPackPromptEnhancer] LLM model loaded successfully to {llm_model_device}!")
 
+            # Model detection to apply correct chat template
+            detected_chat_template="llama3.1-instruct" # Fallback for now
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -536,7 +540,7 @@ class FunPackPromptEnhancer:
 
             llm_tokens = llm_tokenizer.apply_chat_template(
                 messages,
-                chat_template="llama-3.1", # Currently hardcoded Llama3.1 template because something's weird with my tokenizer
+                chat_template=detected_chat_template, # Currently hardcoded Llama3.1 template because something's weird with my tokenizer
                 add_generation_prompt=True,
                 return_tensors="pt",
                 tokenize=True 
@@ -551,6 +555,7 @@ class FunPackPromptEnhancer:
                     top_k=top_k,
                     temperature=temperature,
                     max_new_tokens=max_new_tokens,
+                    repetition_penalty=repetition_penalty,
                     pad_token_id=llm_tokenizer.pad_token_id
                 )
 
@@ -1157,6 +1162,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
