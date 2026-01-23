@@ -492,7 +492,7 @@ class FunPackPromptEnhancer:
                 "top_p": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.05, "default": 0.75}),
                 "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
                 "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
-                "max_new_tokens": ("INT", {"min": 1, "max": 4096, "step": 64, "default": 512}),
+                "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
             }
         }
 
@@ -536,7 +536,7 @@ class FunPackPromptEnhancer:
 
             llm_tokens = llm_tokenizer.apply_chat_template(
                 messages,
-                chat_template="llama-3",
+                chat_template="llama-3.1", # Currently hardcoded Llama3.1 template because something's weird with my tokenizer
                 add_generation_prompt=True,
                 return_tensors="pt",
                 tokenize=True 
@@ -1157,6 +1157,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
