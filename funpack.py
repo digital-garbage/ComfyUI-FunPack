@@ -531,7 +531,7 @@ class FunPackPromptEnhancer:
             print(f"[FunPackPromptEnhancer] LLM model loaded successfully to {llm_model_device}!")
 
             # Model detection to apply correct chat template
-            detected_chat_template="llama-3.1-instruct" # Fallback for now
+            llm_tokenizer.chat_template = """{% set loop_messages = messages %}{% for message in loop_messages %}{% set content = '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n' + message['content'] | trim + '<|eot_id|>' %}{% if loop.first %}{{ '<|begin_of_text|>' + content }}{% else %}{{ content }}{% endif %}{% endfor %}{{ '<|start_header_id|>assistant<|end_header_id|>\n\n' if add_generation_prompt else '' }}"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -540,7 +540,6 @@ class FunPackPromptEnhancer:
 
             llm_tokens = llm_tokenizer.apply_chat_template(
                 messages,
-                chat_template=detected_chat_template, # Currently hardcoded Llama3.1 template because something's weird with my tokenizer
                 add_generation_prompt=True,
                 return_tensors="pt",
                 tokenize=True 
@@ -1162,6 +1161,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
