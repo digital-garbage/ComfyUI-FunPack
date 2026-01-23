@@ -538,6 +538,10 @@ class FunPackPromptEnhancer:
                 {"role": "user", "content": user_prompt}
             ]
 
+            if llm_tokenizer.pad_token_id is None:
+                llm_tokenizer.pad_token = llm_tokenizer.eos_token
+                llm_tokenizer.pad_token_id = llm_tokenizer.eos_token_id
+
             llm_tokens = llm_tokenizer.apply_chat_template(
                 messages,
                 add_generation_prompt=True,
@@ -1161,6 +1165,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
