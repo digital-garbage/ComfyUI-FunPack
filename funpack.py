@@ -608,6 +608,7 @@ class FunPackStoryWriter:
                 "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
                 "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
                 "mode": (["Sequences from story", "Sequences from user prompt"],),
+                "recommend_loras": ("BOOLEAN", {"default": True, "label": "Enable LoRA suggestion"}),
                 "sanity_check": ("BOOLEAN", {"default": True, "label": "Enable Sanity Check"}),
                 "sanity_check_system_prompt": ("STRING", {
                     "multiline": True,
@@ -621,7 +622,7 @@ class FunPackStoryWriter:
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
-    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode, sanity_check, sanity_check_system_prompt):
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode, recommend_loras, sanity_check, sanity_check_system_prompt):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -655,6 +656,8 @@ class FunPackStoryWriter:
             # Inside write_story method, after model loading and template/pad fix
 
             outputs = [""] * 5
+
+            recommended_loras = None
 
             # ── Initialize messages ONCE, depending on mode ────────────────────────────
             if mode == "Sequences from story":
@@ -765,33 +768,34 @@ class FunPackStoryWriter:
                 # Append generated sequence — this is what chains everything
                 messages.append({"role": "assistant", "content": seq_text})
 
-            lora_list = folder_paths.get_filename_list('loras')
-            lora_messages = [
-                    {"role": "system", "content": "Analyze the given array of sequences and the list of LoRAs and decide which LoRAs out of user's list are recommended to use for each sequence, based on the content of those sequences and the names of LoRAs. Output only list of recommended LoRAs in the format:\nSequence 1: lora name, lora name\nSequence 2: lora name, lora name\nSequence N: lora name, lora name"},
-                    {"role": "user", "content": lora_list,outputs[]}
-                ]
+            if recommend_loras == True:
+                lora_list = folder_paths.get_filename_list('loras')
+                lora_messages = [
+                        {"role": "system", "content": "Analyze the given array of sequences and the list of LoRAs and decide which LoRAs out of user's list are recommended to use for each sequence, based on the content of those sequences and the names of LoRAs. Output only list of recommended LoRAs in the format:\nSequence 1: lora name, lora name\nSequence 2: lora name, lora name\nSequence N: lora name, lora name"},
+                        {"role": "user", "content": lora_list,outputs}
+                    ]
 
-            # Generate hidden story
-                llm_tokens = llm_tokenizer.apply_chat_template(
-                    lora_messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
-                ).to(llm_model_device)
+                # Generate recommended LoRAs
+                    llm_tokens = llm_tokenizer.apply_chat_template(
+                        lora_messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
+                    ).to(llm_model_device)
 
-                print("[FunPackStoryWriter] Generating LoRA recommendations...")
-                with torch.no_grad():
-                    generated_ids = llm_model.generate(
-                        input_ids=llm_tokens,
-                        do_sample=True,
-                        top_p=top_p, top_k=top_k, temperature=temperature,
-                        max_new_tokens=max_new_tokens,
-                        repetition_penalty=repetition_penalty,
-                        pad_token_id=llm_tokenizer.pad_token_id,
-                        eos_token_id=llm_tokenizer.eos_token_id,
-                    )
+                    print("[FunPackStoryWriter] Generating LoRA recommendations...")
+                    with torch.no_grad():
+                        generated_ids = llm_model.generate(
+                            input_ids=llm_tokens,
+                            do_sample=True,
+                            top_p=top_p, top_k=top_k, temperature=temperature,
+                            max_new_tokens=max_new_tokens,
+                            repetition_penalty=repetition_penalty,
+                            pad_token_id=llm_tokenizer.pad_token_id,
+                            eos_token_id=llm_tokenizer.eos_token_id,
+                        )
 
-                recommended_loras = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
-                print(f"[FunPackStoryWriter] LLM recommended to use this list of LoRAs: {recommended_loras}")
+                    recommended_loras = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                    print(f"[FunPackStoryWriter] LLM recommended to use this list of LoRAs: {recommended_loras}")
             
-            return tuple(outputs),recommended_loras
+            return (tuple(outputs), recommended_loras) if recommended_loras is not None else tuple(outputs)
 
         except Exception as e:
             print(f"[FunPackStoryWriter] Error during prompt enhancement: {e}")
@@ -1392,6 +1396,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
