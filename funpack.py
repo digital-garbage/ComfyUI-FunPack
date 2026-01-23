@@ -751,9 +751,9 @@ class FunPackStoryWriter:
                         generated_ids = llm_model.generate(
                             input_ids=llm_tokens,
                             do_sample=False,
-                            top_p=0.95,
+                            top_p=top_p,
                             top_k=top_k,
-                            temperature=0.2,
+                            temperature=temperature,
                             max_new_tokens=1024,
                             repetition_penalty=1.05,
                             pad_token_id=llm_tokenizer.pad_token_id,
@@ -796,9 +796,10 @@ class FunPackStoryWriter:
                         )
 
                     recommended_loras = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                    outputs[5] = recommended_loras
                     print(f"[FunPackStoryWriter] LLM recommended to use this list of LoRAs: {recommended_loras}")
             
-            return (tuple(outputs), recommended_loras) if recommended_loras is not None else tuple(outputs)
+            return tuple(outputs)
 
         except Exception as e:
             print(f"[FunPackStoryWriter] Error during prompt enhancement: {e}")
@@ -1399,6 +1400,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
