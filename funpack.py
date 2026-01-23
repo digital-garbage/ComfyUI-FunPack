@@ -531,7 +531,7 @@ class FunPackPromptEnhancer:
             print(f"[FunPackPromptEnhancer] LLM model loaded successfully to {llm_model_device}!")
 
             # Model detection to apply correct chat template
-            detected_chat_template="llama3.1-instruct" # Fallback for now
+            detected_chat_template="llama-3.1-instruct" # Fallback for now
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -1162,6 +1162,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
