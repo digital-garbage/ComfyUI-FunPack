@@ -772,8 +772,11 @@ class FunPackStoryWriter:
                 lora_list = folder_paths.get_filename_list('loras')
                 lora_messages = [
                         {"role": "system", "content": "Analyze the given array of sequences and the list of LoRAs and decide which LoRAs out of user's list are recommended to use for each sequence, based on the content of those sequences and the names of LoRAs. Output only list of recommended LoRAs in the format:\nSequence 1: lora name, lora name\nSequence 2: lora name, lora name\nSequence N: lora name, lora name"},
-                        {"role": "user", "content": lora_list,outputs}
+                        {"role": "user", "content": lora_list}
                     ]
+                for seq_idx, seq_output in enumerate(outputs):
+                    seq_output = outputs[seq_idx]
+                    lora_messages.append({"role": "user", "content": f"This is sequence ID {seq_idx + 1}: {seq_output}"})
 
                 # Generate recommended LoRAs
                     llm_tokens = llm_tokenizer.apply_chat_template(
@@ -1396,6 +1399,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
