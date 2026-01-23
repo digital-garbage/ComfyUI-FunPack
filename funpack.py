@@ -1297,6 +1297,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
+    "FunPackStoryWriter": FunPackStoryWriter,
     "FunPackVideoStitch": FunPackVideoStitch,
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackCreativeTemplate": FunPackCreativeTemplate,
@@ -1309,11 +1310,13 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
+    "FunPackStoryWriter": "FunPack Story Writer",
     "FunPackVideoStitch": "FunPack Video Stitch",
     "FunPackContinueVideo": "FunPack Continue Video",
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
