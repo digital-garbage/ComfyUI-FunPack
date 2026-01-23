@@ -607,6 +607,7 @@ class FunPackStoryWriter:
                 "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
                 "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
                 "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
+                "mode": (["Sequences from story", "Sequences from user prompt"],),
             }
         }
 
@@ -615,7 +616,7 @@ class FunPackStoryWriter:
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
-    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty):
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -648,42 +649,46 @@ class FunPackStoryWriter:
 
             # Inside write_story method, after model loading and template/pad fix
 
-            # Prepare fixed-size output list (only sequences go here)
             outputs = [""] * 5
 
-            # ── 1. Generate the hidden story ───────────────────────────────────────
-            messages = [
-                {"role": "system", "content": story_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ]
+            # ── Initialize messages ONCE, depending on mode ────────────────────────────
+            if mode == "Sequences from story":
+                messages = [
+                    {"role": "system", "content": story_system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
 
-            llm_tokens = llm_tokenizer.apply_chat_template(
-                messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
-            ).to(llm_model_device)
+            # Generate hidden story
+                llm_tokens = llm_tokenizer.apply_chat_template(
+                    messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
+                ).to(llm_model_device)
 
-            print("[FunPackStoryWriter] Generating hidden story...")
-            with torch.no_grad():
-                generated_ids = llm_model.generate(
-                    input_ids=llm_tokens,
-                    do_sample=True,
-                    top_p=top_p, 
-                    top_k=top_k, 
-                    temperature=temperature,
-                    max_new_tokens=max_new_tokens,
-                    repetition_penalty=repetition_penalty,
-                    pad_token_id=llm_tokenizer.pad_token_id,
-                    eos_token_id=llm_tokenizer.eos_token_id,
-                )
+                print("[FunPackStoryWriter] Generating hidden story...")
+                with torch.no_grad():
+                    generated_ids = llm_model.generate(
+                        input_ids=llm_tokens,
+                        do_sample=True,
+                        top_p=top_p, top_k=top_k, temperature=temperature,
+                        max_new_tokens=max_new_tokens,
+                        repetition_penalty=repetition_penalty,
+                        pad_token_id=llm_tokenizer.pad_token_id,
+                        eos_token_id=llm_tokenizer.eos_token_id,
+                    )
 
-            story = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
-            print(f"[FunPackStoryWriter] Hidden story (for context only): {story[:150]}...")
+                story = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                print(f"[FunPackStoryWriter] Hidden story: {story[:150]}...")
 
-            # Append story once — it will be visible to all sequences
-            messages.append({"role": "assistant", "content": story})
+                messages.append({"role": "assistant", "content": story})
 
-            # ── 2. Generate the requested number of sequences ──────────────────────
+            else:  # "Sequences from user prompt"
+                messages = [
+                    {"role": "system", "content": sequence_system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+
+            # ── Now generate sequences — only add new instruction + append output ─────
             for seq_idx in range(prompt_count):
-                # Every time: add fresh instruction for this sequence
+                # Add **only** the fresh sequence instruction each time
                 messages.append({"role": "user", "content": sequence_system_prompt})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
@@ -695,8 +700,8 @@ class FunPackStoryWriter:
                     generated_ids = llm_model.generate(
                         input_ids=llm_tokens,
                         do_sample=True,
-                        top_p=top_p, 
-                        top_k=top_k, 
+                        top_p=top_p,
+                        top_k=top_k,
                         temperature=temperature,
                         max_new_tokens=max_new_tokens,
                         repetition_penalty=repetition_penalty,
@@ -705,16 +710,13 @@ class FunPackStoryWriter:
                     )
 
                 seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
-    
-                # Store this sequence in output
                 outputs[seq_idx] = seq_text
-    
+
                 print(f"[FunPackStoryWriter] Sequence {seq_idx + 1}: {seq_text[:150]}...")
 
-                # Append the just-generated sequence so the NEXT sequence sees it
+                # Append generated sequence — this is what chains everything
                 messages.append({"role": "assistant", "content": seq_text})
 
-            # Return exactly 5 strings — remaining are empty if prompt_count < 5
             return tuple(outputs)
 
         except Exception as e:
@@ -1316,6 +1318,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
