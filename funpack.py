@@ -725,6 +725,7 @@ class FunPackStoryWriter:
                         sanity_messages = [
                             {"role": "system", "content": sanity_check_system_prompt},
                             {"role": "user", "content": f"""Original story: {story}
+                            Original system prompt (rules that must have been followed to generate the sequence): {story_system_prompt}
                             Original user prompt: {user_prompt}
                              Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
                              Sequence to validate and correct if needed: {seq_text}"""}
@@ -733,6 +734,7 @@ class FunPackStoryWriter:
                         sanity_messages = [
                             {"role": "system", "content": sanity_check_system_prompt},
                             {"role": "user", "content": f"""Original user prompt: {user_prompt}
+                            Original system prompt (rules that must have been followed to generate the sequence): {sequence_system_prompt}
                              Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
                              Sequence to validate and correct if needed: {seq_text}"""}
                         ]
@@ -1363,6 +1365,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
