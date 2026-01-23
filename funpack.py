@@ -609,7 +609,7 @@ class FunPackStoryWriter:
                 "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
                 "mode": (["Sequences from story", "Sequences from user prompt"],),
                 "sanity_check": ("BOOLEAN", {"default": True, "label": "Enable Sanity Check"}),
-                "sequence_system_prompt": ("STRING", {
+                "sanity_check_system_prompt": ("STRING", {
                     "multiline": True,
                     "default": "Analyze the given sequence and perform a correction, if the sequence does not match the given requirements:\n1. The sequence is related to given user's prompt.\n2. The sequence contains only physically possible actions.\n3. The sequence contains information about characters, their appearances, positioning, actions, camera angle, focus and zoom.\n4. The sequence is fully describing the requested action.\n\nOutput ONLY corrected sequence, or return it unchanged if it matches the requirements. No additional text except for sequence is allowed."
                 }), 
@@ -1363,6 +1363,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
