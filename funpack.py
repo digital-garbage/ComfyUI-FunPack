@@ -489,10 +489,10 @@ class FunPackPromptEnhancer:
                 "model_path_type": (["Local Safetensors", "HuggingFace Pretrained"],),
                 "model_path": ("STRING", {"multiline": False, "default": "mlabonne/NeuralLlama-3-8B-Instruct-abliterated"}),
                 "llm_safetensors_file": (folder_paths.get_filename_list('clip'),), 
-                "top_p": ("FLOAT", {"min": 0.0, "max": 1.0, "step": 0.05, "default": 0.75}),
+                "top_p": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.05, "default": 0.75}),
                 "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
-                "temperature": ("FLOAT", {"min": 0.0, "max": 1.0, "step": 0.01, "default": 0.6}),
-                "max_new_tokens": ("INT", {"min": 1, "max": 2048, "step": 64, "default": 1024}),
+                "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
+                "max_new_tokens": ("INT", {"min": 1, "max": 4096, "step": 64, "default": 512}),
             }
         }
 
@@ -536,6 +536,7 @@ class FunPackPromptEnhancer:
 
             llm_tokens = llm_tokenizer.apply_chat_template(
                 messages,
+                chat_template="llama-3",
                 add_generation_prompt=True,
                 return_tensors="pt",
                 tokenize=True 
@@ -1156,6 +1157,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
