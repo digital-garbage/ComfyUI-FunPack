@@ -621,7 +621,7 @@ class FunPackStoryWriter:
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
-    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode, sanity_check):
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode, sanity_check, sanity_check_system_prompt):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -1363,6 +1363,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
