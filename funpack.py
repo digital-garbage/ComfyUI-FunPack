@@ -648,9 +648,10 @@ class FunPackStoryWriter:
 
             # Inside write_story method, after model loading and template/pad fix
 
+            # Prepare fixed-size output list (only sequences go here)
             outputs = [""] * 5
 
-            # ── Generate story (goes only into memory, not outputs) ────────
+            # ── 1. Generate the hidden story ───────────────────────────────────────
             messages = [
                 {"role": "system", "content": story_system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -675,14 +676,14 @@ class FunPackStoryWriter:
                 )
 
             story = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
-            print(f"[FunPackStoryWriter] Story generated (hidden): {story[:150]}...")
+            print(f"[FunPackStoryWriter] Hidden story (for context only): {story[:150]}...")
 
-            # Append story to conversation history
+            # Append story once — it will be visible to all sequences
             messages.append({"role": "assistant", "content": story})
 
-            # ── Generate requested number of sequences ─────────────────────
+            # ── 2. Generate the requested number of sequences ──────────────────────
             for seq_idx in range(prompt_count):
-                # Tell the model to generate the next sequence
+                # Every time: add fresh instruction for this sequence
                 messages.append({"role": "user", "content": sequence_system_prompt})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
@@ -694,7 +695,9 @@ class FunPackStoryWriter:
                     generated_ids = llm_model.generate(
                         input_ids=llm_tokens,
                         do_sample=True,
-                        top_p=top_p, top_k=top_k, temperature=temperature,
+                        top_p=top_p, 
+                        top_k=top_k, 
+                        temperature=temperature,
                         max_new_tokens=max_new_tokens,
                         repetition_penalty=repetition_penalty,
                         pad_token_id=llm_tokenizer.pad_token_id,
@@ -703,15 +706,15 @@ class FunPackStoryWriter:
 
                 seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
     
-                # Store in output slot (0 = first sequence, 1 = second, etc.)
+                # Store this sequence in output
                 outputs[seq_idx] = seq_text
     
                 print(f"[FunPackStoryWriter] Sequence {seq_idx + 1}: {seq_text[:150]}...")
 
-                # Append this sequence so the next one sees it
+                # Append the just-generated sequence so the NEXT sequence sees it
                 messages.append({"role": "assistant", "content": seq_text})
 
-            # Return exactly 5 strings (remaining slots stay "")
+            # Return exactly 5 strings — remaining are empty if prompt_count < 5
             return tuple(outputs)
 
         except Exception as e:
@@ -1311,6 +1314,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
