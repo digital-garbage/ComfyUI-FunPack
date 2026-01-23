@@ -736,7 +736,6 @@ class FunPackStoryWriter:
                              Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
                              Sequence to validate and correct if needed: {seq_text}}"""
                         ]
-                    sanity_messages.append({"role": "user", "content": seq_text})
                     llm_tokens = llm_tokenizer.apply_chat_template(
                         sanity_messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
                         ).to(llm_model_device)
@@ -1364,6 +1363,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
