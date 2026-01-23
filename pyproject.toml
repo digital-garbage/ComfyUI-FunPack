@@ -2,7 +2,7 @@
 [project]
 name = "funpack" # Unique identifier for your node. Immutable after creation.
 description = "A set of nodes for experiments with video generation models, including Prompt Enhancer, Video Stitch, Creative Template and many other nodes."
-version = "1.1.0" # Custom Node version. Must be semantically versioned.
+version = "1.2.0" # Custom Node version. Must be semantically versioned.
 license = { text = "GNU GPL v3" }
 dependencies  = [] # Filled in from requirements.txt
 
