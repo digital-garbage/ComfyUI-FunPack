@@ -493,7 +493,7 @@ class FunPackPromptEnhancer:
                 "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
                 "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
                 "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
-                "repetition_penalty": ("FLOAT", {"min": "0.0", "max": "3.0", "step": 0.01, "default": 1.0}),
+                "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
             }
         }
 
@@ -1162,6 +1162,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
