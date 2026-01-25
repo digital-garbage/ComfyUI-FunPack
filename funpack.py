@@ -699,7 +699,7 @@ class FunPackStoryWriter:
                 # Add **only** the fresh sequence instruction each time
                 messages = [
                     {"role": "system", "content": sequence_system_prompt},
-                    {"role": "user", "content": f"""Current sequence number: {seq_idx + 1}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""}
+                    {"role": "user", "content": f"""Current sequence number: {seq_idx + 1}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""},
                     {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i+1}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence."}"""}
                 ]
 
@@ -1402,6 +1402,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
