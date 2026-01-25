@@ -697,20 +697,7 @@ class FunPackStoryWriter:
             # ── Now generate sequences — only add new instruction + append output ─────
             for seq_idx in range(prompt_count):
                 # Add **only** the fresh sequence instruction each time
-                messages.append({"role": "system", "content": f"""This sequence's ID is {seq_idx + 1} out of total {prompt_count} sequences requested."""})
-                messages.append({"role": "user", "content": seq_prompt = f"""
-                    {sequence_system_prompt}
-
-                    Current sequence number: {seq_idx + 1}
-                    Total sequences requested: {prompt_count}
-
-                    Original user prompt: {user_prompt}
-
-                    Previous sequences (for continuity):
-                    {chr(10).join(outputs[:seq_idx]) if seq_idx > 0 else "This is the first sequence."}
-
-                    Generate the next sequence now.
-                    """})
+                messages.append({"role": "user", "seq_prompt": f"""{sequence_system_prompt}\nCurrent sequence number: {seq_idx + 1}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}\nPrevious sequences (for continuity):\n{chr(10).join(outputs[:seq_idx]) if seq_idx > 0 else "This is the first sequence."}\n\Gnenerate the next sequence now."""})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
@@ -1411,6 +1398,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
