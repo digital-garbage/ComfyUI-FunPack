@@ -552,7 +552,7 @@ class FunPackPromptEnhancer:
             print("[FunPackPromptEnhancer] Generating enhanced prompt...")
             with torch.no_grad():
                 generated_ids = llm_model.generate(
-                    input_ids=llm_tokens,
+                    **llm_tokens,
                     do_sample=True,
                     top_p=top_p,
                     top_k=top_k,
@@ -674,7 +674,7 @@ class FunPackStoryWriter:
                 print("[FunPackStoryWriter] Generating hidden story...")
                 with torch.no_grad():
                     generated_ids = llm_model.generate(
-                        input_ids=llm_tokens,
+                        **llm_tokens,
                         do_sample=True,
                         top_p=top_p, top_k=top_k, temperature=temperature,
                         max_new_tokens=max_new_tokens,
@@ -710,7 +710,7 @@ class FunPackStoryWriter:
                 print(f"[FunPackStoryWriter] Generating sequence {seq_idx + 1}/{prompt_count}...")
                 with torch.no_grad():
                     generated_ids = llm_model.generate(
-                        input_ids=llm_tokens,
+                        **llm_tokens,
                         do_sample=True,
                         top_p=top_p,
                         top_k=top_k,
@@ -752,7 +752,7 @@ class FunPackStoryWriter:
                     print(f"[FunPackStoryWriter] Performing sanity check on sequence {seq_idx + 1}/{prompt_count}...")
                     with torch.no_grad():
                         generated_ids = llm_model.generate(
-                            input_ids=llm_tokens,
+                            **llm_tokens,
                             do_sample=False,
                             top_p=top_p,
                             top_k=top_k,
@@ -789,7 +789,7 @@ class FunPackStoryWriter:
                 print("[FunPackStoryWriter] Generating LoRA recommendations...")
                 with torch.no_grad():
                     generated_ids = llm_model.generate(
-                        input_ids=llm_tokens,
+                        **llm_tokens,
                         do_sample=True,
                         top_p=top_p, top_k=top_k, temperature=temperature,
                         max_new_tokens=max_new_tokens,
@@ -1402,6 +1402,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
