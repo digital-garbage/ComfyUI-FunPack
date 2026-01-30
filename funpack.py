@@ -632,13 +632,13 @@ class FunPackStoryWriter:
         try:
             if model_path_type == "HuggingFace Pretrained":
                 print(f"[FunPackStoryWriter] Loading LLM from HuggingFace pretrained: {model_path}")
-                llm_tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-                llm_model = AutoModelForCausalLM.from_pretrained(model_path, ignore_mismatched_sizes=True, trust_remote_code=True)
+                llm_tokenizer = AutoTokenizer.from_pretrained(model_path, ignore_mismatched_sizes=True, trust_remote_code=True, local_files_only=True)
+                llm_model = AutoModelForCausalLM.from_pretrained(model_path, ignore_mismatched_sizes=True, trust_remote_code=True, local_files_only=True)
             elif model_path_type == "Local Safetensors":
                 print(f"[FunPackStoryWriter] Loading LLM from local safetensors file: {llm_safetensors_file}")
                 full_safetensors_path = folder_paths.get_full_path('clip', llm_safetensors_file)
                 
-                llm_tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
+                llm_tokenizer = AutoTokenizer.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", ignore_mismatched_sizes=True, trust_remote_code=True, local_files_only=True)
                 
                 config = AutoConfig.from_pretrained("xtuner/llava-llama-3-8b-v1_1-transformers", trust_remote_code=True)
                 model_base = AutoModelForCausalLM.from_config(config, trust_remote_code=True)
@@ -1402,6 +1402,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
