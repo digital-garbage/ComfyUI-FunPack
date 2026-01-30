@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.3] - 2026-01-30
+
+### Fixed
+
+Fixed Transformers library error when running Prompt Enhancer and Story Writer nodes.
+
 ## [1.2.2] - 2026-01-26
 
 ### Changed
