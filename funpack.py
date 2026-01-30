@@ -562,7 +562,7 @@ class FunPackPromptEnhancer:
                     pad_token_id=llm_tokenizer.pad_token_id
                 )
 
-            output_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True)
+            output_text = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True)
             print(f"[FunPackPromptEnhancer] Enhanced prompt generated: {output_text}")
 
             return (output_text,)
@@ -683,7 +683,7 @@ class FunPackStoryWriter:
                         eos_token_id=llm_tokenizer.eos_token_id,
                     )
 
-                story = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                story = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True).strip()
                 print(f"[FunPackStoryWriter] Hidden story: {story[:150]}...")
 
                 messages.append({"role": "assistant", "content": story})
@@ -721,7 +721,7 @@ class FunPackStoryWriter:
                         eos_token_id=llm_tokenizer.eos_token_id,
                     )
 
-                seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True).strip()
                 
                 if sanity_check == False:
                     print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check skipped): {seq_text}...")
@@ -763,7 +763,7 @@ class FunPackStoryWriter:
                             eos_token_id=llm_tokenizer.eos_token_id,
                         )
 
-                    seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                    seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True).strip()
                     print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check performed): {seq_text}...")
                 
                 outputs[seq_idx] = seq_text
@@ -798,7 +798,7 @@ class FunPackStoryWriter:
                         eos_token_id=llm_tokenizer.eos_token_id,
                     )
 
-                recommended_loras = llm_tokenizer.decode(generated_ids[0][llm_tokens.shape[1]:], skip_special_tokens=True).strip()
+                recommended_loras = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True).strip()
                 print(f"[FunPackStoryWriter] LLM recommended to use this list of LoRAs: {recommended_loras}")
             
             return tuple(outputs)
@@ -1402,6 +1402,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
