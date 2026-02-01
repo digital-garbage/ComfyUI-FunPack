@@ -704,7 +704,7 @@ class FunPackStoryWriter:
                 ]
 
                 if vision_input is not None:
-                    messages.append({"role": "user", "content": f"""Reference image description (the video starts from this image): {vision_input}"""})
+                    messages.append({"role": "user", "content": f"""Reference image description (first sequence of the video starts from this image): {vision_input}"""})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
@@ -1375,6 +1375,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
