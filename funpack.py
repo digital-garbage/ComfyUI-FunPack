@@ -120,8 +120,17 @@ class FunPackLorebookEnhancer:
                 
                 is_constant = entry.get("constant", False)
                 
+                is_constant = entry.get("constant", False)
+   
                 if not is_constant:
-                    if not self._match_keys(entry.get("key", []), scan_text):
+                    keys = entry.get("keys", entry.get("key", []))              # Fixed: use "keys" (plural) first
+                    if not self._match_keys(keys, scan_text):
+                        continue
+   
+                if entry.get("selective", False):
+                    sec_keys = entry.get("keysecondary", []) or entry.get("secondary_keys", [])
+                    logic = entry.get("selectiveLogic", 0)
+                    if not self._match_secondary(sec_keys, scan_text, logic):
                         continue
                 
                 if entry.get("selective", False):
@@ -1375,6 +1384,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
