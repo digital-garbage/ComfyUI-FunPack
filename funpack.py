@@ -769,7 +769,7 @@ class FunPackStoryWriter:
                              Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence"}
                              Sequence to validate and correct if needed: {seq_text}"""}
                         ]
-                    else if mode == "Sequences from user prompt" and disable_continuity == False:
+                    elif mode == "Sequences from user prompt" and disable_continuity == False:
                         sanity_messages = [
                             {"role": "system", "content": sanity_check_system_prompt},
                             {"role": "user", "content": f"""Original user prompt: {user_prompt}
@@ -1412,6 +1412,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
