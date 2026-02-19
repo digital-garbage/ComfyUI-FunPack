@@ -624,6 +624,7 @@ class FunPackStoryWriter:
                     "multiline": True,
                     "default": "Analyze the given sequence and perform a correction, if the sequence does not match the given requirements:\n1. The sequence is related to given user's prompt.\n2. The sequence contains only physically possible actions.\n3. The sequence contains information about characters, their appearances, positioning, actions, camera angle, focus and zoom.\n4. The sequence is fully describing the requested action.\n\nOutput ONLY corrected sequence, or return it unchanged if it matches the requirements. No additional text except for sequence is allowed."
                 }), 
+                "disable_continuity": ("BOOLEAN", {"default": False, "label": "Enable/disable continuity - if enabled, does not provide the history of previously generated sequences when generating new one."}),
             }
         }
 
@@ -632,7 +633,7 @@ class FunPackStoryWriter:
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
-    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, min_p, temperature, max_new_tokens, repetition_penalty, mode, vision_input, sanity_check, sanity_check_system_prompt):
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, min_p, temperature, max_new_tokens, repetition_penalty, mode, vision_input, sanity_check, sanity_check_system_prompt, disable_continuity):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -710,11 +711,18 @@ class FunPackStoryWriter:
             # ── Now generate sequences — only add new instruction + append output ─────
             for seq_idx in range(prompt_count):
                 # Add **only** the fresh sequence instruction each time
-                messages = [
-                    {"role": "system", "content": sequence_system_prompt},
-                    {"role": "user", "content": f"""Current sequence number: {seq_idx}\nTotal sequences requested: {prompt_count - 1}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""},
-                    {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence."}"""}
-                ]
+                if disable_continuity = True:
+                    messages = [
+                        {"role": "system", "content": sequence_system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ]
+                    
+                else:
+                    messages = [
+                        {"role": "system", "content": sequence_system_prompt},
+                        {"role": "user", "content": f"""Current sequence number: {seq_idx}\nTotal sequences requested: {prompt_count - 1}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""},
+                        {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence."}"""}
+                    ]
 
                 if vision_input is not None:
                     messages.append({"role": "user", "content": f"""Reference image description (first sequence of the video starts from this image): {vision_input}"""})
@@ -1390,6 +1398,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
