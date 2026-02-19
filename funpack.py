@@ -613,6 +613,7 @@ class FunPackStoryWriter:
                 "prompt_count": ("INT", {"min": 1, "max": 5, "step": 1, "default": 3}),
                 "top_p": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.05, "default": 0.75}),
                 "top_k": ("INT", {"min": 0, "max": 1000, "step": 1, "default": 40}),
+                "min_p": ("FLOAT", {"min": 0.0, "max": 1.0, "step": 0.01, "default": 0.1}),
                 "temperature": ("FLOAT", {"min": 0.0, "max": 2.0, "step": 0.01, "default": 0.6}),
                 "max_new_tokens": ("INT", {"min": 64, "max": 4096, "step": 64, "default": 512}),
                 "repetition_penalty": ("FLOAT", {"min": 0.0, "max": 3.0, "step": 0.01, "default": 1.0}),
@@ -631,7 +632,7 @@ class FunPackStoryWriter:
     FUNCTION = "write_story"
     CATEGORY = "FunPack"
 
-    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, temperature, max_new_tokens, repetition_penalty, mode, vision_input, sanity_check, sanity_check_system_prompt):
+    def write_story(self, user_prompt, story_system_prompt, sequence_system_prompt, model_path_type, model_path, llm_safetensors_file, prompt_count, top_p, top_k, min_p, temperature, max_new_tokens, repetition_penalty, mode, vision_input, sanity_check, sanity_check_system_prompt):
         llm_model = None
         llm_tokenizer = None
         llm_model_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -685,7 +686,10 @@ class FunPackStoryWriter:
                     generated_ids = llm_model.generate(
                         **llm_tokens,
                         do_sample=True,
-                        top_p=top_p, top_k=top_k, temperature=temperature,
+                        top_p=top_p, 
+                        top_k=top_k, 
+                        min_p=min_p, 
+                        temperature=temperature,
                         max_new_tokens=max_new_tokens,
                         repetition_penalty=repetition_penalty,
                         pad_token_id=llm_tokenizer.pad_token_id,
@@ -708,8 +712,8 @@ class FunPackStoryWriter:
                 # Add **only** the fresh sequence instruction each time
                 messages = [
                     {"role": "system", "content": sequence_system_prompt},
-                    {"role": "user", "content": f"""Current sequence number: {seq_idx + 1}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""},
-                    {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i+1}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence."}"""}
+                    {"role": "user", "content": f"""Current sequence number: {seq_idx}\nTotal sequences requested: {prompt_count - 1}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""},
+                    {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence."}"""}
                 ]
 
                 if vision_input is not None:
@@ -726,6 +730,7 @@ class FunPackStoryWriter:
                         do_sample=True,
                         top_p=top_p,
                         top_k=top_k,
+                        min_p=min_p,
                         temperature=temperature,
                         max_new_tokens=max_new_tokens,
                         repetition_penalty=repetition_penalty,
@@ -746,7 +751,7 @@ class FunPackStoryWriter:
                             {"role": "user", "content": f"""Original story: {story}
                             Original system prompt (rules that must have been followed to generate the sequence): {story_system_prompt}
                             Original user prompt: {user_prompt}
-                             Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
+                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence"}
                              Sequence to validate and correct if needed: {seq_text}"""}
                         ]
                     else:
@@ -754,7 +759,7 @@ class FunPackStoryWriter:
                             {"role": "system", "content": sanity_check_system_prompt},
                             {"role": "user", "content": f"""Original user prompt: {user_prompt}
                             Original system prompt (rules that must have been followed to generate the sequence): {sequence_system_prompt}
-                             Previous sequence (for continuity check): {outputs[seq_idx-1] if seq_idx > 0 else "This is the first sequence"}
+                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence"}
                              Sequence to validate and correct if needed: {seq_text}"""}
                         ]
                     llm_tokens = llm_tokenizer.apply_chat_template(
@@ -768,6 +773,7 @@ class FunPackStoryWriter:
                             do_sample=False,
                             top_p=top_p,
                             top_k=top_k,
+                            min_p=min_p,
                             temperature=temperature,
                             max_new_tokens=1024,
                             repetition_penalty=1.05,
@@ -1384,6 +1390,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
