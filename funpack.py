@@ -712,13 +712,13 @@ class FunPackStoryWriter:
             # ── Now generate sequences — only add new instruction + append output ─────
             for seq_idx in range(prompt_count):
                 # Add **only** the fresh sequence instruction each time
-                if disable_continuity = True and provide_current_id = False:
+                if disable_continuity == True and provide_current_id == False:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
                         {"role": "user", "content": user_prompt}
                     ]
 
-                elif disable_continuity = True and provide_current_id = True:
+                elif disable_continuity == True and provide_current_id == True:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
                         {"role": "user", "content": f"""Current sequence number: {seq_idx}\nOriginal user prompt: {user_prompt}"""}
@@ -1405,6 +1405,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
