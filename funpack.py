@@ -754,6 +754,9 @@ class FunPackStoryWriter:
                     )
 
                 seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True).strip()
+
+                # Append generated sequence — this is what chains everything
+                messages.append({"role": "assistant", "content": seq_text})
                 
                 if sanity_check == False:
                     print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check skipped): {seq_text}...")
@@ -807,9 +810,6 @@ class FunPackStoryWriter:
                     print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check performed): {seq_text}...")
                 
                 outputs[seq_idx] = seq_text
-
-                # Append generated sequence — this is what chains everything
-                messages.append({"role": "assistant", "content": seq_text})
                 
             return tuple(outputs)
 
@@ -1412,6 +1412,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
