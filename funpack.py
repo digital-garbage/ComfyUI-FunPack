@@ -721,13 +721,13 @@ class FunPackStoryWriter:
                 elif disable_continuity == True and provide_current_id == True:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current sequence: {seq_idx}\nOriginal user prompt: {user_prompt}"""}
+                        {"role": "user", "content": f"""Current sequence: {seq_idx+1}\nOriginal user prompt: {user_prompt}"""}
                     ]
                 
                 else:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current sequence: {seq_idx}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}"""},
+                        {"role": "user", "content": f"""Current sequence: {seq_idx+1}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}"""},
                         {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}"""}
                     ]
 
@@ -1412,6 +1412,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
