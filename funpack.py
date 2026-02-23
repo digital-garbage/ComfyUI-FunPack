@@ -721,18 +721,18 @@ class FunPackStoryWriter:
                 elif disable_continuity == True and provide_current_id == True:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current sequence number: {seq_idx}\nOriginal user prompt: {user_prompt}"""}
+                        {"role": "user", "content": f"""Current sequence: {seq_idx}\nOriginal user prompt: {user_prompt}"""}
                     ]
                 
                 else:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current sequence number: {seq_idx}\nTotal sequences requested: {prompt_count - 1}\nOriginal user prompt: {user_prompt}n\Generate the next sequence now."""},
-                        {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence."}"""}
+                        {"role": "user", "content": f"""Current sequence: {seq_idx}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}"""},
+                        {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}"""}
                     ]
 
                 if vision_input is not None:
-                    messages.append({"role": "user", "content": f"""Reference image description (first sequence of the video starts from this image): {vision_input}"""})
+                    messages.append({"role": "user", "content": f"""Reference image description (first frame of the first sequence): {vision_input}"""})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
@@ -769,7 +769,7 @@ class FunPackStoryWriter:
                             {"role": "user", "content": f"""Original story: {story}
                             Original system prompt (rules that must have been followed to generate the sequence): {story_system_prompt}
                             Original user prompt: {user_prompt}
-                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence"}
+                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}
                              Sequence to validate and correct if needed: {seq_text}"""}
                         ]
                     elif mode == "Sequences from user prompt" and disable_continuity == False:
@@ -777,7 +777,7 @@ class FunPackStoryWriter:
                             {"role": "system", "content": sanity_check_system_prompt},
                             {"role": "user", "content": f"""Original user prompt: {user_prompt}
                             Original system prompt (rules that must have been followed to generate the sequence): {sequence_system_prompt}
-                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence"}
+                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}
                              Sequence to validate and correct if needed: {seq_text}"""}
                         ]
                     else:
@@ -1412,6 +1412,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
