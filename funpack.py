@@ -721,24 +721,24 @@ class FunPackStoryWriter:
                 elif disable_continuity == True and provide_current_id == True:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current sequence: {seq_idx+1}\nOriginal user prompt: {user_prompt}"""}
+                        {"role": "user", "content": f"""Request ID: {seq_idx+1}\nUser's instruction: {user_prompt}"""}
                     ]
                 
                 else:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current sequence: {seq_idx+1}\nTotal sequences requested: {prompt_count}\nOriginal user prompt: {user_prompt}"""},
-                        {"role": "assistant", "content": f"""Previous sequences for continuity:{chr(10).join([f"Sequence {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}"""}
+                        {"role": "user", "content": f"""Request ID: {seq_idx+1}\n Total requested: {prompt_count}\nUser's instruction: {user_prompt}"""},
+                        {"role": "assistant", "content": f"""History:{chr(10).join([f"ID {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "No history available."}"""}
                     ]
 
                 if vision_input is not None:
-                    messages.append({"role": "user", "content": f"""Reference image description (first frame of the first sequence): {vision_input}"""})
+                    messages.append({"role": "user", "content": f"""Reference image description: {vision_input}"""})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
                 ).to(llm_model_device)
 
-                print(f"[FunPackStoryWriter] Generating sequence {seq_idx + 1}/{prompt_count}...")
+                print(f"[FunPackStoryWriter] Generating ID {seq_idx + 1}/{prompt_count}...")
                 with torch.no_grad():
                     generated_ids = llm_model.generate(
                         **llm_tokens,
@@ -759,39 +759,39 @@ class FunPackStoryWriter:
                 messages.append({"role": "assistant", "content": seq_text})
                 
                 if sanity_check == False:
-                    print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check skipped): {seq_text}...")
+                    print(f"[FunPackStoryWriter] ID {seq_idx + 1} (sanity check skipped): {seq_text}...")
 
                 # Performing sanity check - comparing sequence text to user's prompt according to rules in sanity check system prompt.
                 if sanity_check == True:
                     if mode == "Sequences from story" and disable_continuity == False:
                         sanity_messages = [
                             {"role": "system", "content": sanity_check_system_prompt},
-                            {"role": "user", "content": f"""Original story: {story}
-                            Original system prompt (rules that must have been followed to generate the sequence): {story_system_prompt}
-                            Original user prompt: {user_prompt}
-                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}
-                             Sequence to validate and correct if needed: {seq_text}"""}
+                            {"role": "user", "content": f"""Original story: {story}\n
+                            Rules: {story_system_prompt}\n
+                            User's instruction: {user_prompt}\n
+                             Previous response: {outputs[seq_idx] if seq_idx > 0 else "No history available."}\n
+                             Response to validate and correct if rules were broken: {seq_text}"""}
                         ]
                     elif mode == "Sequences from user prompt" and disable_continuity == False:
                         sanity_messages = [
                             {"role": "system", "content": sanity_check_system_prompt},
-                            {"role": "user", "content": f"""Original user prompt: {user_prompt}
-                            Original system prompt (rules that must have been followed to generate the sequence): {sequence_system_prompt}
-                             Previous sequence (for continuity check): {outputs[seq_idx] if seq_idx > 0 else "This is the first sequence. No prior sequences have been generated."}
-                             Sequence to validate and correct if needed: {seq_text}"""}
+                            {"role": "user", "content": f"""User's instruction: {user_prompt}\n
+                            Rules: {sequence_system_prompt}\n
+                             Previous response: {outputs[seq_idx] if seq_idx > 0 else "No history available."}\n
+                             Response to validate and correct if rules were broken: {seq_text}"""}
                         ]
                     else:
                         sanity_messages = [
                             {"role": "system", "content": sanity_check_system_prompt},
-                            {"role": "user", "content": f"""Original user prompt: {user_prompt}
-                            Original system prompt (rules that must have been followed to generate the sequence): {sequence_system_prompt}
-                            Sequence to validate and correct if needed: {seq_text}"""}
+                            {"role": "user", "content": f"""User's instruction: {user_prompt}
+                            Rules: {sequence_system_prompt}
+                            Response to validate and correct if rules were broken: {seq_text}"""}
                         ]
                     llm_tokens = llm_tokenizer.apply_chat_template(
                         sanity_messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
                         ).to(llm_model_device)
 
-                    print(f"[FunPackStoryWriter] Performing sanity check on sequence {seq_idx + 1}/{prompt_count}...")
+                    print(f"[FunPackStoryWriter] Performing sanity check on ID {seq_idx + 1}/{prompt_count}...")
                     with torch.no_grad():
                         generated_ids = llm_model.generate(
                             **llm_tokens,
@@ -807,7 +807,7 @@ class FunPackStoryWriter:
                         )
 
                     seq_text = llm_tokenizer.decode(generated_ids[0][llm_tokens['input_ids'].shape[1]:], skip_special_tokens=True).strip()
-                    print(f"[FunPackStoryWriter] Sequence {seq_idx + 1} (sanity check performed): {seq_text}...")
+                    print(f"[FunPackStoryWriter] ID {seq_idx + 1} (sanity check performed): {seq_text}...")
                 
                 outputs[seq_idx] = seq_text
                 
@@ -1412,6 +1412,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
