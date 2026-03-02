@@ -721,18 +721,18 @@ class FunPackStoryWriter:
                 elif disable_continuity == True and provide_current_id == True:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Request ID: {seq_idx+1}\nUser's instruction: {user_prompt}"""}
+                        {"role": "user", "content": f"""Current request ID: {seq_idx+1}\nUser's instruction: {user_prompt}"""}
                     ]
                 
                 else:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Request ID: {seq_idx+1}\n Total requested: {prompt_count}\nUser's instruction: {user_prompt}"""},
+                        {"role": "user", "content": f"""Total amount of requests in this batch: {prompt_count}\nCurrently generating request ID {seq_idx+1} out of {prompt_count}\nRequests left in queue: {prompt_count - seq_idx - 1}\nUser's instruction: {user_prompt}"""},
                         {"role": "assistant", "content": f"""History:{chr(10).join([f"ID {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "No history available."}"""}
                     ]
 
                 if vision_input is not None:
-                    messages.append({"role": "user", "content": f"""Reference image description: {vision_input}"""})
+                    messages.append({"role": "user", "content": f"""Reference image description (this is the starting image in the video batch): {vision_input}"""})
 
                 llm_tokens = llm_tokenizer.apply_chat_template(
                     messages, add_generation_prompt=True, return_tensors="pt", tokenize=True
@@ -1412,6 +1412,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
+
 
 
 
