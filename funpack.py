@@ -732,25 +732,25 @@ class FunPackStoryWriter:
                     ]
 
                     if prompts[seq_idx]:
-                        messages.append({"role": "user", "content": prompts[seq_idx]})
+                        messages.append({"role": "user", "content": f"""User's request for current scene only: {prompts[seq_idx]}"""})
 
                 elif disable_continuity == True and provide_current_id == True:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Current request ID: {seq_idx+1}\nUser's message: {user_prompt}"""}
+                        {"role": "user", "content": f"""Current request ID: {seq_idx+1}\nUser's instruction for all requests: {user_prompt}"""}
                     ]
                     
                     if prompts[seq_idx]:
-                        messages.append({"role": "user", "content": prompts[seq_idx]})
+                        messages.append({"role": "user", "content": f"""User's request for current scene only: {prompts[seq_idx]}"""})
                 
                 else:
                     messages = [
                         {"role": "system", "content": sequence_system_prompt},
-                        {"role": "user", "content": f"""Total amount of requests in this batch: {prompt_count}\nCurrently generating request ID {seq_idx+1} out of {prompt_count}\nRequests left in queue: {prompt_count - seq_idx - 1}\nUser's message: {user_prompt}"""},
+                        {"role": "user", "content": f"""Total amount of requests in this batch: {prompt_count}\nCurrently generating request ID {seq_idx+1} out of {prompt_count}\nRequests left in queue: {prompt_count - seq_idx - 1}\nUser's instruction for all requests: {user_prompt}"""},
                         {"role": "assistant", "content": f"""History:{chr(10).join([f"ID {i}: {text}" for i, text in enumerate(outputs[:seq_idx])]) if seq_idx > 0 else "No history available."}"""}
                     ]
                     if prompts[seq_idx]:
-                        messages.append({"role": "user", "content": prompts[seq_idx]})
+                        messages.append({"role": "user", "content": f"""User's request for current scene only: {prompts[seq_idx]}"""})
 
                 if vision_input is not None:
                     messages.append({"role": "user", "content": f"""Reference image description (this is the starting image in the video batch): {vision_input}"""})
