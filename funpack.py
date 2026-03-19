@@ -31,6 +31,55 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
+class FunPackPromptCombiner:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "main_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "masterpiece, best quality, detailed background"
+                }),
+            },
+            "optional": {
+                "prompt1": ("STRING", {"default": "", "multiline": True}),
+                "prompt2": ("STRING", {"default": "", "multiline": True}),
+                "prompt3": ("STRING", {"default": "", "multiline": True}),
+                "prompt4": ("STRING", {"default": "", "multiline": True}),
+                "prompt5": ("STRING", {"default": "", "multiline": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("out1", "out2", "out3", "out4", "out5")
+    FUNCTION = "combine"
+    CATEGORY = "FunPack"
+    OUTPUT_NODE = False
+
+    def combine(self, main_prompt,
+                prompt1="", prompt2="", prompt3="", prompt4="", prompt5=""):
+
+        main = main_prompt.strip()
+
+        def merge(base, addon):
+            addon = addon.strip()
+            if not addon:
+                return base
+            if not base:
+                return addon
+            # You can change separator style here
+            #return f"{base}, {addon}"          # ← comma style (most common in SD)
+            return f"{base}\n{addon}"        # ← new line style
+            # return f"{base} | {addon}"       # ← pipe style, etc.
+
+        results = []
+        for p in (prompt1, prompt2, prompt3, prompt4, prompt5):
+            combined = merge(main, p)
+            results.append(combined)
+
+        # Always return exactly 5 strings (even if some are just the main prompt)
+        return tuple(results)
+
 class FunPackLorebookEnhancer:
     """
     Injects context from SillyTavern-style lorebook JSON files.
@@ -1410,6 +1459,7 @@ class FunPackCreativeTemplate:
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "FunPackStoryMemJSONConverter": FunPackStoryMemJSONConverter,
+    "FunPackPromptCombiner": FunPackPromptCombiner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
     "FunPackImg2LatentInterpolation": FunPackImg2LatentInterpolation,
@@ -1423,6 +1473,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackStoryMemJSONConverter": "FunPack StoryMem JSON Converter",
+    "FunPackPromptCombiner": "FunPack Prompt Combiner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
     "FunPackImg2LatentInterpolation": "FunPack Img2Latent Interpolation",
@@ -1433,77 +1484,3 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
