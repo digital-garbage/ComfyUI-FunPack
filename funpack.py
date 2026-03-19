@@ -31,6 +31,247 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
+import torch
+import torch.nn.functional as F
+import numpy as np
+from typing import List, Tuple, Optional
+
+class FunPackAutoMontage:
+    """
+    FunPack Auto Montage - Semantic prompt-based cleaning + smart transitions
+    For multi-sequence AI video workflows.
+    Each sequence gets its own prompt for accurate frame filtering.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "clip": ("CLIP",),                    # For prompt (text) encoding
+                "clip_vision": ("CLIP_VISION",),      # For per-frame image embeddings
+                
+                "images_1": ("IMAGE",),
+                "prompt_1": ("STRING", {"multiline": True, "default": "A cinematic wide shot of a futuristic city at dusk, neon lights, flying cars"}),
+                
+                "images_2": ("IMAGE",),
+                "prompt_2": ("STRING", {"multiline": True, "default": ""}),
+                
+                "images_3": ("IMAGE",),
+                "prompt_3": ("STRING", {"multiline": True, "default": ""}),
+                
+                "images_4": ("IMAGE",),
+                "prompt_4": ("STRING", {"multiline": True, "default": ""}),
+                
+                "images_5": ("IMAGE",),
+                "prompt_5": ("STRING", {"multiline": True, "default": ""}),
+                
+                "prompt_threshold": ("FLOAT", {
+                    "default": 0.24, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "CLIP cosine similarity threshold. Lower = keep more frames (more permissive)."
+                }),
+                "min_scene_frames": ("INT", {"default": 8, "min": 1, "max": 120}),
+                "transition_frames": ("INT", {"default": 12, "min": 0, "max": 60}),
+                "transition_mode": (["none", "fade", "dissolve", "slide_left", "slide_right"],),
+            },
+            "optional": {
+                "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
+                "scene_sensitivity": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Extra visual scene-cut detection INSIDE each sequence (0 = disabled, treat whole cleaned sequence as 1 scene)"
+                }),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE", "INT", "STRING")
+    RETURN_NAMES = ("montage_frames", "scene_count", "stats")
+    FUNCTION = "montage"
+    CATEGORY = "FunPack"
+
+    def montage(self, clip, clip_vision, images_1, prompt_1,
+                images_2=None, prompt_2="", images_3=None, prompt_3="",
+                images_4=None, prompt_4="", images_5=None, prompt_5="",
+                prompt_threshold=0.24, min_scene_frames=8, transition_frames=12,
+                transition_mode="fade", negative_prompt="", scene_sensitivity=0.0):
+        
+        sequences = [
+            (images_1, prompt_1.strip()),
+            (images_2, prompt_2.strip()) if images_2 is not None else (None, ""),
+            (images_3, prompt_3.strip()) if images_3 is not None else (None, ""),
+            (images_4, prompt_4.strip()) if images_4 is not None else (None, ""),
+            (images_5, prompt_5.strip()) if images_5 is not None else (None, ""),
+        ]
+        
+        # Filter out empty sequences
+        active_seqs: List[Tuple[torch.Tensor, str]] = []
+        for imgs, prompt in sequences:
+            if imgs is not None and imgs.shape[0] > 0 and prompt:
+                active_seqs.append((imgs, prompt))
+        
+        if not active_seqs:
+            # Fallback: return first non-empty input unchanged
+            for imgs, _ in sequences:
+                if imgs is not None and imgs.shape[0] > 0:
+                    return (imgs, 1, "No valid sequences with prompts - returning raw input")
+            raise ValueError("No valid image batches or prompts provided")
+        
+        device = images_1.device
+        final_frames: List[torch.Tensor] = []
+        stats = []
+        scene_count = 0
+        total_dropped = 0
+        
+        clip_model = clip[0] if isinstance(clip, (list, tuple)) else clip  # Handle possible tuple from some loaders
+        vision_model = clip_vision
+        
+        # Encode negative once (global)
+        neg_embed = None
+        if negative_prompt.strip():
+            tokens = clip.tokenizer.encode(negative_prompt)
+            tokens = clip.tokenizer.pad_tokens(tokens)
+            neg_embed = clip.encode_text(tokens).to(device)
+            neg_embed = F.normalize(neg_embed, dim=-1)
+        
+        for i, (batch, prompt) in enumerate(active_seqs):
+            orig_count = batch.shape[0]
+            if orig_count == 0:
+                continue
+                
+            # Encode prompt
+            tokens = clip.tokenizer.encode(prompt)
+            tokens = clip.tokenizer.pad_tokens(tokens)
+            text_embed = clip.encode_text(tokens).to(device)
+            text_embed = F.normalize(text_embed, dim=-1)
+            
+            # Process frames (batch CLIP vision encoding)
+            kept = []
+            dropped = 0
+            scores = []
+            
+            # CLIP Vision expects specific format; we use a simple loop for compatibility (fast enough for video)
+            for j in range(batch.shape[0]):
+                frame = batch[j:j+1]  # [1, H, W, C]
+                
+                # Get image embedding via CLIP Vision
+                # Most CLIPVision models expose .encode_image or we use the standard path
+                vision_out = vision_model.encode_image(frame)  # Returns dict or tensor with 'image_embeds'
+                if isinstance(vision_out, dict):
+                    img_embed = vision_out.get("image_embeds", vision_out.get("last_hidden_state", None))
+                else:
+                    img_embed = vision_out
+                
+                if img_embed is None:
+                    img_embed = vision_out  # fallback
+                
+                img_embed = img_embed.to(device)
+                if img_embed.dim() > 2:
+                    img_embed = img_embed.mean(dim=1)  # pool if needed
+                img_embed = F.normalize(img_embed, dim=-1)
+                
+                # Cosine similarity
+                sim = F.cosine_similarity(img_embed, text_embed, dim=-1).item()
+                
+                if neg_embed is not None:
+                    neg_sim = F.cosine_similarity(img_embed, neg_embed, dim=-1).item()
+                    sim = sim - 0.3 * neg_sim  # penalize negative
+                
+                scores.append(sim)
+                
+                if sim >= prompt_threshold:
+                    kept.append(batch[j:j+1])
+                else:
+                    dropped += 1
+            
+            if not kept:
+                # Fallback: keep the single best frame
+                best_idx = np.argmax(scores)
+                kept = [batch[best_idx:best_idx+1]]
+                dropped = orig_count - 1
+            
+            cleaned = torch.cat(kept, dim=0)
+            
+            # Optional intra-sequence visual cuts (simple diff-based if sensitivity > 0)
+            if scene_sensitivity > 0 and cleaned.shape[0] > 1:
+                # TODO: lightweight histogram/SSIM cut detection here if desired in future
+                pass  # For v1 we treat each cleaned sequence as ONE scene
+            
+            final_frames.append(cleaned)
+            total_dropped += dropped
+            scene_count += 1
+            
+            stats.append(f"Seq {i+1}: {orig_count}→{cleaned.shape[0]} frames (dropped {dropped}, avg score {np.mean(scores):.3f})")
+        
+        # Add transitions between sequences
+        montage_list: List[torch.Tensor] = []
+        trans_func = self._get_transition_func(transition_mode)
+        
+        for idx, seq in enumerate(final_frames):
+            montage_list.append(seq)
+            
+            if idx < len(final_frames) - 1 and transition_frames > 0:
+                next_seq = final_frames[idx + 1]
+                # Use last frame of current + first frame of next
+                A = seq[-1:] if seq.shape[0] > 0 else seq[0:1]
+                B = next_seq[0:1] if next_seq.shape[0] > 0 else next_seq[-1:]
+                
+                trans_clip = trans_func(A, B, transition_frames, device)
+                montage_list.append(trans_clip)
+        
+        if not montage_list:
+            final_batch = torch.zeros((1, 512, 512, 3), device=device, dtype=torch.float32)
+        else:
+            final_batch = torch.cat(montage_list, dim=0)
+        
+        info = f"Scenes: {scene_count} | Total dropped: {total_dropped} | Final frames: {final_batch.shape[0]}\n" + "\n".join(stats)
+        
+        return (final_batch, scene_count, info)
+    
+    def _get_transition_func(self, mode: str):
+        def fade(A: torch.Tensor, B: torch.Tensor, n: int, device):
+            frames = []
+            for i in range(n):
+                t = i / (n - 1) if n > 1 else 0.5
+                frame = (1 - t) * A + t * B
+                frames.append(frame)
+            return torch.cat(frames, dim=0)
+        
+        def dissolve(A: torch.Tensor, B: torch.Tensor, n: int, device):
+            frames = []
+            for i in range(n):
+                t = i / (n - 1) if n > 1 else 0.5
+                frame = (1 - t) * A + t * B
+                noise = torch.randn_like(frame) * 0.05 * (1 - t)
+                frame = torch.clamp(frame + noise, 0.0, 1.0)
+                frames.append(frame)
+            return torch.cat(frames, dim=0)
+        
+        def slide_left(A: torch.Tensor, B: torch.Tensor, n: int, device):
+            frames = []
+            for i in range(n):
+                t = i / (n - 1) if n > 1 else 0.5
+                w = A.shape[2]
+                shift = int(w * t)
+                left = A[:, :, shift:, :]
+                right = B[:, :, :shift, :]
+                pad_left = torch.zeros_like(A[:, :, :shift, :])
+                pad_right = torch.zeros_like(B[:, :, shift:, :])
+                frame = torch.cat([left, pad_right], dim=2) + torch.cat([pad_left, right], dim=2)  # simplistic slide
+                frames.append(frame)
+            return torch.cat(frames, dim=0)
+        
+        def slide_right(A: torch.Tensor, B: torch.Tensor, n: int, device):
+            return self._get_transition_func("slide_left")(B, A, n, device)  # reverse
+        
+        if mode == "none":
+            return lambda a, b, n, d: torch.zeros((0, *a.shape[1:]), device=d)  # empty
+        elif mode == "dissolve":
+            return dissolve
+        elif mode == "slide_left":
+            return slide_left
+        elif mode == "slide_right":
+            return slide_right
+        else:  # default fade
+            return fade
+
 class FunPackPromptCombiner:
     @classmethod
     def INPUT_TYPES(cls):
@@ -1459,6 +1700,7 @@ class FunPackCreativeTemplate:
 # Update NODE_CLASS_MAPPINGS and NODE_DISPLAY_NAME_MAPPINGS
 NODE_CLASS_MAPPINGS = {
     "FunPackStoryMemJSONConverter": FunPackStoryMemJSONConverter,
+    "FunPackAutoMontage": FunPackAutoMontage,
     "FunPackPromptCombiner": FunPackPromptCombiner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
@@ -1473,6 +1715,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackStoryMemJSONConverter": "FunPack StoryMem JSON Converter",
+    "FunPackAutoMontage": "FunPack Auto Montage",
     "FunPackPromptCombiner": "FunPack Prompt Combiner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
