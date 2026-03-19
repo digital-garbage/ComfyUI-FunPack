@@ -12,6 +12,7 @@ import tempfile
 import gc # Import garbage collector
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import List, Tuple, Optional
 import numpy as np
 from PIL import Image
 import folder_paths
