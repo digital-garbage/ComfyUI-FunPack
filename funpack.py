@@ -32,11 +32,6 @@ MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
 
-import torch
-import torch.nn.functional as F
-import numpy as np
-from typing import List, Tuple, Optional
-
 class FunPackAutoMontage:
     """
     FunPack Auto Montage v2
