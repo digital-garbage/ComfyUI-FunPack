@@ -5,7 +5,7 @@ A set of nodes designed for experiments with video diffusion models, such as WAN
 All pip packages used by FunPack nodes are Comfy dependencies so no additional installations are required. 
 hpsv3 is an _optional_ dependency for Keyframe Extractor node, thus not included into requirements. 
 You can install it separately: _pip3 install hpsv3 --no-build-isolation_.
-Please take into attention that using Prompt Enhancer and Story Writer nodes is not possible due to version of transformers required by hpsv3. Nodes require transformers>=5.0.
+Please take into attention that using Prompt Enhancer and Story Writer nodes becomes impossible after installation of hpsv3 due to version of transformers required by hpsv3. Nodes require transformers>=5.0. Installing it without --no-build-isolation will lead to 0 effect and node won't detect working hpsv3 in this case.
 
 To discover how to work with nodes, please check "docs" folder.
 
