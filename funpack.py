@@ -58,15 +58,6 @@ class FunPackAutoMontage:
                 "images_2": ("IMAGE",),
                 "prompt_2": ("STRING", {"multiline": True, "default": ""}),
                 
-                "images_3": ("IMAGE",),
-                "prompt_3": ("STRING", {"multiline": True, "default": ""}),
-                
-                "images_4": ("IMAGE",),
-                "prompt_4": ("STRING", {"multiline": True, "default": ""}),
-                
-                "images_5": ("IMAGE",),
-                "prompt_5": ("STRING", {"multiline": True, "default": ""}),
-                
                 "prompt_threshold": ("FLOAT", {
                     "default": 0.24, "min": 0.0, "max": 1.0, "step": 0.01,
                     "tooltip": "Lower = more permissive (keeps more frames)"
@@ -76,6 +67,14 @@ class FunPackAutoMontage:
                 "transition_mode": (["none", "fade", "dissolve", "slide_left", "slide_right"],),
             },
             "optional": {
+                "images_3": ("IMAGE",),
+                "prompt_3": ("STRING", {"multiline": True, "default": ""}),
+                
+                "images_4": ("IMAGE",),
+                "prompt_4": ("STRING", {"multiline": True, "default": ""}),
+                
+                "images_5": ("IMAGE",),
+                "prompt_5": ("STRING", {"multiline": True, "default": ""}),
                 "clip": ("CLIP",),  # Optional — improves prompt scoring accuracy
                 "negative_prompt": ("STRING", {"multiline": True, "default": ""}),
             }
