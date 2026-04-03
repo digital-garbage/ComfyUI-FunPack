@@ -247,6 +247,7 @@ class FunPackPromptCombiner:
                 "prompt3": ("STRING", {"default": "", "multiline": True}),
                 "prompt4": ("STRING", {"default": "", "multiline": True}),
                 "prompt5": ("STRING", {"default": "", "multiline": True}),
+                "entry_delimiter": ("STRING", {"default": "", "multiline": True}),
             }
         }
 
@@ -257,7 +258,7 @@ class FunPackPromptCombiner:
     OUTPUT_NODE = False
 
     def combine(self, main_prompt,
-                prompt1="", prompt2="", prompt3="", prompt4="", prompt5=""):
+                prompt1="", prompt2="", prompt3="", prompt4="", prompt5="", entry_delimiter=""):
 
         main = main_prompt.strip()
 
@@ -274,7 +275,10 @@ class FunPackPromptCombiner:
 
         results = []
         for p in (prompt1, prompt2, prompt3, prompt4, prompt5):
-            combined = merge(main, p)
+            if entry_delimiter:
+                combined = merge(entry_delimiter, main, p)
+            else:
+                combined = merge(main, p)
             results.append(combined)
 
         # Always return exactly 5 strings (even if some are just the main prompt)
