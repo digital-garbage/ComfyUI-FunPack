@@ -51,6 +51,8 @@ class FunPackUserRatingProvider:
         return (rating,)
 
 
+import time  # needed for IS_CHANGED
+
 # ====================== FUNPACK GEMMA EMBEDDING REFINER ======================
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
@@ -88,6 +90,13 @@ class FunPackGemmaEmbeddingRefiner:
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
+    # === THIS IS THE KEY FIX ===
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Return a value that is different every single time the node is queued
+        # float("nan") is the most common reliable trick — NaN never equals NaN
+        return float("nan")
+
     def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.07):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
@@ -96,7 +105,7 @@ class FunPackGemmaEmbeddingRefiner:
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
-        # Extract tensor + metadata (LTX/Gemma format)
+        # Extract tensor + metadata
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
             return (conditioning, "ERROR: Empty CONDITIONING")
 
@@ -111,10 +120,9 @@ class FunPackGemmaEmbeddingRefiner:
             return (conditioning, f"ERROR: Unexpected item type {type(item)}")
 
         if not isinstance(raw_embeds, torch.Tensor):
-            return (conditioning, f"ERROR: No tensor extracted")
+            return (conditioning, "ERROR: No tensor extracted")
 
         if reset_session or not os.path.exists(json_file):
-            # FIRST RUN
             data = {
                 "refinement_key": refinement_key,
                 "reference_embeds": tensor_to_serializable(raw_embeds),
@@ -125,10 +133,9 @@ class FunPackGemmaEmbeddingRefiner:
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-
             return (conditioning, f"First run – Reference saved for '{refinement_key}'")
 
-        # SUBSEQUENT RUNS
+        # Load previous
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -140,20 +147,16 @@ class FunPackGemmaEmbeddingRefiner:
 
         last_rating = data.get("last_rating", 3)
 
-        # === ALWAYS REACT TO THE CURRENT RATING (no "same rating = nothing" logic) ===
+        # Refinement logic — always reacts to the current rating
         if rating >= 4:
-            # Good rating → reinforce and continue improving
             multiplier = 1.32 if rating == 5 else 1.18
             if rating == last_rating:
-                multiplier += 0.15          # keep moving forward on repeated good ratings
+                multiplier += 0.15
             noise_scale = exploration_strength * (0.85 if rating == 5 else 0.65)
         else:
-            # Bad rating → pull back strongly
             multiplier = max(0.12, rating / 3.6)
             noise_scale = exploration_strength * (4.6 - rating) * 1.35
-
             if rating == last_rating:
-                # Repeated bad ratings (especially 1s) → very aggressive response
                 multiplier *= 0.45
                 noise_scale *= 2.2 if rating <= 2 else 1.6
 
@@ -165,7 +168,7 @@ class FunPackGemmaEmbeddingRefiner:
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Save state
+        # Save
         data["modified_embeds"] = tensor_to_serializable(new_modified)
         data["history"].append({
             "iteration": len(data["history"]),
