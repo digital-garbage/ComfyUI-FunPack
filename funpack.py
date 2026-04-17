@@ -23,6 +23,158 @@ import json
 from comfy.utils import ProgressBar
 import random
 import re
+import base64
+from hashlib import md5
+
+class FunPackUserRatingProvider:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "rating": ("INT", {
+                    "default": 3,
+                    "min": 1,
+                    "max": 5,
+                    "step": 1,
+                    "display": "slider",
+                    "label": "Rating (1=awful, 5=masterpiece)"
+                })
+            }
+        }
+
+    RETURN_TYPES = ("INT",)
+    RETURN_NAMES = ("rating",)
+    FUNCTION = "provide"
+    CATEGORY = "FunPack/Refinement"
+
+    def provide(self, rating):
+        return (rating,)
+
+
+# ====================== FUNPACK GEMMA EMBEDDING REFINER ======================
+def tensor_to_serializable(t: torch.Tensor) -> dict:
+    arr = t.cpu().numpy()
+    return {
+        "data": base64.b64encode(arr.tobytes()).decode("utf-8"),
+        "shape": list(arr.shape),
+        "dtype": str(arr.dtype)
+    }
+
+
+def serializable_to_tensor(d: dict) -> torch.Tensor:
+    arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"])
+    return torch.from_numpy(arr).to(device="cuda" if torch.cuda.is_available() else "cpu", dtype=torch.float32)
+
+
+class FunPackGemmaEmbeddingRefiner:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "conditioning": ("CONDITIONING",),
+                "rating": ("INT", {"default": 3, "min": 1, "max": 5, "step": 1}),
+                "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
+            },
+            "optional": {
+                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session"}),
+                "exploration_strength": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.1, "step": 0.001}),
+            }
+        }
+
+    RETURN_TYPES = ("CONDITIONING", "STRING")
+    RETURN_NAMES = ("modified_conditioning", "status")
+    FUNCTION = "refine"
+    CATEGORY = "FunPack/Refinement"
+
+    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.02):
+        # Create refinements folder relative to this custom node
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        refinements_dir = os.path.join(base_dir, "refinements")
+        os.makedirs(refinements_dir, exist_ok=True)
+
+        safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
+        json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
+
+        # Extract embeds tensor and metadata dict (LTX format)
+        if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
+            return (conditioning, "ERROR: Empty conditioning")
+
+        item = conditioning[0]
+        if isinstance(item, tuple) and len(item) >= 2:
+            raw_embeds = item[0]          # tensor
+            meta_dict = item[1]           # {'pooled_output': None, 'unprocessed_ltxav_embeds': True, ...}
+        else:
+            raw_embeds = item
+            meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
+
+        if reset_session or not os.path.exists(json_file):
+            # === FIRST RUN ===
+            data = {
+                "refinement_key": refinement_key,
+                "reference_embeds": tensor_to_serializable(raw_embeds),
+                "original_embeds": tensor_to_serializable(raw_embeds),
+                "modified_embeds": tensor_to_serializable(raw_embeds),
+                "history": [],
+                "last_rating": rating
+            }
+            with open(json_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+
+            status = f"First run – Reference embeddings saved for key: {refinement_key}"
+            return (conditioning, status)
+
+        # === SUBSEQUENT RUNS ===
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            return (conditioning, f"ERROR loading JSON: {str(e)}")
+
+        reference = serializable_to_tensor(data["reference_embeds"])
+        prev_modified = serializable_to_tensor(data.get("modified_embeds", data["reference_embeds"]))
+        prev_delta = prev_modified - reference
+
+        # Update original to previous modified
+        data["original_embeds"] = data.get("modified_embeds", data["reference_embeds"])
+
+        # Rating-based delta refinement
+        if rating >= 4:
+            multiplier = 1.12
+            noise_scale = exploration_strength * 0.5
+        else:
+            multiplier = max(0.3, rating / 3.0)
+            noise_scale = exploration_strength * (3.0 - rating) * 0.8
+
+        new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
+
+        new_modified = reference + new_delta
+
+        # Safety: clamp and normalize magnitude
+        new_modified = torch.clamp(new_modified, min=-50.0, max=50.0)
+        new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * reference.norm(dim=-1, keepdim=True)
+
+        # Save updated state
+        data["modified_embeds"] = tensor_to_serializable(new_modified)
+        data["history"].append({
+            "iteration": len(data["history"]),
+            "rating": rating,
+            "delta_magnitude": float(new_delta.abs().mean())
+        })
+        data["last_rating"] = rating
+
+        try:
+            with open(json_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            return (conditioning, f"ERROR saving JSON: {str(e)}")
+
+        # Rebuild CONDITIONING while preserving LTX metadata
+        modified_conditioning = [(new_modified, meta_dict)]
+
+        iteration = len(data["history"])
+        status = f"Iteration {iteration} | Rating {rating}/5 | Delta updated | Key: {refinement_key}"
+
+        return (modified_conditioning, status)
 
 # Constants from StoryMem
 IMAGE_FACTOR = 28
@@ -1671,6 +1823,8 @@ NODE_CLASS_MAPPINGS = {
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackCreativeTemplate": FunPackCreativeTemplate,
     "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
+    "FunPackUserRatingProvider": FunPackUserRatingProvider,
+    "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1685,5 +1839,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackVideoStitch": "FunPack Video Stitch",
     "FunPackContinueVideo": "FunPack Continue Video",
     "FunPackCreativeTemplate": "FunPack Creative Template",
-    "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer"
+    "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
+    "FunPackUserRatingProvider": "FunPack User Rating Provider (1-5)",
+    "FunPackGemmaEmbeddingRefiner": "FunPack Gemma Embedding Refiner (Self-Refinement)"
 }
