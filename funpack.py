@@ -51,6 +51,7 @@ class FunPackUserRatingProvider:
         return (rating,)
 
 
+# ====================== FUNPACK GEMMA EMBEDDING REFINER ======================
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -78,7 +79,7 @@ class FunPackGemmaEmbeddingRefiner:
             },
             "optional": {
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session"}),
-                "exploration_strength": ("FLOAT", {"default": 0.035, "min": 0.0, "max": 0.15, "step": 0.001}),
+                "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
             }
         }
 
@@ -87,7 +88,7 @@ class FunPackGemmaEmbeddingRefiner:
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
-    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.035):
+    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.07):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -95,25 +96,25 @@ class FunPackGemmaEmbeddingRefiner:
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
-        # === ROBUST EXTRACTION OF TENSOR + METADATA (LTX/Gemma format) ===
+        # Extract tensor + metadata (LTX/Gemma format)
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
-            return (conditioning, "ERROR: Empty or invalid CONDITIONING")
+            return (conditioning, "ERROR: Empty CONDITIONING")
 
         item = conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
-            raw_embeds = item[0]          # the actual embedding tensor
+            raw_embeds = item[0]
             meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None, "unprocessed_ltxav_embeds": True}
         elif isinstance(item, torch.Tensor):
             raw_embeds = item
             meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
         else:
-            return (conditioning, f"ERROR: Unexpected conditioning item type: {type(item)}")
+            return (conditioning, f"ERROR: Unexpected item type {type(item)}")
 
         if not isinstance(raw_embeds, torch.Tensor):
-            return (conditioning, f"ERROR: Could not extract tensor (got {type(raw_embeds)})")
+            return (conditioning, f"ERROR: No tensor extracted")
 
         if reset_session or not os.path.exists(json_file):
-            # === FIRST RUN ===
+            # FIRST RUN
             data = {
                 "refinement_key": refinement_key,
                 "reference_embeds": tensor_to_serializable(raw_embeds),
@@ -125,73 +126,64 @@ class FunPackGemmaEmbeddingRefiner:
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
-            status = f"First run – Reference embeddings saved for key: {refinement_key}"
-            return (conditioning, status)   # unchanged on first run
+            return (conditioning, f"First run – Reference saved for '{refinement_key}'")
 
-        # === SUBSEQUENT RUNS ===
-        try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            return (conditioning, f"ERROR loading JSON: {str(e)}")
+        # SUBSEQUENT RUNS
+        with open(json_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         reference = serializable_to_tensor(data["reference_embeds"])
         prev_modified = serializable_to_tensor(data.get("modified_embeds", data["reference_embeds"]))
         prev_delta = prev_modified - reference
 
-        # Update original to previous modified (as per your original request)
         data["original_embeds"] = data.get("modified_embeds", data["reference_embeds"])
 
-        # === IMPROVED REFINEMENT LOGIC (responds to repeated ratings) ===
         last_rating = data.get("last_rating", 3)
 
+        # === ALWAYS REACT TO THE CURRENT RATING (no "same rating = nothing" logic) ===
         if rating >= 4:
-            # High rating → keep pushing in the good direction
-            multiplier = 1.25 if rating == 5 else 1.12
+            # Good rating → reinforce and continue improving
+            multiplier = 1.32 if rating == 5 else 1.18
             if rating == last_rating:
-                multiplier += 0.09          # continued reinforcement even on repeated 4/5
-            noise_scale = exploration_strength * (0.75 if rating == 5 else 0.55)
+                multiplier += 0.15          # keep moving forward on repeated good ratings
+            noise_scale = exploration_strength * (0.85 if rating == 5 else 0.65)
         else:
-            # Low rating → pull back from the bad direction
-            multiplier = max(0.20, rating / 3.5)   # stronger damping than before
-            noise_scale = exploration_strength * (4.2 - rating) * 1.1
+            # Bad rating → pull back strongly
+            multiplier = max(0.12, rating / 3.6)
+            noise_scale = exploration_strength * (4.6 - rating) * 1.35
 
             if rating == last_rating:
-                # === THIS IS THE KEY CHANGE YOU ASKED FOR ===
-                # Multiple identical low ratings (especially 1s) = user is clearly unhappy
-                # → much stronger exploration + even more aggressive damping
-                multiplier = max(0.12, multiplier * 0.65)
-                noise_scale *= 1.65 if rating <= 2 else 1.3
+                # Repeated bad ratings (especially 1s) → very aggressive response
+                multiplier *= 0.45
+                noise_scale *= 2.2 if rating <= 2 else 1.6
 
         new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
         new_modified = reference + new_delta
 
-        # Safety: prevent extreme values and keep magnitude close to original
-        new_modified = torch.clamp(new_modified, min=-50.0, max=50.0)
-        new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * reference.norm(dim=-1, keepdim=True)
+        # Safety
+        new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
+        norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
+        new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Save updated state
+        # Save state
         data["modified_embeds"] = tensor_to_serializable(new_modified)
         data["history"].append({
             "iteration": len(data["history"]),
             "rating": rating,
-            "delta_magnitude": float(new_delta.abs().mean()),
-            "multiplier_used": float(multiplier),
-            "noise_scale_used": float(noise_scale)
+            "prev_rating": last_rating,
+            "multiplier": round(multiplier, 3),
+            "noise_scale": round(noise_scale, 4),
+            "delta_magnitude": round(float(new_delta.abs().mean()), 4)
         })
         data["last_rating"] = rating
 
-        try:
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            return (conditioning, f"ERROR saving JSON: {str(e)}")
+        with open(json_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
-        # Rebuild CONDITIONING (preserves exact LTX metadata)
         modified_conditioning = [(new_modified, meta_dict)]
 
         iteration = len(data["history"])
-        status = f"Iteration {iteration} | Rating {rating}/5 (prev {last_rating}) | Delta updated | Key: {refinement_key}"
+        status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | Mult {multiplier:.2f} | Noise {noise_scale:.3f}"
 
         return (modified_conditioning, status)
 
