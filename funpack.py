@@ -53,6 +53,8 @@ class FunPackUserRatingProvider:
 
 # ====================== FUNPACK GEMMA EMBEDDING REFINER ======================
 def tensor_to_serializable(t: torch.Tensor) -> dict:
+    if not isinstance(t, torch.Tensor):
+        raise TypeError(f"Expected torch.Tensor, got {type(t)}")
     arr = t.cpu().numpy()
     return {
         "data": base64.b64encode(arr.tobytes()).decode("utf-8"),
@@ -87,7 +89,6 @@ class FunPackGemmaEmbeddingRefiner:
     CATEGORY = "FunPack/Refinement"
 
     def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.02):
-        # Create refinements folder relative to this custom node
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -95,17 +96,26 @@ class FunPackGemmaEmbeddingRefiner:
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
-        # Extract embeds tensor and metadata dict (LTX format)
+        # === ROBUST EXTRACTION OF TENSOR + METADATA (fixes the error) ===
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
-            return (conditioning, "ERROR: Empty conditioning")
+            return (conditioning, "ERROR: Empty or invalid CONDITIONING")
 
+        # Take the first item (most common case for LTX/Gemma)
         item = conditioning[0]
-        if isinstance(item, tuple) and len(item) >= 2:
-            raw_embeds = item[0]          # tensor
-            meta_dict = item[1]           # {'pooled_output': None, 'unprocessed_ltxav_embeds': True, ...}
-        else:
+
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            # Standard ComfyUI / LTX format: (tensor, dict)
+            raw_embeds = item[0]
+            meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None, "unprocessed_ltxav_embeds": True}
+        elif isinstance(item, torch.Tensor):
+            # Rare fallback: just a tensor
             raw_embeds = item
             meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
+        else:
+            return (conditioning, f"ERROR: Unexpected conditioning item type: {type(item)}")
+
+        if not isinstance(raw_embeds, torch.Tensor):
+            return (conditioning, f"ERROR: Could not extract tensor (got {type(raw_embeds)})")
 
         if reset_session or not os.path.exists(json_file):
             # === FIRST RUN ===
@@ -121,7 +131,7 @@ class FunPackGemmaEmbeddingRefiner:
                 json.dump(data, f, indent=2)
 
             status = f"First run – Reference embeddings saved for key: {refinement_key}"
-            return (conditioning, status)
+            return (conditioning, status)   # return original on first run
 
         # === SUBSEQUENT RUNS ===
         try:
@@ -134,10 +144,9 @@ class FunPackGemmaEmbeddingRefiner:
         prev_modified = serializable_to_tensor(data.get("modified_embeds", data["reference_embeds"]))
         prev_delta = prev_modified - reference
 
-        # Update original to previous modified
         data["original_embeds"] = data.get("modified_embeds", data["reference_embeds"])
 
-        # Rating-based delta refinement
+        # Rating-based refinement
         if rating >= 4:
             multiplier = 1.12
             noise_scale = exploration_strength * 0.5
@@ -146,14 +155,13 @@ class FunPackGemmaEmbeddingRefiner:
             noise_scale = exploration_strength * (3.0 - rating) * 0.8
 
         new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
-
         new_modified = reference + new_delta
 
-        # Safety: clamp and normalize magnitude
+        # Safety
         new_modified = torch.clamp(new_modified, min=-50.0, max=50.0)
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * reference.norm(dim=-1, keepdim=True)
 
-        # Save updated state
+        # Save
         data["modified_embeds"] = tensor_to_serializable(new_modified)
         data["history"].append({
             "iteration": len(data["history"]),
@@ -168,7 +176,7 @@ class FunPackGemmaEmbeddingRefiner:
         except Exception as e:
             return (conditioning, f"ERROR saving JSON: {str(e)}")
 
-        # Rebuild CONDITIONING while preserving LTX metadata
+        # Rebuild CONDITIONING (preserve exact LTX metadata)
         modified_conditioning = [(new_modified, meta_dict)]
 
         iteration = len(data["history"])
