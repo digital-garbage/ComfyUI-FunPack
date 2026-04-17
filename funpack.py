@@ -51,7 +51,7 @@ class FunPackUserRatingProvider:
         return (rating,)
 
 
-import time  # needed for IS_CHANGED
+import time  # only needed if you want extra safety, but IS_CHANGED is enough
 
 # ====================== FUNPACK GEMMA EMBEDDING REFINER ======================
 def tensor_to_serializable(t: torch.Tensor) -> dict:
@@ -82,6 +82,13 @@ class FunPackGemmaEmbeddingRefiner:
             "optional": {
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session"}),
                 "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
+                "token_prioritization_strength": ("FLOAT", {
+                    "default": 0.8,
+                    "min": 0.0,
+                    "max": 1.5,
+                    "step": 0.05,
+                    "label": "Token Prioritization (0=uniform, 1.0=focus on important tokens)"
+                }),
             }
         }
 
@@ -90,14 +97,14 @@ class FunPackGemmaEmbeddingRefiner:
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
-    # === THIS IS THE KEY FIX ===
+    # Forces ComfyUI to run the node every single time (no caching)
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        # Return a value that is different every single time the node is queued
-        # float("nan") is the most common reliable trick — NaN never equals NaN
         return float("nan")
 
-    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.07):
+    def refine(self, conditioning, rating, refinement_key,
+               reset_session=False, exploration_strength=0.07,
+               token_prioritization_strength=0.8):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -135,7 +142,7 @@ class FunPackGemmaEmbeddingRefiner:
                 json.dump(data, f, indent=2)
             return (conditioning, f"First run – Reference saved for '{refinement_key}'")
 
-        # Load previous
+        # Load previous state
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -147,7 +154,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         last_rating = data.get("last_rating", 3)
 
-        # Refinement logic — always reacts to the current rating
+        # Base refinement (same strong reaction to repeated ratings)
         if rating >= 4:
             multiplier = 1.32 if rating == 5 else 1.18
             if rating == last_rating:
@@ -161,6 +168,17 @@ class FunPackGemmaEmbeddingRefiner:
                 noise_scale *= 2.2 if rating <= 2 else 1.6
 
         new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
+
+        # === NEW: PER-TOKEN PRIORITIZATION ===
+        if token_prioritization_strength > 0.0:
+            # Magnitude of change per token (row)
+            token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)          # [seq_len, 1]
+            # Normalize to 0–1 range
+            token_importance = token_deltas / (token_deltas.max() + 1e-8)
+            # Boost multiplier on the most "active" tokens
+            boost = 1.0 + token_prioritization_strength * token_importance
+            new_delta = new_delta * boost
+
         new_modified = reference + new_delta
 
         # Safety
@@ -176,7 +194,8 @@ class FunPackGemmaEmbeddingRefiner:
             "prev_rating": last_rating,
             "multiplier": round(multiplier, 3),
             "noise_scale": round(noise_scale, 4),
-            "delta_magnitude": round(float(new_delta.abs().mean()), 4)
+            "delta_magnitude": round(float(new_delta.abs().mean()), 4),
+            "token_prioritization": float(token_prioritization_strength)
         })
         data["last_rating"] = rating
 
@@ -186,7 +205,7 @@ class FunPackGemmaEmbeddingRefiner:
         modified_conditioning = [(new_modified, meta_dict)]
 
         iteration = len(data["history"])
-        status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | Mult {multiplier:.2f} | Noise {noise_scale:.3f}"
+        status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | Mult {multiplier:.2f} | TokPri {token_prioritization_strength:.1f}"
 
         return (modified_conditioning, status)
 
