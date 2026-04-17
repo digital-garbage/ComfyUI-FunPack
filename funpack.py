@@ -51,7 +51,6 @@ class FunPackUserRatingProvider:
         return (rating,)
 
 
-# ====================== FUNPACK GEMMA EMBEDDING REFINER ======================
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -79,7 +78,7 @@ class FunPackGemmaEmbeddingRefiner:
             },
             "optional": {
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session"}),
-                "exploration_strength": ("FLOAT", {"default": 0.02, "min": 0.0, "max": 0.1, "step": 0.001}),
+                "exploration_strength": ("FLOAT", {"default": 0.035, "min": 0.0, "max": 0.15, "step": 0.001}),
             }
         }
 
@@ -88,7 +87,7 @@ class FunPackGemmaEmbeddingRefiner:
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
-    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.02):
+    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.035):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -96,19 +95,15 @@ class FunPackGemmaEmbeddingRefiner:
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
-        # === ROBUST EXTRACTION OF TENSOR + METADATA (fixes the error) ===
+        # === ROBUST EXTRACTION OF TENSOR + METADATA (LTX/Gemma format) ===
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
             return (conditioning, "ERROR: Empty or invalid CONDITIONING")
 
-        # Take the first item (most common case for LTX/Gemma)
         item = conditioning[0]
-
         if isinstance(item, (list, tuple)) and len(item) >= 2:
-            # Standard ComfyUI / LTX format: (tensor, dict)
-            raw_embeds = item[0]
+            raw_embeds = item[0]          # the actual embedding tensor
             meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None, "unprocessed_ltxav_embeds": True}
         elif isinstance(item, torch.Tensor):
-            # Rare fallback: just a tensor
             raw_embeds = item
             meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
         else:
@@ -131,7 +126,7 @@ class FunPackGemmaEmbeddingRefiner:
                 json.dump(data, f, indent=2)
 
             status = f"First run – Reference embeddings saved for key: {refinement_key}"
-            return (conditioning, status)   # return original on first run
+            return (conditioning, status)   # unchanged on first run
 
         # === SUBSEQUENT RUNS ===
         try:
@@ -144,29 +139,45 @@ class FunPackGemmaEmbeddingRefiner:
         prev_modified = serializable_to_tensor(data.get("modified_embeds", data["reference_embeds"]))
         prev_delta = prev_modified - reference
 
+        # Update original to previous modified (as per your original request)
         data["original_embeds"] = data.get("modified_embeds", data["reference_embeds"])
 
-        # Rating-based refinement
+        # === IMPROVED REFINEMENT LOGIC (responds to repeated ratings) ===
+        last_rating = data.get("last_rating", 3)
+
         if rating >= 4:
-            multiplier = 1.12
-            noise_scale = exploration_strength * 0.5
+            # High rating → keep pushing in the good direction
+            multiplier = 1.25 if rating == 5 else 1.12
+            if rating == last_rating:
+                multiplier += 0.09          # continued reinforcement even on repeated 4/5
+            noise_scale = exploration_strength * (0.75 if rating == 5 else 0.55)
         else:
-            multiplier = max(0.3, rating / 3.0)
-            noise_scale = exploration_strength * (3.0 - rating) * 0.8
+            # Low rating → pull back from the bad direction
+            multiplier = max(0.20, rating / 3.5)   # stronger damping than before
+            noise_scale = exploration_strength * (4.2 - rating) * 1.1
+
+            if rating == last_rating:
+                # === THIS IS THE KEY CHANGE YOU ASKED FOR ===
+                # Multiple identical low ratings (especially 1s) = user is clearly unhappy
+                # → much stronger exploration + even more aggressive damping
+                multiplier = max(0.12, multiplier * 0.65)
+                noise_scale *= 1.65 if rating <= 2 else 1.3
 
         new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
         new_modified = reference + new_delta
 
-        # Safety
+        # Safety: prevent extreme values and keep magnitude close to original
         new_modified = torch.clamp(new_modified, min=-50.0, max=50.0)
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * reference.norm(dim=-1, keepdim=True)
 
-        # Save
+        # Save updated state
         data["modified_embeds"] = tensor_to_serializable(new_modified)
         data["history"].append({
             "iteration": len(data["history"]),
             "rating": rating,
-            "delta_magnitude": float(new_delta.abs().mean())
+            "delta_magnitude": float(new_delta.abs().mean()),
+            "multiplier_used": float(multiplier),
+            "noise_scale_used": float(noise_scale)
         })
         data["last_rating"] = rating
 
@@ -176,11 +187,11 @@ class FunPackGemmaEmbeddingRefiner:
         except Exception as e:
             return (conditioning, f"ERROR saving JSON: {str(e)}")
 
-        # Rebuild CONDITIONING (preserve exact LTX metadata)
+        # Rebuild CONDITIONING (preserves exact LTX metadata)
         modified_conditioning = [(new_modified, meta_dict)]
 
         iteration = len(data["history"])
-        status = f"Iteration {iteration} | Rating {rating}/5 | Delta updated | Key: {refinement_key}"
+        status = f"Iteration {iteration} | Rating {rating}/5 (prev {last_rating}) | Delta updated | Key: {refinement_key}"
 
         return (modified_conditioning, status)
 
