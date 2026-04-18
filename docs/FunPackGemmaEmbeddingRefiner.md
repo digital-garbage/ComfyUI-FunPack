@@ -10,6 +10,8 @@
 
 **exploration_strength** - General multiplier for deltas. Lower value = lesser changes in deltas = less noticeable but more stable result, in case you need a tiny refinement. If you need the model to do what it was not supposed to produce, try higher values.
 
+**similarity_threshold** - If you use a different prompt (conditioning on the input of the node is different from what you have used before), and the difference between these prompts reaches certain threshold, enables smart merging that adds previous "good" deltas to new ones you provided.
+
 **token_prioritization_strength** - Multiplier of priority of certain tokens that are responsible for bad or good results, depending on the ratings. 0 means all tokens are treated equally. Lower value means certain tokens are slightly boosted, higher value means they are boosted significantly in comparison to others.
 
 **max_history** - How many previously generated deltas to store inside the .json. Lower value would mean less refinement overtime due to lesser amount of information available to tweak deltas. Higher value is preferred, but in case you don't have enough free space - do not set it too high.
