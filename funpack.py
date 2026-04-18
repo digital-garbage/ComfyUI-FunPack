@@ -54,7 +54,7 @@ class FunPackUserRatingProvider:
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
-    arr = t.cpu().numpy()
+    arr = t.detach().cpu().numpy()
     return {
         "data": base64.b64encode(arr.tobytes()).decode("utf-8"),
         "shape": list(arr.shape),
@@ -64,7 +64,10 @@ def tensor_to_serializable(t: torch.Tensor) -> dict:
 
 def serializable_to_tensor(d: dict) -> torch.Tensor:
     arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"])
-    return torch.from_numpy(arr).to(device="cuda" if torch.cuda.is_available() else "cpu", dtype=torch.float32)
+    tensor = torch.from_numpy(arr).to(dtype=torch.float32)
+    if torch.cuda.is_available():
+        tensor = tensor.cuda()
+    return tensor
 
 
 class FunPackGemmaEmbeddingRefiner:
@@ -132,8 +135,12 @@ class FunPackGemmaEmbeddingRefiner:
 
         reference = serializable_to_tensor(data["reference_embeds"])
 
+        # Move current input to same device as reference for similarity calculation
+        device = reference.device
+        cur_embeds = raw_embeds.to(device) if raw_embeds.device != device else raw_embeds
+
         ref_mean = reference.mean(dim=1)
-        cur_mean = raw_embeds.mean(dim=1)
+        cur_mean = cur_embeds.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
 
         last_rating = data.get("last_rating", 3)
@@ -158,7 +165,7 @@ class FunPackGemmaEmbeddingRefiner:
             new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
             merged_good = 0
         else:
-            # Different prompt detected - merge good past deltas
+            # Different prompt - merge good past deltas
             good_deltas = []
             if "history" in data:
                 for entry in data["history"]:
@@ -173,7 +180,7 @@ class FunPackGemmaEmbeddingRefiner:
                 new_delta = torch.randn_like(reference) * exploration_strength * 0.3
                 merged_good = 0
 
-        # Token prioritization (re-added - crucial as you said)
+        # Token prioritization
         if token_prioritization_strength > 0.0:
             token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
             token_importance = token_deltas / (token_deltas.max() + 1e-8)
