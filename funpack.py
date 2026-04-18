@@ -156,7 +156,7 @@ class FunPackGemmaEmbeddingRefiner:
         if prompt and last_prompt and new_token_boost > 0.0:
             try:
                 from transformers import AutoTokenizer
-                tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-12b-it", trust_remote_code=True, use_fast=True)
+                tokenizer = AutoTokenizer.from_pretrained("DreamFast/gemma-3-12b-it-heretic-v2", trust_remote_code=True, use_fast=True)
                 cur_tokens = tokenizer.encode(prompt, add_special_tokens=True)
                 prev_tokens = tokenizer.encode(last_prompt, add_special_tokens=True)
                 min_len = min(len(cur_tokens), len(prev_tokens))
