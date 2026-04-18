@@ -80,12 +80,14 @@ class FunPackGemmaEmbeddingRefiner:
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
             },
             "optional": {
+                "prompt": ("STRING", {"multiline": True, "default": "", "placeholder": "Paste your positive prompt here (optional but recommended)"}),
                 "latent": ("LATENT",),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears history)"}),
                 "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
                 "token_prioritization_strength": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.5, "step": 0.05, "label": "Token Prioritization Strength (0 = uniform)"}),
+                "new_token_boost": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.05, "label": "New Token Boost (0 = disabled)"}),
                 "latent_strength": ("FLOAT", {"default": 0.12, "min": 0.0, "max": 0.4, "step": 0.01, "label": "Latent Refinement Strength (0 = disabled)"}),
-                "similarity_threshold": ("FLOAT", {"default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01, "label": "Similarity Threshold (for cross-prompt merging)"}),
+                "similarity_threshold": ("FLOAT", {"default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01, "label": "Similarity Threshold"}),
                 "max_history": ("INT", {"default": 50, "min": 10, "max": 500, "step": 5, "label": "Max History Entries"})
             }
         }
@@ -99,7 +101,7 @@ class FunPackGemmaEmbeddingRefiner:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def refine(self, conditioning, rating, refinement_key, latent=None, reset_session=False, exploration_strength=0.07, token_prioritization_strength=0.85, latent_strength=0.12, similarity_threshold=0.78, max_history=50):
+    def refine(self, conditioning, rating, refinement_key, prompt="", latent=None, reset_session=False, exploration_strength=0.07, token_prioritization_strength=0.85, new_token_boost=0.0, latent_strength=0.12, similarity_threshold=0.78, max_history=50):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -124,9 +126,11 @@ class FunPackGemmaEmbeddingRefiner:
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
+                "reference_prompt": prompt,
                 "reference_embeds": tensor_to_serializable(raw_embeds),
                 "history": [],
-                "last_rating": rating
+                "last_rating": rating,
+                "last_prompt": prompt
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -145,6 +149,23 @@ class FunPackGemmaEmbeddingRefiner:
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
 
         last_rating = data.get("last_rating", 3)
+        last_prompt = data.get("last_prompt", "")
+
+        # New prompt-aware logic
+        new_token_mask = None
+        if prompt and last_prompt and new_token_boost > 0.0:
+            try:
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained("google/gemma-3-12b-it", trust_remote_code=True, use_fast=True)
+                cur_tokens = tokenizer.encode(prompt, add_special_tokens=True)
+                prev_tokens = tokenizer.encode(last_prompt, add_special_tokens=True)
+                min_len = min(len(cur_tokens), len(prev_tokens))
+                new_token_mask = torch.ones(cur_embeds.shape[0], device=device)
+                for i in range(min_len):
+                    if cur_tokens[i] != prev_tokens[i]:
+                        new_token_mask[i] = 0.0
+            except:
+                pass
 
         if similarity >= similarity_threshold:
             prev_modified = serializable_to_tensor(data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"]) if data.get("history") else data["reference_embeds"])
@@ -185,12 +206,16 @@ class FunPackGemmaEmbeddingRefiner:
             boost = 1.0 + token_prioritization_strength * token_importance
             new_delta = new_delta * boost
 
+        # New token boost
+        if new_token_mask is not None:
+            new_delta = new_delta * (1.0 + new_token_boost * (1.0 - new_token_mask).unsqueeze(-1))
+
         new_modified = reference + new_delta
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # === Balanced Latent Refinement ===
+        # Balanced Latent Refinement
         modified_latent = latent
         latent_info = ""
         if latent is not None and latent_strength > 0.0 and "samples" in latent:
@@ -230,7 +255,8 @@ class FunPackGemmaEmbeddingRefiner:
             "rating": rating,
             "prev_rating": last_rating,
             "modified_embeds": tensor_to_serializable(new_modified),
-            "similarity": round(similarity, 4)
+            "similarity": round(similarity, 4),
+            "prompt": prompt
         }
         if latent is not None:
             history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
@@ -241,6 +267,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         data["modified_embeds"] = history_entry["modified_embeds"]
         data["last_rating"] = rating
+        data["last_prompt"] = prompt
 
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -253,6 +280,8 @@ class FunPackGemmaEmbeddingRefiner:
         else:
             status = f"Iter {iteration} | Rating {rating} | New prompt (Sim {similarity:.3f}) | Merged {merged_good} good | TokPri {token_prioritization_strength:.2f} | Hist {len(data['history'])}"
 
+        if new_token_boost > 0.0 and new_token_mask is not None:
+            status += f" | New tokens boosted"
         if latent_strength > 0.0 and latent is not None:
             status += latent_info
 
