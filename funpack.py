@@ -79,6 +79,7 @@ class FunPackGemmaEmbeddingRefiner:
             "optional": {
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears history)"}),
                 "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
+                "token_prioritization_strength": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.5, "step": 0.05, "label": "Token Prioritization Strength (0 = uniform)"}),
                 "similarity_threshold": ("FLOAT", {"default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01, "label": "Similarity Threshold (for cross-prompt merging)"}),
                 "max_history": ("INT", {"default": 50, "min": 10, "max": 500, "step": 5, "label": "Max History Entries"})
             }
@@ -93,7 +94,7 @@ class FunPackGemmaEmbeddingRefiner:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.07, similarity_threshold=0.78, max_history=50):
+    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.07, token_prioritization_strength=0.85, similarity_threshold=0.78, max_history=50):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -131,7 +132,6 @@ class FunPackGemmaEmbeddingRefiner:
 
         reference = serializable_to_tensor(data["reference_embeds"])
 
-        # Compute similarity between current input and stored reference
         ref_mean = reference.mean(dim=1)
         cur_mean = raw_embeds.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
@@ -139,7 +139,7 @@ class FunPackGemmaEmbeddingRefiner:
         last_rating = data.get("last_rating", 3)
 
         if similarity >= similarity_threshold:
-            # Same/similar prompt → normal per-prompt refinement
+            # Same/similar prompt - normal refinement
             prev_modified = serializable_to_tensor(data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"]) if data.get("history") else data["reference_embeds"])
             prev_delta = prev_modified - reference
 
@@ -158,7 +158,7 @@ class FunPackGemmaEmbeddingRefiner:
             new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
             merged_good = 0
         else:
-            # Different conditioning detected → merge good past deltas from history
+            # Different prompt detected - merge good past deltas
             good_deltas = []
             if "history" in data:
                 for entry in data["history"]:
@@ -172,6 +172,13 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * exploration_strength * 0.3
                 merged_good = 0
+
+        # Token prioritization (re-added - crucial as you said)
+        if token_prioritization_strength > 0.0:
+            token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
+            token_importance = token_deltas / (token_deltas.max() + 1e-8)
+            boost = 1.0 + token_prioritization_strength * token_importance
+            new_delta = new_delta * boost
 
         new_modified = reference + new_delta
 
@@ -201,12 +208,12 @@ class FunPackGemmaEmbeddingRefiner:
 
         iteration = len(data["history"])
         if similarity >= similarity_threshold:
-            status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | Sim {similarity:.3f} | History {len(data['history'])}"
+            status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | TokPri {token_prioritization_strength:.2f} | Sim {similarity:.3f} | History {len(data['history'])}"
         else:
-            status = f"Iter {iteration} | Rating {rating} | New prompt detected (Sim {similarity:.3f}) | Merged {merged_good} good deltas | History {len(data['history'])}"
+            status = f"Iter {iteration} | Rating {rating} | New prompt (Sim {similarity:.3f}) | Merged {merged_good} good | TokPri {token_prioritization_strength:.2f} | History {len(data['history'])}"
 
         return (modified_conditioning, status)
-
+        
 # Constants from StoryMem
 IMAGE_FACTOR = 28
 VIDEO_MIN_PIXELS = 48 * IMAGE_FACTOR * IMAGE_FACTOR  # 37,632
