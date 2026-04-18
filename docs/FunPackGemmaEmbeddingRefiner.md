@@ -25,3 +25,19 @@
 ## Purpose:
 
 This node's purpose is to analyze the text embeddings and change them according to the given rating. Basically, this node tries to find the best values for deltas that you will more likely rate higher, and suppresses ones you rated lower, leading to consistently better output.
+
+## How similarity_threshold works:
+
+The node calculates cosine similarity between the current input embedding and the stored reference embedding.Similarity = 1.0 → almost identical prompts
+Similarity = 0.7–0.85 → somewhat similar prompts (same style, different subject)
+Similarity = < 0.6 → very different prompts
+
+Current logic in the code:If similarity >= similarity_threshold → treat as "same/similar prompt" → do normal per-prompt refinement (using the last delta).
+If similarity < similarity_threshold → treat as "new/different prompt" → trigger merging of good (rating ≥4) past deltas from history.
+
+So, what should the value be?Higher threshold (e.g. 0.85 or 0.90) → more strict
+Only very similar prompts will use normal refinement.
+Most new prompts will trigger merging of good past deltas.
+Lower threshold (e.g. 0.70 or 0.75) → more lenient
+Even somewhat different prompts will be treated as "same" and use normal refinement.
+Merging only triggers on quite different prompts.
