@@ -190,11 +190,13 @@ class FunPackGemmaEmbeddingRefiner:
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # === Balanced Latent Refinement (good + bad) ===
+        # === Balanced Latent Refinement ===
         modified_latent = latent
         latent_info = ""
         if latent is not None and latent_strength > 0.0 and "samples" in latent:
-            samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
+            samples = latent["samples"]
+            if samples.device != device:
+                samples = samples.to(device)
 
             good_latents = []
             bad_latents = []
@@ -219,10 +221,10 @@ class FunPackGemmaEmbeddingRefiner:
             if good_latents or bad_latents:
                 new_samples = samples + latent_delta
                 new_samples = torch.clamp(new_samples, min=-12.0, max=12.0)
-                modified_latent = {"samples": new_samples, "noise_mask": latent.get("noise_mask")}
+                modified_latent = {"samples": new_samples.to("cpu"), "noise_mask": latent.get("noise_mask")}
                 latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
 
-        # Store full history (always store current latent if provided)
+        # Store history
         history_entry = {
             "iteration": len(data.get("history", [])) + 1,
             "rating": rating,
