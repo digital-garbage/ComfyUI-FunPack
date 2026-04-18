@@ -80,15 +80,16 @@ class FunPackGemmaEmbeddingRefiner:
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
             },
             "optional": {
-                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session"}),
+                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears history)"}),
                 "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
                 "token_prioritization_strength": ("FLOAT", {
-                    "default": 0.8,
+                    "default": 0.0,   # set to 0.85+ if you want it back
                     "min": 0.0,
                     "max": 1.5,
                     "step": 0.05,
-                    "label": "Token Prioritization (0=uniform, 1.0=focus on important tokens)"
+                    "label": "Token Prioritization Strength (0 = uniform)"
                 }),
+                "max_history": ("INT", {"default": 50, "min": 10, "max": 500, "step": 5, "label": "Max History Entries (prunes oldest)"})
             }
         }
 
@@ -97,14 +98,12 @@ class FunPackGemmaEmbeddingRefiner:
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
-    # Forces ComfyUI to run the node every single time (no caching)
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def refine(self, conditioning, rating, refinement_key,
-               reset_session=False, exploration_strength=0.07,
-               token_prioritization_strength=0.8):
+    def refine(self, conditioning, rating, refinement_key, reset_session=False,
+               exploration_strength=0.07, token_prioritization_strength=0.0, max_history=50):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -120,41 +119,38 @@ class FunPackGemmaEmbeddingRefiner:
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             raw_embeds = item[0]
             meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None, "unprocessed_ltxav_embeds": True}
-        elif isinstance(item, torch.Tensor):
-            raw_embeds = item
-            meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
         else:
-            return (conditioning, f"ERROR: Unexpected item type {type(item)}")
+            raw_embeds = item if isinstance(item, torch.Tensor) else None
+            meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
 
         if not isinstance(raw_embeds, torch.Tensor):
             return (conditioning, "ERROR: No tensor extracted")
 
         if reset_session or not os.path.exists(json_file):
+            # FIRST RUN
             data = {
                 "refinement_key": refinement_key,
                 "reference_embeds": tensor_to_serializable(raw_embeds),
-                "original_embeds": tensor_to_serializable(raw_embeds),
-                "modified_embeds": tensor_to_serializable(raw_embeds),
-                "history": [],
+                "history": [],  # will store full past modified embeddings + ratings
                 "last_rating": rating
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (conditioning, f"First run – Reference saved for '{refinement_key}'")
+            return (conditioning, f"First run – Reference saved. History started.")
 
         # Load previous state
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         reference = serializable_to_tensor(data["reference_embeds"])
-        prev_modified = serializable_to_tensor(data.get("modified_embeds", data["reference_embeds"]))
+        # Use last modified as previous (or reference if none)
+        prev_modified = serializable_to_tensor(data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"]) 
+                                               if data.get("history") else data["reference_embeds"])
         prev_delta = prev_modified - reference
-
-        data["original_embeds"] = data.get("modified_embeds", data["reference_embeds"])
 
         last_rating = data.get("last_rating", 3)
 
-        # Base refinement (same strong reaction to repeated ratings)
+        # Base refinement logic (reacts to repeated ratings)
         if rating >= 4:
             multiplier = 1.32 if rating == 5 else 1.18
             if rating == last_rating:
@@ -169,13 +165,10 @@ class FunPackGemmaEmbeddingRefiner:
 
         new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
 
-        # === NEW: PER-TOKEN PRIORITIZATION ===
+        # Optional token prioritization (kept but default off)
         if token_prioritization_strength > 0.0:
-            # Magnitude of change per token (row)
-            token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)          # [seq_len, 1]
-            # Normalize to 0–1 range
+            token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
             token_importance = token_deltas / (token_deltas.max() + 1e-8)
-            # Boost multiplier on the most "active" tokens
             boost = 1.0 + token_prioritization_strength * token_importance
             new_delta = new_delta * boost
 
@@ -186,18 +179,27 @@ class FunPackGemmaEmbeddingRefiner:
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Save
-        data["modified_embeds"] = tensor_to_serializable(new_modified)
-        data["history"].append({
-            "iteration": len(data["history"]),
+        # === STORE FULL HISTORY ===
+        history_entry = {
+            "iteration": len(data.get("history", [])) + 1,
             "rating": rating,
             "prev_rating": last_rating,
+            "modified_embeds": tensor_to_serializable(new_modified),   # full conditioning stored
             "multiplier": round(multiplier, 3),
-            "noise_scale": round(noise_scale, 4),
-            "delta_magnitude": round(float(new_delta.abs().mean()), 4),
-            "token_prioritization": float(token_prioritization_strength)
-        })
+            "noise_scale": round(noise_scale, 4)
+        }
+
+        if "history" not in data:
+            data["history"] = []
+        data["history"].append(history_entry)
+
+        # Prune oldest if over limit
+        if len(data["history"]) > max_history:
+            data["history"] = data["history"][-max_history:]
+
         data["last_rating"] = rating
+        # Keep latest modified for quick access
+        data["modified_embeds"] = history_entry["modified_embeds"]
 
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -205,7 +207,7 @@ class FunPackGemmaEmbeddingRefiner:
         modified_conditioning = [(new_modified, meta_dict)]
 
         iteration = len(data["history"])
-        status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | Mult {multiplier:.2f} | TokPri {token_prioritization_strength:.1f}"
+        status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | History size: {len(data['history'])}"
 
         return (modified_conditioning, status)
 
