@@ -80,16 +80,18 @@ class FunPackGemmaEmbeddingRefiner:
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
             },
             "optional": {
+                "latent": ("LATENT",),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears history)"}),
                 "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
-                "token_prioritization_strength": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.5, "step": 0.05, "label": "Token Prioritization Strength (0 = uniform)"}),
-                "similarity_threshold": ("FLOAT", {"default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01, "label": "Similarity Threshold (for cross-prompt merging)"}),
+                "token_prioritization_strength": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.5, "step": 0.05, "label": "Token Prioritization Strength"}),
+                "latent_strength": ("FLOAT", {"default": 0.12, "min": 0.0, "max": 0.4, "step": 0.01, "label": "Latent Refinement Strength (0 = disabled)"}),
+                "similarity_threshold": ("FLOAT", {"default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01, "label": "Similarity Threshold"}),
                 "max_history": ("INT", {"default": 50, "min": 10, "max": 500, "step": 5, "label": "Max History Entries"})
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "STRING")
-    RETURN_NAMES = ("modified_conditioning", "status")
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "STRING")
+    RETURN_NAMES = ("modified_conditioning", "modified_latent", "status")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -97,7 +99,7 @@ class FunPackGemmaEmbeddingRefiner:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def refine(self, conditioning, rating, refinement_key, reset_session=False, exploration_strength=0.07, token_prioritization_strength=0.85, similarity_threshold=0.78, max_history=50):
+    def refine(self, conditioning, rating, refinement_key, latent=None, reset_session=False, exploration_strength=0.07, token_prioritization_strength=0.85, latent_strength=0.12, similarity_threshold=0.78, max_history=50):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -105,8 +107,9 @@ class FunPackGemmaEmbeddingRefiner:
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
+        # Extract conditioning
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
-            return (conditioning, "ERROR: Empty CONDITIONING")
+            return (conditioning, latent, "ERROR: Empty CONDITIONING")
 
         item = conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -117,7 +120,7 @@ class FunPackGemmaEmbeddingRefiner:
             meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
 
         if not isinstance(raw_embeds, torch.Tensor):
-            return (conditioning, "ERROR: No tensor extracted")
+            return (conditioning, latent, "ERROR: No embedding tensor extracted")
 
         if reset_session or not os.path.exists(json_file):
             data = {
@@ -128,14 +131,13 @@ class FunPackGemmaEmbeddingRefiner:
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (conditioning, f"First run – Reference saved | History: 0")
+            return (conditioning, latent, f"First run – Reference saved | History: 0")
 
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         reference = serializable_to_tensor(data["reference_embeds"])
 
-        # Move current input to same device as reference for similarity calculation
         device = reference.device
         cur_embeds = raw_embeds.to(device) if raw_embeds.device != device else raw_embeds
 
@@ -146,7 +148,6 @@ class FunPackGemmaEmbeddingRefiner:
         last_rating = data.get("last_rating", 3)
 
         if similarity >= similarity_threshold:
-            # Same/similar prompt - normal refinement
             prev_modified = serializable_to_tensor(data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"]) if data.get("history") else data["reference_embeds"])
             prev_delta = prev_modified - reference
 
@@ -165,7 +166,6 @@ class FunPackGemmaEmbeddingRefiner:
             new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
             merged_good = 0
         else:
-            # Different prompt - merge good past deltas
             good_deltas = []
             if "history" in data:
                 for entry in data["history"]:
@@ -180,7 +180,6 @@ class FunPackGemmaEmbeddingRefiner:
                 new_delta = torch.randn_like(reference) * exploration_strength * 0.3
                 merged_good = 0
 
-        # Token prioritization
         if token_prioritization_strength > 0.0:
             token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
             token_importance = token_deltas / (token_deltas.max() + 1e-8)
@@ -188,11 +187,32 @@ class FunPackGemmaEmbeddingRefiner:
             new_delta = new_delta * boost
 
         new_modified = reference + new_delta
-
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
+        # === Optional Latent Refinement ===
+        modified_latent = latent
+        if latent is not None and latent_strength > 0.0 and "samples" in latent:
+            samples = latent["samples"]
+            if samples.device != device:
+                samples = samples.to(device)
+
+            # Simple latent delta: pull toward previously good latents
+            good_latents = []
+            if "history" in data:
+                for entry in data.get("history", []):
+                    if entry.get("rating", 0) >= 4 and "latent_samples" in entry:
+                        good_latents.append(serializable_to_tensor(entry["latent_samples"]))
+
+            if good_latents:
+                avg_good_latent = torch.stack(good_latents).mean(dim=0)
+                latent_delta = (avg_good_latent - samples) * latent_strength
+                new_samples = samples + latent_delta
+                new_samples = torch.clamp(new_samples, min=-10.0, max=10.0)
+                modified_latent = {"samples": new_samples, "noise_mask": latent.get("noise_mask")}
+
+        # Store full history
         history_entry = {
             "iteration": len(data.get("history", [])) + 1,
             "rating": rating,
@@ -200,8 +220,10 @@ class FunPackGemmaEmbeddingRefiner:
             "modified_embeds": tensor_to_serializable(new_modified),
             "similarity": round(similarity, 4)
         }
-        data.setdefault("history", []).append(history_entry)
+        if latent is not None and rating >= 4:
+            history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
 
+        data.setdefault("history", []).append(history_entry)
         if len(data["history"]) > max_history:
             data["history"] = data["history"][-max_history:]
 
@@ -215,11 +237,14 @@ class FunPackGemmaEmbeddingRefiner:
 
         iteration = len(data["history"])
         if similarity >= similarity_threshold:
-            status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | TokPri {token_prioritization_strength:.2f} | Sim {similarity:.3f} | History {len(data['history'])}"
+            status = f"Iter {iteration} | Rating {rating} | TokPri {token_prioritization_strength:.2f} | Sim {similarity:.3f} | Hist {len(data['history'])}"
         else:
-            status = f"Iter {iteration} | Rating {rating} | New prompt (Sim {similarity:.3f}) | Merged {merged_good} good | TokPri {token_prioritization_strength:.2f} | History {len(data['history'])}"
+            status = f"Iter {iteration} | Rating {rating} | New prompt (Sim {similarity:.3f}) | Merged {merged_good} good | TokPri {token_prioritization_strength:.2f} | Hist {len(data['history'])}"
 
-        return (modified_conditioning, status)
+        if latent_strength > 0.0 and latent is not None:
+            status += f" | Latent str {latent_strength:.2f}"
+
+        return (modified_conditioning, modified_latent, status)
         
 # Constants from StoryMem
 IMAGE_FACTOR = 28
