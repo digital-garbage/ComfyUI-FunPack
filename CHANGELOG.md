@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.0] - 2026-04-18
+
+### Changed
+
+Added new nodes - User Rating and Gemma Self-Refinement for LTX2.3 video workflows.
+
 ## [1.2.3] - 2026-01-30
 
 ### Fixed
