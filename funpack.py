@@ -27,30 +27,6 @@ import base64
 from hashlib import md5
 import time
 
-class FunPackUserRatingProvider:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "rating": ("INT", {
-                    "default": 3,
-                    "min": 1,
-                    "max": 5,
-                    "step": 1,
-                    "display": "slider",
-                    "label": "Rating (1=awful, 5=masterpiece)"
-                })
-            }
-        }
-
-    RETURN_TYPES = ("INT",)
-    RETURN_NAMES = ("rating",)
-    FUNCTION = "provide"
-    CATEGORY = "FunPack/Refinement"
-
-    def provide(self, rating):
-        return (rating,)
-
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -61,7 +37,6 @@ def tensor_to_serializable(t: torch.Tensor) -> dict:
         "dtype": str(arr.dtype)
     }
 
-
 def serializable_to_tensor(d: dict) -> torch.Tensor:
     arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"])
     tensor = torch.from_numpy(arr).to(dtype=torch.float32)
@@ -69,26 +44,30 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
         tensor = tensor.cuda()
     return tensor
 
-
 class FunPackGemmaEmbeddingRefiner:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "conditioning": ("CONDITIONING",),
-                "rating": ("INT", {"default": 3, "min": 1, "max": 5, "step": 1}),
+                "rating": ("INT", {
+                    "default": 5,
+                    "min": 1,
+                    "max": 10,
+                    "step": 1,
+                    "display": "slider",
+                    "label": "Rating (1=absolutely horrific, 10=masterpiece)"
+                }),
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
             },
             "optional": {
-                "prompt": ("STRING", {"multiline": True, "default": "", "placeholder": "Paste your positive prompt here (optional but recommended)"}),
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "placeholder": "Positive prompt (helps detect new tokens & prompt drift)"
+                }),
                 "latent": ("LATENT",),
-                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears history)"}),
-                "exploration_strength": ("FLOAT", {"default": 0.07, "min": 0.0, "max": 0.3, "step": 0.001}),
-                "token_prioritization_strength": ("FLOAT", {"default": 0.85, "min": 0.0, "max": 1.5, "step": 0.05, "label": "Token Prioritization Strength (0 = uniform)"}),
-                "new_token_boost": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 2.0, "step": 0.05, "label": "New Token Boost (0 = disabled)"}),
-                "latent_strength": ("FLOAT", {"default": 0.12, "min": 0.0, "max": 0.4, "step": 0.01, "label": "Latent Refinement Strength (0 = disabled)"}),
-                "similarity_threshold": ("FLOAT", {"default": 0.78, "min": 0.0, "max": 1.0, "step": 0.01, "label": "Similarity Threshold"}),
-                "max_history": ("INT", {"default": 50, "min": 10, "max": 500, "step": 5, "label": "Max History Entries"})
+                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears all history)"}),
             }
         }
 
@@ -99,192 +78,270 @@ class FunPackGemmaEmbeddingRefiner:
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        return float("nan")
+        return float("nan")  # always re-run
 
-    def refine(self, conditioning, rating, refinement_key, prompt="", latent=None, reset_session=False, exploration_strength=0.07, token_prioritization_strength=0.85, new_token_boost=0.0, latent_strength=0.12, similarity_threshold=0.78, max_history=50):
+    def refine(self, conditioning, rating, refinement_key, prompt="", latent=None, reset_session=False):
+        # ----------------------------------------------------------------
+        # Setup persistent storage
+        # ----------------------------------------------------------------
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
-
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
-            return (conditioning, latent, "ERROR: Empty CONDITIONING")
+            return (conditioning, latent, "ERROR: Empty CONDITIONING input")
 
+        # Extract raw embedding
         item = conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             raw_embeds = item[0]
-            meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None, "unprocessed_ltxav_embeds": True}
+            meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
         else:
             raw_embeds = item if isinstance(item, torch.Tensor) else None
-            meta_dict = {"pooled_output": None, "unprocessed_ltxav_embeds": True}
+            meta_dict = {"pooled_output": None}
 
         if not isinstance(raw_embeds, torch.Tensor):
-            return (conditioning, latent, "ERROR: No embedding tensor extracted")
+            return (conditioning, latent, "ERROR: No embedding tensor found in CONDITIONING")
 
+        # ----------------------------------------------------------------
+        # First run or reset
+        # ----------------------------------------------------------------
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
-                "reference_prompt": prompt,
                 "reference_embeds": tensor_to_serializable(raw_embeds),
                 "history": [],
+                "adaptive": {                  # ← new internal learning state
+                    "exploration_base": 0.08,
+                    "momentum": 0.0,
+                    "avg_reward_ema": 0.0,
+                    "good_count": 0,
+                    "dynamic_sim_threshold": 0.82
+                },
                 "last_rating": rating,
                 "last_prompt": prompt
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (conditioning, latent, f"First run – Reference saved | History: 0")
+            return (conditioning, latent, f"✓ Session started – Reference saved | Rating scale now 1–10")
 
+        # Load existing session
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         reference = serializable_to_tensor(data["reference_embeds"])
-
         device = reference.device
         cur_embeds = raw_embeds.to(device) if raw_embeds.device != device else raw_embeds
 
+        # ----------------------------------------------------------------
+        # Compute similarity & normalized reward (-1.0 … +1.0)
+        # ----------------------------------------------------------------
         ref_mean = reference.mean(dim=1)
         cur_mean = cur_embeds.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
 
-        last_rating = data.get("last_rating", 3)
-        last_prompt = data.get("last_prompt", "")
+        reward = (rating - 5.5) / 4.5                     # -1.0 (1★) → +1.0 (10★)
+        last_rating = data.get("last_rating", 5)
+        last_reward = (last_rating - 5.5) / 4.5
 
-        # New prompt-aware logic
+        # ----------------------------------------------------------------
+        # Adaptive parameters (loaded from JSON)
+        # ----------------------------------------------------------------
+        adaptive = data["adaptive"]
+        expl = adaptive["exploration_base"]
+        momentum = adaptive["momentum"]
+        avg_reward_ema = adaptive["avg_reward_ema"]
+        good_count = adaptive["good_count"]
+        sim_threshold = adaptive["dynamic_sim_threshold"]
+
+        # Update EMA reward (for convergence tracking)
+        avg_reward_ema = 0.85 * avg_reward_ema + 0.15 * reward
+
+        # ----------------------------------------------------------------
+        # Decide learning strategy
+        # ----------------------------------------------------------------
+        is_close_to_reference = similarity >= sim_threshold
+
+        # 1. New prompt detection (automatic new-token boost)
         new_token_mask = None
-        if prompt and last_prompt and new_token_boost > 0.0:
-            try:
-                from transformers import AutoTokenizer
-                tokenizer = AutoTokenizer.from_pretrained("DreamFast/gemma-3-12b-it-heretic-v2", trust_remote_code=True, use_fast=True)
-                cur_tokens = tokenizer.encode(prompt, add_special_tokens=True)
-                prev_tokens = tokenizer.encode(last_prompt, add_special_tokens=True)
-                min_len = min(len(cur_tokens), len(prev_tokens))
-                new_token_mask = torch.ones(cur_embeds.shape[0], device=device)
-                for i in range(min_len):
-                    if cur_tokens[i] != prev_tokens[i]:
-                        new_token_mask[i] = 0.0
-            except:
-                pass
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("DreamFast/gemma-3-12b-it-heretic-v2",
+                                                      trust_remote_code=True, use_fast=True)
+            cur_tokens = tokenizer.encode(prompt, add_special_tokens=True)
+            prev_tokens = tokenizer.encode(data.get("last_prompt", ""), add_special_tokens=True)
+            min_len = min(len(cur_tokens), len(prev_tokens))
+            new_token_mask = torch.ones(cur_embeds.shape[0], device=device)
+            for i in range(min_len):
+                if cur_tokens[i] != prev_tokens[i]:
+                    new_token_mask[i] = 0.0
+        except:
+            pass  # tokenizer unavailable → no boost
 
-        if similarity >= similarity_threshold:
-            prev_modified = serializable_to_tensor(data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"]) if data.get("history") else data["reference_embeds"])
+        # 2. Compute delta
+        if is_close_to_reference:
+            # Strong reinforcement / correction on previous good direction
+            prev_modified = serializable_to_tensor(
+                data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"])
+            )
             prev_delta = prev_modified - reference
 
-            if rating >= 4:
-                multiplier = 1.32 if rating == 5 else 1.18
-                if rating == last_rating:
-                    multiplier += 0.15
-                noise_scale = exploration_strength * (0.85 if rating == 5 else 0.65)
-            else:
-                multiplier = max(0.12, rating / 3.6)
-                noise_scale = exploration_strength * (4.6 - rating) * 1.35
-                if rating == last_rating:
-                    multiplier *= 0.45
-                    noise_scale *= 2.2 if rating <= 2 else 1.6
+            multiplier = 1.0 + (reward * 1.45)                     # huge boost on 9–10
+            if rating == last_rating and rating >= 8:
+                multiplier += 0.35                                 # momentum
 
-            new_delta = prev_delta * multiplier + torch.randn_like(prev_delta) * noise_scale
+            noise = torch.randn_like(prev_delta) * (expl * (1.0 - avg_reward_ema * 0.7))
+            new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
+
             merged_good = 0
         else:
+            # Average all historically good embeddings
             good_deltas = []
-            if "history" in data:
-                for entry in data["history"]:
-                    if entry.get("rating", 0) >= 4:
-                        hist_emb = serializable_to_tensor(entry["modified_embeds"])
-                        good_deltas.append(hist_emb - reference)
+            for entry in data.get("history", []):
+                if entry.get("rating", 0) >= 7:
+                    hist_emb = serializable_to_tensor(entry["modified_embeds"])
+                    good_deltas.append(hist_emb - reference)
+
             if good_deltas:
                 avg_good_delta = torch.stack(good_deltas).mean(dim=0)
-                new_delta = avg_good_delta * 0.65 + torch.randn_like(avg_good_delta) * exploration_strength * 0.4
+                new_delta = avg_good_delta * (0.7 + reward * 0.4)
                 merged_good = len(good_deltas)
             else:
-                new_delta = torch.randn_like(reference) * exploration_strength * 0.3
+                new_delta = torch.randn_like(reference) * expl * 0.45
                 merged_good = 0
 
-        if token_prioritization_strength > 0.0:
-            token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
-            token_importance = token_deltas / (token_deltas.max() + 1e-8)
-            boost = 1.0 + token_prioritization_strength * token_importance
-            new_delta = new_delta * boost
+        # 3. Token importance (still automatic, stronger when learning well)
+        token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
+        token_importance = token_deltas / (token_deltas.max() + 1e-8)
+        boost = 1.0 + (0.9 + avg_reward_ema * 0.6) * token_importance   # auto-scaled
+        new_delta = new_delta * boost
 
-        # New token boost
+        # 4. Automatic new-token boost when prompt changed
         if new_token_mask is not None:
-            new_delta = new_delta * (1.0 + new_token_boost * (1.0 - new_token_mask).unsqueeze(-1))
+            new_delta = new_delta * (1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1))
 
+        # 5. Apply delta + normalization
         new_modified = reference + new_delta
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Balanced Latent Refinement
+        # ----------------------------------------------------------------
+        # Latent refinement (fully automatic now)
+        # ----------------------------------------------------------------
         modified_latent = latent
         latent_info = ""
-        if latent is not None and latent_strength > 0.0 and "samples" in latent:
-            samples = latent["samples"]
-            if samples.device != device:
-                samples = samples.to(device)
-
+        if latent is not None and "samples" in latent:
+            samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
             good_latents = []
             bad_latents = []
-            if "history" in data:
-                for entry in data.get("history", []):
-                    if "latent_samples" in entry:
-                        hist_latent = serializable_to_tensor(entry["latent_samples"])
-                        r = entry.get("rating", 3)
-                        if r >= 4:
-                            good_latents.append(hist_latent)
-                        elif r <= 2:
-                            bad_latents.append(hist_latent)
+            for entry in data.get("history", []):
+                if "latent_samples" in entry:
+                    hist_latent = serializable_to_tensor(entry["latent_samples"])
+                    r = entry.get("rating", 5)
+                    if r >= 8:
+                        good_latents.append(hist_latent)
+                    elif r <= 3:
+                        bad_latents.append(hist_latent)
 
+            latent_strength_auto = max(0.0, avg_reward_ema * 0.35)   # grows with good ratings
             latent_delta = torch.zeros_like(samples)
+
             if good_latents:
                 avg_good = torch.stack(good_latents).mean(dim=0)
-                latent_delta += (avg_good - samples) * latent_strength * 0.8
+                latent_delta += (avg_good - samples) * latent_strength_auto
             if bad_latents:
                 avg_bad = torch.stack(bad_latents).mean(dim=0)
-                latent_delta -= (avg_bad - samples) * latent_strength * 0.6
+                latent_delta -= (avg_bad - samples) * (latent_strength_auto * 0.7)
 
             if good_latents or bad_latents:
                 new_samples = samples + latent_delta
                 new_samples = torch.clamp(new_samples, min=-12.0, max=12.0)
-                modified_latent = {"samples": new_samples.to("cpu"), "noise_mask": latent.get("noise_mask")}
+                modified_latent = {"samples": new_samples.cpu(), "noise_mask": latent.get("noise_mask")}
                 latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
 
-        # Store history
+        # ----------------------------------------------------------------
+        # Update adaptive state & history
+        # ----------------------------------------------------------------
+        # Update momentum
+        momentum = 0.75 * momentum + 0.25 * reward
+
+        # Slowly tighten similarity threshold as we learn
+        if avg_reward_ema > 0.3:
+            sim_threshold = max(0.75, sim_threshold - 0.002)
+
+        # Exploration decays when we keep getting good ratings
+        if rating >= 8:
+            adaptive["exploration_base"] = max(0.015, expl * 0.96)
+            good_count += 1
+        else:
+            adaptive["exploration_base"] = min(0.12, expl * 1.08)
+
+        adaptive.update({
+            "momentum": momentum,
+            "avg_reward_ema": avg_reward_ema,
+            "good_count": good_count,
+            "dynamic_sim_threshold": sim_threshold
+        })
+
+        # Store history (smart pruning – keep best ones)
         history_entry = {
             "iteration": len(data.get("history", [])) + 1,
             "rating": rating,
-            "prev_rating": last_rating,
+            "reward": round(reward, 3),
             "modified_embeds": tensor_to_serializable(new_modified),
             "similarity": round(similarity, 4),
-            "prompt": prompt
+            "prompt": prompt[:120]  # truncate for JSON size
         }
-        if latent is not None:
+        if latent is not None and "samples" in latent:
             history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
 
         data.setdefault("history", []).append(history_entry)
-        if len(data["history"]) > max_history:
-            data["history"] = data["history"][-max_history:]
+        # Keep only last 80 + top 20 best-rated entries
+        if len(data["history"]) > 100:
+            sorted_hist = sorted(data["history"], key=lambda x: x.get("rating", 0), reverse=True)
+            data["history"] = sorted_hist[:20] + data["history"][-60:]
 
         data["modified_embeds"] = history_entry["modified_embeds"]
         data["last_rating"] = rating
         data["last_prompt"] = prompt
+        data["adaptive"] = adaptive
 
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        modified_conditioning = [(new_modified, meta_dict)]
+        # ----------------------------------------------------------------
+        # Build rich, informative status
+        # ----------------------------------------------------------------
+        iter_num = len(data["history"])
+        trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
 
-        iteration = len(data["history"])
-        if similarity >= similarity_threshold:
-            status = f"Iter {iteration} | Rating {rating} (prev {last_rating}) | TokPri {token_prioritization_strength:.2f} | Sim {similarity:.3f} | Hist {len(data['history'])}"
-        else:
-            status = f"Iter {iteration} | Rating {rating} | New prompt (Sim {similarity:.3f}) | Merged {merged_good} good | TokPri {token_prioritization_strength:.2f} | Hist {len(data['history'])}"
-
-        if new_token_boost > 0.0 and new_token_mask is not None:
-            status += f" | New tokens boosted"
-        if latent_strength > 0.0 and latent is not None:
+        status = (
+            f"Iter {iter_num} | Rating {rating}/10 {trend} (prev {last_rating}) | "
+            f"Sim {similarity:.3f} (thresh {sim_threshold:.2f}) | "
+            f"Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | "
+            f"Good learned: {good_count} | Momentum {momentum:+.2f} | "
+            f"Expl {expl:.3f}"
+        )
+        if new_token_mask is not None:
+            status += " | New tokens boosted"
+        if latent_info:
             status += latent_info
 
+        # Final "health" indicator so user knows the node is really learning
+        if avg_reward_ema > 0.6:
+            health = "🚀 Strong convergence"
+        elif avg_reward_ema > 0.3:
+            health = "✅ Learning well"
+        elif avg_reward_ema > -0.2:
+            health = "⚠️ Still exploring"
+        else:
+            health = "🔄 Heavy correction"
+        status += f" | {health}"
+
+        modified_conditioning = [(new_modified, meta_dict)]
         return (modified_conditioning, modified_latent, status)
         
 # Constants from StoryMem
