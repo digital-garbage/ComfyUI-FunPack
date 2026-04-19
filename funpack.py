@@ -99,7 +99,7 @@ class FunPackGemmaEmbeddingRefiner:
                 "feedback_rating": ("INT", {
                     "default": 3,
                     "min": 1,
-                    "max": 5,
+                    "max": 6,          # Extended to support 6 = overrepresented
                     "step": 1,
                     "display": "slider",
                     "label": "Token Feedback (1=absent, 5=perfect, 6=overrepresented)"
@@ -222,7 +222,7 @@ class FunPackGemmaEmbeddingRefiner:
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer()
 
-        # ====================== FEEDBACK STATE MACHINE (UPGRADED with rating 6 support) ======================
+        # ====================== FEEDBACK STATE MACHINE ======================
         feedback_question_output = ""
         pending = data.get("pending_feedback")
 
@@ -234,22 +234,20 @@ class FunPackGemmaEmbeddingRefiner:
             feedback_question_output = "Feedback disabled. Queue cleared."
         else:
             if pending is not None:
-                # Process previous token feedback - principled update with overrepresentation support
                 token_id = pending["token_id"]
                 tid_str = str(token_id)
                 token_importance = global_adaptive["token_importance"]
 
                 old_imp = token_importance.get(tid_str, 1.0)
 
-                if feedback_rating == 6:  # Overrepresented → suppress
-                    target_imp = 0.65   # Pull toward mild suppression
+                if feedback_rating == 6:          # Overrepresented → suppress
+                    target_imp = 0.65
                 else:
                     target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
 
                 new_imp = 0.65 * old_imp + 0.35 * target_imp
                 token_importance[tid_str] = max(0.3, min(2.5, new_imp))
 
-                # Update library counts (rating 6 treated as neutral for counts)
                 token_library = global_adaptive.setdefault("token_library", {})
                 if tid_str in token_library:
                     if feedback_rating >= 4 and feedback_rating != 6:
@@ -635,7 +633,7 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # ====================== GENERATE NEW FEEDBACK QUESTION (UPGRADED) ======================
+        # ====================== GENERATE NEW FEEDBACK QUESTION ======================
         if feedback_enabled and data.get("pending_feedback") is None and tokenizer and positive_prompt:
             prompt_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=False)
             last_tid = global_adaptive.get("last_feedback_tid")
