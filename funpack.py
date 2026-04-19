@@ -99,7 +99,7 @@ class FunPackGemmaEmbeddingRefiner:
                 "feedback_rating": ("INT", {
                     "default": 3,
                     "min": 1,
-                    "max": 6,          # Extended to support 6 = overrepresented
+                    "max": 6,
                     "step": 1,
                     "display": "slider",
                     "label": "Token Feedback (1=absent, 5=perfect, 6=overrepresented)"
@@ -199,7 +199,8 @@ class FunPackGemmaEmbeddingRefiner:
                     "avg_reward_ema": 0.0,
                     "good_ratio": 0.0,
                     "dynamic_sim_threshold": 0.82,
-                    "last_feedback_tid": None
+                    "last_feedback_tid": None,
+                    "last_feedback_word": None
                 },
                 "prompt_histories": {
                     prompt_key: {
@@ -240,7 +241,7 @@ class FunPackGemmaEmbeddingRefiner:
 
                 old_imp = token_importance.get(tid_str, 1.0)
 
-                if feedback_rating == 6:          # Overrepresented → suppress
+                if feedback_rating == 6:
                     target_imp = 0.65
                 else:
                     target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
@@ -278,11 +279,34 @@ class FunPackGemmaEmbeddingRefiner:
         device = old_reference.device
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
 
-        cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
+        full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # Cross-prompt token importance transfer
-        if is_new_prompt and tokenizer and cur_token_ids:
-            current_set = set(cur_token_ids)
+        # ====================== WORD GROUPING ======================
+        word_groups = []
+        if tokenizer and positive_prompt and full_token_ids:
+            try:
+                words = positive_prompt.split()
+                token_idx = 0
+                for word in words:
+                    if not word:
+                        continue
+                    word_tokens = tokenizer.encode(word, add_special_tokens=False)
+                    word_len = len(word_tokens)
+                    if token_idx + word_len <= len(full_token_ids) and full_token_ids[token_idx:token_idx + word_len] == word_tokens:
+                        word_groups.append((token_idx, token_idx + word_len, word, word_tokens))
+                        token_idx += word_len
+                    else:
+                        if token_idx < len(full_token_ids):
+                            single_token = full_token_ids[token_idx]
+                            decoded = tokenizer.decode([single_token]).strip()
+                            word_groups.append((token_idx, token_idx + 1, decoded, [single_token]))
+                            token_idx += 1
+            except Exception:
+                word_groups = [(i, i+1, tokenizer.decode([tid]).strip(), [tid]) for i, tid in enumerate(full_token_ids)]
+
+        # ====================== CROSS-PROMPT TRANSFER ======================
+        if is_new_prompt and tokenizer and full_token_ids:
+            current_set = set(full_token_ids)
             token_importance = global_adaptive["token_importance"]
             for other_key, other in prompt_histories.items():
                 if other_key == prompt_key:
@@ -323,11 +347,11 @@ class FunPackGemmaEmbeddingRefiner:
 
         # ====================== TOKEN LIBRARY UPDATE ======================
         token_library = global_adaptive.setdefault("token_library", {})
-        if tokenizer and cur_token_ids:
-            valuable_token_ids = [tid for tid in cur_token_ids if self._is_valuable_token(tokenizer.decode([tid]))]
+        if tokenizer and full_token_ids:
+            valuable_token_ids = [tid for tid in full_token_ids if self._is_valuable_token(tokenizer.decode([tid]))]
             norm_factor = len(valuable_token_ids) if valuable_token_ids else 1
 
-            for tid in cur_token_ids:
+            for tid in full_token_ids:
                 tid_str = str(tid)
                 if tid_str not in token_library:
                     token_library[tid_str] = {
@@ -343,9 +367,9 @@ class FunPackGemmaEmbeddingRefiner:
                     lib_entry["unique_prompts"] += 1
 
             if rating >= 8:
-                for i, tid1 in enumerate(cur_token_ids):
+                for i, tid1 in enumerate(full_token_ids):
                     tid1_str = str(tid1)
-                    for tid2 in cur_token_ids[i+1:]:
+                    for tid2 in full_token_ids[i+1:]:
                         tid2_str = str(tid2)
                         if tid1_str in token_library and tid2_str in token_library:
                             if tid2_str not in token_library[tid1_str]["good_pairs"]:
@@ -357,7 +381,7 @@ class FunPackGemmaEmbeddingRefiner:
                     if tid1_str in token_library:
                         token_library[tid1_str]["high_rated_count"] += 1
             elif rating <= 4:
-                for tid in cur_token_ids:
+                for tid in full_token_ids:
                     tid_str = str(tid)
                     if tid_str in token_library:
                         token_library[tid_str]["low_rated_count"] += 1
@@ -373,7 +397,7 @@ class FunPackGemmaEmbeddingRefiner:
                 entry["is_specific"] = not entry["is_general"] and mostly_high and entry["unique_prompts"] <= 8
                 entry["infusable"] = (entry["is_general"] or entry["is_specific"]) and entry["high_rated_count"] >= 2
 
-        # ====================== CORE REFINEMENT (positive) ======================
+        # ====================== CORE REFINEMENT ======================
         ref_mean = old_reference.mean(dim=1)
         cur_mean = cur_positive.mean(dim=1)
         similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
@@ -405,43 +429,45 @@ class FunPackGemmaEmbeddingRefiner:
 
         if tokenizer and positive_prompt:
             try:
-                cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True)
                 embed_seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0] if cur_positive.dim() == 2 else 1
-
                 prev_token_ids = tokenizer.encode(active.get("last_positive_prompt", ""), add_special_tokens=True) if "last_positive_prompt" in active else []
 
                 new_token_mask = torch.ones(embed_seq_len, device=device)
-                compare_len = min(len(cur_token_ids), len(prev_token_ids), embed_seq_len)
+                compare_len = min(len(full_token_ids), len(prev_token_ids), embed_seq_len)
                 for i in range(compare_len):
-                    if cur_token_ids[i] != prev_token_ids[i]:
+                    if full_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
-                valuable_tids = [tid for tid in cur_token_ids if self._is_valuable_token(tokenizer.decode([tid]))]
-                norm_factor = len(valuable_tids) if valuable_tids else 1
+                # ====================== WORD-LEVEL IMPORTANCE UPDATE ======================
+                for start, end, full_word, word_token_list in word_groups:
+                    is_valuable = self._is_valuable_token(full_word)
+                    group_key = str(word_token_list[0])
 
-                for tid in cur_token_ids[:embed_seq_len]:
-                    tid_str = str(tid)
-                    token_text = tokenizer.decode([int(tid)], skip_special_tokens=True).strip()
-                    is_valuable = self._is_valuable_token(token_text)
+                    if group_key not in token_importance:
+                        token_importance[group_key] = 1.0 if is_valuable else 0.4
 
-                    if tid_str not in token_importance:
-                        token_importance[tid_str] = 1.0 if is_valuable else 0.4
-
-                    is_new = tid not in prev_token_ids
+                    is_new = any(tid not in prev_token_ids for tid in word_token_list)
                     update_strength = 1.8 if is_new else 1.0
                     if not is_valuable:
                         update_strength *= 0.25
 
-                    fqc = token_library.get(tid_str, {}).get("fqc", 0)
+                    fqc = token_library.get(group_key, {}).get("fqc", 0)
                     lr = 0.18 / (1 + 0.08 * (fqc ** 0.5))
 
-                    token_importance[tid_str] = max(0.3, min(2.5,
-                        token_importance[tid_str] + reward * lr * update_strength / norm_factor))
+                    group_delta = reward * lr * update_strength
 
+                    for tid in word_token_list:
+                        tid_str = str(tid)
+                        if tid_str in token_importance:
+                            token_importance[tid_str] = max(0.3, min(2.5, token_importance[tid_str] + group_delta))
+                        else:
+                            token_importance[tid_str] = max(0.3, min(2.5, 1.0 + group_delta))
+
+                # Infusion
                 if random.random() < 0.18 and token_library:
                     infusion_weights = torch.ones(embed_seq_len, device=device)
                     infusion_any = False
-                    for i, tid in enumerate(cur_token_ids[:embed_seq_len]):
+                    for i, tid in enumerate(full_token_ids[:embed_seq_len]):
                         tid_str = str(tid)
                         if tid_str not in token_library or not token_library[tid_str].get("infusable", False):
                             continue
@@ -451,11 +477,8 @@ class FunPackGemmaEmbeddingRefiner:
                         entry = token_library[tid_str]
                         if not entry.get("good_pairs"):
                             continue
-                        pair_scores = []
-                        for ct in cur_token_ids[:embed_seq_len]:
-                            ct_str = str(ct)
-                            if ct_str in entry["good_pairs"]:
-                                pair_scores.append(entry["good_pairs"][ct_str])
+                        pair_scores = [entry["good_pairs"].get(str(ct), 0) for ct in full_token_ids[:embed_seq_len]]
+                        pair_scores = [s for s in pair_scores if s > 0]
                         if pair_scores:
                             avg_pair = sum(pair_scores) / len(pair_scores)
                             if avg_pair > 1.2 or entry.get("is_general", False):
@@ -512,7 +535,7 @@ class FunPackGemmaEmbeddingRefiner:
         if token_importance and cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
-            for i, tid in enumerate(cur_token_ids[:seq_len]):
+            for i, tid in enumerate(full_token_ids[:seq_len]):
                 tid_str = str(tid)
                 if tid_str in token_importance:
                     importance_tensor[i] = token_importance[tid_str]
@@ -549,7 +572,7 @@ class FunPackGemmaEmbeddingRefiner:
                 norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
                 new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
 
-        # ====================== SAFE LATENT REFINEMENT ======================
+        # ====================== LATENT REFINEMENT ======================
         modified_latent = latent
         latent_info = " | Latent unchanged"
         if latent is not None and "samples" in latent:
@@ -633,52 +656,41 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # ====================== GENERATE NEW FEEDBACK QUESTION ======================
-        if feedback_enabled and data.get("pending_feedback") is None and tokenizer and positive_prompt:
-            prompt_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=False)
-            last_tid = global_adaptive.get("last_feedback_tid")
+        # ====================== FEEDBACK QUESTION (whole word) ======================
+        if feedback_enabled and data.get("pending_feedback") is None and tokenizer and word_groups:
+            last_word = global_adaptive.get("last_feedback_word")
 
-            low_imp_candidates = []
-            normal_candidates = []
-
-            for tid in prompt_token_ids:
-                token_text = tokenizer.decode([tid]).strip()
-                if not self._is_valuable_token(token_text):
+            candidates = []
+            for start, end, full_word, word_token_list in word_groups:
+                if not self._is_valuable_token(full_word) or full_word == last_word:
                     continue
-                tid_str = str(tid)
-                imp = token_importance.get(tid_str, 1.0)
-                freq = token_library.get(tid_str, {}).get("fqc", 1)
+                group_key = str(word_token_list[0])
+                imp = token_importance.get(group_key, 1.0)
+                freq = token_library.get(group_key, {}).get("fqc", 1)
                 score = freq * (1.0 - abs(imp - 1.0))
+                candidates.append((full_word, group_key, score, word_token_list[0]))
 
-                if tid == last_tid:
-                    continue
-
-                if imp < 0.85:
-                    low_imp_candidates.append((tid, token_text, score))
+            if candidates:
+                low_imp = [c for c in candidates if c[2] < 1.0]
+                if low_imp and random.random() < 0.35:
+                    chosen = max(low_imp, key=lambda x: x[2])
                 else:
-                    normal_candidates.append((tid, token_text, score))
+                    chosen = max(candidates, key=lambda x: x[2])
 
-            if low_imp_candidates and random.random() < 0.35:
-                chosen = max(low_imp_candidates, key=lambda x: x[2])
-            elif normal_candidates:
-                chosen = max(normal_candidates, key=lambda x: x[2])
-            elif low_imp_candidates:
-                chosen = max(low_imp_candidates, key=lambda x: x[2])
-            else:
-                chosen = None
+                full_word, group_key, _, best_tid = chosen
 
-            if chosen:
-                best_tid, best_text, _ = chosen
                 data["pending_feedback"] = {
                     "token_id": int(best_tid),
-                    "token_text": best_text,
+                    "token_text": full_word,
                     "prompt_key": prompt_key,
                     "iteration": len(history)
                 }
                 global_adaptive["last_feedback_tid"] = int(best_tid)
-                feedback_question_output = f"Token: '{best_text}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
+                global_adaptive["last_feedback_word"] = full_word
+
+                feedback_question_output = f"Word: '{full_word}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
             else:
-                feedback_question_output = "Feedback enabled but no valuable token found in prompt."
+                feedback_question_output = "Feedback enabled but no suitable word found."
 
         # ====================== FINAL SAVE ======================
         with open(json_file, "w", encoding="utf-8") as f:
