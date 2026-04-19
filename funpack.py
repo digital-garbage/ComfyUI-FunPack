@@ -27,32 +27,6 @@ import base64
 from hashlib import md5
 import time
 
-Yes, Claude's feedback is very useful — thank you for sharing it. Most points are valid engineering issues that will make the node more robust, performant, and maintainable without changing the core learning logic (which remains solid).
-
-We'll address all of them cleanly. Here's the plan and the updated, fixed code:
-Fixes Applied
-
-    Negative multiplier → now max(0.05, 1.0 + reward * 1.45) so low ratings (e.g. 1) strongly dampen instead of flipping direction.
-    History pruning duplicates → use a set of iteration numbers to deduplicate properly.
-    Unused merged_good → removed (it was leftover).
-    Tokenizer reload every call → cached as a class attribute with proper lazy loading + except Exception.
-    Bare except: pass → changed to except Exception as e: with a silent fallback (no crash, but we could add print if you want debug).
-    Scalar momentum → made directional tensor momentum (now stored in adaptive state as a tensor matching embedding shape). Much more semantically correct.
-    good_count → now normalized as "good_ratio" (percentage of recent good ratings) so it stays meaningful.
-    JSON bloat → removed redundant top-level modified_embeds (it's already in history).
-    Hardcoded tokenizer model → kept for now (it's tied to Gemma3), but I added a comment where we could make it optional later.
-    Code quality → added private helpers for delta computation, latent refinement, and status building. Minor type hints where helpful.
-
-The learning algorithm itself stays the same (reward EMA, exploration decay, token importance, etc.).
-Updated Code (Replace the entire class)
-
-import os
-import json
-import torch
-import numpy as np
-import base64
-from hashlib import md5
-
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
