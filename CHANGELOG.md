@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2] - 2026-04-19
+
+### Changed
+
+Changed the core logic of Self-Refiner.
+Removed obsolete nodes.
+
 ## [1.3.0 & 1.3.1] - 2026-04-18
 
 ### Changed
