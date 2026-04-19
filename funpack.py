@@ -86,6 +86,10 @@ class FunPackGemmaEmbeddingRefiner:
                 }),
                 "latent": ("LATENT",),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears all history)"}),
+                "unlimited_history": ("BOOLEAN", {
+                    "default": False,
+                    "label": "Unlimited History (for multi-prompt / NSFW training — never prunes)"
+                }),
             }
         }
 
@@ -98,7 +102,8 @@ class FunPackGemmaEmbeddingRefiner:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def refine(self, conditioning, rating: int, refinement_key: str, prompt: str = "", latent=None, reset_session: bool = False):
+    def refine(self, conditioning, rating: int, refinement_key: str, prompt: str = "", latent=None,
+               reset_session: bool = False, unlimited_history: bool = False):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -119,7 +124,7 @@ class FunPackGemmaEmbeddingRefiner:
         if not isinstance(raw_embeds, torch.Tensor):
             return (conditioning, latent, "ERROR: No embedding tensor found")
 
-        # First run or explicit reset
+        # First run or reset
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
@@ -130,7 +135,8 @@ class FunPackGemmaEmbeddingRefiner:
                     "momentum": None,
                     "avg_reward_ema": 0.0,
                     "good_ratio": 0.0,
-                    "dynamic_sim_threshold": 0.82
+                    "dynamic_sim_threshold": 0.82,
+                    "token_importance": {}          # token_id -> importance score (1.0 = neutral)
                 },
                 "last_rating": rating,
                 "last_prompt": prompt
@@ -139,7 +145,7 @@ class FunPackGemmaEmbeddingRefiner:
                 json.dump(data, f, indent=2)
             return (conditioning, latent, "✓ New session started – Reference saved")
 
-        # Load existing
+        # Load session
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -161,31 +167,44 @@ class FunPackGemmaEmbeddingRefiner:
         avg_reward_ema = adaptive["avg_reward_ema"]
         good_ratio = adaptive["good_ratio"]
         sim_threshold = adaptive["dynamic_sim_threshold"]
+        token_importance = adaptive.get("token_importance", {})
 
         avg_reward_ema = 0.85 * avg_reward_ema + 0.15 * reward
 
-        # Directional momentum (safe init)
         if momentum is None or not isinstance(momentum, dict):
             momentum = torch.zeros_like(reference)
         else:
             momentum = serializable_to_tensor(momentum)
 
-        # New token detection
-        new_token_mask = None
+        # === Token handling & importance learning ===
         tokenizer = self._get_tokenizer()
-        if tokenizer and prompt and data.get("last_prompt"):
-            try:
-                cur_tokens = tokenizer.encode(prompt, add_special_tokens=True)
-                prev_tokens = tokenizer.encode(data["last_prompt"], add_special_tokens=True)
-                min_len = min(len(cur_tokens), len(prev_tokens))
-                new_token_mask = torch.ones(cur_embeds.shape[0], device=device)
-                for i in range(min_len):
-                    if cur_tokens[i] != prev_tokens[i]:
-                        new_token_mask[i] = 0.0
-            except Exception:
-                pass
+        cur_token_ids = []
+        prev_token_ids = []
+        new_token_mask = None
 
-        # Safe delta computation
+        if tokenizer and prompt:
+            cur_token_ids = tokenizer.encode(prompt, add_special_tokens=True)
+            prev_token_ids = tokenizer.encode(data.get("last_prompt", ""), add_special_tokens=True)
+            min_len = min(len(cur_token_ids), len(prev_token_ids))
+
+            new_token_mask = torch.ones(cur_embeds.shape[0], device=device)
+            for i in range(min_len):
+                if cur_token_ids[i] != prev_token_ids[i]:
+                    new_token_mask[i] = 0.0
+
+            # Update per-token importance (only tokens present in current prompt)
+            for tid in cur_token_ids:
+                tid_str = str(tid)  # JSON-safe key
+                if tid_str not in token_importance:
+                    token_importance[tid_str] = 1.0  # new token starts neutral
+
+                # New tokens get stronger update
+                is_new = tid not in prev_token_ids
+                update_strength = 1.8 if is_new else 1.0
+                token_importance[tid_str] = max(0.3, min(2.5,
+                    token_importance[tid_str] + reward * 0.12 * update_strength))
+
+        # === Safe delta computation ===
         history = data.get("history", [])
         is_close = similarity >= sim_threshold
 
@@ -206,35 +225,37 @@ class FunPackGemmaEmbeddingRefiner:
                 if entry.get("rating", 0) >= 7:
                     hist_emb = serializable_to_tensor(entry["modified_embeds"])
                     good_deltas.append(hist_emb - reference)
-
             if good_deltas:
                 avg_good_delta = torch.stack(good_deltas).mean(dim=0)
                 new_delta = avg_good_delta * (0.7 + reward * 0.4)
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Token importance & new-token boost
-        token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
-        token_importance = token_deltas / (token_deltas.max() + 1e-8)
-        boost = 1.0 + (0.9 + avg_reward_ema * 0.6) * token_importance
-        new_delta = new_delta * boost
+        # Apply learned token importance
+        if cur_token_ids and token_importance:
+            importance_tensor = torch.ones(cur_embeds.shape[0], device=device)
+            for i, tid in enumerate(cur_token_ids[:cur_embeds.shape[0]]):
+                tid_str = str(tid)
+                if tid_str in token_importance:
+                    importance_tensor[i] = token_importance[tid_str]
+            new_delta = new_delta * importance_tensor.unsqueeze(-1)
 
+        # New-token boost (stronger exploration for newly added tokens)
         if new_token_mask is not None:
             new_delta = new_delta * (1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1))
 
-        # Apply delta + normalize
+        # Apply & normalize embedding
         new_modified = reference + new_delta
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Latent refinement
+        # Latent refinement (unchanged)
         modified_latent = latent
         latent_info = ""
         if latent is not None and "samples" in latent:
             samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
-            good_latents = []
-            bad_latents = []
+            good_latents, bad_latents = [], []
             for entry in history:
                 if "latent_samples" in entry:
                     hl = serializable_to_tensor(entry["latent_samples"])
@@ -275,29 +296,31 @@ class FunPackGemmaEmbeddingRefiner:
             "momentum": tensor_to_serializable(momentum),
             "avg_reward_ema": avg_reward_ema,
             "good_ratio": good_ratio,
-            "dynamic_sim_threshold": sim_threshold
+            "dynamic_sim_threshold": sim_threshold,
+            "token_importance": token_importance
         })
 
-        # History + smart pruning
+        # === History management (new unlimited option) ===
         history_entry = {
             "iteration": len(history) + 1,
             "rating": rating,
             "reward": round(reward, 3),
             "modified_embeds": tensor_to_serializable(new_modified),
             "similarity": round(similarity, 4),
-            "prompt": prompt[:120]
+            "prompt": prompt[:180]
         }
         if latent is not None and "samples" in latent:
             history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
 
         history.append(history_entry)
 
-        if len(history) > 100:
-            sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
-            top = sorted_hist[:20]
-            recent = history[-60:]
-            seen = {e["iteration"] for e in top}
-            history = top + [e for e in recent if e["iteration"] not in seen]
+        if not unlimited_history:
+            if len(history) > 200:
+                sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
+                top = sorted_hist[:40]
+                recent = history[-120:]
+                seen = {e["iteration"] for e in top}
+                history = top + [e for e in recent if e["iteration"] not in seen]
 
         data["history"] = history
         data["last_rating"] = rating
@@ -307,7 +330,7 @@ class FunPackGemmaEmbeddingRefiner:
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # Status
+        # === Status ===
         iter_num = len(history)
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else \
@@ -320,10 +343,12 @@ class FunPackGemmaEmbeddingRefiner:
             f"Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | "
             f"Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}"
         )
-        if new_token_mask is not None:
+        if new_token_mask is not None and (1.0 - new_token_mask).sum() > 0:
             status += " | New tokens boosted"
         if latent_info:
             status += latent_info
+        if unlimited_history:
+            status += " | Unlimited history ON"
 
         modified_conditioning = [(new_modified, meta_dict)]
         return (modified_conditioning, modified_latent, status)
