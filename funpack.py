@@ -688,7 +688,7 @@ class FunPackGemmaEmbeddingRefiner:
                 global_adaptive["last_feedback_tid"] = int(best_tid)
                 global_adaptive["last_feedback_word"] = full_word
 
-                feedback_question_output = f"Word: '{full_word}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
+                feedback_question_output = f"Based on the previously generated video, how would you rate the representation of this token? '{full_word}' (1=absent, 5=perfect, 6=overrepresented). If not sure, leave the rating at 5."
             else:
                 feedback_question_output = "Feedback enabled but no suitable word found."
 
