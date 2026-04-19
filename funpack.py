@@ -304,7 +304,7 @@ class FunPackGemmaEmbeddingRefiner:
                 entry["is_specific"] = not entry["is_general"] and mostly_high and entry["unique_prompts"] <= 8
                 entry["infusable"] = entry["is_general"] or (entry["is_specific"] and entry["high_rated_count"] > 15)
 
-        # ====================== CORE REFINEMENT ======================
+        # ====================== CORE REFINEMENT (positive) ======================
         ref_mean = old_reference.mean(dim=1)
         cur_mean = cur_positive.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
@@ -346,25 +346,22 @@ class FunPackGemmaEmbeddingRefiner:
                     if cur_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
-                # Update importance with different base and treatment
                 for tid in cur_token_ids[:embed_seq_len]:
                     tid_str = str(tid)
                     token_text = tokenizer.decode([int(tid)], skip_special_tokens=True).strip()
                     is_valuable = self._is_valuable_token(token_text)
 
                     if tid_str not in token_importance:
-                        token_importance[tid_str] = 1.0 if is_valuable else 0.4   # low base for junk tokens
+                        token_importance[tid_str] = 1.0 if is_valuable else 0.4
 
                     is_new = tid not in prev_token_ids
                     update_strength = 1.8 if is_new else 1.0
-
                     if not is_valuable:
-                        update_strength *= 0.25   # very low influence
+                        update_strength *= 0.25
 
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
 
-                # Infusion — only valuable tokens
                 if random.random() < 0.18 and token_library:
                     for tid in cur_token_ids[:embed_seq_len]:
                         tid_str = str(tid)
@@ -448,23 +445,49 @@ class FunPackGemmaEmbeddingRefiner:
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        new_negative = None
-        negative_meta = {"pooled_output": None}
-        if negative_conditioning is not None:
-            neg_item = negative_conditioning[0]
-            if isinstance(neg_item, (list, tuple)) and len(neg_item) >= 2:
-                raw_negative = neg_item[0]
-                negative_meta = neg_item[1] if isinstance(neg_item[1], dict) else {"pooled_output": None}
-            else:
-                raw_negative = neg_item if isinstance(neg_item, torch.Tensor) else None
+        # ====================== SAFE LATENT REFINEMENT ======================
+        modified_latent = latent
+        latent_info = " | Latent unchanged"
 
-            if isinstance(raw_negative, torch.Tensor):
-                neg_strength = 0.15 if rating <= 4 else 0.05
-                neg_delta = torch.randn_like(raw_negative) * neg_strength * (5.5 - rating) / 4.5
-                new_negative = raw_negative + neg_delta
-                new_negative = torch.clamp(new_negative, min=-60.0, max=60.0)
-                norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
-                new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
+        if latent is not None and "samples" in latent:
+            samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
+            current_shape = list(samples.shape)
+
+            good_latents = []
+            bad_latents = []
+
+            for entry in history:
+                if "latent_samples" in entry:
+                    mod_data = entry["latent_samples"]
+                    if mod_data is not None:
+                        mod = serializable_to_tensor(mod_data)
+                        if list(mod.shape) == current_shape:
+                            if entry.get("rating", 5) >= 8:
+                                good_latents.append(mod)
+                            elif entry.get("rating", 5) <= 3:
+                                bad_latents.append(mod)
+
+            if good_latents or bad_latents:
+                latent_strength = max(0.0, avg_reward_ema * 0.35)
+
+                latent_delta = torch.zeros_like(samples)
+
+                if good_latents:
+                    mean_good = torch.stack(good_latents).mean(dim=0)
+                    latent_delta += (mean_good - samples) * latent_strength
+
+                if bad_latents:
+                    mean_bad = torch.stack(bad_latents).mean(dim=0)
+                    latent_delta -= (mean_bad - samples) * (latent_strength * 0.65)
+
+                # Protect technical/empty regions (consistently near-zero areas)
+                mask = torch.abs(samples) < 0.05
+                latent_delta = latent_delta * (~mask).float()
+
+                if torch.abs(latent_delta).max() > 1e-4:
+                    new_samples = torch.clamp(samples + latent_delta, min=-12.0, max=12.0)
+                    modified_latent = {"samples": new_samples.cpu(), "noise_mask": latent.get("noise_mask")}
+                    latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
 
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
         if avg_reward_ema > 0.3:
@@ -549,10 +572,10 @@ class FunPackGemmaEmbeddingRefiner:
             status += "\n🔀 Random token infusion active (positive only)"
         if rating <= 4:
             status += "\nLow rating: importance down-weighted + negative strengthened"
+        status += latent_info
 
         modified_positive = [(new_positive, positive_meta)]
         modified_negative = [(new_negative, negative_meta)] if new_negative is not None else negative_conditioning
-        modified_latent = latent
 
         return (modified_positive, modified_negative, modified_latent, status)
         
