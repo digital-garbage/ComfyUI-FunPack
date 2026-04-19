@@ -1991,7 +1991,6 @@ NODE_CLASS_MAPPINGS = {
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackCreativeTemplate": FunPackCreativeTemplate,
     "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
-    "FunPackUserRatingProvider": FunPackUserRatingProvider,
     "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
 }
 
@@ -2008,6 +2007,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackContinueVideo": "FunPack Continue Video",
     "FunPackCreativeTemplate": "FunPack Creative Template",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
-    "FunPackUserRatingProvider": "FunPack User Rating Provider (1-5)",
     "FunPackGemmaEmbeddingRefiner": "FunPack Gemma Embedding Refiner (Self-Refinement)"
 }
