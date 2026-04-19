@@ -27,26 +27,6 @@ import base64
 from hashlib import md5
 import time
 
-Got it — this is a classic edge-case bug.
-
-The crash happens here:
-
-data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"])
-
-When the JSON file exists but the "history" list is empty (which can happen right after a reset_session=True on the very next run, or if pruning accidentally left it empty), [-1] fails with "list index out of range".
-
-This slipped through because the first-run block only triggers on not os.path.exists(json_file), not on an empty history inside an existing file.
-Fixed Version (Only the refine method needs updating — replace the whole class again)
-
-Here's the corrected code with robust safeguards:
-
-import os
-import json
-import torch
-import numpy as np
-import base64
-from hashlib import md5
-
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -139,7 +119,7 @@ class FunPackGemmaEmbeddingRefiner:
         if not isinstance(raw_embeds, torch.Tensor):
             return (conditioning, latent, "ERROR: No embedding tensor found")
 
-        # === First run or explicit reset ===
+        # First run or explicit reset
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
@@ -205,12 +185,11 @@ class FunPackGemmaEmbeddingRefiner:
             except Exception:
                 pass
 
-        # === Safe delta computation (fixed the crash) ===
+        # Safe delta computation
         history = data.get("history", [])
         is_close = similarity >= sim_threshold
 
-        if is_close and history:  # ← added "and history"
-            # Safe access to last entry
+        if is_close and history:
             last_entry = history[-1]
             prev_modified = serializable_to_tensor(
                 last_entry.get("modified_embeds", data["reference_embeds"])
@@ -222,7 +201,6 @@ class FunPackGemmaEmbeddingRefiner:
             noise = torch.randn_like(prev_delta) * (expl * (1.0 - avg_reward_ema * 0.7))
             new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
         else:
-            # Fallback when no history yet or far from reference
             good_deltas = []
             for entry in history:
                 if entry.get("rating", 0) >= 7:
@@ -235,7 +213,7 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Token importance & new-token boost (unchanged)
+        # Token importance & new-token boost
         token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
         token_importance = token_deltas / (token_deltas.max() + 1e-8)
         boost = 1.0 + (0.9 + avg_reward_ema * 0.6) * token_importance
@@ -244,13 +222,13 @@ class FunPackGemmaEmbeddingRefiner:
         if new_token_mask is not None:
             new_delta = new_delta * (1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1))
 
-        # Apply delta
+        # Apply delta + normalize
         new_modified = reference + new_delta
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Latent refinement (unchanged)
+        # Latent refinement
         modified_latent = latent
         latent_info = ""
         if latent is not None and "samples" in latent:
