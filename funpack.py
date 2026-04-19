@@ -27,35 +27,6 @@ import base64
 from hashlib import md5
 import time
 
-Yes — this is an excellent idea!
-
-Adding visibility into “what the node is currently focusing on” will make the learning process much more transparent and give you real control. You’ll be able to see if it’s drifting toward irrelevant tokens and deliberately give lower ratings to steer it back faster.
-What We’ll Add to the Status
-
-For every generation, the status will now show two useful lines:
-
-    Current top 10 tokens (by learned importance in this session)
-    → Shows what the node currently considers most critical for your embedding.
-    Next generation focus (predicted top 10 tokens that will be boosted the most in the next step)
-    → Based on the current importance + the reward you just gave.
-
-This makes it very visible when the node starts focusing on something unrelated (e.g. background words, punctuation, or generic quality boosters instead of the main subject/action).
-Implementation Details
-
-    We decode token IDs back to human-readable text using the Gemma tokenizer.
-    We show the top 10 (token text + importance score).
-    If a token is new or has changed importance significantly, it will be highlighted in the status.
-    Everything stays lightweight and inside the same JSON.
-
-Here’s the updated full node with this new visibility feature (plus all previous improvements):
-
-import os
-import json
-import torch
-import numpy as np
-import base64
-from hashlib import md5
-
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
