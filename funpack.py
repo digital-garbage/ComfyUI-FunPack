@@ -223,7 +223,6 @@ class FunPackGemmaEmbeddingRefiner:
                     except:
                         pass
 
-        # Update stored reference to current conditioning (only after computations)
         active["reference_embeds"] = tensor_to_serializable(cur_positive)
         reference = cur_positive.clone()
 
@@ -480,17 +479,28 @@ class FunPackGemmaEmbeddingRefiner:
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
+        # ====================== ENHANCED STATUS WITH INFUSION TOKENS ======================
         iter_num = len(history)
+        total_iterations = sum(len(p.get("history", [])) for p in prompt_histories.values())
+        total_history_count = sum(len(p.get("history", [])) for p in prompt_histories.values())
+        unique_prompts = len(prompt_histories)
+        infusion_count = len([v for v in infusion_tokens.values() if v > 0.5])
+
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else "✅ Learning well" if avg_reward_ema > 0.3 else "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
         current_top = self._get_top_tokens(token_importance, tokenizer, 10)
+        top_infusion = self._get_top_tokens(infusion_tokens, tokenizer, 8)
 
         lib_size = len(token_library)
         gen_count = sum(1 for e in token_library.values() if e.get("is_general", False))
 
-        status = (f"Iter {iter_num} | Rating {rating}/10 {trend} | Sim {similarity:.3f} | "
-                  f"Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | "
-                  f"Expl {expl:.3f} | {health}\nCurrent focus: {current_top}\n"
+        status = (f"Iter {iter_num} | Total iters {total_iterations} | "
+                  f"History {total_history_count} | Unique prompts {unique_prompts} | "
+                  f"Infusion tokens {infusion_count}\n"
+                  f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
+                  f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
+                  f"Current focus: {current_top}\n"
+                  f"Top infusion: {top_infusion}\n"
                   f"Library: {lib_size} tokens ({gen_count} general)")
 
         if is_new_prompt:
