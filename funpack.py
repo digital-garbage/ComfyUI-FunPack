@@ -43,7 +43,6 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
-
 class FunPackGemmaEmbeddingRefiner:
     _tokenizer = None
 
@@ -66,7 +65,7 @@ class FunPackGemmaEmbeddingRefiner:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "conditioning": ("CONDITIONING",),
+                "positive_conditioning": ("CONDITIONING",),
                 "rating": ("INT", {
                     "default": 5,
                     "min": 1,
@@ -78,22 +77,28 @@ class FunPackGemmaEmbeddingRefiner:
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
             },
             "optional": {
-                "prompt": ("STRING", {
+                "positive_prompt": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "placeholder": "Positive prompt (helps detect new tokens & prompt drift)"
+                    "placeholder": "Positive prompt (detects drift & new tokens)"
                 }),
+                "negative_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "placeholder": "Negative prompt (optional)"
+                }),
+                "negative_conditioning": ("CONDITIONING",),
                 "latent": ("LATENT",),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears all history)"}),
                 "unlimited_history": ("BOOLEAN", {
                     "default": False,
-                    "label": "Unlimited History (for multi-prompt / NSFW training — never prunes)"
+                    "label": "Unlimited History (for multi-prompt training — never prunes)"
                 }),
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "STRING")
-    RETURN_NAMES = ("modified_conditioning", "modified_latent", "status")
+    RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT", "STRING")
+    RETURN_NAMES = ("modified_positive_conditioning", "modified_negative_conditioning", "modified_latent", "status")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -115,7 +120,9 @@ class FunPackGemmaEmbeddingRefiner:
                 top_list.append(f"ID{tid_str}({score:.2f})")
         return ", ".join(top_list) if top_list else "None"
 
-    def refine(self, conditioning, rating: int, refinement_key: str, prompt: str = "", latent=None,
+    def refine(self, positive_conditioning, rating: int, refinement_key: str,
+               positive_prompt: str = "", negative_prompt: str = "",
+               negative_conditioning=None, latent=None,
                reset_session: bool = False, unlimited_history: bool = False):
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
@@ -123,25 +130,26 @@ class FunPackGemmaEmbeddingRefiner:
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
-        if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
-            return (conditioning, latent, "ERROR: Empty CONDITIONING input")
+        # Extract positive embedding
+        if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
+            return (positive_conditioning, negative_conditioning, latent, "ERROR: Empty positive CONDITIONING input")
 
-        item = conditioning[0]
+        item = positive_conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
-            raw_embeds = item[0]
-            meta_dict = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
+            raw_positive = item[0]
+            positive_meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
         else:
-            raw_embeds = item if isinstance(item, torch.Tensor) else None
-            meta_dict = {"pooled_output": None}
+            raw_positive = item if isinstance(item, torch.Tensor) else None
+            positive_meta = {"pooled_output": None}
 
-        if not isinstance(raw_embeds, torch.Tensor):
-            return (conditioning, latent, "ERROR: No embedding tensor found")
+        if not isinstance(raw_positive, torch.Tensor):
+            return (positive_conditioning, negative_conditioning, latent, "ERROR: No positive embedding tensor found")
 
         # First run or reset
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
-                "reference_embeds": tensor_to_serializable(raw_embeds),
+                "reference_embeds": tensor_to_serializable(raw_positive),
                 "history": [],
                 "adaptive": {
                     "exploration_base": 0.08,
@@ -149,14 +157,16 @@ class FunPackGemmaEmbeddingRefiner:
                     "avg_reward_ema": 0.0,
                     "good_ratio": 0.0,
                     "dynamic_sim_threshold": 0.82,
-                    "token_importance": {}
+                    "token_importance": {},
+                    "infusion_tokens": {}
                 },
                 "last_rating": rating,
-                "last_prompt": prompt
+                "last_positive_prompt": positive_prompt,
+                "last_negative_prompt": negative_prompt
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (conditioning, latent, "✓ New session started – Reference saved")
+            return (positive_conditioning, negative_conditioning, latent, "✓ New session started – Reference saved")
 
         # Load session
         with open(json_file, "r", encoding="utf-8") as f:
@@ -164,10 +174,47 @@ class FunPackGemmaEmbeddingRefiner:
 
         reference = serializable_to_tensor(data["reference_embeds"])
         device = reference.device
-        cur_embeds = raw_embeds.to(device) if raw_embeds.device != device else raw_embeds
+        cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
 
+        # Major change detection (new prompt/negative/shape)
+        pos_changed = positive_prompt != data.get("last_positive_prompt", "")
+        neg_changed = negative_prompt != data.get("last_negative_prompt", "")
+        shape_mismatch = list(reference.shape) != list(cur_positive.shape)
+        major_change = pos_changed or neg_changed or shape_mismatch
+
+        history = data.get("history", [])
+
+        if major_change:
+            # Knowledge transfer from past positive prompts only
+            tokenizer = self._get_tokenizer()
+            cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
+            if history and tokenizer and cur_token_ids:
+                current_set = set(cur_token_ids)
+                for entry in history:
+                    if "prompt" not in entry or not entry["prompt"]:
+                        continue
+                    try:
+                        old_tokens = tokenizer.encode(entry["prompt"], add_special_tokens=True)[:60]
+                        matching = current_set & set(old_tokens)
+                        r = entry.get("rating", 5)
+                        adj = 1.25 if r >= 8 else 0.75 if r <= 3 else None
+                        if adj:
+                            for tid in matching:
+                                tid_str = str(tid)
+                                if tid_str in data["adaptive"]["token_importance"]:
+                                    data["adaptive"]["token_importance"][tid_str] = max(0.3, min(2.5,
+                                        data["adaptive"]["token_importance"][tid_str] * adj))
+                    except:
+                        pass
+
+            # Update reference to current positive conditioning
+            data["reference_embeds"] = tensor_to_serializable(cur_positive)
+            reference = cur_positive.clone()
+            history = []  # clear old deltas
+
+        # Core refinement logic (positive)
         ref_mean = reference.mean(dim=1)
-        cur_mean = cur_embeds.mean(dim=1)
+        cur_mean = cur_positive.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
 
         reward = (rating - 5.5) / 4.5
@@ -181,6 +228,7 @@ class FunPackGemmaEmbeddingRefiner:
         good_ratio = adaptive["good_ratio"]
         sim_threshold = adaptive["dynamic_sim_threshold"]
         token_importance = adaptive.get("token_importance", {})
+        infusion_tokens = adaptive.get("infusion_tokens", {})
 
         avg_reward_ema = 0.85 * avg_reward_ema + 0.15 * reward
 
@@ -189,56 +237,54 @@ class FunPackGemmaEmbeddingRefiner:
         else:
             momentum = serializable_to_tensor(momentum)
 
-        # === SAFE Token handling ===
+        # Token handling - positive only for infusion
         tokenizer = self._get_tokenizer()
         new_token_mask = None
         cur_token_ids = []
+        infusion_active = False
 
-        if tokenizer and prompt:
+        if tokenizer and positive_prompt:
             try:
-                cur_token_ids = tokenizer.encode(prompt, add_special_tokens=True)
-                prev_token_ids = tokenizer.encode(data.get("last_prompt", ""), add_special_tokens=True)
-
-                # Get actual embedding sequence length safely
-                if cur_embeds.dim() == 3:           # [batch, seq, hidden]
-                    embed_seq_len = cur_embeds.shape[1]
-                elif cur_embeds.dim() == 2:         # [seq, hidden]
-                    embed_seq_len = cur_embeds.shape[0]
-                else:
-                    embed_seq_len = 1
+                cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True)
+                embed_seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0] if cur_positive.dim() == 2 else 1
 
                 new_token_mask = torch.ones(embed_seq_len, device=device)
 
+                prev_token_ids = tokenizer.encode(data.get("last_positive_prompt", ""), add_special_tokens=True)
                 compare_len = min(len(cur_token_ids), len(prev_token_ids), embed_seq_len)
 
                 for i in range(compare_len):
                     if cur_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
-                # Update per-token importance safely
+                # Update importance
                 for tid in cur_token_ids[:embed_seq_len]:
                     tid_str = str(tid)
                     if tid_str not in token_importance:
                         token_importance[tid_str] = 1.0
-
                     is_new = tid not in prev_token_ids
                     update_strength = 1.8 if is_new else 1.0
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
 
+                # Random token infusion — POSITIVE ONLY
+                if random.random() < 0.18 and infusion_tokens:
+                    seq_len = embed_seq_len
+                    for i, tid in enumerate(cur_token_ids[:seq_len]):
+                        tid_str = str(tid)
+                        if tid_str in infusion_tokens:
+                            infusion_tokens[tid_str] = min(3.0, infusion_tokens[tid_str] + 0.4)
+                            infusion_active = True
+
             except Exception as e:
                 print(f"[FunPackGemmaEmbeddingRefiner] Token comparison failed: {e}")
                 new_token_mask = None
 
-        # === Delta computation ===
-        history = data.get("history", [])
+        # Delta computation (positive)
         is_close = similarity >= sim_threshold
-
         if is_close and history:
             last_entry = history[-1]
-            prev_modified = serializable_to_tensor(
-                last_entry.get("modified_embeds", data["reference_embeds"])
-            )
+            prev_modified = serializable_to_tensor(last_entry.get("modified_embeds", data["reference_embeds"]))
             prev_delta = prev_modified - reference
             multiplier = max(0.05, 1.0 + reward * 1.45)
             if rating == last_rating and rating >= 8:
@@ -247,59 +293,53 @@ class FunPackGemmaEmbeddingRefiner:
             new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
         else:
             good_deltas = [serializable_to_tensor(entry["modified_embeds"]) - reference 
-                          for entry in history if entry.get("rating", 0) >= 7]
-            if good_deltas:
-                new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
-            else:
-                new_delta = torch.randn_like(reference) * expl * 0.45
+                           for entry in history if entry.get("rating", 0) >= 7]
+            new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4) if good_deltas else \
+                        torch.randn_like(reference) * expl * 0.45
 
-        # Apply token importance — always match current embedding length
-        if token_importance and cur_embeds.dim() > 1:
-            if cur_embeds.dim() == 3:
-                seq_len = cur_embeds.shape[1]
-            else:
-                seq_len = cur_embeds.shape[0]
-
+        # Apply importance + boost
+        if token_importance and cur_positive.dim() > 1:
+            seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
             for i, tid in enumerate(cur_token_ids[:seq_len]):
                 tid_str = str(tid)
                 if tid_str in token_importance:
                     importance_tensor[i] = token_importance[tid_str]
-
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
 
-        # Apply new token boost safely
         if new_token_mask is not None:
             boost_factor = 1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1)
             new_delta = new_delta * boost_factor
 
-        # Apply & normalize
-        new_modified = reference + new_delta
-        new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
+        # Final positive
+        new_positive = reference + new_delta
+        new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
-        new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
+        new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Latent refinement
-        modified_latent = latent
-        latent_info = ""
-        if latent is not None and "samples" in latent:
-            samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
-            good_latents = [serializable_to_tensor(entry["latent_samples"]) for entry in history if entry.get("rating", 5) >= 8]
-            bad_latents = [serializable_to_tensor(entry["latent_samples"]) for entry in history if entry.get("rating", 5) <= 3]
+        # ====================== NEGATIVE REFINEMENT (light, no infusion) ======================
+        new_negative = None
+        negative_meta = {"pooled_output": None}
+        if negative_conditioning is not None:
+            # Simple extraction (can be expanded later if needed)
+            neg_item = negative_conditioning[0]
+            if isinstance(neg_item, (list, tuple)) and len(neg_item) >= 2:
+                raw_negative = neg_item[0]
+                negative_meta = neg_item[1] if isinstance(neg_item[1], dict) else {"pooled_output": None}
+            else:
+                raw_negative = neg_item if isinstance(neg_item, torch.Tensor) else None
 
-            latent_strength_auto = max(0.0, avg_reward_ema * 0.35)
-            latent_delta = torch.zeros_like(samples)
-            if good_latents:
-                latent_delta += (torch.stack(good_latents).mean(dim=0) - samples) * latent_strength_auto
-            if bad_latents:
-                latent_delta -= (torch.stack(bad_latents).mean(dim=0) - samples) * (latent_strength_auto * 0.7)
+            if isinstance(raw_negative, torch.Tensor):
+                # Light refinement: mild shift based on rating (strengthen when low rating)
+                neg_strength = 0.15 if rating <= 4 else 0.05
+                neg_delta = torch.randn_like(raw_negative) * neg_strength * (5.5 - rating) / 4.5
+                new_negative = raw_negative + neg_delta
+                new_negative = torch.clamp(new_negative, min=-60.0, max=60.0)
+                # Simple norm preservation
+                norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
+                new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
 
-            if good_latents or bad_latents:
-                new_samples = torch.clamp(samples + latent_delta, min=-12.0, max=12.0)
-                modified_latent = {"samples": new_samples.cpu(), "noise_mask": latent.get("noise_mask")}
-                latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
-
-        # Update adaptive state
+        # Update adaptive + infusion memory (positive only)
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
         if avg_reward_ema > 0.3:
             sim_threshold = max(0.75, sim_threshold - 0.002)
@@ -307,6 +347,12 @@ class FunPackGemmaEmbeddingRefiner:
         if rating >= 8:
             expl = max(0.015, expl * 0.96)
             good_ratio = 0.9 * good_ratio + 0.1 * 1.0
+            # Remember for future infusion (positive tokens only)
+            for tid in cur_token_ids:
+                tid_str = str(tid)
+                if tid_str not in infusion_tokens:
+                    infusion_tokens[tid_str] = 0.0
+                infusion_tokens[tid_str] = min(4.0, infusion_tokens[tid_str] + reward * 0.6)
         else:
             expl = min(0.12, expl * 1.08)
             good_ratio = 0.9 * good_ratio + 0.1 * 0.0
@@ -317,17 +363,18 @@ class FunPackGemmaEmbeddingRefiner:
             "avg_reward_ema": avg_reward_ema,
             "good_ratio": good_ratio,
             "dynamic_sim_threshold": sim_threshold,
-            "token_importance": token_importance
+            "token_importance": token_importance,
+            "infusion_tokens": infusion_tokens
         })
 
-        # History
+        # History (stores positive prompt)
         history_entry = {
             "iteration": len(history) + 1,
             "rating": rating,
             "reward": round(reward, 3),
-            "modified_embeds": tensor_to_serializable(new_modified),
+            "modified_embeds": tensor_to_serializable(new_positive),
             "similarity": round(similarity, 4),
-            "prompt": prompt[:180]
+            "prompt": positive_prompt[:180]
         }
         if latent is not None and "samples" in latent:
             history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
@@ -343,36 +390,37 @@ class FunPackGemmaEmbeddingRefiner:
 
         data["history"] = history
         data["last_rating"] = rating
-        data["last_prompt"] = prompt
+        data["last_positive_prompt"] = positive_prompt
+        data["last_negative_prompt"] = negative_prompt
         data["adaptive"] = adaptive
 
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # === Rich Status ===
+        # Status
         iter_num = len(history)
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
-        health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else \
-                 "✅ Learning well" if avg_reward_ema > 0.3 else \
-                 "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
+        health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else "✅ Learning well" if avg_reward_ema > 0.3 else "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
 
         current_top = self._get_top_tokens(token_importance, tokenizer, 10)
 
-        status = (
-            f"Iter {iter_num} | Rating {rating}/10 {trend} | "
-            f"Sim {similarity:.3f} | Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | "
-            f"Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-            f"Current focus: {current_top}"
-        )
+        status = f"Iter {iter_num} | Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\nCurrent focus: {current_top}"
+
+        if major_change:
+            status += "\n✓ New prompt/negative/shape → reference updated + knowledge transferred"
         if new_token_mask is not None and (1.0 - new_token_mask).sum() > 0:
             status += "\nNew tokens boosted"
-        if latent_info:
-            status += latent_info
-        if unlimited_history:
-            status += " | Unlimited history ON"
+        if infusion_active:
+            status += "\n🔀 Random token infusion active (positive only)"
+        if rating <= 4:
+            status += "\nLow rating: importance down-weighted + negative strengthened"
 
-        modified_conditioning = [(new_modified, meta_dict)]
-        return (modified_conditioning, modified_latent, status)
+        # Prepare outputs
+        modified_positive = [(new_positive, positive_meta)]
+        modified_negative = [(new_negative, negative_meta)] if new_negative is not None else negative_conditioning
+        modified_latent = latent  # can be enhanced later
+
+        return (modified_positive, modified_negative, modified_latent, status)
         
 # Constants from StoryMem
 IMAGE_FACTOR = 28
