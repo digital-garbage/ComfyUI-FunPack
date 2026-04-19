@@ -122,14 +122,28 @@ class FunPackGemmaEmbeddingRefiner:
         return ", ".join(top_list) if top_list else "None"
 
     def _is_valuable_token(self, token_text):
-        if not token_text or len(token_text.strip()) <= 2:
+        if not token_text:
             return False
-        t = token_text.strip().lower()
-        stopwords = {"the","a","an","and","or","with","her","his","him","she","he","it","to","of","in","on","for","is","are","was","were","be","this","that","these","those"}
-        if t in stopwords:
+        t = token_text.strip()
+        if len(t) < 3:
             return False
-        if t in {",",".","!","?",":",";","-","_","(",")","[","]","{","}"} or t.isdigit():
+        t_lower = t.lower()
+
+        stopwords = {
+            "the","a","an","and","or","but","with","for","of","in","on","at","to","from","by","is",
+            "are","was","were","be","been","being","have","has","had","do","does","did","will","would",
+            "her","his","him","she","he","it","they","them","this","that","these","those","i","you",
+            "my","your","our","their","me","us"
+        }
+        if t_lower in stopwords:
             return False
+
+        if t in {",",".","!","?",":",";","-","_","(",")","[","]","{","}","'","\"", "..."} or t.isdigit():
+            return False
+
+        if not any(c.isalpha() for c in t):
+            return False
+
         return True
 
     def refine(self, positive_conditioning, rating: int, refinement_key: str,
@@ -332,16 +346,25 @@ class FunPackGemmaEmbeddingRefiner:
                     if cur_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
+                # Update importance with different treatment for low-value tokens
                 for tid in cur_token_ids[:embed_seq_len]:
                     tid_str = str(tid)
+                    token_text = tokenizer.decode([int(tid)], skip_special_tokens=True).strip()
+                    is_valuable = self._is_valuable_token(token_text)
+
                     if tid_str not in token_importance:
                         token_importance[tid_str] = 1.0
+
                     is_new = tid not in prev_token_ids
                     update_strength = 1.8 if is_new else 1.0
+
+                    if not is_valuable:
+                        update_strength *= 0.25   # very low influence for dots, "the", "her", etc.
+
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
 
-                # VALUABLE TOKEN INFUSION ONLY
+                # Infusion — only valuable tokens
                 if random.random() < 0.18 and token_library:
                     for tid in cur_token_ids[:embed_seq_len]:
                         tid_str = str(tid)
@@ -494,7 +517,7 @@ class FunPackGemmaEmbeddingRefiner:
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # ====================== ENHANCED STATUS ======================
+        # ====================== STATUS ======================
         iter_num = len(history)
         total_iterations = sum(len(p.get("history", [])) for p in prompt_histories.values())
         total_history_count = sum(len(p.get("history", [])) for p in prompt_histories.values())
