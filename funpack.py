@@ -194,8 +194,8 @@ class FunPackGemmaEmbeddingRefiner:
             }
             prompt_histories[prompt_key] = active
 
-        reference = serializable_to_tensor(active["reference_embeds"])
-        device = reference.device
+        old_reference = serializable_to_tensor(active["reference_embeds"])
+        device = old_reference.device
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
 
         tokenizer = self._get_tokenizer()
@@ -223,6 +223,7 @@ class FunPackGemmaEmbeddingRefiner:
                     except:
                         pass
 
+        # Update stored reference to current conditioning (only after computations)
         active["reference_embeds"] = tensor_to_serializable(cur_positive)
         reference = cur_positive.clone()
 
@@ -230,7 +231,6 @@ class FunPackGemmaEmbeddingRefiner:
         token_library = global_adaptive.setdefault("token_library", {})
 
         if tokenizer and cur_token_ids:
-            current_set = set(cur_token_ids)
             for tid in cur_token_ids:
                 tid_str = str(tid)
                 if tid_str not in token_library:
@@ -258,14 +258,14 @@ class FunPackGemmaEmbeddingRefiner:
                                 token_library[tid2_str]["good_pairs"][tid1_str] = 0
                             token_library[tid1_str]["good_pairs"][tid2_str] += 1
                             token_library[tid2_str]["good_pairs"][tid1_str] += 1
-                    token_library[tid1_str]["high_rated_count"] += 1
+                    if tid1_str in token_library:
+                        token_library[tid1_str]["high_rated_count"] += 1
             elif rating <= 4:
                 for tid in cur_token_ids:
                     tid_str = str(tid)
                     if tid_str in token_library:
                         token_library[tid_str]["low_rated_count"] += 1
 
-            # Compute general/specific/infusable
             for tid_str, entry in token_library.items():
                 total_rated = entry["high_rated_count"] + entry["low_rated_count"]
                 if total_rated == 0:
@@ -273,19 +273,17 @@ class FunPackGemmaEmbeddingRefiner:
                     entry["is_specific"] = False
                     entry["infusable"] = False
                     continue
-
                 appears_in_many = entry["unique_prompts"] >= 5
                 balanced = entry["high_rated_count"] > 0 and entry["low_rated_count"] > 0
                 mostly_high = entry["high_rated_count"] > entry["low_rated_count"] * 2
-
                 entry["is_general"] = appears_in_many and balanced
                 entry["is_specific"] = not entry["is_general"] and mostly_high and entry["unique_prompts"] <= 8
                 entry["infusable"] = entry["is_general"] or (entry["is_specific"] and entry["high_rated_count"] > 15)
 
         # ====================== CORE REFINEMENT ======================
-        ref_mean = reference.mean(dim=1)
+        ref_mean = old_reference.mean(dim=1)
         cur_mean = cur_positive.mean(dim=1)
-        similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
+        similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
 
         reward = (rating - 5.5) / 4.5
         last_rating = active.get("last_rating", 5)
@@ -305,6 +303,8 @@ class FunPackGemmaEmbeddingRefiner:
             momentum = torch.zeros_like(reference)
         else:
             momentum = serializable_to_tensor(momentum)
+            if list(momentum.shape) != list(reference.shape):
+                momentum = torch.zeros_like(reference)
 
         new_token_mask = None
         infusion_active = False
@@ -331,15 +331,13 @@ class FunPackGemmaEmbeddingRefiner:
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
 
-                # Pair-aware infusion using token_library
                 if random.random() < 0.18 and token_library:
-                    token_lib = token_library
                     for tid in cur_token_ids[:embed_seq_len]:
                         tid_str = str(tid)
-                        if tid_str not in token_lib or not token_lib[tid_str].get("infusable", False):
+                        if tid_str not in token_library or not token_library[tid_str].get("infusable", False):
                             continue
-                        entry = token_lib[tid_str]
-                        if not entry["good_pairs"]:
+                        entry = token_library[tid_str]
+                        if not entry.get("good_pairs"):
                             continue
                         pair_scores = []
                         for ct in cur_token_ids[:embed_seq_len]:
@@ -349,7 +347,9 @@ class FunPackGemmaEmbeddingRefiner:
                         if pair_scores:
                             avg_pair = sum(pair_scores) / len(pair_scores)
                             if avg_pair > 1.2 or entry.get("is_general", False):
-                                infusion_tokens[tid_str] = min(3.0, infusion_tokens.get(tid_str, 0.0) + 0.6)
+                                if tid_str not in infusion_tokens:
+                                    infusion_tokens[tid_str] = 0.0
+                                infusion_tokens[tid_str] = min(3.0, infusion_tokens[tid_str] + 0.6)
                                 infusion_active = True
 
             except Exception as e:
@@ -357,21 +357,41 @@ class FunPackGemmaEmbeddingRefiner:
                 new_token_mask = None
 
         history = active.get("history", [])
-        is_close = similarity >= sim_threshold
+        is_close = (not is_new_prompt) and (similarity >= sim_threshold)
+
         if is_close and history:
             last_entry = history[-1]
-            prev_modified = serializable_to_tensor(last_entry.get("modified_embeds", active["reference_embeds"]))
-            prev_delta = prev_modified - reference
+            mod_data = last_entry.get("modified_embeds")
+            if mod_data is None:
+                prev_modified = torch.zeros_like(old_reference)
+            else:
+                prev_modified = serializable_to_tensor(mod_data)
+                if list(prev_modified.shape) != list(old_reference.shape):
+                    prev_modified = torch.zeros_like(old_reference)
+            prev_delta = prev_modified - old_reference
             multiplier = max(0.05, 1.0 + reward * 1.45)
             if rating == last_rating and rating >= 8:
                 multiplier += 0.35
-            noise = torch.randn_like(prev_delta) * (expl * (1.0 - avg_reward_ema * 0.7))
+            noise = torch.randn_like(old_reference) * (expl * (1.0 - avg_reward_ema * 0.7))
             new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
         else:
-            good_deltas = [serializable_to_tensor(entry["modified_embeds"]) - reference 
-                           for entry in history if entry.get("rating", 0) >= 7]
-            new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4) if good_deltas else \
-                        torch.randn_like(reference) * expl * 0.45
+            good_deltas = []
+            for entry in history:
+                if entry.get("rating", 0) >= 7:
+                    mod_data = entry.get("modified_embeds")
+                    if mod_data is None:
+                        continue
+                    mod = serializable_to_tensor(mod_data)
+                    if list(mod.shape) == list(old_reference.shape):
+                        good_deltas.append(mod - old_reference)
+            if good_deltas:
+                new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
+            else:
+                if is_new_prompt and isinstance(momentum, torch.Tensor) and list(momentum.shape) == list(reference.shape):
+                    seed_strength = min(0.3, abs(avg_reward_ema) * 0.4)
+                    new_delta = momentum * seed_strength + torch.randn_like(reference) * expl * 0.3
+                else:
+                    new_delta = torch.randn_like(reference) * expl * 0.45
 
         if token_importance and cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
@@ -409,7 +429,7 @@ class FunPackGemmaEmbeddingRefiner:
                 norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
                 new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
 
-        momentum = 0.75 * momentum + 0.25 * (new_delta * reward) if 'momentum' in locals() else torch.zeros_like(reference)
+        momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
         if avg_reward_ema > 0.3:
             sim_threshold = max(0.75, sim_threshold - 0.002)
 
