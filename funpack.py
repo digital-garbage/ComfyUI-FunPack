@@ -102,7 +102,7 @@ class FunPackGemmaEmbeddingRefiner:
                     "max": 5,
                     "step": 1,
                     "display": "slider",
-                    "label": "Token Feedback (1=absent, 5=perfect)"
+                    "label": "Token Feedback (1=absent, 5=perfect, 6=overrepresented)"
                 }),
             }
         }
@@ -187,7 +187,6 @@ class FunPackGemmaEmbeddingRefiner:
         if negative_prompt:
             prompt_key += f" |||NEG||| {negative_prompt}"
 
-        # ====================== SESSION RESET ======================
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
@@ -223,7 +222,7 @@ class FunPackGemmaEmbeddingRefiner:
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer()
 
-        # ====================== FEEDBACK STATE MACHINE (UPGRADED) ======================
+        # ====================== FEEDBACK STATE MACHINE (UPGRADED with rating 6 support) ======================
         feedback_question_output = ""
         pending = data.get("pending_feedback")
 
@@ -235,18 +234,25 @@ class FunPackGemmaEmbeddingRefiner:
             feedback_question_output = "Feedback disabled. Queue cleared."
         else:
             if pending is not None:
-                # Process feedback - principled EMA
+                # Process previous token feedback - principled update with overrepresentation support
                 token_id = pending["token_id"]
                 tid_str = str(token_id)
                 token_importance = global_adaptive["token_importance"]
+
                 old_imp = token_importance.get(tid_str, 1.0)
-                target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
+
+                if feedback_rating == 6:  # Overrepresented → suppress
+                    target_imp = 0.65   # Pull toward mild suppression
+                else:
+                    target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
+
                 new_imp = 0.65 * old_imp + 0.35 * target_imp
                 token_importance[tid_str] = max(0.3, min(2.5, new_imp))
 
+                # Update library counts (rating 6 treated as neutral for counts)
                 token_library = global_adaptive.setdefault("token_library", {})
                 if tid_str in token_library:
-                    if feedback_rating >= 4:
+                    if feedback_rating >= 4 and feedback_rating != 6:
                         token_library[tid_str]["high_rated_count"] += 2
                     elif feedback_rating <= 2:
                         token_library[tid_str]["low_rated_count"] += 2
@@ -276,7 +282,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # Cross-prompt transfer
+        # Cross-prompt token importance transfer
         if is_new_prompt and tokenizer and cur_token_ids:
             current_set = set(cur_token_ids)
             token_importance = global_adaptive["token_importance"]
@@ -434,7 +440,6 @@ class FunPackGemmaEmbeddingRefiner:
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * lr * update_strength / norm_factor))
 
-                # Infusion
                 if random.random() < 0.18 and token_library:
                     infusion_weights = torch.ones(embed_seq_len, device=device)
                     infusion_any = False
@@ -469,7 +474,6 @@ class FunPackGemmaEmbeddingRefiner:
                 new_token_mask = None
                 infusion_weights = None
 
-        # Delta construction
         history = active.get("history", [])
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
@@ -507,7 +511,6 @@ class FunPackGemmaEmbeddingRefiner:
                 else:
                     new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply importance, new tokens, infusion
         if token_importance and cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
@@ -548,7 +551,7 @@ class FunPackGemmaEmbeddingRefiner:
                 norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
                 new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
 
-        # ====================== LATENT REFINEMENT ======================
+        # ====================== SAFE LATENT REFINEMENT ======================
         modified_latent = latent
         latent_info = " | Latent unchanged"
         if latent is not None and "samples" in latent:
@@ -578,11 +581,11 @@ class FunPackGemmaEmbeddingRefiner:
                 mask = torch.abs(samples) < 0.05
                 latent_delta = latent_delta * (~mask).float()
                 if torch.abs(latent_delta).max() > 1e-4:
-                    new_samples = torch.clamp(samples + latent_delta, min=-12.0, max=-12.0)
+                    new_samples = torch.clamp(samples + latent_delta, min=-12.0, max=12.0)
                     modified_latent = {"samples": new_samples.cpu(), "noise_mask": latent.get("noise_mask")}
                     latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
 
-        # Update momentum and adaptive params
+        # Update momentum and adaptive parameters
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
         if avg_reward_ema > 0.3:
             sim_threshold = max(0.75, sim_threshold - 0.002)
@@ -632,7 +635,7 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # ====================== SMART FEEDBACK QUESTION (UPGRADED) ======================
+        # ====================== GENERATE NEW FEEDBACK QUESTION (UPGRADED) ======================
         if feedback_enabled and data.get("pending_feedback") is None and tokenizer and positive_prompt:
             prompt_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=False)
             last_tid = global_adaptive.get("last_feedback_tid")
@@ -675,7 +678,7 @@ class FunPackGemmaEmbeddingRefiner:
                     "iteration": len(history)
                 }
                 global_adaptive["last_feedback_tid"] = int(best_tid)
-                feedback_question_output = f"Token: '{best_text}' – How well represented? (1=absent, 5=perfect)"
+                feedback_question_output = f"Token: '{best_text}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
             else:
                 feedback_question_output = "Feedback enabled but no valuable token found in prompt."
 
