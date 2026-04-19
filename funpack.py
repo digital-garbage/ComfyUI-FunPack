@@ -200,7 +200,8 @@ class FunPackGemmaEmbeddingRefiner:
                     "good_ratio": 0.0,
                     "dynamic_sim_threshold": 0.82,
                     "last_feedback_tid": None,
-                    "last_feedback_word": None
+                    "last_feedback_word": None,
+                    "feedbacked_words": []
                 },
                 "prompt_histories": {
                     prompt_key: {
@@ -281,8 +282,9 @@ class FunPackGemmaEmbeddingRefiner:
 
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # ====================== WORD GROUPING ======================
-        word_groups = []
+        # ====================== STRICT WORD GROUPING ======================
+        word_groups = []  # (start, end, full_word, word_token_list)
+        current_words = set()
         if tokenizer and positive_prompt and full_token_ids:
             try:
                 words = positive_prompt.split()
@@ -294,15 +296,18 @@ class FunPackGemmaEmbeddingRefiner:
                     word_len = len(word_tokens)
                     if token_idx + word_len <= len(full_token_ids) and full_token_ids[token_idx:token_idx + word_len] == word_tokens:
                         word_groups.append((token_idx, token_idx + word_len, word, word_tokens))
+                        current_words.add(word.lower())
                         token_idx += word_len
                     else:
                         if token_idx < len(full_token_ids):
-                            single_token = full_token_ids[token_idx]
-                            decoded = tokenizer.decode([single_token]).strip()
-                            word_groups.append((token_idx, token_idx + 1, decoded, [single_token]))
+                            single = full_token_ids[token_idx]
+                            decoded = tokenizer.decode([single]).strip()
+                            word_groups.append((token_idx, token_idx + 1, decoded, [single]))
+                            current_words.add(decoded.lower())
                             token_idx += 1
             except Exception:
                 word_groups = [(i, i+1, tokenizer.decode([tid]).strip(), [tid]) for i, tid in enumerate(full_token_ids)]
+                current_words = {w.lower() for _, _, w, _ in word_groups if self._is_valuable_token(w)}
 
         # ====================== CROSS-PROMPT TRANSFER ======================
         if is_new_prompt and tokenizer and full_token_ids:
@@ -438,7 +443,7 @@ class FunPackGemmaEmbeddingRefiner:
                     if full_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
-                # ====================== WORD-LEVEL IMPORTANCE UPDATE ======================
+                # ====================== WORD-LEVEL IMPORTANCE ======================
                 for start, end, full_word, word_token_list in word_groups:
                     is_valuable = self._is_valuable_token(full_word)
                     group_key = str(word_token_list[0])
@@ -463,7 +468,7 @@ class FunPackGemmaEmbeddingRefiner:
                         else:
                             token_importance[tid_str] = max(0.3, min(2.5, 1.0 + group_delta))
 
-                # Infusion
+                # ====================== INFUSION (only current prompt words) ======================
                 if random.random() < 0.18 and token_library:
                     infusion_weights = torch.ones(embed_seq_len, device=device)
                     infusion_any = False
@@ -656,29 +661,42 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # ====================== FEEDBACK QUESTION (whole word) ======================
+        # ====================== NEW FEEDBACK QUESTION (new words first + only current prompt) ======================
         if feedback_enabled and data.get("pending_feedback") is None and tokenizer and word_groups:
+            feedbacked = set(global_adaptive.get("feedbacked_words", []))
             last_word = global_adaptive.get("last_feedback_word")
 
-            candidates = []
-            for start, end, full_word, word_token_list in word_groups:
-                if not self._is_valuable_token(full_word) or full_word == last_word:
-                    continue
-                group_key = str(word_token_list[0])
-                imp = token_importance.get(group_key, 1.0)
-                freq = token_library.get(group_key, {}).get("fqc", 1)
-                score = freq * (1.0 - abs(imp - 1.0))
-                candidates.append((full_word, group_key, score, word_token_list[0]))
+            # Priority 1: New words in current prompt (never asked before)
+            new_words = [ (full_word, group_key, score, best_tid)
+                          for start, end, full_word, word_token_list in word_groups
+                          for group_key in [str(word_token_list[0])]
+                          for best_tid in [word_token_list[0]]
+                          for score in [token_library.get(group_key, {}).get("fqc", 1) * (1.0 - abs(token_importance.get(group_key, 1.0) - 1.0))]
+                          if self._is_valuable_token(full_word) and full_word.lower() not in feedbacked and full_word != last_word ]
 
-            if candidates:
-                low_imp = [c for c in candidates if c[2] < 1.0]
-                if low_imp and random.random() < 0.35:
-                    chosen = max(low_imp, key=lambda x: x[2])
-                else:
+            if new_words:
+                # Pick the most "interesting" new word
+                chosen = max(new_words, key=lambda x: x[2])
+                full_word, group_key, score, best_tid = chosen
+            else:
+                # Priority 2: Existing words that are valuable and not recently asked
+                candidates = []
+                for start, end, full_word, word_token_list in word_groups:
+                    if not self._is_valuable_token(full_word) or full_word == last_word:
+                        continue
+                    group_key = str(word_token_list[0])
+                    imp = token_importance.get(group_key, 1.0)
+                    freq = token_library.get(group_key, {}).get("fqc", 1)
+                    score = freq * (1.0 - abs(imp - 1.0))
+                    candidates.append((full_word, group_key, score, word_token_list[0]))
+
+                if candidates:
                     chosen = max(candidates, key=lambda x: x[2])
+                    full_word, group_key, score, best_tid = chosen
+                else:
+                    full_word = None
 
-                full_word, group_key, _, best_tid = chosen
-
+            if full_word:
                 data["pending_feedback"] = {
                     "token_id": int(best_tid),
                     "token_text": full_word,
@@ -687,10 +705,11 @@ class FunPackGemmaEmbeddingRefiner:
                 }
                 global_adaptive["last_feedback_tid"] = int(best_tid)
                 global_adaptive["last_feedback_word"] = full_word
+                global_adaptive.setdefault("feedbacked_words", []).append(full_word)
 
-                feedback_question_output = f"Based on the previously generated video, how would you rate the representation of this token? '{full_word}' (1=absent, 5=perfect, 6=overrepresented). If not sure, leave the rating at 5."
+                feedback_question_output = f"Word: '{full_word}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
             else:
-                feedback_question_output = "Feedback enabled but no suitable word found."
+                feedback_question_output = "Feedback enabled but no new or suitable word found in current prompt."
 
         # ====================== FINAL SAVE ======================
         with open(json_file, "w", encoding="utf-8") as f:
