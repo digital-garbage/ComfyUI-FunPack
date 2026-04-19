@@ -346,20 +346,20 @@ class FunPackGemmaEmbeddingRefiner:
                     if cur_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
-                # Update importance with different treatment for low-value tokens
+                # Update importance with different base and treatment
                 for tid in cur_token_ids[:embed_seq_len]:
                     tid_str = str(tid)
                     token_text = tokenizer.decode([int(tid)], skip_special_tokens=True).strip()
                     is_valuable = self._is_valuable_token(token_text)
 
                     if tid_str not in token_importance:
-                        token_importance[tid_str] = 1.0
+                        token_importance[tid_str] = 1.0 if is_valuable else 0.4   # low base for junk tokens
 
                     is_new = tid not in prev_token_ids
                     update_strength = 1.8 if is_new else 1.0
 
                     if not is_valuable:
-                        update_strength *= 0.25   # very low influence for dots, "the", "her", etc.
+                        update_strength *= 0.25   # very low influence
 
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
