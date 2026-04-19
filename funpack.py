@@ -253,7 +253,7 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply token importance — safely match current embedding length
+        # Apply token importance — always match current embedding length
         if token_importance and cur_embeds.dim() > 1:
             if cur_embeds.dim() == 3:
                 seq_len = cur_embeds.shape[1]
