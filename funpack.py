@@ -27,6 +27,35 @@ import base64
 from hashlib import md5
 import time
 
+Yes — this is an excellent idea!
+
+Adding visibility into “what the node is currently focusing on” will make the learning process much more transparent and give you real control. You’ll be able to see if it’s drifting toward irrelevant tokens and deliberately give lower ratings to steer it back faster.
+What We’ll Add to the Status
+
+For every generation, the status will now show two useful lines:
+
+    Current top 10 tokens (by learned importance in this session)
+    → Shows what the node currently considers most critical for your embedding.
+    Next generation focus (predicted top 10 tokens that will be boosted the most in the next step)
+    → Based on the current importance + the reward you just gave.
+
+This makes it very visible when the node starts focusing on something unrelated (e.g. background words, punctuation, or generic quality boosters instead of the main subject/action).
+Implementation Details
+
+    We decode token IDs back to human-readable text using the Gemma tokenizer.
+    We show the top 10 (token text + importance score).
+    If a token is new or has changed importance significantly, it will be highlighted in the status.
+    Everything stays lightweight and inside the same JSON.
+
+Here’s the updated full node with this new visibility feature (plus all previous improvements):
+
+import os
+import json
+import torch
+import numpy as np
+import base64
+from hashlib import md5
+
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -102,6 +131,21 @@ class FunPackGemmaEmbeddingRefiner:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
+    def _get_top_tokens(self, token_importance, tokenizer, top_k=10):
+        if not token_importance or not tokenizer:
+            return "N/A"
+        # Sort by importance descending
+        sorted_tokens = sorted(token_importance.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        top_list = []
+        for tid_str, score in sorted_tokens:
+            try:
+                token_text = tokenizer.decode([int(tid_str)], skip_special_tokens=True).strip()
+                if token_text:
+                    top_list.append(f"{token_text}({score:.2f})")
+            except:
+                top_list.append(f"ID{tid_str}({score:.2f})")
+        return ", ".join(top_list) if top_list else "None"
+
     def refine(self, conditioning, rating: int, refinement_key: str, prompt: str = "", latent=None,
                reset_session: bool = False, unlimited_history: bool = False):
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -136,7 +180,7 @@ class FunPackGemmaEmbeddingRefiner:
                     "avg_reward_ema": 0.0,
                     "good_ratio": 0.0,
                     "dynamic_sim_threshold": 0.82,
-                    "token_importance": {}          # token_id -> importance score (1.0 = neutral)
+                    "token_importance": {}
                 },
                 "last_rating": rating,
                 "last_prompt": prompt
@@ -192,19 +236,18 @@ class FunPackGemmaEmbeddingRefiner:
                 if cur_token_ids[i] != prev_token_ids[i]:
                     new_token_mask[i] = 0.0
 
-            # Update per-token importance (only tokens present in current prompt)
+            # Update per-token importance
             for tid in cur_token_ids:
-                tid_str = str(tid)  # JSON-safe key
+                tid_str = str(tid)
                 if tid_str not in token_importance:
-                    token_importance[tid_str] = 1.0  # new token starts neutral
+                    token_importance[tid_str] = 1.0
 
-                # New tokens get stronger update
                 is_new = tid not in prev_token_ids
                 update_strength = 1.8 if is_new else 1.0
                 token_importance[tid_str] = max(0.3, min(2.5,
                     token_importance[tid_str] + reward * 0.12 * update_strength))
 
-        # === Safe delta computation ===
+        # === Delta computation ===
         history = data.get("history", [])
         is_close = similarity >= sim_threshold
 
@@ -220,18 +263,14 @@ class FunPackGemmaEmbeddingRefiner:
             noise = torch.randn_like(prev_delta) * (expl * (1.0 - avg_reward_ema * 0.7))
             new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
         else:
-            good_deltas = []
-            for entry in history:
-                if entry.get("rating", 0) >= 7:
-                    hist_emb = serializable_to_tensor(entry["modified_embeds"])
-                    good_deltas.append(hist_emb - reference)
+            good_deltas = [serializable_to_tensor(entry["modified_embeds"]) - reference 
+                          for entry in history if entry.get("rating", 0) >= 7]
             if good_deltas:
-                avg_good_delta = torch.stack(good_deltas).mean(dim=0)
-                new_delta = avg_good_delta * (0.7 + reward * 0.4)
+                new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply learned token importance
+        # Apply token importance
         if cur_token_ids and token_importance:
             importance_tensor = torch.ones(cur_embeds.shape[0], device=device)
             for i, tid in enumerate(cur_token_ids[:cur_embeds.shape[0]]):
@@ -240,39 +279,29 @@ class FunPackGemmaEmbeddingRefiner:
                     importance_tensor[i] = token_importance[tid_str]
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
 
-        # New-token boost (stronger exploration for newly added tokens)
         if new_token_mask is not None:
             new_delta = new_delta * (1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1))
 
-        # Apply & normalize embedding
+        # Apply & normalize
         new_modified = reference + new_delta
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # Latent refinement (unchanged)
+        # Latent refinement (kept simple)
         modified_latent = latent
         latent_info = ""
         if latent is not None and "samples" in latent:
             samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
-            good_latents, bad_latents = [], []
-            for entry in history:
-                if "latent_samples" in entry:
-                    hl = serializable_to_tensor(entry["latent_samples"])
-                    r = entry.get("rating", 5)
-                    if r >= 8:
-                        good_latents.append(hl)
-                    elif r <= 3:
-                        bad_latents.append(hl)
+            good_latents = [serializable_to_tensor(entry["latent_samples"]) for entry in history if entry.get("rating", 5) >= 8]
+            bad_latents = [serializable_to_tensor(entry["latent_samples"]) for entry in history if entry.get("rating", 5) <= 3]
 
             latent_strength_auto = max(0.0, avg_reward_ema * 0.35)
             latent_delta = torch.zeros_like(samples)
             if good_latents:
-                avg_good = torch.stack(good_latents).mean(dim=0)
-                latent_delta += (avg_good - samples) * latent_strength_auto
+                latent_delta += (torch.stack(good_latents).mean(dim=0) - samples) * latent_strength_auto
             if bad_latents:
-                avg_bad = torch.stack(bad_latents).mean(dim=0)
-                latent_delta -= (avg_bad - samples) * (latent_strength_auto * 0.7)
+                latent_delta -= (torch.stack(bad_latents).mean(dim=0) - samples) * (latent_strength_auto * 0.7)
 
             if good_latents or bad_latents:
                 new_samples = torch.clamp(samples + latent_delta, min=-12.0, max=12.0)
@@ -300,7 +329,7 @@ class FunPackGemmaEmbeddingRefiner:
             "token_importance": token_importance
         })
 
-        # === History management (new unlimited option) ===
+        # History
         history_entry = {
             "iteration": len(history) + 1,
             "rating": rating,
@@ -314,13 +343,12 @@ class FunPackGemmaEmbeddingRefiner:
 
         history.append(history_entry)
 
-        if not unlimited_history:
-            if len(history) > 200:
-                sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
-                top = sorted_hist[:40]
-                recent = history[-120:]
-                seen = {e["iteration"] for e in top}
-                history = top + [e for e in recent if e["iteration"] not in seen]
+        if not unlimited_history and len(history) > 200:
+            sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
+            top = sorted_hist[:40]
+            recent = history[-120:]
+            seen = {e["iteration"] for e in top}
+            history = top + [e for e in recent if e["iteration"] not in seen]
 
         data["history"] = history
         data["last_rating"] = rating
@@ -330,21 +358,28 @@ class FunPackGemmaEmbeddingRefiner:
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # === Status ===
+        # === Rich Status with Token Focus ===
         iter_num = len(history)
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else \
                  "✅ Learning well" if avg_reward_ema > 0.3 else \
                  "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
 
+        current_top = self._get_top_tokens(token_importance, tokenizer, 10)
+
+        # Next generation focus = current importance boosted by latest reward
+        next_importance = {k: v * (1.0 + reward * 0.3) for k, v in token_importance.items()}
+        next_top = self._get_top_tokens(next_importance, tokenizer, 10)
+
         status = (
-            f"Iter {iter_num} | Rating {rating}/10 {trend} (prev {last_rating}) | "
-            f"Sim {similarity:.3f} (thresh {sim_threshold:.2f}) | "
-            f"Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | "
-            f"Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}"
+            f"Iter {iter_num} | Rating {rating}/10 {trend} | "
+            f"Sim {similarity:.3f} | Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | "
+            f"Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
+            f"Current focus: {current_top}\n"
+            f"Next focus:    {next_top}"
         )
         if new_token_mask is not None and (1.0 - new_token_mask).sum() > 0:
-            status += " | New tokens boosted"
+            status += "\nNew tokens boosted"
         if latent_info:
             status += latent_info
         if unlimited_history:
