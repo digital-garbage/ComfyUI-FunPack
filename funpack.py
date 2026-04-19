@@ -445,6 +445,25 @@ class FunPackGemmaEmbeddingRefiner:
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
+        # ====================== NEGATIVE REFINEMENT ======================
+        new_negative = None
+        negative_meta = {"pooled_output": None}
+        if negative_conditioning is not None:
+            neg_item = negative_conditioning[0]
+            if isinstance(neg_item, (list, tuple)) and len(neg_item) >= 2:
+                raw_negative = neg_item[0]
+                negative_meta = neg_item[1] if isinstance(neg_item[1], dict) else {"pooled_output": None}
+            else:
+                raw_negative = neg_item if isinstance(neg_item, torch.Tensor) else None
+
+            if isinstance(raw_negative, torch.Tensor):
+                neg_strength = 0.15 if rating <= 4 else 0.05
+                neg_delta = torch.randn_like(raw_negative) * neg_strength * (5.5 - rating) / 4.5
+                new_negative = raw_negative + neg_delta
+                new_negative = torch.clamp(new_negative, min=-60.0, max=60.0)
+                norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
+                new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
+
         # ====================== SAFE LATENT REFINEMENT ======================
         modified_latent = latent
         latent_info = " | Latent unchanged"
@@ -469,7 +488,6 @@ class FunPackGemmaEmbeddingRefiner:
 
             if good_latents or bad_latents:
                 latent_strength = max(0.0, avg_reward_ema * 0.35)
-
                 latent_delta = torch.zeros_like(samples)
 
                 if good_latents:
@@ -480,7 +498,7 @@ class FunPackGemmaEmbeddingRefiner:
                     mean_bad = torch.stack(bad_latents).mean(dim=0)
                     latent_delta -= (mean_bad - samples) * (latent_strength * 0.65)
 
-                # Protect technical/empty regions (consistently near-zero areas)
+                # Protect technical/empty regions
                 mask = torch.abs(samples) < 0.05
                 latent_delta = latent_delta * (~mask).float()
 
