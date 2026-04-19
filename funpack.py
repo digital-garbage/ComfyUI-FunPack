@@ -121,6 +121,17 @@ class FunPackGemmaEmbeddingRefiner:
                 top_list.append(f"ID{tid_str}({score:.2f})")
         return ", ".join(top_list) if top_list else "None"
 
+    def _is_valuable_token(self, token_text):
+        if not token_text or len(token_text.strip()) <= 2:
+            return False
+        t = token_text.strip().lower()
+        stopwords = {"the","a","an","and","or","with","her","his","him","she","he","it","to","of","in","on","for","is","are","was","were","be","this","that","these","those"}
+        if t in stopwords:
+            return False
+        if t in {",",".","!","?",":",";","-","_","(",")","[","]","{","}"} or t.isdigit():
+            return False
+        return True
+
     def refine(self, positive_conditioning, rating: int, refinement_key: str,
                positive_prompt: str = "", negative_prompt: str = "",
                negative_conditioning=None, latent=None,
@@ -330,10 +341,14 @@ class FunPackGemmaEmbeddingRefiner:
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
 
+                # VALUABLE TOKEN INFUSION ONLY
                 if random.random() < 0.18 and token_library:
                     for tid in cur_token_ids[:embed_seq_len]:
                         tid_str = str(tid)
                         if tid_str not in token_library or not token_library[tid_str].get("infusable", False):
+                            continue
+                        token_text = tokenizer.decode([int(tid)], skip_special_tokens=True).strip()
+                        if not self._is_valuable_token(token_text):
                             continue
                         entry = token_library[tid_str]
                         if not entry.get("good_pairs"):
@@ -479,7 +494,7 @@ class FunPackGemmaEmbeddingRefiner:
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # ====================== ENHANCED STATUS WITH INFUSION TOKENS ======================
+        # ====================== ENHANCED STATUS ======================
         iter_num = len(history)
         total_iterations = sum(len(p.get("history", [])) for p in prompt_histories.values())
         total_history_count = sum(len(p.get("history", [])) for p in prompt_histories.values())
