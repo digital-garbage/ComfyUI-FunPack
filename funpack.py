@@ -43,17 +43,6 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
-    
-import os
-import json
-import random
-import torch
-import torch.nn.functional as F
-from hashlib import md5
-
-# Assumed to be available from outer scope:
-# from .utils import tensor_to_serializable, serializable_to_tensor
-
 
 class FunPackGemmaEmbeddingRefiner:
     _tokenizer = None
@@ -115,7 +104,7 @@ class FunPackGemmaEmbeddingRefiner:
                     "max": 5,
                     "step": 1,
                     "display": "slider",
-                    "label": "Token Representation (1=absent, 5=perfect)"
+                    "label": "Token Feedback (1=absent, 5=perfect)"
                 }),
             }
         }
@@ -147,6 +136,8 @@ class FunPackGemmaEmbeddingRefiner:
         if not token_text:
             return False
         t = token_text.strip()
+        if '<' in t or '>' in t:
+            return False
         if len(t) < 3:
             return False
         t_lower = t.lower()
@@ -171,7 +162,6 @@ class FunPackGemmaEmbeddingRefiner:
                seed: int = 0,
                feedback_enabled: bool = False, feedback_rating: int = 3):
 
-        # Set deterministic exploration seed
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -222,46 +212,55 @@ class FunPackGemmaEmbeddingRefiner:
                     }
                 },
                 "last_prompt_key": prompt_key,
-                "pending_feedback": None   # No pending question
+                "pending_feedback": None
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             return (positive_conditioning, negative_conditioning, latent, "✓ New session started – Reference saved", "")
 
-        # --- Load existing state ---
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         global_adaptive = data["global_adaptive"]
         prompt_histories = data.get("prompt_histories", {})
-
-        # --- Process pending token feedback (if any and enabled) ---
         tokenizer = self._get_tokenizer()
-        pending = data.get("pending_feedback")
-        if feedback_enabled and pending is not None and feedback_rating != 3:  # 3 is neutral
-            token_id = pending["token_id"]
-            token_text = pending["token_text"]
-            # Map rating 1-5 to multiplier: 1->0.5, 2->0.75, 3->1.0, 4->1.25, 5->1.5
-            multiplier = 0.5 + (feedback_rating - 1) * 0.25  # 0.5, 0.75, 1.0, 1.25, 1.5
-            tid_str = str(token_id)
-            token_importance = global_adaptive["token_importance"]
-            if tid_str in token_importance:
-                token_importance[tid_str] = max(0.3, min(2.5, token_importance[tid_str] * multiplier))
-            else:
-                token_importance[tid_str] = max(0.3, min(2.5, 1.0 * multiplier))
-            # Also update token library high/low counts (strong signal)
-            token_library = global_adaptive.setdefault("token_library", {})
-            if tid_str in token_library:
-                if feedback_rating >= 4:
-                    token_library[tid_str]["high_rated_count"] += 2
-                elif feedback_rating <= 2:
-                    token_library[tid_str]["low_rated_count"] += 2
-            # Clear pending feedback after processing
-            data["pending_feedback"] = None
-            # Save immediately so we don't reprocess if something fails
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
 
+        # ====================== FEEDBACK STATE MACHINE ======================
+        feedback_question_output = ""
+        pending = data.get("pending_feedback")
+
+        if not feedback_enabled:
+            if pending is not None:
+                data["pending_feedback"] = None
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            feedback_question_output = "Feedback disabled. Queue cleared."
+        else:
+            if pending is not None:
+                # Process feedback from previous run
+                token_id = pending["token_id"]
+                tid_str = str(token_id)
+                # Multiplier: 5=1.0, 1=1.5
+                multiplier = 1.0 + (5 - feedback_rating) * 0.125
+                token_importance = global_adaptive["token_importance"]
+                if tid_str in token_importance:
+                    token_importance[tid_str] = max(0.3, min(2.5, token_importance[tid_str] * multiplier))
+                else:
+                    token_importance[tid_str] = max(0.3, min(2.5, 1.0 * multiplier))
+                token_library = global_adaptive.setdefault("token_library", {})
+                if tid_str in token_library:
+                    if feedback_rating >= 4:
+                        token_library[tid_str]["high_rated_count"] += 2
+                    elif feedback_rating <= 2:
+                        token_library[tid_str]["low_rated_count"] += 2
+                data["pending_feedback"] = None
+                # Save after processing
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            else:
+                feedback_question_output = "Feedback enabled. A question will appear after this generation."
+
+        # ====================== PROMPT HISTORY SETUP ======================
         if prompt_key in prompt_histories:
             active = prompt_histories[prompt_key]
             is_new_prompt = False
@@ -288,7 +287,6 @@ class FunPackGemmaEmbeddingRefiner:
             for other_key, other in prompt_histories.items():
                 if other_key == prompt_key:
                     continue
-                # Compute token overlap similarity (Jaccard) as weight
                 other_tokens = set()
                 for entry in other.get("history", []):
                     if "prompt" in entry and entry["prompt"]:
@@ -408,6 +406,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         new_token_mask = None
         infusion_active = False
+        infusion_weights = None
         if tokenizer and positive_prompt:
             try:
                 cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True)
@@ -522,7 +521,7 @@ class FunPackGemmaEmbeddingRefiner:
             boost_factor = 1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1)
             new_delta = new_delta * boost_factor
 
-        if infusion_active and 'infusion_weights' in locals() and infusion_weights is not None:
+        if infusion_active and infusion_weights is not None:
             new_delta = new_delta * infusion_weights.unsqueeze(-1)
 
         new_positive = reference + new_delta
@@ -641,43 +640,44 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # --- Generate new feedback question for next round ---
-        feedback_question_str = ""
-        suggested_token_text = ""
-        if tokenizer and cur_token_ids:
-            # Find best token to ask about (valuable, moderate importance, decent frequency)
-            best_score = -1.0
-            best_tid = None
-            for tid in cur_token_ids:
-                token_text = tokenizer.decode([tid]).strip()
-                if not self._is_valuable_token(token_text):
-                    continue
-                tid_str = str(tid)
-                imp = token_importance.get(tid_str, 1.0)
-                freq = token_library.get(tid_str, {}).get("fqc", 1)
-                # Score prefers tokens with importance near 1.0 (uncertain) and higher frequency
-                score = freq * (1.0 - abs(imp - 1.0))
-                if score > best_score:
-                    best_score = score
-                    best_tid = tid
-                    suggested_token_text = token_text
-            if best_tid is not None:
-                # Store pending feedback
-                data["pending_feedback"] = {
-                    "token_id": int(best_tid),
-                    "token_text": suggested_token_text,
-                    "prompt_key": prompt_key,
-                    "iteration": len(history)
-                }
-                feedback_question_str = f"How do you think this token was represented in the generation? Token: '{suggested_token_text}' (Rate 1-5 on the slider, 1=absent, 5=perfect)"
+        # ====================== GENERATE NEW FEEDBACK QUESTION ======================
+        if feedback_enabled and data.get("pending_feedback") is None:
+            # Only generate a new question if we don't already have one (should be None)
+            if tokenizer and positive_prompt:
+                prompt_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=False)
+                best_score = -1.0
+                best_tid = None
+                best_token_text = ""
+                for tid in prompt_token_ids:
+                    token_text = tokenizer.decode([tid]).strip()
+                    if not self._is_valuable_token(token_text):
+                        continue
+                    tid_str = str(tid)
+                    imp = token_importance.get(tid_str, 1.0)
+                    freq = token_library.get(tid_str, {}).get("fqc", 1)
+                    score = freq * (1.0 - abs(imp - 1.0))
+                    if score > best_score:
+                        best_score = score
+                        best_tid = tid
+                        best_token_text = token_text
+                if best_tid is not None:
+                    data["pending_feedback"] = {
+                        "token_id": int(best_tid),
+                        "token_text": best_token_text,
+                        "prompt_key": prompt_key,
+                        "iteration": len(history)
+                    }
+                    feedback_question_output = f"Token: '{best_token_text}' – How well represented? (1=absent, 5=perfect)"
+                else:
+                    feedback_question_output = "Feedback enabled but no valuable token found in prompt."
             else:
-                data["pending_feedback"] = None
-                feedback_question_str = ""
-        else:
-            data["pending_feedback"] = None
-            feedback_question_str = ""
+                feedback_question_output = "Feedback enabled but tokenizer or prompt missing."
+        elif feedback_enabled and pending is not None:
+            # We already cleared pending earlier; this branch shouldn't happen, but handle gracefully
+            pass
+        # else: feedback_enabled False, output already set
 
-        # Save state (with pending feedback)
+        # Save final state
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
@@ -717,7 +717,7 @@ class FunPackGemmaEmbeddingRefiner:
         modified_positive = [(new_positive, positive_meta)]
         modified_negative = [(new_negative, negative_meta)] if new_negative is not None else negative_conditioning
 
-        return (modified_positive, modified_negative, modified_latent, status, feedback_question_str)
+        return (modified_positive, modified_negative, modified_latent, status, feedback_question_output)
         
 # Constants from StoryMem
 IMAGE_FACTOR = 28
