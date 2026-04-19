@@ -189,26 +189,26 @@ class FunPackGemmaEmbeddingRefiner:
         else:
             momentum = serializable_to_tensor(momentum)
 
-        # === SAFE Token handling & importance learning ===
+        # === SAFE Token handling ===
         tokenizer = self._get_tokenizer()
         new_token_mask = None
+        cur_token_ids = []
 
         if tokenizer and prompt:
             try:
                 cur_token_ids = tokenizer.encode(prompt, add_special_tokens=True)
                 prev_token_ids = tokenizer.encode(data.get("last_prompt", ""), add_special_tokens=True)
 
-                # Get actual embedding sequence length safely (handles [1, hidden] or [seq, hidden])
-                if cur_embeds.dim() == 3:
-                    embed_seq_len = cur_embeds.shape[1]   # typical [batch, seq, hidden]
-                elif cur_embeds.dim() == 2:
+                # Get actual embedding sequence length safely
+                if cur_embeds.dim() == 3:           # [batch, seq, hidden]
+                    embed_seq_len = cur_embeds.shape[1]
+                elif cur_embeds.dim() == 2:         # [seq, hidden]
                     embed_seq_len = cur_embeds.shape[0]
                 else:
                     embed_seq_len = 1
 
                 new_token_mask = torch.ones(embed_seq_len, device=device)
 
-                # Only compare up to the minimum safe length
                 compare_len = min(len(cur_token_ids), len(prev_token_ids), embed_seq_len)
 
                 for i in range(compare_len):
@@ -253,14 +253,19 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply token importance
+        # Apply token importance — safely match current embedding length
         if token_importance and cur_embeds.dim() > 1:
-            embed_seq_len = cur_embeds.shape[1] if cur_embeds.dim() == 3 else cur_embeds.shape[0]
-            importance_tensor = torch.ones(embed_seq_len, device=device)
-            for i, tid in enumerate(cur_token_ids[:embed_seq_len]):
+            if cur_embeds.dim() == 3:
+                seq_len = cur_embeds.shape[1]
+            else:
+                seq_len = cur_embeds.shape[0]
+
+            importance_tensor = torch.ones(seq_len, device=device)
+            for i, tid in enumerate(cur_token_ids[:seq_len]):
                 tid_str = str(tid)
                 if tid_str in token_importance:
                     importance_tensor[i] = token_importance[tid_str]
+
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
 
         # Apply new token boost safely
