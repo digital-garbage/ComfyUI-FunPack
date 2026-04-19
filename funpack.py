@@ -27,16 +27,22 @@ import base64
 from hashlib import md5
 import time
 
-def tensor_to_serializable(t):
-    if t is None:
-        return None
-    return t.detach().cpu().tolist()
+def tensor_to_serializable(t: torch.Tensor) -> dict:
+    if not isinstance(t, torch.Tensor):
+        raise TypeError(f"Expected torch.Tensor, got {type(t)}")
+    arr = t.detach().cpu().numpy()
+    return {
+        "data": base64.b64encode(arr.tobytes()).decode("utf-8"),
+        "shape": list(arr.shape),
+        "dtype": str(arr.dtype)
+    }
 
-def serializable_to_tensor(data):
-    if data is None:
-        return None
-    return torch.tensor(data, dtype=torch.float32)
-
+def serializable_to_tensor(d: dict) -> torch.Tensor:
+    arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"])
+    tensor = torch.from_numpy(arr).to(dtype=torch.float32)
+    if torch.cuda.is_available():
+        tensor = tensor.cuda()
+    return tensor
 
 class FunPackGemmaEmbeddingRefiner:
     _tokenizer = None
