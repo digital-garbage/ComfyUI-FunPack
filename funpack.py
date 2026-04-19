@@ -43,6 +43,7 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
+    
 class FunPackGemmaEmbeddingRefiner:
     _tokenizer = None
 
@@ -80,7 +81,7 @@ class FunPackGemmaEmbeddingRefiner:
                 "positive_prompt": ("STRING", {
                     "multiline": True,
                     "default": "",
-                    "placeholder": "Positive prompt (detects drift & new tokens)"
+                    "placeholder": "Positive prompt"
                 }),
                 "negative_prompt": ("STRING", {
                     "multiline": True,
@@ -89,10 +90,10 @@ class FunPackGemmaEmbeddingRefiner:
                 }),
                 "negative_conditioning": ("CONDITIONING",),
                 "latent": ("LATENT",),
-                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears all history)"}),
+                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears ALL history)"}),
                 "unlimited_history": ("BOOLEAN", {
                     "default": False,
-                    "label": "Unlimited History (for multi-prompt training — never prunes)"
+                    "label": "Unlimited History (never prunes)"
                 }),
             }
         }
@@ -124,13 +125,14 @@ class FunPackGemmaEmbeddingRefiner:
                positive_prompt: str = "", negative_prompt: str = "",
                negative_conditioning=None, latent=None,
                reset_session: bool = False, unlimited_history: bool = False):
+
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
         safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
-        # Extract positive embedding
+        # Extract positive
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
             return (positive_conditioning, negative_conditioning, latent, "ERROR: Empty positive CONDITIONING input")
 
@@ -145,52 +147,72 @@ class FunPackGemmaEmbeddingRefiner:
         if not isinstance(raw_positive, torch.Tensor):
             return (positive_conditioning, negative_conditioning, latent, "ERROR: No positive embedding tensor found")
 
-        # First run or reset
+        # Prompt key = full positive + negative (so same prompt pair re-uses exact history)
+        prompt_key = positive_prompt
+        if negative_prompt:
+            prompt_key += f" |||NEG||| {negative_prompt}"
+
+        # ====================== FIRST RUN / RESET ======================
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
-                "reference_embeds": tensor_to_serializable(raw_positive),
-                "history": [],
-                "adaptive": {
+                "global_adaptive": {
+                    "token_importance": {},
+                    "infusion_tokens": {},
                     "exploration_base": 0.08,
                     "momentum": None,
                     "avg_reward_ema": 0.0,
                     "good_ratio": 0.0,
-                    "dynamic_sim_threshold": 0.82,
-                    "token_importance": {},
-                    "infusion_tokens": {}
+                    "dynamic_sim_threshold": 0.82
                 },
-                "last_rating": rating,
-                "last_positive_prompt": positive_prompt,
-                "last_negative_prompt": negative_prompt
+                "prompt_histories": {
+                    prompt_key: {
+                        "reference_embeds": tensor_to_serializable(raw_positive),
+                        "history": [],
+                        "last_rating": rating
+                    }
+                },
+                "last_prompt_key": prompt_key
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             return (positive_conditioning, negative_conditioning, latent, "✓ New session started – Reference saved")
 
-        # Load session
+        # ====================== LOAD ======================
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        reference = serializable_to_tensor(data["reference_embeds"])
+        global_adaptive = data["global_adaptive"]
+        prompt_histories = data.get("prompt_histories", {})
+
+        # If this exact prompt pair was seen before → reuse its history
+        if prompt_key in prompt_histories:
+            active = prompt_histories[prompt_key]
+            is_new_prompt = False
+        else:
+            # Brand new prompt pair
+            is_new_prompt = True
+            active = {
+                "reference_embeds": tensor_to_serializable(raw_positive),
+                "history": [],
+                "last_rating": rating
+            }
+            prompt_histories[prompt_key] = active
+
+        reference = serializable_to_tensor(active["reference_embeds"])
         device = reference.device
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
 
-        # Major change detection (new prompt/negative/shape)
-        pos_changed = positive_prompt != data.get("last_positive_prompt", "")
-        neg_changed = negative_prompt != data.get("last_negative_prompt", "")
-        shape_mismatch = list(reference.shape) != list(cur_positive.shape)
-        major_change = pos_changed or neg_changed or shape_mismatch
-
-        history = data.get("history", [])
-
-        if major_change:
-            # Knowledge transfer from past positive prompts only
-            tokenizer = self._get_tokenizer()
-            cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
-            if history and tokenizer and cur_token_ids:
-                current_set = set(cur_token_ids)
-                for entry in history:
+        # ====================== KNOWLEDGE TRANSFER ON NEW PROMPT ======================
+        tokenizer = self._get_tokenizer()
+        cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
+        if is_new_prompt and tokenizer and cur_token_ids:
+            current_set = set(cur_token_ids)
+            token_importance = global_adaptive["token_importance"]
+            for other_key, other in prompt_histories.items():
+                if other_key == prompt_key:
+                    continue
+                for entry in other.get("history", []):
                     if "prompt" not in entry or not entry["prompt"]:
                         continue
                     try:
@@ -198,37 +220,35 @@ class FunPackGemmaEmbeddingRefiner:
                         matching = current_set & set(old_tokens)
                         r = entry.get("rating", 5)
                         adj = 1.25 if r >= 8 else 0.75 if r <= 3 else None
-                        if adj:
+                        if adj is not None:
                             for tid in matching:
                                 tid_str = str(tid)
-                                if tid_str in data["adaptive"]["token_importance"]:
-                                    data["adaptive"]["token_importance"][tid_str] = max(0.3, min(2.5,
-                                        data["adaptive"]["token_importance"][tid_str] * adj))
+                                if tid_str in token_importance:
+                                    token_importance[tid_str] = max(0.3, min(2.5, token_importance[tid_str] * adj))
                     except:
                         pass
 
-            # Update reference to current positive conditioning
-            data["reference_embeds"] = tensor_to_serializable(cur_positive)
-            reference = cur_positive.clone()
-            history = []  # clear old deltas
+        # Update reference to CURRENT conditioning (always)
+        active["reference_embeds"] = tensor_to_serializable(cur_positive)
+        reference = cur_positive.clone()
 
-        # Core refinement logic (positive)
+        # ====================== CORE REFINEMENT (positive) ======================
+        # (same logic as before, using only the active prompt's history)
         ref_mean = reference.mean(dim=1)
         cur_mean = cur_positive.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
 
         reward = (rating - 5.5) / 4.5
-        last_rating = data.get("last_rating", 5)
+        last_rating = active.get("last_rating", 5)
         last_reward = (last_rating - 5.5) / 4.5
 
-        adaptive = data["adaptive"]
-        expl = adaptive["exploration_base"]
-        momentum = adaptive.get("momentum")
-        avg_reward_ema = adaptive["avg_reward_ema"]
-        good_ratio = adaptive["good_ratio"]
-        sim_threshold = adaptive["dynamic_sim_threshold"]
-        token_importance = adaptive.get("token_importance", {})
-        infusion_tokens = adaptive.get("infusion_tokens", {})
+        expl = global_adaptive["exploration_base"]
+        momentum = global_adaptive.get("momentum")
+        avg_reward_ema = global_adaptive["avg_reward_ema"]
+        good_ratio = global_adaptive["good_ratio"]
+        sim_threshold = global_adaptive["dynamic_sim_threshold"]
+        token_importance = global_adaptive["token_importance"]
+        infusion_tokens = global_adaptive["infusion_tokens"]
 
         avg_reward_ema = 0.85 * avg_reward_ema + 0.15 * reward
 
@@ -237,12 +257,9 @@ class FunPackGemmaEmbeddingRefiner:
         else:
             momentum = serializable_to_tensor(momentum)
 
-        # Token handling - positive only for infusion
-        tokenizer = self._get_tokenizer()
+        # Token handling + random infusion (positive only)
         new_token_mask = None
-        cur_token_ids = []
         infusion_active = False
-
         if tokenizer and positive_prompt:
             try:
                 cur_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True)
@@ -250,14 +267,14 @@ class FunPackGemmaEmbeddingRefiner:
 
                 new_token_mask = torch.ones(embed_seq_len, device=device)
 
-                prev_token_ids = tokenizer.encode(data.get("last_positive_prompt", ""), add_special_tokens=True)
+                prev_token_ids = tokenizer.encode(active.get("last_positive_prompt", ""), add_special_tokens=True) if "last_positive_prompt" in active else []
                 compare_len = min(len(cur_token_ids), len(prev_token_ids), embed_seq_len)
 
                 for i in range(compare_len):
                     if cur_token_ids[i] != prev_token_ids[i]:
                         new_token_mask[i] = 0.0
 
-                # Update importance
+                # Update global token importance
                 for tid in cur_token_ids[:embed_seq_len]:
                     tid_str = str(tid)
                     if tid_str not in token_importance:
@@ -267,10 +284,9 @@ class FunPackGemmaEmbeddingRefiner:
                     token_importance[tid_str] = max(0.3, min(2.5,
                         token_importance[tid_str] + reward * 0.12 * update_strength))
 
-                # Random token infusion — POSITIVE ONLY
+                # Random token infusion (global, positive only)
                 if random.random() < 0.18 and infusion_tokens:
-                    seq_len = embed_seq_len
-                    for i, tid in enumerate(cur_token_ids[:seq_len]):
+                    for tid in cur_token_ids[:embed_seq_len]:
                         tid_str = str(tid)
                         if tid_str in infusion_tokens:
                             infusion_tokens[tid_str] = min(3.0, infusion_tokens[tid_str] + 0.4)
@@ -280,11 +296,12 @@ class FunPackGemmaEmbeddingRefiner:
                 print(f"[FunPackGemmaEmbeddingRefiner] Token comparison failed: {e}")
                 new_token_mask = None
 
-        # Delta computation (positive)
+        # Delta from THIS prompt's history only
+        history = active.get("history", [])
         is_close = similarity >= sim_threshold
         if is_close and history:
             last_entry = history[-1]
-            prev_modified = serializable_to_tensor(last_entry.get("modified_embeds", data["reference_embeds"]))
+            prev_modified = serializable_to_tensor(last_entry.get("modified_embeds", active["reference_embeds"]))
             prev_delta = prev_modified - reference
             multiplier = max(0.05, 1.0 + reward * 1.45)
             if rating == last_rating and rating >= 8:
@@ -311,17 +328,15 @@ class FunPackGemmaEmbeddingRefiner:
             boost_factor = 1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1)
             new_delta = new_delta * boost_factor
 
-        # Final positive
         new_positive = reference + new_delta
         new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # ====================== NEGATIVE REFINEMENT (light, no infusion) ======================
+        # ====================== NEGATIVE (light) ======================
         new_negative = None
         negative_meta = {"pooled_output": None}
         if negative_conditioning is not None:
-            # Simple extraction (can be expanded later if needed)
             neg_item = negative_conditioning[0]
             if isinstance(neg_item, (list, tuple)) and len(neg_item) >= 2:
                 raw_negative = neg_item[0]
@@ -330,24 +345,21 @@ class FunPackGemmaEmbeddingRefiner:
                 raw_negative = neg_item if isinstance(neg_item, torch.Tensor) else None
 
             if isinstance(raw_negative, torch.Tensor):
-                # Light refinement: mild shift based on rating (strengthen when low rating)
                 neg_strength = 0.15 if rating <= 4 else 0.05
                 neg_delta = torch.randn_like(raw_negative) * neg_strength * (5.5 - rating) / 4.5
                 new_negative = raw_negative + neg_delta
                 new_negative = torch.clamp(new_negative, min=-60.0, max=60.0)
-                # Simple norm preservation
                 norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
                 new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
 
-        # Update adaptive + infusion memory (positive only)
-        momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
+        # Update global adaptive + remember infusion tokens
+        momentum = 0.75 * momentum + 0.25 * (new_delta * reward) if 'momentum' in locals() else torch.zeros_like(reference)
         if avg_reward_ema > 0.3:
             sim_threshold = max(0.75, sim_threshold - 0.002)
 
         if rating >= 8:
             expl = max(0.015, expl * 0.96)
             good_ratio = 0.9 * good_ratio + 0.1 * 1.0
-            # Remember for future infusion (positive tokens only)
             for tid in cur_token_ids:
                 tid_str = str(tid)
                 if tid_str not in infusion_tokens:
@@ -357,7 +369,7 @@ class FunPackGemmaEmbeddingRefiner:
             expl = min(0.12, expl * 1.08)
             good_ratio = 0.9 * good_ratio + 0.1 * 0.0
 
-        adaptive.update({
+        global_adaptive.update({
             "exploration_base": expl,
             "momentum": tensor_to_serializable(momentum),
             "avg_reward_ema": avg_reward_ema,
@@ -367,7 +379,7 @@ class FunPackGemmaEmbeddingRefiner:
             "infusion_tokens": infusion_tokens
         })
 
-        # History (stores positive prompt)
+        # Add to THIS prompt's history
         history_entry = {
             "iteration": len(history) + 1,
             "rating": rating,
@@ -388,26 +400,28 @@ class FunPackGemmaEmbeddingRefiner:
             seen = {e["iteration"] for e in top}
             history = top + [e for e in recent if e["iteration"] not in seen]
 
-        data["history"] = history
-        data["last_rating"] = rating
-        data["last_positive_prompt"] = positive_prompt
-        data["last_negative_prompt"] = negative_prompt
-        data["adaptive"] = adaptive
+        active["history"] = history
+        active["last_rating"] = rating
+        active["last_positive_prompt"] = positive_prompt   # for next comparison
+        data["last_prompt_key"] = prompt_key
+        data["prompt_histories"] = prompt_histories
+        data["global_adaptive"] = global_adaptive
 
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # Status
+        # ====================== STATUS ======================
         iter_num = len(history)
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else "✅ Learning well" if avg_reward_ema > 0.3 else "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
-
         current_top = self._get_top_tokens(token_importance, tokenizer, 10)
 
-        status = f"Iter {iter_num} | Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\nCurrent focus: {current_top}"
+        status = (f"Iter {iter_num} | Rating {rating}/10 {trend} | Sim {similarity:.3f} | "
+                  f"Reward {reward:+.2f} | EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | "
+                  f"Expl {expl:.3f} | {health}\nCurrent focus: {current_top}")
 
-        if major_change:
-            status += "\n✓ New prompt/negative/shape → reference updated + knowledge transferred"
+        if is_new_prompt:
+            status += "\n✓ New prompt pair → fresh history + cross-prompt token transfer applied"
         if new_token_mask is not None and (1.0 - new_token_mask).sum() > 0:
             status += "\nNew tokens boosted"
         if infusion_active:
@@ -415,10 +429,10 @@ class FunPackGemmaEmbeddingRefiner:
         if rating <= 4:
             status += "\nLow rating: importance down-weighted + negative strengthened"
 
-        # Prepare outputs
+        # Return
         modified_positive = [(new_positive, positive_meta)]
         modified_negative = [(new_negative, negative_meta)] if new_negative is not None else negative_conditioning
-        modified_latent = latent  # can be enhanced later
+        modified_latent = latent
 
         return (modified_positive, modified_negative, modified_latent, status)
         
