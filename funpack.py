@@ -27,6 +27,26 @@ import base64
 from hashlib import md5
 import time
 
+Got it — this is a classic edge-case bug.
+
+The crash happens here:
+
+data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"])
+
+When the JSON file exists but the "history" list is empty (which can happen right after a reset_session=True on the very next run, or if pruning accidentally left it empty), [-1] fails with "list index out of range".
+
+This slipped through because the first-run block only triggers on not os.path.exists(json_file), not on an empty history inside an existing file.
+Fixed Version (Only the refine method needs updating — replace the whole class again)
+
+Here's the corrected code with robust safeguards:
+
+import os
+import json
+import torch
+import numpy as np
+import base64
+from hashlib import md5
+
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -46,7 +66,6 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
 
 
 class FunPackGemmaEmbeddingRefiner:
-    # Class-level tokenizer cache (loaded once)
     _tokenizer = None
 
     @classmethod
@@ -97,10 +116,9 @@ class FunPackGemmaEmbeddingRefiner:
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        return float("nan")  # Forces re-execution every time (intentional for online learning)
+        return float("nan")
 
     def refine(self, conditioning, rating: int, refinement_key: str, prompt: str = "", latent=None, reset_session: bool = False):
-        # Setup storage
         base_dir = os.path.dirname(os.path.abspath(__file__))
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
@@ -110,7 +128,6 @@ class FunPackGemmaEmbeddingRefiner:
         if not conditioning or not isinstance(conditioning, list) or len(conditioning) == 0:
             return (conditioning, latent, "ERROR: Empty CONDITIONING input")
 
-        # Extract embedding
         item = conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             raw_embeds = item[0]
@@ -122,7 +139,7 @@ class FunPackGemmaEmbeddingRefiner:
         if not isinstance(raw_embeds, torch.Tensor):
             return (conditioning, latent, "ERROR: No embedding tensor found")
 
-        # First run or reset
+        # === First run or explicit reset ===
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
@@ -130,7 +147,7 @@ class FunPackGemmaEmbeddingRefiner:
                 "history": [],
                 "adaptive": {
                     "exploration_base": 0.08,
-                    "momentum": None,           # will become tensor on first update
+                    "momentum": None,
                     "avg_reward_ema": 0.0,
                     "good_ratio": 0.0,
                     "dynamic_sim_threshold": 0.82
@@ -140,9 +157,9 @@ class FunPackGemmaEmbeddingRefiner:
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (conditioning, latent, "✓ New session started – Reference saved (1–10 rating scale)")
+            return (conditioning, latent, "✓ New session started – Reference saved")
 
-        # Load session
+        # Load existing
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
 
@@ -150,7 +167,6 @@ class FunPackGemmaEmbeddingRefiner:
         device = reference.device
         cur_embeds = raw_embeds.to(device) if raw_embeds.device != device else raw_embeds
 
-        # Similarity & reward
         ref_mean = reference.mean(dim=1)
         cur_mean = cur_embeds.mean(dim=1)
         similarity = torch.nn.functional.cosine_similarity(ref_mean, cur_mean, dim=1).item()
@@ -161,21 +177,20 @@ class FunPackGemmaEmbeddingRefiner:
 
         adaptive = data["adaptive"]
         expl = adaptive["exploration_base"]
-        momentum = adaptive["momentum"]
+        momentum = adaptive.get("momentum")
         avg_reward_ema = adaptive["avg_reward_ema"]
         good_ratio = adaptive["good_ratio"]
         sim_threshold = adaptive["dynamic_sim_threshold"]
 
-        # Update EMA
         avg_reward_ema = 0.85 * avg_reward_ema + 0.15 * reward
 
-        # Directional momentum (tensor)
+        # Directional momentum (safe init)
         if momentum is None or not isinstance(momentum, dict):
             momentum = torch.zeros_like(reference)
         else:
             momentum = serializable_to_tensor(momentum)
 
-        # New prompt / token detection
+        # New token detection
         new_token_mask = None
         tokenizer = self._get_tokenizer()
         if tokenizer and prompt and data.get("last_prompt"):
@@ -190,58 +205,59 @@ class FunPackGemmaEmbeddingRefiner:
             except Exception:
                 pass
 
-        # === Delta computation (private logic) ===
+        # === Safe delta computation (fixed the crash) ===
+        history = data.get("history", [])
         is_close = similarity >= sim_threshold
 
-        if is_close:
+        if is_close and history:  # ← added "and history"
+            # Safe access to last entry
+            last_entry = history[-1]
             prev_modified = serializable_to_tensor(
-                data.get("history", [{}])[-1].get("modified_embeds", data["reference_embeds"])
+                last_entry.get("modified_embeds", data["reference_embeds"])
             )
             prev_delta = prev_modified - reference
-            multiplier = max(0.05, 1.0 + reward * 1.45)   # prevent negative flip
+            multiplier = max(0.05, 1.0 + reward * 1.45)
             if rating == last_rating and rating >= 8:
                 multiplier += 0.35
             noise = torch.randn_like(prev_delta) * (expl * (1.0 - avg_reward_ema * 0.7))
             new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
-            merged_good = 0
         else:
+            # Fallback when no history yet or far from reference
             good_deltas = []
-            for entry in data.get("history", []):
+            for entry in history:
                 if entry.get("rating", 0) >= 7:
                     hist_emb = serializable_to_tensor(entry["modified_embeds"])
                     good_deltas.append(hist_emb - reference)
+
             if good_deltas:
                 avg_good_delta = torch.stack(good_deltas).mean(dim=0)
                 new_delta = avg_good_delta * (0.7 + reward * 0.4)
-                merged_good = len(good_deltas)
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
-                merged_good = 0
 
-        # Token importance (auto-scaled)
+        # Token importance & new-token boost (unchanged)
         token_deltas = torch.norm(new_delta, dim=-1, keepdim=True)
         token_importance = token_deltas / (token_deltas.max() + 1e-8)
         boost = 1.0 + (0.9 + avg_reward_ema * 0.6) * token_importance
         new_delta = new_delta * boost
 
-        # New token boost
         if new_token_mask is not None:
             new_delta = new_delta * (1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1))
 
-        # Apply & normalize
+        # Apply delta
         new_modified = reference + new_delta
         new_modified = torch.clamp(new_modified, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_modified = new_modified / (new_modified.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
 
-        # === Latent refinement (auto) ===
+        # Latent refinement (unchanged)
         modified_latent = latent
         latent_info = ""
         if latent is not None and "samples" in latent:
             samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
             good_latents = []
             bad_latents = []
-            for entry in data.get("history", []):
+            for entry in history:
                 if "latent_samples" in entry:
                     hl = serializable_to_tensor(entry["latent_samples"])
                     r = entry.get("rating", 5)
@@ -264,8 +280,8 @@ class FunPackGemmaEmbeddingRefiner:
                 modified_latent = {"samples": new_samples.cpu(), "noise_mask": latent.get("noise_mask")}
                 latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
 
-        # === Update adaptive state ===
-        momentum = 0.75 * momentum + 0.25 * (new_delta * reward)   # directional update
+        # Update adaptive state
+        momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
         if avg_reward_ema > 0.3:
             sim_threshold = max(0.75, sim_threshold - 0.002)
 
@@ -284,9 +300,9 @@ class FunPackGemmaEmbeddingRefiner:
             "dynamic_sim_threshold": sim_threshold
         })
 
-        # === History (deduplicated pruning) ===
+        # History + smart pruning
         history_entry = {
-            "iteration": len(data.get("history", [])) + 1,
+            "iteration": len(history) + 1,
             "rating": rating,
             "reward": round(reward, 3),
             "modified_embeds": tensor_to_serializable(new_modified),
@@ -296,18 +312,16 @@ class FunPackGemmaEmbeddingRefiner:
         if latent is not None and "samples" in latent:
             history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
 
-        hist = data.setdefault("history", [])
-        hist.append(history_entry)
+        history.append(history_entry)
 
-        # Smart prune: top 20 best + last 60, deduplicated by iteration
-        if len(hist) > 100:
-            sorted_hist = sorted(hist, key=lambda x: x.get("rating", 0), reverse=True)
+        if len(history) > 100:
+            sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
             top = sorted_hist[:20]
-            recent = hist[-60:]
-            seen_iters = {e["iteration"] for e in top}
-            combined = top + [e for e in recent if e["iteration"] not in seen_iters]
-            data["history"] = combined
+            recent = history[-60:]
+            seen = {e["iteration"] for e in top}
+            history = top + [e for e in recent if e["iteration"] not in seen]
 
+        data["history"] = history
         data["last_rating"] = rating
         data["last_prompt"] = prompt
         data["adaptive"] = adaptive
@@ -315,8 +329,8 @@ class FunPackGemmaEmbeddingRefiner:
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # === Rich status ===
-        iter_num = len(data["history"])
+        # Status
+        iter_num = len(history)
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else \
                  "✅ Learning well" if avg_reward_ema > 0.3 else \
