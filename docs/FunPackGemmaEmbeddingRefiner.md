@@ -2,7 +2,9 @@
 
 ## Parameters:
 
-**rating** - Rating for previously generated video, from 1 to 5, where 1 means "awful, totally not what I asked for" and 5 means "masterpiece, exactly what I have asked for".
+**rating** - Rating for previously generated video, from 1 to 10, where 1 means "awful, totally not what I asked for" and 10 means "masterpiece, exactly what I have asked for".
+
+Rating is NOT balanced. 5 is not the true middle, 5.5 is.
 
 **refinement_key** - Name for the .json file that contains the tuned deltas for conditioning. You can re-use previously trained .json files - they are stored in /custom_nodes/ComfyUI-FunPack/refinements.
 
