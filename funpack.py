@@ -225,6 +225,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         prompt_key = positive_prompt
 
+        # ====================== RESET / NEW SESSION ======================
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
@@ -315,7 +316,7 @@ class FunPackGemmaEmbeddingRefiner:
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
         # ====================== WORD GROUPING FROM PROMPT ======================
-        word_groups = []  # (start, end, full_word, word_token_list)
+        word_groups = []
         seen = set()
         if tokenizer and positive_prompt:
             raw_words = [w.strip() for w in positive_prompt.split() if w.strip()]
@@ -347,6 +348,8 @@ class FunPackGemmaEmbeddingRefiner:
         cur_mean = cur_positive.mean(dim=1)
         similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
         reward = (rating - 5.5) / 4.5
+        last_rating = active.get("last_rating", 5)
+        last_reward = (last_rating - 5.5) / 4.5
 
         word_importance = global_adaptive.setdefault("word_importance", {})
 
@@ -365,16 +368,15 @@ class FunPackGemmaEmbeddingRefiner:
             if wkey not in word_importance:
                 word_importance[wkey] = 1.0
 
-            is_new = True
             base_lr = 0.22 / (1 + 0.07 * (len(history) ** 0.5))
-            group_delta = reward * base_lr * lr_scale * confidence * (1.8 if is_new else 1.0)
+            group_delta = reward * base_lr * lr_scale * confidence * 1.8
 
             if wkey in word_lr_mult:
                 group_delta *= word_lr_mult[wkey]
 
             word_importance[wkey] = max(0.35, min(2.8, word_importance[wkey] + group_delta))
 
-        # ====================== CORE REFINEMENT (POSITIVE ONLY) ======================
+        # ====================== CORE REFINEMENT ======================
         reference = cur_positive.clone()
         momentum = global_adaptive.get("momentum")
         if momentum is None or not isinstance(momentum, dict):
@@ -400,7 +402,6 @@ class FunPackGemmaEmbeddingRefiner:
         sim_threshold = global_adaptive["dynamic_sim_threshold"]
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
-        # Simple new_delta
         if is_close and history:
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
@@ -423,7 +424,7 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply WORD-LEVEL importance
+        # Apply word-level importance
         if word_importance and cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
@@ -471,7 +472,7 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # ====================== INTELLIGENT FEEDBACK QUESTION ======================
+        # ====================== INTELLIGENT FEEDBACK ======================
         if feedback_enabled and data.get("pending_feedback") is None and word_groups:
             feedbacked = set(global_adaptive.get("feedbacked_words", []))
             candidates = []
