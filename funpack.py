@@ -261,7 +261,7 @@ class FunPackGemmaEmbeddingRefiner:
                 json.dump(data, f, indent=2)
             return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
 
-        # FIX 1: Guard against corrupt JSON — treat as a fresh session instead of crashing
+        # Safe JSON loading
         try:
             with open(json_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -322,7 +322,6 @@ class FunPackGemmaEmbeddingRefiner:
             if pending is not None:
                 full_word = pending["full_word"].lower()
                 word_importance = global_adaptive["word_importance"]
-
                 old_imp = word_importance.get(full_word, 1.0)
                 if feedback_rating == 6:
                     target_imp = 0.65
@@ -330,7 +329,6 @@ class FunPackGemmaEmbeddingRefiner:
                     target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
                 new_imp = 0.65 * old_imp + 0.35 * target_imp
                 word_importance[full_word] = max(0.3, min(2.8, new_imp))
-
                 data["pending_feedback"] = None
                 with open(json_file, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2)
@@ -350,7 +348,7 @@ class FunPackGemmaEmbeddingRefiner:
             }
             prompt_histories[prompt_key] = active
 
-        # FIX 2: Guard against missing key or corrupt reference embedding data
+        # Safe reference loading
         try:
             old_reference = serializable_to_tensor(active["reference_embeds"])
         except Exception as e:
@@ -363,9 +361,9 @@ class FunPackGemmaEmbeddingRefiner:
         device = old_reference.device
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
 
-        # FIX 3: Detect embedding shape mismatch (e.g. model swapped mid-session) and reset gracefully
+        # Shape mismatch guard
         if old_reference.shape != cur_positive.shape:
-            print(f"[FunPackGemmaEmbeddingRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference for this prompt.")
+            print(f"[FunPackGemmaEmbeddingRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference.")
             old_reference = cur_positive.clone()
             active["reference_embeds"] = tensor_to_serializable(old_reference)
             active["history"] = []
@@ -373,7 +371,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # ====================== WORD GROUPING FROM PROMPT ======================
+        # ====================== WORD GROUPING ======================
         word_groups = []
         seen = set()
         if tokenizer and positive_prompt:
@@ -402,7 +400,7 @@ class FunPackGemmaEmbeddingRefiner:
         iter_num = len(history) + 1
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
 
-        # FIX 4: Guard .mean(dim=1) — safe for any tensor dimensionality; also guard F.cosine_similarity
+        # Safe similarity calculation
         try:
             if old_reference.dim() >= 2 and cur_positive.dim() >= 2:
                 ref_mean = old_reference.mean(dim=1)
@@ -439,7 +437,7 @@ class FunPackGemmaEmbeddingRefiner:
                 word_importance[wkey] = 1.0
 
             base_lr = 0.22 / (1 + 0.07 * (len(history) ** 0.5))
-            group_delta = reward * base_lr * lr_scale * confidence * 1.8
+            group_delta = reward * base_lr * lr_scale * confidence
 
             if wkey in word_lr_mult:
                 group_delta *= word_lr_mult[wkey]
@@ -448,6 +446,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         # ====================== CORE REFINEMENT ======================
         reference = cur_positive.clone()
+
         momentum = global_adaptive.get("momentum")
         if momentum is None or not isinstance(momentum, dict):
             momentum = torch.zeros_like(reference)
@@ -472,10 +471,10 @@ class FunPackGemmaEmbeddingRefiner:
         sim_threshold = global_adaptive["dynamic_sim_threshold"]
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
+        # Always define new_delta
         if is_close and history:
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
-            # FIX 5: Guard against corrupt mod_data and shape mismatch before subtraction
             if mod_data is not None:
                 try:
                     prev_modified = serializable_to_tensor(mod_data).to(device)
@@ -495,16 +494,15 @@ class FunPackGemmaEmbeddingRefiner:
             good_deltas = []
             for entry in history:
                 if entry.get("rating", 0) >= 7:
-                    # FIX 6: Guard against missing or corrupt "modified_embeds" in history entries
                     mod_data = entry.get("modified_embeds")
                     if mod_data is None:
                         continue
                     try:
                         mod = serializable_to_tensor(mod_data).to(device)
+                        if list(mod.shape) == list(old_reference.shape):
+                            good_deltas.append(mod - old_reference)
                     except Exception:
                         continue
-                    if list(mod.shape) == list(old_reference.shape):
-                        good_deltas.append(mod - old_reference)
             if good_deltas:
                 new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
             else:
@@ -519,9 +517,8 @@ class FunPackGemmaEmbeddingRefiner:
                 importance_tensor[start:end] = imp
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
 
-        # FIX 7: Guard against unexpected shape mismatch before tensor addition
+        # Final safety guard
         if new_delta.shape != reference.shape:
-            print(f"[FunPackGemmaEmbeddingRefiner] new_delta shape {new_delta.shape} != reference shape {reference.shape}. Falling back to zero delta.")
             new_delta = torch.zeros_like(reference)
 
         new_positive = reference + new_delta
