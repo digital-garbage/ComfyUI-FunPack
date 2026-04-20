@@ -261,8 +261,49 @@ class FunPackGemmaEmbeddingRefiner:
                 json.dump(data, f, indent=2)
             return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
 
-        with open(json_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # FIX 1: Guard against corrupt JSON — treat as a fresh session instead of crashing
+        try:
+            with open(json_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            print(f"[FunPackGemmaEmbeddingRefiner] Corrupt session file, resetting: {e}")
+            try:
+                os.remove(json_file)
+            except OSError:
+                pass
+            data = {
+                "refinement_key": refinement_key,
+                "global_adaptive": {
+                    "word_importance": {},
+                    "infusion_tokens": {},
+                    "token_library": {},
+                    "exploration_base": 0.08,
+                    "momentum": None,
+                    "avg_reward_ema": 0.0,
+                    "good_ratio": 0.0,
+                    "dynamic_sim_threshold": 0.82,
+                    "last_feedback_word": None,
+                    "feedbacked_words": [],
+                    "scheduler_mode": scheduler_mode,
+                    "prodigy_d": {},
+                    "prodigy_lr_base": 1.0,
+                    "warmup_steps": 8,
+                    "total_steps_estimate": 150,
+                    "current_step": 0,
+                },
+                "prompt_histories": {
+                    prompt_key: {
+                        "reference_embeds": tensor_to_serializable(raw_positive),
+                        "history": [],
+                        "last_rating": rating
+                    }
+                },
+                "last_prompt_key": prompt_key,
+                "pending_feedback": None
+            }
+            with open(json_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file")
 
         global_adaptive = data["global_adaptive"]
         prompt_histories = data.get("prompt_histories", {})
@@ -309,9 +350,26 @@ class FunPackGemmaEmbeddingRefiner:
             }
             prompt_histories[prompt_key] = active
 
-        old_reference = serializable_to_tensor(active["reference_embeds"])
+        # FIX 2: Guard against missing key or corrupt reference embedding data
+        try:
+            old_reference = serializable_to_tensor(active["reference_embeds"])
+        except Exception as e:
+            print(f"[FunPackGemmaEmbeddingRefiner] Failed to load reference embedding: {e}. Resetting for this prompt.")
+            old_reference = raw_positive.clone()
+            active["reference_embeds"] = tensor_to_serializable(old_reference)
+            active["history"] = []
+            is_new_prompt = True
+
         device = old_reference.device
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
+
+        # FIX 3: Detect embedding shape mismatch (e.g. model swapped mid-session) and reset gracefully
+        if old_reference.shape != cur_positive.shape:
+            print(f"[FunPackGemmaEmbeddingRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference for this prompt.")
+            old_reference = cur_positive.clone()
+            active["reference_embeds"] = tensor_to_serializable(old_reference)
+            active["history"] = []
+            is_new_prompt = True
 
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
@@ -344,9 +402,21 @@ class FunPackGemmaEmbeddingRefiner:
         iter_num = len(history) + 1
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
 
-        ref_mean = old_reference.mean(dim=1)
-        cur_mean = cur_positive.mean(dim=1)
-        similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
+        # FIX 4: Guard .mean(dim=1) — safe for any tensor dimensionality; also guard F.cosine_similarity
+        try:
+            if old_reference.dim() >= 2 and cur_positive.dim() >= 2:
+                ref_mean = old_reference.mean(dim=1)
+                cur_mean = cur_positive.mean(dim=1)
+                similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
+            else:
+                similarity = F.cosine_similarity(
+                    old_reference.flatten().unsqueeze(0),
+                    cur_positive.flatten().unsqueeze(0),
+                    dim=-1
+                ).mean().item()
+        except Exception:
+            similarity = 0.0
+
         reward = (rating - 5.5) / 4.5
         last_rating = active.get("last_rating", 5)
         last_reward = (last_rating - 5.5) / 4.5
@@ -405,7 +475,16 @@ class FunPackGemmaEmbeddingRefiner:
         if is_close and history:
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
-            prev_modified = serializable_to_tensor(mod_data).to(device) if mod_data else torch.zeros_like(old_reference)
+            # FIX 5: Guard against corrupt mod_data and shape mismatch before subtraction
+            if mod_data is not None:
+                try:
+                    prev_modified = serializable_to_tensor(mod_data).to(device)
+                    if list(prev_modified.shape) != list(old_reference.shape):
+                        prev_modified = torch.zeros_like(old_reference)
+                except Exception:
+                    prev_modified = torch.zeros_like(old_reference)
+            else:
+                prev_modified = torch.zeros_like(old_reference)
             prev_delta = prev_modified - old_reference
             multiplier = max(0.05, 1.0 + reward * 1.45)
             if rating == last_rating and rating >= 8:
@@ -416,7 +495,14 @@ class FunPackGemmaEmbeddingRefiner:
             good_deltas = []
             for entry in history:
                 if entry.get("rating", 0) >= 7:
-                    mod = serializable_to_tensor(entry.get("modified_embeds")).to(device)
+                    # FIX 6: Guard against missing or corrupt "modified_embeds" in history entries
+                    mod_data = entry.get("modified_embeds")
+                    if mod_data is None:
+                        continue
+                    try:
+                        mod = serializable_to_tensor(mod_data).to(device)
+                    except Exception:
+                        continue
                     if list(mod.shape) == list(old_reference.shape):
                         good_deltas.append(mod - old_reference)
             if good_deltas:
@@ -432,6 +518,11 @@ class FunPackGemmaEmbeddingRefiner:
                 imp = word_importance.get(full_word.lower(), 1.0)
                 importance_tensor[start:end] = imp
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
+
+        # FIX 7: Guard against unexpected shape mismatch before tensor addition
+        if new_delta.shape != reference.shape:
+            print(f"[FunPackGemmaEmbeddingRefiner] new_delta shape {new_delta.shape} != reference shape {reference.shape}. Falling back to zero delta.")
+            new_delta = torch.zeros_like(reference)
 
         new_positive = reference + new_delta
         new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
