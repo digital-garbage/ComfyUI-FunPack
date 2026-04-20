@@ -43,6 +43,7 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
+    
 class FunPackGemmaEmbeddingRefiner:
     _tokenizer = None
 
@@ -82,13 +83,6 @@ class FunPackGemmaEmbeddingRefiner:
                     "default": "",
                     "placeholder": "Positive prompt"
                 }),
-                "negative_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "placeholder": "Negative prompt (optional)"
-                }),
-                "negative_conditioning": ("CONDITIONING",),
-                "latent": ("LATENT",),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears ALL history)"}),
                 "unlimited_history": ("BOOLEAN", {
                     "default": False,
@@ -107,8 +101,8 @@ class FunPackGemmaEmbeddingRefiner:
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("modified_positive", "modified_negative", "modified_latent", "status", "feedback_question", "training_info")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -117,7 +111,7 @@ class FunPackGemmaEmbeddingRefiner:
         return float("nan")
 
     def _get_scheduler_factors(self, mode, rating, reward, similarity, iter_num, total_iters,
-                               token_importance, word_groups, full_token_ids, global_adaptive, device):
+                               word_importance, word_groups, global_adaptive, device):
         if mode == "original":
             base_lr = 0.18 / (1 + 0.08 * (iter_num ** 0.5))
             confidence = max(0.2, min(1.0, (rating - 3.0) / 5.0))
@@ -133,17 +127,17 @@ class FunPackGemmaEmbeddingRefiner:
         d_coef = 1.0 if mode == "accurate" else 1.8
         adaptive_lr = global_adaptive.get("prodigy_lr_base", 1.0)
 
-        token_lr_mult = {}
-        for tid in full_token_ids:
-            tid_str = str(tid)
-            if tid_str not in token_importance:
+        word_lr_mult = {}
+        for _, _, full_word, _ in word_groups:
+            wkey = full_word.lower()
+            if wkey not in word_importance:
                 continue
             g = abs(reward) + 1e-8
-            if tid_str not in prodigy_d:
-                prodigy_d[tid_str] = g
+            if wkey not in prodigy_d:
+                prodigy_d[wkey] = g
             else:
-                prodigy_d[tid_str] = 0.9 * prodigy_d[tid_str] + 0.1 * g
-            token_lr_mult[tid_str] = adaptive_lr / (prodigy_d[tid_str] ** 0.5 + 1e-8) * d_coef
+                prodigy_d[wkey] = 0.9 * prodigy_d[wkey] + 0.1 * g
+            word_lr_mult[wkey] = adaptive_lr / (prodigy_d[wkey] ** 0.5 + 1e-8) * d_coef
 
         current_step = global_adaptive.setdefault("current_step", 0)
         current_step = min(current_step + 1, 500)
@@ -166,20 +160,20 @@ class FunPackGemmaEmbeddingRefiner:
             confidence = min(1.0, confidence * 1.3)
             exploration_mult = max(0.6, 1.3 - 0.7 * progress)
 
-        return lr_scale, confidence, exploration_mult, token_lr_mult
+        return lr_scale, confidence, exploration_mult, word_lr_mult
 
     def _get_top_tokens(self, token_dict, tokenizer, top_k=10):
         if not token_dict or not tokenizer:
             return "N/A"
         sorted_tokens = sorted(token_dict.items(), key=lambda x: x[1], reverse=True)[:top_k]
         top_list = []
-        for tid_str, score in sorted_tokens:
+        for key, score in sorted_tokens:
             try:
-                token_text = tokenizer.decode([int(tid_str)], skip_special_tokens=True).strip()
-                if token_text:
-                    top_list.append(f"{token_text}({score:.2f})")
+                text = key if isinstance(key, str) else tokenizer.decode([int(key)], skip_special_tokens=True).strip()
+                if text:
+                    top_list.append(f"{text}({score:.2f})")
             except:
-                top_list.append(f"ID{tid_str}({score:.2f})")
+                top_list.append(f"{key}({score:.2f})")
         return ", ".join(top_list) if top_list else "None"
 
     def _is_valuable_token(self, token_text):
@@ -199,8 +193,7 @@ class FunPackGemmaEmbeddingRefiner:
         return True
 
     def refine(self, positive_conditioning, rating: int, refinement_key: str, scheduler_mode: str = "original",
-               positive_prompt: str = "", negative_prompt: str = "",
-               negative_conditioning=None, latent=None,
+               positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0,
                feedback_enabled: bool = False, feedback_rating: int = 3):
@@ -217,7 +210,7 @@ class FunPackGemmaEmbeddingRefiner:
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
-            return (positive_conditioning, negative_conditioning, latent, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning")
+            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning")
 
         item = positive_conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -228,32 +221,44 @@ class FunPackGemmaEmbeddingRefiner:
             positive_meta = {"pooled_output": None}
 
         if not isinstance(raw_positive, torch.Tensor):
-            return (positive_conditioning, negative_conditioning, latent, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding")
+            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding")
 
         prompt_key = positive_prompt
-        if negative_prompt:
-            prompt_key += f" |||NEG||| {negative_prompt}"
 
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
                 "global_adaptive": {
-                    "token_importance": {}, "infusion_tokens": {}, "token_library": {},
-                    "exploration_base": 0.08, "momentum": None, "avg_reward_ema": 0.0,
-                    "good_ratio": 0.0, "dynamic_sim_threshold": 0.82,
-                    "last_feedback_tid": None, "last_feedback_word": None, "feedbacked_words": [],
-                    "scheduler_mode": scheduler_mode, "prodigy_d": {}, "prodigy_lr_base": 1.0,
-                    "warmup_steps": 8, "total_steps_estimate": 150, "current_step": 0,
+                    "word_importance": {},
+                    "infusion_tokens": {},
+                    "token_library": {},
+                    "exploration_base": 0.08,
+                    "momentum": None,
+                    "avg_reward_ema": 0.0,
+                    "good_ratio": 0.0,
+                    "dynamic_sim_threshold": 0.82,
+                    "last_feedback_word": None,
+                    "feedbacked_words": [],
+                    "scheduler_mode": scheduler_mode,
+                    "prodigy_d": {},
+                    "prodigy_lr_base": 1.0,
+                    "warmup_steps": 8,
+                    "total_steps_estimate": 150,
+                    "current_step": 0,
                 },
                 "prompt_histories": {
-                    prompt_key: {"reference_embeds": tensor_to_serializable(raw_positive), "history": [], "last_rating": rating}
+                    prompt_key: {
+                        "reference_embeds": tensor_to_serializable(raw_positive),
+                        "history": [],
+                        "last_rating": rating
+                    }
                 },
                 "last_prompt_key": prompt_key,
                 "pending_feedback": None
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, negative_conditioning, latent, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
+            return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
 
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -262,7 +267,7 @@ class FunPackGemmaEmbeddingRefiner:
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer()
 
-        # ====================== FEEDBACK STATE MACHINE ======================
+        # ====================== FEEDBACK STATE MACHINE (WORD-LEVEL) ======================
         feedback_question_output = ""
         pending = data.get("pending_feedback")
         if not feedback_enabled:
@@ -273,23 +278,16 @@ class FunPackGemmaEmbeddingRefiner:
             feedback_question_output = "Feedback disabled. Queue cleared."
         else:
             if pending is not None:
-                token_id = pending["token_id"]
-                tid_str = str(token_id)
-                token_importance = global_adaptive["token_importance"]
-                old_imp = token_importance.get(tid_str, 1.0)
+                full_word = pending["full_word"].lower()
+                word_importance = global_adaptive["word_importance"]
+
+                old_imp = word_importance.get(full_word, 1.0)
                 if feedback_rating == 6:
                     target_imp = 0.65
                 else:
                     target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
                 new_imp = 0.65 * old_imp + 0.35 * target_imp
-                token_importance[tid_str] = max(0.3, min(2.5, new_imp))
-
-                token_library = global_adaptive.setdefault("token_library", {})
-                if tid_str in token_library:
-                    if feedback_rating >= 4 and feedback_rating != 6:
-                        token_library[tid_str]["high_rated_count"] += 2
-                    elif feedback_rating <= 2:
-                        token_library[tid_str]["low_rated_count"] += 2
+                word_importance[full_word] = max(0.3, min(2.8, new_imp))
 
                 data["pending_feedback"] = None
                 with open(json_file, "w", encoding="utf-8") as f:
@@ -303,7 +301,11 @@ class FunPackGemmaEmbeddingRefiner:
             is_new_prompt = False
         else:
             is_new_prompt = True
-            active = {"reference_embeds": tensor_to_serializable(raw_positive), "history": [], "last_rating": rating}
+            active = {
+                "reference_embeds": tensor_to_serializable(raw_positive),
+                "history": [],
+                "last_rating": rating
+            }
             prompt_histories[prompt_key] = active
 
         old_reference = serializable_to_tensor(active["reference_embeds"])
@@ -312,71 +314,28 @@ class FunPackGemmaEmbeddingRefiner:
 
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # ====================== IMPROVED WORD GROUPING (FIXED) ======================
-        word_groups = []
-        if tokenizer and positive_prompt and full_token_ids:
-            try:
-                # Get raw tokens with Gemma's ▁ word-boundary marker
-                token_texts = tokenizer.convert_ids_to_tokens(full_token_ids)
-                i = 0
-                while i < len(token_texts):
-                    start_idx = i
-                    word_token_ids = [full_token_ids[i]]
-                    # Build the human-readable word
-                    word_str = token_texts[i].replace("▁", "")
-
-                    i += 1
-                    while i < len(token_texts) and not token_texts[i].startswith("▁"):
-                        word_token_ids.append(full_token_ids[i])
-                        word_str += token_texts[i].replace("▁", "")
-                        i += 1
-
-                    # Final clean decoded word for feedback
-                    full_word = tokenizer.decode(word_token_ids, skip_special_tokens=True).strip()
-                    if not full_word:
-                        full_word = word_str.strip()
-
-                    word_groups.append((start_idx, i, full_word, word_token_ids))
-            except Exception:
-                # Ultra-safe fallback
-                word_groups = [(i, i+1, tokenizer.decode([tid]).strip(), [tid]) for i, tid in enumerate(full_token_ids)]
-
-        # ====================== CROSS-PROMPT TRANSFER ======================
-        if is_new_prompt and tokenizer and full_token_ids:
-            current_set = set(full_token_ids)
-            token_importance = global_adaptive["token_importance"]
-            for other_key, other in prompt_histories.items():
-                if other_key == prompt_key:
+        # ====================== WORD GROUPING FROM PROMPT ======================
+        word_groups = []  # (start, end, full_word, word_token_list)
+        seen = set()
+        if tokenizer and positive_prompt:
+            raw_words = [w.strip() for w in positive_prompt.split() if w.strip()]
+            for word in raw_words:
+                clean_word = word
+                lower = clean_word.lower()
+                if lower in seen or len(clean_word) < 3 or not self._is_valuable_token(clean_word):
                     continue
-                other_tokens = set()
-                for entry in other.get("history", []):
-                    if "prompt" in entry and entry["prompt"]:
-                        try:
-                            other_tokens.update(tokenizer.encode(entry["prompt"], add_special_tokens=True)[:60])
-                        except:
-                            pass
-                if not other_tokens:
-                    continue
-                intersection = len(current_set & other_tokens)
-                union = len(current_set | other_tokens)
-                sim_weight = intersection / union if union > 0 else 0.0
-                if sim_weight < 0.3:
-                    continue
-                for entry in other.get("history", []):
-                    if "prompt" not in entry or not entry["prompt"]:
-                        continue
-                    try:
-                        old_tokens = tokenizer.encode(entry["prompt"], add_special_tokens=True)[:60]
-                        matching = current_set & set(old_tokens)
-                        r = entry.get("rating", 5)
-                        adj = 1.25 if r >= 8 else 0.75 if r <= 3 else None
-                        if adj is not None:
-                            for tid in matching:
-                                tid_str = str(tid)
-                                if tid_str in token_importance:
-                                    token_importance[tid_str] = max(0.3, min(2.5, token_importance[tid_str] * (1.0 + (adj - 1.0) * sim_weight)))
-                    except:
-                        pass
+                seen.add(lower)
+
+                word_token_list = tokenizer.encode(clean_word, add_special_tokens=False)
+
+                found = False
+                for start in range(len(full_token_ids) - len(word_token_list) + 1):
+                    if full_token_ids[start:start + len(word_token_list)] == word_token_list:
+                        word_groups.append((start, start + len(word_token_list), clean_word, word_token_list))
+                        found = True
+                        break
+                if not found and word_token_list:
+                    word_groups.append((0, 1, clean_word, [word_token_list[0]]))
 
         # ====================== SCHEDULER SETUP ======================
         global_adaptive["scheduler_mode"] = scheduler_mode
@@ -388,86 +347,34 @@ class FunPackGemmaEmbeddingRefiner:
         cur_mean = cur_positive.mean(dim=1)
         similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
         reward = (rating - 5.5) / 4.5
-        last_rating = active.get("last_rating", 5)
-        last_reward = (last_rating - 5.5) / 4.5
 
-        lr_scale, confidence, exploration_mult, token_lr_mult = self._get_scheduler_factors(
+        word_importance = global_adaptive.setdefault("word_importance", {})
+
+        lr_scale, confidence, exploration_mult, word_lr_mult = self._get_scheduler_factors(
             scheduler_mode, rating, reward, similarity, iter_num, total_iters,
-            global_adaptive["token_importance"], word_groups, full_token_ids, global_adaptive, device
+            word_importance, word_groups, global_adaptive, device
         )
 
         expl = global_adaptive["exploration_base"] * exploration_mult
 
-        # ====================== TOKEN LIBRARY UPDATE ======================
-        token_library = global_adaptive.setdefault("token_library", {})
-        token_importance = global_adaptive["token_importance"]
-        infusion_tokens = global_adaptive["infusion_tokens"]
+        # ====================== WORD IMPORTANCE UPDATE ======================
+        for start, end, full_word, word_token_list in word_groups:
+            if not self._is_valuable_token(full_word):
+                continue
+            wkey = full_word.lower()
+            if wkey not in word_importance:
+                word_importance[wkey] = 1.0
 
-        if tokenizer and full_token_ids:
-            valuable_token_ids = [tid for tid in full_token_ids if self._is_valuable_token(tokenizer.decode([tid]))]
-            norm_factor = len(valuable_token_ids) if valuable_token_ids else 1
-            for tid in full_token_ids:
-                tid_str = str(tid)
-                if tid_str not in token_library:
-                    token_library[tid_str] = {
-                        "fqc": 0,
-                        "unique_prompts": 0,
-                        "high_rated_count": 0,
-                        "low_rated_count": 0,
-                        "good_pairs": {},
-                        "contrib_score": 0.0,
-                        "redundancy_score": 0.0,
-                        "protected_until": 0
-                    }
-                lib_entry = token_library[tid_str]
-                lib_entry["fqc"] += 1
-                if is_new_prompt:
-                    lib_entry["unique_prompts"] += 1
+            is_new = True
+            base_lr = 0.22 / (1 + 0.07 * (len(history) ** 0.5))
+            group_delta = reward * base_lr * lr_scale * confidence * (1.8 if is_new else 1.0)
 
-            if rating >= 8:
-                for i, tid1 in enumerate(full_token_ids):
-                    tid1_str = str(tid1)
-                    for tid2 in full_token_ids[i+1:]:
-                        tid2_str = str(tid2)
-                        if tid1_str in token_library and tid2_str in token_library:
-                            if tid2_str not in token_library[tid1_str]["good_pairs"]:
-                                token_library[tid1_str]["good_pairs"][tid2_str] = 0
-                            if tid1_str not in token_library[tid2_str]["good_pairs"]:
-                                token_library[tid2_str]["good_pairs"][tid1_str] = 0
-                            token_library[tid1_str]["good_pairs"][tid2_str] += 1
-                            token_library[tid2_str]["good_pairs"][tid1_str] += 1
-                    if tid1_str in token_library:
-                        token_library[tid1_str]["high_rated_count"] += 1
-            elif rating <= 4:
-                for tid in full_token_ids:
-                    tid_str = str(tid)
-                    if tid_str in token_library:
-                        token_library[tid_str]["low_rated_count"] += 1
+            if wkey in word_lr_mult:
+                group_delta *= word_lr_mult[wkey]
 
-            # Safe contextual updates
-            for start, end, full_word, word_token_list in word_groups:
-                if not self._is_valuable_token(full_word):
-                    continue
-                tid_str = str(word_token_list[0])
-                entry = token_library[tid_str]
-                entry["contrib_score"] = 0.85 * entry.get("contrib_score", 0.0) + 0.15 * 0.6
-                if len(word_groups) > 4:
-                    entry["redundancy_score"] = min(1.0, entry.get("redundancy_score", 0.0) + 0.07)
-                if rating >= 8 and entry.get("contrib_score", 0) > 0.3:
-                    entry["protected_until"] = max(entry.get("protected_until", 0), iter_num + 8)
+            word_importance[wkey] = max(0.35, min(2.8, word_importance[wkey] + group_delta))
 
-            for tid_str, entry in token_library.items():
-                total_rated = entry["high_rated_count"] + entry["low_rated_count"]
-                if total_rated == 0:
-                    continue
-                appears_in_many = entry["unique_prompts"] >= 5
-                balanced = entry["high_rated_count"] > 0 and entry["low_rated_count"] > 0
-                mostly_high = entry["high_rated_count"] > entry["low_rated_count"] * 2
-                entry["is_general"] = appears_in_many and balanced
-                entry["is_specific"] = not entry["is_general"] and mostly_high and entry["unique_prompts"] <= 8
-                entry["infusable"] = (entry["is_general"] or entry["is_specific"]) and entry["high_rated_count"] >= 2
-
-        # ====================== CORE REFINEMENT ======================
+        # ====================== CORE REFINEMENT (POSITIVE ONLY) ======================
         reference = cur_positive.clone()
         momentum = global_adaptive.get("momentum")
         if momentum is None or not isinstance(momentum, dict):
@@ -493,91 +400,11 @@ class FunPackGemmaEmbeddingRefiner:
         sim_threshold = global_adaptive["dynamic_sim_threshold"]
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
-        new_token_mask = None
-        infusion_active = False
-        infusion_weights = None
-
-        if tokenizer and positive_prompt:
-            try:
-                embed_seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0] if cur_positive.dim() == 2 else 1
-                prev_token_ids = tokenizer.encode(active.get("last_positive_prompt", ""), add_special_tokens=True) if "last_positive_prompt" in active else []
-                new_token_mask = torch.ones(embed_seq_len, device=device)
-                compare_len = min(len(full_token_ids), len(prev_token_ids), embed_seq_len)
-                for i in range(compare_len):
-                    if full_token_ids[i] != prev_token_ids[i]:
-                        new_token_mask[i] = 0.0
-
-                # Word-level importance update with scheduler
-                for start, end, full_word, word_token_list in word_groups:
-                    if not self._is_valuable_token(full_word):
-                        continue
-                    group_key = str(word_token_list[0])
-                    if group_key not in token_importance:
-                        token_importance[group_key] = 1.0
-
-                    is_new = any(tid not in prev_token_ids for tid in word_token_list)
-                    update_strength = 1.8 if is_new else 1.0
-
-                    # Missing token protection
-                    missing_penalty = 1.0
-                    if group_key in token_importance and group_key not in [str(t) for t in full_token_ids]:
-                        if token_library.get(group_key, {}).get("contrib_score", 0) > 0.35:
-                            missing_penalty = 0.78
-                        else:
-                            missing_penalty = 0.55
-
-                    fqc = token_library.get(group_key, {}).get("fqc", 1)
-                    base_lr = 0.22 / (1 + 0.07 * (fqc ** 0.5))
-
-                    group_delta = reward * base_lr * lr_scale * confidence * update_strength * missing_penalty
-
-                    for tid in word_token_list:
-                        tid_str = str(tid)
-                        if tid_str in token_lr_mult:
-                            group_delta *= token_lr_mult[tid_str]
-                        token_importance[tid_str] = max(0.35, min(2.8, token_importance[tid_str] + group_delta))
-
-                # Infusion logic (kept from original)
-                if random.random() < 0.18 and token_library:
-                    infusion_weights = torch.ones(embed_seq_len, device=device)
-                    infusion_any = False
-                    for i, tid in enumerate(full_token_ids[:embed_seq_len]):
-                        tid_str = str(tid)
-                        if tid_str not in token_library or not token_library[tid_str].get("infusable", False):
-                            continue
-                        token_text = tokenizer.decode([int(tid)], skip_special_tokens=True).strip()
-                        if not self._is_valuable_token(token_text):
-                            continue
-                        entry = token_library[tid_str]
-                        if not entry.get("good_pairs"):
-                            continue
-                        pair_scores = [entry["good_pairs"].get(str(ct), 0) for ct in full_token_ids[:embed_seq_len]]
-                        pair_scores = [s for s in pair_scores if s > 0]
-                        if pair_scores:
-                            avg_pair = sum(pair_scores) / len(pair_scores)
-                            if avg_pair > 1.2 or entry.get("is_general", False):
-                                if tid_str not in infusion_tokens:
-                                    infusion_tokens[tid_str] = 0.0
-                                infusion_tokens[tid_str] = min(3.0, infusion_tokens[tid_str] + 0.6)
-                                infusion_weights[i] += infusion_tokens[tid_str] * 0.15
-                                infusion_any = True
-                    if infusion_any:
-                        infusion_active = True
-            except Exception as e:
-                print(f"[FunPackGemmaEmbeddingRefiner] Token comparison failed: {e}")
-                new_token_mask = None
-                infusion_weights = None
-
-        # Delta calculation
+        # Simple new_delta
         if is_close and history:
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
-            if mod_data is None:
-                prev_modified = torch.zeros_like(old_reference)
-            else:
-                prev_modified = serializable_to_tensor(mod_data).to(device)
-                if list(prev_modified.shape) != list(old_reference.shape):
-                    prev_modified = torch.zeros_like(old_reference)
+            prev_modified = serializable_to_tensor(mod_data).to(device) if mod_data else torch.zeros_like(old_reference)
             prev_delta = prev_modified - old_reference
             multiplier = max(0.05, 1.0 + reward * 1.45)
             if rating == last_rating and rating >= 8:
@@ -588,95 +415,27 @@ class FunPackGemmaEmbeddingRefiner:
             good_deltas = []
             for entry in history:
                 if entry.get("rating", 0) >= 7:
-                    mod_data = entry.get("modified_embeds")
-                    if mod_data is None:
-                        continue
-                    mod = serializable_to_tensor(mod_data).to(device)
+                    mod = serializable_to_tensor(entry.get("modified_embeds")).to(device)
                     if list(mod.shape) == list(old_reference.shape):
                         good_deltas.append(mod - old_reference)
             if good_deltas:
                 new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
             else:
-                if is_new_prompt and isinstance(momentum, torch.Tensor) and list(momentum.shape) == list(reference.shape):
-                    seed_strength = min(0.3, abs(avg_reward_ema) * 0.4)
-                    new_delta = momentum * seed_strength + torch.randn_like(reference) * expl * 0.3
-                else:
-                    new_delta = torch.randn_like(reference) * expl * 0.45
+                new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply importance, new token boost, infusion
-        if token_importance and cur_positive.dim() > 1:
+        # Apply WORD-LEVEL importance
+        if word_importance and cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
-            for i, tid in enumerate(full_token_ids[:seq_len]):
-                tid_str = str(tid)
-                if tid_str in token_importance:
-                    importance_tensor[i] = token_importance[tid_str]
+            for start, end, full_word, _ in word_groups:
+                imp = word_importance.get(full_word.lower(), 1.0)
+                importance_tensor[start:end] = imp
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
-
-        if new_token_mask is not None:
-            boost_factor = 1.0 + 1.8 * (1.0 - new_token_mask).unsqueeze(-1)
-            new_delta = new_delta * boost_factor
-
-        if infusion_active and infusion_weights is not None:
-            new_delta = new_delta * infusion_weights.unsqueeze(-1)
 
         new_positive = reference + new_delta
         new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
-
-        # ====================== NEGATIVE REFINEMENT ======================
-        new_negative = None
-        negative_meta = {"pooled_output": None}
-        if negative_conditioning is not None:
-            neg_item = negative_conditioning[0]
-            if isinstance(neg_item, (list, tuple)) and len(neg_item) >= 2:
-                raw_negative = neg_item[0]
-                negative_meta = neg_item[1] if isinstance(neg_item[1], dict) else {"pooled_output": None}
-            else:
-                raw_negative = neg_item if isinstance(neg_item, torch.Tensor) else None
-            if isinstance(raw_negative, torch.Tensor):
-                raw_negative = raw_negative.to(device)
-                neg_strength = 0.15 if rating <= 4 else 0.05
-                neg_delta = torch.randn_like(raw_negative) * neg_strength * (5.5 - rating) / 4.5
-                new_negative = raw_negative + neg_delta
-                new_negative = torch.clamp(new_negative, min=-60.0, max=60.0)
-                norm_factor_neg = raw_negative.norm(dim=-1, keepdim=True) + 1e-8
-                new_negative = new_negative / (new_negative.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor_neg
-
-        # ====================== LATENT REFINEMENT ======================
-        modified_latent = latent
-        latent_info = " | Latent unchanged"
-        if latent is not None and "samples" in latent:
-            samples = latent["samples"].to(device) if latent["samples"].device != device else latent["samples"]
-            current_shape = list(samples.shape)
-            good_latents = []
-            bad_latents = []
-            for entry in history:
-                if "latent_samples" in entry:
-                    mod_data = entry["latent_samples"]
-                    if mod_data is not None:
-                        mod = serializable_to_tensor(mod_data).to(device)
-                        if list(mod.shape) == current_shape:
-                            if entry.get("rating", 5) >= 8:
-                                good_latents.append(mod)
-                            elif entry.get("rating", 5) <= 3:
-                                bad_latents.append(mod)
-            if good_latents or bad_latents:
-                latent_strength = max(0.0, avg_reward_ema * 0.35)
-                latent_delta = torch.zeros_like(samples)
-                if good_latents:
-                    mean_good = torch.stack(good_latents).mean(dim=0)
-                    latent_delta += (mean_good - samples) * latent_strength
-                if bad_latents:
-                    mean_bad = torch.stack(bad_latents).mean(dim=0)
-                    latent_delta -= (mean_bad - samples) * (latent_strength * 0.65)
-                mask = torch.abs(samples) < 0.05
-                latent_delta = latent_delta * (~mask).float()
-                if torch.abs(latent_delta).max() > 1e-4:
-                    new_samples = torch.clamp(samples + latent_delta, min=-12.0, max=12.0)
-                    modified_latent = {"samples": new_samples.cpu(), "noise_mask": latent.get("noise_mask")}
-                    latent_info = f" | Latent ±{len(good_latents)}g/{len(bad_latents)}b"
 
         # Update momentum
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
@@ -696,8 +455,6 @@ class FunPackGemmaEmbeddingRefiner:
             "similarity": round(similarity, 4),
             "prompt": positive_prompt[:180]
         }
-        if latent is not None and "samples" in latent:
-            history_entry["latent_samples"] = tensor_to_serializable(latent["samples"])
         history.append(history_entry)
 
         if not unlimited_history and len(history) > 200:
@@ -715,107 +472,63 @@ class FunPackGemmaEmbeddingRefiner:
         data["global_adaptive"] = global_adaptive
 
         # ====================== INTELLIGENT FEEDBACK QUESTION ======================
-        if feedback_enabled and data.get("pending_feedback") is None and tokenizer and word_groups:
+        if feedback_enabled and data.get("pending_feedback") is None and word_groups:
             feedbacked = set(global_adaptive.get("feedbacked_words", []))
-            last_word = global_adaptive.get("last_feedback_word")
-            new_unasked = []
-            for start, end, full_word, word_token_list in word_groups:
-                if not self._is_valuable_token(full_word):
+            candidates = []
+            for _, _, full_word, word_token_list in word_groups:
+                if not self._is_valuable_token(full_word) or full_word.lower() in feedbacked:
                     continue
-                if full_word.lower() in feedbacked or full_word == last_word:
-                    continue
-                group_key = str(word_token_list[0])
-                imp = token_importance.get(group_key, 1.0)
-                freq = token_library.get(group_key, {}).get("fqc", 1)
-                score = freq * (1.0 - abs(imp - 1.0))
-                new_unasked.append((full_word, group_key, score, word_token_list[0]))
-            if new_unasked:
-                chosen = max(new_unasked, key=lambda x: x[2])
-            else:
-                candidates = []
-                for start, end, full_word, word_token_list in word_groups:
-                    if not self._is_valuable_token(full_word) or full_word == last_word:
-                        continue
-                    group_key = str(word_token_list[0])
-                    imp = token_importance.get(group_key, 1.0)
-                    freq = token_library.get(group_key, {}).get("fqc", 1)
-                    score = freq * (1.0 - abs(imp - 1.0))
-                    rating_bonus = 1.5 if rating >= 8 or rating <= 3 else 1.0
-                    candidates.append((full_word, group_key, score * rating_bonus, word_token_list[0]))
-                if candidates:
-                    chosen = max(candidates, key=lambda x: x[2])
-                else:
-                    chosen = None
-            if chosen:
-                full_word, group_key, _, best_tid = chosen
+                wkey = full_word.lower()
+                imp = word_importance.get(wkey, 1.0)
+                score = 1.0 - abs(imp - 1.0)
+                candidates.append((full_word, wkey, score, word_token_list))
+
+            if candidates:
+                chosen = max(candidates, key=lambda x: x[2])
+                full_word, wkey, _, word_token_list = chosen
+
                 data["pending_feedback"] = {
-                    "token_id": int(best_tid),
-                    "token_text": full_word,
+                    "full_word": full_word,
+                    "word_token_list": word_token_list,
                     "prompt_key": prompt_key,
                     "iteration": iter_num
                 }
-                global_adaptive["last_feedback_tid"] = int(best_tid)
                 global_adaptive["last_feedback_word"] = full_word
-                if full_word.lower() not in feedbacked:
-                    global_adaptive.setdefault("feedbacked_words", []).append(full_word)
+                global_adaptive.setdefault("feedbacked_words", []).append(full_word)
+
                 feedback_question_output = f"Word: '{full_word}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
-            else:
-                feedback_question_output = "Feedback enabled but no suitable word found in current prompt."
 
         # ====================== TRAINING INFO ======================
-        current_top = self._get_top_tokens(token_importance, tokenizer, 12)
-        top_infusion = self._get_top_tokens(infusion_tokens, tokenizer, 8)
+        current_top = self._get_top_tokens(word_importance, tokenizer, 12)
 
-        top_contrib = sorted(
-            [(k, v.get("contrib_score", 0.0)) for k, v in token_library.items() if v.get("contrib_score", 0.0) > 0.1],
-            key=lambda x: x[1], reverse=True
-        )[:10]
-        top_contrib_str = ", ".join([
-            f"{tokenizer.decode([int(k)], skip_special_tokens=True).strip()}({v:.2f})" 
-            for k, v in top_contrib
-        ]) or "None"
+        normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
+        stability_factor = max(0.0, 1.0 - similarity)
+        raw_loss = (1.0 - normalized_reward) * 0.7 + stability_factor * 0.3
+        learning_loss = max(0.02, raw_loss * (1.0 - min(0.95, good_ratio * 0.8)))
 
         training_info = (
-            f"Scheduler: {scheduler_mode.upper()} | Global Step: {global_adaptive['current_step']} | "
+            f"Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
             f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
-            f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Raw Reward: {reward:+.3f} | Good Ratio: {good_ratio:.1%}\n"
-            f"Top Importance Tokens: {current_top}\n"
-            f"Top Contributors (by delta impact): {top_contrib_str}\n"
-            f"Protected: {sum(1 for v in token_library.values() if v.get('protected_until', 0) > iter_num)} | "
-            f"Library: {len(token_library)} tokens | Infusion active: {infusion_active}"
+            f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%}\n"
+            f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
+            f"Top Word Importance: {current_top}\n"
+            f"Word Library Size: {len(word_importance)}"
         )
 
         if scheduler_mode == "accurate":
-            training_info += "\n[Accurate] Conservative Prodigy + Cosine decay - slow & stable"
+            training_info += "\n[Accurate] Conservative • Prodigy + Cosine"
         elif scheduler_mode == "aggressive":
-            training_info += "\n[Aggressive] Fast early boosts - quick style locking"
+            training_info += "\n[Aggressive] Fast style locking"
 
         # ====================== STATUS ======================
-        iter_num = len(history)
-        total_iterations = sum(len(p.get("history", [])) for p in prompt_histories.values())
-        unique_prompts = len(prompt_histories)
-        infusion_count = len([v for v in infusion_tokens.values() if v > 0.5])
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else "✅ Learning well" if avg_reward_ema > 0.3 else "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
 
-        status = (f"Iter {iter_num} | Total iters {total_iterations} | "
-                  f"History {len(history)} | Unique prompts {unique_prompts} | "
-                  f"Infusion tokens {infusion_count}\n"
+        status = (f"Iter {iter_num} | Total iters {total_iters} | "
+                  f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
                   f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
                   f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-                  f"Current focus: {current_top}\n"
-                  f"Top infusion: {top_infusion}\n"
-                  f"Library: {len(token_library)} tokens")
-
-        if is_new_prompt:
-            status += "\n✓ New prompt pair → token overlap transfer applied"
-        if new_token_mask is not None and (1.0 - new_token_mask).sum() > 0:
-            status += "\nNew tokens boosted"
-        if infusion_active:
-            status += "\n🔀 Token infusion active (delta scaled)"
-        if rating <= 4:
-            status += "\nLow rating: importance down-weighted + negative strengthened"
-        status += latent_info
+                  f"Current focus: {current_top}")
 
         # ====================== FINAL SAVE ======================
         with open(json_file, "w", encoding="utf-8") as f:
@@ -823,9 +536,8 @@ class FunPackGemmaEmbeddingRefiner:
 
         # ====================== RETURN ======================
         modified_positive = [(new_positive, positive_meta)]
-        modified_negative = [(new_negative, negative_meta)] if new_negative is not None else negative_conditioning
 
-        return (modified_positive, modified_negative, modified_latent, status, feedback_question_output, training_info)
+        return (modified_positive, status, feedback_question_output, training_info)
         
 # Constants from StoryMem
 IMAGE_FACTOR = 28
