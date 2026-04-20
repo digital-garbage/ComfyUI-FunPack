@@ -43,7 +43,6 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
-
 class FunPackGemmaEmbeddingRefiner:
     _tokenizer = None
 
@@ -117,7 +116,6 @@ class FunPackGemmaEmbeddingRefiner:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    # ====================== SCHEDULER HELPER ======================
     def _get_scheduler_factors(self, mode, rating, reward, similarity, iter_num, total_iters,
                                token_importance, word_groups, full_token_ids, global_adaptive, device):
         if mode == "original":
@@ -125,14 +123,12 @@ class FunPackGemmaEmbeddingRefiner:
             confidence = max(0.2, min(1.0, (rating - 3.0) / 5.0))
             if similarity > 0.93:
                 confidence *= 0.4
-            return base_lr, confidence, 1.0, {}   # lr_scale, confidence, exploration_mult, token_lr_mult
+            return base_lr, confidence, 1.0, {}
 
-        # Common calculations for accurate & aggressive
         confidence = max(0.15, min(1.0, (rating - 2.5) / 6.0))
         if abs(reward) < 0.15 or similarity > 0.94:
             confidence *= 0.35
 
-        # Prodigy-style adaptive LR
         prodigy_d = global_adaptive.setdefault("prodigy_d", {})
         d_coef = 1.0 if mode == "accurate" else 1.8
         adaptive_lr = global_adaptive.get("prodigy_lr_base", 1.0)
@@ -147,10 +143,8 @@ class FunPackGemmaEmbeddingRefiner:
                 prodigy_d[tid_str] = g
             else:
                 prodigy_d[tid_str] = 0.9 * prodigy_d[tid_str] + 0.1 * g
-
             token_lr_mult[tid_str] = adaptive_lr / (prodigy_d[tid_str] ** 0.5 + 1e-8) * d_coef
 
-        # Warmup + Cosine annealing
         current_step = global_adaptive.setdefault("current_step", 0)
         current_step = min(current_step + 1, 500)
         global_adaptive["current_step"] = current_step
@@ -167,7 +161,7 @@ class FunPackGemmaEmbeddingRefiner:
             lr_scale *= 0.75
             confidence *= 0.9
             exploration_mult = max(0.3, 1.0 - 0.6 * progress)
-        else:  # aggressive
+        else:
             lr_scale = min(2.2, lr_scale * 1.6)
             confidence = min(1.0, confidence * 1.3)
             exploration_mult = max(0.6, 1.3 - 0.7 * progress)
@@ -195,12 +189,7 @@ class FunPackGemmaEmbeddingRefiner:
         if '<' in t or '>' in t or len(t) < 3:
             return False
         t_lower = t.lower()
-        stopwords = {
-            "the","a","an","and","or","but","with","for","of","in","on","at","to","from","by","is",
-            "are","was","were","be","been","being","have","has","had","do","does","did","will","would",
-            "her","his","him","she","he","it","they","them","this","that","these","those","i","you",
-            "my","your","our","their","me","us"
-        }
+        stopwords = {"the","a","an","and","or","but","with","for","of","in","on","at","to","from","by","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","her","his","him","she","he","it","they","them","this","that","these","those","i","you","my","your","our","their","me","us"}
         if t_lower in stopwords:
             return False
         if t in {",",".","!","?",":",";","-","*","(",")","[","]","{","}","'","\"", "..."} or t.isdigit():
@@ -230,7 +219,6 @@ class FunPackGemmaEmbeddingRefiner:
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
             return (positive_conditioning, negative_conditioning, latent, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning")
 
-        # Extract embedding
         item = positive_conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
             raw_positive = item[0]
@@ -246,43 +234,26 @@ class FunPackGemmaEmbeddingRefiner:
         if negative_prompt:
             prompt_key += f" |||NEG||| {negative_prompt}"
 
-        # ====================== RESET / NEW SESSION ======================
         if reset_session or not os.path.exists(json_file):
             data = {
                 "refinement_key": refinement_key,
                 "global_adaptive": {
-                    "token_importance": {},
-                    "infusion_tokens": {},
-                    "token_library": {},
-                    "exploration_base": 0.08,
-                    "momentum": None,
-                    "avg_reward_ema": 0.0,
-                    "good_ratio": 0.0,
-                    "dynamic_sim_threshold": 0.82,
-                    "last_feedback_tid": None,
-                    "last_feedback_word": None,
-                    "feedbacked_words": [],
-                    "scheduler_mode": scheduler_mode,
-                    "prodigy_d": {},
-                    "prodigy_lr_base": 1.0,
-                    "warmup_steps": 8,
-                    "total_steps_estimate": 150,
-                    "current_step": 0,
+                    "token_importance": {}, "infusion_tokens": {}, "token_library": {},
+                    "exploration_base": 0.08, "momentum": None, "avg_reward_ema": 0.0,
+                    "good_ratio": 0.0, "dynamic_sim_threshold": 0.82,
+                    "last_feedback_tid": None, "last_feedback_word": None, "feedbacked_words": [],
+                    "scheduler_mode": scheduler_mode, "prodigy_d": {}, "prodigy_lr_base": 1.0,
+                    "warmup_steps": 8, "total_steps_estimate": 150, "current_step": 0,
                 },
                 "prompt_histories": {
-                    prompt_key: {
-                        "reference_embeds": tensor_to_serializable(raw_positive),
-                        "history": [],
-                        "last_rating": rating
-                    }
+                    prompt_key: {"reference_embeds": tensor_to_serializable(raw_positive), "history": [], "last_rating": rating}
                 },
                 "last_prompt_key": prompt_key,
                 "pending_feedback": None
             }
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            training_info = "✓ New session started. Reference embedding saved. Learning begins now."
-            return (positive_conditioning, negative_conditioning, latent, "✓ New session started – Reference saved", "", training_info)
+            return (positive_conditioning, negative_conditioning, latent, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
 
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -332,11 +303,7 @@ class FunPackGemmaEmbeddingRefiner:
             is_new_prompt = False
         else:
             is_new_prompt = True
-            active = {
-                "reference_embeds": tensor_to_serializable(raw_positive),
-                "history": [],
-                "last_rating": rating
-            }
+            active = {"reference_embeds": tensor_to_serializable(raw_positive), "history": [], "last_rating": rating}
             prompt_histories[prompt_key] = active
 
         old_reference = serializable_to_tensor(active["reference_embeds"])
@@ -345,32 +312,34 @@ class FunPackGemmaEmbeddingRefiner:
 
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # ====================== STRICT WORD GROUPING ======================
+        # ====================== IMPROVED WORD GROUPING (FIXED) ======================
         word_groups = []
-        current_words_set = set()
         if tokenizer and positive_prompt and full_token_ids:
             try:
-                words = positive_prompt.split()
-                token_idx = 0
-                for word in words:
-                    if not word:
-                        continue
-                    word_tokens = tokenizer.encode(word, add_special_tokens=False)
-                    word_len = len(word_tokens)
-                    if token_idx + word_len <= len(full_token_ids) and full_token_ids[token_idx:token_idx + word_len] == word_tokens:
-                        word_groups.append((token_idx, token_idx + word_len, word, word_tokens))
-                        current_words_set.add(word.lower())
-                        token_idx += word_len
-                    else:
-                        if token_idx < len(full_token_ids):
-                            single = full_token_ids[token_idx]
-                            decoded = tokenizer.decode([single]).strip()
-                            word_groups.append((token_idx, token_idx + 1, decoded, [single]))
-                            current_words_set.add(decoded.lower())
-                            token_idx += 1
+                # Get raw tokens with Gemma's ▁ word-boundary marker
+                token_texts = tokenizer.convert_ids_to_tokens(full_token_ids)
+                i = 0
+                while i < len(token_texts):
+                    start_idx = i
+                    word_token_ids = [full_token_ids[i]]
+                    # Build the human-readable word
+                    word_str = token_texts[i].replace("▁", "")
+
+                    i += 1
+                    while i < len(token_texts) and not token_texts[i].startswith("▁"):
+                        word_token_ids.append(full_token_ids[i])
+                        word_str += token_texts[i].replace("▁", "")
+                        i += 1
+
+                    # Final clean decoded word for feedback
+                    full_word = tokenizer.decode(word_token_ids, skip_special_tokens=True).strip()
+                    if not full_word:
+                        full_word = word_str.strip()
+
+                    word_groups.append((start_idx, i, full_word, word_token_ids))
             except Exception:
+                # Ultra-safe fallback
                 word_groups = [(i, i+1, tokenizer.decode([tid]).strip(), [tid]) for i, tid in enumerate(full_token_ids)]
-                current_words_set = {w.lower() for _, _, w, _ in word_groups if self._is_valuable_token(w)}
 
         # ====================== CROSS-PROMPT TRANSFER ======================
         if is_new_prompt and tokenizer and full_token_ids:
@@ -405,8 +374,7 @@ class FunPackGemmaEmbeddingRefiner:
                             for tid in matching:
                                 tid_str = str(tid)
                                 if tid_str in token_importance:
-                                    token_importance[tid_str] = max(0.3, min(2.5,
-                                        token_importance[tid_str] * (1.0 + (adj - 1.0) * sim_weight)))
+                                    token_importance[tid_str] = max(0.3, min(2.5, token_importance[tid_str] * (1.0 + (adj - 1.0) * sim_weight)))
                     except:
                         pass
 
