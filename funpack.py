@@ -1097,25 +1097,11 @@ class FunPackGemmaEmbeddingRefiner:
             feedback_question_output = "Feedback disabled. Queue cleared."
         else:
             if pending is not None:
-                # Silently discard old word-level pending entries from before the
-                # concept feedback upgrade (they lack "type": "concept").
-                if pending.get("type") != "concept":
+                # Discard stale or incompatible pending feedback before we even
+                # consider applying it to the current prompt.
+                if pending.get("type") != "concept" or pending.get("prompt_key") != prompt_key:
                     data["pending_feedback"] = None
-                    with open(json_file, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2)
-                else:
-                    self._apply_concept_feedback(
-                        pending["concept_id"],
-                        feedback_rating,
-                        pending.get("question_type", "presence"),
-                        global_adaptive["concept_clusters"],
-                        pending.get("neighbor_ids", []),
-                        global_adaptive["word_importance"],
-                        global_adaptive["concept_groups"],
-                        pending.get("iteration", 0)
-                    )
-                    global_adaptive["last_feedback_concept"] = pending.get("concept_label", "")
-                    data["pending_feedback"] = None
+                    pending = None
                     with open(json_file, "w", encoding="utf-8") as f:
                         json.dump(data, f, indent=2)
             else:
@@ -1182,6 +1168,12 @@ class FunPackGemmaEmbeddingRefiner:
                 for w in concept_clusters[fallback_cid].get("anchor_words", []):
                     word_to_concept.setdefault(w, fallback_cid)
 
+        if feedback_enabled and pending is not None and pending.get("concept_id") not in set(ordered_concept_ids):
+            data["pending_feedback"] = None
+            pending = None
+            with open(json_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+
         # Build or update concept groups from the current ordered concept list
         concept_groups = self._build_concept_groups(
             ordered_concept_ids, concept_clusters,
@@ -1201,6 +1193,23 @@ class FunPackGemmaEmbeddingRefiner:
         iter_num = len(history) + 1
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
         feedback_memory = global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
+
+        if feedback_enabled and pending is not None:
+            self._apply_concept_feedback(
+                pending["concept_id"],
+                feedback_rating,
+                pending.get("question_type", "presence"),
+                global_adaptive["concept_clusters"],
+                pending.get("neighbor_ids", []),
+                global_adaptive["word_importance"],
+                global_adaptive["concept_groups"],
+                pending.get("iteration", 0)
+            )
+            global_adaptive["last_feedback_concept"] = pending.get("concept_label", "")
+            data["pending_feedback"] = None
+            pending = None
+            with open(json_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
 
         # Safe similarity calculation
         try:
