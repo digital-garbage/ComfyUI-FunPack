@@ -610,6 +610,72 @@ class FunPackGemmaEmbeddingRefiner:
                 result.append(words)
         return result
 
+    def _build_prompt_fallback_concept(self, prompt: str, concept_clusters: dict):
+        if not prompt:
+            return None
+
+        fallback_words = [
+            w.strip().lower()
+            for w in re.split(r'[\s,;]+', prompt)
+            if self._is_valuable_token(w.strip())
+        ][:8]
+        if not fallback_words:
+            return None
+
+        fallback_id = "prompt_" + md5("|".join(fallback_words).encode()).hexdigest()[:10]
+        if fallback_id not in concept_clusters:
+            concept_clusters[fallback_id] = self._default_concept_cluster(fallback_words)
+            concept_clusters[fallback_id]["label"] = " ".join(fallback_words[:5])
+        else:
+            concept_clusters[fallback_id] = self._ensure_concept_cluster_defaults(concept_clusters[fallback_id])
+
+        return fallback_id
+
+    def _force_feedback_fallback(self, ordered_concept_ids: list, concept_clusters: dict,
+                                 concept_groups: dict, rating_shift: float, similarity: float):
+        if not ordered_concept_ids:
+            return None
+
+        ranked = []
+        for cid in ordered_concept_ids:
+            cluster = concept_clusters.get(cid)
+            if not cluster:
+                continue
+            cluster = self._ensure_concept_cluster_defaults(cluster)
+            concept_clusters[cid] = cluster
+            mean_imp = self._get_concept_mean_importance(cluster)
+            dominance = abs(mean_imp - cluster.get("presence_target", 1.0))
+            ranked.append((dominance, cid, cluster))
+
+        if not ranked:
+            return None
+
+        _, chosen_cid, cluster = max(ranked, key=lambda x: x[0])
+        if rating_shift >= 2.0:
+            question_type = "fidelity"
+        elif similarity < 0.84:
+            question_type = "stability"
+        elif cluster.get("category") in {"style", "camera", "quality"}:
+            question_type = "balance"
+        else:
+            question_type = "presence"
+
+        chosen_group_id = None
+        for gid, group in concept_groups.items():
+            if chosen_cid in group.get("concept_ids", []):
+                chosen_group_id = gid
+                break
+
+        return {
+            "concept_id": chosen_cid,
+            "concept_label": cluster.get("label", ""),
+            "question_type": question_type,
+            "neighbor_ids": self._get_concept_neighbors(chosen_cid, ordered_concept_ids, radius=2),
+            "group_id": chosen_group_id,
+            "category": cluster.get("category", "general"),
+            "score": 0.0,
+        }
+
     def _match_concept(self, phrase_words: list, concept_clusters: dict, threshold: float = 0.38):
         """
         Match a phrase to an existing concept cluster using Jaccard similarity on
@@ -1109,6 +1175,13 @@ class FunPackGemmaEmbeddingRefiner:
         else:
             word_to_concept, ordered_concept_ids = {}, []
 
+        if feedback_enabled and not ordered_concept_ids and analysis_prompt:
+            fallback_cid = self._build_prompt_fallback_concept(analysis_prompt, concept_clusters)
+            if fallback_cid:
+                ordered_concept_ids = [fallback_cid]
+                for w in concept_clusters[fallback_cid].get("anchor_words", []):
+                    word_to_concept.setdefault(w, fallback_cid)
+
         # Build or update concept groups from the current ordered concept list
         concept_groups = self._build_concept_groups(
             ordered_concept_ids, concept_clusters,
@@ -1385,6 +1458,15 @@ class FunPackGemmaEmbeddingRefiner:
                 similarity,
                 iter_num
             )
+
+            if selected_question is None:
+                selected_question = self._force_feedback_fallback(
+                    ordered_concept_ids,
+                    concept_clusters,
+                    concept_groups,
+                    rating_shift,
+                    similarity
+                )
 
             if selected_question:
                 data["pending_feedback"] = {
