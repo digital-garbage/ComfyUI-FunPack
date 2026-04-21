@@ -45,27 +45,217 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     return tensor
     
 class FunPackGemmaEmbeddingRefiner:
-    _tokenizer = None
+    _tokenizers = {}
+    _tokenizer_sources = {
+        "ltx2": [
+            ("DreamFast/gemma-3-12b-it-heretic-v2", {
+                "trust_remote_code": True,
+                "use_fast": True,
+            }),
+        ],
+        "wan": [
+            ("Wan-AI/Wan2.2-T2V-A14B", {
+                "subfolder": "google/umt5-xxl",
+                "use_fast": True,
+            }),
+            ("Wan-AI/Wan2.2-I2V-A14B", {
+                "subfolder": "google/umt5-xxl",
+                "use_fast": True,
+            }),
+            ("Wan-AI/Wan2.2-Animate-14B", {
+                "subfolder": "google/umt5-xxl",
+                "use_fast": True,
+            }),
+            ("Wan-AI/Wan2.1-T2V-1.3B", {
+                "subfolder": "google/umt5-xxl",
+                "use_fast": True,
+            }),
+            ("Runware/Wan2.2-TI2V-5B", {
+                "subfolder": "google/umt5-xxl",
+                "use_fast": True,
+            }),
+            ("ddwf/Wan2.2-Animate-14B", {
+                "subfolder": "google/umt5-xxl",
+                "use_fast": True,
+            }),
+        ],
+    }
 
     @classmethod
-    def _get_tokenizer(cls):
-        if cls._tokenizer is None:
-            try:
-                cls._tokenizer = AutoTokenizer.from_pretrained(
-                    "DreamFast/gemma-3-12b-it-heretic-v2",
-                    trust_remote_code=True,
-                    use_fast=True
+    def _get_tokenizer_sources(cls, mode="ltx2"):
+        mode = (mode or "ltx2").lower()
+        sources = list(cls._tokenizer_sources.get(mode, cls._tokenizer_sources["ltx2"]))
+
+        if mode == "wan":
+            local_sources = []
+            models_dir = getattr(folder_paths, "models_dir", None)
+            if models_dir:
+                local_sources.extend(
+                    (path, {})
+                    for path in glob.glob(os.path.join(models_dir, "Wan", "*", "google", "umt5-xxl"))
+                    if os.path.isdir(path)
                 )
+                text_encoder_tokenizer = os.path.join(models_dir, "text_encoders", "google", "umt5-xxl")
+                if os.path.isdir(text_encoder_tokenizer):
+                    local_sources.append((text_encoder_tokenizer, {}))
+
+            if local_sources:
+                sources = local_sources + sources
+
+        return sources
+
+    @classmethod
+    def _get_tokenizer(cls, mode="ltx2"):
+        mode = (mode or "ltx2").lower()
+        cached = cls._tokenizers.get(mode)
+        if cached is not None:
+            return cls._tokenizers[mode]
+
+        sources = cls._get_tokenizer_sources(mode)
+        for model_id, kwargs in sources:
+            try:
+                cls._tokenizers[mode] = AutoTokenizer.from_pretrained(model_id, **kwargs)
+                return cls._tokenizers[mode]
             except Exception as e:
-                print(f"[FunPackGemmaEmbeddingRefiner] Tokenizer load failed: {e}")
-                cls._tokenizer = None
-        return cls._tokenizer
+                print(f"[FunPackGemmaEmbeddingRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
+
+        return None
+
+    def _normalize_prompt_for_mode(self, prompt: str, mode: str) -> str:
+        prompt = (prompt or "").strip()
+        if mode == "wan":
+            return re.sub(r"\s+", " ", prompt)
+        return prompt
+
+    def _get_conditioning_seq_len(self, conditioning: torch.Tensor) -> int:
+        if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
+            return 0
+        return conditioning.shape[1] if conditioning.dim() == 3 else conditioning.shape[0]
+
+    def _get_conditioning_token_mask(self, conditioning: torch.Tensor):
+        if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
+            return None
+
+        if conditioning.dim() == 3:
+            token_energy = conditioning.detach().abs().sum(dim=-1)
+            mask = token_energy.gt(1e-12).any(dim=0)
+        else:
+            token_energy = conditioning.detach().abs().sum(dim=-1)
+            mask = token_energy.gt(1e-12)
+
+        if not bool(mask.any()):
+            seq_len = self._get_conditioning_seq_len(conditioning)
+            return torch.ones(seq_len, dtype=torch.bool, device=conditioning.device)
+
+        return mask
+
+    def _get_effective_seq_len(self, token_mask, fallback_seq_len: int) -> int:
+        if token_mask is None:
+            return fallback_seq_len
+        active_positions = torch.nonzero(token_mask, as_tuple=False).flatten()
+        if active_positions.numel() == 0:
+            return fallback_seq_len
+        return min(fallback_seq_len, int(active_positions[-1].item()) + 1)
+
+    def _mask_to_embedding_dims(self, token_mask, reference: torch.Tensor):
+        if token_mask is None or not isinstance(reference, torch.Tensor) or reference.dim() <= 1:
+            return None
+
+        token_mask = token_mask.to(device=reference.device, dtype=reference.dtype)
+        if reference.dim() == 3:
+            return token_mask.view(1, -1, 1)
+        return token_mask.view(-1, 1)
+
+    def _masked_sequence_mean(self, conditioning: torch.Tensor, token_mask):
+        if not isinstance(conditioning, torch.Tensor):
+            return conditioning
+        if conditioning.dim() <= 1 or token_mask is None:
+            return conditioning
+
+        mask = self._mask_to_embedding_dims(token_mask, conditioning)
+        if conditioning.dim() == 3:
+            denom = mask.sum(dim=1).clamp_min(1.0)
+            return (conditioning * mask).sum(dim=1) / denom
+
+        denom = mask.sum(dim=0).clamp_min(1.0)
+        return (conditioning * mask).sum(dim=0) / denom
+
+    def _tokenize_ids(self, tokenizer, text: str, add_special_tokens: bool, max_length: Optional[int] = None):
+        if not tokenizer or not text:
+            return []
+
+        kwargs = {"add_special_tokens": add_special_tokens}
+        if max_length is not None and max_length > 0:
+            kwargs["truncation"] = True
+            kwargs["max_length"] = max_length
+
+        try:
+            tokenized = tokenizer(text, **kwargs)
+            input_ids = tokenized.get("input_ids", tokenized)
+            if isinstance(input_ids, list) and input_ids and isinstance(input_ids[0], list):
+                input_ids = input_ids[0]
+            return input_ids if isinstance(input_ids, list) else list(input_ids)
+        except Exception:
+            try:
+                return tokenizer.encode(text, **kwargs)
+            except Exception:
+                return []
+
+    def _build_word_groups(self, prompt: str, tokenizer, seq_len: int, token_mask=None):
+        if not tokenizer or not prompt or seq_len <= 0:
+            return []
+
+        effective_seq_len = self._get_effective_seq_len(token_mask, seq_len)
+        token_mask_list = None
+        if token_mask is not None:
+            token_mask_list = token_mask[:effective_seq_len].detach().cpu().tolist()
+
+        full_token_ids = self._tokenize_ids(
+            tokenizer,
+            prompt,
+            add_special_tokens=True,
+            max_length=effective_seq_len
+        )[:effective_seq_len]
+
+        word_groups = []
+        grouped_seen = set()
+        raw_words = [w.strip() for w in prompt.split() if w.strip()]
+        for word in raw_words:
+            clean_word = word
+            lower = clean_word.lower()
+            if lower in grouped_seen or len(clean_word) < 3 or not self._is_valuable_token(clean_word):
+                continue
+
+            grouped_seen.add(lower)
+            word_token_list = self._tokenize_ids(
+                tokenizer,
+                clean_word,
+                add_special_tokens=False
+            )
+            if not word_token_list:
+                continue
+
+            found = False
+            for start in range(max(0, len(full_token_ids) - len(word_token_list) + 1)):
+                end = start + len(word_token_list)
+                if token_mask_list is not None and not all(token_mask_list[start:min(effective_seq_len, end)]):
+                    continue
+                if full_token_ids[start:end] == word_token_list and start < effective_seq_len:
+                    word_groups.append((start, min(effective_seq_len, end), clean_word, word_token_list))
+                    found = True
+                    break
+
+            if not found:
+                continue
+
+        return [group for group in word_groups if group[1] > group[0]]
 
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "positive_conditioning": ("CONDITIONING",),
+                "mode": (["ltx2", "wan"], {"default": "ltx2", "label": "Tokenizer Mode"}),
                 "rating": ("INT", {
                     "default": 5,
                     "min": 1,
@@ -461,10 +651,14 @@ class FunPackGemmaEmbeddingRefiner:
     # MAIN REFINE
     # =========================================================================
 
-    def refine(self, positive_conditioning, rating: int, refinement_key: str,
+    def refine(self, positive_conditioning, mode: str, rating: int, refinement_key: str,
                scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3):
+
+        mode = (mode or "ltx2").lower()
+        if mode not in self._tokenizer_sources:
+            mode = "ltx2"
 
         if seed != 0:
             torch.manual_seed(seed)
@@ -474,7 +668,7 @@ class FunPackGemmaEmbeddingRefiner:
         refinements_dir = os.path.join(base_dir, "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
 
-        safe_key = md5(refinement_key.encode("utf-8")).hexdigest()
+        safe_key = md5(f"{mode}::{refinement_key}".encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
@@ -491,7 +685,8 @@ class FunPackGemmaEmbeddingRefiner:
         if not isinstance(raw_positive, torch.Tensor):
             return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding")
 
-        prompt_key = positive_prompt
+        analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
+        prompt_key = analysis_prompt if mode == "wan" else positive_prompt
 
         # ====================== STATE TEMPLATES ======================
         # Single source of truth for both reset and corrupt-recovery paths.
@@ -507,6 +702,7 @@ class FunPackGemmaEmbeddingRefiner:
                 "dynamic_sim_threshold": 0.82,
                 "last_feedback_concept": None,
                 "feedbacked_concepts": [],
+                "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
                 "prodigy_lr_base": 1.0,
@@ -558,9 +754,10 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive.setdefault("concept_groups", {})
         global_adaptive.setdefault("word_importance", {})
         global_adaptive.setdefault("feedbacked_concepts", [])
+        global_adaptive.setdefault("mode", mode)
 
         prompt_histories = data.get("prompt_histories", {})
-        tokenizer = self._get_tokenizer()
+        tokenizer = self._get_tokenizer(mode)
 
         # ====================== FEEDBACK STATE MACHINE (CONCEPT-LEVEL) ======================
         # Operates on full concept phrases rather than individual words.
@@ -633,34 +830,22 @@ class FunPackGemmaEmbeddingRefiner:
             active["history"] = []
             is_new_prompt = True
 
-        full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
+        seq_len = self._get_conditioning_seq_len(cur_positive)
+        active_token_mask = self._get_conditioning_token_mask(cur_positive) if mode == "wan" else None
 
         # ====================== WORD GROUPING (Level 2) ======================
-        word_groups = []
-        grouped_seen = set()
-        if tokenizer and positive_prompt:
-            raw_words = [w.strip() for w in positive_prompt.split() if w.strip()]
-            for word in raw_words:
-                clean_word = word
-                lower = clean_word.lower()
-                if lower in grouped_seen or len(clean_word) < 3 or not self._is_valuable_token(clean_word):
-                    continue
-                grouped_seen.add(lower)
-                word_token_list = tokenizer.encode(clean_word, add_special_tokens=False)
-                found = False
-                for start in range(len(full_token_ids) - len(word_token_list) + 1):
-                    if full_token_ids[start:start + len(word_token_list)] == word_token_list:
-                        word_groups.append((start, start + len(word_token_list), clean_word, word_token_list))
-                        found = True
-                        break
-                if not found and word_token_list:
-                    word_groups.append((0, 1, clean_word, [word_token_list[0]]))
+        word_groups = self._build_word_groups(
+            analysis_prompt,
+            tokenizer,
+            seq_len,
+            token_mask=active_token_mask
+        )
 
         # ====================== CONCEPT CLUSTER + GROUP SETUP (Levels 3 & 4) ======================
         concept_clusters = global_adaptive["concept_clusters"]
-        if positive_prompt:
+        if analysis_prompt:
             word_to_concept, ordered_concept_ids = self._build_word_concept_map(
-                positive_prompt, concept_clusters
+                analysis_prompt, concept_clusters
             )
         else:
             word_to_concept, ordered_concept_ids = {}, []
@@ -687,8 +872,8 @@ class FunPackGemmaEmbeddingRefiner:
         # Safe similarity calculation
         try:
             if old_reference.dim() >= 2 and cur_positive.dim() >= 2:
-                ref_mean = old_reference.mean(dim=1)
-                cur_mean = cur_positive.mean(dim=1)
+                ref_mean = self._masked_sequence_mean(old_reference, active_token_mask)
+                cur_mean = self._masked_sequence_mean(cur_positive, active_token_mask)
                 similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
             else:
                 similarity = F.cosine_similarity(
@@ -814,6 +999,8 @@ class FunPackGemmaEmbeddingRefiner:
         if cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
+            if active_token_mask is not None:
+                importance_tensor = importance_tensor * active_token_mask.to(device=device, dtype=importance_tensor.dtype)
             for start, end, full_word, _ in word_groups:
                 wkey = full_word.lower()
                 cid = word_to_concept.get(wkey)
@@ -825,6 +1012,10 @@ class FunPackGemmaEmbeddingRefiner:
                     imp = word_importance.get(wkey, 1.0)
                 importance_tensor[start:end] = imp
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
+
+        token_mask_nd = self._mask_to_embedding_dims(active_token_mask, reference)
+        if token_mask_nd is not None:
+            new_delta = new_delta * token_mask_nd
 
         # Final safety guard
         if new_delta.shape != reference.shape:
@@ -972,7 +1163,7 @@ class FunPackGemmaEmbeddingRefiner:
         learning_loss = max(0.02, raw_loss * (1.0 - min(0.95, good_ratio * 0.8)))
 
         training_info = (
-            f"Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
+            f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
             f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
             f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%}\n"
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
@@ -997,7 +1188,7 @@ class FunPackGemmaEmbeddingRefiner:
         )
 
         status = (
-            f"Iter {iter_num} | Total iters {total_iters} | "
+            f"Mode {mode.upper()} | Iter {iter_num} | Total iters {total_iters} | "
             f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
             f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
             f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
