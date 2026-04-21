@@ -89,14 +89,14 @@ class FunPackGemmaEmbeddingRefiner:
                     "label": "Unlimited History (never prunes)"
                 }),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
-                "feedback_enabled": ("BOOLEAN", {"default": False, "label": "Enable Token Feedback"}),
+                "feedback_enabled": ("BOOLEAN", {"default": False, "label": "Enable Concept Feedback"}),
                 "feedback_rating": ("INT", {
                     "default": 3,
                     "min": 1,
                     "max": 6,
                     "step": 1,
                     "display": "slider",
-                    "label": "Token Feedback (1=absent, 5=perfect, 6=overrepresented)"
+                    "label": "Concept Feedback (1=absent, 3=weak, 5=perfect, 6=overrepresented)"
                 }),
             }
         }
@@ -109,6 +109,10 @@ class FunPackGemmaEmbeddingRefiner:
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
+
+    # =========================================================================
+    # SCHEDULER
+    # =========================================================================
 
     def _get_scheduler_factors(self, mode, rating, reward, similarity, iter_num, total_iters,
                                word_importance, word_groups, global_adaptive, device):
@@ -162,6 +166,10 @@ class FunPackGemmaEmbeddingRefiner:
 
         return lr_scale, confidence, exploration_mult, word_lr_mult
 
+    # =========================================================================
+    # TOKEN / WORD UTILITIES
+    # =========================================================================
+
     def _get_top_tokens(self, token_dict, tokenizer, top_k=10):
         if not token_dict or not tokenizer:
             return "N/A"
@@ -198,11 +206,19 @@ class FunPackGemmaEmbeddingRefiner:
             return False
         return True
 
+    # =========================================================================
+    # MULTI-LEVEL CONCEPT SYSTEM
+    # =========================================================================
+
     def _parse_concepts(self, prompt: str):
         """
-        Split a prompt into concept phrases on commas/semicolons.
-        Each phrase is returned as a list of significant lowercase words.
-        Example: "red dress, dark forest" -> [["red","dress"], ["dark","forest"]]
+        Level 2 → Level 3 boundary: split the prompt on commas/semicolons into
+        concept phrases. Each phrase is returned as a list of significant lowercase
+        words, preserving prompt order.
+
+        Example:
+          "masterpiece, anime girl, long hair, dark forest"
+          -> [["masterpiece"], ["anime","girl"], ["long","hair"], ["dark","forest"]]
         """
         if not prompt:
             return []
@@ -216,11 +232,11 @@ class FunPackGemmaEmbeddingRefiner:
 
     def _match_concept(self, phrase_words: list, concept_clusters: dict, threshold: float = 0.38):
         """
-        Find the best-matching cluster for a phrase via Jaccard similarity.
+        Match a phrase to an existing concept cluster using Jaccard similarity on
+        anchor words. If no cluster clears `threshold`, a new cluster id is minted.
+
         Returns (cluster_id, is_new_cluster).
-        If no existing cluster exceeds the threshold, a new cluster id is minted.
-        Lower threshold -> more clusters (stricter separation).
-        Higher threshold -> fewer clusters (more aggressive merging).
+        Tune threshold: lower -> more isolated clusters; higher -> more merging.
         """
         if not phrase_words:
             return None, False
@@ -243,38 +259,212 @@ class FunPackGemmaEmbeddingRefiner:
 
     def _build_word_concept_map(self, prompt: str, concept_clusters: dict):
         """
-        Parse the prompt into concept phrases, match or create clusters,
-        and return a dict mapping each significant word -> cluster_id.
-        Updates concept_clusters in-place with any new or expanded clusters.
+        Parse the prompt into concept phrases (Level 3), match or create clusters,
+        and return:
+          - word_to_concept: dict mapping each significant word -> cluster_id
+          - ordered_concept_ids: list of cluster IDs in prompt order (no duplicates)
+
+        Updates concept_clusters in-place. The ordered list is the backbone for
+        group building and neighbour lookup at Level 4.
         """
         word_to_concept = {}
+        ordered_concept_ids = []
         for phrase_words in self._parse_concepts(prompt):
             cid, is_new = self._match_concept(phrase_words, concept_clusters)
             if cid is None:
                 continue
             if is_new:
                 concept_clusters[cid] = {
-                    "label": " ".join(phrase_words[:5]),
+                    "label": " ".join(phrase_words[:6]),
                     "anchor_words": phrase_words,
                     "word_importance": {},
                     "usage_count": 0,
                     "last_seen_iter": 0,
                 }
             else:
-                # Expand anchor vocabulary with any new words seen in this phrase
+                # Expand anchor vocabulary with words newly seen in this phrase
                 existing = set(concept_clusters[cid]["anchor_words"])
                 for w in phrase_words:
                     if w not in existing:
                         concept_clusters[cid]["anchor_words"].append(w)
             for w in phrase_words:
                 word_to_concept[w] = cid
-        return word_to_concept
+            if cid not in ordered_concept_ids:
+                ordered_concept_ids.append(cid)
+        return word_to_concept, ordered_concept_ids
 
-    def refine(self, positive_conditioning, rating: int, refinement_key: str, scheduler_mode: str = "original",
-               positive_prompt: str = "",
+    def _build_concept_groups(self, ordered_concept_ids: list, concept_clusters: dict,
+                               existing_groups: dict, window: int = 3):
+        """
+        Level 4: group consecutive concept phrases into semantic sentence-level
+        units using a non-overlapping sliding window of size `window`.
+
+        Groups model the "sentences" of the prompt — natural semantic blocks
+        like (quality tags), (subject + appearance), (setting), (style + tech).
+
+        Existing groups are matched by their concept_ids set and updated in-place
+        to preserve their accumulated reward_ema and usage_count. New groups are
+        created when a previously unseen concept combination appears.
+
+        Returns the updated groups dict.
+        """
+        if not ordered_concept_ids:
+            return existing_groups
+
+        groups = dict(existing_groups)
+        for i in range(0, len(ordered_concept_ids), window):
+            chunk = ordered_concept_ids[i:i + window]
+            if not chunk:
+                continue
+            chunk_set = frozenset(chunk)
+
+            # Try to match an existing group by concept set identity
+            existing_gid = None
+            for gid, g in groups.items():
+                if frozenset(g.get("concept_ids", [])) == chunk_set:
+                    existing_gid = gid
+                    break
+
+            if existing_gid:
+                # Preserve the canonical prompt order even if it shifted slightly
+                groups[existing_gid]["concept_ids"] = chunk
+            else:
+                labels = [concept_clusters[cid]["label"]
+                          for cid in chunk if cid in concept_clusters]
+                gid = md5("|".join(chunk).encode()).hexdigest()[:10]
+                groups[gid] = {
+                    "label": " | ".join(labels),
+                    "concept_ids": chunk,
+                    "reward_ema": 0.0,
+                    "usage_count": 0,
+                    "last_seen_iter": 0,
+                }
+
+        return groups
+
+    def _get_concept_neighbors(self, concept_id: str, ordered_concept_ids: list,
+                                radius: int = 2):
+        """
+        Return the concept IDs positionally adjacent to `concept_id` within
+        `radius` steps in the prompt's ordered concept list.
+
+        Adjacent concepts compete for embedding space: if "anime style" is
+        overrepresented, it likely crowds its neighbours "cinematic lighting"
+        and "detailed background". This adjacency is what makes the neighbour
+        signal in _apply_concept_feedback meaningful.
+        """
+        if concept_id not in ordered_concept_ids:
+            return []
+        idx = ordered_concept_ids.index(concept_id)
+        neighbors = []
+        for offset in range(-radius, radius + 1):
+            if offset == 0:
+                continue
+            ni = idx + offset
+            if 0 <= ni < len(ordered_concept_ids):
+                neighbors.append(ordered_concept_ids[ni])
+        return neighbors
+
+    def _get_dominant_concept(self, ordered_concept_ids: list, concept_clusters: dict):
+        """
+        Return (cluster_id, avg_importance, label) for the concept with the
+        highest mean word importance — i.e. what the embedding currently weighs
+        most heavily. This is the "main thing forming the video" signal.
+        """
+        best_cid, best_score, best_label = None, -1.0, ""
+        for cid in ordered_concept_ids:
+            if cid not in concept_clusters:
+                continue
+            imp_vals = list(concept_clusters[cid]["word_importance"].values())
+            if not imp_vals:
+                continue
+            avg = sum(imp_vals) / len(imp_vals)
+            if avg > best_score:
+                best_score, best_cid, best_label = avg, cid, concept_clusters[cid]["label"]
+        return best_cid, best_score, best_label
+
+    def _apply_concept_feedback(self, concept_id: str, feedback_rating: int,
+                                 concept_clusters: dict, neighbor_ids: list,
+                                 word_importance: dict, concept_groups: dict):
+        """
+        Multi-level feedback propagation.
+
+        Level 3 — rated concept phrase:
+          All word importances inside the rated cluster shift by `direct_delta`.
+          This is the primary, high-confidence signal.
+
+        Level 3 — neighbour concepts (adjacent phrases in the prompt):
+          Receive a dampened signal modelled on embedding-space competition.
+          - Concept being boosted (absent/weak): neighbours get a small inhibitory
+            nudge, giving the boosted concept more semantic room.
+          - Concept being reduced (overrepresented): neighbours also receive a mild
+            reduction — the whole semantic area is too heavy.
+          Magnitude: 22% of direct_delta; same sign for overrep, opposite for absent.
+
+        Level 4 — concept groups:
+          The reward_ema of every group containing the rated concept is updated,
+          enabling group-level health tracking over time.
+
+        Level 2 — global word_importance fallback:
+          Each change is also written at 40% strength into the flat global dict
+          so the scheduler and prodigy system retain a valid signal.
+
+        Feedback scale:
+          1 = absent           -> direct_delta = +0.90 (strong boost)
+          2 = weak             -> direct_delta = +0.50
+          3 = slightly weak    -> direct_delta = +0.20
+          4 = slightly strong  -> direct_delta = -0.15
+          5 = perfect          -> direct_delta = +0.04 (small stability reward)
+          6 = overrepresented  -> direct_delta = -0.55 (strong reduction)
+        """
+        if concept_id not in concept_clusters:
+            return
+
+        feedback_deltas = {1: 0.90, 2: 0.50, 3: 0.20, 4: -0.15, 5: 0.04, 6: -0.55}
+        direct_delta = feedback_deltas.get(feedback_rating, 0.0)
+
+        # --- Level 3: rated concept ---
+        local_imp = concept_clusters[concept_id]["word_importance"]
+        for wkey in list(local_imp.keys()):
+            local_imp[wkey] = max(0.3, min(2.8, local_imp[wkey] + direct_delta))
+            if wkey in word_importance:
+                word_importance[wkey] = max(0.3, min(2.8, word_importance[wkey] + direct_delta * 0.4))
+
+        # --- Level 3: neighbour concepts ---
+        # Boosted concept -> inhibit neighbours (give it semantic space).
+        # Reduced concept -> also soften neighbours (the whole area is too heavy).
+        if direct_delta > 0:
+            neighbor_delta = -direct_delta * 0.22
+        else:
+            neighbor_delta = direct_delta * 0.22
+
+        for nid in neighbor_ids:
+            if nid not in concept_clusters or nid == concept_id:
+                continue
+            n_local = concept_clusters[nid]["word_importance"]
+            for wkey in list(n_local.keys()):
+                n_local[wkey] = max(0.3, min(2.8, n_local[wkey] + neighbor_delta))
+                if wkey in word_importance:
+                    word_importance[wkey] = max(0.3, min(2.8,
+                                                word_importance[wkey] + neighbor_delta * 0.4))
+
+        # --- Level 4: concept group reward EMA ---
+        # Maps feedback 1-6 onto a [-1, +1] reward signal.
+        group_reward_map = {1: -1.0, 2: -0.5, 3: -0.1, 4: 0.4, 5: 1.0, 6: -0.6}
+        normalized = group_reward_map.get(feedback_rating, 0.0)
+        for gid, g in concept_groups.items():
+            if concept_id in g.get("concept_ids", []):
+                g["reward_ema"] = 0.75 * g.get("reward_ema", 0.0) + 0.25 * normalized
+                g["usage_count"] = g.get("usage_count", 0) + 1
+
+    # =========================================================================
+    # MAIN REFINE
+    # =========================================================================
+
+    def refine(self, positive_conditioning, rating: int, refinement_key: str,
+               scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
-               seed: int = 0,
-               feedback_enabled: bool = False, feedback_rating: int = 3):
+               seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3):
 
         if seed != 0:
             torch.manual_seed(seed)
@@ -303,21 +493,20 @@ class FunPackGemmaEmbeddingRefiner:
 
         prompt_key = positive_prompt
 
-        # ====================== FRESH GLOBAL STATE TEMPLATE ======================
-        # Defined once here and reused for both reset and corrupt-file recovery.
-        # Removed: infusion_tokens, token_library — initialised but never read or written
-        # after construction, contributing only to JSON bloat.
+        # ====================== STATE TEMPLATES ======================
+        # Single source of truth for both reset and corrupt-recovery paths.
         def _fresh_global():
             return {
                 "word_importance": {},
                 "concept_clusters": {},
+                "concept_groups": {},
                 "exploration_base": 0.08,
                 "momentum": None,
                 "avg_reward_ema": 0.0,
                 "good_ratio": 0.0,
                 "dynamic_sim_threshold": 0.82,
-                "last_feedback_word": None,
-                "feedbacked_words": [],
+                "last_feedback_concept": None,
+                "feedbacked_concepts": [],
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
                 "prodigy_lr_base": 1.0,
@@ -364,14 +553,20 @@ class FunPackGemmaEmbeddingRefiner:
             return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file")
 
         global_adaptive = data["global_adaptive"]
-        # Migrate sessions created before concept-awareness was added
+        # Migrate sessions created before the multi-level concept system was added
         global_adaptive.setdefault("concept_clusters", {})
+        global_adaptive.setdefault("concept_groups", {})
         global_adaptive.setdefault("word_importance", {})
+        global_adaptive.setdefault("feedbacked_concepts", [])
 
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer()
 
-        # ====================== FEEDBACK STATE MACHINE (WORD-LEVEL) ======================
+        # ====================== FEEDBACK STATE MACHINE (CONCEPT-LEVEL) ======================
+        # Operates on full concept phrases rather than individual words.
+        # Rating a concept updates all its tracked words proportionally and sends a
+        # dampened neighbour signal to adjacent phrases. See _apply_concept_feedback
+        # for the full multi-level propagation model.
         feedback_question_output = ""
         pending = data.get("pending_feedback")
         if not feedback_enabled:
@@ -382,28 +577,27 @@ class FunPackGemmaEmbeddingRefiner:
             feedback_question_output = "Feedback disabled. Queue cleared."
         else:
             if pending is not None:
-                full_word = pending["full_word"].lower()
-                word_importance = global_adaptive["word_importance"]
-                concept_clusters = global_adaptive["concept_clusters"]
-                old_imp = word_importance.get(full_word, 1.0)
-                if feedback_rating == 6:
-                    target_imp = 0.65
+                # Silently discard old word-level pending entries from before the
+                # concept feedback upgrade (they lack "type": "concept").
+                if pending.get("type") != "concept":
+                    data["pending_feedback"] = None
+                    with open(json_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
                 else:
-                    target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
-                new_imp = 0.65 * old_imp + 0.35 * target_imp
-                clamped = max(0.3, min(2.8, new_imp))
-                word_importance[full_word] = clamped
-                # Mirror feedback into the concept cluster the word belongs to
-                pending_cid = pending.get("concept_id")
-                if pending_cid and pending_cid in concept_clusters:
-                    local_imp = concept_clusters[pending_cid]["word_importance"]
-                    old_local = local_imp.get(full_word, 1.0)
-                    local_imp[full_word] = max(0.3, min(2.8, 0.65 * old_local + 0.35 * target_imp))
-                data["pending_feedback"] = None
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                    self._apply_concept_feedback(
+                        pending["concept_id"],
+                        feedback_rating,
+                        global_adaptive["concept_clusters"],
+                        pending.get("neighbor_ids", []),
+                        global_adaptive["word_importance"],
+                        global_adaptive["concept_groups"]
+                    )
+                    global_adaptive["last_feedback_concept"] = pending.get("concept_label", "")
+                    data["pending_feedback"] = None
+                    with open(json_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
             else:
-                feedback_question_output = "Feedback enabled. A question will appear after this generation."
+                feedback_question_output = "Feedback enabled. A concept question will appear after this generation."
 
         # ====================== PROMPT HISTORY SETUP ======================
         if prompt_key in prompt_histories:
@@ -441,7 +635,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         full_token_ids = tokenizer.encode(positive_prompt, add_special_tokens=True) if tokenizer and positive_prompt else []
 
-        # ====================== WORD GROUPING ======================
+        # ====================== WORD GROUPING (Level 2) ======================
         word_groups = []
         grouped_seen = set()
         if tokenizer and positive_prompt:
@@ -462,9 +656,27 @@ class FunPackGemmaEmbeddingRefiner:
                 if not found and word_token_list:
                     word_groups.append((0, 1, clean_word, [word_token_list[0]]))
 
-        # ====================== CONCEPT CLUSTER SETUP ======================
+        # ====================== CONCEPT CLUSTER + GROUP SETUP (Levels 3 & 4) ======================
         concept_clusters = global_adaptive["concept_clusters"]
-        word_to_concept = self._build_word_concept_map(positive_prompt, concept_clusters) if positive_prompt else {}
+        if positive_prompt:
+            word_to_concept, ordered_concept_ids = self._build_word_concept_map(
+                positive_prompt, concept_clusters
+            )
+        else:
+            word_to_concept, ordered_concept_ids = {}, []
+
+        # Build or update concept groups from the current ordered concept list
+        concept_groups = self._build_concept_groups(
+            ordered_concept_ids, concept_clusters,
+            global_adaptive["concept_groups"], window=3
+        )
+        global_adaptive["concept_groups"] = concept_groups
+
+        # Track which groups are active in this iteration
+        active_group_ids = {
+            gid for gid, g in concept_groups.items()
+            if any(cid in ordered_concept_ids for cid in g.get("concept_ids", []))
+        }
 
         # ====================== SCHEDULER SETUP ======================
         global_adaptive["scheduler_mode"] = scheduler_mode
@@ -500,7 +712,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         expl = global_adaptive["exploration_base"] * exploration_mult
 
-        # ====================== WORD IMPORTANCE UPDATE (concept-aware) ======================
+        # ====================== WORD IMPORTANCE UPDATE (concept-aware, Levels 2-3) ======================
         for start, end, full_word, word_token_list in word_groups:
             if not self._is_valuable_token(full_word):
                 continue
@@ -511,7 +723,7 @@ class FunPackGemmaEmbeddingRefiner:
             if wkey in word_lr_mult:
                 group_delta *= word_lr_mult[wkey]
 
-            # Primary signal: concept-local importance, isolated per cluster
+            # Level 3: update per-concept importance (primary, context-isolated signal)
             cid = word_to_concept.get(wkey)
             if cid and cid in concept_clusters:
                 local_imp = concept_clusters[cid]["word_importance"]
@@ -521,11 +733,17 @@ class FunPackGemmaEmbeddingRefiner:
                 concept_clusters[cid]["usage_count"] = concept_clusters[cid].get("usage_count", 0) + 1
                 concept_clusters[cid]["last_seen_iter"] = iter_num
 
-            # Fallback: global word_importance, dampened so the scheduler/prodigy
-            # still has a signal without contaminating cross-context words
+            # Level 2: dampened global fallback so the scheduler/prodigy system
+            # retains a signal without cross-context word-meaning contamination
             if wkey not in word_importance:
                 word_importance[wkey] = 1.0
             word_importance[wkey] = max(0.35, min(2.8, word_importance[wkey] + group_delta * 0.4))
+
+        # Update active group usage counters (Level 4)
+        for gid in active_group_ids:
+            if gid in concept_groups:
+                concept_groups[gid]["last_seen_iter"] = iter_num
+                concept_groups[gid]["usage_count"] = concept_groups[gid].get("usage_count", 0) + 1
 
         # ====================== CORE REFINEMENT ======================
         reference = cur_positive.clone()
@@ -590,7 +808,9 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply concept-aware word importance to delta
+        # Apply concept-aware importance to delta (Levels 2-3)
+        # Each token position is scaled by the concept-local importance of the word
+        # occupying that position, with global importance as fallback.
         if cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
@@ -598,9 +818,9 @@ class FunPackGemmaEmbeddingRefiner:
                 wkey = full_word.lower()
                 cid = word_to_concept.get(wkey)
                 if cid and cid in concept_clusters:
-                    # Use concept-local score; fall back to global if not yet tracked locally
-                    imp = concept_clusters[cid]["word_importance"].get(wkey,
-                          word_importance.get(wkey, 1.0))
+                    imp = concept_clusters[cid]["word_importance"].get(
+                        wkey, word_importance.get(wkey, 1.0)
+                    )
                 else:
                     imp = word_importance.get(wkey, 1.0)
                 importance_tensor[start:end] = imp
@@ -624,13 +844,20 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive["dynamic_sim_threshold"] = sim_threshold
         global_adaptive["exploration_base"] = expl
 
-        # Prune stale concept clusters to prevent unbounded JSON growth
+        # Prune stale concept clusters and groups to prevent unbounded JSON growth
         if len(concept_clusters) > 64:
             concept_clusters = {
                 cid: c for cid, c in concept_clusters.items()
                 if iter_num - c.get("last_seen_iter", 0) < 500
             }
             global_adaptive["concept_clusters"] = concept_clusters
+
+        if len(concept_groups) > 32:
+            concept_groups = {
+                gid: g for gid, g in concept_groups.items()
+                if iter_num - g.get("last_seen_iter", 0) < 500
+            }
+            global_adaptive["concept_groups"] = concept_groups
 
         # ====================== HISTORY ENTRY ======================
         history_entry = {
@@ -657,47 +884,87 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
-        # ====================== INTELLIGENT FEEDBACK ======================
-        if feedback_enabled and data.get("pending_feedback") is None and word_groups:
-            feedbacked = set(global_adaptive.get("feedbacked_words", []))
+        # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
+        # Selects the concept phrase with the highest uncertainty — defined as mean
+        # word importance still near the 1.0 baseline. Uncertain concepts give the
+        # most information per user action because the system hasn't yet formed a
+        # strong opinion about them. The full phrase label is shown so the user
+        # evaluates a complete semantic unit ("high quality anime style") rather
+        # than a decontextualised single token ("high").
+        if feedback_enabled and data.get("pending_feedback") is None and ordered_concept_ids:
+            feedbacked = set(global_adaptive.get("feedbacked_concepts", []))
             candidates = []
-            for _, _, full_word, word_token_list in word_groups:
-                if not self._is_valuable_token(full_word) or full_word.lower() in feedbacked:
+            for cid in ordered_concept_ids:
+                if cid in feedbacked or cid not in concept_clusters:
                     continue
-                wkey = full_word.lower()
-                cid = word_to_concept.get(wkey)
-                if cid and cid in concept_clusters:
-                    imp = concept_clusters[cid]["word_importance"].get(wkey, 1.0)
+                cluster = concept_clusters[cid]
+                local_imp = cluster["word_importance"]
+                if not local_imp:
+                    # No words tracked yet — maximum uncertainty, high priority
+                    uncertainty = 1.0
                 else:
-                    imp = word_importance.get(wkey, 1.0)
-                # Score: words whose importance is still near 1.0 (uncertain) are most
-                # valuable to get explicit human feedback on
-                score = 1.0 - abs(imp - 1.0)
-                candidates.append((full_word, wkey, score, word_token_list, cid))
+                    mean_imp = sum(local_imp.values()) / len(local_imp)
+                    uncertainty = 1.0 - abs(mean_imp - 1.0)
+                candidates.append((cid, cluster["label"], uncertainty))
 
             if candidates:
-                chosen = max(candidates, key=lambda x: x[2])
-                full_word, wkey, _, word_token_list, chosen_cid = chosen
+                chosen_cid, chosen_label, _ = max(candidates, key=lambda x: x[2])
+                neighbor_ids = self._get_concept_neighbors(
+                    chosen_cid, ordered_concept_ids, radius=2
+                )
+
+                # Identify the group this concept belongs to for Level 4 tracking
+                chosen_group_id = None
+                for gid, g in concept_groups.items():
+                    if chosen_cid in g.get("concept_ids", []):
+                        chosen_group_id = gid
+                        break
+
                 data["pending_feedback"] = {
-                    "full_word": full_word,
-                    "word_token_list": word_token_list,
+                    "type": "concept",
                     "concept_id": chosen_cid,
+                    "concept_label": chosen_label,
+                    "neighbor_ids": neighbor_ids,
+                    "group_id": chosen_group_id,
                     "prompt_key": prompt_key,
                     "iteration": iter_num
                 }
-                global_adaptive["last_feedback_word"] = full_word
-                global_adaptive.setdefault("feedbacked_words", []).append(full_word)
-                feedback_question_output = f"Word: '{full_word}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
+                global_adaptive["last_feedback_concept"] = chosen_label
+                global_adaptive.setdefault("feedbacked_concepts", []).append(chosen_cid)
+                feedback_question_output = (
+                    f"Concept: '{chosen_label}'\n"
+                    f"How well is this represented in the output?\n"
+                    f"1=absent  2=weak  3=slightly weak  4=slightly strong  5=perfect  6=overrepresented"
+                )
 
         # ====================== TRAINING INFO ======================
-        current_top = self._get_top_tokens(word_importance, tokenizer, 12)
+        current_top = self._get_top_tokens(word_importance, tokenizer, 10)
 
+        # Per-concept phrase summaries (Level 3)
         active_concept_parts = []
-        for cid, c in concept_clusters.items():
-            if cid in word_to_concept.values():
-                top_local = self._get_top_tokens(c["word_importance"], tokenizer, 5)
-                active_concept_parts.append(f"[{c['label']}({c['usage_count']}): {top_local}]")
+        for cid in ordered_concept_ids:
+            if cid not in concept_clusters:
+                continue
+            c = concept_clusters[cid]
+            top_local = self._get_top_tokens(c["word_importance"], tokenizer, 4)
+            active_concept_parts.append(f"[{c['label']}({c['usage_count']}): {top_local}]")
         concept_line = "; ".join(active_concept_parts) if active_concept_parts else "none"
+
+        # Concept group health summaries (Level 4)
+        group_parts = []
+        for gid in active_group_ids:
+            g = concept_groups.get(gid)
+            if g:
+                ema = g.get("reward_ema", 0.0)
+                health_icon = "✅" if ema > 0.3 else "⚠️" if ema > -0.3 else "🔄"
+                group_parts.append(f"{health_icon} {g['label']} (ema={ema:+.2f})")
+        group_line = "; ".join(group_parts) if group_parts else "none"
+
+        # Dominant concept: the phrase the model currently weights most heavily
+        dom_cid, dom_score, dom_label = self._get_dominant_concept(
+            ordered_concept_ids, concept_clusters
+        )
+        dominant_line = f"'{dom_label}' (avg_imp={dom_score:.2f})" if dom_cid else "undetermined"
 
         normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
         stability_factor = max(0.0, 1.0 - similarity)
@@ -709,9 +976,10 @@ class FunPackGemmaEmbeddingRefiner:
             f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
             f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%}\n"
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
-            f"Global Top Words: {current_top}\n"
-            f"Active Concept Clusters ({len(concept_clusters)} total): {concept_line}\n"
-            f"Word Library Size: {len(word_importance)}"
+            f"Dominant concept: {dominant_line}\n"
+            f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
+            f"Concept groups ({len(concept_groups)} total): {group_line}\n"
+            f"Global top words: {current_top}"
         )
 
         if scheduler_mode == "accurate":
@@ -733,7 +1001,7 @@ class FunPackGemmaEmbeddingRefiner:
             f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
             f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
             f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-            f"Active concepts: {concept_line}"
+            f"Dominant: {dominant_line} | Groups: {group_line}"
         )
 
         # ====================== FINAL SAVE ======================
