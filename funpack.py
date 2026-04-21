@@ -286,7 +286,7 @@ class FunPackGemmaEmbeddingRefiner:
                     "max": 6,
                     "step": 1,
                     "display": "slider",
-                    "label": "Concept Feedback (1=absent, 3=weak, 5=perfect, 6=overrepresented)"
+                    "label": "Feedback Response (follow the question scale)"
                 }),
             }
         }
@@ -396,6 +396,196 @@ class FunPackGemmaEmbeddingRefiner:
             return False
         return True
 
+    def _infer_concept_category(self, phrase_words: list):
+        words = set(phrase_words or [])
+        if not words:
+            return "general"
+
+        category_terms = {
+            "quality": {"masterpiece", "best", "quality", "detailed", "highres", "high-res", "ultra", "perfect"},
+            "style": {"anime", "cinematic", "photorealistic", "painterly", "illustration", "stylized", "realistic", "film", "noir"},
+            "camera": {"closeup", "close-up", "wide", "shot", "angle", "zoom", "pan", "tracking", "dolly", "camera", "focus", "bokeh", "framing"},
+            "action": {"running", "walking", "flying", "jumping", "smiling", "turning", "dancing", "moving", "motion", "looking", "holding", "standing", "sitting"},
+            "environment": {"forest", "city", "street", "room", "beach", "mountain", "temple", "sunset", "night", "rain", "snow", "sky", "background"},
+            "appearance": {"hair", "eyes", "dress", "jacket", "armor", "face", "skin", "beard", "smile", "pose", "outfit"},
+            "subject": {"girl", "boy", "woman", "man", "person", "character", "robot", "dragon", "cat", "dog", "bird", "child"},
+        }
+
+        best_category, best_score = "general", 0
+        for category, terms in category_terms.items():
+            score = len(words & terms)
+            if score > best_score:
+                best_category, best_score = category, score
+        return best_category
+
+    def _default_concept_cluster(self, phrase_words: list):
+        category = self._infer_concept_category(phrase_words)
+        return {
+            "label": " ".join((phrase_words or [])[:6]),
+            "anchor_words": list(phrase_words or []),
+            "category": category,
+            "word_importance": {},
+            "presence_target": 1.0,
+            "priority_weight": 1.0,
+            "overrep_sensitivity": 1.0,
+            "stability_weight": 1.0,
+            "semantic_fidelity": 1.0,
+            "user_affinity": 1.0,
+            "question_history": [],
+            "last_question_type": None,
+            "last_question_iter": 0,
+            "usage_count": 0,
+            "last_seen_iter": 0,
+        }
+
+    def _ensure_concept_cluster_defaults(self, cluster: dict):
+        if not isinstance(cluster, dict):
+            return self._default_concept_cluster([])
+
+        anchor_words = list(cluster.get("anchor_words", []))
+        defaults = self._default_concept_cluster(anchor_words)
+        defaults.update(cluster)
+        if not defaults.get("category") or defaults.get("category") == "general":
+            defaults["category"] = self._infer_concept_category(defaults.get("anchor_words", []))
+        defaults["question_history"] = list(defaults.get("question_history", []))[-24:]
+        return defaults
+
+    def _clip_profile_value(self, value, low=0.5, high=1.8):
+        return max(low, min(high, float(value)))
+
+    def _feedback_question_specs(self):
+        return {
+            "presence": {
+                "prompt": "How well is '{label}' represented in the output?",
+                "legend": "1=absent  2=weak  3=slightly weak  4=slightly strong  5=perfect  6=overrepresented",
+            },
+            "priority": {
+                "prompt": "How important should '{label}' be relative to the other concepts?",
+                "legend": "1=much less important  2=less important  3=slightly less  4=slightly more  5=important  6=top priority",
+            },
+            "balance": {
+                "prompt": "How balanced is '{label}' compared with nearby concepts?",
+                "legend": "1=far too weak  2=too weak  3=slightly weak  4=slightly strong  5=balanced  6=overpowering",
+            },
+            "fidelity": {
+                "prompt": "How accurately does '{label}' match what you meant?",
+                "legend": "1=wrong  2=mostly wrong  3=slightly off  4=close  5=correct  6=too literal",
+            },
+            "stability": {
+                "prompt": "How stable should '{label}' be across future outputs?",
+                "legend": "1=very unstable  2=unstable  3=slightly unstable  4=slightly stable  5=stable  6=very rigid",
+            },
+            "preference": {
+                "prompt": "What is your preference for having '{label}' in future outputs?",
+                "legend": "1=strongly less  2=less  3=slightly less  4=slightly more  5=more  6=much more",
+            },
+        }
+
+    def _get_concept_mean_importance(self, cluster: dict):
+        local_imp = cluster.get("word_importance", {})
+        if not local_imp:
+            return 1.0
+        return sum(local_imp.values()) / max(1, len(local_imp))
+
+    def _get_question_base_weight(self, question_type: str, category: str):
+        weights = {
+            "presence": {"subject": 1.15, "appearance": 1.12, "action": 1.10, "environment": 1.08, "style": 0.95, "camera": 0.92, "quality": 0.90, "general": 1.0},
+            "priority": {"style": 1.15, "camera": 1.12, "quality": 1.08, "environment": 1.02, "subject": 0.98, "appearance": 0.98, "action": 1.0, "general": 1.0},
+            "balance": {"style": 1.18, "camera": 1.10, "quality": 1.08, "environment": 1.02, "subject": 0.98, "appearance": 1.0, "action": 1.0, "general": 1.0},
+            "fidelity": {"subject": 1.15, "action": 1.12, "environment": 1.08, "appearance": 1.05, "style": 0.95, "camera": 0.92, "quality": 0.90, "general": 1.0},
+            "stability": {"action": 1.10, "camera": 1.10, "style": 1.06, "subject": 1.04, "appearance": 1.0, "environment": 1.0, "quality": 0.95, "general": 1.0},
+            "preference": {"style": 1.14, "environment": 1.10, "appearance": 1.05, "subject": 1.03, "camera": 1.02, "action": 1.0, "quality": 0.95, "general": 1.0},
+        }
+        return weights.get(question_type, {}).get(category, 1.0)
+
+    def _score_question_type(self, question_type: str, cluster: dict, category: str,
+                             mean_imp: float, neighbor_mean: float, rating_shift: float,
+                             similarity: float, iter_num: int):
+        uncertainty = max(0.0, 1.0 - min(1.0, abs(mean_imp - cluster.get("presence_target", 1.0))))
+        dominance = max(0.0, mean_imp - 1.15)
+        neighbor_conflict = abs(mean_imp - neighbor_mean)
+        freshness = 1.0
+        if cluster.get("last_question_type") == question_type:
+            freshness -= 0.35
+        if iter_num - int(cluster.get("last_question_iter", 0)) < 3:
+            freshness -= 0.20
+        freshness = max(0.25, freshness)
+
+        if question_type == "presence":
+            score = 0.50 * uncertainty + 0.22 * abs(cluster.get("presence_target", 1.0) - mean_imp) + 0.16 * rating_shift + 0.12 * max(0.0, 1.0 - similarity)
+        elif question_type == "priority":
+            score = 0.40 * rating_shift + 0.28 * abs(cluster.get("priority_weight", 1.0) - 1.0) + 0.18 * dominance + 0.14 * uncertainty
+        elif question_type == "balance":
+            score = 0.44 * dominance + 0.28 * neighbor_conflict + 0.16 * abs(cluster.get("overrep_sensitivity", 1.0) - 1.0) + 0.12 * rating_shift
+        elif question_type == "fidelity":
+            score = 0.38 * (2.0 - cluster.get("semantic_fidelity", 1.0)) + 0.24 * rating_shift + 0.20 * uncertainty + 0.18 * max(0.0, 1.0 - similarity)
+        elif question_type == "stability":
+            score = 0.35 * rating_shift + 0.30 * abs(cluster.get("stability_weight", 1.0) - 1.0) + 0.20 * max(0.0, 1.0 - similarity) + 0.15 * uncertainty
+        else:  # preference
+            score = 0.34 * abs(cluster.get("user_affinity", 1.0) - 1.0) + 0.28 * rating_shift + 0.20 * uncertainty + 0.18 * abs(cluster.get("priority_weight", 1.0) - 1.0)
+
+        return score * self._get_question_base_weight(question_type, category) * freshness
+
+    def _select_feedback_question(self, ordered_concept_ids: list, concept_clusters: dict,
+                                  concept_groups: dict, last_rating: int, rating: int,
+                                  similarity: float, iter_num: int):
+        if not ordered_concept_ids:
+            return None
+
+        question_specs = self._feedback_question_specs()
+        rating_shift = min(1.0, abs(rating - last_rating) / 4.0)
+        candidates = []
+
+        for cid in ordered_concept_ids:
+            cluster = concept_clusters.get(cid)
+            if not cluster:
+                continue
+            cluster = self._ensure_concept_cluster_defaults(cluster)
+            concept_clusters[cid] = cluster
+
+            category = cluster.get("category", "general")
+            mean_imp = self._get_concept_mean_importance(cluster)
+            neighbor_ids = self._get_concept_neighbors(cid, ordered_concept_ids, radius=2)
+            neighbor_means = [
+                self._get_concept_mean_importance(concept_clusters[nid])
+                for nid in neighbor_ids if nid in concept_clusters
+            ]
+            neighbor_mean = sum(neighbor_means) / len(neighbor_means) if neighbor_means else 1.0
+
+            chosen_group_id = None
+            for gid, group in concept_groups.items():
+                if cid in group.get("concept_ids", []):
+                    chosen_group_id = gid
+                    break
+
+            for question_type in question_specs.keys():
+                score = self._score_question_type(
+                    question_type, cluster, category, mean_imp,
+                    neighbor_mean, rating_shift, similarity, iter_num
+                )
+                candidates.append({
+                    "concept_id": cid,
+                    "concept_label": cluster.get("label", ""),
+                    "question_type": question_type,
+                    "neighbor_ids": neighbor_ids,
+                    "group_id": chosen_group_id,
+                    "category": category,
+                    "score": score,
+                })
+
+        if not candidates:
+            return None
+
+        return max(candidates, key=lambda x: x["score"])
+
+    def _format_feedback_question(self, concept_label: str, question_type: str):
+        spec = self._feedback_question_specs().get(question_type, self._feedback_question_specs()["presence"])
+        return (
+            f"Concept: '{concept_label}'\n"
+            f"{spec['prompt'].format(label=concept_label)}\n"
+            f"{spec['legend']}"
+        )
+
     # =========================================================================
     # MULTI-LEVEL CONCEPT SYSTEM
     # =========================================================================
@@ -464,19 +654,18 @@ class FunPackGemmaEmbeddingRefiner:
             if cid is None:
                 continue
             if is_new:
-                concept_clusters[cid] = {
-                    "label": " ".join(phrase_words[:6]),
-                    "anchor_words": phrase_words,
-                    "word_importance": {},
-                    "usage_count": 0,
-                    "last_seen_iter": 0,
-                }
+                concept_clusters[cid] = self._default_concept_cluster(phrase_words)
             else:
+                concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
                 # Expand anchor vocabulary with words newly seen in this phrase
                 existing = set(concept_clusters[cid]["anchor_words"])
                 for w in phrase_words:
                     if w not in existing:
                         concept_clusters[cid]["anchor_words"].append(w)
+                if concept_clusters[cid].get("category") == "general":
+                    concept_clusters[cid]["category"] = self._infer_concept_category(
+                        concept_clusters[cid]["anchor_words"]
+                    )
             for w in phrase_words:
                 word_to_concept[w] = cid
             if cid not in ordered_concept_ids:
@@ -574,8 +763,10 @@ class FunPackGemmaEmbeddingRefiner:
         return best_cid, best_score, best_label
 
     def _apply_concept_feedback(self, concept_id: str, feedback_rating: int,
+                                 question_type: str,
                                  concept_clusters: dict, neighbor_ids: list,
-                                 word_importance: dict, concept_groups: dict):
+                                 word_importance: dict, concept_groups: dict,
+                                 iter_num: int = 0):
         """
         Multi-level feedback propagation.
 
@@ -610,15 +801,62 @@ class FunPackGemmaEmbeddingRefiner:
         if concept_id not in concept_clusters:
             return
 
-        feedback_deltas = {1: 0.90, 2: 0.50, 3: 0.20, 4: -0.15, 5: 0.04, 6: -0.55}
-        direct_delta = feedback_deltas.get(feedback_rating, 0.0)
+        cluster = self._ensure_concept_cluster_defaults(concept_clusters[concept_id])
+        concept_clusters[concept_id] = cluster
+
+        question_type = question_type or "presence"
+        direct_deltas = {
+            "presence": {1: 0.90, 2: 0.50, 3: 0.20, 4: -0.15, 5: 0.04, 6: -0.55},
+            "priority": {1: -0.25, 2: -0.12, 3: -0.05, 4: 0.08, 5: 0.18, 6: 0.30},
+            "balance": {1: 0.72, 2: 0.40, 3: 0.16, 4: -0.10, 5: 0.00, 6: -0.62},
+            "fidelity": {1: 0.25, 2: 0.16, 3: 0.08, 4: 0.02, 5: 0.00, 6: -0.06},
+            "stability": {1: 0.10, 2: 0.06, 3: 0.03, 4: 0.00, 5: -0.02, 6: -0.06},
+            "preference": {1: -0.30, 2: -0.18, 3: -0.08, 4: 0.10, 5: 0.22, 6: 0.36},
+        }
+        direct_delta = direct_deltas.get(question_type, direct_deltas["presence"]).get(feedback_rating, 0.0)
+        centered = (feedback_rating - 3.5) / 2.5
 
         # --- Level 3: rated concept ---
-        local_imp = concept_clusters[concept_id]["word_importance"]
+        local_imp = cluster["word_importance"]
         for wkey in list(local_imp.keys()):
             local_imp[wkey] = max(0.3, min(2.8, local_imp[wkey] + direct_delta))
             if wkey in word_importance:
                 word_importance[wkey] = max(0.3, min(2.8, word_importance[wkey] + direct_delta * 0.4))
+
+        if question_type == "presence":
+            cluster["presence_target"] = self._clip_profile_value(
+                cluster.get("presence_target", 1.0) + direct_delta * 0.22
+            )
+        elif question_type == "priority":
+            cluster["priority_weight"] = self._clip_profile_value(
+                cluster.get("priority_weight", 1.0) + centered * 0.18
+            )
+        elif question_type == "balance":
+            cluster["overrep_sensitivity"] = self._clip_profile_value(
+                cluster.get("overrep_sensitivity", 1.0) + max(0.0, centered) * 0.24 - max(0.0, -centered) * 0.12
+            )
+            cluster["presence_target"] = self._clip_profile_value(
+                cluster.get("presence_target", 1.0) + direct_delta * 0.12
+            )
+        elif question_type == "fidelity":
+            cluster["semantic_fidelity"] = self._clip_profile_value(
+                cluster.get("semantic_fidelity", 1.0) + (centered * 0.16),
+                low=0.6, high=1.8
+            )
+        elif question_type == "stability":
+            cluster["stability_weight"] = self._clip_profile_value(
+                cluster.get("stability_weight", 1.0) + centered * 0.18
+            )
+        elif question_type == "preference":
+            cluster["user_affinity"] = self._clip_profile_value(
+                cluster.get("user_affinity", 1.0) + centered * 0.20
+            )
+            cluster["priority_weight"] = self._clip_profile_value(
+                cluster.get("priority_weight", 1.0) + centered * 0.08
+            )
+            cluster["presence_target"] = self._clip_profile_value(
+                cluster.get("presence_target", 1.0) + centered * 0.10
+            )
 
         # --- Level 3: neighbour concepts ---
         # Boosted concept -> inhibit neighbours (give it semantic space).
@@ -631,6 +869,7 @@ class FunPackGemmaEmbeddingRefiner:
         for nid in neighbor_ids:
             if nid not in concept_clusters or nid == concept_id:
                 continue
+            concept_clusters[nid] = self._ensure_concept_cluster_defaults(concept_clusters[nid])
             n_local = concept_clusters[nid]["word_importance"]
             for wkey in list(n_local.keys()):
                 n_local[wkey] = max(0.3, min(2.8, n_local[wkey] + neighbor_delta))
@@ -646,6 +885,15 @@ class FunPackGemmaEmbeddingRefiner:
             if concept_id in g.get("concept_ids", []):
                 g["reward_ema"] = 0.75 * g.get("reward_ema", 0.0) + 0.25 * normalized
                 g["usage_count"] = g.get("usage_count", 0) + 1
+
+        cluster["question_history"] = list(cluster.get("question_history", []))[-23:]
+        cluster["question_history"].append({
+            "iteration": iter_num,
+            "type": question_type,
+            "rating": feedback_rating,
+        })
+        cluster["last_question_type"] = question_type
+        cluster["last_question_iter"] = iter_num
 
     # =========================================================================
     # MAIN REFINE
@@ -702,6 +950,10 @@ class FunPackGemmaEmbeddingRefiner:
                 "dynamic_sim_threshold": 0.82,
                 "last_feedback_concept": None,
                 "feedbacked_concepts": [],
+                "feedback_memory": {
+                    "recent_questions": [],
+                    "rating_change_events": [],
+                },
                 "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
@@ -754,7 +1006,12 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive.setdefault("concept_groups", {})
         global_adaptive.setdefault("word_importance", {})
         global_adaptive.setdefault("feedbacked_concepts", [])
+        global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
         global_adaptive.setdefault("mode", mode)
+        for cid in list(global_adaptive["concept_clusters"].keys()):
+            global_adaptive["concept_clusters"][cid] = self._ensure_concept_cluster_defaults(
+                global_adaptive["concept_clusters"][cid]
+            )
 
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer(mode)
@@ -784,10 +1041,12 @@ class FunPackGemmaEmbeddingRefiner:
                     self._apply_concept_feedback(
                         pending["concept_id"],
                         feedback_rating,
+                        pending.get("question_type", "presence"),
                         global_adaptive["concept_clusters"],
                         pending.get("neighbor_ids", []),
                         global_adaptive["word_importance"],
-                        global_adaptive["concept_groups"]
+                        global_adaptive["concept_groups"],
+                        pending.get("iteration", 0)
                     )
                     global_adaptive["last_feedback_concept"] = pending.get("concept_label", "")
                     data["pending_feedback"] = None
@@ -868,6 +1127,7 @@ class FunPackGemmaEmbeddingRefiner:
         history = active.get("history", [])
         iter_num = len(history) + 1
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
+        feedback_memory = global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
 
         # Safe similarity calculation
         try:
@@ -887,6 +1147,14 @@ class FunPackGemmaEmbeddingRefiner:
         reward = (rating - 5.5) / 4.5
         last_rating = active.get("last_rating", 5)
         last_reward = (last_rating - 5.5) / 4.5
+        rating_shift = abs(rating - last_rating)
+        feedback_memory["rating_change_events"] = list(feedback_memory.get("rating_change_events", []))[-15:]
+        feedback_memory["rating_change_events"].append({
+            "iteration": iter_num,
+            "rating": rating,
+            "shift": rating_shift,
+            "prompt_key": prompt_key,
+        })
 
         word_importance = global_adaptive["word_importance"]
 
@@ -911,7 +1179,14 @@ class FunPackGemmaEmbeddingRefiner:
             # Level 3: update per-concept importance (primary, context-isolated signal)
             cid = word_to_concept.get(wkey)
             if cid and cid in concept_clusters:
+                concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
                 local_imp = concept_clusters[cid]["word_importance"]
+                profile_gain = (
+                    concept_clusters[cid]["priority_weight"] *
+                    (0.82 + 0.18 * concept_clusters[cid]["user_affinity"]) *
+                    (0.80 + 0.20 * concept_clusters[cid]["presence_target"])
+                )
+                group_delta *= max(0.55, min(1.85, profile_gain))
                 if wkey not in local_imp:
                     local_imp[wkey] = 1.0
                 local_imp[wkey] = max(0.35, min(2.8, local_imp[wkey] + group_delta))
@@ -999,19 +1274,40 @@ class FunPackGemmaEmbeddingRefiner:
         if cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
+            profile_tensor = torch.ones(seq_len, device=device)
             if active_token_mask is not None:
                 importance_tensor = importance_tensor * active_token_mask.to(device=device, dtype=importance_tensor.dtype)
+                profile_tensor = profile_tensor * active_token_mask.to(device=device, dtype=profile_tensor.dtype)
             for start, end, full_word, _ in word_groups:
                 wkey = full_word.lower()
                 cid = word_to_concept.get(wkey)
                 if cid and cid in concept_clusters:
+                    concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
                     imp = concept_clusters[cid]["word_importance"].get(
                         wkey, word_importance.get(wkey, 1.0)
                     )
+                    profile_mult = (
+                        concept_clusters[cid]["priority_weight"] *
+                        (0.84 + 0.16 * concept_clusters[cid]["user_affinity"]) *
+                        (0.86 + 0.14 * concept_clusters[cid]["presence_target"])
+                    )
+                    profile_mult *= (
+                        1.0 -
+                        0.10 * (concept_clusters[cid]["stability_weight"] - 1.0) -
+                        0.06 * (concept_clusters[cid]["semantic_fidelity"] - 1.0)
+                    )
+                    profile_mult *= (
+                        1.0 -
+                        0.10 * max(0.0, concept_clusters[cid]["overrep_sensitivity"] - 1.0)
+                    )
+                    profile_mult = max(0.55, min(1.80, profile_mult))
                 else:
                     imp = word_importance.get(wkey, 1.0)
+                    profile_mult = 1.0
                 importance_tensor[start:end] = imp
+                profile_tensor[start:end] = profile_mult
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
+            new_delta = new_delta * profile_tensor.unsqueeze(-1)
 
         token_mask_nd = self._mask_to_embedding_dims(active_token_mask, reference)
         if token_mask_nd is not None:
@@ -1076,57 +1372,53 @@ class FunPackGemmaEmbeddingRefiner:
         data["global_adaptive"] = global_adaptive
 
         # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
-        # Selects the concept phrase with the highest uncertainty — defined as mean
-        # word importance still near the 1.0 baseline. Uncertain concepts give the
-        # most information per user action because the system hasn't yet formed a
-        # strong opinion about them. The full phrase label is shown so the user
-        # evaluates a complete semantic unit ("high quality anime style") rather
-        # than a decontextualised single token ("high").
+        # Chooses one concept/question pair per run using category-aware scoring.
+        # Different question types learn different aspects of user preference:
+        # presence, priority, balance, fidelity, stability, and preference.
         if feedback_enabled and data.get("pending_feedback") is None and ordered_concept_ids:
-            feedbacked = set(global_adaptive.get("feedbacked_concepts", []))
-            candidates = []
-            for cid in ordered_concept_ids:
-                if cid in feedbacked or cid not in concept_clusters:
-                    continue
-                cluster = concept_clusters[cid]
-                local_imp = cluster["word_importance"]
-                if not local_imp:
-                    # No words tracked yet — maximum uncertainty, high priority
-                    uncertainty = 1.0
-                else:
-                    mean_imp = sum(local_imp.values()) / len(local_imp)
-                    uncertainty = 1.0 - abs(mean_imp - 1.0)
-                candidates.append((cid, cluster["label"], uncertainty))
+            selected_question = self._select_feedback_question(
+                ordered_concept_ids,
+                concept_clusters,
+                concept_groups,
+                last_rating,
+                rating,
+                similarity,
+                iter_num
+            )
 
-            if candidates:
-                chosen_cid, chosen_label, _ = max(candidates, key=lambda x: x[2])
-                neighbor_ids = self._get_concept_neighbors(
-                    chosen_cid, ordered_concept_ids, radius=2
-                )
-
-                # Identify the group this concept belongs to for Level 4 tracking
-                chosen_group_id = None
-                for gid, g in concept_groups.items():
-                    if chosen_cid in g.get("concept_ids", []):
-                        chosen_group_id = gid
-                        break
-
+            if selected_question:
                 data["pending_feedback"] = {
                     "type": "concept",
-                    "concept_id": chosen_cid,
-                    "concept_label": chosen_label,
-                    "neighbor_ids": neighbor_ids,
-                    "group_id": chosen_group_id,
+                    "concept_id": selected_question["concept_id"],
+                    "concept_label": selected_question["concept_label"],
+                    "question_type": selected_question["question_type"],
+                    "neighbor_ids": selected_question["neighbor_ids"],
+                    "group_id": selected_question["group_id"],
                     "prompt_key": prompt_key,
                     "iteration": iter_num
                 }
-                global_adaptive["last_feedback_concept"] = chosen_label
-                global_adaptive.setdefault("feedbacked_concepts", []).append(chosen_cid)
-                feedback_question_output = (
-                    f"Concept: '{chosen_label}'\n"
-                    f"How well is this represented in the output?\n"
-                    f"1=absent  2=weak  3=slightly weak  4=slightly strong  5=perfect  6=overrepresented"
+                feedback_memory["recent_questions"] = list(feedback_memory.get("recent_questions", []))[-15:]
+                feedback_memory["recent_questions"].append({
+                    "iteration": iter_num,
+                    "concept_id": selected_question["concept_id"],
+                    "question_type": selected_question["question_type"],
+                    "prompt_key": prompt_key,
+                })
+                global_adaptive["last_feedback_concept"] = selected_question["concept_label"]
+                feedback_question_output = self._format_feedback_question(
+                    selected_question["concept_label"],
+                    selected_question["question_type"]
                 )
+            else:
+                feedback_question_output = (
+                    "There is enough information collected on current concepts. "
+                    "Node will ask you again in case if rating changes significantly."
+                )
+        elif feedback_enabled and data.get("pending_feedback") is None:
+            feedback_question_output = (
+                "There is enough information collected on current concepts. "
+                "Node will ask you again in case if rating changes significantly."
+            )
 
         # ====================== TRAINING INFO ======================
         current_top = self._get_top_tokens(word_importance, tokenizer, 10)
@@ -1138,7 +1430,12 @@ class FunPackGemmaEmbeddingRefiner:
                 continue
             c = concept_clusters[cid]
             top_local = self._get_top_tokens(c["word_importance"], tokenizer, 4)
-            active_concept_parts.append(f"[{c['label']}({c['usage_count']}): {top_local}]")
+            active_concept_parts.append(
+                f"[{c['label']}/{c.get('category', 'general')}: "
+                f"top={top_local} | p={c.get('presence_target', 1.0):.2f} "
+                f"prio={c.get('priority_weight', 1.0):.2f} "
+                f"stab={c.get('stability_weight', 1.0):.2f}]"
+            )
         concept_line = "; ".join(active_concept_parts) if active_concept_parts else "none"
 
         # Concept group health summaries (Level 4)
