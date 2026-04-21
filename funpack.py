@@ -172,7 +172,7 @@ class FunPackGemmaEmbeddingRefiner:
                 text = key if isinstance(key, str) else tokenizer.decode([int(key)], skip_special_tokens=True).strip()
                 if text:
                     top_list.append(f"{text}({score:.2f})")
-            except:
+            except Exception:
                 top_list.append(f"{key}({score:.2f})")
         return ", ".join(top_list) if top_list else "None"
 
@@ -183,14 +183,92 @@ class FunPackGemmaEmbeddingRefiner:
         if '<' in t or '>' in t or len(t) < 3:
             return False
         t_lower = t.lower()
-        stopwords = {"the","a","an","and","or","but","with","for","of","in","on","at","to","from","by","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","her","his","him","she","he","it","they","them","this","that","these","those","i","you","my","your","our","their","me","us"}
+        stopwords = {
+            "the", "a", "an", "and", "or", "but", "with", "for", "of", "in", "on", "at",
+            "to", "from", "by", "is", "are", "was", "were", "be", "been", "being", "have",
+            "has", "had", "do", "does", "did", "will", "would", "her", "his", "him", "she",
+            "he", "it", "they", "them", "this", "that", "these", "those", "i", "you", "my",
+            "your", "our", "their", "me", "us"
+        }
         if t_lower in stopwords:
             return False
-        if t in {",",".","!","?",":",";","-","*","(",")","[","]","{","}","'","\"", "..."} or t.isdigit():
+        if t in {",", ".", "!", "?", ":", ";", "-", "*", "(", ")", "[", "]", "{", "}", "'", "\"", "..."} or t.isdigit():
             return False
         if not any(c.isalpha() for c in t):
             return False
         return True
+
+    def _parse_concepts(self, prompt: str):
+        """
+        Split a prompt into concept phrases on commas/semicolons.
+        Each phrase is returned as a list of significant lowercase words.
+        Example: "red dress, dark forest" -> [["red","dress"], ["dark","forest"]]
+        """
+        if not prompt:
+            return []
+        phrases = [p.strip() for p in re.split(r'[,;]', prompt) if p.strip()]
+        result = []
+        for phrase in phrases:
+            words = [w.strip().lower() for w in phrase.split() if self._is_valuable_token(w.strip())]
+            if words:
+                result.append(words)
+        return result
+
+    def _match_concept(self, phrase_words: list, concept_clusters: dict, threshold: float = 0.38):
+        """
+        Find the best-matching cluster for a phrase via Jaccard similarity.
+        Returns (cluster_id, is_new_cluster).
+        If no existing cluster exceeds the threshold, a new cluster id is minted.
+        Lower threshold -> more clusters (stricter separation).
+        Higher threshold -> fewer clusters (more aggressive merging).
+        """
+        if not phrase_words:
+            return None, False
+        phrase_set = set(phrase_words)
+        best_id, best_score = None, 0.0
+        for cid, cluster in concept_clusters.items():
+            anchor_set = set(cluster.get("anchor_words", []))
+            if not anchor_set:
+                continue
+            union = len(phrase_set | anchor_set)
+            if union == 0:
+                continue
+            jaccard = len(phrase_set & anchor_set) / union
+            if jaccard > best_score:
+                best_score, best_id = jaccard, cid
+        if best_score >= threshold:
+            return best_id, False
+        new_id = md5("|".join(sorted(phrase_words)).encode()).hexdigest()[:10]
+        return new_id, True
+
+    def _build_word_concept_map(self, prompt: str, concept_clusters: dict):
+        """
+        Parse the prompt into concept phrases, match or create clusters,
+        and return a dict mapping each significant word -> cluster_id.
+        Updates concept_clusters in-place with any new or expanded clusters.
+        """
+        word_to_concept = {}
+        for phrase_words in self._parse_concepts(prompt):
+            cid, is_new = self._match_concept(phrase_words, concept_clusters)
+            if cid is None:
+                continue
+            if is_new:
+                concept_clusters[cid] = {
+                    "label": " ".join(phrase_words[:5]),
+                    "anchor_words": phrase_words,
+                    "word_importance": {},
+                    "usage_count": 0,
+                    "last_seen_iter": 0,
+                }
+            else:
+                # Expand anchor vocabulary with any new words seen in this phrase
+                existing = set(concept_clusters[cid]["anchor_words"])
+                for w in phrase_words:
+                    if w not in existing:
+                        concept_clusters[cid]["anchor_words"].append(w)
+            for w in phrase_words:
+                word_to_concept[w] = cid
+        return word_to_concept
 
     def refine(self, positive_conditioning, rating: int, refinement_key: str, scheduler_mode: str = "original",
                positive_prompt: str = "",
@@ -225,28 +303,33 @@ class FunPackGemmaEmbeddingRefiner:
 
         prompt_key = positive_prompt
 
-        # ====================== RESET / NEW SESSION ======================
-        if reset_session or not os.path.exists(json_file):
-            data = {
+        # ====================== FRESH GLOBAL STATE TEMPLATE ======================
+        # Defined once here and reused for both reset and corrupt-file recovery.
+        # Removed: infusion_tokens, token_library — initialised but never read or written
+        # after construction, contributing only to JSON bloat.
+        def _fresh_global():
+            return {
+                "word_importance": {},
+                "concept_clusters": {},
+                "exploration_base": 0.08,
+                "momentum": None,
+                "avg_reward_ema": 0.0,
+                "good_ratio": 0.0,
+                "dynamic_sim_threshold": 0.82,
+                "last_feedback_word": None,
+                "feedbacked_words": [],
+                "scheduler_mode": scheduler_mode,
+                "prodigy_d": {},
+                "prodigy_lr_base": 1.0,
+                "warmup_steps": 8,
+                "total_steps_estimate": 150,
+                "current_step": 0,
+            }
+
+        def _fresh_data():
+            return {
                 "refinement_key": refinement_key,
-                "global_adaptive": {
-                    "word_importance": {},
-                    "infusion_tokens": {},
-                    "token_library": {},
-                    "exploration_base": 0.08,
-                    "momentum": None,
-                    "avg_reward_ema": 0.0,
-                    "good_ratio": 0.0,
-                    "dynamic_sim_threshold": 0.82,
-                    "last_feedback_word": None,
-                    "feedbacked_words": [],
-                    "scheduler_mode": scheduler_mode,
-                    "prodigy_d": {},
-                    "prodigy_lr_base": 1.0,
-                    "warmup_steps": 8,
-                    "total_steps_estimate": 150,
-                    "current_step": 0,
-                },
+                "global_adaptive": _fresh_global(),
                 "prompt_histories": {
                     prompt_key: {
                         "reference_embeds": tensor_to_serializable(raw_positive),
@@ -257,11 +340,15 @@ class FunPackGemmaEmbeddingRefiner:
                 "last_prompt_key": prompt_key,
                 "pending_feedback": None
             }
+
+        # ====================== RESET / NEW SESSION ======================
+        if reset_session or not os.path.exists(json_file):
+            data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
 
-        # Safe JSON loading
+        # ====================== SAFE JSON LOAD ======================
         try:
             with open(json_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -271,41 +358,16 @@ class FunPackGemmaEmbeddingRefiner:
                 os.remove(json_file)
             except OSError:
                 pass
-            data = {
-                "refinement_key": refinement_key,
-                "global_adaptive": {
-                    "word_importance": {},
-                    "infusion_tokens": {},
-                    "token_library": {},
-                    "exploration_base": 0.08,
-                    "momentum": None,
-                    "avg_reward_ema": 0.0,
-                    "good_ratio": 0.0,
-                    "dynamic_sim_threshold": 0.82,
-                    "last_feedback_word": None,
-                    "feedbacked_words": [],
-                    "scheduler_mode": scheduler_mode,
-                    "prodigy_d": {},
-                    "prodigy_lr_base": 1.0,
-                    "warmup_steps": 8,
-                    "total_steps_estimate": 150,
-                    "current_step": 0,
-                },
-                "prompt_histories": {
-                    prompt_key: {
-                        "reference_embeds": tensor_to_serializable(raw_positive),
-                        "history": [],
-                        "last_rating": rating
-                    }
-                },
-                "last_prompt_key": prompt_key,
-                "pending_feedback": None
-            }
+            data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file")
 
         global_adaptive = data["global_adaptive"]
+        # Migrate sessions created before concept-awareness was added
+        global_adaptive.setdefault("concept_clusters", {})
+        global_adaptive.setdefault("word_importance", {})
+
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer()
 
@@ -322,13 +384,21 @@ class FunPackGemmaEmbeddingRefiner:
             if pending is not None:
                 full_word = pending["full_word"].lower()
                 word_importance = global_adaptive["word_importance"]
+                concept_clusters = global_adaptive["concept_clusters"]
                 old_imp = word_importance.get(full_word, 1.0)
                 if feedback_rating == 6:
                     target_imp = 0.65
                 else:
                     target_imp = 0.4 + (feedback_rating / 5.0) * 2.1
                 new_imp = 0.65 * old_imp + 0.35 * target_imp
-                word_importance[full_word] = max(0.3, min(2.8, new_imp))
+                clamped = max(0.3, min(2.8, new_imp))
+                word_importance[full_word] = clamped
+                # Mirror feedback into the concept cluster the word belongs to
+                pending_cid = pending.get("concept_id")
+                if pending_cid and pending_cid in concept_clusters:
+                    local_imp = concept_clusters[pending_cid]["word_importance"]
+                    old_local = local_imp.get(full_word, 1.0)
+                    local_imp[full_word] = max(0.3, min(2.8, 0.65 * old_local + 0.35 * target_imp))
                 data["pending_feedback"] = None
                 with open(json_file, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2)
@@ -373,18 +443,16 @@ class FunPackGemmaEmbeddingRefiner:
 
         # ====================== WORD GROUPING ======================
         word_groups = []
-        seen = set()
+        grouped_seen = set()
         if tokenizer and positive_prompt:
             raw_words = [w.strip() for w in positive_prompt.split() if w.strip()]
             for word in raw_words:
                 clean_word = word
                 lower = clean_word.lower()
-                if lower in seen or len(clean_word) < 3 or not self._is_valuable_token(clean_word):
+                if lower in grouped_seen or len(clean_word) < 3 or not self._is_valuable_token(clean_word):
                     continue
-                seen.add(lower)
-
+                grouped_seen.add(lower)
                 word_token_list = tokenizer.encode(clean_word, add_special_tokens=False)
-
                 found = False
                 for start in range(len(full_token_ids) - len(word_token_list) + 1):
                     if full_token_ids[start:start + len(word_token_list)] == word_token_list:
@@ -393,6 +461,10 @@ class FunPackGemmaEmbeddingRefiner:
                         break
                 if not found and word_token_list:
                     word_groups.append((0, 1, clean_word, [word_token_list[0]]))
+
+        # ====================== CONCEPT CLUSTER SETUP ======================
+        concept_clusters = global_adaptive["concept_clusters"]
+        word_to_concept = self._build_word_concept_map(positive_prompt, concept_clusters) if positive_prompt else {}
 
         # ====================== SCHEDULER SETUP ======================
         global_adaptive["scheduler_mode"] = scheduler_mode
@@ -419,7 +491,7 @@ class FunPackGemmaEmbeddingRefiner:
         last_rating = active.get("last_rating", 5)
         last_reward = (last_rating - 5.5) / 4.5
 
-        word_importance = global_adaptive.setdefault("word_importance", {})
+        word_importance = global_adaptive["word_importance"]
 
         lr_scale, confidence, exploration_mult, word_lr_mult = self._get_scheduler_factors(
             scheduler_mode, rating, reward, similarity, iter_num, total_iters,
@@ -428,21 +500,32 @@ class FunPackGemmaEmbeddingRefiner:
 
         expl = global_adaptive["exploration_base"] * exploration_mult
 
-        # ====================== WORD IMPORTANCE UPDATE ======================
+        # ====================== WORD IMPORTANCE UPDATE (concept-aware) ======================
         for start, end, full_word, word_token_list in word_groups:
             if not self._is_valuable_token(full_word):
                 continue
             wkey = full_word.lower()
-            if wkey not in word_importance:
-                word_importance[wkey] = 1.0
 
             base_lr = 0.22 / (1 + 0.07 * (len(history) ** 0.5))
             group_delta = reward * base_lr * lr_scale * confidence
-
             if wkey in word_lr_mult:
                 group_delta *= word_lr_mult[wkey]
 
-            word_importance[wkey] = max(0.35, min(2.8, word_importance[wkey] + group_delta))
+            # Primary signal: concept-local importance, isolated per cluster
+            cid = word_to_concept.get(wkey)
+            if cid and cid in concept_clusters:
+                local_imp = concept_clusters[cid]["word_importance"]
+                if wkey not in local_imp:
+                    local_imp[wkey] = 1.0
+                local_imp[wkey] = max(0.35, min(2.8, local_imp[wkey] + group_delta))
+                concept_clusters[cid]["usage_count"] = concept_clusters[cid].get("usage_count", 0) + 1
+                concept_clusters[cid]["last_seen_iter"] = iter_num
+
+            # Fallback: global word_importance, dampened so the scheduler/prodigy
+            # still has a signal without contaminating cross-context words
+            if wkey not in word_importance:
+                word_importance[wkey] = 1.0
+            word_importance[wkey] = max(0.35, min(2.8, word_importance[wkey] + group_delta * 0.4))
 
         # ====================== CORE REFINEMENT ======================
         reference = cur_positive.clone()
@@ -471,7 +554,6 @@ class FunPackGemmaEmbeddingRefiner:
         sim_threshold = global_adaptive["dynamic_sim_threshold"]
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
-        # Always define new_delta
         if is_close and history:
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
@@ -508,12 +590,19 @@ class FunPackGemmaEmbeddingRefiner:
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
-        # Apply word-level importance
-        if word_importance and cur_positive.dim() > 1:
+        # Apply concept-aware word importance to delta
+        if cur_positive.dim() > 1:
             seq_len = cur_positive.shape[1] if cur_positive.dim() == 3 else cur_positive.shape[0]
             importance_tensor = torch.ones(seq_len, device=device)
             for start, end, full_word, _ in word_groups:
-                imp = word_importance.get(full_word.lower(), 1.0)
+                wkey = full_word.lower()
+                cid = word_to_concept.get(wkey)
+                if cid and cid in concept_clusters:
+                    # Use concept-local score; fall back to global if not yet tracked locally
+                    imp = concept_clusters[cid]["word_importance"].get(wkey,
+                          word_importance.get(wkey, 1.0))
+                else:
+                    imp = word_importance.get(wkey, 1.0)
                 importance_tensor[start:end] = imp
             new_delta = new_delta * importance_tensor.unsqueeze(-1)
 
@@ -535,6 +624,14 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive["dynamic_sim_threshold"] = sim_threshold
         global_adaptive["exploration_base"] = expl
 
+        # Prune stale concept clusters to prevent unbounded JSON growth
+        if len(concept_clusters) > 64:
+            concept_clusters = {
+                cid: c for cid, c in concept_clusters.items()
+                if iter_num - c.get("last_seen_iter", 0) < 500
+            }
+            global_adaptive["concept_clusters"] = concept_clusters
+
         # ====================== HISTORY ENTRY ======================
         history_entry = {
             "iteration": iter_num,
@@ -550,8 +647,8 @@ class FunPackGemmaEmbeddingRefiner:
             sorted_hist = sorted(history, key=lambda x: x.get("rating", 0), reverse=True)
             top = sorted_hist[:40]
             recent = history[-120:]
-            seen = {e["iteration"] for e in top}
-            history = top + [e for e in recent if e["iteration"] not in seen]
+            seen_iters = {e["iteration"] for e in top}
+            history = top + [e for e in recent if e["iteration"] not in seen_iters]
 
         active["history"] = history
         active["last_rating"] = rating
@@ -568,27 +665,39 @@ class FunPackGemmaEmbeddingRefiner:
                 if not self._is_valuable_token(full_word) or full_word.lower() in feedbacked:
                     continue
                 wkey = full_word.lower()
-                imp = word_importance.get(wkey, 1.0)
+                cid = word_to_concept.get(wkey)
+                if cid and cid in concept_clusters:
+                    imp = concept_clusters[cid]["word_importance"].get(wkey, 1.0)
+                else:
+                    imp = word_importance.get(wkey, 1.0)
+                # Score: words whose importance is still near 1.0 (uncertain) are most
+                # valuable to get explicit human feedback on
                 score = 1.0 - abs(imp - 1.0)
-                candidates.append((full_word, wkey, score, word_token_list))
+                candidates.append((full_word, wkey, score, word_token_list, cid))
 
             if candidates:
                 chosen = max(candidates, key=lambda x: x[2])
-                full_word, wkey, _, word_token_list = chosen
-
+                full_word, wkey, _, word_token_list, chosen_cid = chosen
                 data["pending_feedback"] = {
                     "full_word": full_word,
                     "word_token_list": word_token_list,
+                    "concept_id": chosen_cid,
                     "prompt_key": prompt_key,
                     "iteration": iter_num
                 }
                 global_adaptive["last_feedback_word"] = full_word
                 global_adaptive.setdefault("feedbacked_words", []).append(full_word)
-
                 feedback_question_output = f"Word: '{full_word}' – How well represented? (1=absent, 5=perfect, 6=overrepresented)"
 
         # ====================== TRAINING INFO ======================
         current_top = self._get_top_tokens(word_importance, tokenizer, 12)
+
+        active_concept_parts = []
+        for cid, c in concept_clusters.items():
+            if cid in word_to_concept.values():
+                top_local = self._get_top_tokens(c["word_importance"], tokenizer, 5)
+                active_concept_parts.append(f"[{c['label']}({c['usage_count']}): {top_local}]")
+        concept_line = "; ".join(active_concept_parts) if active_concept_parts else "none"
 
         normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
         stability_factor = max(0.0, 1.0 - similarity)
@@ -600,7 +709,8 @@ class FunPackGemmaEmbeddingRefiner:
             f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
             f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%}\n"
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
-            f"Top Word Importance: {current_top}\n"
+            f"Global Top Words: {current_top}\n"
+            f"Active Concept Clusters ({len(concept_clusters)} total): {concept_line}\n"
             f"Word Library Size: {len(word_importance)}"
         )
 
@@ -611,13 +721,20 @@ class FunPackGemmaEmbeddingRefiner:
 
         # ====================== STATUS ======================
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
-        health = "🚀 Strong convergence" if avg_reward_ema > 0.6 else "✅ Learning well" if avg_reward_ema > 0.3 else "⚠️ Still exploring" if avg_reward_ema > -0.2 else "🔄 Heavy correction"
+        health = (
+            "🚀 Strong convergence" if avg_reward_ema > 0.6 else
+            "✅ Learning well" if avg_reward_ema > 0.3 else
+            "⚠️ Still exploring" if avg_reward_ema > -0.2 else
+            "🔄 Heavy correction"
+        )
 
-        status = (f"Iter {iter_num} | Total iters {total_iters} | "
-                  f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
-                  f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
-                  f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-                  f"Current focus: {current_top}")
+        status = (
+            f"Iter {iter_num} | Total iters {total_iters} | "
+            f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
+            f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
+            f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
+            f"Active concepts: {concept_line}"
+        )
 
         # ====================== FINAL SAVE ======================
         with open(json_file, "w", encoding="utf-8") as f:
