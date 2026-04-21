@@ -527,7 +527,8 @@ class FunPackGemmaEmbeddingRefiner:
         return score * self._get_question_base_weight(question_type, category) * freshness
 
     def _select_feedback_question(self, ordered_concept_ids: list, concept_clusters: dict,
-                                  concept_groups: dict, last_rating: int, rating: int,
+                                  concept_groups: dict, current_concept_labels: dict,
+                                  last_rating: int, rating: int,
                                   similarity: float, iter_num: int):
         if not ordered_concept_ids:
             return None
@@ -565,7 +566,7 @@ class FunPackGemmaEmbeddingRefiner:
                 )
                 candidates.append({
                     "concept_id": cid,
-                    "concept_label": cluster.get("label", ""),
+                    "concept_label": current_concept_labels.get(cid, cluster.get("label", "")),
                     "question_type": question_type,
                     "neighbor_ids": neighbor_ids,
                     "group_id": chosen_group_id,
@@ -632,7 +633,8 @@ class FunPackGemmaEmbeddingRefiner:
         return fallback_id
 
     def _force_feedback_fallback(self, ordered_concept_ids: list, concept_clusters: dict,
-                                 concept_groups: dict, rating_shift: float, similarity: float):
+                                 concept_groups: dict, current_concept_labels: dict,
+                                 rating_shift: float, similarity: float):
         if not ordered_concept_ids:
             return None
 
@@ -668,7 +670,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         return {
             "concept_id": chosen_cid,
-            "concept_label": cluster.get("label", ""),
+            "concept_label": current_concept_labels.get(chosen_cid, cluster.get("label", "")),
             "question_type": question_type,
             "neighbor_ids": self._get_concept_neighbors(chosen_cid, ordered_concept_ids, radius=2),
             "group_id": chosen_group_id,
@@ -715,10 +717,12 @@ class FunPackGemmaEmbeddingRefiner:
         """
         word_to_concept = {}
         ordered_concept_ids = []
+        current_concept_labels = {}
         for phrase_words in self._parse_concepts(prompt):
             cid, is_new = self._match_concept(phrase_words, concept_clusters)
             if cid is None:
                 continue
+            phrase_label = " ".join(phrase_words[:6])
             if is_new:
                 concept_clusters[cid] = self._default_concept_cluster(phrase_words)
             else:
@@ -732,14 +736,17 @@ class FunPackGemmaEmbeddingRefiner:
                     concept_clusters[cid]["category"] = self._infer_concept_category(
                         concept_clusters[cid]["anchor_words"]
                     )
+            concept_clusters[cid]["last_prompt_label"] = phrase_label
+            current_concept_labels[cid] = phrase_label
             for w in phrase_words:
                 word_to_concept[w] = cid
             if cid not in ordered_concept_ids:
                 ordered_concept_ids.append(cid)
-        return word_to_concept, ordered_concept_ids
+        return word_to_concept, ordered_concept_ids, current_concept_labels
 
     def _build_concept_groups(self, ordered_concept_ids: list, concept_clusters: dict,
-                               existing_groups: dict, window: int = 3):
+                               existing_groups: dict, current_concept_labels: dict,
+                               window: int = 3):
         """
         Level 4: group consecutive concept phrases into semantic sentence-level
         units using a non-overlapping sliding window of size `window`.
@@ -773,8 +780,12 @@ class FunPackGemmaEmbeddingRefiner:
             if existing_gid:
                 # Preserve the canonical prompt order even if it shifted slightly
                 groups[existing_gid]["concept_ids"] = chunk
+                groups[existing_gid]["label"] = " | ".join(
+                    current_concept_labels.get(cid, concept_clusters.get(cid, {}).get("label", cid))
+                    for cid in chunk
+                )
             else:
-                labels = [concept_clusters[cid]["label"]
+                labels = [current_concept_labels.get(cid, concept_clusters[cid]["label"])
                           for cid in chunk if cid in concept_clusters]
                 gid = md5("|".join(chunk).encode()).hexdigest()[:10]
                 groups[gid] = {
@@ -1155,16 +1166,17 @@ class FunPackGemmaEmbeddingRefiner:
         # ====================== CONCEPT CLUSTER + GROUP SETUP (Levels 3 & 4) ======================
         concept_clusters = global_adaptive["concept_clusters"]
         if analysis_prompt:
-            word_to_concept, ordered_concept_ids = self._build_word_concept_map(
+            word_to_concept, ordered_concept_ids, current_concept_labels = self._build_word_concept_map(
                 analysis_prompt, concept_clusters
             )
         else:
-            word_to_concept, ordered_concept_ids = {}, []
+            word_to_concept, ordered_concept_ids, current_concept_labels = {}, [], {}
 
         if feedback_enabled and not ordered_concept_ids and analysis_prompt:
             fallback_cid = self._build_prompt_fallback_concept(analysis_prompt, concept_clusters)
             if fallback_cid:
                 ordered_concept_ids = [fallback_cid]
+                current_concept_labels[fallback_cid] = concept_clusters[fallback_cid].get("label", analysis_prompt[:64])
                 for w in concept_clusters[fallback_cid].get("anchor_words", []):
                     word_to_concept.setdefault(w, fallback_cid)
 
@@ -1177,7 +1189,7 @@ class FunPackGemmaEmbeddingRefiner:
         # Build or update concept groups from the current ordered concept list
         concept_groups = self._build_concept_groups(
             ordered_concept_ids, concept_clusters,
-            global_adaptive["concept_groups"], window=3
+            global_adaptive["concept_groups"], current_concept_labels, window=3
         )
         global_adaptive["concept_groups"] = concept_groups
 
@@ -1462,6 +1474,7 @@ class FunPackGemmaEmbeddingRefiner:
                 ordered_concept_ids,
                 concept_clusters,
                 concept_groups,
+                current_concept_labels,
                 last_rating,
                 rating,
                 similarity,
@@ -1473,6 +1486,7 @@ class FunPackGemmaEmbeddingRefiner:
                     ordered_concept_ids,
                     concept_clusters,
                     concept_groups,
+                    current_concept_labels,
                     rating_shift,
                     similarity
                 )
@@ -1522,7 +1536,7 @@ class FunPackGemmaEmbeddingRefiner:
             c = concept_clusters[cid]
             top_local = self._get_top_tokens(c["word_importance"], tokenizer, 4)
             active_concept_parts.append(
-                f"[{c['label']}/{c.get('category', 'general')}: "
+                f"[{current_concept_labels.get(cid, c['label'])}/{c.get('category', 'general')}: "
                 f"top={top_local} | p={c.get('presence_target', 1.0):.2f} "
                 f"prio={c.get('priority_weight', 1.0):.2f} "
                 f"stab={c.get('stability_weight', 1.0):.2f}]"
@@ -1543,6 +1557,7 @@ class FunPackGemmaEmbeddingRefiner:
         dom_cid, dom_score, dom_label = self._get_dominant_concept(
             ordered_concept_ids, concept_clusters
         )
+        dom_label = current_concept_labels.get(dom_cid, dom_label) if dom_cid else dom_label
         dominant_line = f"'{dom_label}' (avg_imp={dom_score:.2f})" if dom_cid else "undetermined"
 
         normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
