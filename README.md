@@ -1,21 +1,42 @@
 # ComfyUI-FunPack
 
-A set of nodes designed for experiments with video diffusion models, such as WAN, HunyuanVideo, LTX and others.
+A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-All pip packages used by FunPack nodes are Comfy dependencies so no additional installations are required. 
-hpsv3 is an _optional_ dependency for Keyframe Extractor node, thus not included into requirements. 
-You can install it separately: _pip3 install hpsv3 --no-build-isolation_.
-Please take into attention that using Prompt Enhancer and Story Writer nodes becomes impossible after installation of hpsv3 due to version of transformers required by hpsv3. Nodes require transformers>=5.0. Installing it without --no-build-isolation will lead to 0 effect and node won't detect working hpsv3 in this case.
+## Installation
 
-To discover how to work with nodes, please check "docs" folder.
+FunPack is available on Comfy Registry and can be installed in any of these ways:
 
-To see the changes between the versions of FunPack, please check CHANGELOG.md.
+1. With `comfy-cli`:
+   `comfy node install funpack`
+2. With git, inside your `ComfyUI/custom_nodes` directory:
+   `git clone https://github.com/aimfordeb/ComfyUI-FunPack`
+3. With ComfyUI-Manager:
+   Open `Install custom nodes`, search for `ComfyUI-FunPack`, and click `Install`.
 
-**FunPack is available on Comfy Registry and offers three different ways to install it:**
-1. With comfy-cli: run _comfy node install funpack_ in your Terminal (make sure comfy-cli is installed).
-2. With git: run _git clone https://github.com/aimfordeb/ComfyUI-FunPack_ in your Terminal inside your /ComfyUI/custom_nodes folder.
-3. With ComfyUI-Manager: _open "Install custom nodes" and search for ComfyUI-FunPack, then click on "Install"._
+## Dependencies
 
-Additional message: Sorry for testing new features in "main" branch and spamming with commits. It's just inconvenient for me to test on "dev" since I'm not running the code on my own PC locally.
+The main FunPack nodes rely only on packages that already come with ComfyUI, so no extra installation is normally required.
 
-If you have any suggestions or questions, or you have a new feature to add into the node set, feel free to add new topic in Issues or create a pull request.
+`hpsv3` is an optional dependency used by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not included in the default requirements.
+
+Install it manually only if you need that feature:
+
+`pip3 install hpsv3 --no-build-isolation`
+
+## Important Note About `hpsv3`
+
+Installing `hpsv3` can break `Prompt Enhancer` and `Story Writer`, because `hpsv3` depends on a `transformers` version that conflicts with the version those LLM-based nodes require.
+
+FunPack's LLM nodes require `transformers >= 5.0`.
+
+If you install `hpsv3`, use `--no-build-isolation`. Otherwise the install may appear to succeed while the node still cannot detect a working `hpsv3` package.
+
+## Documentation
+
+Per-node documentation is available in the [`docs`](docs) folder.
+
+Version history is available in [CHANGELOG.md](CHANGELOG.md).
+
+## Feedback
+
+If you have suggestions, questions, or ideas for new nodes, feel free to open an Issue or submit a pull request.
