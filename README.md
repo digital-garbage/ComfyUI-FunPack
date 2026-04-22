@@ -15,9 +15,20 @@ FunPack is available on Comfy Registry and can be installed in any of these ways
 
 ## Dependencies
 
-The main FunPack nodes rely only on packages that already come with ComfyUI, so no extra installation is normally required.
+FunPack now includes a [`requirements.txt`](requirements.txt) file for the Python packages it expects outside the standard library.
 
-`hpsv3` is an optional dependency used by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not included in the default requirements.
+Install them with:
+
+`pip install -r requirements.txt`
+
+The requirements file uses the CUDA 12.9 PyTorch wheel index and requires:
+
+- `torch >= 2.8.0`
+- `transformers >= 5.0.0`
+
+Higher Torch versions are fine. The important part is avoiding older Torch releases that may break FunPack workflows.
+
+`hpsv3` is still an optional dependency used only by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not included in the default requirements.
 
 Install it manually only if you need that feature:
 

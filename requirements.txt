@@ -1,0 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cu129
+
+torch>=2.8.0
+transformers>=5.0.0
+huggingface_hub
+safetensors
+numpy
+Pillow
