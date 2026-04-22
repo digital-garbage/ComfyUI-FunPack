@@ -21,12 +21,16 @@ Install them with:
 
 `pip install -r requirements.txt`
 
-The requirements file uses the CUDA 12.9 PyTorch wheel index and requires:
+The requirements file intentionally avoids pip command flags because some ComfyUI/registry installers treat those as invalid requirement entries.
+
+FunPack expects your existing ComfyUI environment to already have a compatible PyTorch install, and the requirements file only lists the extra Python packages this node set needs.
+
+The expected baseline is:
 
 - `torch >= 2.8.0`
 - `transformers >= 5.0.0`
 
-Higher Torch versions are fine. The important part is avoiding older Torch releases that may break FunPack workflows.
+Higher Torch versions are fine. The important part is avoiding older Torch releases that may break FunPack workflows. If your ComfyUI environment has an older Torch build, upgrade Torch in that environment separately instead of through `requirements.txt`.
 
 `hpsv3` is still an optional dependency used only by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not included in the default requirements.
 
