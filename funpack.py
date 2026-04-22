@@ -1811,15 +1811,16 @@ class FunPackLorebookEnhancer:
             content = entry.get("content", "").strip()
             if not content:
                 continue
+            prefixed_content = f"{entry_delimiter}{content}" if entry_delimiter else content
 
             # Always append to the end - this is the requested behavior
             if enhanced:
-                enhanced += "\n" + content
+                enhanced += "\n" + prefixed_content
             else:
-                enhanced = content
+                enhanced = prefixed_content
 
             source = entry.get("comment") or entry.get("name") or f"uid:{entry.get('uid','?')}" or "unnamed"
-            injected.append(f"[{source}] {content}")
+            injected.append(f"[{source}] {prefixed_content}")
 
         injected_text = "\n\n".join(injected) if injected else "No content injected"
         return (enhanced, injected_text)
