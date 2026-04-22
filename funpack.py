@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Tuple, Optional
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import folder_paths
 from comfy.utils import ProgressBar
 import comfy.clip_vision
@@ -43,6 +43,109 @@ def serializable_to_tensor(d: dict) -> torch.Tensor:
     if torch.cuda.is_available():
         tensor = tensor.cuda()
     return tensor
+
+def _safe_float(value, fallback=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+def _safe_int(value, fallback=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+def _to_image_tensor(image):
+    arr = np.asarray(image).astype(np.float32) / 255.0
+    return torch.from_numpy(arr).unsqueeze(0)
+
+def render_refinement_loss_graph(refinement_key, scheduler_mode, mode, total_iterations, latest_learning_loss, points, width=960, height=540):
+    image = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+
+    bg = (24, 28, 34)
+    panel = (30, 36, 44)
+    grid = (64, 76, 92)
+    axis = (122, 137, 156)
+    text = (235, 239, 244)
+    subtext = (168, 180, 194)
+    line = (74, 201, 255)
+    fill = (74, 201, 255, 72)
+    point_color = (255, 181, 71)
+
+    image.paste(bg, (0, 0, width, height))
+
+    draw.rounded_rectangle((16, 16, width - 16, height - 16), radius=18, fill=panel, outline=(49, 58, 70), width=1)
+    draw.text((32, 28), "FunPack Refinement Loss", fill=text, font=font)
+    draw.text((32, 50), f"Embedding: {refinement_key}", fill=text, font=font)
+    draw.text((32, 68), f"Scheduler: {scheduler_mode.upper()}   Mode: {mode.upper()}   Iterations: {total_iterations}   Latest loss: {latest_learning_loss:.4f}", fill=subtext, font=font)
+
+    if not points:
+        draw.text((32, 112), "No loss history is available yet.", fill=(255, 160, 122), font=font)
+        return _to_image_tensor(image.convert("RGB"))
+
+    left = 70
+    top = 92
+    right = width - 28
+    bottom = height - 58
+    graph_width = max(1, right - left)
+    graph_height = max(1, bottom - top)
+
+    draw.line((left, top, left, bottom), fill=axis, width=1)
+    draw.line((left, bottom, right, bottom), fill=axis, width=1)
+
+    y_values = [_safe_float(point.get("learning_loss"), 0.0) for point in points]
+    x_values = [_safe_int(point.get("total_iteration"), index + 1) for index, point in enumerate(points)]
+
+    y_min = min(y_values)
+    y_max = max(y_values)
+    if abs(y_max - y_min) < 1e-9:
+        pad = 0.25 if y_max == 0 else abs(y_max) * 0.15
+        y_min -= pad
+        y_max += pad
+    else:
+        pad = max(0.02, (y_max - y_min) * 0.12)
+        y_min -= pad
+        y_max += pad
+
+    x_min = min(x_values)
+    x_max = max(x_values)
+    if x_min == x_max:
+        x_max = x_min + 1
+
+    for i in range(5):
+        y = top + (graph_height * i / 4.0)
+        draw.line((left, y, right, y), fill=grid, width=1)
+        y_label = y_max - ((y_max - y_min) * i / 4.0)
+        draw.text((18, y - 6), f"{y_label:.3f}", fill=subtext, font=font)
+
+    for i in range(5):
+        x = left + (graph_width * i / 4.0)
+        draw.line((x, top, x, bottom), fill=grid, width=1)
+        x_label = round(x_min + ((x_max - x_min) * i / 4.0))
+        draw.text((x - 10, bottom + 10), str(x_label), fill=subtext, font=font)
+
+    coords = []
+    for x_value, y_value in zip(x_values, y_values):
+        norm_x = (x_value - x_min) / max(1e-9, (x_max - x_min))
+        norm_y = (y_value - y_min) / max(1e-9, (y_max - y_min))
+        px = left + norm_x * graph_width
+        py = bottom - norm_y * graph_height
+        coords.append((px, py))
+
+    if len(coords) == 1:
+        px, py = coords[0]
+        draw.ellipse((px - 4, py - 4, px + 4, py + 4), fill=point_color)
+    else:
+        polygon = [(coords[0][0], bottom)] + coords + [(coords[-1][0], bottom)]
+        draw.polygon(polygon, fill=fill)
+        draw.line(coords, fill=line, width=3)
+        px, py = coords[-1]
+        draw.ellipse((px - 5, py - 5, px + 5, py + 5), fill=point_color, outline=(255, 243, 214))
+
+    return _to_image_tensor(image.convert("RGB"))
     
 class FunPackGemmaEmbeddingRefiner:
     _tokenizers = {}
@@ -291,8 +394,8 @@ class FunPackGemmaEmbeddingRefiner:
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -1031,6 +1134,7 @@ class FunPackGemmaEmbeddingRefiner:
                     "recent_questions": [],
                     "rating_change_events": [],
                 },
+                "loss_history": [],
                 "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
@@ -1084,6 +1188,7 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive.setdefault("word_importance", {})
         global_adaptive.setdefault("feedbacked_concepts", [])
         global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
+        global_adaptive.setdefault("loss_history", [])
         global_adaptive.setdefault("mode", mode)
         for cid in list(global_adaptive["concept_clusters"].keys()):
             global_adaptive["concept_clusters"][cid] = self._ensure_concept_cluster_defaults(
@@ -1581,6 +1686,27 @@ class FunPackGemmaEmbeddingRefiner:
         elif scheduler_mode == "aggressive":
             training_info += "\n[Aggressive] Fast style locking"
 
+        global_total_iterations = sum(len(p.get("history", [])) for p in prompt_histories.values())
+        loss_history = list(global_adaptive.get("loss_history", []))[-511:]
+        loss_history.append({
+            "total_iteration": global_total_iterations,
+            "learning_loss": round(float(learning_loss), 6),
+            "rating": int(rating),
+            "similarity": round(float(similarity), 6),
+            "scheduler_mode": scheduler_mode,
+            "mode": mode,
+        })
+        global_adaptive["loss_history"] = loss_history
+
+        loss_graph = render_refinement_loss_graph(
+            refinement_key=refinement_key,
+            scheduler_mode=scheduler_mode,
+            mode=mode,
+            total_iterations=global_total_iterations,
+            latest_learning_loss=float(learning_loss),
+            points=loss_history[-256:],
+        )
+
         # ====================== STATUS ======================
         trend = "↑" if reward > last_reward else "↓" if reward < last_reward else "→"
         health = (
@@ -1591,7 +1717,7 @@ class FunPackGemmaEmbeddingRefiner:
         )
 
         status = (
-            f"Mode {mode.upper()} | Iter {iter_num} | Total iters {total_iters} | "
+            f"Mode {mode.upper()} | Iter {iter_num} | Total iters {global_total_iterations} | "
             f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
             f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
             f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
@@ -1605,7 +1731,7 @@ class FunPackGemmaEmbeddingRefiner:
         # ====================== RETURN ======================
         modified_positive = [(new_positive, positive_meta)]
 
-        return (modified_positive, status, feedback_question_output, training_info)
+        return (modified_positive, status, feedback_question_output, training_info, loss_graph)
         
 # Constants from StoryMem
 IMAGE_FACTOR = 28
@@ -2197,7 +2323,8 @@ class FunPackVideoStitch:
     FUNCTION = "stitch"
     INPUT_TYPES = lambda: {
         "required": {
-            "blend_frames": ("INT", {"default": 8, "min": 1, "max": 64}),
+            "blend_frames": ("INT", {"default": 8, "min": 0, "max": 64}),
+            "transition_type": (["linear", "ease_in", "ease_out", "ease_in_out", "cosine"], {"default": "linear"}),
         },
         "optional": {
             "video1": ("IMAGE",),
@@ -2211,24 +2338,39 @@ class FunPackVideoStitch:
         }
     }
 
-    def linear_blend(self, batch_a, batch_b, blend_frames):
+    def get_alpha(self, step_index, blend_frames, transition_type):
         if blend_frames == 1:
-            blended_frame = 0.5 * batch_a[-1] + 0.5 * batch_b[0]
-            return blended_frame.unsqueeze(0)
+            return 0.5
 
+        t = step_index / (blend_frames - 1)
+
+        if transition_type == "ease_in":
+            return t * t
+        if transition_type == "ease_out":
+            return 1 - ((1 - t) * (1 - t))
+        if transition_type == "ease_in_out":
+            return t * t * (3 - (2 * t))
+        if transition_type == "cosine":
+            return 0.5 - (0.5 * math.cos(math.pi * t))
+        return t
+
+    def blend_batches(self, batch_a, batch_b, blend_frames, transition_type):
         blended = []
         for i in range(blend_frames):
-            alpha = i / (blend_frames - 1)
+            alpha = self.get_alpha(i, blend_frames, transition_type)
             blended_frame = (1 - alpha) * batch_a[-blend_frames + i] + alpha * batch_b[i]
             blended.append(blended_frame.unsqueeze(0))
         return torch.cat(blended, dim=0)
 
-    def stitch(self, blend_frames, video1=None, video2=None, video3=None, video4=None, video5=None, video6=None, video7=None, video8=None):
+    def stitch(self, blend_frames, transition_type, video1=None, video2=None, video3=None, video4=None, video5=None, video6=None, video7=None, video8=None):
         input_videos = [video1, video2, video3, video4, video5, video6, video7, video8]
         video_batches = [v for v in input_videos if v is not None]
 
         if len(video_batches) < 2:
             raise ValueError("VideoStitch requires at least 2 connected video inputs.")
+
+        if blend_frames == 0:
+            return (torch.cat(video_batches, dim=0),)
 
         output_frames = []
 
@@ -2241,7 +2383,7 @@ class FunPackVideoStitch:
 
             stable_a = batch_a[:-blend_frames]
             stable_b = batch_b[blend_frames:]
-            transition = self.linear_blend(batch_a, batch_b, blend_frames)
+            transition = self.blend_batches(batch_a, batch_b, blend_frames, transition_type)
 
             if i == 0:
                 output_frames.append(stable_a)
