@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.3] - 2026-04-22
+
+### Changed
+
+Expanded `/docs` so every node in `funpack.py` now has matching documentation, and refreshed the existing node docs to match the current inputs and outputs.
+
 ## [1.3.2] - 2026-04-19
 
 ### Changed

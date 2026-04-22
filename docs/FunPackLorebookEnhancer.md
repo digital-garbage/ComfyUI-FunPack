@@ -1,19 +1,25 @@
 # FunPack Lorebook Enhancer
 
-This node helps you with loading SillyTavern format lorebooks to use with Prompt Enhancer and Story Writer nodes, enhancing the prompt with related tags from lorebooks.
+This node loads SillyTavern-style lorebook JSON files and appends matching lore entries to the end of your prompt.
 
 ## Parameters
 
-**prompt**: Your prompt that has to be enhanced with lorebooks tags.
+**prompt**: Base prompt that should be enhanced with lorebook content.
 
-**lorebook**: Full path to your .json lorebook file.
+**lorebook_1, lorebook_2, lorebook_3, lorebook_4**: Full paths to lorebook `.json` files. You can use one lorebook or combine up to four.
 
-**context_history**: If enabled, remembers the previous context to use for the next generation.
+**entry_delimiter**: Extra delimiter text intended for separating injected entries. At the moment, the node always appends entries line by line, so this input currently has no visible effect.
 
-**scan_depth**: How many previous messages to include into context. Min 1 (only last message), max 12.
+**context_history**: Additional context text that is scanned together with the current prompt when looking for matching lorebook entries.
+
+**scan_depth**: How many trailing lines from `context_history + prompt` should be scanned for lorebook triggers.
 
 ## Outputs
 
-**enhanced_prompt**: Your revamped prompt with injected knowledge from lorebooks.
+**enhanced_prompt**: Your original prompt with the activated lorebook entries appended to the end.
 
-**injected_content**: What's exactly injected into your prompt.
+**injected_content**: A readable list of the exact lorebook entries that were injected.
+
+## Purpose
+
+Use this node to bring character, world, or setting information from SillyTavern lorebooks into Prompt Enhancer or Story Writer workflows without manually copying lore into every prompt.
