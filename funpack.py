@@ -376,6 +376,15 @@ class FunPackGemmaEmbeddingRefiner:
                     "default": "",
                     "placeholder": "Positive prompt"
                 }),
+                "sigmas": ("SIGMAS",),
+                "sigma_strength": ("FLOAT", {
+                    "default": 0.18,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "round": False,
+                    "label": "Sigma Refinement Strength"
+                }),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears ALL history)"}),
                 "unlimited_history": ("BOOLEAN", {
                     "default": False,
@@ -394,8 +403,8 @@ class FunPackGemmaEmbeddingRefiner:
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE")
-    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE", "SIGMAS")
+    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph", "refined_sigmas")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -1076,13 +1085,150 @@ class FunPackGemmaEmbeddingRefiner:
         cluster["last_question_iter"] = iter_num
 
     # =========================================================================
+    # SIGMA REFINEMENT
+    # =========================================================================
+
+    def _ensure_sigma_state_defaults(self, global_adaptive: dict):
+        global_adaptive.setdefault("sigma_profile", [0.0] * 32)
+        global_adaptive.setdefault("last_applied_sigma_profile", [0.0] * 32)
+        global_adaptive.setdefault("sigma_iterations", 0)
+        global_adaptive.setdefault("sigma_avg_reward_ema", 0.0)
+        global_adaptive.setdefault("sigma_exploration_base", 0.035)
+        global_adaptive.setdefault("sigma_history", [])
+
+    def _sigma_resample_profile(self, profile, target_len):
+        if target_len <= 0:
+            return np.zeros((0,), dtype=np.float32)
+
+        arr = np.asarray(profile, dtype=np.float32)
+        if arr.size == 0:
+            arr = np.zeros((32,), dtype=np.float32)
+        if arr.size == target_len:
+            return arr.copy()
+        if arr.size == 1:
+            return np.full((target_len,), float(arr[0]), dtype=np.float32)
+
+        src = np.linspace(0.0, 1.0, arr.size)
+        dst = np.linspace(0.0, 1.0, target_len)
+        return np.interp(dst, src, arr).astype(np.float32)
+
+    def _sigma_smooth_noise(self, noise):
+        if noise.size <= 2:
+            return noise
+        kernel = np.array([0.25, 0.5, 0.25], dtype=np.float32)
+        smoothed = np.convolve(noise, kernel, mode="same")
+        smoothed = np.convolve(smoothed, kernel, mode="same")
+        return smoothed.astype(np.float32)
+
+    def _sigma_enforce_monotonic(self, tuned: torch.Tensor, original: torch.Tensor):
+        out = tuned.clone()
+        count = int(out.shape[0])
+        if count <= 2:
+            return out
+
+        eps = max(1e-6, float((original[0] - original[-1]).abs().item()) * 1e-6)
+
+        for i in range(1, count - 1):
+            max_allowed = out[i - 1] - eps
+            if out[i] >= max_allowed:
+                out[i] = max_allowed
+
+        out[-1] = original[-1]
+        for i in range(count - 2, 0, -1):
+            min_allowed = out[i + 1] + eps
+            if out[i] <= min_allowed:
+                out[i] = min_allowed
+
+        out[0] = original[0]
+        out[-1] = original[-1]
+        return out
+
+    def _refine_sigma_schedule(self, sigmas, rating: int, global_adaptive: dict, strength: float, seed: int):
+        if not isinstance(sigmas, torch.Tensor):
+            return torch.FloatTensor([]), "Sigma refinement inactive."
+
+        original_sigmas = sigmas.detach().clone()
+        if original_sigmas.numel() <= 2:
+            return original_sigmas, "Sigma refinement skipped: schedule too short."
+
+        self._ensure_sigma_state_defaults(global_adaptive)
+
+        reward = (rating - 5.5) / 4.5
+        sigma_iterations = int(global_adaptive.get("sigma_iterations", 0))
+
+        profile = np.asarray(global_adaptive.get("sigma_profile", [0.0] * 32), dtype=np.float32)
+        last_applied = np.asarray(global_adaptive.get("last_applied_sigma_profile", [0.0] * 32), dtype=np.float32)
+        sigma_lr = 0.22 / (1.0 + 0.08 * math.sqrt(max(1, sigma_iterations)))
+        profile = np.clip(profile + (last_applied * reward * sigma_lr), -1.0, 1.0)
+        profile = np.clip(profile - profile.mean(), -1.0, 1.0)
+
+        sigma_avg_reward_ema = float(global_adaptive.get("sigma_avg_reward_ema", 0.0))
+        sigma_avg_reward_ema = 0.85 * sigma_avg_reward_ema + 0.15 * reward
+        sigma_exploration_base = float(global_adaptive.get("sigma_exploration_base", 0.035))
+        sigma_exploration_scale = max(0.18, 1.0 - max(0.0, sigma_avg_reward_ema) * 0.7)
+
+        if seed != 0:
+            np.random.seed(seed % (2 ** 32))
+        noise = np.random.normal(
+            0.0,
+            sigma_exploration_base * sigma_exploration_scale,
+            size=profile.shape[0]
+        ).astype(np.float32)
+        applied_profile = np.clip(profile + self._sigma_smooth_noise(noise), -1.0, 1.0)
+        applied_profile = np.clip(applied_profile - applied_profile.mean(), -1.0, 1.0)
+
+        middle_profile = self._sigma_resample_profile(applied_profile, max(0, original_sigmas.shape[0] - 2))
+        middle_profile_tensor = torch.tensor(middle_profile, dtype=original_sigmas.dtype, device=original_sigmas.device)
+
+        tuned_sigmas = original_sigmas.clone()
+        sigma_strength = max(0.0, min(1.0, float(strength)))
+        for idx in range(1, int(original_sigmas.shape[0]) - 1):
+            delta = float(middle_profile_tensor[idx - 1].item())
+            current = original_sigmas[idx]
+            prev_sigma = original_sigmas[idx - 1]
+            next_sigma = original_sigmas[idx + 1]
+            if delta >= 0.0:
+                tuned_sigmas[idx] = current + (prev_sigma - current) * sigma_strength * delta
+            else:
+                tuned_sigmas[idx] = current + (current - next_sigma) * sigma_strength * delta
+
+        tuned_sigmas = self._sigma_enforce_monotonic(tuned_sigmas, original_sigmas)
+
+        global_adaptive["sigma_profile"] = profile.tolist()
+        global_adaptive["last_applied_sigma_profile"] = applied_profile.tolist()
+        global_adaptive["sigma_iterations"] = sigma_iterations + 1
+        global_adaptive["sigma_avg_reward_ema"] = sigma_avg_reward_ema
+        global_adaptive["sigma_exploration_base"] = max(
+            0.012,
+            min(0.05, sigma_exploration_base * (0.97 if rating >= 8 else 1.02))
+        )
+        sigma_history = list(global_adaptive.get("sigma_history", []))[-119:]
+        sigma_history.append({
+            "iteration": sigma_iterations + 1,
+            "rating": int(rating),
+            "reward": round(float(reward), 6),
+            "lr": round(float(sigma_lr), 6),
+        })
+        global_adaptive["sigma_history"] = sigma_history
+
+        mean_shift = float((tuned_sigmas[1:-1] - original_sigmas[1:-1]).abs().mean().item()) if tuned_sigmas.numel() > 2 else 0.0
+        max_shift = float((tuned_sigmas[1:-1] - original_sigmas[1:-1]).abs().max().item()) if tuned_sigmas.numel() > 2 else 0.0
+        sigma_status = (
+            f"Sigma: iter {global_adaptive['sigma_iterations']} | strength {sigma_strength:.2f} | "
+            f"mean shift {mean_shift:.6f} | max shift {max_shift:.6f} | "
+            f"endpoints preserved ({float(original_sigmas[0].item()):.6f} -> {float(original_sigmas[-1].item()):.6f})"
+        )
+        return tuned_sigmas, sigma_status
+
+    # =========================================================================
     # MAIN REFINE
     # =========================================================================
 
     def refine(self, positive_conditioning, mode: str, rating: int, refinement_key: str,
                scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
-               seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3):
+               seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
+               sigmas=None, sigma_strength: float = 0.18):
 
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:
@@ -1098,9 +1244,18 @@ class FunPackGemmaEmbeddingRefiner:
 
         safe_key = md5(f"{mode}::{refinement_key}".encode("utf-8")).hexdigest()
         json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
+        fallback_loss_graph = render_refinement_loss_graph(
+            refinement_key=refinement_key,
+            scheduler_mode=scheduler_mode,
+            mode=mode,
+            total_iterations=0,
+            latest_learning_loss=0.0,
+            points=[],
+        )
+        fallback_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else torch.FloatTensor([])
 
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
-            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning")
+            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas)
 
         item = positive_conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -1111,7 +1266,7 @@ class FunPackGemmaEmbeddingRefiner:
             positive_meta = {"pooled_output": None}
 
         if not isinstance(raw_positive, torch.Tensor):
-            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding")
+            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas)
 
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
@@ -1119,7 +1274,7 @@ class FunPackGemmaEmbeddingRefiner:
         # ====================== STATE TEMPLATES ======================
         # Single source of truth for both reset and corrupt-recovery paths.
         def _fresh_global():
-            return {
+            state = {
                 "word_importance": {},
                 "concept_clusters": {},
                 "concept_groups": {},
@@ -1143,6 +1298,8 @@ class FunPackGemmaEmbeddingRefiner:
                 "total_steps_estimate": 150,
                 "current_step": 0,
             }
+            self._ensure_sigma_state_defaults(state)
+            return state
 
         def _fresh_data():
             return {
@@ -1164,7 +1321,7 @@ class FunPackGemmaEmbeddingRefiner:
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.")
+            return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.", fallback_loss_graph, fallback_sigmas)
 
         # ====================== SAFE JSON LOAD ======================
         try:
@@ -1179,7 +1336,7 @@ class FunPackGemmaEmbeddingRefiner:
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file")
+            return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file", fallback_loss_graph, fallback_sigmas)
 
         global_adaptive = data["global_adaptive"]
         # Migrate sessions created before the multi-level concept system was added
@@ -1190,6 +1347,7 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
         global_adaptive.setdefault("loss_history", [])
         global_adaptive.setdefault("mode", mode)
+        self._ensure_sigma_state_defaults(global_adaptive)
         for cid in list(global_adaptive["concept_clusters"].keys()):
             global_adaptive["concept_clusters"][cid] = self._ensure_concept_cluster_defaults(
                 global_adaptive["concept_clusters"][cid]
@@ -1570,6 +1728,14 @@ class FunPackGemmaEmbeddingRefiner:
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
 
+        refined_sigmas, sigma_status = self._refine_sigma_schedule(
+            sigmas,
+            rating,
+            global_adaptive,
+            sigma_strength,
+            seed,
+        )
+
         # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
         # Chooses one concept/question pair per run using category-aware scoring.
         # Different question types learn different aspects of user preference:
@@ -1678,7 +1844,8 @@ class FunPackGemmaEmbeddingRefiner:
             f"Dominant concept: {dominant_line}\n"
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
-            f"Global top words: {current_top}"
+            f"Global top words: {current_top}\n"
+            f"{sigma_status}"
         )
 
         if scheduler_mode == "accurate":
@@ -1721,7 +1888,8 @@ class FunPackGemmaEmbeddingRefiner:
             f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
             f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
             f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-            f"Dominant: {dominant_line} | Groups: {group_line}"
+            f"Dominant: {dominant_line} | Groups: {group_line}\n"
+            f"{sigma_status}"
         )
 
         # ====================== FINAL SAVE ======================
@@ -1731,8 +1899,7 @@ class FunPackGemmaEmbeddingRefiner:
         # ====================== RETURN ======================
         modified_positive = [(new_positive, positive_meta)]
 
-        return (modified_positive, status, feedback_question_output, training_info, loss_graph)
-        
+        return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas)
 # Constants from StoryMem
 IMAGE_FACTOR = 28
 VIDEO_MIN_PIXELS = 48 * IMAGE_FACTOR * IMAGE_FACTOR  # 37,632
@@ -2836,5 +3003,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackVideoStitch": "FunPack Video Stitch",
     "FunPackContinueVideo": "FunPack Continue Video",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
-    "FunPackGemmaEmbeddingRefiner": "FunPack Gemma Embedding Refiner (Self-Refinement)"
+    "FunPackGemmaEmbeddingRefiner": "FunPack Gemma Embedding Refiner (Self-Refinement)",
 }

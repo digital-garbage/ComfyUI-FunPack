@@ -16,6 +16,10 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **positive_prompt**: Optional prompt text used for token analysis and concept-level feedback.
 
+**sigmas**: Optional input sigma schedule to co-refine alongside the conditioning. When connected, the node preserves the first and last sigma exactly and only adjusts the middle values.
+
+**sigma_strength**: Maximum amount of movement allowed for the middle sigma values when sigma refinement is enabled.
+
 **reset_session**: If enabled, clears the saved training history for the selected refinement key and starts a fresh session.
 
 **unlimited_history**: If enabled, disables history pruning.
@@ -37,6 +41,8 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 **training_info**: Additional training details for the current refinement step.
 
 **loss_graph**: Graph image showing learning loss over total session iterations for the current refinement key.
+
+**refined_sigmas**: Refined sigma schedule. If no `sigmas` input is connected, this output is empty.
 
 ## Purpose
 
