@@ -36,6 +36,8 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **training_info**: Additional training details for the current refinement step.
 
+**loss_graph**: Graph image showing learning loss over total session iterations for the current refinement key.
+
 ## Purpose
 
 Use this node when you want to iteratively tune prompt conditioning based on your own ratings instead of manually rewriting prompts every time. Over multiple runs, it builds a refinement profile for the selected `refinement_key`.
