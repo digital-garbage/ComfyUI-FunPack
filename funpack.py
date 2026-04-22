@@ -377,12 +377,8 @@ class FunPackGemmaEmbeddingRefiner:
                     "placeholder": "Positive prompt"
                 }),
                 "sigmas": ("SIGMAS",),
-                "sigma_strength": ("FLOAT", {
-                    "default": 0.18,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "round": False,
+                "sigma_strength": (["off", "subtle", "medium", "strong", "max"], {
+                    "default": "subtle",
                     "label": "Sigma Refinement Strength"
                 }),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset Session (clears ALL history)"}),
@@ -1096,6 +1092,16 @@ class FunPackGemmaEmbeddingRefiner:
         global_adaptive.setdefault("sigma_exploration_base", 0.035)
         global_adaptive.setdefault("sigma_history", [])
 
+    def _resolve_sigma_strength(self, strength_mode: str):
+        strength_map = {
+            "off": 0.0,
+            "subtle": 0.18,
+            "medium": 0.35,
+            "strong": 0.60,
+            "max": 1.0,
+        }
+        return strength_map.get((strength_mode or "subtle").lower(), 0.18)
+
     def _sigma_resample_profile(self, profile, target_len):
         if target_len <= 0:
             return np.zeros((0,), dtype=np.float32)
@@ -1143,7 +1149,7 @@ class FunPackGemmaEmbeddingRefiner:
         out[-1] = original[-1]
         return out
 
-    def _refine_sigma_schedule(self, sigmas, rating: int, global_adaptive: dict, strength: float, seed: int):
+    def _refine_sigma_schedule(self, sigmas, rating: int, global_adaptive: dict, strength_mode: str, seed: int):
         if not isinstance(sigmas, torch.Tensor):
             return torch.FloatTensor([]), "Sigma refinement inactive."
 
@@ -1181,7 +1187,7 @@ class FunPackGemmaEmbeddingRefiner:
         middle_profile_tensor = torch.tensor(middle_profile, dtype=original_sigmas.dtype, device=original_sigmas.device)
 
         tuned_sigmas = original_sigmas.clone()
-        sigma_strength = max(0.0, min(1.0, float(strength)))
+        sigma_strength = self._resolve_sigma_strength(strength_mode)
         for idx in range(1, int(original_sigmas.shape[0]) - 1):
             delta = float(middle_profile_tensor[idx - 1].item())
             current = original_sigmas[idx]
@@ -1214,7 +1220,7 @@ class FunPackGemmaEmbeddingRefiner:
         mean_shift = float((tuned_sigmas[1:-1] - original_sigmas[1:-1]).abs().mean().item()) if tuned_sigmas.numel() > 2 else 0.0
         max_shift = float((tuned_sigmas[1:-1] - original_sigmas[1:-1]).abs().max().item()) if tuned_sigmas.numel() > 2 else 0.0
         sigma_status = (
-            f"Sigma: iter {global_adaptive['sigma_iterations']} | strength {sigma_strength:.2f} | "
+            f"Sigma: iter {global_adaptive['sigma_iterations']} | strength {strength_mode} ({sigma_strength:.2f}) | "
             f"mean shift {mean_shift:.6f} | max shift {max_shift:.6f} | "
             f"endpoints preserved ({float(original_sigmas[0].item()):.6f} -> {float(original_sigmas[-1].item()):.6f})"
         )
@@ -1228,7 +1234,7 @@ class FunPackGemmaEmbeddingRefiner:
                scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
-               sigmas=None, sigma_strength: float = 0.18):
+               sigmas=None, sigma_strength: str = "subtle"):
 
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:

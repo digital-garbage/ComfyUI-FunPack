@@ -18,7 +18,7 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **sigmas**: Optional input sigma schedule to co-refine alongside the conditioning. When connected, the node preserves the first and last sigma exactly and only adjusts the middle values.
 
-**sigma_strength**: Maximum amount of movement allowed for the middle sigma values when sigma refinement is enabled.
+**sigma_strength**: Preset strength for sigma refinement. `off` disables sigma changes, while `subtle`, `medium`, `strong`, and `max` allow progressively larger movement of the middle sigma values.
 
 **reset_session**: If enabled, clears the saved training history for the selected refinement key and starts a fresh session.
 
