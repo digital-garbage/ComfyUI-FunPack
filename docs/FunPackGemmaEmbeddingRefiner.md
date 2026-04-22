@@ -47,3 +47,7 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 ## Purpose
 
 Use this node when you want to iteratively tune prompt conditioning based on your own ratings instead of manually rewriting prompts every time. Over multiple runs, it builds a refinement profile for the selected `refinement_key`.
+
+## Warning
+
+Sigma refinement currently breaks audio generation in workflows that also produce audio streams. If you need audio to generate and save correctly, do not connect `sigmas` to this node. Use the refiner only for conditioning in those workflows.
