@@ -8,7 +8,7 @@ This node loads SillyTavern-style lorebook JSON files and appends matching lore 
 
 **lorebook_1, lorebook_2, lorebook_3, lorebook_4**: Full paths to lorebook `.json` files. You can use one lorebook or combine up to four.
 
-**entry_delimiter**: Extra delimiter text intended for separating injected entries. At the moment, the node always appends entries line by line, so this input currently has no visible effect.
+**entry_delimiter**: Optional prefix added before every injected lorebook entry. This is useful when the enhanced prompt is fed into an LLM and you want each injected entry to start with a recognizable marker.
 
 **context_history**: Additional context text that is scanned together with the current prompt when looking for matching lorebook entries.
 
@@ -16,9 +16,9 @@ This node loads SillyTavern-style lorebook JSON files and appends matching lore 
 
 ## Outputs
 
-**enhanced_prompt**: Your original prompt with the activated lorebook entries appended to the end.
+**enhanced_prompt**: Your original prompt with the activated lorebook entries appended to the end. If `entry_delimiter` is set, each injected entry is prefixed with it.
 
-**injected_content**: A readable list of the exact lorebook entries that were injected.
+**injected_content**: A readable list of the exact lorebook entries that were injected, including the applied delimiter prefix.
 
 ## Purpose
 
