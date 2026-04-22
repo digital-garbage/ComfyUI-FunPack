@@ -36,6 +36,8 @@ Higher Torch versions are fine. The important part is avoiding older Torch relea
 
 `FunPack Gemma Embedding Refiner` can optionally refine `SIGMAS`, but that currently breaks audio generation in workflows that also produce audio streams. If you need audio to generate and mux correctly, do not connect `sigmas` to the refiner. Leave sigma schedules on their original path and use the refiner only for conditioning.
 
+UPD: This is not caused by Embedding Refiner node. Updating to latest nightly version of ComfyUI solves the problem.
+
 `hpsv3` is still an optional dependency used only by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not included in the default requirements.
 
 Install it manually only if you need that feature:
