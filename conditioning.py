@@ -26,6 +26,11 @@ LORA_REFINER_TYPE_PROFILES = {
     "character": {"step": 0.024, "max_offset": 0.20, "bad_max_offset": 0.42},
 }
 
+
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -37,7 +42,7 @@ def tensor_to_serializable(t: torch.Tensor) -> dict:
     }
 
 def serializable_to_tensor(d: dict) -> torch.Tensor:
-    arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"])
+    arr = np.frombuffer(base64.b64decode(d["data"]), dtype=d["dtype"]).reshape(d["shape"]).copy()
     tensor = torch.from_numpy(arr).to(dtype=torch.float32)
     if torch.cuda.is_available():
         tensor = tensor.cuda()
