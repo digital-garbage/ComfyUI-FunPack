@@ -58,6 +58,16 @@ Use this node when you want to iteratively tune prompt conditioning based on you
 
 Use `FunPack Save Refinement Latent` to store a reference latent tensor bundle under a `refinement_key` and tokenizer `mode`. When `FunPack Video Refiner` later receives a latent input with the same key and mode, it loads that saved latent and applies a small rating-driven adjustment to the latent output.
 
+For LTX audio/video workflows, the latent path must use video latents only:
+
+- Split sampler output with `LTXVSeparateAVLatent`.
+- Send the video latent output to `FunPack Save Refinement Latent`.
+- Send the plain video latent to `FunPack Video Refiner` latent input.
+- Send `FunPack Video Refiner` `refined_latent` to `LTXVConcatAVLatent` `video_latent`.
+- Send the original audio latent to `LTXVConcatAVLatent` `audio_latent`.
+
+Do not connect the combined AV latent from `LTXVConcatAVLatent`, the sampler AV output, or the audio latent to this node. Those use LTX nested/audio latent structures and are intentionally rejected with a clear error.
+
 Latent refinement follows the connection state exactly:
 
 - If the latent input is disconnected and `refined_latent` is disconnected, latent tweaking is disabled.
@@ -66,7 +76,7 @@ Latent refinement follows the connection state exactly:
 - If the latent input is connected and `refined_latent` is disconnected, latent tweaking is disabled.
 - If both latent input and `refined_latent` are connected but no saved latent exists, the node passes the input latent through unchanged and saves it as the current reference.
 - If both are connected and the saved latent shape does not match the current input, the node rewrites the reference and passes the current input through unchanged.
-- If both are connected and the saved latent shape matches the current input, the node tweaks the latent using the connected input as the base and the saved latent as the learned reference.
+- If both are connected and the saved latent shape matches the current input, the node tweaks the latent using the connected input as the base and the saved latent as the learned reference. The refined tensor is bounded to the current/reference value range to avoid out-of-range latent values.
 
 Resetting the session deletes the saved latent reference too.
 

@@ -176,6 +176,20 @@ def latent_samples(latent):
     return samples if isinstance(samples, torch.Tensor) else None
 
 
+def latent_sample_type_name(latent):
+    if not isinstance(latent, dict):
+        return "missing"
+    samples = latent.get("samples")
+    if samples is None:
+        return "missing samples"
+    return f"{type(samples).__module__}.{type(samples).__name__}"
+
+
+def latent_is_plain_video_tensor(latent):
+    samples = latent_samples(latent)
+    return samples is not None and latent.get("type") != "audio"
+
+
 def cpu_tensor_bundle(latent):
     if not isinstance(latent, dict):
         return {}
@@ -202,6 +216,12 @@ def latent_from_tensor_bundle(bundle):
 class FunPackVideoRefiner:
     LATENT_OUTPUT_INDEX = 6
     NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
+    WRONG_LATENT_ERROR = (
+        "Video Refiner latent input must be a plain video LATENT with tensor samples. "
+        "Audio latents and LTX audio/video combined NestedTensor latents are not supported here. "
+        "Connect only the video latent to Video Refiner, then feed the refined video latent into "
+        "LTXVConcatAVLatent as video_latent."
+    )
     SAVED_LATENT_ONLY_STATUS = (
         "Running refinement on saved latent. Changing reference latent shape and size will cause no effect to generation."
     )
@@ -1393,6 +1413,11 @@ class FunPackVideoRefiner:
     def _latent_refinement_disabled(self, latent):
         return clone_latent(latent), "Latent: disabled because latent refinement input/output path is not fully connected."
 
+    def _raise_wrong_latent(self, latent):
+        sample_type = latent_sample_type_name(latent)
+        latent_type = latent.get("type", "unspecified") if isinstance(latent, dict) else "missing"
+        raise ValueError(f"{self.WRONG_LATENT_ERROR} Received samples={sample_type}, type={latent_type}.")
+
     def _save_latent_reference(self, latent, refinement_key, mode):
         samples = latent_samples(latent)
         if samples is None:
@@ -1420,6 +1445,9 @@ class FunPackVideoRefiner:
             return False
 
     def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive):
+        if isinstance(latent, dict) and not latent_is_plain_video_tensor(latent):
+            self._raise_wrong_latent(latent)
+
         current = latent_samples(latent)
         saved_bundle, load_status = self._load_saved_latent(refinement_key, mode)
 
@@ -1485,6 +1513,10 @@ class FunPackVideoRefiner:
 
         refined_samples = current + latent_delta
         refined_samples = torch.where(nonzero_mask, refined_samples, current)
+        refined_samples = torch.nan_to_num(refined_samples, nan=0.0)
+        range_min = torch.minimum(current, saved_samples)
+        range_max = torch.maximum(current, saved_samples)
+        refined_samples = torch.maximum(torch.minimum(refined_samples, range_max), range_min)
         refined_latent["samples"] = refined_samples
 
         latent_state["momentum"] = tensor_to_serializable(momentum.detach().cpu())
@@ -1493,7 +1525,7 @@ class FunPackVideoRefiner:
         latent_state["nonzero_ratio"] = round(float(nonzero_mask.float().mean().item()), 6)
         latent_state["status"] = (
             f"Latent: adjusted shape {tuple(current.shape)} | nonzero {latent_state['nonzero_ratio']:.1%} | "
-            f"max step {max_step:.5f}"
+            f"max step {max_step:.5f} | bounded to input/reference range"
         )
         return refined_latent, latent_state["status"]
 
@@ -2429,6 +2461,9 @@ class FunPackSaveRefinementLatent:
         return float("nan")
 
     def save_latent(self, latent, refinement_key, mode):
+        if isinstance(latent, dict) and not latent_is_plain_video_tensor(latent):
+            FunPackVideoRefiner()._raise_wrong_latent(latent)
+
         samples = latent_samples(latent)
         if samples is None:
             return (clone_latent(latent), "No latent samples tensor found.")
