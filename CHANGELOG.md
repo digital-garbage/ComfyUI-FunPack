@@ -4,7 +4,9 @@
 
 ### Added
 
-Added `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`, a prompt-exact LoRA weight workflow designed to work with `FunPack Gemma Embedding Refiner`.
+Added `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`, a prompt-exact LoRA weight workflow designed to work with `FunPack Video Refiner`.
+
+Added `FunPack Save Refinement Latent`, which stores latent tensor bundles by refinement key for optional latent refinement in `FunPack Video Refiner`.
 
 The new workflow uses base LoRA weights on the first run for a prompt, then lets the refiner save prompt-specific suggested LoRA weights into its existing JSON state for later runs.
 
@@ -19,7 +21,11 @@ Split the old single `funpack.py` implementation into focused modules:
 
 `funpack.py` remains as a compatibility re-export for older imports.
 
-Updated `FunPack Gemma Embedding Refiner` so it can accept a FunPack LoRA stack and save next-run model LoRA weight suggestions based on prompt concepts, LoRA type hints, and user ratings.
+Renamed the visible refiner title to `FunPack Video Refiner` while keeping the old node key as a compatibility alias.
+
+Updated `FunPack Video Refiner` so it can accept a FunPack LoRA stack and save next-run model LoRA weight suggestions based on prompt concepts, LoRA type hints, and user ratings.
+
+Updated `FunPack Video Refiner` with optional latent input/output refinement. If no matching saved latent exists, the latent path is skipped and existing conditioning behavior continues unchanged.
 
 ## [1.3.3] - 2026-04-22
 

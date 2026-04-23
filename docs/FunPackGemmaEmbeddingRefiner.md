@@ -1,6 +1,6 @@
-# FunPack Gemma Embedding Refiner
+# FunPack Video Refiner
 
-This node analyzes the positive conditioning produced by your text encoder, tracks your feedback over time, and nudges the conditioning toward directions that should score higher in future generations.
+This node analyzes the positive conditioning produced by your text encoder, tracks your feedback over time, and nudges the conditioning toward directions that should score higher in future generations. It also has optional sigma and latent refinement paths for video workflows.
 
 ## Parameters
 
@@ -30,6 +30,10 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **feedback_rating**: Answer to the feedback question on its own 1 to 6 scale. This is only useful when concept feedback is enabled.
 
+**lora_stack**: Optional stack from `FunPack LoRA Loader`. The refiner uses it to save next-run model LoRA weight suggestions.
+
+**latent**: Optional latent input. If a latent was saved with `FunPack Save Refinement Latent` under the same `refinement_key` and `mode`, the node can return a conservatively refined latent. If no saved latent exists, or if no latent is connected, latent refinement is skipped.
+
 ## Outputs
 
 **modified_positive**: Refined conditioning. Connect this output to the next conditioning stage in your workflow.
@@ -44,9 +48,19 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **refined_sigmas**: Refined sigma schedule. If no `sigmas` input is connected, this output is empty.
 
+**refined_latent**: Refined latent output. If latent refinement is inactive, this passes the input latent through unchanged or returns an empty latent when no latent input is connected.
+
 ## Purpose
 
 Use this node when you want to iteratively tune prompt conditioning based on your own ratings instead of manually rewriting prompts every time. Over multiple runs, it builds a refinement profile for the selected `refinement_key`.
+
+## Latent Refinement
+
+Use `FunPack Save Refinement Latent` to store a reference latent tensor bundle under a `refinement_key` and tokenizer `mode`. When `FunPack Video Refiner` later receives a latent input with the same key and mode, it loads that saved latent and applies a small rating-driven adjustment to the latent output.
+
+Latent refinement is intentionally conservative. It resizes saved tensors to the current latent shape when possible, tracks latent shape changes in the session state, and leaves zero-valued latent positions unchanged because zero values can be intentional.
+
+If the saved latent is missing, invalid, incompatible, or the latent input is not connected, the refiner skips latent refinement and continues with conditioning/sigma/LoRA behavior as usual.
 
 ## Capability Boundary
 

@@ -11,17 +11,19 @@ FunPack is now split into focused Python modules for easier editing and maintena
 - `image_processing.py`
 - `model_management.py`
 
-Version 2.0.0 also adds a prompt-exact LoRA weight workflow that works together with `FunPack Gemma Embedding Refiner`.
+Version 2.0.0 also adds a prompt-exact LoRA weight workflow that works together with `FunPack Video Refiner`.
 
 Use this order:
 
-`FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Gemma Embedding Refiner`
+`FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Video Refiner`
 
 `FunPack Apply LoRA Weights` defines selected LoRAs, LoRA type, and model base weights. If the refiner has saved suggested weights for the exact prompt, it applies them; otherwise it uses the base weights.
 
 `FunPack LoRA Loader` loads the prepared LoRA stack into the model. Its CLIP input is optional and is left untouched when omitted.
 
-`FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON. It can improve the balance and stability of concepts the model can already express, but it cannot teach a model missing concepts or capabilities from scratch.
+`FunPack Video Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON. It can improve the balance and stability of concepts the model can already express, but it cannot teach a model missing concepts or capabilities from scratch.
+
+`FunPack Save Refinement Latent` can save a latent tensor bundle under the same refinement key. If a saved latent and an optional latent input are connected to `FunPack Video Refiner`, the refiner can also produce a conservative refined latent output while preserving zero-valued latent positions.
 
 ## Installation
 
@@ -30,7 +32,7 @@ FunPack is available on Comfy Registry and can be installed in any of these ways
 1. With `comfy-cli`:
    `comfy node install ComfyUI-FunPack`
 2. With git, inside your `ComfyUI/custom_nodes` directory:
-   `git clone https://github.com/aimfordeb/ComfyUI-FunPack`
+   `git clone https://github.com/digital-garbage/ComfyUI-FunPack`
 3. With ComfyUI-Manager:
    Open `Custom Nodes Manager`, search for `ComfyUI-FunPack`, and click `Install`.
 
@@ -55,7 +57,7 @@ Higher Torch versions are fine. The important part is avoiding older Torch relea
 
 ## Known Limitation
 
-`FunPack Gemma Embedding Refiner` can optionally refine `SIGMAS`, but that currently breaks audio generation in workflows that also produce audio streams. If you need audio to generate and mux correctly, do not connect `sigmas` to the refiner. Leave sigma schedules on their original path and use the refiner only for conditioning.
+`FunPack Video Refiner` can optionally refine `SIGMAS`, but that currently breaks audio generation in workflows that also produce audio streams. If you need audio to generate and mux correctly, do not connect `sigmas` to the refiner. Leave sigma schedules on their original path and use the refiner only for conditioning.
 
 UPD: This is not caused by Embedding Refiner node. Updating to latest nightly version of ComfyUI solves the problem.
 
@@ -78,6 +80,10 @@ If you install `hpsv3`, use `--no-build-isolation`. Otherwise the install may ap
 Per-node documentation is available in the [`docs`](docs) folder.
 
 The LoRA/refiner helper workflow is documented in [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md).
+
+The video refiner is documented in [`docs/FunPackVideoRefiner.md`](docs/FunPackVideoRefiner.md).
+
+The latent saver helper is documented in [`docs/FunPackSaveRefinementLatent.md`](docs/FunPackSaveRefinementLatent.md).
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
 

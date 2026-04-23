@@ -7,7 +7,9 @@ try:
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
+        FunPackSaveRefinementLatent,
         FunPackStoryWriter,
+        FunPackVideoRefiner,
     )
     from .image_processing import (
         FunPackContinueVideo,
@@ -23,7 +25,9 @@ except ImportError:
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
+        FunPackSaveRefinementLatent,
         FunPackStoryWriter,
+        FunPackVideoRefiner,
     )
     from image_processing import (
         FunPackContinueVideo,
@@ -44,6 +48,8 @@ except ImportError:
         "FunPackContinueVideo": FunPackContinueVideo,
         "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
         "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
+        "FunPackVideoRefiner": FunPackVideoRefiner,
+        "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
@@ -58,7 +64,9 @@ except ImportError:
         "FunPackVideoStitch": "FunPack Video Stitch",
         "FunPackContinueVideo": "FunPack Continue Video",
         "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
-        "FunPackGemmaEmbeddingRefiner": "FunPack Gemma Embedding Refiner (Self-Refinement)",
+        "FunPackGemmaEmbeddingRefiner": "FunPack Video Refiner (Compatibility)",
+        "FunPackVideoRefiner": "FunPack Video Refiner",
+        "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
@@ -68,6 +76,8 @@ __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
     "FunPackGemmaEmbeddingRefiner",
+    "FunPackSaveRefinementLatent",
+    "FunPackVideoRefiner",
     "FunPackHybridEuler2SSampler",
     "FunPackPromptCombiner",
     "FunPackLorebookEnhancer",
