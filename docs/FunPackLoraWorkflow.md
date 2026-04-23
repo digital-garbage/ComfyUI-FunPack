@@ -19,6 +19,7 @@ Inputs:
 - **positive_prompt**: Exact prompt text for lookup.
 - **refinement_key**: Same key used by `FunPack Video Refiner`.
 - **mode**: Same tokenizer mode as the refiner.
+- **per_block**: If enabled for `ltx2` stacks, the loader derives hidden transformer block scales from each LoRA's own patch magnitudes. The UI still exposes only the regular base weights.
 - **lora_N**: LoRA file.
 - **lora_N_type**: `general`, `concept`, `style`, `quality`, or `character`.
 - **lora_N_base_weight**: Trainer-recommended model base weight.
@@ -30,6 +31,8 @@ On the first run for an exact prompt, no saved suggestion exists, so base weight
 ## FunPack LoRA Loader
 
 This node only loads the LoRA stack. It applies the model weights prepared by `FunPack Apply LoRA Weights`, then passes the same stack forward so the refiner can learn from it. The `clip` input is optional and uses zero CLIP strength when omitted.
+
+When `per_block` is enabled on an `ltx2` stack, the loader keeps the user-facing global LoRA weight but redistributes it across detected `transformer_blocks.N` patches automatically. Blocks with stronger LoRA magnitude get a bit more weight, weaker blocks get a bit less, and non-block patches stay at the global weight. If the loader cannot detect a usable LTX transformer block layout, it falls back to the normal global application path.
 
 ## Video Refiner Integration
 

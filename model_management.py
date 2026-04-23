@@ -1,17 +1,24 @@
 import json
+import logging
 import os
 import re
+from collections import defaultdict
 from hashlib import md5
 
+import comfy.lora
+import comfy.lora_convert
 import comfy.sd
 import comfy.utils
 import folder_paths
+import torch
 from aiohttp import web
 from server import PromptServer
 
 
 LORA_TYPES = ["general", "concept", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
+TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
+LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
 
 
 @PromptServer.instance.routes.get("/funpack/loras")
@@ -82,6 +89,46 @@ def refiner_state_path(refinement_key, mode):
     return os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
 
+def coerce_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def patch_target_key(patch_key):
+    if isinstance(patch_key, tuple) and patch_key:
+        return patch_key[0]
+    return patch_key
+
+
+def transformer_block_index(patch_key):
+    target_key = patch_target_key(patch_key)
+    if not isinstance(target_key, str):
+        return None
+
+    match = TRANSFORMER_BLOCK_PATTERN.search(target_key)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def patch_energy(value):
+    if isinstance(value, torch.Tensor):
+        return float(value.abs().mean().item())
+
+    weights = getattr(value, "weights", None)
+    if weights is not None:
+        return patch_energy(weights)
+
+    if isinstance(value, dict):
+        return sum(patch_energy(item) for item in value.values())
+
+    if isinstance(value, (list, tuple)):
+        return sum(patch_energy(item) for item in value)
+
+    return 0.0
+
+
 class FunPackApplyLoraWeights:
     """
     Builds a LoRA stack from user base weights, then applies prompt-specific
@@ -120,6 +167,13 @@ class FunPackApplyLoraWeights:
                 "positive_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
                 "mode": (["ltx2", "wan"], {"default": "ltx2"}),
+                "per_block": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "For LTX-mode stacks, derive hidden transformer block strengths from the LoRA itself and apply them automatically.",
+                    },
+                ),
             },
             "optional": optional,
         }
@@ -217,13 +271,15 @@ class FunPackApplyLoraWeights:
 
         return abs(float(saved_base) - float(entry["base_model_weight"])) <= 1e-6
 
-    def apply_lora_weights(self, positive_prompt, refinement_key, mode, **kwargs):
+    def apply_lora_weights(self, positive_prompt, refinement_key, mode, per_block=False, **kwargs):
         mode = (mode or "ltx2").lower()
+        per_block = coerce_bool(per_block)
         prompt_key = prompt_key_for_mode(positive_prompt, mode)
         suggestions, source_message = self._load_suggestions(refinement_key, mode, prompt_key)
 
         loras = []
         lines = [f"FunPack Apply LoRA Weights | {source_message}"]
+        lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         for entry in self._iter_slots(kwargs):
             suggestion = self._get_suggestion(suggestions, entry)
             model_weight = float(suggestion.get("model_weight", entry["base_model_weight"]))
@@ -240,9 +296,10 @@ class FunPackApplyLoraWeights:
             )
 
         stack = {
-            "version": 1,
+            "version": 2,
             "refinement_key": refinement_key,
             "mode": mode,
+            "per_block": per_block,
             "positive_prompt": positive_prompt,
             "prompt_key": prompt_key,
             "loras": loras,
@@ -293,9 +350,115 @@ class FunPackLoraLoader:
 
         return lora
 
+    def _model_image_model(self, model):
+        model_wrapper = getattr(model, "model", None)
+        model_config = getattr(model_wrapper, "model_config", None)
+        unet_config = getattr(model_config, "unet_config", None)
+        if isinstance(unet_config, dict):
+            return unet_config.get("image_model")
+        return None
+
+    def _per_block_requested(self, entry, lora_stack):
+        return coerce_bool(entry.get("per_block", lora_stack.get("per_block", False)))
+
+    def _per_block_supported(self, model, lora_stack, entry):
+        if not self._per_block_requested(entry, lora_stack):
+            return False
+
+        if (lora_stack.get("mode") or "ltx2").lower() != "ltx2":
+            return False
+
+        return self._model_image_model(model) in LTX_IMAGE_MODELS
+
+    def _load_model_lora_patches(self, model, lora):
+        key_map = comfy.lora.model_lora_keys_unet(model.model, {})
+        converted_lora = comfy.lora_convert.convert_lora(lora)
+        return comfy.lora.load_lora(converted_lora, key_map)
+
+    def _split_model_patches_by_block(self, loaded):
+        global_patches = {}
+        block_patches = defaultdict(dict)
+
+        for patch_key, patch_value in loaded.items():
+            block_index = transformer_block_index(patch_key)
+            if block_index is None:
+                global_patches[patch_key] = patch_value
+                continue
+            block_patches[block_index][patch_key] = patch_value
+
+        return global_patches, dict(block_patches)
+
+    def _block_scales_from_patches(self, block_patches):
+        block_scores = {}
+        for block_index, patches in block_patches.items():
+            score = 0.0
+            for patch_value in patches.values():
+                score += patch_energy(patch_value)
+            if score > 0.0:
+                block_scores[block_index] = score
+
+        if len(block_scores) < 2:
+            return {}
+
+        mean_score = sum(block_scores.values()) / len(block_scores)
+        if mean_score <= 0.0:
+            return {}
+
+        scales = {}
+        for block_index, score in block_scores.items():
+            ratio = max(0.0, score / mean_score)
+            scales[block_index] = max(0.25, min(1.75, ratio ** 0.5))
+
+        return scales
+
+    def _apply_model_patches(self, model, loaded, model_weight, block_scales=None):
+        new_model = model.clone()
+        applied = set()
+        global_patches, block_patches = self._split_model_patches_by_block(loaded)
+
+        if global_patches:
+            applied.update(new_model.add_patches(global_patches, model_weight))
+
+        if block_scales:
+            for block_index in sorted(block_patches):
+                block_strength = model_weight * block_scales.get(block_index, 1.0)
+                applied.update(new_model.add_patches(block_patches[block_index], block_strength))
+        else:
+            for block_index in sorted(block_patches):
+                applied.update(new_model.add_patches(block_patches[block_index], model_weight))
+
+        for patch_key in loaded:
+            if patch_key not in applied:
+                logging.warning("NOT LOADED %s", patch_key)
+
+        return new_model, len(global_patches), len(block_patches)
+
+    def _load_lora_per_block(self, model, lora, model_weight):
+        loaded = self._load_model_lora_patches(model, lora)
+        _, block_patches = self._split_model_patches_by_block(loaded)
+        block_scales = self._block_scales_from_patches(block_patches)
+        if not block_scales:
+            return None, "per-block fallback=global"
+
+        new_model, non_block_count, _ = self._apply_model_patches(
+            model,
+            loaded,
+            model_weight,
+            block_scales=block_scales,
+        )
+        min_scale = min(block_scales.values())
+        max_scale = max(block_scales.values())
+        status = (
+            f"per-block blocks={len(block_scales)} non_block={non_block_count} "
+            f"range={min_scale:.2f}..{max_scale:.2f}"
+        )
+        return new_model, status
+
     def load_loras(self, model, lora_stack, clip=None):
         loras = lora_stack.get("loras", []) if isinstance(lora_stack, dict) else []
+        per_block = coerce_bool(lora_stack.get("per_block", False)) if isinstance(lora_stack, dict) else False
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
+        lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         loaded_count = 0
 
         for entry in loras:
@@ -305,11 +468,22 @@ class FunPackLoraLoader:
                 continue
 
             lora = self._load_lora_file(entry["name"])
-            model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
+            apply_status = "global"
+            if self._per_block_supported(model, lora_stack, entry):
+                per_block_model, apply_status = self._load_lora_per_block(model, lora, model_weight)
+                if per_block_model is not None:
+                    model = per_block_model
+                else:
+                    model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
+            elif self._per_block_requested(entry, lora_stack):
+                apply_status = "per-block unsupported -> global"
+                model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
+            else:
+                model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
             loaded_count += 1
             lines.append(
                 f"lora_{entry.get('slot', '?')}: {entry['name']} "
-                f"applied={model_weight:+.3f} source={entry.get('source', 'base')}"
+                f"applied={model_weight:+.3f} source={entry.get('source', 'base')} mode={apply_status}"
             )
 
         if loaded_count == 0:
