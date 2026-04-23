@@ -193,7 +193,7 @@ class FunPackApplyLoraWeights:
 
     def _get_suggestion(self, suggestions, entry):
         suggestion = suggestions.get(entry["id"])
-        if suggestion:
+        if self._suggestion_matches_base(suggestion, entry):
             return suggestion
 
         for legacy in suggestions.values():
@@ -201,10 +201,21 @@ class FunPackApplyLoraWeights:
                 isinstance(legacy, dict)
                 and legacy.get("name") == entry["name"]
                 and legacy.get("type", "general") == entry["type"]
+                and self._suggestion_matches_base(legacy, entry)
             ):
                 return legacy
 
         return {}
+
+    def _suggestion_matches_base(self, suggestion, entry):
+        if not isinstance(suggestion, dict):
+            return False
+
+        saved_base = suggestion.get("base_model_weight")
+        if saved_base is None:
+            return True
+
+        return abs(float(saved_base) - float(entry["base_model_weight"])) <= 1e-6
 
     def apply_lora_weights(self, positive_prompt, refinement_key, mode, **kwargs):
         mode = (mode or "ltx2").lower()
