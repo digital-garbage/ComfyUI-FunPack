@@ -182,12 +182,19 @@ def latent_sample_type_name(latent):
     samples = latent.get("samples")
     if samples is None:
         return "missing samples"
-    return f"{type(samples).__module__}.{type(samples).__name__}"
+    shape = tuple(samples.shape) if isinstance(samples, torch.Tensor) else "unknown"
+    return f"{type(samples).__module__}.{type(samples).__name__}, shape={shape}"
 
 
 def latent_is_plain_video_tensor(latent):
     samples = latent_samples(latent)
-    return samples is not None and latent.get("type") != "audio"
+    if samples is None:
+        return False
+    if samples.dim() == 5:
+        return True
+    if samples.dim() == 4 and latent.get("type") != "audio":
+        return True
+    return False
 
 
 def cpu_tensor_bundle(latent):

@@ -68,6 +68,8 @@ For LTX audio/video workflows, the latent path must use video latents only:
 
 Do not connect the combined AV latent from `LTXVConcatAVLatent`, the sampler AV output, or the audio latent to this node. Those use LTX nested/audio latent structures and are intentionally rejected with a clear error.
 
+Some LTX separated video latents keep `type: audio` metadata even after `LTXVSeparateAVLatent`; the node accepts those when their `samples` tensor is the 5D video tensor shape.
+
 Latent refinement follows the connection state exactly:
 
 - If the latent input is disconnected and `refined_latent` is disconnected, latent tweaking is disabled.
