@@ -19,7 +19,7 @@ Split the old single `funpack.py` implementation into focused modules:
 
 `funpack.py` remains as a compatibility re-export for older imports.
 
-Updated `FunPack Gemma Embedding Refiner` so it can accept a FunPack LoRA stack and save next-run LoRA weight suggestions based on prompt concepts, LoRA concept/type hints, and user ratings.
+Updated `FunPack Gemma Embedding Refiner` so it can accept a FunPack LoRA stack and save next-run model LoRA weight suggestions based on prompt concepts, LoRA type hints, and user ratings.
 
 ## [1.3.3] - 2026-04-22
 

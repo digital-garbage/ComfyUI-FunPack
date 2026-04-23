@@ -21,21 +21,21 @@ Inputs:
 - **mode**: Same tokenizer mode as the refiner.
 - **lora_N**: LoRA file.
 - **lora_N_type**: `general`, `concept`, `style`, `quality`, or `character`.
-- **lora_N_concept**: Human-readable concept hint for the refiner.
 - **lora_N_base_weight**: Trainer-recommended model base weight.
-- **lora_N_clip_base_weight**: Trainer-recommended CLIP base weight.
+
+Use **+ Add LoRA** to add more LoRA rows as needed.
 
 On the first run for an exact prompt, no saved suggestion exists, so base weights are used. On later runs, the node reads the refiner JSON and applies saved suggestions for that exact prompt only.
 
 ## FunPack LoRA Loader
 
-This node only loads the LoRA stack. It applies the model and CLIP weights prepared by `FunPack Apply LoRA Weights`, then passes the same stack forward so the refiner can learn from it.
+This node only loads the LoRA stack. It applies the model weights prepared by `FunPack Apply LoRA Weights`, then passes the same stack forward so the refiner can learn from it. The `clip` input is optional and uses zero CLIP strength when omitted.
 
 ## Gemma Refiner Integration
 
 Connect the `lora_stack` output from `FunPack LoRA Loader` into the optional `lora_stack` input on `FunPack Gemma Embedding Refiner`.
 
-The refiner compares each LoRA's declared type/concept with the concepts it already extracted from the prompt. After processing the rating, it saves `lora_weight_suggestions` into the same prompt entry in the refiner JSON.
+The refiner compares each LoRA's declared type and filename with the concepts it already extracted from the prompt. After processing the rating, it saves `lora_weight_suggestions` into the same prompt entry in the refiner JSON.
 
 Examples:
 

@@ -17,9 +17,9 @@ Use this order:
 
 `FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Gemma Embedding Refiner`
 
-`FunPack Apply LoRA Weights` defines selected LoRAs, base weights, LoRA type, and LoRA concept hints. If the refiner has saved suggested weights for the exact prompt, it applies them; otherwise it uses the base weights.
+`FunPack Apply LoRA Weights` defines selected LoRAs, LoRA type, and model base weights. If the refiner has saved suggested weights for the exact prompt, it applies them; otherwise it uses the base weights.
 
-`FunPack LoRA Loader` only loads the prepared LoRA stack into the model and CLIP, then passes that stack forward.
+`FunPack LoRA Loader` loads the prepared LoRA stack into the model. Its CLIP input is optional and is left untouched when omitted.
 
 `FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON.
 
@@ -84,3 +84,5 @@ Version history is available in [CHANGELOG.md](CHANGELOG.md).
 ## Feedback
 
 If you have suggestions, questions, or ideas for new nodes, feel free to open an Issue or submit a pull request.
+
+Thanks to teams of OpenAI, xAI, DeepSeek, Anthropic and Google and their respective AI large language models for providing all the help with the code and transforming my stupid ideas into something actually running in your UI. Thanks to all testers and users who use FunPack in their workflows daily and provide feedback in any way. Without all of you, this would have been a dream of a wannabe coder nerd.
