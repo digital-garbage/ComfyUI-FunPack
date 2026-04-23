@@ -21,7 +21,7 @@ Use this order:
 
 `FunPack LoRA Loader` loads the prepared LoRA stack into the model. Its CLIP input is optional and is left untouched when omitted.
 
-`FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON.
+`FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON. It can improve the balance and stability of concepts the model can already express, but it cannot teach a model missing concepts or capabilities from scratch.
 
 ## Installation
 
