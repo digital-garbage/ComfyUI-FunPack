@@ -32,7 +32,7 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **lora_stack**: Optional stack from `FunPack LoRA Loader`. The refiner uses it to save next-run model LoRA weight suggestions.
 
-**latent**: Optional latent input. If a latent was saved with `FunPack Save Refinement Latent` under the same `refinement_key` and `mode`, the node can return a conservatively refined latent. If no saved latent exists, or if no latent is connected, latent refinement is skipped.
+**latent**: Optional latent input. It is only used when the `refined_latent` output is also connected. If no saved latent exists yet, the node uses the connected input latent as the current reference.
 
 ## Outputs
 
@@ -48,7 +48,7 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **refined_sigmas**: Refined sigma schedule. If no `sigmas` input is connected, this output is empty.
 
-**refined_latent**: Refined latent output. If latent refinement is inactive, this passes the input latent through unchanged or returns an empty latent when no latent input is connected.
+**refined_latent**: Refined latent output. Connecting this output enables latent refinement logic; leaving it disconnected disables latent refinement even if the latent input is connected.
 
 ## Purpose
 
@@ -58,9 +58,19 @@ Use this node when you want to iteratively tune prompt conditioning based on you
 
 Use `FunPack Save Refinement Latent` to store a reference latent tensor bundle under a `refinement_key` and tokenizer `mode`. When `FunPack Video Refiner` later receives a latent input with the same key and mode, it loads that saved latent and applies a small rating-driven adjustment to the latent output.
 
-If the refiner receives a latent input but no saved latent exists yet, it passes the input latent through unchanged and saves it as the current reference. If the input latent shape changes later, it rewrites the saved reference and passes the new latent through unchanged for that run. Resetting the session deletes the saved latent reference too.
+Latent refinement follows the connection state exactly:
 
-Latent refinement is intentionally conservative. It tracks latent shape changes in the session state and leaves zero-valued latent positions unchanged because zero values can be intentional. If the latent input is not connected, the refiner skips latent refinement and continues with conditioning/sigma/LoRA behavior as usual.
+- If the latent input is disconnected and `refined_latent` is disconnected, latent tweaking is disabled.
+- If the latent input is disconnected, `refined_latent` is connected, and no saved latent exists, the node errors with: `No available latent to operate. Please connect reference latent to input of Video Refiner.`
+- If the latent input is disconnected, `refined_latent` is connected, and a saved latent exists, the node reports: `Running refinement on saved latent. Changing reference latent shape and size will cause no effect to generation.`
+- If the latent input is connected and `refined_latent` is disconnected, latent tweaking is disabled.
+- If both latent input and `refined_latent` are connected but no saved latent exists, the node passes the input latent through unchanged and saves it as the current reference.
+- If both are connected and the saved latent shape does not match the current input, the node rewrites the reference and passes the current input through unchanged.
+- If both are connected and the saved latent shape matches the current input, the node tweaks the latent using the connected input as the base and the saved latent as the learned reference.
+
+Resetting the session deletes the saved latent reference too.
+
+Latent refinement is intentionally conservative. It tracks latent shape changes in the session state and leaves zero-valued latent positions unchanged because zero values can be intentional.
 
 ## Capability Boundary
 
