@@ -31,7 +31,7 @@ def _clamp(value, low, high):
     return max(low, min(high, value))
 
 
-QUOTED_TEXT_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
+PROTECTED_PHRASE_RE = re.compile(r'"([^"]+)"|“([^”]+)”|\\([^\\]+)\\')
 
 
 def tensor_to_serializable(t: torch.Tensor) -> dict:
@@ -397,13 +397,13 @@ class FunPackVideoRefiner:
             return
 
         last_end = 0
-        for match in QUOTED_TEXT_RE.finditer(prompt):
+        for match in PROTECTED_PHRASE_RE.finditer(prompt):
             start, end = match.span()
             if start > last_end:
                 yield ("text", prompt[last_end:start])
-            quoted_text = (match.group(1) or match.group(2) or "").strip()
-            if quoted_text:
-                yield ("quote", quoted_text)
+            protected_text = (match.group(1) or match.group(2) or match.group(3) or "").strip()
+            if protected_text:
+                yield ("protected", protected_text)
             last_end = end
 
         if last_end < len(prompt):
@@ -412,7 +412,7 @@ class FunPackVideoRefiner:
     def _mask_quoted_text(self, prompt: str):
         if not prompt:
             return ""
-        return QUOTED_TEXT_RE.sub(lambda match: " " * len(match.group(0)), prompt)
+        return PROTECTED_PHRASE_RE.sub(lambda match: " " * len(match.group(0)), prompt)
 
     def _build_word_groups(self, prompt: str, tokenizer, seq_len: int, token_mask=None):
         if not tokenizer or not prompt or seq_len <= 0:
@@ -433,7 +433,7 @@ class FunPackVideoRefiner:
         word_groups = []
         grouped_seen = set()
         for segment_type, segment_text in self._iter_prompt_segments(prompt):
-            if segment_type != "quote":
+            if segment_type != "protected":
                 continue
 
             clean_phrase = segment_text.strip()
@@ -862,10 +862,10 @@ class FunPackVideoRefiner:
             return []
         result = []
         for segment_type, segment_text in self._iter_prompt_segments(prompt):
-            if segment_type == "quote":
-                quoted_phrase = segment_text.strip().lower()
-                if len(quoted_phrase) >= 3 and any(c.isalpha() for c in quoted_phrase):
-                    result.append([quoted_phrase])
+            if segment_type == "protected":
+                protected_phrase = segment_text.strip().lower()
+                if len(protected_phrase) >= 3 and any(c.isalpha() for c in protected_phrase):
+                    result.append([protected_phrase])
                 continue
 
             phrases = [p.strip() for p in re.split(r'[,;]', segment_text) if p.strip()]
@@ -881,10 +881,10 @@ class FunPackVideoRefiner:
 
         fallback_words = []
         for segment_type, segment_text in self._iter_prompt_segments(prompt):
-            if segment_type == "quote":
-                quoted_phrase = segment_text.strip().lower()
-                if len(quoted_phrase) >= 3 and any(c.isalpha() for c in quoted_phrase):
-                    fallback_words.append(quoted_phrase)
+            if segment_type == "protected":
+                protected_phrase = segment_text.strip().lower()
+                if len(protected_phrase) >= 3 and any(c.isalpha() for c in protected_phrase):
+                    fallback_words.append(protected_phrase)
                 continue
 
             fallback_words.extend(

@@ -16,7 +16,7 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **positive_prompt**: Optional prompt text used for token analysis and concept-level feedback.
 
-If you want the model to preserve speech or spoken lines, wrap that text in `"` or `“ ”`. Quoted text is treated as one protected phrase during prompt analysis, so dialogue like `"You should go for it, young man."` stays intact. If speech is not quoted, common words inside it can still be treated as low-value prompt words and may be omitted or ignored.
+If you want the model to preserve speech or spoken lines, wrap that text in `"` or `“ ”`. If you want a non-speech phrase to be treated as one whole phrase, wrap it in backslashes like `\a woman holds his drawings in her hands\`. Protected phrases are treated as one unit during prompt analysis, so dialogue like `"You should go for it, young man."` stays intact and a phrase like `\She calls him in.\` is kept whole instead of being reduced to a few "important" words. If speech or phrase-level text is not wrapped this way, common words inside it can still be treated as low-value prompt words and may be omitted or ignored.
 
 **sigmas**: Optional input sigma schedule to co-refine alongside the conditioning. When connected, the node preserves the first and last sigma exactly and only adjusts the middle values.
 
