@@ -22,6 +22,7 @@ any_type = AnyType("*")
 
 class FlexibleOptionalInputType(dict):
     def __init__(self, input_type, data=None):
+        super().__init__(data or {})
         self.input_type = input_type
         self.data = data or {}
 
