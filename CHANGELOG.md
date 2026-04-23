@@ -1,14 +1,20 @@
 # Changelog
 
-## [2.0.0] - 2026-04-23
+## [2.1.0] - 2026-04-23
 
 ### Added
 
-Added `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`, a prompt-exact LoRA weight workflow designed to work with `FunPack Gemma Embedding Refiner`.
+Added `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`, a prompt-exact LoRA weight workflow designed to work with `FunPack Video Refiner`.
+
+Added `FunPack Save Refinement Latent`, which stores latent tensor bundles by refinement key for optional latent refinement in `FunPack Video Refiner`.
+
+Added hidden LTX per-block LoRA redistribution for supported `ltx2` model stacks. The UI still exposes normal LoRA weights, while the loader derives per-block strengths from the LoRA patch magnitudes when the model and LoRA layout support it.
 
 The new workflow uses base LoRA weights on the first run for a prompt, then lets the refiner save prompt-specific suggested LoRA weights into its existing JSON state for later runs.
 
 ### Changed
+
+Promoted the `FunPack Video Refiner` development workflow to `main` and renamed the visible refiner title from `FunPack Gemma Embedding Refiner` to `FunPack Video Refiner` while keeping the old node key as a compatibility alias.
 
 Split the old single `funpack.py` implementation into focused modules:
 
@@ -19,7 +25,15 @@ Split the old single `funpack.py` implementation into focused modules:
 
 `funpack.py` remains as a compatibility re-export for older imports.
 
-Updated `FunPack Gemma Embedding Refiner` so it can accept a FunPack LoRA stack and save next-run model LoRA weight suggestions based on prompt concepts, LoRA type hints, and user ratings.
+Updated `FunPack Video Refiner` so it can accept a FunPack LoRA stack and save next-run model LoRA weight suggestions based on prompt concepts, LoRA type hints, and user ratings.
+
+Updated `FunPack Video Refiner` with optional latent input/output refinement. If no matching saved latent exists and both latent input and output are connected, the input latent is saved as the first reference and passed through unchanged.
+
+Updated prompt analysis so quoted speech and backslash-wrapped phrases can be protected as whole prompt units.
+
+### Documentation
+
+Documented unintended and edge-case usage for the new refiner workflow, including disconnected latent paths, saved-latent-only runs, wrong LTX audio/AV latent connections, exact-prompt LoRA lookup behavior, base-weight mismatch behavior, zero-weight LoRA skipping, and unsupported per-block fallback behavior.
 
 ## [1.3.3] - 2026-04-22
 

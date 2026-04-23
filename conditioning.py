@@ -19,16 +19,19 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 import folder_paths
 
 LORA_REFINER_TYPE_PROFILES = {
-    "general": {"step": 0.025, "max_offset": 0.20, "bad_max_offset": 0.45},
-    "concept": {"step": 0.040, "max_offset": 0.35, "bad_max_offset": 0.70},
-    "style": {"step": 0.032, "max_offset": 0.28, "bad_max_offset": 0.58},
-    "quality": {"step": 0.022, "max_offset": 0.18, "bad_max_offset": 0.38},
-    "character": {"step": 0.024, "max_offset": 0.20, "bad_max_offset": 0.42},
+    "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
+    "concept": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
+    "style": {"step": 0.032, "max_offset": 0.28, "min_offset": -0.38, "bad_max_offset": 0.58, "bad_min_offset": -1.55, "culprit_bias": 0.20},
+    "quality": {"step": 0.022, "max_offset": 0.18, "min_offset": -0.30, "bad_max_offset": 0.38, "bad_min_offset": -1.20, "culprit_bias": 0.18},
+    "character": {"step": 0.024, "max_offset": 0.20, "min_offset": -0.32, "bad_max_offset": 0.42, "bad_min_offset": -1.30, "culprit_bias": 0.10},
 }
 
 
 def _clamp(value, low, high):
     return max(low, min(high, value))
+
+
+PROTECTED_PHRASE_RE = re.compile(r'"([^"]+)"|“([^”]+)”|\\([^\\]+)\\')
 
 
 def tensor_to_serializable(t: torch.Tensor) -> dict:
@@ -151,7 +154,88 @@ def render_refinement_loss_graph(refinement_key, scheduler_mode, mode, total_ite
 
     return _to_image_tensor(image.convert("RGB"))
 
-class FunPackGemmaEmbeddingRefiner:
+
+def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    refinements_dir = os.path.join(base_dir, "refinements")
+    safe_key = md5(f"{(mode or 'ltx2').lower()}::{refinement_key}".encode("utf-8")).hexdigest()
+    return os.path.join(refinements_dir, f"{prefix}_{safe_key}.{extension}")
+
+
+def clone_latent(latent):
+    if not isinstance(latent, dict):
+        return None
+
+    cloned = {}
+    for key, value in latent.items():
+        cloned[key] = value.detach().clone() if isinstance(value, torch.Tensor) else value
+    return cloned
+
+
+def latent_samples(latent):
+    if not isinstance(latent, dict):
+        return None
+    samples = latent.get("samples")
+    return samples if isinstance(samples, torch.Tensor) else None
+
+
+def latent_sample_type_name(latent):
+    if not isinstance(latent, dict):
+        return "missing"
+    samples = latent.get("samples")
+    if samples is None:
+        return "missing samples"
+    shape = tuple(samples.shape) if isinstance(samples, torch.Tensor) else "unknown"
+    return f"{type(samples).__module__}.{type(samples).__name__}, shape={shape}"
+
+
+def latent_is_plain_video_tensor(latent):
+    samples = latent_samples(latent)
+    if samples is None:
+        return False
+    if samples.dim() == 5:
+        return True
+    if samples.dim() == 4 and latent.get("type") != "audio":
+        return True
+    return False
+
+
+def cpu_tensor_bundle(latent):
+    if not isinstance(latent, dict):
+        return {}
+
+    bundle = {}
+    for key, value in latent.items():
+        if isinstance(value, torch.Tensor):
+            bundle[key] = value.detach().cpu().clone()
+    return bundle
+
+
+def latent_from_tensor_bundle(bundle):
+    if not isinstance(bundle, dict):
+        return None
+
+    latent = {}
+    for key, value in bundle.items():
+        if key == "_meta":
+            continue
+        latent[key] = value.detach().clone() if isinstance(value, torch.Tensor) else value
+    return latent if latent_samples(latent) is not None else None
+
+
+class FunPackVideoRefiner:
+    LATENT_OUTPUT_INDEX = 6
+    NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
+    WRONG_LATENT_ERROR = (
+        "Video Refiner latent input must be a plain video LATENT with tensor samples. "
+        "Audio latents and LTX audio/video combined NestedTensor latents are not supported here. "
+        "Connect only the video latent to Video Refiner, then feed the refined video latent into "
+        "LTXVConcatAVLatent as video_latent."
+    )
+    SAVED_LATENT_ONLY_STATUS = (
+        "Running refinement on saved latent. Changing reference latent shape and size will cause no effect to generation."
+    )
+
     _tokenizers = {}
     _tokenizer_sources = {
         "ltx2": [
@@ -224,7 +308,7 @@ class FunPackGemmaEmbeddingRefiner:
                 cls._tokenizers[mode] = AutoTokenizer.from_pretrained(model_id, **kwargs)
                 return cls._tokenizers[mode]
             except Exception as e:
-                print(f"[FunPackGemmaEmbeddingRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
+                print(f"[FunPackVideoRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
 
         return None
 
@@ -308,6 +392,28 @@ class FunPackGemmaEmbeddingRefiner:
             except Exception:
                 return []
 
+    def _iter_prompt_segments(self, prompt: str):
+        if not prompt:
+            return
+
+        last_end = 0
+        for match in PROTECTED_PHRASE_RE.finditer(prompt):
+            start, end = match.span()
+            if start > last_end:
+                yield ("text", prompt[last_end:start])
+            protected_text = (match.group(1) or match.group(2) or match.group(3) or "").strip()
+            if protected_text:
+                yield ("protected", protected_text)
+            last_end = end
+
+        if last_end < len(prompt):
+            yield ("text", prompt[last_end:])
+
+    def _mask_quoted_text(self, prompt: str):
+        if not prompt:
+            return ""
+        return PROTECTED_PHRASE_RE.sub(lambda match: " " * len(match.group(0)), prompt)
+
     def _build_word_groups(self, prompt: str, tokenizer, seq_len: int, token_mask=None):
         if not tokenizer or not prompt or seq_len <= 0:
             return []
@@ -326,7 +432,33 @@ class FunPackGemmaEmbeddingRefiner:
 
         word_groups = []
         grouped_seen = set()
-        raw_words = [w.strip() for w in prompt.split() if w.strip()]
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type != "protected":
+                continue
+
+            clean_phrase = segment_text.strip()
+            lower = clean_phrase.lower()
+            if lower in grouped_seen or len(clean_phrase) < 3 or not any(c.isalpha() for c in clean_phrase):
+                continue
+
+            grouped_seen.add(lower)
+            phrase_token_list = self._tokenize_ids(
+                tokenizer,
+                clean_phrase,
+                add_special_tokens=False
+            )
+            if not phrase_token_list:
+                continue
+
+            for start in range(max(0, len(full_token_ids) - len(phrase_token_list) + 1)):
+                end = start + len(phrase_token_list)
+                if token_mask_list is not None and not all(token_mask_list[start:min(effective_seq_len, end)]):
+                    continue
+                if full_token_ids[start:end] == phrase_token_list and start < effective_seq_len:
+                    word_groups.append((start, min(effective_seq_len, end), clean_phrase, phrase_token_list))
+                    break
+
+        raw_words = [w.strip() for w in self._mask_quoted_text(prompt).split() if w.strip()]
         for word in raw_words:
             clean_word = word
             lower = clean_word.lower()
@@ -355,7 +487,10 @@ class FunPackGemmaEmbeddingRefiner:
             if not found:
                 continue
 
-        return [group for group in word_groups if group[1] > group[0]]
+        return sorted(
+            [group for group in word_groups if group[1] > group[0]],
+            key=lambda group: (group[0], group[1], group[2].lower()),
+        )
 
     @classmethod
     def INPUT_TYPES(s):
@@ -403,11 +538,18 @@ class FunPackGemmaEmbeddingRefiner:
                 "lora_stack": ("FUNPACK_LORA_STACK", {
                     "tooltip": "Optional stack from FunPack LoRA Loader. The refiner uses it to save prompt-specific suggested LoRA weights."
                 }),
+                "latent": ("LATENT", {
+                    "tooltip": "Optional latent to refine. If no saved latent exists for this key, it passes through unchanged."
+                }),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE", "SIGMAS")
-    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph", "refined_sigmas")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE", "SIGMAS", "LATENT")
+    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph", "refined_sigmas", "refined_latent")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -718,23 +860,42 @@ class FunPackGemmaEmbeddingRefiner:
         """
         if not prompt:
             return []
-        phrases = [p.strip() for p in re.split(r'[,;]', prompt) if p.strip()]
         result = []
-        for phrase in phrases:
-            words = [w.strip().lower() for w in phrase.split() if self._is_valuable_token(w.strip())]
-            if words:
-                result.append(words)
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type == "protected":
+                protected_phrase = segment_text.strip().lower()
+                if len(protected_phrase) >= 3 and any(c.isalpha() for c in protected_phrase):
+                    result.append([protected_phrase])
+                continue
+
+            phrases = [p.strip() for p in re.split(r'[,;]', segment_text) if p.strip()]
+            for phrase in phrases:
+                words = [w.strip().lower() for w in phrase.split() if self._is_valuable_token(w.strip())]
+                if words:
+                    result.append(words)
         return result
 
     def _build_prompt_fallback_concept(self, prompt: str, concept_clusters: dict):
         if not prompt:
             return None
 
-        fallback_words = [
-            w.strip().lower()
-            for w in re.split(r'[\s,;]+', prompt)
-            if self._is_valuable_token(w.strip())
-        ][:8]
+        fallback_words = []
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type == "protected":
+                protected_phrase = segment_text.strip().lower()
+                if len(protected_phrase) >= 3 and any(c.isalpha() for c in protected_phrase):
+                    fallback_words.append(protected_phrase)
+                continue
+
+            fallback_words.extend(
+                w.strip().lower()
+                for w in re.split(r'[\s,;]+', segment_text)
+                if self._is_valuable_token(w.strip())
+            )
+            if len(fallback_words) >= 8:
+                break
+
+        fallback_words = fallback_words[:8]
         if not fallback_words:
             return None
 
@@ -1234,6 +1395,221 @@ class FunPackGemmaEmbeddingRefiner:
         return tuned_sigmas, sigma_status
 
     # =========================================================================
+    # LATENT REFINEMENT
+    # =========================================================================
+
+    def _resize_tensor_like(self, tensor: torch.Tensor, reference: torch.Tensor):
+        if not isinstance(tensor, torch.Tensor) or not isinstance(reference, torch.Tensor):
+            return None
+
+        out = tensor.to(device=reference.device, dtype=reference.dtype)
+        if list(out.shape) == list(reference.shape):
+            return out
+        if out.dim() != reference.dim() or out.dim() not in {4, 5}:
+            return None
+
+        batch = reference.shape[0]
+        if out.shape[0] < batch:
+            reps = [1] * out.dim()
+            reps[0] = math.ceil(batch / max(1, out.shape[0]))
+            out = out.repeat(*reps)
+        out = out[:batch]
+
+        channels = reference.shape[1]
+        if out.shape[1] < channels:
+            pad_shape = list(out.shape)
+            pad_shape[1] = channels - out.shape[1]
+            out = torch.cat([out, torch.zeros(pad_shape, device=out.device, dtype=out.dtype)], dim=1)
+        out = out[:, :channels]
+
+        if out.dim() == 4:
+            return F.interpolate(out, size=reference.shape[-2:], mode="bilinear", align_corners=False)
+        return F.interpolate(out, size=reference.shape[-3:], mode="trilinear", align_corners=False)
+
+    def _load_saved_latent(self, refinement_key, mode):
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        if not os.path.exists(path):
+            return None, "Latent: no saved latent for this key."
+
+        try:
+            data = torch.load(path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            return None, f"Latent: failed to load saved latent ({e})."
+
+        if not isinstance(data, dict) or not isinstance(data.get("samples"), torch.Tensor):
+            return None, "Latent: saved latent file is invalid."
+
+        return data, "Latent: saved latent loaded."
+
+    def _value_links_to_output(self, value, source_id, output_index):
+        if isinstance(value, (list, tuple)):
+            if len(value) >= 2 and str(value[0]) == source_id:
+                try:
+                    if int(value[1]) == output_index:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            return any(self._value_links_to_output(item, source_id, output_index) for item in value)
+
+        if isinstance(value, dict):
+            return any(self._value_links_to_output(item, source_id, output_index) for item in value.values())
+
+        return False
+
+    def _is_output_connected(self, prompt, unique_id, output_index):
+        if prompt is None or unique_id is None:
+            return False
+
+        source_id = str(unique_id)
+        prompt_nodes = prompt.get("output", prompt) if isinstance(prompt, dict) else {}
+        if not isinstance(prompt_nodes, dict):
+            return False
+
+        for node in prompt_nodes.values():
+            if not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs", {})
+            if isinstance(inputs, dict) and self._value_links_to_output(inputs, source_id, output_index):
+                return True
+
+        workflow = prompt.get("workflow") if isinstance(prompt, dict) else None
+        links = workflow.get("links", []) if isinstance(workflow, dict) else []
+        for link in links:
+            if isinstance(link, (list, tuple)) and len(link) >= 3:
+                try:
+                    if str(link[1]) == source_id and int(link[2]) == output_index:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(link, dict):
+                try:
+                    if str(link.get("origin_id")) == source_id and int(link.get("origin_slot")) == output_index:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+
+        return False
+
+    def _latent_refinement_disabled(self, latent):
+        return clone_latent(latent), "Latent: disabled because latent refinement input/output path is not fully connected."
+
+    def _raise_wrong_latent(self, latent):
+        sample_type = latent_sample_type_name(latent)
+        latent_type = latent.get("type", "unspecified") if isinstance(latent, dict) else "missing"
+        raise ValueError(f"{self.WRONG_LATENT_ERROR} Received samples={sample_type}, type={latent_type}.")
+
+    def _save_latent_reference(self, latent, refinement_key, mode):
+        samples = latent_samples(latent)
+        if samples is None:
+            return False
+
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        bundle = cpu_tensor_bundle(latent)
+        bundle["_meta"] = {
+            "refinement_key": refinement_key,
+            "mode": (mode or "ltx2").lower(),
+            "samples_shape": list(samples.shape),
+        }
+        torch.save(bundle, path)
+        return True
+
+    def _delete_latent_reference(self, refinement_key, mode):
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        try:
+            os.remove(path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
+    def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive):
+        if isinstance(latent, dict) and not latent_is_plain_video_tensor(latent):
+            self._raise_wrong_latent(latent)
+
+        current = latent_samples(latent)
+        saved_bundle, load_status = self._load_saved_latent(refinement_key, mode)
+
+        if current is None:
+            if saved_bundle is None:
+                raise ValueError(self.NO_LATENT_REFERENCE_ERROR)
+
+            saved_latent = latent_from_tensor_bundle(saved_bundle)
+            saved_samples = latent_samples(saved_latent)
+            if saved_samples is None:
+                raise ValueError(self.NO_LATENT_REFERENCE_ERROR)
+
+            latent_state = global_adaptive.setdefault("latent_refinement", {})
+            latent_state["last_shape"] = list(saved_samples.shape)
+            latent_state["saved_shape"] = list(saved_samples.shape)
+            latent_state["status"] = self.SAVED_LATENT_ONLY_STATUS
+            return saved_latent, latent_state["status"]
+
+        refined_latent = clone_latent(latent)
+        if saved_bundle is None:
+            self._save_latent_reference(latent, refinement_key, mode)
+            global_adaptive.setdefault("latent_refinement", {})["last_shape"] = list(current.shape)
+            return refined_latent, f"{load_status} Current latent saved as reference."
+
+        raw_saved_samples = saved_bundle.get("samples")
+        if list(raw_saved_samples.shape) != list(current.shape):
+            self._save_latent_reference(latent, refinement_key, mode)
+            latent_state = global_adaptive.setdefault("latent_refinement", {})
+            latent_state.pop("momentum", None)
+            latent_state["last_shape"] = list(current.shape)
+            latent_state["saved_shape"] = list(raw_saved_samples.shape)
+            return refined_latent, "Latent: input shape changed. Reference rewritten, passthrough."
+
+        saved_samples = raw_saved_samples.to(device=current.device, dtype=current.dtype)
+        latent_state = global_adaptive.setdefault("latent_refinement", {})
+        latent_state["last_shape"] = list(current.shape)
+        latent_state["saved_shape"] = list(raw_saved_samples.shape)
+
+        momentum_data = latent_state.get("momentum")
+        if isinstance(momentum_data, dict):
+            try:
+                momentum = serializable_to_tensor(momentum_data).to(device=current.device, dtype=current.dtype)
+                momentum = self._resize_tensor_like(momentum, current)
+            except Exception:
+                momentum = None
+        else:
+            momentum = None
+        if momentum is None:
+            momentum = torch.zeros_like(current)
+
+        nonzero_mask = current.ne(0) & saved_samples.ne(0)
+        if not bool(nonzero_mask.any()):
+            refined_latent["samples"] = current
+            latent_state["status"] = "Latent: only zero-valued positions available, passthrough."
+            return refined_latent, latent_state["status"]
+
+        lr = 0.035 if rating >= 7 else 0.055 if rating <= 4 else 0.018
+        target_delta = (saved_samples - current) * nonzero_mask.to(dtype=current.dtype)
+        update = target_delta * (reward * lr)
+        momentum = 0.82 * momentum + 0.18 * update
+        max_step = max(0.001, min(0.08, float(current.detach().abs().mean().item()) * 0.18))
+        latent_delta = torch.clamp(momentum, min=-max_step, max=max_step)
+
+        refined_samples = current + latent_delta
+        refined_samples = torch.where(nonzero_mask, refined_samples, current)
+        refined_samples = torch.nan_to_num(refined_samples, nan=0.0)
+        range_min = torch.minimum(current, saved_samples)
+        range_max = torch.maximum(current, saved_samples)
+        refined_samples = torch.maximum(torch.minimum(refined_samples, range_max), range_min)
+        refined_latent["samples"] = refined_samples
+
+        latent_state["momentum"] = tensor_to_serializable(momentum.detach().cpu())
+        latent_state["last_rating"] = int(rating)
+        latent_state["last_reward"] = round(float(reward), 4)
+        latent_state["nonzero_ratio"] = round(float(nonzero_mask.float().mean().item()), 6)
+        latent_state["status"] = (
+            f"Latent: adjusted shape {tuple(current.shape)} | nonzero {latent_state['nonzero_ratio']:.1%} | "
+            f"max step {max_step:.5f} | bounded to input/reference range"
+        )
+        return refined_latent, latent_state["status"]
+
+    # =========================================================================
     # LORA WEIGHT SUGGESTIONS
     # =========================================================================
 
@@ -1258,8 +1634,10 @@ class FunPackGemmaEmbeddingRefiner:
                 "offset_ratio": 0.0,
                 "stable_offset_ratio": None,
                 "reward_ema": 0.0,
+                "culprit_score": 0.0,
                 "good_streak": 0,
                 "bad_streak": 0,
+                "culprit_hits": 0,
                 "iterations": 0,
             },
         )
@@ -1268,8 +1646,10 @@ class FunPackGemmaEmbeddingRefiner:
         state.setdefault("offset_ratio", 0.0)
         state.setdefault("stable_offset_ratio", None)
         state.setdefault("reward_ema", 0.0)
+        state.setdefault("culprit_score", 0.0)
         state.setdefault("good_streak", 0)
         state.setdefault("bad_streak", 0)
+        state.setdefault("culprit_hits", 0)
         state.setdefault("iterations", 0)
         return lora_id, state
 
@@ -1342,47 +1722,91 @@ class FunPackGemmaEmbeddingRefiner:
 
             offset = float(state.get("offset_ratio", 0.0))
             stable_offset = state.get("stable_offset_ratio")
+            culprit_score = float(state.get("culprit_score", 0.0))
+            culprit_hits = int(state.get("culprit_hits", 0))
             if stable_offset is not None and rating >= 6:
                 offset = 0.72 * offset + 0.28 * float(stable_offset)
 
             step = profile["step"] * max(0.15, relation)
             max_offset = profile["max_offset"]
-            if relation <= 0.05:
-                offset *= 0.94
-            elif rating >= 8:
+            min_offset = profile["min_offset"]
+            effective_relation = max(relation, profile.get("culprit_bias", 0.0))
+            base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
+            base_abs = abs(base_model)
+            is_concept_lora = lora_type == "concept"
+            concept_match_strength = 1.0
+            if is_concept_lora:
+                concept_match_strength += 0.30 if matched_labels else 0.0
+                concept_match_strength += max(0.0, relation - 0.30) * 1.35
+
+            if rating >= 8:
                 value_mult = 0.75 + min(1.4, max(0.5, concept_importance)) * 0.25
                 offset += step * (0.45 + max(0.0, reward)) * value_mult
+                culprit_score *= 0.72
                 if state["good_streak"] >= 3:
                     if stable_offset is None:
                         stable_offset = offset
                     else:
                         stable_offset = 0.78 * float(stable_offset) + 0.22 * offset
-                    state["stable_offset_ratio"] = _clamp(stable_offset, -max_offset, max_offset)
+                    state["stable_offset_ratio"] = _clamp(stable_offset, min_offset, max_offset)
                     offset = state["stable_offset_ratio"]
             elif rating <= 4:
                 severity = _clamp((5.0 - float(rating)) / 4.0, 0.0, 1.0)
+                culprit_signal = max(0.20, effective_relation) * (0.70 + base_abs * 0.30)
+                if is_concept_lora:
+                    culprit_signal *= concept_match_strength
+                culprit_score = _clamp(culprit_score * 0.72 + severity * culprit_signal, 0.0, 2.5)
+                culprit_hits = culprit_hits + 1 if culprit_score >= 0.45 else max(0, culprit_hits - 1)
                 max_offset = profile["bad_max_offset"] if rating <= 2 else max(max_offset, profile["bad_max_offset"] * 0.72)
-                offset -= step * (1.0 + severity * 3.0) * max(0.6, relation)
+                bad_floor_strength = min(1.0, 0.45 + 0.35 * culprit_score + 0.14 * state["bad_streak"])
+                if is_concept_lora:
+                    bad_floor_strength = min(1.0, bad_floor_strength + 0.18 * concept_match_strength)
+                min_offset = min(min_offset, profile["bad_min_offset"] * bad_floor_strength)
+                offset -= step * (1.0 + severity * 3.0) * max(0.4, effective_relation) * max(0.8, 0.85 + culprit_score)
+                if state["bad_streak"] >= 2:
+                    offset -= step * (0.65 + severity * 1.8) * max(0.25, effective_relation)
+                if is_concept_lora and state["bad_streak"] >= 2:
+                    offset -= step * (0.85 + severity * 2.4) * max(0.50, effective_relation) * concept_match_strength
                 if state["bad_streak"] >= 2:
                     state["stable_offset_ratio"] = None
+                if is_concept_lora and matched_labels and state["bad_streak"] >= 2 and culprit_score >= 0.70:
+                    offset = min(offset, -1.0)
+                if state["bad_streak"] >= 3 and culprit_score >= 0.85 and abs(1.0 + offset) < 0.08:
+                    offset = -1.0
             else:
-                if stable_offset is not None:
+                culprit_score *= 0.92
+                culprit_hits = max(0, culprit_hits - 1)
+                if relation <= 0.05:
+                    offset *= 0.94
+                elif stable_offset is not None:
                     offset = 0.65 * offset + 0.35 * float(stable_offset)
                 else:
                     offset *= 0.90
 
-            offset = _clamp(offset, -max_offset, max_offset)
+            offset = _clamp(offset, min_offset, max_offset)
             state["offset_ratio"] = offset
+            state["culprit_score"] = culprit_score
+            state["culprit_hits"] = culprit_hits
             state["iterations"] = int(state.get("iterations", 0)) + 1
 
-            base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
             model_weight = base_model * (1.0 + offset)
+            suspect = culprit_score >= 0.65 or model_weight <= 0.0 or culprit_hits >= 2
+            action = (
+                "invert" if model_weight < 0.0 else
+                "mute" if model_weight == 0.0 else
+                "reduce" if abs(model_weight) < abs(base_model) else
+                "boost"
+            )
             suggestions[lora_id] = {
                 "name": entry.get("name", ""),
                 "type": lora_type,
                 "model_weight": model_weight,
                 "base_model_weight": base_model,
                 "offset_ratio": offset,
+                "culprit_score": culprit_score,
+                "culprit_hits": culprit_hits,
+                "suspect": suspect,
+                "action": action,
                 "relation": relation,
                 "matched_concepts": matched_labels,
                 "rating": int(rating),
@@ -1395,6 +1819,7 @@ class FunPackGemmaEmbeddingRefiner:
             status_parts.append(
                 f"{entry.get('name', '?')}[{lora_type}] rel={relation:.2f} "
                 f"offset={offset:+.3f} next={model_weight:+.3f} "
+                f"sus={culprit_score:.2f}{' !' if suspect else ''} "
                 f"match={match_text}"
             )
 
@@ -1412,7 +1837,8 @@ class FunPackGemmaEmbeddingRefiner:
                scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
-               sigmas=None, sigma_strength: str = "subtle", lora_stack=None):
+               sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
+               prompt=None, unique_id=None):
 
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:
@@ -1422,12 +1848,10 @@ class FunPackGemmaEmbeddingRefiner:
             torch.manual_seed(seed)
             random.seed(seed)
 
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        refinements_dir = os.path.join(base_dir, "refinements")
+        refinements_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
 
-        safe_key = md5(f"{mode}::{refinement_key}".encode("utf-8")).hexdigest()
-        json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
+        json_file = refinement_state_path(refinement_key, mode)
         fallback_loss_graph = render_refinement_loss_graph(
             refinement_key=refinement_key,
             scheduler_mode=scheduler_mode,
@@ -1437,9 +1861,12 @@ class FunPackGemmaEmbeddingRefiner:
             points=[],
         )
         fallback_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else torch.FloatTensor([])
+        latent_output_connected = self._is_output_connected(prompt, unique_id, self.LATENT_OUTPUT_INDEX)
+        fallback_latent = clone_latent(latent)
+        fallback_latent_status = "Latent: not evaluated before conditioning validation."
 
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
-            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         item = positive_conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -1450,7 +1877,7 @@ class FunPackGemmaEmbeddingRefiner:
             positive_meta = {"pooled_output": None}
 
         if not isinstance(raw_positive, torch.Tensor):
-            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
@@ -1503,25 +1930,49 @@ class FunPackGemmaEmbeddingRefiner:
 
         # ====================== RESET / NEW SESSION ======================
         if reset_session or not os.path.exists(json_file):
+            if reset_session:
+                self._delete_latent_reference(refinement_key, mode)
+            if latent_output_connected:
+                fallback_latent, fallback_latent_status = self._refine_latent(
+                    latent,
+                    refinement_key,
+                    mode,
+                    rating,
+                    (rating - 5.5) / 4.5,
+                    {},
+                )
+            else:
+                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "New session started - Reference saved", "", f"New session started. Reference embedding saved.\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         # ====================== SAFE JSON LOAD ======================
         try:
             with open(json_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError, ValueError) as e:
-            print(f"[FunPackGemmaEmbeddingRefiner] Corrupt session file, resetting: {e}")
+            print(f"[FunPackVideoRefiner] Corrupt session file, resetting: {e}")
             try:
                 os.remove(json_file)
             except OSError:
                 pass
+            if latent_output_connected:
+                fallback_latent, fallback_latent_status = self._refine_latent(
+                    latent,
+                    refinement_key,
+                    mode,
+                    rating,
+                    (rating - 5.5) / 4.5,
+                    {},
+                )
+            else:
+                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         global_adaptive = data["global_adaptive"]
         # Migrate sessions created before the multi-level concept system was added
@@ -1584,7 +2035,7 @@ class FunPackGemmaEmbeddingRefiner:
         try:
             old_reference = serializable_to_tensor(active["reference_embeds"])
         except Exception as e:
-            print(f"[FunPackGemmaEmbeddingRefiner] Failed to load reference embedding: {e}. Resetting for this prompt.")
+            print(f"[FunPackVideoRefiner] Failed to load reference embedding: {e}. Resetting for this prompt.")
             old_reference = raw_positive.clone()
             active["reference_embeds"] = tensor_to_serializable(old_reference)
             active["history"] = []
@@ -1595,7 +2046,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         # Shape mismatch guard
         if old_reference.shape != cur_positive.shape:
-            print(f"[FunPackGemmaEmbeddingRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference.")
+            print(f"[FunPackVideoRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference.")
             old_reference = cur_positive.clone()
             active["reference_embeds"] = tensor_to_serializable(old_reference)
             active["history"] = []
@@ -1921,6 +2372,17 @@ class FunPackGemmaEmbeddingRefiner:
             sigma_strength,
             seed,
         )
+        if latent_output_connected:
+            refined_latent, latent_status = self._refine_latent(
+                latent,
+                refinement_key,
+                mode,
+                rating,
+                reward,
+                global_adaptive,
+            )
+        else:
+            refined_latent, latent_status = self._latent_refinement_disabled(latent)
 
         # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
         # Chooses one concept/question pair per run using category-aware scoring.
@@ -2043,7 +2505,8 @@ class FunPackGemmaEmbeddingRefiner:
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
             f"{lora_suggestion_status}\n"
-            f"{sigma_status}"
+            f"{sigma_status}\n"
+            f"{latent_status}"
         )
 
         if scheduler_mode == "accurate":
@@ -2080,15 +2543,40 @@ class FunPackGemmaEmbeddingRefiner:
             "⚠️ Still exploring" if avg_reward_ema > -0.2 else
             "🔄 Heavy correction"
         )
+        pending_feedback = data.get("pending_feedback")
+        if not feedback_enabled:
+            feedback_state = "Feedback off"
+        elif pending_feedback is not None:
+            feedback_state = f"Feedback queued for '{pending_feedback.get('concept_label', 'concept')}'"
+        else:
+            feedback_state = "Feedback ready"
+
+        suggestions_snapshot = active.get("lora_weight_suggestions", {})
+        suspect_count = sum(1 for item in suggestions_snapshot.values() if item.get("suspect"))
+        if isinstance(lora_stack, dict) and lora_stack.get("loras"):
+            lora_state = f"LoRA active ({len(lora_stack.get('loras', []))} loaded"
+            if suspect_count > 0:
+                lora_state += f", {suspect_count} suspect"
+            lora_state += ")"
+        else:
+            lora_state = "LoRA idle"
+
+        sigma_state = "Sigma active" if isinstance(sigmas, torch.Tensor) and sigma_strength != "off" else (
+            "Sigma connected (off)" if isinstance(sigmas, torch.Tensor) else "Sigma idle"
+        )
+
+        latent_state = (
+            "Latent active" if latent_output_connected and refined_latent is not None else
+            "Latent armed" if latent_output_connected else
+            "Latent idle"
+        )
 
         status = (
-            f"Mode {mode.upper()} | Iter {iter_num} | Total iters {global_total_iterations} | "
-            f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
-            f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
-            f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-            f"Dominant: {dominant_line} | Groups: {group_line}\n"
-            f"{lora_suggestion_status}\n"
-            f"{sigma_status}"
+            f"{health} | Mode {mode.upper()} | Rating {rating}/10 {trend} | Iter {iter_num}\n"
+            f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
+            f"{len(history)} history item(s) on this prompt\n"
+            f"Focus: {dominant_line} | {feedback_state}\n"
+            f"Systems: {lora_state} | {sigma_state} | {latent_state}"
         )
 
         # ====================== FINAL SAVE ======================
@@ -2098,7 +2586,43 @@ class FunPackGemmaEmbeddingRefiner:
         # ====================== RETURN ======================
         modified_positive = [(new_positive, positive_meta)]
 
-        return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas)
+        return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas, refined_latent)
+
+
+FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
+
+
+class FunPackSaveRefinementLatent:
+    CATEGORY = "FunPack/Refinement"
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("latent", "status")
+    FUNCTION = "save_latent"
+    DESCRIPTION = "Saves a latent tensor bundle under a refinement key for FunPack Video Refiner latent refinement."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT",),
+                "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
+                "mode": (["ltx2", "wan"], {"default": "ltx2"}),
+            }
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
+    def save_latent(self, latent, refinement_key, mode):
+        if isinstance(latent, dict) and not latent_is_plain_video_tensor(latent):
+            FunPackVideoRefiner()._raise_wrong_latent(latent)
+
+        samples = latent_samples(latent)
+        if samples is None:
+            return (clone_latent(latent), "No latent samples tensor found.")
+
+        FunPackVideoRefiner()._save_latent_reference(latent, refinement_key, mode)
+        return (clone_latent(latent), f"Saved latent for key '{refinement_key}' ({mode}) shape={tuple(samples.shape)}")
 
 
 class FunPackPromptCombiner:

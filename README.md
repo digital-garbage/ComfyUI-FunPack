@@ -2,32 +2,30 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-## What's New in 2.0.0
+## What's New in 2.1.0
 
-FunPack is now split into focused Python modules for easier editing and maintenance:
+Version 2.1.0 promotes the latest refiner workflow from `dev` to `main`.
 
-- `conditioning.py`
-- `samplers.py`
-- `image_processing.py`
-- `model_management.py`
+`FunPack Gemma Embedding Refiner` is now displayed as `FunPack Video Refiner`. The old node key remains available as a compatibility alias, so existing workflows that reference `FunPackGemmaEmbeddingRefiner` can continue to load.
 
-Version 2.0.0 also adds a prompt-exact LoRA weight workflow that works together with `FunPack Gemma Embedding Refiner`.
+The Video Refiner now supports:
 
-Use this order:
+- concept-aware feedback and clearer split `status` / `training_info` outputs
+- protected prompt phrases with either quoted speech or backslash-wrapped phrases
+- optional sigma refinement
+- optional video-latent refinement through `FunPack Save Refinement Latent`
+- prompt-exact LoRA weight suggestions through `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`
+- hidden per-block LoRA redistribution for supported LTX model stacks
 
-`FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Gemma Embedding Refiner`
+For the LoRA/refiner workflow, use this order:
 
-`FunPack Apply LoRA Weights` defines selected LoRAs, LoRA type, and model base weights. If the refiner has saved suggested weights for the exact prompt, it applies them; otherwise it uses the base weights.
+`FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Video Refiner`
 
-`FunPack LoRA Loader` loads the prepared LoRA stack into the model. Its CLIP input is optional and is left untouched when omitted.
+For LTX audio/video latent refinement, split the AV latent first:
 
-`FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON. It can improve the balance and stability of concepts the model can already express, but it cannot teach a model missing concepts or capabilities from scratch.
+`LTXVSeparateAVLatent` video output -> `FunPack Save Refinement Latent` / `FunPack Video Refiner` -> `LTXVConcatAVLatent` video input
 
-## WIP on `dev`
-
-The `dev` branch contains unstable work-in-progress changes, including the Video Refiner rename, latent refinement experiments, and related LTX video-latent helpers.
-
-Switch to `dev` only if you intentionally want to test unfinished features. For stable daily use, stay on `main`.
+Do not send combined AV latents or audio latents into the FunPack latent refinement path. Those structures are intentionally rejected so the workflow does not silently refine the wrong tensor.
 
 ## Installation
 
@@ -42,7 +40,7 @@ FunPack is available on Comfy Registry and can be installed in any of these ways
 
 ## Dependencies
 
-FunPack now includes a [`requirements.txt`](requirements.txt) file for the Python packages it expects outside the standard library.
+FunPack includes a [`requirements.txt`](requirements.txt) file for the Python packages it expects outside the standard library.
 
 Install them with:
 
@@ -77,7 +75,11 @@ If you install `hpsv3`, use `--no-build-isolation`. Otherwise the install may ap
 
 Per-node documentation is available in the [`docs`](docs) folder.
 
-The LoRA/refiner helper workflow is documented in [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md).
+Start with:
+
+- [`docs/FunPackGemmaEmbeddingRefiner.md`](docs/FunPackGemmaEmbeddingRefiner.md) for `FunPack Video Refiner`
+- [`docs/FunPackSaveRefinementLatent.md`](docs/FunPackSaveRefinementLatent.md) for latent references
+- [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
 
