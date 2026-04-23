@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.0.0] - 2026-04-23
+
+### Added
+
+Added `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`, a prompt-exact LoRA weight workflow designed to work with `FunPack Gemma Embedding Refiner`.
+
+The new workflow uses base LoRA weights on the first run for a prompt, then lets the refiner save prompt-specific suggested LoRA weights into its existing JSON state for later runs.
+
+### Changed
+
+Split the old single `funpack.py` implementation into focused modules:
+
+- `conditioning.py`
+- `samplers.py`
+- `image_processing.py`
+- `model_management.py`
+
+`funpack.py` remains as a compatibility re-export for older imports.
+
+Updated `FunPack Gemma Embedding Refiner` so it can accept a FunPack LoRA stack and save next-run LoRA weight suggestions based on prompt concepts, LoRA concept/type hints, and user ratings.
+
 ## [1.3.3] - 2026-04-22
 
 ### Changed

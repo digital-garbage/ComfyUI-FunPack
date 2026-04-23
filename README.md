@@ -2,6 +2,27 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## What's New in 2.0.0
+
+FunPack is now split into focused Python modules for easier editing and maintenance:
+
+- `conditioning.py`
+- `samplers.py`
+- `image_processing.py`
+- `model_management.py`
+
+Version 2.0.0 also adds a prompt-exact LoRA weight workflow that works together with `FunPack Gemma Embedding Refiner`.
+
+Use this order:
+
+`FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Gemma Embedding Refiner`
+
+`FunPack Apply LoRA Weights` defines selected LoRAs, base weights, LoRA type, and LoRA concept hints. If the refiner has saved suggested weights for the exact prompt, it applies them; otherwise it uses the base weights.
+
+`FunPack LoRA Loader` only loads the prepared LoRA stack into the model and CLIP, then passes that stack forward.
+
+`FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON.
+
 ## Installation
 
 FunPack is available on Comfy Registry and can be installed in any of these ways:
@@ -55,6 +76,8 @@ If you install `hpsv3`, use `--no-build-isolation`. Otherwise the install may ap
 ## Documentation
 
 Per-node documentation is available in the [`docs`](docs) folder.
+
+The LoRA/refiner helper workflow is documented in [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md).
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
 
