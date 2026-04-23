@@ -92,6 +92,15 @@ RATING_PROFILES = {
     },
 }
 
+CATEGORY_FEEDBACK_MAP = {
+    1: "general",
+    2: "concept",
+    3: "style",
+    4: "quality",
+    5: "character",
+    6: "details",
+}
+
 
 def _clamp(value, low, high):
     return max(low, min(high, value))
@@ -772,6 +781,8 @@ class FunPackVideoRefiner:
             "label": " ".join((phrase_words or [])[:6]),
             "anchor_words": list(phrase_words or []),
             "category": category,
+            "category_source": "auto",
+            "category_confidence": 0.35 if category == "general" else 0.65,
             "word_importance": {},
             "presence_target": 1.0,
             "priority_weight": 1.0,
@@ -793,8 +804,13 @@ class FunPackVideoRefiner:
         anchor_words = list(cluster.get("anchor_words", []))
         defaults = self._default_concept_cluster(anchor_words)
         defaults.update(cluster)
-        if not defaults.get("category") or defaults.get("category") == "general":
+        defaults.setdefault("category_source", "auto")
+        defaults.setdefault("category_confidence", 0.35 if defaults.get("category") == "general" else 0.65)
+        if defaults.get("category_source") != "user" and (
+            not defaults.get("category") or defaults.get("category") == "general"
+        ):
             defaults["category"] = self._infer_concept_category(defaults.get("anchor_words", []))
+            defaults["category_confidence"] = 0.35 if defaults["category"] == "general" else max(0.65, defaults.get("category_confidence", 0.0))
         defaults["question_history"] = list(defaults.get("question_history", []))[-24:]
         return defaults
 
@@ -826,6 +842,10 @@ class FunPackVideoRefiner:
             "preference": {
                 "prompt": "What is your preference for having '{label}' in future outputs?",
                 "legend": "1=strongly less  2=less  3=slightly less  4=slightly more  5=more  6=much more",
+            },
+            "category": {
+                "prompt": "What kind of concept is '{label}'?",
+                "legend": "1=general  2=concept  3=style  4=quality  5=character  6=details",
             },
         }
 
@@ -869,6 +889,10 @@ class FunPackVideoRefiner:
             score = 0.38 * (2.0 - cluster.get("semantic_fidelity", 1.0)) + 0.24 * rating_shift + 0.20 * uncertainty + 0.18 * max(0.0, 1.0 - similarity)
         elif question_type == "stability":
             score = 0.35 * rating_shift + 0.30 * abs(cluster.get("stability_weight", 1.0) - 1.0) + 0.20 * max(0.0, 1.0 - similarity) + 0.15 * uncertainty
+        elif question_type == "category":
+            category_unknown = 1.0 if cluster.get("category_source") != "user" else 0.0
+            category_uncertainty = max(0.0, 1.0 - float(cluster.get("category_confidence", 0.35)))
+            score = 0.65 * category_unknown + 0.25 * category_uncertainty + 0.10 * rating_shift
         else:  # preference
             score = 0.34 * abs(cluster.get("user_affinity", 1.0) - 1.0) + 0.28 * rating_shift + 0.20 * uncertainty + 0.18 * abs(cluster.get("priority_weight", 1.0) - 1.0)
 
@@ -884,6 +908,7 @@ class FunPackVideoRefiner:
         question_specs = self._feedback_question_specs()
         rating_shift = min(1.0, abs(rating - last_rating) / 4.0)
         candidates = []
+        category_candidates = []
 
         for cid in ordered_concept_ids:
             cluster = concept_clusters.get(cid)
@@ -912,7 +937,7 @@ class FunPackVideoRefiner:
                     question_type, cluster, category, mean_imp,
                     neighbor_mean, rating_shift, similarity, iter_num
                 )
-                candidates.append({
+                candidate = {
                     "concept_id": cid,
                     "concept_label": current_concept_labels.get(cid, cluster.get("label", "")),
                     "question_type": question_type,
@@ -920,7 +945,16 @@ class FunPackVideoRefiner:
                     "group_id": chosen_group_id,
                     "category": category,
                     "score": score,
-                })
+                }
+                if question_type == "category":
+                    category_candidates.append(candidate)
+                else:
+                    candidates.append(candidate)
+
+        if category_candidates:
+            category_candidate = max(category_candidates, key=lambda x: x["score"])
+            if category_candidate["score"] >= 0.60:
+                return category_candidate
 
         if not candidates:
             return None
@@ -1072,6 +1106,37 @@ class FunPackVideoRefiner:
         new_id = md5("|".join(sorted(phrase_words)).encode()).hexdigest()[:10]
         return new_id, True
 
+    def _apply_category_feedback(self, cluster: dict, feedback_rating: int, iter_num: int = 0):
+        category = CATEGORY_FEEDBACK_MAP.get(int(feedback_rating), "general")
+        cluster["category"] = category
+        cluster["category_source"] = "user"
+        cluster["category_confidence"] = 1.0
+
+        if category in {"concept", "character", "details"}:
+            cluster["presence_target"] = self._clip_profile_value(cluster.get("presence_target", 1.0) + 0.10)
+            cluster["priority_weight"] = self._clip_profile_value(cluster.get("priority_weight", 1.0) + 0.10)
+            cluster["semantic_fidelity"] = self._clip_profile_value(
+                cluster.get("semantic_fidelity", 1.0) + 0.08,
+                low=0.6,
+                high=1.8,
+            )
+        elif category == "quality":
+            cluster["priority_weight"] = self._clip_profile_value(cluster.get("priority_weight", 1.0) + 0.06)
+            cluster["overrep_sensitivity"] = self._clip_profile_value(cluster.get("overrep_sensitivity", 1.0) + 0.08)
+        elif category == "style":
+            cluster["stability_weight"] = self._clip_profile_value(cluster.get("stability_weight", 1.0) + 0.08)
+            cluster["user_affinity"] = self._clip_profile_value(cluster.get("user_affinity", 1.0) + 0.05)
+
+        cluster["question_history"] = list(cluster.get("question_history", []))[-23:]
+        cluster["question_history"].append({
+            "iteration": iter_num,
+            "type": "category",
+            "rating": feedback_rating,
+            "category": category,
+        })
+        cluster["last_question_type"] = "category"
+        cluster["last_question_iter"] = iter_num
+
     def _build_word_concept_map(self, prompt: str, concept_clusters: dict):
         """
         Parse the prompt into concept phrases (Level 3), match or create clusters,
@@ -1099,9 +1164,15 @@ class FunPackVideoRefiner:
                 for w in phrase_words:
                     if w not in existing:
                         concept_clusters[cid]["anchor_words"].append(w)
-                if concept_clusters[cid].get("category") == "general":
+                if (
+                    concept_clusters[cid].get("category_source") != "user" and
+                    concept_clusters[cid].get("category") == "general"
+                ):
                     concept_clusters[cid]["category"] = self._infer_concept_category(
                         concept_clusters[cid]["anchor_words"]
+                    )
+                    concept_clusters[cid]["category_confidence"] = (
+                        0.35 if concept_clusters[cid]["category"] == "general" else 0.65
                     )
             concept_clusters[cid]["last_prompt_label"] = phrase_label
             current_concept_labels[cid] = phrase_label
@@ -1249,6 +1320,10 @@ class FunPackVideoRefiner:
         concept_clusters[concept_id] = cluster
 
         question_type = question_type or "presence"
+        if question_type == "category":
+            self._apply_category_feedback(cluster, feedback_rating, iter_num)
+            return
+
         direct_deltas = {
             "presence": {1: 0.90, 2: 0.50, 3: 0.20, 4: -0.15, 5: 0.04, 6: -0.55},
             "priority": {1: -0.25, 2: -0.12, 3: -0.05, 4: 0.08, 5: 0.18, 6: 0.30},
@@ -1780,6 +1855,10 @@ class FunPackVideoRefiner:
 
             overlap = len(lora_words & prompt_words) / max(1, len(lora_words)) if lora_words else 0.0
             category_score = 0.62 if lora_type == category else 0.0
+            if lora_type == "concept" and category in {"concept", "details", "subject", "appearance", "action", "environment"}:
+                category_score = max(category_score, 0.58)
+            if lora_type == "character" and category in {"character", "subject", "appearance"}:
+                category_score = max(category_score, 0.72)
             if lora_type == "quality" and category == "quality":
                 category_score = 0.78
             if lora_type == "style" and category in {"style", "camera"}:
@@ -2659,7 +2738,8 @@ class FunPackVideoRefiner:
                 f"[{current_concept_labels.get(cid, c['label'])}/{c.get('category', 'general')}: "
                 f"top={top_local} | p={c.get('presence_target', 1.0):.2f} "
                 f"prio={c.get('priority_weight', 1.0):.2f} "
-                f"stab={c.get('stability_weight', 1.0):.2f}]"
+                f"stab={c.get('stability_weight', 1.0):.2f} "
+                f"cat={c.get('category_source', 'auto')}]"
             )
         concept_line = "; ".join(active_concept_parts) if active_concept_parts else "none"
 
