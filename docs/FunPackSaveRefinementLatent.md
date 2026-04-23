@@ -4,7 +4,7 @@ This node saves a latent tensor bundle under a refinement key so `FunPack Video 
 
 ## Parameters
 
-**latent**: Latent tensor bundle to save.
+**latent**: Plain video latent tensor bundle to save. In LTX audio/video workflows, connect the video output from `LTXVSeparateAVLatent`, not the audio latent or combined AV latent.
 
 **refinement_key**: Name of the refinement session. Use the same key in `FunPack Video Refiner`.
 
@@ -19,3 +19,5 @@ This node saves a latent tensor bundle under a refinement key so `FunPack Video 
 ## Notes
 
 The saved latent lives in FunPack's local `refinements` folder as a PyTorch tensor file. The refiner only uses it when both the key and mode match and the `refined_latent` output is connected. If the refiner receives a latent and no saved reference exists, it saves the incoming latent automatically. Zero-valued latent positions are treated as intentional and are not refined.
+
+Audio latents and LTX audio/video combined `NestedTensor` latents are intentionally rejected. Use only the video latent side, then reconnect the refined result to `LTXVConcatAVLatent` as `video_latent`.
