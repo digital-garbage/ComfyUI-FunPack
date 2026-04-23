@@ -23,6 +23,12 @@ Use this order:
 
 `FunPack Gemma Embedding Refiner` does the prompt/concept/rating work and saves next-run LoRA weight suggestions into its existing refinement JSON. It can improve the balance and stability of concepts the model can already express, but it cannot teach a model missing concepts or capabilities from scratch.
 
+## WIP on `dev`
+
+The `dev` branch contains unstable work-in-progress changes, including the Video Refiner rename, latent refinement experiments, and related LTX video-latent helpers.
+
+Switch to `dev` only if you intentionally want to test unfinished features. For stable daily use, stay on `main`.
+
 ## Installation
 
 FunPack is available on Comfy Registry and can be installed in any of these ways:
@@ -30,7 +36,7 @@ FunPack is available on Comfy Registry and can be installed in any of these ways
 1. With `comfy-cli`:
    `comfy node install ComfyUI-FunPack`
 2. With git, inside your `ComfyUI/custom_nodes` directory:
-   `git clone https://github.com/aimfordeb/ComfyUI-FunPack`
+   `git clone https://github.com/digital-garbage/ComfyUI-FunPack`
 3. With ComfyUI-Manager:
    Open `Custom Nodes Manager`, search for `ComfyUI-FunPack`, and click `Install`.
 
@@ -52,12 +58,6 @@ The expected baseline is:
 - `transformers >= 5.0.0`
 
 Higher Torch versions are fine. The important part is avoiding older Torch releases that may break FunPack workflows. If your ComfyUI environment has an older Torch build, upgrade Torch in that environment separately instead of through `requirements.txt`.
-
-## Known Limitation
-
-`FunPack Gemma Embedding Refiner` can optionally refine `SIGMAS`, but that currently breaks audio generation in workflows that also produce audio streams. If you need audio to generate and mux correctly, do not connect `sigmas` to the refiner. Leave sigma schedules on their original path and use the refiner only for conditioning.
-
-UPD: This is not caused by Embedding Refiner node. Updating to latest nightly version of ComfyUI solves the problem.
 
 `hpsv3` is still an optional dependency used only by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not included in the default requirements.
 
