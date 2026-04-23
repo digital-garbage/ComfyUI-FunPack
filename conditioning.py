@@ -151,7 +151,46 @@ def render_refinement_loss_graph(refinement_key, scheduler_mode, mode, total_ite
 
     return _to_image_tensor(image.convert("RGB"))
 
-class FunPackGemmaEmbeddingRefiner:
+
+def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    refinements_dir = os.path.join(base_dir, "refinements")
+    safe_key = md5(f"{(mode or 'ltx2').lower()}::{refinement_key}".encode("utf-8")).hexdigest()
+    return os.path.join(refinements_dir, f"{prefix}_{safe_key}.{extension}")
+
+
+def empty_latent():
+    return {"samples": torch.empty(0)}
+
+
+def clone_latent(latent):
+    if not isinstance(latent, dict):
+        return empty_latent()
+
+    cloned = {}
+    for key, value in latent.items():
+        cloned[key] = value.detach().clone() if isinstance(value, torch.Tensor) else value
+    return cloned
+
+
+def latent_samples(latent):
+    if not isinstance(latent, dict):
+        return None
+    samples = latent.get("samples")
+    return samples if isinstance(samples, torch.Tensor) else None
+
+
+def cpu_tensor_bundle(latent):
+    if not isinstance(latent, dict):
+        return {}
+
+    bundle = {}
+    for key, value in latent.items():
+        if isinstance(value, torch.Tensor):
+            bundle[key] = value.detach().cpu().clone()
+    return bundle
+
+class FunPackVideoRefiner:
     _tokenizers = {}
     _tokenizer_sources = {
         "ltx2": [
@@ -224,7 +263,7 @@ class FunPackGemmaEmbeddingRefiner:
                 cls._tokenizers[mode] = AutoTokenizer.from_pretrained(model_id, **kwargs)
                 return cls._tokenizers[mode]
             except Exception as e:
-                print(f"[FunPackGemmaEmbeddingRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
+                print(f"[FunPackVideoRefiner] Tokenizer load failed for mode '{mode}' from '{model_id}': {e}")
 
         return None
 
@@ -403,11 +442,14 @@ class FunPackGemmaEmbeddingRefiner:
                 "lora_stack": ("FUNPACK_LORA_STACK", {
                     "tooltip": "Optional stack from FunPack LoRA Loader. The refiner uses it to save prompt-specific suggested LoRA weights."
                 }),
+                "latent": ("LATENT", {
+                    "tooltip": "Optional latent to refine. If no saved latent exists for this key, it passes through unchanged."
+                }),
             }
         }
 
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE", "SIGMAS")
-    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph", "refined_sigmas")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "STRING", "IMAGE", "SIGMAS", "LATENT")
+    RETURN_NAMES = ("modified_positive", "status", "feedback_question", "training_info", "loss_graph", "refined_sigmas", "refined_latent")
     FUNCTION = "refine"
     CATEGORY = "FunPack/Refinement"
 
@@ -1234,6 +1276,110 @@ class FunPackGemmaEmbeddingRefiner:
         return tuned_sigmas, sigma_status
 
     # =========================================================================
+    # LATENT REFINEMENT
+    # =========================================================================
+
+    def _resize_tensor_like(self, tensor: torch.Tensor, reference: torch.Tensor):
+        if not isinstance(tensor, torch.Tensor) or not isinstance(reference, torch.Tensor):
+            return None
+
+        out = tensor.to(device=reference.device, dtype=reference.dtype)
+        if list(out.shape) == list(reference.shape):
+            return out
+        if out.dim() != reference.dim() or out.dim() not in {4, 5}:
+            return None
+
+        batch = reference.shape[0]
+        if out.shape[0] < batch:
+            reps = [1] * out.dim()
+            reps[0] = math.ceil(batch / max(1, out.shape[0]))
+            out = out.repeat(*reps)
+        out = out[:batch]
+
+        channels = reference.shape[1]
+        if out.shape[1] < channels:
+            pad_shape = list(out.shape)
+            pad_shape[1] = channels - out.shape[1]
+            out = torch.cat([out, torch.zeros(pad_shape, device=out.device, dtype=out.dtype)], dim=1)
+        out = out[:, :channels]
+
+        if out.dim() == 4:
+            return F.interpolate(out, size=reference.shape[-2:], mode="bilinear", align_corners=False)
+        return F.interpolate(out, size=reference.shape[-3:], mode="trilinear", align_corners=False)
+
+    def _load_saved_latent(self, refinement_key, mode):
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        if not os.path.exists(path):
+            return None, "Latent: no saved latent for this key."
+
+        try:
+            data = torch.load(path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            return None, f"Latent: failed to load saved latent ({e})."
+
+        if not isinstance(data, dict) or not isinstance(data.get("samples"), torch.Tensor):
+            return None, "Latent: saved latent file is invalid."
+
+        return data, "Latent: saved latent loaded."
+
+    def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive):
+        current = latent_samples(latent)
+        if current is None:
+            return empty_latent(), "Latent: no latent input connected."
+
+        refined_latent = clone_latent(latent)
+        saved_bundle, load_status = self._load_saved_latent(refinement_key, mode)
+        if saved_bundle is None:
+            return refined_latent, load_status
+
+        saved_samples = self._resize_tensor_like(saved_bundle.get("samples"), current)
+        if saved_samples is None:
+            return refined_latent, "Latent: saved latent shape is incompatible, passthrough."
+
+        latent_state = global_adaptive.setdefault("latent_refinement", {})
+        latent_state["last_shape"] = list(current.shape)
+        latent_state["saved_shape"] = list(saved_bundle["samples"].shape)
+
+        momentum_data = latent_state.get("momentum")
+        if isinstance(momentum_data, dict):
+            try:
+                momentum = serializable_to_tensor(momentum_data).to(device=current.device, dtype=current.dtype)
+                momentum = self._resize_tensor_like(momentum, current)
+            except Exception:
+                momentum = None
+        else:
+            momentum = None
+        if momentum is None:
+            momentum = torch.zeros_like(current)
+
+        nonzero_mask = current.ne(0) & saved_samples.ne(0)
+        if not bool(nonzero_mask.any()):
+            refined_latent["samples"] = current
+            latent_state["status"] = "Latent: only zero-valued positions available, passthrough."
+            return refined_latent, latent_state["status"]
+
+        lr = 0.035 if rating >= 7 else 0.055 if rating <= 4 else 0.018
+        target_delta = (current - saved_samples) * nonzero_mask.to(dtype=current.dtype)
+        update = target_delta * (reward * lr)
+        momentum = 0.82 * momentum + 0.18 * update
+        max_step = max(0.001, min(0.08, float(current.detach().abs().mean().item()) * 0.18))
+        latent_delta = torch.clamp(momentum, min=-max_step, max=max_step)
+
+        refined_samples = current + latent_delta
+        refined_samples = torch.where(nonzero_mask, refined_samples, current)
+        refined_latent["samples"] = refined_samples
+
+        latent_state["momentum"] = tensor_to_serializable(momentum.detach().cpu())
+        latent_state["last_rating"] = int(rating)
+        latent_state["last_reward"] = round(float(reward), 4)
+        latent_state["nonzero_ratio"] = round(float(nonzero_mask.float().mean().item()), 6)
+        latent_state["status"] = (
+            f"Latent: adjusted shape {tuple(current.shape)} | nonzero {latent_state['nonzero_ratio']:.1%} | "
+            f"max step {max_step:.5f}"
+        )
+        return refined_latent, latent_state["status"]
+
+    # =========================================================================
     # LORA WEIGHT SUGGESTIONS
     # =========================================================================
 
@@ -1412,7 +1558,7 @@ class FunPackGemmaEmbeddingRefiner:
                scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
-               sigmas=None, sigma_strength: str = "subtle", lora_stack=None):
+               sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None):
 
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:
@@ -1422,12 +1568,10 @@ class FunPackGemmaEmbeddingRefiner:
             torch.manual_seed(seed)
             random.seed(seed)
 
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        refinements_dir = os.path.join(base_dir, "refinements")
+        refinements_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements")
         os.makedirs(refinements_dir, exist_ok=True)
 
-        safe_key = md5(f"{mode}::{refinement_key}".encode("utf-8")).hexdigest()
-        json_file = os.path.join(refinements_dir, f"refine_{safe_key}.json")
+        json_file = refinement_state_path(refinement_key, mode)
         fallback_loss_graph = render_refinement_loss_graph(
             refinement_key=refinement_key,
             scheduler_mode=scheduler_mode,
@@ -1437,9 +1581,10 @@ class FunPackGemmaEmbeddingRefiner:
             points=[],
         )
         fallback_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else torch.FloatTensor([])
+        fallback_latent = clone_latent(latent)
 
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
-            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         item = positive_conditioning[0]
         if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -1450,7 +1595,7 @@ class FunPackGemmaEmbeddingRefiner:
             positive_meta = {"pooled_output": None}
 
         if not isinstance(raw_positive, torch.Tensor):
-            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
@@ -1506,14 +1651,14 @@ class FunPackGemmaEmbeddingRefiner:
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "✓ New session started – Reference saved", "", "✓ New session started. Reference embedding saved.", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "New session started - Reference saved", "", "New session started. Reference embedding saved.", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         # ====================== SAFE JSON LOAD ======================
         try:
             with open(json_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError, ValueError) as e:
-            print(f"[FunPackGemmaEmbeddingRefiner] Corrupt session file, resetting: {e}")
+            print(f"[FunPackVideoRefiner] Corrupt session file, resetting: {e}")
             try:
                 os.remove(json_file)
             except OSError:
@@ -1521,7 +1666,7 @@ class FunPackGemmaEmbeddingRefiner:
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "⚠️ Session file was corrupt – Reset and started fresh", "", "⚠️ Session reset due to corrupt file", fallback_loss_graph, fallback_sigmas)
+            return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", "Session reset due to corrupt file", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         global_adaptive = data["global_adaptive"]
         # Migrate sessions created before the multi-level concept system was added
@@ -1584,7 +1729,7 @@ class FunPackGemmaEmbeddingRefiner:
         try:
             old_reference = serializable_to_tensor(active["reference_embeds"])
         except Exception as e:
-            print(f"[FunPackGemmaEmbeddingRefiner] Failed to load reference embedding: {e}. Resetting for this prompt.")
+            print(f"[FunPackVideoRefiner] Failed to load reference embedding: {e}. Resetting for this prompt.")
             old_reference = raw_positive.clone()
             active["reference_embeds"] = tensor_to_serializable(old_reference)
             active["history"] = []
@@ -1595,7 +1740,7 @@ class FunPackGemmaEmbeddingRefiner:
 
         # Shape mismatch guard
         if old_reference.shape != cur_positive.shape:
-            print(f"[FunPackGemmaEmbeddingRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference.")
+            print(f"[FunPackVideoRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference.")
             old_reference = cur_positive.clone()
             active["reference_embeds"] = tensor_to_serializable(old_reference)
             active["history"] = []
@@ -1921,6 +2066,14 @@ class FunPackGemmaEmbeddingRefiner:
             sigma_strength,
             seed,
         )
+        refined_latent, latent_status = self._refine_latent(
+            latent,
+            refinement_key,
+            mode,
+            rating,
+            reward,
+            global_adaptive,
+        )
 
         # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
         # Chooses one concept/question pair per run using category-aware scoring.
@@ -2043,7 +2196,8 @@ class FunPackGemmaEmbeddingRefiner:
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
             f"{lora_suggestion_status}\n"
-            f"{sigma_status}"
+            f"{sigma_status}\n"
+            f"{latent_status}"
         )
 
         if scheduler_mode == "accurate":
@@ -2088,7 +2242,8 @@ class FunPackGemmaEmbeddingRefiner:
             f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
             f"Dominant: {dominant_line} | Groups: {group_line}\n"
             f"{lora_suggestion_status}\n"
-            f"{sigma_status}"
+            f"{sigma_status}\n"
+            f"{latent_status}"
         )
 
         # ====================== FINAL SAVE ======================
@@ -2098,7 +2253,48 @@ class FunPackGemmaEmbeddingRefiner:
         # ====================== RETURN ======================
         modified_positive = [(new_positive, positive_meta)]
 
-        return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas)
+        return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas, refined_latent)
+
+
+FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
+
+
+class FunPackSaveRefinementLatent:
+    CATEGORY = "FunPack/Refinement"
+    RETURN_TYPES = ("LATENT", "STRING")
+    RETURN_NAMES = ("latent", "status")
+    FUNCTION = "save_latent"
+    DESCRIPTION = "Saves a latent tensor bundle under a refinement key for FunPack Video Refiner latent refinement."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT",),
+                "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
+                "mode": (["ltx2", "wan"], {"default": "ltx2"}),
+            }
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
+    def save_latent(self, latent, refinement_key, mode):
+        samples = latent_samples(latent)
+        if samples is None:
+            return (clone_latent(latent), "No latent samples tensor found.")
+
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        bundle = cpu_tensor_bundle(latent)
+        bundle["_meta"] = {
+            "refinement_key": refinement_key,
+            "mode": (mode or "ltx2").lower(),
+            "samples_shape": list(samples.shape),
+        }
+        torch.save(bundle, path)
+        return (clone_latent(latent), f"Saved latent for key '{refinement_key}' ({mode}) shape={tuple(samples.shape)}")
 
 
 class FunPackPromptCombiner:
