@@ -19,11 +19,11 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 import folder_paths
 
 LORA_REFINER_TYPE_PROFILES = {
-    "general": {"step": 0.025, "max_offset": 0.20, "bad_max_offset": 0.45},
-    "concept": {"step": 0.040, "max_offset": 0.35, "bad_max_offset": 0.70},
-    "style": {"step": 0.032, "max_offset": 0.28, "bad_max_offset": 0.58},
-    "quality": {"step": 0.022, "max_offset": 0.18, "bad_max_offset": 0.38},
-    "character": {"step": 0.024, "max_offset": 0.20, "bad_max_offset": 0.42},
+    "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
+    "concept": {"step": 0.040, "max_offset": 0.35, "min_offset": -0.40, "bad_max_offset": 0.70, "bad_min_offset": -1.80, "culprit_bias": 0.08},
+    "style": {"step": 0.032, "max_offset": 0.28, "min_offset": -0.38, "bad_max_offset": 0.58, "bad_min_offset": -1.55, "culprit_bias": 0.20},
+    "quality": {"step": 0.022, "max_offset": 0.18, "min_offset": -0.30, "bad_max_offset": 0.38, "bad_min_offset": -1.20, "culprit_bias": 0.18},
+    "character": {"step": 0.024, "max_offset": 0.20, "min_offset": -0.32, "bad_max_offset": 0.42, "bad_min_offset": -1.30, "culprit_bias": 0.10},
 }
 
 
@@ -1561,8 +1561,10 @@ class FunPackVideoRefiner:
                 "offset_ratio": 0.0,
                 "stable_offset_ratio": None,
                 "reward_ema": 0.0,
+                "culprit_score": 0.0,
                 "good_streak": 0,
                 "bad_streak": 0,
+                "culprit_hits": 0,
                 "iterations": 0,
             },
         )
@@ -1571,8 +1573,10 @@ class FunPackVideoRefiner:
         state.setdefault("offset_ratio", 0.0)
         state.setdefault("stable_offset_ratio", None)
         state.setdefault("reward_ema", 0.0)
+        state.setdefault("culprit_score", 0.0)
         state.setdefault("good_streak", 0)
         state.setdefault("bad_streak", 0)
+        state.setdefault("culprit_hits", 0)
         state.setdefault("iterations", 0)
         return lora_id, state
 
@@ -1645,47 +1649,78 @@ class FunPackVideoRefiner:
 
             offset = float(state.get("offset_ratio", 0.0))
             stable_offset = state.get("stable_offset_ratio")
+            culprit_score = float(state.get("culprit_score", 0.0))
+            culprit_hits = int(state.get("culprit_hits", 0))
             if stable_offset is not None and rating >= 6:
                 offset = 0.72 * offset + 0.28 * float(stable_offset)
 
             step = profile["step"] * max(0.15, relation)
             max_offset = profile["max_offset"]
-            if relation <= 0.05:
-                offset *= 0.94
-            elif rating >= 8:
+            min_offset = profile["min_offset"]
+            effective_relation = max(relation, profile.get("culprit_bias", 0.0))
+            base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
+            base_abs = abs(base_model)
+
+            if rating >= 8:
                 value_mult = 0.75 + min(1.4, max(0.5, concept_importance)) * 0.25
                 offset += step * (0.45 + max(0.0, reward)) * value_mult
+                culprit_score *= 0.72
                 if state["good_streak"] >= 3:
                     if stable_offset is None:
                         stable_offset = offset
                     else:
                         stable_offset = 0.78 * float(stable_offset) + 0.22 * offset
-                    state["stable_offset_ratio"] = _clamp(stable_offset, -max_offset, max_offset)
+                    state["stable_offset_ratio"] = _clamp(stable_offset, min_offset, max_offset)
                     offset = state["stable_offset_ratio"]
             elif rating <= 4:
                 severity = _clamp((5.0 - float(rating)) / 4.0, 0.0, 1.0)
+                culprit_signal = max(0.20, effective_relation) * (0.70 + base_abs * 0.30)
+                culprit_score = _clamp(culprit_score * 0.72 + severity * culprit_signal, 0.0, 2.5)
+                culprit_hits = culprit_hits + 1 if culprit_score >= 0.45 else max(0, culprit_hits - 1)
                 max_offset = profile["bad_max_offset"] if rating <= 2 else max(max_offset, profile["bad_max_offset"] * 0.72)
-                offset -= step * (1.0 + severity * 3.0) * max(0.6, relation)
+                bad_floor_strength = min(1.0, 0.45 + 0.35 * culprit_score + 0.14 * state["bad_streak"])
+                min_offset = min(min_offset, profile["bad_min_offset"] * bad_floor_strength)
+                offset -= step * (1.0 + severity * 3.0) * max(0.4, effective_relation) * max(0.8, 0.85 + culprit_score)
+                if state["bad_streak"] >= 2:
+                    offset -= step * (0.65 + severity * 1.8) * max(0.25, effective_relation)
                 if state["bad_streak"] >= 2:
                     state["stable_offset_ratio"] = None
+                if state["bad_streak"] >= 3 and culprit_score >= 0.85 and abs(1.0 + offset) < 0.08:
+                    offset = -1.0
             else:
-                if stable_offset is not None:
+                culprit_score *= 0.92
+                culprit_hits = max(0, culprit_hits - 1)
+                if relation <= 0.05:
+                    offset *= 0.94
+                elif stable_offset is not None:
                     offset = 0.65 * offset + 0.35 * float(stable_offset)
                 else:
                     offset *= 0.90
 
-            offset = _clamp(offset, -max_offset, max_offset)
+            offset = _clamp(offset, min_offset, max_offset)
             state["offset_ratio"] = offset
+            state["culprit_score"] = culprit_score
+            state["culprit_hits"] = culprit_hits
             state["iterations"] = int(state.get("iterations", 0)) + 1
 
-            base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
             model_weight = base_model * (1.0 + offset)
+            suspect = culprit_score >= 0.65 or model_weight <= 0.0 or culprit_hits >= 2
+            action = (
+                "invert" if model_weight < 0.0 else
+                "mute" if model_weight == 0.0 else
+                "reduce" if abs(model_weight) < abs(base_model) else
+                "boost"
+            )
             suggestions[lora_id] = {
                 "name": entry.get("name", ""),
                 "type": lora_type,
                 "model_weight": model_weight,
                 "base_model_weight": base_model,
                 "offset_ratio": offset,
+                "culprit_score": culprit_score,
+                "culprit_hits": culprit_hits,
+                "suspect": suspect,
+                "action": action,
                 "relation": relation,
                 "matched_concepts": matched_labels,
                 "rating": int(rating),
@@ -1698,6 +1733,7 @@ class FunPackVideoRefiner:
             status_parts.append(
                 f"{entry.get('name', '?')}[{lora_type}] rel={relation:.2f} "
                 f"offset={offset:+.3f} next={model_weight:+.3f} "
+                f"sus={culprit_score:.2f}{' !' if suspect else ''} "
                 f"match={match_text}"
             )
 
