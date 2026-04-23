@@ -2543,16 +2543,40 @@ class FunPackVideoRefiner:
             "⚠️ Still exploring" if avg_reward_ema > -0.2 else
             "🔄 Heavy correction"
         )
+        pending_feedback = data.get("pending_feedback")
+        if not feedback_enabled:
+            feedback_state = "Feedback off"
+        elif pending_feedback is not None:
+            feedback_state = f"Feedback queued for '{pending_feedback.get('concept_label', 'concept')}'"
+        else:
+            feedback_state = "Feedback ready"
+
+        suggestions_snapshot = active.get("lora_weight_suggestions", {})
+        suspect_count = sum(1 for item in suggestions_snapshot.values() if item.get("suspect"))
+        if isinstance(lora_stack, dict) and lora_stack.get("loras"):
+            lora_state = f"LoRA active ({len(lora_stack.get('loras', []))} loaded"
+            if suspect_count > 0:
+                lora_state += f", {suspect_count} suspect"
+            lora_state += ")"
+        else:
+            lora_state = "LoRA idle"
+
+        sigma_state = "Sigma active" if isinstance(sigmas, torch.Tensor) and sigma_strength != "off" else (
+            "Sigma connected (off)" if isinstance(sigmas, torch.Tensor) else "Sigma idle"
+        )
+
+        latent_state = (
+            "Latent active" if latent_output_connected and refined_latent is not None else
+            "Latent armed" if latent_output_connected else
+            "Latent idle"
+        )
 
         status = (
-            f"Mode {mode.upper()} | Iter {iter_num} | Total iters {global_total_iterations} | "
-            f"History {len(history)} | Unique prompts {len(prompt_histories)}\n"
-            f"Rating {rating}/10 {trend} | Sim {similarity:.3f} | Reward {reward:+.2f} | "
-            f"EMA {avg_reward_ema:+.2f} | Good ratio {good_ratio:.0%} | Expl {expl:.3f} | {health}\n"
-            f"Dominant: {dominant_line} | Groups: {group_line}\n"
-            f"{lora_suggestion_status}\n"
-            f"{sigma_status}\n"
-            f"{latent_status}"
+            f"{health} | Mode {mode.upper()} | Rating {rating}/10 {trend} | Iter {iter_num}\n"
+            f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
+            f"{len(history)} history item(s) on this prompt\n"
+            f"Focus: {dominant_line} | {feedback_state}\n"
+            f"Systems: {lora_state} | {sigma_state} | {latent_state}"
         )
 
         # ====================== FINAL SAVE ======================
