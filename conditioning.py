@@ -186,7 +186,26 @@ def cpu_tensor_bundle(latent):
             bundle[key] = value.detach().cpu().clone()
     return bundle
 
+
+def latent_from_tensor_bundle(bundle):
+    if not isinstance(bundle, dict):
+        return None
+
+    latent = {}
+    for key, value in bundle.items():
+        if key == "_meta":
+            continue
+        latent[key] = value.detach().clone() if isinstance(value, torch.Tensor) else value
+    return latent if latent_samples(latent) is not None else None
+
+
 class FunPackVideoRefiner:
+    LATENT_OUTPUT_INDEX = 6
+    NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
+    SAVED_LATENT_ONLY_STATUS = (
+        "Running refinement on saved latent. Changing reference latent shape and size will cause no effect to generation."
+    )
+
     _tokenizers = {}
     _tokenizer_sources = {
         "ltx2": [
@@ -441,6 +460,10 @@ class FunPackVideoRefiner:
                 "latent": ("LATENT", {
                     "tooltip": "Optional latent to refine. If no saved latent exists for this key, it passes through unchanged."
                 }),
+            },
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
             }
         }
 
@@ -1318,6 +1341,58 @@ class FunPackVideoRefiner:
 
         return data, "Latent: saved latent loaded."
 
+    def _value_links_to_output(self, value, source_id, output_index):
+        if isinstance(value, (list, tuple)):
+            if len(value) >= 2 and str(value[0]) == source_id:
+                try:
+                    if int(value[1]) == output_index:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            return any(self._value_links_to_output(item, source_id, output_index) for item in value)
+
+        if isinstance(value, dict):
+            return any(self._value_links_to_output(item, source_id, output_index) for item in value.values())
+
+        return False
+
+    def _is_output_connected(self, prompt, unique_id, output_index):
+        if prompt is None or unique_id is None:
+            return False
+
+        source_id = str(unique_id)
+        prompt_nodes = prompt.get("output", prompt) if isinstance(prompt, dict) else {}
+        if not isinstance(prompt_nodes, dict):
+            return False
+
+        for node in prompt_nodes.values():
+            if not isinstance(node, dict):
+                continue
+            inputs = node.get("inputs", {})
+            if isinstance(inputs, dict) and self._value_links_to_output(inputs, source_id, output_index):
+                return True
+
+        workflow = prompt.get("workflow") if isinstance(prompt, dict) else None
+        links = workflow.get("links", []) if isinstance(workflow, dict) else []
+        for link in links:
+            if isinstance(link, (list, tuple)) and len(link) >= 3:
+                try:
+                    if str(link[1]) == source_id and int(link[2]) == output_index:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(link, dict):
+                try:
+                    if str(link.get("origin_id")) == source_id and int(link.get("origin_slot")) == output_index:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+
+        return False
+
+    def _latent_refinement_disabled(self, latent):
+        return clone_latent(latent), "Latent: disabled because latent refinement input/output path is not fully connected."
+
     def _save_latent_reference(self, latent, refinement_key, mode):
         samples = latent_samples(latent)
         if samples is None:
@@ -1346,11 +1421,24 @@ class FunPackVideoRefiner:
 
     def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive):
         current = latent_samples(latent)
+        saved_bundle, load_status = self._load_saved_latent(refinement_key, mode)
+
         if current is None:
-            return None, "Latent: no latent input connected."
+            if saved_bundle is None:
+                raise ValueError(self.NO_LATENT_REFERENCE_ERROR)
+
+            saved_latent = latent_from_tensor_bundle(saved_bundle)
+            saved_samples = latent_samples(saved_latent)
+            if saved_samples is None:
+                raise ValueError(self.NO_LATENT_REFERENCE_ERROR)
+
+            latent_state = global_adaptive.setdefault("latent_refinement", {})
+            latent_state["last_shape"] = list(saved_samples.shape)
+            latent_state["saved_shape"] = list(saved_samples.shape)
+            latent_state["status"] = self.SAVED_LATENT_ONLY_STATUS
+            return saved_latent, latent_state["status"]
 
         refined_latent = clone_latent(latent)
-        saved_bundle, load_status = self._load_saved_latent(refinement_key, mode)
         if saved_bundle is None:
             self._save_latent_reference(latent, refinement_key, mode)
             global_adaptive.setdefault("latent_refinement", {})["last_shape"] = list(current.shape)
@@ -1389,7 +1477,7 @@ class FunPackVideoRefiner:
             return refined_latent, latent_state["status"]
 
         lr = 0.035 if rating >= 7 else 0.055 if rating <= 4 else 0.018
-        target_delta = (current - saved_samples) * nonzero_mask.to(dtype=current.dtype)
+        target_delta = (saved_samples - current) * nonzero_mask.to(dtype=current.dtype)
         update = target_delta * (reward * lr)
         momentum = 0.82 * momentum + 0.18 * update
         max_step = max(0.001, min(0.08, float(current.detach().abs().mean().item()) * 0.18))
@@ -1588,7 +1676,8 @@ class FunPackVideoRefiner:
                scheduler_mode: str = "original", positive_prompt: str = "",
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
-               sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None):
+               sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
+               prompt=None, unique_id=None):
 
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:
@@ -1611,7 +1700,9 @@ class FunPackVideoRefiner:
             points=[],
         )
         fallback_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else torch.FloatTensor([])
+        latent_output_connected = self._is_output_connected(prompt, unique_id, self.LATENT_OUTPUT_INDEX)
         fallback_latent = clone_latent(latent)
+        fallback_latent_status = "Latent: not evaluated before conditioning validation."
 
         if not positive_conditioning or not isinstance(positive_conditioning, list) or len(positive_conditioning) == 0:
             return (positive_conditioning, "ERROR: Empty positive CONDITIONING input", "", "ERROR: No positive conditioning", fallback_loss_graph, fallback_sigmas, fallback_latent)
@@ -1680,10 +1771,21 @@ class FunPackVideoRefiner:
         if reset_session or not os.path.exists(json_file):
             if reset_session:
                 self._delete_latent_reference(refinement_key, mode)
+            if latent_output_connected:
+                fallback_latent, fallback_latent_status = self._refine_latent(
+                    latent,
+                    refinement_key,
+                    mode,
+                    rating,
+                    (rating - 5.5) / 4.5,
+                    {},
+                )
+            else:
+                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "New session started - Reference saved", "", "New session started. Reference embedding saved.", fallback_loss_graph, fallback_sigmas, fallback_latent)
+            return (positive_conditioning, "New session started - Reference saved", "", f"New session started. Reference embedding saved.\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         # ====================== SAFE JSON LOAD ======================
         try:
@@ -1695,10 +1797,21 @@ class FunPackVideoRefiner:
                 os.remove(json_file)
             except OSError:
                 pass
+            if latent_output_connected:
+                fallback_latent, fallback_latent_status = self._refine_latent(
+                    latent,
+                    refinement_key,
+                    mode,
+                    rating,
+                    (rating - 5.5) / 4.5,
+                    {},
+                )
+            else:
+                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", "Session reset due to corrupt file", fallback_loss_graph, fallback_sigmas, fallback_latent)
+            return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         global_adaptive = data["global_adaptive"]
         # Migrate sessions created before the multi-level concept system was added
@@ -2098,14 +2211,17 @@ class FunPackVideoRefiner:
             sigma_strength,
             seed,
         )
-        refined_latent, latent_status = self._refine_latent(
-            latent,
-            refinement_key,
-            mode,
-            rating,
-            reward,
-            global_adaptive,
-        )
+        if latent_output_connected:
+            refined_latent, latent_status = self._refine_latent(
+                latent,
+                refinement_key,
+                mode,
+                rating,
+                reward,
+                global_adaptive,
+            )
+        else:
+            refined_latent, latent_status = self._latent_refinement_disabled(latent)
 
         # ====================== INTELLIGENT CONCEPT FEEDBACK SELECTION ======================
         # Chooses one concept/question pair per run using category-aware scoring.
