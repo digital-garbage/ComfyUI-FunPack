@@ -48,6 +48,12 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 Use this node when you want to iteratively tune prompt conditioning based on your own ratings instead of manually rewriting prompts every time. Over multiple runs, it builds a refinement profile for the selected `refinement_key`.
 
+## Capability Boundary
+
+This node cannot make the underlying model generate concepts it does not already know how to represent. If a required subject, action, style, object, anatomy detail, or relationship is missing from the model's learned capabilities, repeating ratings will not teach it from scratch.
+
+The refiner can only adjust the strength, balance, stability, and emphasis of concepts that are already present in the model's output space. Use model choice, LoRAs, ControlNet/reference tools, better source images, or prompt changes when a concept is absent rather than merely under-weighted.
+
 ## Warning
 
 Sigma refinement currently breaks audio generation in workflows that also produce audio streams. If you need audio to generate and save correctly, do not connect `sigmas` to this node. Use the refiner only for conditioning in those workflows.
