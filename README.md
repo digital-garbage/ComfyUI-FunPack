@@ -28,7 +28,7 @@ Use this order:
 FunPack is available on Comfy Registry and can be installed in any of these ways:
 
 1. With `comfy-cli`:
-   `comfy node install funpack`
+   `comfy node install ComfyUI-FunPack`
 2. With git, inside your `ComfyUI/custom_nodes` directory:
    `git clone https://github.com/aimfordeb/ComfyUI-FunPack`
 3. With ComfyUI-Manager:
