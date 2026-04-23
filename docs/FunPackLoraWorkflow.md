@@ -38,11 +38,12 @@ When `per_block` is enabled on an `ltx2` stack, the loader keeps the user-facing
 
 Connect the `lora_stack` output from `FunPack LoRA Loader` into the optional `lora_stack` input on `FunPack Video Refiner`.
 
-The refiner compares each LoRA's declared type and filename with the concepts it already extracted from the prompt. After processing the rating, it saves `lora_weight_suggestions` into the same prompt entry in the refiner JSON.
+The refiner compares each LoRA's declared type and filename with the concepts it already extracted from the prompt. After processing the rating category, it saves `lora_weight_suggestions` into the same prompt entry in the refiner JSON.
 
 Examples:
 
-- A `quality` LoRA matching a valuable quality concept can be boosted after good ratings.
-- A `concept` LoRA matching a bad-rated prompt is treated more aggressively than broad LoRAs, so it can be muted or inverted faster if it keeps distorting that concept.
-- Repeated bad ratings can mark a LoRA as a likely culprit, push its automatic weight down to `0.0`, and even invert it with a negative weight if it keeps ruining output.
-- Consistently good ratings can stabilize around a saved offset instead of continually drifting.
+- `I like it` boosts matching LoRAs gently and can stabilize repeated good offsets.
+- `Missing details` keeps the main direction mostly positive while nudging related concept, character, and general LoRAs upward.
+- `Missing concept` boosts the best-matching concept or character LoRA, while reducing weaker competing concept LoRAs that may be crowding it out.
+- `Missing quality` can boost quality LoRAs and the best concept match, while reducing unrelated or competing concept LoRAs.
+- `I don't like it` treats matching concept LoRAs more aggressively than broad LoRAs, so repeated failures can mark a LoRA as a likely culprit, push its automatic weight down to `0.0`, or invert it with a negative weight.
