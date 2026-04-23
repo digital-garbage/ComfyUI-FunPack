@@ -1,15 +1,15 @@
 # pyproject.toml
 [project]
-name = "funpack" # Unique identifier for your node. Immutable after creation.
+name = "ComfyUI-FunPack" # Unique identifier for your node. Immutable after creation.
 description = "A set of nodes for experiments with video generation models, including prompt refinement, adaptive LoRA weight workflows, story tools, video stitching, lorebook enhancement and more."
 version = "2.0.0" # Custom Node version. Must be semantically versioned.
 license = { text = "GNU GPL v3" }
 dependencies  = [] # Filled in from requirements.txt
 
 [project.urls]
-Repository = "https://github.com/aimfordeb/ComfyUI-FunPack"
+Repository = "https://github.com/digital-garbage/ComfyUI-FunPack"
 
 [tool.comfy]
-PublisherId = "aimfordeb" # TODO (fill in Publisher ID from Comfy Registry Website).
+PublisherId = "digital-garbage" # TODO (fill in Publisher ID from Comfy Registry Website).
 DisplayName = "ComfyUI-FunPack" # Display name for the Custom Node. Can be changed later.
 Icon = "https://example.com/icon.png" # SVG, PNG, JPG or GIF (MAX. 800x400px)
