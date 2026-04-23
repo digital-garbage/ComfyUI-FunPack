@@ -31,6 +31,9 @@ def _clamp(value, low, high):
     return max(low, min(high, value))
 
 
+QUOTED_TEXT_RE = re.compile(r'"([^"]+)"|“([^”]+)”')
+
+
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -389,6 +392,28 @@ class FunPackVideoRefiner:
             except Exception:
                 return []
 
+    def _iter_prompt_segments(self, prompt: str):
+        if not prompt:
+            return
+
+        last_end = 0
+        for match in QUOTED_TEXT_RE.finditer(prompt):
+            start, end = match.span()
+            if start > last_end:
+                yield ("text", prompt[last_end:start])
+            quoted_text = (match.group(1) or match.group(2) or "").strip()
+            if quoted_text:
+                yield ("quote", quoted_text)
+            last_end = end
+
+        if last_end < len(prompt):
+            yield ("text", prompt[last_end:])
+
+    def _mask_quoted_text(self, prompt: str):
+        if not prompt:
+            return ""
+        return QUOTED_TEXT_RE.sub(lambda match: " " * len(match.group(0)), prompt)
+
     def _build_word_groups(self, prompt: str, tokenizer, seq_len: int, token_mask=None):
         if not tokenizer or not prompt or seq_len <= 0:
             return []
@@ -407,7 +432,33 @@ class FunPackVideoRefiner:
 
         word_groups = []
         grouped_seen = set()
-        raw_words = [w.strip() for w in prompt.split() if w.strip()]
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type != "quote":
+                continue
+
+            clean_phrase = segment_text.strip()
+            lower = clean_phrase.lower()
+            if lower in grouped_seen or len(clean_phrase) < 3 or not any(c.isalpha() for c in clean_phrase):
+                continue
+
+            grouped_seen.add(lower)
+            phrase_token_list = self._tokenize_ids(
+                tokenizer,
+                clean_phrase,
+                add_special_tokens=False
+            )
+            if not phrase_token_list:
+                continue
+
+            for start in range(max(0, len(full_token_ids) - len(phrase_token_list) + 1)):
+                end = start + len(phrase_token_list)
+                if token_mask_list is not None and not all(token_mask_list[start:min(effective_seq_len, end)]):
+                    continue
+                if full_token_ids[start:end] == phrase_token_list and start < effective_seq_len:
+                    word_groups.append((start, min(effective_seq_len, end), clean_phrase, phrase_token_list))
+                    break
+
+        raw_words = [w.strip() for w in self._mask_quoted_text(prompt).split() if w.strip()]
         for word in raw_words:
             clean_word = word
             lower = clean_word.lower()
@@ -436,7 +487,10 @@ class FunPackVideoRefiner:
             if not found:
                 continue
 
-        return [group for group in word_groups if group[1] > group[0]]
+        return sorted(
+            [group for group in word_groups if group[1] > group[0]],
+            key=lambda group: (group[0], group[1], group[2].lower()),
+        )
 
     @classmethod
     def INPUT_TYPES(s):
@@ -806,23 +860,42 @@ class FunPackVideoRefiner:
         """
         if not prompt:
             return []
-        phrases = [p.strip() for p in re.split(r'[,;]', prompt) if p.strip()]
         result = []
-        for phrase in phrases:
-            words = [w.strip().lower() for w in phrase.split() if self._is_valuable_token(w.strip())]
-            if words:
-                result.append(words)
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type == "quote":
+                quoted_phrase = segment_text.strip().lower()
+                if len(quoted_phrase) >= 3 and any(c.isalpha() for c in quoted_phrase):
+                    result.append([quoted_phrase])
+                continue
+
+            phrases = [p.strip() for p in re.split(r'[,;]', segment_text) if p.strip()]
+            for phrase in phrases:
+                words = [w.strip().lower() for w in phrase.split() if self._is_valuable_token(w.strip())]
+                if words:
+                    result.append(words)
         return result
 
     def _build_prompt_fallback_concept(self, prompt: str, concept_clusters: dict):
         if not prompt:
             return None
 
-        fallback_words = [
-            w.strip().lower()
-            for w in re.split(r'[\s,;]+', prompt)
-            if self._is_valuable_token(w.strip())
-        ][:8]
+        fallback_words = []
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type == "quote":
+                quoted_phrase = segment_text.strip().lower()
+                if len(quoted_phrase) >= 3 and any(c.isalpha() for c in quoted_phrase):
+                    fallback_words.append(quoted_phrase)
+                continue
+
+            fallback_words.extend(
+                w.strip().lower()
+                for w in re.split(r'[\s,;]+', segment_text)
+                if self._is_valuable_token(w.strip())
+            )
+            if len(fallback_words) >= 8:
+                break
+
+        fallback_words = fallback_words[:8]
         if not fallback_words:
             return None
 
