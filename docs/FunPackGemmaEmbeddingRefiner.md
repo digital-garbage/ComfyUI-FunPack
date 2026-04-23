@@ -8,7 +8,15 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **mode**: Tokenizer mode used for prompt analysis. Use `ltx2` for LTX-style workflows and `wan` for Wan workflows.
 
-**rating**: Rating for the previously generated result, from 1 to 10, where 1 means "awful" and 10 means "masterpiece".
+**rating**: Categorical feedback for the previously generated result:
+
+- `I like it`: The video fully matches the request, or is very close.
+- `Missing details`: The video is visually solid and the main concept is present, but requested details were ignored or changed.
+- `Missing concept`: The video is visually solid, but the requested concept and details are absent.
+- `Missing quality`: The video may be visually pleasant, but anatomy, scene construction, concept, and details are not acceptable.
+- `I don't like it`: The output is low quality, does not represent the requested concept, and ignores details.
+
+Older numeric workflows are still understood internally: `9-10` maps to `I like it`, `7-8` to `Missing details`, `5-6` to `Missing concept`, `3-4` to `Missing quality`, and `1-2` to `I don't like it`.
 
 **refinement_key**: Name of the refinement session. The node stores its learned refinement data under this key so you can continue training the same style later.
 
