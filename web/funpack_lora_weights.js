@@ -1,11 +1,58 @@
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "FunPackApplyLoraWeights";
 const LORA_TYPES = ["general", "concept", "style", "quality", "character"];
 const ADD_BUTTON_NAME = "+ Add LoRA";
 
+let cachedLoraValues = null;
+
 function getLoraValues(nodeData) {
-  return nodeData?.input?.optional?.lora_0?.[0] || ["None"];
+  return cachedLoraValues || nodeData?.input?.optional?.lora_0?.[0] || ["None"];
+}
+
+async function fetchLoraValues(nodeData) {
+  try {
+    const response = await api.fetchApi("/funpack/loras");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const values = await response.json();
+    if (Array.isArray(values) && values.length) {
+      cachedLoraValues = values;
+      return values;
+    }
+  } catch (error) {
+    console.warn("FunPack: failed to refresh LoRA list", error);
+  }
+  cachedLoraValues = getLoraValues(nodeData);
+  return cachedLoraValues;
+}
+
+function valuesWithCurrent(values, current) {
+  if (!current || values.includes(current)) {
+    return values;
+  }
+  return [...values, current];
+}
+
+function isLoraCombo(widget) {
+  return /^lora_\d+$/.test(widget.name || "");
+}
+
+function updateLoraWidgets(node, values) {
+  for (const widget of node.widgets || []) {
+    if (!isLoraCombo(widget)) {
+      continue;
+    }
+    widget.options = widget.options || {};
+    widget.options.values = valuesWithCurrent(values, widget.value);
+  }
+  node.setDirtyCanvas(true, true);
+}
+
+async function refreshLoraWidgets(node, nodeData) {
+  updateLoraWidgets(node, await fetchLoraValues(nodeData));
 }
 
 function getNextLoraIndex(node) {
@@ -37,14 +84,14 @@ function resizeNode(node) {
   node.size[1] = computed[1];
 }
 
-function addLoraRow(node, nodeData, value = {}, markDirty = true) {
+function addLoraRow(node, nodeData, values, value = {}, markDirty = true) {
   const index = getNextLoraIndex(node);
   const loraWidget = node.addWidget(
     "combo",
     `lora_${index}`,
     value.lora || "None",
     undefined,
-    { values: getLoraValues(nodeData) },
+    { values: valuesWithCurrent(values || getLoraValues(nodeData), value.lora) },
   );
   const typeWidget = node.addWidget(
     "combo",
@@ -77,8 +124,8 @@ function ensureAddButton(node, nodeData) {
     return;
   }
 
-  const button = node.addWidget("button", ADD_BUTTON_NAME, null, () => {
-    addLoraRow(node, nodeData);
+  const button = node.addWidget("button", ADD_BUTTON_NAME, null, async () => {
+    addLoraRow(node, nodeData, await fetchLoraValues(nodeData));
   });
   button.serialize = false;
   moveAddButtonToEnd(node);
@@ -101,6 +148,7 @@ function restoreExtraRows(node, nodeData, info) {
     addLoraRow(
       node,
       nodeData,
+      getLoraValues(nodeData),
       {
         lora: values[offset],
         type: values[offset + 1],
@@ -122,6 +170,7 @@ app.registerExtension({
     nodeType.prototype.onNodeCreated = function () {
       originalOnNodeCreated?.apply(this, arguments);
       ensureAddButton(this, nodeData);
+      void refreshLoraWidgets(this, nodeData);
     };
 
     const originalConfigure = nodeType.prototype.configure;
@@ -129,6 +178,7 @@ app.registerExtension({
       originalConfigure?.apply(this, arguments);
       ensureAddButton(this, nodeData);
       restoreExtraRows(this, nodeData, info);
+      void refreshLoraWidgets(this, nodeData);
     };
   },
 });
