@@ -159,13 +159,9 @@ def refinement_state_path(refinement_key, mode, prefix="refine", extension="json
     return os.path.join(refinements_dir, f"{prefix}_{safe_key}.{extension}")
 
 
-def empty_latent():
-    return {"samples": torch.empty(0)}
-
-
 def clone_latent(latent):
     if not isinstance(latent, dict):
-        return empty_latent()
+        return None
 
     cloned = {}
     for key, value in latent.items():
@@ -1322,23 +1318,57 @@ class FunPackVideoRefiner:
 
         return data, "Latent: saved latent loaded."
 
+    def _save_latent_reference(self, latent, refinement_key, mode):
+        samples = latent_samples(latent)
+        if samples is None:
+            return False
+
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        bundle = cpu_tensor_bundle(latent)
+        bundle["_meta"] = {
+            "refinement_key": refinement_key,
+            "mode": (mode or "ltx2").lower(),
+            "samples_shape": list(samples.shape),
+        }
+        torch.save(bundle, path)
+        return True
+
+    def _delete_latent_reference(self, refinement_key, mode):
+        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
+        try:
+            os.remove(path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+
     def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive):
         current = latent_samples(latent)
         if current is None:
-            return empty_latent(), "Latent: no latent input connected."
+            return None, "Latent: no latent input connected."
 
         refined_latent = clone_latent(latent)
         saved_bundle, load_status = self._load_saved_latent(refinement_key, mode)
         if saved_bundle is None:
-            return refined_latent, load_status
+            self._save_latent_reference(latent, refinement_key, mode)
+            global_adaptive.setdefault("latent_refinement", {})["last_shape"] = list(current.shape)
+            return refined_latent, f"{load_status} Current latent saved as reference."
 
-        saved_samples = self._resize_tensor_like(saved_bundle.get("samples"), current)
-        if saved_samples is None:
-            return refined_latent, "Latent: saved latent shape is incompatible, passthrough."
+        raw_saved_samples = saved_bundle.get("samples")
+        if list(raw_saved_samples.shape) != list(current.shape):
+            self._save_latent_reference(latent, refinement_key, mode)
+            latent_state = global_adaptive.setdefault("latent_refinement", {})
+            latent_state.pop("momentum", None)
+            latent_state["last_shape"] = list(current.shape)
+            latent_state["saved_shape"] = list(raw_saved_samples.shape)
+            return refined_latent, "Latent: input shape changed. Reference rewritten, passthrough."
 
+        saved_samples = raw_saved_samples.to(device=current.device, dtype=current.dtype)
         latent_state = global_adaptive.setdefault("latent_refinement", {})
         latent_state["last_shape"] = list(current.shape)
-        latent_state["saved_shape"] = list(saved_bundle["samples"].shape)
+        latent_state["saved_shape"] = list(raw_saved_samples.shape)
 
         momentum_data = latent_state.get("momentum")
         if isinstance(momentum_data, dict):
@@ -1648,6 +1678,8 @@ class FunPackVideoRefiner:
 
         # ====================== RESET / NEW SESSION ======================
         if reset_session or not os.path.exists(json_file):
+            if reset_session:
+                self._delete_latent_reference(refinement_key, mode)
             data = _fresh_data()
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -2285,15 +2317,7 @@ class FunPackSaveRefinementLatent:
         if samples is None:
             return (clone_latent(latent), "No latent samples tensor found.")
 
-        path = refinement_state_path(refinement_key, mode, prefix="latent", extension="pt")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        bundle = cpu_tensor_bundle(latent)
-        bundle["_meta"] = {
-            "refinement_key": refinement_key,
-            "mode": (mode or "ltx2").lower(),
-            "samples_shape": list(samples.shape),
-        }
-        torch.save(bundle, path)
+        FunPackVideoRefiner()._save_latent_reference(latent, refinement_key, mode)
         return (clone_latent(latent), f"Saved latent for key '{refinement_key}' ({mode}) shape={tuple(samples.shape)}")
 
 

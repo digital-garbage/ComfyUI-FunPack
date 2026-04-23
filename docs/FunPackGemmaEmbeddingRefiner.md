@@ -58,9 +58,9 @@ Use this node when you want to iteratively tune prompt conditioning based on you
 
 Use `FunPack Save Refinement Latent` to store a reference latent tensor bundle under a `refinement_key` and tokenizer `mode`. When `FunPack Video Refiner` later receives a latent input with the same key and mode, it loads that saved latent and applies a small rating-driven adjustment to the latent output.
 
-Latent refinement is intentionally conservative. It resizes saved tensors to the current latent shape when possible, tracks latent shape changes in the session state, and leaves zero-valued latent positions unchanged because zero values can be intentional.
+If the refiner receives a latent input but no saved latent exists yet, it passes the input latent through unchanged and saves it as the current reference. If the input latent shape changes later, it rewrites the saved reference and passes the new latent through unchanged for that run. Resetting the session deletes the saved latent reference too.
 
-If the saved latent is missing, invalid, incompatible, or the latent input is not connected, the refiner skips latent refinement and continues with conditioning/sigma/LoRA behavior as usual.
+Latent refinement is intentionally conservative. It tracks latent shape changes in the session state and leaves zero-valued latent positions unchanged because zero values can be intentional. If the latent input is not connected, the refiner skips latent refinement and continues with conditioning/sigma/LoRA behavior as usual.
 
 ## Capability Boundary
 
