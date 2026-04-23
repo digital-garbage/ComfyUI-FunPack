@@ -1232,8 +1232,8 @@ class FunPackGemmaEmbeddingRefiner:
     # LORA WEIGHT SUGGESTIONS
     # =========================================================================
 
-    def _lora_state_id(self, lora_name: str, lora_type: str, concept: str):
-        return md5(f"{lora_name}::{lora_type}::{concept}".encode("utf-8")).hexdigest()[:16]
+    def _lora_state_id(self, lora_name: str, lora_type: str):
+        return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
 
     def _lora_words(self, text: str):
         return {
@@ -1244,14 +1244,12 @@ class FunPackGemmaEmbeddingRefiner:
 
     def _ensure_lora_memory(self, memory: dict, lora_entry: dict):
         lora_type = lora_entry.get("type", "general")
-        concept = lora_entry.get("concept", "")
-        lora_id = lora_entry.get("id") or self._lora_state_id(lora_entry.get("name", ""), lora_type, concept)
+        lora_id = lora_entry.get("id") or self._lora_state_id(lora_entry.get("name", ""), lora_type)
         state = memory.setdefault(
             lora_id,
             {
                 "name": lora_entry.get("name", ""),
                 "type": lora_type,
-                "concept": concept,
                 "offset_ratio": 0.0,
                 "stable_offset_ratio": None,
                 "reward_ema": 0.0,
@@ -1262,7 +1260,6 @@ class FunPackGemmaEmbeddingRefiner:
         )
         state["name"] = lora_entry.get("name", "")
         state["type"] = lora_type
-        state["concept"] = concept
         state.setdefault("offset_ratio", 0.0)
         state.setdefault("stable_offset_ratio", None)
         state.setdefault("reward_ema", 0.0)
@@ -1273,9 +1270,7 @@ class FunPackGemmaEmbeddingRefiner:
 
     def _score_lora_prompt_relation(self, lora_entry, ordered_concept_ids, concept_clusters, current_concept_labels):
         lora_type = lora_entry.get("type", "general")
-        concept_words = self._lora_words(lora_entry.get("concept", ""))
-        if not concept_words:
-            concept_words = self._lora_words(lora_entry.get("name", ""))
+        lora_words = self._lora_words(lora_entry.get("name", ""))
 
         best_score = 0.35 if lora_type == "general" else 0.0
         best_labels = []
@@ -1292,7 +1287,7 @@ class FunPackGemmaEmbeddingRefiner:
             prompt_words = label_words | anchor_words
             category = cluster.get("category", "general")
 
-            overlap = len(concept_words & prompt_words) / max(1, len(concept_words)) if concept_words else 0.0
+            overlap = len(lora_words & prompt_words) / max(1, len(lora_words)) if lora_words else 0.0
             category_score = 0.62 if lora_type == category else 0.0
             if lora_type == "quality" and category == "quality":
                 category_score = 0.78
@@ -1376,17 +1371,12 @@ class FunPackGemmaEmbeddingRefiner:
             state["iterations"] = int(state.get("iterations", 0)) + 1
 
             base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
-            base_clip = float(entry.get("base_clip_weight", entry.get("clip_weight", base_model)))
             model_weight = base_model * (1.0 + offset)
-            clip_weight = base_clip * (1.0 + offset)
             suggestions[lora_id] = {
                 "name": entry.get("name", ""),
                 "type": lora_type,
-                "concept": entry.get("concept", ""),
                 "model_weight": model_weight,
-                "clip_weight": clip_weight,
                 "base_model_weight": base_model,
-                "base_clip_weight": base_clip,
                 "offset_ratio": offset,
                 "relation": relation,
                 "matched_concepts": matched_labels,
@@ -1399,7 +1389,7 @@ class FunPackGemmaEmbeddingRefiner:
             match_text = ",".join(matched_labels) if matched_labels else "none"
             status_parts.append(
                 f"{entry.get('name', '?')}[{lora_type}] rel={relation:.2f} "
-                f"offset={offset:+.3f} next=({model_weight:+.3f},{clip_weight:+.3f}) "
+                f"offset={offset:+.3f} next={model_weight:+.3f} "
                 f"match={match_text}"
             )
 

@@ -16,6 +16,8 @@ from .image_processing import (
 from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
 from .samplers import FunPackHybridEuler2SSampler
 
+WEB_DIRECTORY = "./web"
+
 NODE_CLASS_MAPPINGS = {
     "FunPackPromptCombiner": FunPackPromptCombiner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
@@ -49,4 +51,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
+    "WEB_DIRECTORY",
 ]

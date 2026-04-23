@@ -9,8 +9,45 @@ import folder_paths
 
 
 LORA_TYPES = ["general", "concept", "style", "quality", "character"]
-LORA_SLOT_COUNT = 8
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
+
+
+class AnyType(str):
+    def __ne__(self, _):
+        return False
+
+
+any_type = AnyType("*")
+
+
+class FlexibleOptionalInputType(dict):
+    def __init__(self, input_type, data=None):
+        self.input_type = input_type
+        self.data = data or {}
+
+    def __contains__(self, _):
+        return True
+
+    def __getitem__(self, key):
+        return self.data.get(key, (self.input_type,))
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def items(self):
+        return self.data.items()
+
+    def keys(self):
+        return self.data.keys()
+
+    def values(self):
+        return self.data.values()
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def __len__(self):
+        return len(self.data)
 
 
 def normalize_prompt_for_mode(prompt, mode):
@@ -26,8 +63,8 @@ def prompt_key_for_mode(prompt, mode):
     return prompt or ""
 
 
-def lora_state_id(lora_name, lora_type, concept):
-    return md5(f"{lora_name}::{lora_type}::{concept}".encode("utf-8")).hexdigest()[:16]
+def lora_state_id(lora_name, lora_type):
+    return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
 
 
 def refiner_state_path(refinement_key, mode):
@@ -52,38 +89,23 @@ class FunPackApplyLoraWeights:
     @classmethod
     def INPUT_TYPES(cls):
         loras = ["None"] + folder_paths.get_filename_list("loras")
-        optional = {}
-        for index in range(LORA_SLOT_COUNT):
-            optional[f"lora_{index}"] = (loras, {"default": "None"})
-            optional[f"lora_{index}_type"] = (LORA_TYPES, {"default": "general"})
-            optional[f"lora_{index}_concept"] = (
-                "STRING",
-                {
-                    "default": "",
-                    "multiline": False,
-                    "tooltip": "Concept this LoRA is meant to affect. Gemma Refiner uses this hint.",
-                },
-            )
-            optional[f"lora_{index}_base_weight"] = (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": -10.0,
-                    "max": 10.0,
-                    "step": 0.01,
-                    "tooltip": "Trainer-recommended model anchor weight.",
-                },
-            )
-            optional[f"lora_{index}_clip_base_weight"] = (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": -10.0,
-                    "max": 10.0,
-                    "step": 0.01,
-                    "tooltip": "Trainer-recommended CLIP anchor weight.",
-                },
-            )
+        optional = FlexibleOptionalInputType(
+            any_type,
+            {
+                "lora_0": (loras, {"default": "None"}),
+                "lora_0_type": (LORA_TYPES, {"default": "general"}),
+                "lora_0_base_weight": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": -10.0,
+                        "max": 10.0,
+                        "step": 0.01,
+                        "tooltip": "Trainer-recommended model anchor weight.",
+                    },
+                ),
+            },
+        )
 
         return {
             "required": {
@@ -120,25 +142,61 @@ class FunPackApplyLoraWeights:
         return suggestions, "refiner suggestions applied"
 
     def _iter_slots(self, kwargs):
-        for index in range(LORA_SLOT_COUNT):
+        indexed_slots = set()
+        for key in kwargs:
+            match = re.fullmatch(r"lora_(\d+)", key)
+            if match:
+                indexed_slots.add(int(match.group(1)))
+
+        for index in sorted(indexed_slots):
             lora_name = kwargs.get(f"lora_{index}", "None")
+            if isinstance(lora_name, dict):
+                if not lora_name.get("on", True):
+                    continue
+                name = lora_name.get("lora", "None")
+                if not name or name == "None":
+                    continue
+                lora_type = lora_name.get("type", lora_name.get("lora_type", "general"))
+                if lora_type not in LORA_TYPES:
+                    lora_type = "general"
+                yield {
+                    "slot": index,
+                    "name": name,
+                    "type": lora_type,
+                    "id": lora_state_id(name, lora_type),
+                    "base_model_weight": float(lora_name.get("strength", lora_name.get("base_weight", 1.0))),
+                }
+                continue
+
             if not lora_name or lora_name == "None":
                 continue
 
             lora_type = kwargs.get(f"lora_{index}_type", "general")
             if lora_type not in LORA_TYPES:
                 lora_type = "general"
-            concept = (kwargs.get(f"lora_{index}_concept", "") or "").strip()
 
             yield {
                 "slot": index,
                 "name": lora_name,
                 "type": lora_type,
-                "concept": concept,
-                "id": lora_state_id(lora_name, lora_type, concept),
+                "id": lora_state_id(lora_name, lora_type),
                 "base_model_weight": float(kwargs.get(f"lora_{index}_base_weight", 1.0)),
-                "base_clip_weight": float(kwargs.get(f"lora_{index}_clip_base_weight", 1.0)),
             }
+
+    def _get_suggestion(self, suggestions, entry):
+        suggestion = suggestions.get(entry["id"])
+        if suggestion:
+            return suggestion
+
+        for legacy in suggestions.values():
+            if (
+                isinstance(legacy, dict)
+                and legacy.get("name") == entry["name"]
+                and legacy.get("type", "general") == entry["type"]
+            ):
+                return legacy
+
+        return {}
 
     def apply_lora_weights(self, positive_prompt, refinement_key, mode, **kwargs):
         mode = (mode or "ltx2").lower()
@@ -148,22 +206,18 @@ class FunPackApplyLoraWeights:
         loras = []
         lines = [f"FunPack Apply LoRA Weights | {source_message}"]
         for entry in self._iter_slots(kwargs):
-            suggestion = suggestions.get(entry["id"], {})
+            suggestion = self._get_suggestion(suggestions, entry)
             model_weight = float(suggestion.get("model_weight", entry["base_model_weight"]))
-            clip_weight = float(suggestion.get("clip_weight", entry["base_clip_weight"]))
             source = "suggested" if suggestion else "base"
 
             stack_entry = dict(entry)
             stack_entry["model_weight"] = model_weight
-            stack_entry["clip_weight"] = clip_weight
             stack_entry["source"] = source
             loras.append(stack_entry)
 
-            concept = entry["concept"] or entry["type"]
             lines.append(
-                f"lora_{entry['slot']}: {entry['name']} [{entry['type']}:{concept}] "
-                f"{source}=({model_weight:+.3f}, {clip_weight:+.3f}) "
-                f"base=({entry['base_model_weight']:+.3f}, {entry['base_clip_weight']:+.3f})"
+                f"lora_{entry['slot']}: {entry['name']} [{entry['type']}] "
+                f"{source}={model_weight:+.3f} base={entry['base_model_weight']:+.3f}"
             )
 
         stack = {
@@ -198,9 +252,11 @@ class FunPackLoraLoader:
         return {
             "required": {
                 "model": ("MODEL",),
-                "clip": ("CLIP",),
                 "lora_stack": (LORA_STACK_TYPE,),
-            }
+            },
+            "optional": {
+                "clip": ("CLIP",),
+            },
         }
 
     def _load_lora_file(self, lora_name):
@@ -218,24 +274,23 @@ class FunPackLoraLoader:
 
         return lora
 
-    def load_loras(self, model, clip, lora_stack):
+    def load_loras(self, model, lora_stack, clip=None):
         loras = lora_stack.get("loras", []) if isinstance(lora_stack, dict) else []
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
         loaded_count = 0
 
         for entry in loras:
             model_weight = float(entry.get("model_weight", 0.0))
-            clip_weight = float(entry.get("clip_weight", 0.0))
-            if model_weight == 0 and clip_weight == 0:
+            if model_weight == 0:
                 lines.append(f"lora_{entry.get('slot', '?')}: {entry.get('name', '?')} skipped at zero weight")
                 continue
 
             lora = self._load_lora_file(entry["name"])
-            model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, clip_weight)
+            model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
             loaded_count += 1
             lines.append(
                 f"lora_{entry.get('slot', '?')}: {entry['name']} "
-                f"applied=({model_weight:+.3f}, {clip_weight:+.3f}) source={entry.get('source', 'base')}"
+                f"applied={model_weight:+.3f} source={entry.get('source', 'base')}"
             )
 
         if loaded_count == 0:
