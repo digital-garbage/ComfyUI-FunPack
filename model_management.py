@@ -6,10 +6,17 @@ from hashlib import md5
 import comfy.sd
 import comfy.utils
 import folder_paths
+from aiohttp import web
+from server import PromptServer
 
 
 LORA_TYPES = ["general", "concept", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
+
+
+@PromptServer.instance.routes.get("/funpack/loras")
+async def funpack_loras(_):
+    return web.json_response(["None"] + folder_paths.get_filename_list("loras"))
 
 
 class AnyType(str):
