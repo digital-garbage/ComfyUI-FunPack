@@ -20,7 +20,7 @@ import folder_paths
 
 LORA_REFINER_TYPE_PROFILES = {
     "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
-    "concept": {"step": 0.040, "max_offset": 0.35, "min_offset": -0.40, "bad_max_offset": 0.70, "bad_min_offset": -1.80, "culprit_bias": 0.08},
+    "concept": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
     "style": {"step": 0.032, "max_offset": 0.28, "min_offset": -0.38, "bad_max_offset": 0.58, "bad_min_offset": -1.55, "culprit_bias": 0.20},
     "quality": {"step": 0.022, "max_offset": 0.18, "min_offset": -0.30, "bad_max_offset": 0.38, "bad_min_offset": -1.20, "culprit_bias": 0.18},
     "character": {"step": 0.024, "max_offset": 0.20, "min_offset": -0.32, "bad_max_offset": 0.42, "bad_min_offset": -1.30, "culprit_bias": 0.10},
@@ -1660,6 +1660,11 @@ class FunPackVideoRefiner:
             effective_relation = max(relation, profile.get("culprit_bias", 0.0))
             base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
             base_abs = abs(base_model)
+            is_concept_lora = lora_type == "concept"
+            concept_match_strength = 1.0
+            if is_concept_lora:
+                concept_match_strength += 0.30 if matched_labels else 0.0
+                concept_match_strength += max(0.0, relation - 0.30) * 1.35
 
             if rating >= 8:
                 value_mult = 0.75 + min(1.4, max(0.5, concept_importance)) * 0.25
@@ -1675,16 +1680,24 @@ class FunPackVideoRefiner:
             elif rating <= 4:
                 severity = _clamp((5.0 - float(rating)) / 4.0, 0.0, 1.0)
                 culprit_signal = max(0.20, effective_relation) * (0.70 + base_abs * 0.30)
+                if is_concept_lora:
+                    culprit_signal *= concept_match_strength
                 culprit_score = _clamp(culprit_score * 0.72 + severity * culprit_signal, 0.0, 2.5)
                 culprit_hits = culprit_hits + 1 if culprit_score >= 0.45 else max(0, culprit_hits - 1)
                 max_offset = profile["bad_max_offset"] if rating <= 2 else max(max_offset, profile["bad_max_offset"] * 0.72)
                 bad_floor_strength = min(1.0, 0.45 + 0.35 * culprit_score + 0.14 * state["bad_streak"])
+                if is_concept_lora:
+                    bad_floor_strength = min(1.0, bad_floor_strength + 0.18 * concept_match_strength)
                 min_offset = min(min_offset, profile["bad_min_offset"] * bad_floor_strength)
                 offset -= step * (1.0 + severity * 3.0) * max(0.4, effective_relation) * max(0.8, 0.85 + culprit_score)
                 if state["bad_streak"] >= 2:
                     offset -= step * (0.65 + severity * 1.8) * max(0.25, effective_relation)
+                if is_concept_lora and state["bad_streak"] >= 2:
+                    offset -= step * (0.85 + severity * 2.4) * max(0.50, effective_relation) * concept_match_strength
                 if state["bad_streak"] >= 2:
                     state["stable_offset_ratio"] = None
+                if is_concept_lora and matched_labels and state["bad_streak"] >= 2 and culprit_score >= 0.70:
+                    offset = min(offset, -1.0)
                 if state["bad_streak"] >= 3 and culprit_score >= 0.85 and abs(1.0 + offset) < 0.08:
                     offset = -1.0
             else:

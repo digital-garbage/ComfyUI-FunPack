@@ -40,6 +40,6 @@ The refiner compares each LoRA's declared type and filename with the concepts it
 Examples:
 
 - A `quality` LoRA matching a valuable quality concept can be boosted after good ratings.
-- A `concept` LoRA matching a bad-rated prompt can be reduced if it may be over-weighting or distorting that concept.
+- A `concept` LoRA matching a bad-rated prompt is treated more aggressively than broad LoRAs, so it can be muted or inverted faster if it keeps distorting that concept.
 - Repeated bad ratings can mark a LoRA as a likely culprit, push its automatic weight down to `0.0`, and even invert it with a negative weight if it keeps ruining output.
 - Consistently good ratings can stabilize around a saved offset instead of continually drifting.
