@@ -16,6 +16,8 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 
 **positive_prompt**: Optional prompt text used for token analysis and concept-level feedback.
 
+Quoted text inside `"` or `“ ”` is treated as a protected phrase during prompt analysis, so dialogue like `"You should go for it, young man."` is handled as one unit instead of having stopwords inside it stripped into nonsense fragments.
+
 **sigmas**: Optional input sigma schedule to co-refine alongside the conditioning. When connected, the node preserves the first and last sigma exactly and only adjusts the middle values.
 
 **sigma_strength**: Preset strength for sigma refinement. `off` disables sigma changes, while `subtle`, `medium`, `strong`, and `max` allow progressively larger movement of the middle sigma values.
