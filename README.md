@@ -32,7 +32,7 @@ FunPack is available on Comfy Registry and can be installed in any of these ways
 2. With git, inside your `ComfyUI/custom_nodes` directory:
    `git clone https://github.com/aimfordeb/ComfyUI-FunPack`
 3. With ComfyUI-Manager:
-   Open `Install custom nodes`, search for `ComfyUI-FunPack`, and click `Install`.
+   Open `Custom Nodes Manager`, search for `ComfyUI-FunPack`, and click `Install`.
 
 ## Dependencies
 
