@@ -118,6 +118,21 @@ function addLoraRow(node, nodeData, values, value = {}, markDirty = true) {
   }
 }
 
+function serializedBaseWidgetCount(node) {
+  let count = 0;
+  for (const widget of node.widgets || []) {
+    if (widget.serialize === false || widget.name === ADD_BUTTON_NAME) {
+      continue;
+    }
+    const match = /^lora_(\d+)(?:_type|_base_weight)?$/.exec(widget.name || "");
+    if (match && Number(match[1]) > 0) {
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
 function ensureAddButton(node, nodeData) {
   if ((node.widgets || []).some((widget) => widget.name === ADD_BUTTON_NAME)) {
     moveAddButtonToEnd(node);
@@ -138,12 +153,12 @@ function restoreExtraRows(node, nodeData, info) {
     return;
   }
 
+  const knownWidgetCount = serializedBaseWidgetCount(node);
   node.widgets = (node.widgets || []).filter((widget) => {
     const match = /^lora_(\d+)(?:_type|_base_weight)?$/.exec(widget.name || "");
     return !match || Number(match[1]) === 0;
   });
 
-  const knownWidgetCount = 6;
   for (let offset = knownWidgetCount; offset + 2 < values.length; offset += 3) {
     addLoraRow(
       node,
