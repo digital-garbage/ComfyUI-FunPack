@@ -6,26 +6,39 @@ const LORA_TYPES = ["general", "concept", "style", "quality", "character"];
 const ADD_BUTTON_NAME = "+ Add LoRA";
 
 let cachedLoraValues = null;
+let latestNodeData = null;
+const trackedNodes = new Set();
+let pendingRefresh = null;
 
 function getLoraValues(nodeData) {
   return cachedLoraValues || nodeData?.input?.optional?.lora_0?.[0] || ["None"];
 }
 
+function rememberLoraValues(nodeData, values) {
+  cachedLoraValues = values;
+  const loraInput = nodeData?.input?.optional?.lora_0;
+  if (Array.isArray(loraInput)) {
+    loraInput[0] = values;
+  }
+}
+
 async function fetchLoraValues(nodeData) {
   try {
-    const response = await api.fetchApi("/funpack/loras");
+    const response = await api.fetchApi(`/funpack/loras?cache_bust=${Date.now()}`, {
+      cache: "no-store",
+    });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
     const values = await response.json();
     if (Array.isArray(values) && values.length) {
-      cachedLoraValues = values;
+      rememberLoraValues(nodeData, values);
       return values;
     }
   } catch (error) {
     console.warn("FunPack: failed to refresh LoRA list", error);
   }
-  cachedLoraValues = getLoraValues(nodeData);
+  rememberLoraValues(nodeData, getLoraValues(nodeData));
   return cachedLoraValues;
 }
 
@@ -53,6 +66,37 @@ function updateLoraWidgets(node, values) {
 
 async function refreshLoraWidgets(node, nodeData) {
   updateLoraWidgets(node, await fetchLoraValues(nodeData));
+}
+
+function trackNode(node) {
+  trackedNodes.add(node);
+}
+
+async function refreshTrackedLoraWidgets(nodeData = latestNodeData) {
+  if (!nodeData || pendingRefresh) {
+    return pendingRefresh;
+  }
+
+  pendingRefresh = (async () => {
+    const values = await fetchLoraValues(nodeData);
+    for (const node of [...trackedNodes]) {
+      if (!node?.graph) {
+        trackedNodes.delete(node);
+        continue;
+      }
+      updateLoraWidgets(node, values);
+    }
+  })().finally(() => {
+    pendingRefresh = null;
+  });
+
+  return pendingRefresh;
+}
+
+function scheduleTrackedRefresh(nodeData = latestNodeData) {
+  window.setTimeout(() => {
+    void refreshTrackedLoraWidgets(nodeData);
+  }, 100);
 }
 
 function getNextLoraIndex(node) {
@@ -174,16 +218,64 @@ function restoreExtraRows(node, nodeData, info) {
   }
 }
 
+function wrapRefreshFunction(functionName) {
+  const original = app[functionName];
+  if (typeof original !== "function" || original.__funpackLoraWrapped) {
+    return;
+  }
+
+  const wrapped = function () {
+    const result = original.apply(this, arguments);
+    Promise.resolve(result).finally(() => scheduleTrackedRefresh());
+    return result;
+  };
+  wrapped.__funpackLoraWrapped = true;
+  app[functionName] = wrapped;
+}
+
+function hookComfyRefreshControls() {
+  for (const functionName of ["refreshComboInNodes", "refreshComboInNode", "refreshNodeDefs"]) {
+    wrapRefreshFunction(functionName);
+  }
+}
+
+function isRefreshControl(element) {
+  for (let current = element; current && current !== document.body; current = current.parentElement) {
+    const text = [
+      current.title,
+      current.ariaLabel,
+      current.textContent,
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (text.includes("refresh")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 app.registerExtension({
   name: "funpack.loraWeights",
+  setup() {
+    hookComfyRefreshControls();
+    window.setTimeout(hookComfyRefreshControls, 0);
+    window.setTimeout(hookComfyRefreshControls, 1000);
+    document.addEventListener("click", (event) => {
+      if (isRefreshControl(event.target)) {
+        scheduleTrackedRefresh();
+      }
+    }, true);
+  },
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_NAME) {
       return;
     }
+    latestNodeData = nodeData;
+    hookComfyRefreshControls();
 
     const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       originalOnNodeCreated?.apply(this, arguments);
+      trackNode(this);
       ensureAddButton(this, nodeData);
       void refreshLoraWidgets(this, nodeData);
     };
@@ -191,6 +283,7 @@ app.registerExtension({
     const originalConfigure = nodeType.prototype.configure;
     nodeType.prototype.configure = function (info) {
       originalConfigure?.apply(this, arguments);
+      trackNode(this);
       ensureAddButton(this, nodeData);
       restoreExtraRows(this, nodeData, info);
       void refreshLoraWidgets(this, nodeData);

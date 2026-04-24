@@ -24,7 +24,10 @@ LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
 
 @PromptServer.instance.routes.get("/funpack/loras")
 async def funpack_loras(_):
-    return web.json_response(["None"] + folder_paths.get_filename_list("loras"))
+    return web.json_response(
+        ["None"] + folder_paths.get_filename_list("loras"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 class AnyType(str):
