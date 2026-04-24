@@ -890,9 +890,14 @@ class FunPackVideoRefiner:
         elif question_type == "stability":
             score = 0.35 * rating_shift + 0.30 * abs(cluster.get("stability_weight", 1.0) - 1.0) + 0.20 * max(0.0, 1.0 - similarity) + 0.15 * uncertainty
         elif question_type == "category":
-            category_unknown = 1.0 if cluster.get("category_source") != "user" else 0.0
             category_uncertainty = max(0.0, 1.0 - float(cluster.get("category_confidence", 0.35)))
-            score = 0.65 * category_unknown + 0.25 * category_uncertainty + 0.10 * rating_shift
+            needs_category_discovery = (
+                cluster.get("category_source") != "user" and
+                (category == "general" or category_uncertainty >= 0.50)
+            )
+            if not needs_category_discovery:
+                return 0.0
+            score = 0.65 + 0.25 * category_uncertainty + 0.10 * rating_shift
         else:  # preference
             score = 0.34 * abs(cluster.get("user_affinity", 1.0) - 1.0) + 0.28 * rating_shift + 0.20 * uncertainty + 0.18 * abs(cluster.get("priority_weight", 1.0) - 1.0)
 
