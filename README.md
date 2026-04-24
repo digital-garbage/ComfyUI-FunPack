@@ -2,13 +2,13 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-## What's New in 2.1.1
+## Updates in 2.1.1
 
-Version 2.1.1 brings the current Video Refiner work from `dev` to `main`.
+New rating logic for `FunPack Video Refiner`, plus a new CLIP Vision Combine node.
 
-`FunPack Gemma Embedding Refiner` now appears in ComfyUI as `FunPack Video Refiner`. Old workflows still load, because the original node key is kept as an alias.
+`FunPack Gemma Embedding Refiner` now appears in ComfyUI as `FunPack Video Refiner`. Old workflows still load because the original node key is kept as an alias.
 
-The main changes are:
+Highlights:
 
 - clearer rating choices, including `-Just forget it-` for bad runs you do not want saved
 - concept feedback questions that can ask what kind of thing a prompt phrase is: concept, style, quality, character, details, or general text
@@ -79,6 +79,7 @@ Per-node documentation is available in the [`docs`](docs) folder.
 Start with:
 
 - [`docs/FunPackGemmaEmbeddingRefiner.md`](docs/FunPackGemmaEmbeddingRefiner.md) for `FunPack Video Refiner`
+- [`docs/FunPackClipVisionOutputCombine.md`](docs/FunPackClipVisionOutputCombine.md) for CLIP Vision output combining
 - [`docs/FunPackSaveRefinementLatent.md`](docs/FunPackSaveRefinementLatent.md) for latent references
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 

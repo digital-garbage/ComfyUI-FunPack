@@ -16,7 +16,7 @@ Updated the Video Refiner rating categories so feedback can separate missing det
 
 Reduced repeated category feedback prompts after the user has already answered enough about the same concept.
 
-Refreshed README and refiner docs for the promoted `main` release.
+Refreshed README and refiner docs for 2.1.1.
 
 ### Fixed
 
@@ -36,7 +36,7 @@ The new workflow uses base LoRA weights on the first run for a prompt, then lets
 
 ### Changed
 
-Promoted the `FunPack Video Refiner` development workflow to `main` and renamed the visible refiner title from `FunPack Gemma Embedding Refiner` to `FunPack Video Refiner` while keeping the old node key as a compatibility alias.
+Renamed the visible refiner title from `FunPack Gemma Embedding Refiner` to `FunPack Video Refiner`. The old node key is still available as a compatibility alias.
 
 Split the old single `funpack.py` implementation into focused modules:
 
