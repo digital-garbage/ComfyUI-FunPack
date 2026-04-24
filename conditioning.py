@@ -32,9 +32,22 @@ RATING_LABELS = [
     "Missing concept",
     "Missing quality",
     "I don't like it",
+    "-Just forget it-",
 ]
 
 RATING_PROFILES = {
+    "-Just forget it-": {
+        "key": "forget",
+        "level": 0,
+        "legacy_score": 0,
+        "legacy_range": "ignored",
+        "reward": 0.0,
+        "quality_signal": 0.0,
+        "concept_signal": 0.0,
+        "detail_signal": 0.0,
+        "prompt_emphasis": 0.0,
+        "skip_learning": True,
+    },
     "I like it": {
         "key": "like",
         "level": 5,
@@ -2144,6 +2157,32 @@ class FunPackVideoRefiner:
 
         if not isinstance(raw_positive, torch.Tensor):
             return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas, fallback_latent)
+
+        if rating_profile.get("skip_learning"):
+            pending_cleared = False
+            if os.path.exists(json_file):
+                try:
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("pending_feedback") is not None:
+                        data["pending_feedback"] = None
+                        with open(json_file, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2)
+                        pending_cleared = True
+                except (json.JSONDecodeError, OSError, ValueError):
+                    pending_cleared = False
+            pending_status = " Pending feedback queue was cleared." if pending_cleared else ""
+            status = (
+                f"Feedback ignored | Mode {mode.upper()} | Rating {rating_label}\n"
+                "No learning history, LoRA weights, sigma schedule, or latent reference was updated."
+                f"{pending_status}"
+            )
+            training_info = (
+                f"Rating: {rating_label}\n"
+                "This run was intentionally forgotten. The connected conditioning, sigmas, and latent pass through unchanged."
+                f"{pending_status}"
+            )
+            return (positive_conditioning, status, "", training_info, fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
