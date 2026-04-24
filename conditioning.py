@@ -1018,6 +1018,157 @@ class FunPackVideoRefiner:
                     result.append(words)
         return result
 
+    def _concept_overlap_words(self, prompt: str):
+        words = []
+        seen = set()
+        for phrase_words in self._parse_concepts(prompt):
+            for word in phrase_words:
+                clean = str(word).strip().lower()
+                if not clean or clean in seen:
+                    continue
+                seen.add(clean)
+                words.append(clean)
+        return words
+
+    def _history_prompt_texts(self, prompt_key: str, history_entry: dict):
+        texts = []
+        for key in ("canonical_prompt", "last_positive_prompt"):
+            value = history_entry.get(key)
+            if isinstance(value, str) and value.strip():
+                texts.append(value)
+        if isinstance(prompt_key, str) and prompt_key.strip():
+            texts.append(prompt_key)
+        for item in reversed(history_entry.get("history", [])[-4:]):
+            value = item.get("prompt") if isinstance(item, dict) else None
+            if isinstance(value, str) and value.strip():
+                texts.append(value)
+
+        unique = []
+        seen = set()
+        for text in texts:
+            normalized = text.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique.append(normalized)
+        return unique
+
+    def _prompt_history_concept_words(self, prompt_key: str, history_entry: dict):
+        stored = history_entry.get("prompt_concept_words")
+        if isinstance(stored, list) and stored:
+            return [str(word).lower() for word in stored if str(word).strip()]
+
+        words = []
+        seen = set()
+        for text in self._history_prompt_texts(prompt_key, history_entry):
+            for word in self._concept_overlap_words(text):
+                if word not in seen:
+                    seen.add(word)
+                    words.append(word)
+        return words
+
+    def _conditioning_history_similarity(self, history_entry: dict, raw_positive: torch.Tensor):
+        try:
+            old_reference = serializable_to_tensor(history_entry["reference_embeds"])
+        except Exception:
+            return 0.0
+        if not isinstance(old_reference, torch.Tensor) or list(old_reference.shape) != list(raw_positive.shape):
+            return 0.0
+
+        current = raw_positive.to(old_reference.device) if raw_positive.device != old_reference.device else raw_positive
+        try:
+            if old_reference.dim() >= 2 and current.dim() >= 2:
+                ref_mean = self._masked_sequence_mean(old_reference, None)
+                cur_mean = self._masked_sequence_mean(current, None)
+                return float(F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item())
+            return float(F.cosine_similarity(
+                old_reference.flatten().unsqueeze(0),
+                current.flatten().unsqueeze(0),
+                dim=-1
+            ).mean().item())
+        except Exception:
+            return 0.0
+
+    def _find_prompt_variant_history(self, exact_prompt_key: str, current_words: list,
+                                     raw_positive: torch.Tensor, prompt_histories: dict):
+        if not exact_prompt_key or not current_words or not prompt_histories:
+            return None, None
+
+        current_set = set(current_words)
+        if len(current_set) < 2:
+            return None, None
+
+        best_key = None
+        best_info = None
+        best_score = 0.0
+        for candidate_key, history_entry in prompt_histories.items():
+            if candidate_key == exact_prompt_key or not isinstance(history_entry, dict):
+                continue
+
+            candidate_words = self._prompt_history_concept_words(candidate_key, history_entry)
+            candidate_set = set(candidate_words)
+            if len(candidate_set) < 2:
+                continue
+
+            shared = current_set & candidate_set
+            shared_count = len(shared)
+            union = current_set | candidate_set
+            overlap = shared_count / max(1, len(union))
+            coverage = shared_count / max(1, min(len(current_set), len(candidate_set)))
+            semantic_score = max(overlap, coverage * 0.72)
+            conditioning_similarity = self._conditioning_history_similarity(history_entry, raw_positive)
+
+            if conditioning_similarity < 0.68:
+                continue
+            if shared_count < 3 and not (coverage >= 0.85 and conditioning_similarity >= 0.82):
+                continue
+            if not (
+                (overlap >= 0.46 and conditioning_similarity >= 0.78) or
+                (coverage >= 0.68 and conditioning_similarity >= 0.72) or
+                (overlap >= 0.60 and conditioning_similarity >= 0.68)
+            ):
+                continue
+
+            score = semantic_score * 0.58 + conditioning_similarity * 0.42
+            if score > best_score:
+                best_score = score
+                best_key = candidate_key
+                best_info = {
+                    "score": round(float(score), 4),
+                    "overlap": round(float(overlap), 4),
+                    "coverage": round(float(coverage), 4),
+                    "conditioning_similarity": round(float(conditioning_similarity), 4),
+                    "shared_words": sorted(shared)[:12],
+                    "matched_prompt_key": candidate_key,
+                }
+
+        return best_key, best_info
+
+    def _remember_prompt_variant(self, active: dict, exact_prompt_key: str, positive_prompt: str,
+                                 current_words: list, match_info: dict = None):
+        active.setdefault("canonical_prompt", positive_prompt or exact_prompt_key)
+        existing_words = set(
+            str(word).lower()
+            for word in active.get("prompt_concept_words", [])
+            if str(word).strip()
+        )
+        for word in current_words:
+            existing_words.add(str(word).lower())
+        active["prompt_concept_words"] = sorted(existing_words)[:256]
+
+        variants = list(active.get("prompt_variants", []))[-11:]
+        variant = {
+            "prompt_key": exact_prompt_key,
+            "prompt": (positive_prompt or exact_prompt_key)[:240],
+        }
+        if match_info:
+            variant.update({
+                "overlap": match_info.get("overlap"),
+                "coverage": match_info.get("coverage"),
+                "conditioning_similarity": match_info.get("conditioning_similarity"),
+            })
+        variants.append(variant)
+        active["prompt_variants"] = variants
+
     def _build_prompt_fallback_concept(self, prompt: str, concept_clusters: dict):
         if not prompt:
             return None
@@ -2186,6 +2337,9 @@ class FunPackVideoRefiner:
 
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
+        exact_prompt_key = prompt_key
+        current_prompt_words = self._concept_overlap_words(analysis_prompt)
+        prompt_variant_match = None
 
         # ====================== STATE TEMPLATES ======================
         # Single source of truth for both reset and corrupt-recovery paths.
@@ -2224,6 +2378,8 @@ class FunPackVideoRefiner:
                 "global_adaptive": _fresh_global(),
                 "prompt_histories": {
                     prompt_key: {
+                        "canonical_prompt": positive_prompt,
+                        "prompt_concept_words": current_prompt_words,
                         "reference_embeds": tensor_to_serializable(raw_positive),
                         "history": [],
                         "last_rating": rating,
@@ -2301,6 +2457,16 @@ class FunPackVideoRefiner:
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer(mode)
 
+        if prompt_key not in prompt_histories:
+            matched_prompt_key, prompt_variant_match = self._find_prompt_variant_history(
+                exact_prompt_key,
+                current_prompt_words,
+                raw_positive,
+                prompt_histories,
+            )
+            if matched_prompt_key:
+                prompt_key = matched_prompt_key
+
         # ====================== FEEDBACK STATE MACHINE (CONCEPT-LEVEL) ======================
         # Operates on full concept phrases rather than individual words.
         # Rating a concept updates all its tracked words proportionally and sends a
@@ -2333,12 +2499,21 @@ class FunPackVideoRefiner:
         else:
             is_new_prompt = True
             active = {
+                "canonical_prompt": positive_prompt,
+                "prompt_concept_words": current_prompt_words,
                 "reference_embeds": tensor_to_serializable(raw_positive),
                 "history": [],
                 "last_rating": rating,
                 "last_rating_label": rating_label
             }
             prompt_histories[prompt_key] = active
+        self._remember_prompt_variant(
+            active,
+            exact_prompt_key,
+            positive_prompt,
+            current_prompt_words,
+            prompt_variant_match,
+        )
 
         # Safe reference loading
         try:
@@ -2815,6 +2990,17 @@ class FunPackVideoRefiner:
             reward,
             rating_profile,
         )
+        if prompt_variant_match:
+            prompt_history_status = (
+                "Prompt history: reused similar enhanced prompt "
+                f"(overlap {prompt_variant_match.get('overlap', 0.0):.0%}, "
+                f"coverage {prompt_variant_match.get('coverage', 0.0):.0%}, "
+                f"conditioning {prompt_variant_match.get('conditioning_similarity', 0.0):.2f})."
+            )
+        elif exact_prompt_key != prompt_key:
+            prompt_history_status = "Prompt history: reused compatible prompt variant."
+        else:
+            prompt_history_status = "Prompt history: exact prompt."
 
         normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
         stability_factor = max(0.0, 1.0 - similarity)
@@ -2831,6 +3017,7 @@ class FunPackVideoRefiner:
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
+            f"{prompt_history_status}\n"
             f"{lora_suggestion_status}\n"
             f"{sigma_status}\n"
             f"{latent_status}"

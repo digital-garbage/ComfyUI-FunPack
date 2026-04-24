@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.3] - 2026-04-24
+
+### Changed
+
+`FunPack Apply LoRA Weights` now has more user-friendly, compact UI.
+
+`FunPack Video Refiner` now has updated logic to work more stable when provided different prompts and conditioning with each new generation.
+
 ## [2.1.1] - 2026-04-24
 
 ### Added
