@@ -2,37 +2,26 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-## Updates in 2.1.1
+## Updates in 2.1.3
 
-New rating logic for `FunPack Video Refiner`, plus a new CLIP Vision Combine node.
+Updated UI for `FunPack Apply LoRA Weights`. Now it's a one-line rgthree-like styled loader which takes up significantly less space in the workflow and looks more pleasent.
 
-`FunPack Gemma Embedding Refiner` now appears in ComfyUI as `FunPack Video Refiner`. Old workflows still load because the original node key is kept as an alias.
+Updated rating for `FunPack Video Refiner`. Now it uses a rating system more understandable to end user:
 
-Highlights:
+- Rating `"I like it"` - resulting video is an exact match or really close to what was requested;
+- Rating `Missing details` - really close to what was requested, main concept is present but some details/actions were omitted;
+- Rating `Missing concept` - visually pleasent in terms of quality/anatomy/style/scene, but neither main concept nor details/actions are present;
+- Rating `Missing quality` - visually pleasent, but lacking proper anatomy/style/scene and neither main concept nor details/actions are present;
+- Rating `I don't like it` - visual garbage, totally not matching the requirements.
+- Rating `-Just forget it-` - in case of failing sampling or any other result when you are unable to see the video to rate it, select this rating so the previous generation won't count in learning process.
 
-- clearer rating choices, including `-Just forget it-` for bad runs you do not want saved
-- concept feedback questions that can ask what kind of thing a prompt phrase is: concept, style, quality, character, details, or general text
-- fewer repeated category questions once the refiner has enough information
-- optional sigma and video-latent refinement
-- prompt-specific LoRA weight suggestions through `FunPack Apply LoRA Weights` and `FunPack LoRA Loader`
-- hidden per-block LoRA weighting for supported LTX model stacks
-- a CLIP Vision output combiner node for workflows that need to join multiple CLIP Vision outputs
-
-For the LoRA/refiner workflow, connect the nodes in this order:
-
-`FunPack Apply LoRA Weights` -> `FunPack LoRA Loader` -> `FunPack Video Refiner`
-
-For LTX audio/video latent refinement, split the AV latent before using FunPack's latent path:
-
-`LTXVSeparateAVLatent` video output -> `FunPack Save Refinement Latent` / `FunPack Video Refiner` -> `LTXVConcatAVLatent` video input
-
-Do not send the combined AV latent or the audio latent into the FunPack latent nodes. Use the separated video latent, then put it back with `LTXVConcatAVLatent`.
+Updated logic for `FunPack Video Refiner`. Now it has a boost in stability in cases when user provides different conditioning and positive prompt with each new generation (e.g. from prompt enhancement nodes).
 
 ## Dev Branch
 
-The `dev` branch is for testing unfinished changes. It can be broken, renamed, or changed without warning.
+The `dev` branch is intended for testing unfinished changes, implementing new logic and basically, flipping everything just because I can. It can be broken, renamed, or changed without warning.
 
-Use `main` if you want the stable version. Bug reports from `dev` are usually ignored unless I specifically asked you to test that branch.
+Use only `main` if you want the most stable version of this node pack. Bug reports based on `dev` version will be ignored.
 
 ## Installation
 
@@ -53,12 +42,7 @@ Install them with:
 
 `pip install -r requirements.txt`
 
-FunPack uses your existing ComfyUI/PyTorch install. The expected baseline is:
-
-- `torch >= 2.8.0`
-- `transformers >= 5.0.0`
-
-Higher Torch versions are fine. If your ComfyUI environment has an older Torch build, update it there.
+FunPack uses your existing ComfyUI/PyTorch install. The expected baseline is `transformers >= 5.0.0`
 
 `hpsv3` is optional and only used by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not installed by default.
 
@@ -70,9 +54,9 @@ Install it manually only if you need that feature:
 
 Installing `hpsv3` can break `Prompt Enhancer` and `Story Writer`, because `hpsv3` depends on a `transformers` version that conflicts with the version those LLM-based nodes require.
 
-FunPack's LLM nodes require `transformers >= 5.0`.
+FunPack's LLM nodes require `transformers >= 5.0`. The version required for `hpsv3` is strictly `transformers==4.45.2`. Installing any version different from it will result in broken quality detector.
 
-If you install `hpsv3`, use `--no-build-isolation`.
+If you install `hpsv3`, use `--no-build-isolation`. Optionally, specify the exact version - `pip install transformers==4.45.2 --no-build-isolation`.
 
 ## Documentation
 
@@ -90,4 +74,6 @@ Version history is available in [CHANGELOG.md](CHANGELOG.md).
 
 If you have suggestions, questions, or ideas for new nodes, feel free to open an issue or submit a pull request.
 
-Thanks to the teams behind OpenAI, xAI, DeepSeek, Anthropic, and Google for the AI tools that helped with the code. Thanks also to everyone testing FunPack in real workflows and sending feedback. This project would still be a folder of half-working experiments without you.
+## Thank you
+
+I want to say thanks to teams behind OpenAI (ChatGPT/Codex), xAI (Grok), DeepSeek, Anthropic (Claude) and Google (Gemini) for all the help with coding and transforming my ideas into something working in real UI. Thanks to all the testers and users who regularly use FunPack in their workflows, request features and report bugs. Without all of you, this project would've been just wet dreams of a wannabe coder begging on Discord for someone to add nodes he wants. Seriously, you are cool. I love you all. <3
