@@ -28,6 +28,12 @@ For LTX audio/video latent refinement, split the AV latent before using FunPack'
 
 Do not send the combined AV latent or the audio latent into the FunPack latent nodes. Use the separated video latent, then put it back with `LTXVConcatAVLatent`.
 
+## Dev Branch
+
+The `dev` branch is for testing unfinished changes. It can be broken, renamed, or changed without warning.
+
+Use `main` if you want the stable version. Bug reports from `dev` are usually ignored unless I specifically asked you to test that branch.
+
 ## Installation
 
 FunPack is available on Comfy Registry and can be installed in any of these ways:
@@ -47,16 +53,12 @@ Install them with:
 
 `pip install -r requirements.txt`
 
-The requirements file does not include pip command flags, because some ComfyUI and registry installers reject those entries.
-
-FunPack expects your existing ComfyUI environment to already have a compatible PyTorch install, and the requirements file only lists the extra Python packages this node set needs.
-
-The expected baseline is:
+FunPack uses your existing ComfyUI/PyTorch install. The expected baseline is:
 
 - `torch >= 2.8.0`
 - `transformers >= 5.0.0`
 
-Higher Torch versions are fine. If your ComfyUI environment has an older Torch build, upgrade Torch there instead of through `requirements.txt`.
+Higher Torch versions are fine. If your ComfyUI environment has an older Torch build, update it there.
 
 `hpsv3` is optional and only used by the `FunPack StoryMem Keyframe Extractor` quality filter, so it is not installed by default.
 
@@ -79,7 +81,6 @@ Per-node documentation is available in the [`docs`](docs) folder.
 Start with:
 
 - [`docs/FunPackGemmaEmbeddingRefiner.md`](docs/FunPackGemmaEmbeddingRefiner.md) for `FunPack Video Refiner`
-- [`docs/FunPackClipVisionOutputCombine.md`](docs/FunPackClipVisionOutputCombine.md) for CLIP Vision output combining
 - [`docs/FunPackSaveRefinementLatent.md`](docs/FunPackSaveRefinementLatent.md) for latent references
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 
