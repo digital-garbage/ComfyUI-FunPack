@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.1.1] - 2026-04-24
+
+### Added
+
+Added `-Just forget it-` as a Video Refiner rating. Use it when a generation failed for reasons that should not be learned from, such as a broken reference, bad seed, or workflow mistake.
+
+Added category feedback questions for prompt phrases that the refiner cannot confidently classify. The answer scale is `general`, `concept`, `style`, `quality`, `character`, and `details`.
+
+Added a CLIP Vision output combiner node for workflows that need one combined CLIP Vision output from multiple inputs.
+
+### Changed
+
+Updated the Video Refiner rating categories so feedback can separate missing details, missing concept, missing quality, and fully failed output instead of treating all bad results the same way.
+
+Reduced repeated category feedback prompts after the user has already answered enough about the same concept.
+
+Refreshed README and refiner docs for the promoted `main` release.
+
+### Fixed
+
+Fixed LoRA weight row restore order when workflows are loaded.
+
 ## [2.1.0] - 2026-04-23
 
 ### Added

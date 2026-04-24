@@ -26,9 +26,129 @@ LORA_REFINER_TYPE_PROFILES = {
     "character": {"step": 0.024, "max_offset": 0.20, "min_offset": -0.32, "bad_max_offset": 0.42, "bad_min_offset": -1.30, "culprit_bias": 0.10},
 }
 
+RATING_LABELS = [
+    "I like it",
+    "Missing details",
+    "Missing concept",
+    "Missing quality",
+    "I don't like it",
+    "-Just forget it-",
+]
+
+RATING_PROFILES = {
+    "-Just forget it-": {
+        "key": "forget",
+        "level": 0,
+        "legacy_score": 0,
+        "legacy_range": "ignored",
+        "reward": 0.0,
+        "quality_signal": 0.0,
+        "concept_signal": 0.0,
+        "detail_signal": 0.0,
+        "prompt_emphasis": 0.0,
+        "skip_learning": True,
+    },
+    "I like it": {
+        "key": "like",
+        "level": 5,
+        "legacy_score": 10,
+        "legacy_range": "9-10",
+        "reward": 1.0,
+        "quality_signal": 1.0,
+        "concept_signal": 1.0,
+        "detail_signal": 1.0,
+        "prompt_emphasis": 0.45,
+    },
+    "Missing details": {
+        "key": "missing_details",
+        "level": 4,
+        "legacy_score": 8,
+        "legacy_range": "7-8",
+        "reward": 0.45,
+        "quality_signal": 0.85,
+        "concept_signal": 0.70,
+        "detail_signal": -0.55,
+        "prompt_emphasis": 0.65,
+    },
+    "Missing concept": {
+        "key": "missing_concept",
+        "level": 3,
+        "legacy_score": 6,
+        "legacy_range": "5-6",
+        "reward": -0.35,
+        "quality_signal": 0.65,
+        "concept_signal": -0.90,
+        "detail_signal": -0.70,
+        "prompt_emphasis": 0.95,
+    },
+    "Missing quality": {
+        "key": "missing_quality",
+        "level": 2,
+        "legacy_score": 4,
+        "legacy_range": "3-4",
+        "reward": -0.75,
+        "quality_signal": -0.90,
+        "concept_signal": -0.75,
+        "detail_signal": -0.70,
+        "prompt_emphasis": 0.55,
+    },
+    "I don't like it": {
+        "key": "dislike",
+        "level": 1,
+        "legacy_score": 2,
+        "legacy_range": "1-2",
+        "reward": -1.0,
+        "quality_signal": -1.0,
+        "concept_signal": -1.0,
+        "detail_signal": -1.0,
+        "prompt_emphasis": -0.65,
+    },
+}
+
+CATEGORY_FEEDBACK_MAP = {
+    1: "general",
+    2: "concept",
+    3: "style",
+    4: "quality",
+    5: "character",
+    6: "details",
+}
+
 
 def _clamp(value, low, high):
     return max(low, min(high, value))
+
+
+def normalize_refiner_rating(value):
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned in RATING_PROFILES:
+            return dict(RATING_PROFILES[cleaned], label=cleaned)
+        try:
+            value = int(float(cleaned))
+        except (TypeError, ValueError):
+            return dict(RATING_PROFILES["Missing concept"], label="Missing concept")
+
+    try:
+        legacy_score = int(value)
+    except (TypeError, ValueError):
+        legacy_score = RATING_PROFILES["Missing concept"]["legacy_score"]
+
+    legacy_score = int(_clamp(legacy_score, 1, 10))
+    if legacy_score >= 9:
+        label = "I like it"
+    elif legacy_score >= 7:
+        label = "Missing details"
+    elif legacy_score >= 5:
+        label = "Missing concept"
+    elif legacy_score >= 3:
+        label = "Missing quality"
+    else:
+        label = "I don't like it"
+
+    profile = dict(RATING_PROFILES[label], label=label)
+    profile["legacy_score"] = legacy_score
+    return profile
 
 
 PROTECTED_PHRASE_RE = re.compile(r'"([^"]+)"|“([^”]+)”|\\([^\\]+)\\')
@@ -498,14 +618,7 @@ class FunPackVideoRefiner:
             "required": {
                 "positive_conditioning": ("CONDITIONING",),
                 "mode": (["ltx2", "wan"], {"default": "ltx2", "label": "Tokenizer Mode"}),
-                "rating": ("INT", {
-                    "default": 5,
-                    "min": 1,
-                    "max": 10,
-                    "step": 1,
-                    "display": "slider",
-                    "label": "Rating (1=horrific, 10=masterpiece)"
-                }),
+                "rating": (RATING_LABELS, {"default": "Missing concept", "label": "Rating"}),
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
                 "scheduler_mode": (["original", "accurate", "aggressive"], {"default": "original"}),
             },
@@ -681,6 +794,8 @@ class FunPackVideoRefiner:
             "label": " ".join((phrase_words or [])[:6]),
             "anchor_words": list(phrase_words or []),
             "category": category,
+            "category_source": "auto",
+            "category_confidence": 0.35 if category == "general" else 0.65,
             "word_importance": {},
             "presence_target": 1.0,
             "priority_weight": 1.0,
@@ -702,8 +817,13 @@ class FunPackVideoRefiner:
         anchor_words = list(cluster.get("anchor_words", []))
         defaults = self._default_concept_cluster(anchor_words)
         defaults.update(cluster)
-        if not defaults.get("category") or defaults.get("category") == "general":
+        defaults.setdefault("category_source", "auto")
+        defaults.setdefault("category_confidence", 0.35 if defaults.get("category") == "general" else 0.65)
+        if defaults.get("category_source") != "user" and (
+            not defaults.get("category") or defaults.get("category") == "general"
+        ):
             defaults["category"] = self._infer_concept_category(defaults.get("anchor_words", []))
+            defaults["category_confidence"] = 0.35 if defaults["category"] == "general" else max(0.65, defaults.get("category_confidence", 0.0))
         defaults["question_history"] = list(defaults.get("question_history", []))[-24:]
         return defaults
 
@@ -735,6 +855,10 @@ class FunPackVideoRefiner:
             "preference": {
                 "prompt": "What is your preference for having '{label}' in future outputs?",
                 "legend": "1=strongly less  2=less  3=slightly less  4=slightly more  5=more  6=much more",
+            },
+            "category": {
+                "prompt": "What kind of concept is '{label}'?",
+                "legend": "1=general  2=concept  3=style  4=quality  5=character  6=details",
             },
         }
 
@@ -778,6 +902,15 @@ class FunPackVideoRefiner:
             score = 0.38 * (2.0 - cluster.get("semantic_fidelity", 1.0)) + 0.24 * rating_shift + 0.20 * uncertainty + 0.18 * max(0.0, 1.0 - similarity)
         elif question_type == "stability":
             score = 0.35 * rating_shift + 0.30 * abs(cluster.get("stability_weight", 1.0) - 1.0) + 0.20 * max(0.0, 1.0 - similarity) + 0.15 * uncertainty
+        elif question_type == "category":
+            category_uncertainty = max(0.0, 1.0 - float(cluster.get("category_confidence", 0.35)))
+            needs_category_discovery = (
+                cluster.get("category_source") != "user" and
+                (category == "general" or category_uncertainty >= 0.50)
+            )
+            if not needs_category_discovery:
+                return 0.0
+            score = 0.65 + 0.25 * category_uncertainty + 0.10 * rating_shift
         else:  # preference
             score = 0.34 * abs(cluster.get("user_affinity", 1.0) - 1.0) + 0.28 * rating_shift + 0.20 * uncertainty + 0.18 * abs(cluster.get("priority_weight", 1.0) - 1.0)
 
@@ -793,6 +926,7 @@ class FunPackVideoRefiner:
         question_specs = self._feedback_question_specs()
         rating_shift = min(1.0, abs(rating - last_rating) / 4.0)
         candidates = []
+        category_candidates = []
 
         for cid in ordered_concept_ids:
             cluster = concept_clusters.get(cid)
@@ -821,7 +955,7 @@ class FunPackVideoRefiner:
                     question_type, cluster, category, mean_imp,
                     neighbor_mean, rating_shift, similarity, iter_num
                 )
-                candidates.append({
+                candidate = {
                     "concept_id": cid,
                     "concept_label": current_concept_labels.get(cid, cluster.get("label", "")),
                     "question_type": question_type,
@@ -829,7 +963,16 @@ class FunPackVideoRefiner:
                     "group_id": chosen_group_id,
                     "category": category,
                     "score": score,
-                })
+                }
+                if question_type == "category":
+                    category_candidates.append(candidate)
+                else:
+                    candidates.append(candidate)
+
+        if category_candidates:
+            category_candidate = max(category_candidates, key=lambda x: x["score"])
+            if category_candidate["score"] >= 0.60:
+                return category_candidate
 
         if not candidates:
             return None
@@ -981,6 +1124,37 @@ class FunPackVideoRefiner:
         new_id = md5("|".join(sorted(phrase_words)).encode()).hexdigest()[:10]
         return new_id, True
 
+    def _apply_category_feedback(self, cluster: dict, feedback_rating: int, iter_num: int = 0):
+        category = CATEGORY_FEEDBACK_MAP.get(int(feedback_rating), "general")
+        cluster["category"] = category
+        cluster["category_source"] = "user"
+        cluster["category_confidence"] = 1.0
+
+        if category in {"concept", "character", "details"}:
+            cluster["presence_target"] = self._clip_profile_value(cluster.get("presence_target", 1.0) + 0.10)
+            cluster["priority_weight"] = self._clip_profile_value(cluster.get("priority_weight", 1.0) + 0.10)
+            cluster["semantic_fidelity"] = self._clip_profile_value(
+                cluster.get("semantic_fidelity", 1.0) + 0.08,
+                low=0.6,
+                high=1.8,
+            )
+        elif category == "quality":
+            cluster["priority_weight"] = self._clip_profile_value(cluster.get("priority_weight", 1.0) + 0.06)
+            cluster["overrep_sensitivity"] = self._clip_profile_value(cluster.get("overrep_sensitivity", 1.0) + 0.08)
+        elif category == "style":
+            cluster["stability_weight"] = self._clip_profile_value(cluster.get("stability_weight", 1.0) + 0.08)
+            cluster["user_affinity"] = self._clip_profile_value(cluster.get("user_affinity", 1.0) + 0.05)
+
+        cluster["question_history"] = list(cluster.get("question_history", []))[-23:]
+        cluster["question_history"].append({
+            "iteration": iter_num,
+            "type": "category",
+            "rating": feedback_rating,
+            "category": category,
+        })
+        cluster["last_question_type"] = "category"
+        cluster["last_question_iter"] = iter_num
+
     def _build_word_concept_map(self, prompt: str, concept_clusters: dict):
         """
         Parse the prompt into concept phrases (Level 3), match or create clusters,
@@ -1008,9 +1182,15 @@ class FunPackVideoRefiner:
                 for w in phrase_words:
                     if w not in existing:
                         concept_clusters[cid]["anchor_words"].append(w)
-                if concept_clusters[cid].get("category") == "general":
+                if (
+                    concept_clusters[cid].get("category_source") != "user" and
+                    concept_clusters[cid].get("category") == "general"
+                ):
                     concept_clusters[cid]["category"] = self._infer_concept_category(
                         concept_clusters[cid]["anchor_words"]
+                    )
+                    concept_clusters[cid]["category_confidence"] = (
+                        0.35 if concept_clusters[cid]["category"] == "general" else 0.65
                     )
             concept_clusters[cid]["last_prompt_label"] = phrase_label
             current_concept_labels[cid] = phrase_label
@@ -1158,6 +1338,10 @@ class FunPackVideoRefiner:
         concept_clusters[concept_id] = cluster
 
         question_type = question_type or "presence"
+        if question_type == "category":
+            self._apply_category_feedback(cluster, feedback_rating, iter_num)
+            return
+
         direct_deltas = {
             "presence": {1: 0.90, 2: 0.50, 3: 0.20, 4: -0.15, 5: 0.04, 6: -0.55},
             "priority": {1: -0.25, 2: -0.12, 3: -0.05, 4: 0.08, 5: 0.18, 6: 0.30},
@@ -1317,7 +1501,8 @@ class FunPackVideoRefiner:
         out[-1] = original[-1]
         return out
 
-    def _refine_sigma_schedule(self, sigmas, rating: int, global_adaptive: dict, strength_mode: str, seed: int):
+    def _refine_sigma_schedule(self, sigmas, rating: int, global_adaptive: dict, strength_mode: str, seed: int,
+                               rating_profile: Optional[dict] = None):
         if not isinstance(sigmas, torch.Tensor):
             return torch.FloatTensor([]), "Sigma refinement inactive."
 
@@ -1327,7 +1512,9 @@ class FunPackVideoRefiner:
 
         self._ensure_sigma_state_defaults(global_adaptive)
 
-        reward = (rating - 5.5) / 4.5
+        rating_profile = rating_profile or normalize_refiner_rating(rating)
+        rating_key = rating_profile.get("key", "")
+        reward = float(rating_profile.get("reward", (rating - 5.5) / 4.5))
         sigma_iterations = int(global_adaptive.get("sigma_iterations", 0))
 
         profile = np.asarray(global_adaptive.get("sigma_profile", [0.0] * 32), dtype=np.float32)
@@ -1374,12 +1561,13 @@ class FunPackVideoRefiner:
         global_adaptive["sigma_avg_reward_ema"] = sigma_avg_reward_ema
         global_adaptive["sigma_exploration_base"] = max(
             0.012,
-            min(0.05, sigma_exploration_base * (0.97 if rating >= 8 else 1.02))
+            min(0.05, sigma_exploration_base * (0.97 if rating_key == "like" else 1.02))
         )
         sigma_history = list(global_adaptive.get("sigma_history", []))[-119:]
         sigma_history.append({
             "iteration": sigma_iterations + 1,
             "rating": int(rating),
+            "rating_label": rating_profile.get("label", str(rating)),
             "reward": round(float(reward), 6),
             "lr": round(float(sigma_lr), 6),
         })
@@ -1524,7 +1712,8 @@ class FunPackVideoRefiner:
         except OSError:
             return False
 
-    def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive):
+    def _refine_latent(self, latent, refinement_key, mode, rating, reward, global_adaptive,
+                       rating_profile: Optional[dict] = None):
         if isinstance(latent, dict) and not latent_is_plain_video_tensor(latent):
             self._raise_wrong_latent(latent)
 
@@ -1584,7 +1773,16 @@ class FunPackVideoRefiner:
             latent_state["status"] = "Latent: only zero-valued positions available, passthrough."
             return refined_latent, latent_state["status"]
 
-        lr = 0.035 if rating >= 7 else 0.055 if rating <= 4 else 0.018
+        rating_profile = rating_profile or normalize_refiner_rating(rating)
+        rating_key = rating_profile.get("key", "")
+        if rating_key == "like":
+            lr = 0.035
+        elif rating_key in {"missing_quality", "dislike"}:
+            lr = 0.055
+        elif rating_key == "missing_concept":
+            lr = 0.030
+        else:
+            lr = 0.018
         target_delta = (saved_samples - current) * nonzero_mask.to(dtype=current.dtype)
         update = target_delta * (reward * lr)
         momentum = 0.82 * momentum + 0.18 * update
@@ -1601,6 +1799,7 @@ class FunPackVideoRefiner:
 
         latent_state["momentum"] = tensor_to_serializable(momentum.detach().cpu())
         latent_state["last_rating"] = int(rating)
+        latent_state["last_rating_label"] = rating_profile.get("label", str(rating))
         latent_state["last_reward"] = round(float(reward), 4)
         latent_state["nonzero_ratio"] = round(float(nonzero_mask.float().mean().item()), 6)
         latent_state["status"] = (
@@ -1674,6 +1873,10 @@ class FunPackVideoRefiner:
 
             overlap = len(lora_words & prompt_words) / max(1, len(lora_words)) if lora_words else 0.0
             category_score = 0.62 if lora_type == category else 0.0
+            if lora_type == "concept" and category in {"concept", "details", "subject", "appearance", "action", "environment"}:
+                category_score = max(category_score, 0.58)
+            if lora_type == "character" and category in {"character", "subject", "appearance"}:
+                category_score = max(category_score, 0.72)
             if lora_type == "quality" and category == "quality":
                 category_score = 0.78
             if lora_type == "style" and category in {"style", "camera"}:
@@ -1690,30 +1893,45 @@ class FunPackVideoRefiner:
         return min(1.0, best_score), best_labels[:4], best_importance
 
     def _update_lora_weight_suggestions(self, lora_stack, active, global_adaptive, ordered_concept_ids,
-                                        concept_clusters, current_concept_labels, rating, reward):
+                                        concept_clusters, current_concept_labels, rating, reward,
+                                        rating_profile: Optional[dict] = None):
         if not isinstance(lora_stack, dict) or not lora_stack.get("loras"):
             return "LoRA suggestions: no FunPack LoRA stack connected."
 
+        rating_profile = rating_profile or normalize_refiner_rating(rating)
+        rating_key = rating_profile.get("key", "")
         memory = global_adaptive.setdefault("lora_weight_memory", {})
         suggestions = {}
         status_parts = []
+        relation_cache = {}
+        top_concept_relation = 0.0
+        concept_lora_count = 0
 
         for entry in lora_stack.get("loras", []):
             lora_type = entry.get("type", "general")
-            profile = LORA_REFINER_TYPE_PROFILES.get(lora_type, LORA_REFINER_TYPE_PROFILES["general"])
-            lora_id, state = self._ensure_lora_memory(memory, entry)
+            lora_id = entry.get("id") or self._lora_state_id(entry.get("name", ""), lora_type)
             relation, matched_labels, concept_importance = self._score_lora_prompt_relation(
                 entry,
                 ordered_concept_ids,
                 concept_clusters,
                 current_concept_labels,
             )
+            relation_cache[lora_id] = (relation, matched_labels, concept_importance)
+            if lora_type in {"concept", "character"}:
+                concept_lora_count += 1
+                top_concept_relation = max(top_concept_relation, relation)
+
+        for entry in lora_stack.get("loras", []):
+            lora_type = entry.get("type", "general")
+            profile = LORA_REFINER_TYPE_PROFILES.get(lora_type, LORA_REFINER_TYPE_PROFILES["general"])
+            lora_id, state = self._ensure_lora_memory(memory, entry)
+            relation, matched_labels, concept_importance = relation_cache.get(lora_id, (0.0, [], 1.0))
 
             state["reward_ema"] = 0.84 * float(state.get("reward_ema", 0.0)) + 0.16 * reward
-            if rating >= 8:
+            if rating_key == "like":
                 state["good_streak"] = int(state.get("good_streak", 0)) + 1
                 state["bad_streak"] = 0
-            elif rating <= 4:
+            elif rating_key in {"missing_quality", "dislike"}:
                 state["bad_streak"] = int(state.get("bad_streak", 0)) + 1
                 state["good_streak"] = 0
             else:
@@ -1724,7 +1942,7 @@ class FunPackVideoRefiner:
             stable_offset = state.get("stable_offset_ratio")
             culprit_score = float(state.get("culprit_score", 0.0))
             culprit_hits = int(state.get("culprit_hits", 0))
-            if stable_offset is not None and rating >= 6:
+            if stable_offset is not None and rating_key in {"like", "missing_details"}:
                 offset = 0.72 * offset + 0.28 * float(stable_offset)
 
             step = profile["step"] * max(0.15, relation)
@@ -1739,7 +1957,15 @@ class FunPackVideoRefiner:
                 concept_match_strength += 0.30 if matched_labels else 0.0
                 concept_match_strength += max(0.0, relation - 0.30) * 1.35
 
-            if rating >= 8:
+            is_primary_concept_lora = (
+                lora_type in {"concept", "character"} and
+                (
+                    concept_lora_count == 1 or
+                    (top_concept_relation > 0.0 and relation >= max(0.30, top_concept_relation - 1e-6))
+                )
+            )
+
+            if rating_key == "like":
                 value_mult = 0.75 + min(1.4, max(0.5, concept_importance)) * 0.25
                 offset += step * (0.45 + max(0.0, reward)) * value_mult
                 culprit_score *= 0.72
@@ -1750,7 +1976,54 @@ class FunPackVideoRefiner:
                         stable_offset = 0.78 * float(stable_offset) + 0.22 * offset
                     state["stable_offset_ratio"] = _clamp(stable_offset, min_offset, max_offset)
                     offset = state["stable_offset_ratio"]
-            elif rating <= 4:
+            elif rating_key == "missing_details":
+                culprit_score *= 0.86
+                culprit_hits = max(0, culprit_hits - 1)
+                if relation >= 0.25 and lora_type in {"concept", "character", "general"}:
+                    value_mult = 0.85 + min(1.2, max(0.5, concept_importance)) * 0.20
+                    offset += step * (0.30 + relation * 0.45) * value_mult
+                elif relation <= 0.05:
+                    offset *= 0.96
+                elif stable_offset is not None:
+                    offset = 0.78 * offset + 0.22 * float(stable_offset)
+            elif rating_key == "missing_concept":
+                state["stable_offset_ratio"] = None
+                if is_primary_concept_lora:
+                    max_offset = max(max_offset, profile["bad_max_offset"] * 0.82)
+                    offset += step * (1.10 + abs(reward) * 1.25) * concept_match_strength
+                    culprit_score *= 0.70
+                    culprit_hits = max(0, culprit_hits - 1)
+                elif lora_type in {"concept", "character"} and relation > 0.08:
+                    culprit_score = _clamp(culprit_score * 0.75 + 0.35 * max(0.25, relation), 0.0, 2.5)
+                    culprit_hits = culprit_hits + 1 if culprit_score >= 0.65 else culprit_hits
+                    min_offset = min(min_offset, profile["bad_min_offset"] * 0.42)
+                    offset -= step * (0.55 + abs(reward)) * max(0.25, relation)
+                elif relation <= 0.05:
+                    offset *= 0.96
+                else:
+                    offset *= 0.92
+            elif rating_key == "missing_quality":
+                state["stable_offset_ratio"] = None
+                if lora_type == "quality":
+                    max_offset = max(max_offset, profile["bad_max_offset"] * 0.70)
+                    offset += step * (1.00 + abs(reward) * 0.85) * max(0.45, effective_relation)
+                    culprit_score *= 0.76
+                elif is_primary_concept_lora:
+                    max_offset = max(max_offset, profile["bad_max_offset"] * 0.55)
+                    offset += step * (0.62 + abs(reward) * 0.55) * concept_match_strength
+                    culprit_score *= 0.82
+                elif lora_type in {"concept", "character"} and relation > 0.08:
+                    culprit_score = _clamp(culprit_score * 0.78 + 0.42 * max(0.25, relation), 0.0, 2.5)
+                    culprit_hits = culprit_hits + 1 if culprit_score >= 0.65 else culprit_hits
+                    min_offset = min(min_offset, profile["bad_min_offset"] * 0.35)
+                    offset -= step * (0.72 + abs(reward)) * max(0.25, relation)
+                else:
+                    culprit_score = _clamp(culprit_score * 0.84 + 0.18 * max(0.0, relation), 0.0, 2.5)
+                    if relation <= 0.05:
+                        offset *= 0.94
+                    else:
+                        offset -= step * 0.25 * max(0.20, relation)
+            elif rating_key == "dislike":
                 severity = _clamp((5.0 - float(rating)) / 4.0, 0.0, 1.0)
                 culprit_signal = max(0.20, effective_relation) * (0.70 + base_abs * 0.30)
                 if is_concept_lora:
@@ -1810,6 +2083,8 @@ class FunPackVideoRefiner:
                 "relation": relation,
                 "matched_concepts": matched_labels,
                 "rating": int(rating),
+                "rating_label": rating_profile.get("label", str(rating)),
+                "rating_range": rating_profile.get("legacy_range", ""),
                 "good_streak": state.get("good_streak", 0),
                 "bad_streak": state.get("bad_streak", 0),
                 "stable": state.get("stable_offset_ratio") is not None,
@@ -1827,7 +2102,7 @@ class FunPackVideoRefiner:
         active["last_lora_stack"] = lora_stack
         if not status_parts:
             return "LoRA suggestions: stack empty."
-        return "LoRA suggestions: " + " | ".join(status_parts)
+        return f"LoRA suggestions ({rating_profile.get('label', str(rating))}): " + " | ".join(status_parts)
 
     # =========================================================================
     # MAIN REFINE
@@ -1843,6 +2118,10 @@ class FunPackVideoRefiner:
         mode = (mode or "ltx2").lower()
         if mode not in self._tokenizer_sources:
             mode = "ltx2"
+        rating_profile = normalize_refiner_rating(rating)
+        rating_label = rating_profile.get("label", str(rating))
+        rating = int(rating_profile.get("legacy_score", 6))
+        reward = float(rating_profile.get("reward", (rating - 5.5) / 4.5))
 
         if seed != 0:
             torch.manual_seed(seed)
@@ -1878,6 +2157,32 @@ class FunPackVideoRefiner:
 
         if not isinstance(raw_positive, torch.Tensor):
             return (positive_conditioning, "ERROR: No positive embedding tensor found", "", "ERROR: Invalid embedding", fallback_loss_graph, fallback_sigmas, fallback_latent)
+
+        if rating_profile.get("skip_learning"):
+            pending_cleared = False
+            if os.path.exists(json_file):
+                try:
+                    with open(json_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("pending_feedback") is not None:
+                        data["pending_feedback"] = None
+                        with open(json_file, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2)
+                        pending_cleared = True
+                except (json.JSONDecodeError, OSError, ValueError):
+                    pending_cleared = False
+            pending_status = " Pending feedback queue was cleared." if pending_cleared else ""
+            status = (
+                f"Feedback ignored | Mode {mode.upper()} | Rating {rating_label}\n"
+                "No learning history, LoRA weights, sigma schedule, or latent reference was updated."
+                f"{pending_status}"
+            )
+            training_info = (
+                f"Rating: {rating_label}\n"
+                "This run was intentionally forgotten. The connected conditioning, sigmas, and latent pass through unchanged."
+                f"{pending_status}"
+            )
+            return (positive_conditioning, status, "", training_info, fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
@@ -1921,7 +2226,8 @@ class FunPackVideoRefiner:
                     prompt_key: {
                         "reference_embeds": tensor_to_serializable(raw_positive),
                         "history": [],
-                        "last_rating": rating
+                        "last_rating": rating,
+                        "last_rating_label": rating_label
                     }
                 },
                 "last_prompt_key": prompt_key,
@@ -1938,8 +2244,9 @@ class FunPackVideoRefiner:
                     refinement_key,
                     mode,
                     rating,
-                    (rating - 5.5) / 4.5,
+                    reward,
                     {},
+                    rating_profile,
                 )
             else:
                 fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
@@ -1964,8 +2271,9 @@ class FunPackVideoRefiner:
                     refinement_key,
                     mode,
                     rating,
-                    (rating - 5.5) / 4.5,
+                    reward,
                     {},
+                    rating_profile,
                 )
             else:
                 fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
@@ -2027,7 +2335,8 @@ class FunPackVideoRefiner:
             active = {
                 "reference_embeds": tensor_to_serializable(raw_positive),
                 "history": [],
-                "last_rating": rating
+                "last_rating": rating,
+                "last_rating_label": rating_label
             }
             prompt_histories[prompt_key] = active
 
@@ -2138,19 +2447,23 @@ class FunPackVideoRefiner:
         except Exception:
             similarity = 0.0
 
-        reward = (rating - 5.5) / 4.5
         last_rating = active.get("last_rating", 5)
-        last_reward = (last_rating - 5.5) / 4.5
+        last_rating_profile = normalize_refiner_rating(active.get("last_rating_label", last_rating))
+        if "last_rating_label" not in active:
+            last_rating_profile = normalize_refiner_rating(last_rating)
+        last_reward = float(last_rating_profile.get("reward", (last_rating - 5.5) / 4.5))
         rating_shift = abs(rating - last_rating)
         feedback_memory["rating_change_events"] = list(feedback_memory.get("rating_change_events", []))[-15:]
         feedback_memory["rating_change_events"].append({
             "iteration": iter_num,
             "rating": rating,
+            "rating_label": rating_label,
             "shift": rating_shift,
             "prompt_key": prompt_key,
         })
 
         word_importance = global_adaptive["word_importance"]
+        prompt_emphasis = float(rating_profile.get("prompt_emphasis", reward))
 
         lr_scale, confidence, exploration_mult, word_lr_mult = self._get_scheduler_factors(
             scheduler_mode, rating, reward, similarity, iter_num, total_iters,
@@ -2166,7 +2479,7 @@ class FunPackVideoRefiner:
             wkey = full_word.lower()
 
             base_lr = 0.22 / (1 + 0.07 * (len(history) ** 0.5))
-            group_delta = reward * base_lr * lr_scale * confidence
+            group_delta = prompt_emphasis * base_lr * lr_scale * confidence
             if wkey in word_lr_mult:
                 group_delta *= word_lr_mult[wkey]
 
@@ -2215,9 +2528,13 @@ class FunPackVideoRefiner:
         global_adaptive["avg_reward_ema"] = avg_reward_ema
 
         good_ratio = global_adaptive["good_ratio"]
-        if rating >= 8:
+        rating_key = rating_profile.get("key", "")
+        if rating_key == "like":
             good_ratio = 0.9 * good_ratio + 0.1 * 1.0
             expl = max(0.015, expl * 0.96)
+        elif rating_key == "missing_details":
+            good_ratio = 0.9 * good_ratio + 0.1 * 0.55
+            expl = min(0.12, expl * 1.02)
         else:
             good_ratio = 0.9 * good_ratio + 0.1 * 0.0
             expl = min(0.12, expl * 1.08)
@@ -2240,23 +2557,25 @@ class FunPackVideoRefiner:
                 prev_modified = torch.zeros_like(old_reference)
             prev_delta = prev_modified - old_reference
             multiplier = max(0.05, 1.0 + reward * 1.45)
-            if rating == last_rating and rating >= 8:
+            if rating == last_rating and rating_key == "like":
                 multiplier += 0.35
             noise = torch.randn_like(old_reference) * (expl * (1.0 - avg_reward_ema * 0.7))
             new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
         else:
             good_deltas = []
             for entry in history:
-                if entry.get("rating", 0) >= 7:
-                    mod_data = entry.get("modified_embeds")
-                    if mod_data is None:
-                        continue
-                    try:
-                        mod = serializable_to_tensor(mod_data).to(device)
-                        if list(mod.shape) == list(old_reference.shape):
-                            good_deltas.append(mod - old_reference)
-                    except Exception:
-                        continue
+                entry_profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
+                if entry_profile.get("key") not in {"like", "missing_details"}:
+                    continue
+                mod_data = entry.get("modified_embeds")
+                if mod_data is None:
+                    continue
+                try:
+                    mod = serializable_to_tensor(mod_data).to(device)
+                    if list(mod.shape) == list(old_reference.shape):
+                        good_deltas.append(mod - old_reference)
+                except Exception:
+                    continue
             if good_deltas:
                 new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
             else:
@@ -2344,6 +2663,8 @@ class FunPackVideoRefiner:
         history_entry = {
             "iteration": iter_num,
             "rating": rating,
+            "rating_label": rating_label,
+            "rating_range": rating_profile.get("legacy_range", ""),
             "reward": round(reward, 3),
             "modified_embeds": tensor_to_serializable(new_positive),
             "similarity": round(similarity, 4),
@@ -2360,6 +2681,7 @@ class FunPackVideoRefiner:
 
         active["history"] = history
         active["last_rating"] = rating
+        active["last_rating_label"] = rating_label
         active["last_positive_prompt"] = positive_prompt
         data["last_prompt_key"] = prompt_key
         data["prompt_histories"] = prompt_histories
@@ -2371,6 +2693,7 @@ class FunPackVideoRefiner:
             global_adaptive,
             sigma_strength,
             seed,
+            rating_profile,
         )
         if latent_output_connected:
             refined_latent, latent_status = self._refine_latent(
@@ -2380,6 +2703,7 @@ class FunPackVideoRefiner:
                 rating,
                 reward,
                 global_adaptive,
+                rating_profile,
             )
         else:
             refined_latent, latent_status = self._latent_refinement_disabled(latent)
@@ -2458,7 +2782,8 @@ class FunPackVideoRefiner:
                 f"[{current_concept_labels.get(cid, c['label'])}/{c.get('category', 'general')}: "
                 f"top={top_local} | p={c.get('presence_target', 1.0):.2f} "
                 f"prio={c.get('priority_weight', 1.0):.2f} "
-                f"stab={c.get('stability_weight', 1.0):.2f}]"
+                f"stab={c.get('stability_weight', 1.0):.2f} "
+                f"cat={c.get('category_source', 'auto')}]"
             )
         concept_line = "; ".join(active_concept_parts) if active_concept_parts else "none"
 
@@ -2488,6 +2813,7 @@ class FunPackVideoRefiner:
             current_concept_labels,
             rating,
             reward,
+            rating_profile,
         )
 
         normalized_reward = max(0.0, min(1.0, (avg_reward_ema + 1.0) / 2.0))
@@ -2497,8 +2823,9 @@ class FunPackVideoRefiner:
 
         training_info = (
             f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
+            f"Rating: {rating_label} ({rating_profile.get('legacy_range', rating)}) | "
             f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
-            f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%}\n"
+            f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%} | Prompt Emphasis: {prompt_emphasis:+.2f}\n"
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
             f"Dominant concept: {dominant_line}\n"
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
@@ -2520,6 +2847,7 @@ class FunPackVideoRefiner:
             "total_iteration": global_total_iterations,
             "learning_loss": round(float(learning_loss), 6),
             "rating": int(rating),
+            "rating_label": rating_label,
             "similarity": round(float(similarity), 6),
             "scheduler_mode": scheduler_mode,
             "mode": mode,
@@ -2572,7 +2900,7 @@ class FunPackVideoRefiner:
         )
 
         status = (
-            f"{health} | Mode {mode.upper()} | Rating {rating}/10 {trend} | Iter {iter_num}\n"
+            f"{health} | Mode {mode.upper()} | Rating {rating_label} ({rating_profile.get('legacy_range', rating)}) {trend} | Iter {iter_num}\n"
             f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
             f"{len(history)} history item(s) on this prompt\n"
             f"Focus: {dominant_line} | {feedback_state}\n"

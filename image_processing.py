@@ -1,3 +1,4 @@
+import copy
 import math
 
 import numpy as np
@@ -16,6 +17,96 @@ MIN_FRAME_SIMILARITY = 0.9
 MAX_KEYFRAME_NUM = 3
 ADAPTIVE_ALPHA = 0.01
 HPSV3_QUALITY_THRESHOLD = 3.0
+
+
+class FunPackClipVisionOutputCombine:
+    CATEGORY = "FunPack"
+    RETURN_TYPES = ("CLIP_VISION_OUTPUT",)
+    RETURN_NAMES = ("clip_vision_output",)
+    FUNCTION = "combine"
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "clip_vision_output1": ("CLIP_VISION_OUTPUT",),
+                "method": (["mean", "median", "maximum", "minimum"], {"default": "mean"}),
+            },
+            "optional": {
+                "clip_vision_output2": ("CLIP_VISION_OUTPUT",),
+                "clip_vision_output3": ("CLIP_VISION_OUTPUT",),
+                "clip_vision_output4": ("CLIP_VISION_OUTPUT",),
+            },
+        }
+
+    def _keys(self, clip_output):
+        if isinstance(clip_output, dict):
+            return clip_output.keys()
+        return vars(clip_output).keys()
+
+    def _get(self, clip_output, key):
+        if isinstance(clip_output, dict):
+            return clip_output[key]
+        return getattr(clip_output, key)
+
+    def _set(self, clip_output, key, value):
+        if isinstance(clip_output, dict):
+            clip_output[key] = value
+        else:
+            setattr(clip_output, key, value)
+
+    def _copy_value(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.clone()
+        return copy.deepcopy(value)
+
+    def _new_output(self, source):
+        if isinstance(source, dict):
+            return {}
+        return comfy.clip_vision.Output()
+
+    def _combine_tensors(self, key, tensors, method):
+        first = tensors[0]
+        first_shape = first.shape
+        for tensor in tensors[1:]:
+            if tensor.shape != first_shape:
+                raise ValueError(
+                    f"Cannot combine CLIP Vision output field '{key}' with shapes "
+                    f"{tuple(first_shape)} and {tuple(tensor.shape)}."
+                )
+
+        stacked = torch.stack(
+            [tensor.to(device=first.device, dtype=first.dtype) for tensor in tensors],
+            dim=0,
+        )
+
+        if method == "median":
+            return stacked.median(dim=0).values
+        if method == "maximum":
+            return stacked.max(dim=0).values
+        if method == "minimum":
+            return stacked.min(dim=0).values
+        return stacked.mean(dim=0)
+
+    @torch.no_grad()
+    def combine(self, clip_vision_output1, method, clip_vision_output2=None, clip_vision_output3=None, clip_vision_output4=None):
+        outputs = [
+            output
+            for output in (clip_vision_output1, clip_vision_output2, clip_vision_output3, clip_vision_output4)
+            if output is not None
+        ]
+
+        combined = self._new_output(outputs[0])
+        for key in self._keys(outputs[0]):
+            values = [self._get(output, key) for output in outputs if key in self._keys(output)]
+            first_value = self._get(outputs[0], key)
+            if len(values) == len(outputs) and all(isinstance(value, torch.Tensor) for value in values):
+                self._set(combined, key, self._combine_tensors(key, values, method))
+            else:
+                self._set(combined, key, self._copy_value(first_value))
+
+        return (combined,)
+
 
 class FunPackVideoStitch:
     CATEGORY = "FunPack"
@@ -514,4 +605,3 @@ class FunPackStoryMemLastFrameExtractor:
         motion_frames = frames[-n_frames:]
 
         return (last_frame, motion_frames)
-

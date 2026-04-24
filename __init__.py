@@ -10,6 +10,7 @@ from .conditioning import (
     FunPackVideoRefiner,
 )
 from .image_processing import (
+    FunPackClipVisionOutputCombine,
     FunPackContinueVideo,
     FunPackStoryMemKeyframeExtractor,
     FunPackStoryMemLastFrameExtractor,
@@ -27,6 +28,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
     "FunPackStoryWriter": FunPackStoryWriter,
     "FunPackVideoStitch": FunPackVideoStitch,
+    "FunPackClipVisionOutputCombine": FunPackClipVisionOutputCombine,
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
     "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
@@ -44,6 +46,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
     "FunPackStoryWriter": "FunPack Story Writer",
     "FunPackVideoStitch": "FunPack Video Stitch",
+    "FunPackClipVisionOutputCombine": "FunPack CLIP Vision Output Combine",
     "FunPackContinueVideo": "FunPack Continue Video",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
     "FunPackGemmaEmbeddingRefiner": "FunPack Video Refiner (Compatibility)",
