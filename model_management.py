@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import re
 from collections import defaultdict
@@ -93,6 +94,14 @@ def coerce_bool(value):
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def safe_float(value, fallback=1.0):
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return result if math.isfinite(result) else fallback
 
 
 def patch_target_key(patch_key):
@@ -226,23 +235,30 @@ class FunPackApplyLoraWeights:
                     "name": name,
                     "type": lora_type,
                     "id": lora_state_id(name, lora_type),
-                    "base_model_weight": float(lora_name.get("strength", lora_name.get("base_weight", 1.0))),
+                    "base_model_weight": safe_float(lora_name.get("strength", lora_name.get("base_weight", 1.0))),
                 }
                 continue
+
+            shifted_base_weight = None
+            lora_type = kwargs.get(f"lora_{index}_type", "general")
+            if not isinstance(lora_name, str) and isinstance(lora_type, str) and lora_type not in LORA_TYPES:
+                shifted_base_weight = safe_float(lora_name, 1.0)
+                lora_name = lora_type
+                lora_type = "general"
 
             if not lora_name or lora_name == "None":
                 continue
 
-            lora_type = kwargs.get(f"lora_{index}_type", "general")
             if lora_type not in LORA_TYPES:
                 lora_type = "general"
+            base_weight = safe_float(kwargs.get(f"lora_{index}_base_weight", 1.0), shifted_base_weight or 1.0)
 
             yield {
                 "slot": index,
                 "name": lora_name,
                 "type": lora_type,
                 "id": lora_state_id(lora_name, lora_type),
-                "base_model_weight": float(kwargs.get(f"lora_{index}_base_weight", 1.0)),
+                "base_model_weight": base_weight,
             }
 
     def _get_suggestion(self, suggestions, entry):
