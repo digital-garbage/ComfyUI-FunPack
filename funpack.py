@@ -12,6 +12,7 @@ try:
         FunPackVideoRefiner,
     )
     from .image_processing import (
+        FunPackClipVisionOutputCombine,
         FunPackContinueVideo,
         FunPackStoryMemKeyframeExtractor,
         FunPackStoryMemLastFrameExtractor,
@@ -30,6 +31,7 @@ except ImportError:
         FunPackVideoRefiner,
     )
     from image_processing import (
+        FunPackClipVisionOutputCombine,
         FunPackContinueVideo,
         FunPackStoryMemKeyframeExtractor,
         FunPackStoryMemLastFrameExtractor,
@@ -45,6 +47,7 @@ except ImportError:
         "FunPackPromptEnhancer": FunPackPromptEnhancer,
         "FunPackStoryWriter": FunPackStoryWriter,
         "FunPackVideoStitch": FunPackVideoStitch,
+        "FunPackClipVisionOutputCombine": FunPackClipVisionOutputCombine,
         "FunPackContinueVideo": FunPackContinueVideo,
         "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
         "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
@@ -62,6 +65,7 @@ except ImportError:
         "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
         "FunPackStoryWriter": "FunPack Story Writer",
         "FunPackVideoStitch": "FunPack Video Stitch",
+        "FunPackClipVisionOutputCombine": "FunPack CLIP Vision Output Combine",
         "FunPackContinueVideo": "FunPack Continue Video",
         "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
         "FunPackGemmaEmbeddingRefiner": "FunPack Video Refiner (Compatibility)",
@@ -84,6 +88,7 @@ __all__ = [
     "FunPackPromptEnhancer",
     "FunPackStoryWriter",
     "FunPackVideoStitch",
+    "FunPackClipVisionOutputCombine",
     "FunPackContinueVideo",
     "FunPackStoryMemKeyframeExtractor",
     "FunPackStoryMemLastFrameExtractor",
