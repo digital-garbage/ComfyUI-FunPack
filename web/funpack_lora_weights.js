@@ -5,6 +5,7 @@ const NODE_NAME = "FunPackApplyLoraWeights";
 const LORA_TYPES = ["general", "concept", "style", "quality", "character"];
 const ADD_BUTTON_NAME = "+ Add LoRA";
 const HEADER_WIDGET_NAME = "funpack_lora_header";
+const LORA_LIST_WIDGET_NAME = "lora_list";
 const BASE_WIDGET_NAMES = new Set(["positive_prompt", "refinement_key", "mode", "per_block"]);
 
 let cachedLoraValues = null;
@@ -108,7 +109,11 @@ function inside(pos, bounds) {
 }
 
 function getLoraValues(nodeData) {
-  return cachedLoraValues || nodeData?.input?.optional?.lora_0?.[0] || ["None"];
+  const inputType = nodeData?.input?.optional?.lora_0?.[0];
+  const embeddedValues = Array.isArray(inputType)
+    ? inputType
+    : nodeData?.input?.optional?.lora_0?.[1]?.available_loras;
+  return cachedLoraValues || (Array.isArray(embeddedValues) ? embeddedValues : ["None"]);
 }
 
 function rememberLoraValues(nodeData, values) {
@@ -286,9 +291,28 @@ class FunPackLoraHeaderWidget extends FunPackBaseWidget {
   }
 }
 
+class FunPackLoraListWidget extends FunPackBaseWidget {
+  constructor(node) {
+    super(LORA_LIST_WIDGET_NAME);
+    this.node = node;
+    this.value = "[]";
+  }
+
+  computeSize(width) {
+    return [width, 0];
+  }
+
+  draw() {}
+
+  serializeValue() {
+    return JSON.stringify(getLoraRows(this.node).map((row) => row.serializeValue()));
+  }
+}
+
 class FunPackLoraRowWidget extends FunPackBaseWidget {
   constructor(name, value, nodeData) {
     super(name);
+    this.options.serialize = false;
     this.value = normalizeRowValue(value);
     this.nodeData = nodeData;
     this.draggedWeight = false;
@@ -494,6 +518,7 @@ function isDefaultLoraWidget(widget) {
 function isManagedWidget(widget) {
   return (
     isDefaultLoraWidget(widget) ||
+    widget.name === LORA_LIST_WIDGET_NAME ||
     widget.name === HEADER_WIDGET_NAME ||
     widget.name === ADD_BUTTON_NAME ||
     widget.__funpackLoraRow === true
@@ -611,6 +636,23 @@ function parseSerializedRows(values, baseCount) {
   }
 
   const rowValues = values.slice(baseCount);
+  for (const value of rowValues) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        const rows = parsed.map(normalizeRowValue);
+        if (rows.length) {
+          return rows;
+        }
+      }
+    } catch (_error) {
+      // Older workflows stored rows as individual widget values.
+    }
+  }
+
   const objectRows = rowValues
     .filter((value) => value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "lora"))
     .map(normalizeRowValue);
@@ -637,6 +679,7 @@ function ensureCompactLoraUi(node, nodeData, info = null) {
   const rows = serializedRows.length ? serializedRows : defaultRows;
 
   removeManagedWidgets(node);
+  node.addCustomWidget(new FunPackLoraListWidget(node));
   node.addCustomWidget(new FunPackLoraHeaderWidget());
   if (rows.length) {
     for (const row of rows) {
