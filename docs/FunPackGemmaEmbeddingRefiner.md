@@ -27,6 +27,8 @@ Older numeric workflows are still understood internally: `9-10` maps to `I like 
 
 Wrap dialogue in quotes. Wrap any other phrase that should stay together in backslashes, for example `\a woman holds his drawings in her hands\`. This keeps the phrase together during prompt analysis instead of letting it be split into loose words.
 
+If an upstream prompt enhancer rewrites the prompt on every run, pass the final enhanced text here. The refiner keeps exact prompt histories when possible, but it can reuse a similar prompt history when the new prompt has enough concept overlap and the conditioning is close enough. This helps Gemma-style prompt variants share learning without forcing unrelated prompts into the same history.
+
 **sigmas**: Optional input sigma schedule to co-refine alongside the conditioning. When connected, the node preserves the first and last sigma exactly and only adjusts the middle values.
 
 **sigma_strength**: Preset strength for sigma refinement. `off` disables sigma changes, while `subtle`, `medium`, `strong`, and `max` allow progressively larger movement of the middle sigma values.
