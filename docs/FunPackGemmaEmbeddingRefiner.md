@@ -15,6 +15,7 @@ This node analyzes the positive conditioning produced by your text encoder, trac
 - `Missing concept`: The video is visually solid, but the requested concept and details are absent.
 - `Missing quality`: The video may be visually pleasant, but anatomy, scene construction, concept, and details are not acceptable.
 - `I don't like it`: The output is low quality, does not represent the requested concept, and ignores details.
+- `-Just forget it-`: Ignore this run entirely. Use this for sampling errors, broken references, or any result that should not affect future refinement. It skips learning updates and clears any queued feedback question.
 
 Older numeric workflows are still understood internally: `9-10` maps to `I like it`, `7-8` to `Missing details`, `5-6` to `Missing concept`, `3-4` to `Missing quality`, and `1-2` to `I don't like it`.
 
