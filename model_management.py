@@ -24,7 +24,10 @@ LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
 
 @PromptServer.instance.routes.get("/funpack/loras")
 async def funpack_loras(_):
-    return web.json_response(["None"] + folder_paths.get_filename_list("loras"))
+    return web.json_response(
+        ["None"] + folder_paths.get_filename_list("loras"),
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
 
 
 class AnyType(str):
@@ -156,6 +159,7 @@ class FunPackApplyLoraWeights:
         optional = FlexibleOptionalInputType(
             any_type,
             {
+                "lora_list": ("STRING", {"default": "[]", "multiline": False}),
                 "lora_0": (loras, {"default": "None"}),
                 "lora_0_type": (LORA_TYPES, {"default": "general"}),
                 "lora_0_base_weight": (
@@ -191,6 +195,10 @@ class FunPackApplyLoraWeights:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, lora_list=None, lora_0=None):
+        return True
+
     def _load_suggestions(self, refinement_key, mode, prompt_key):
         path = refiner_state_path(refinement_key, mode)
         if not os.path.exists(path):
@@ -212,7 +220,52 @@ class FunPackApplyLoraWeights:
 
         return suggestions, "refiner suggestions applied"
 
+    def _entry_from_row(self, index, row):
+        if not isinstance(row, dict):
+            return None
+        if not row.get("on", True):
+            return None
+
+        name = row.get("lora", row.get("name", "None"))
+        if not name or name == "None":
+            return None
+
+        lora_type = row.get("type", row.get("lora_type", "general"))
+        if lora_type not in LORA_TYPES:
+            lora_type = "general"
+
+        return {
+            "slot": index,
+            "name": name,
+            "type": lora_type,
+            "id": lora_state_id(name, lora_type),
+            "base_model_weight": safe_float(row.get("strength", row.get("base_weight", 1.0))),
+        }
+
+    def _iter_lora_list(self, value):
+        if value in (None, "", "[]"):
+            return None
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return None
+        if not isinstance(value, list):
+            return None
+
+        entries = []
+        for index, row in enumerate(value):
+            entry = self._entry_from_row(index, row)
+            if entry:
+                entries.append(entry)
+        return entries
+
     def _iter_slots(self, kwargs):
+        listed_entries = self._iter_lora_list(kwargs.get("lora_list"))
+        if listed_entries is not None:
+            yield from listed_entries
+            return
+
         indexed_slots = set()
         for key in kwargs:
             match = re.fullmatch(r"lora_(\d+)", key)
@@ -222,21 +275,9 @@ class FunPackApplyLoraWeights:
         for index in sorted(indexed_slots):
             lora_name = kwargs.get(f"lora_{index}", "None")
             if isinstance(lora_name, dict):
-                if not lora_name.get("on", True):
-                    continue
-                name = lora_name.get("lora", "None")
-                if not name or name == "None":
-                    continue
-                lora_type = lora_name.get("type", lora_name.get("lora_type", "general"))
-                if lora_type not in LORA_TYPES:
-                    lora_type = "general"
-                yield {
-                    "slot": index,
-                    "name": name,
-                    "type": lora_type,
-                    "id": lora_state_id(name, lora_type),
-                    "base_model_weight": safe_float(lora_name.get("strength", lora_name.get("base_weight", 1.0))),
-                }
+                entry = self._entry_from_row(index, lora_name)
+                if entry:
+                    yield entry
                 continue
 
             shifted_base_weight = None
