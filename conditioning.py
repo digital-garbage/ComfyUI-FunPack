@@ -3163,8 +3163,8 @@ class FunPackPromptCombiner:
             }
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("out1", "out2", "out3", "out4", "out5")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("out1", "out2", "out3", "out4", "out5", "random")
     FUNCTION = "combine"
     CATEGORY = "FunPack"
     OUTPUT_NODE = False
@@ -3186,8 +3186,10 @@ class FunPackPromptCombiner:
         for p in (prompt1, prompt2, prompt3, prompt4, prompt5):
             combined = merge(main, delimiter, p)
             results.append(combined)
+        
+        random_choice = random.choice(results)
 
-        return tuple(results)
+        return (*results, random_choice)
 
 class FunPackLorebookEnhancer:
     """
