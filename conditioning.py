@@ -3149,6 +3149,10 @@ class FunPackPromptCombiner:
                     "multiline": True,
                     "default": "masterpiece, best quality, detailed background"
                 }),
+                "delimiter": ("STRING", {
+                    "multiline": False,
+                    "default": ",",
+                }),
             },
             "optional": {
                 "prompt1": ("STRING", {"default": "", "multiline": True}),
@@ -3165,28 +3169,24 @@ class FunPackPromptCombiner:
     CATEGORY = "FunPack"
     OUTPUT_NODE = False
 
-    def combine(self, main_prompt,
+    def combine(self, main_prompt, delimiter=",",
                 prompt1="", prompt2="", prompt3="", prompt4="", prompt5=""):
 
         main = main_prompt.strip()
 
-        def merge(base, addon):
+        def merge(base, delim, addon):
             addon = addon.strip()
             if not addon:
                 return base
             if not base:
                 return addon
-            # You can change separator style here
-            #return f"{base}, {addon}"          # ← comma style (most common in SD)
-            return f"{base}\n{addon}"        # ← new line style
-            # return f"{base} | {addon}"       # ← pipe style, etc.
+            return f"{base}{delim}{addon}"
 
         results = []
         for p in (prompt1, prompt2, prompt3, prompt4, prompt5):
-            combined = merge(main, p)
+            combined = merge(main, delimiter, p)
             results.append(combined)
 
-        # Always return exactly 5 strings (even if some are just the main prompt)
         return tuple(results)
 
 class FunPackLorebookEnhancer:
