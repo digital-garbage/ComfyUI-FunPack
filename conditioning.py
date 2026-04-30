@@ -1066,27 +1066,35 @@ class FunPackVideoRefiner:
                     words.append(word)
         return words
 
-    def _conditioning_history_similarity(self, history_entry: dict, raw_positive: torch.Tensor):
-        try:
-            old_reference = serializable_to_tensor(history_entry["reference_embeds"])
-        except Exception:
-            return 0.0
-        if not isinstance(old_reference, torch.Tensor) or list(old_reference.shape) != list(raw_positive.shape):
+    def _conditioning_similarity(self, reference: torch.Tensor, current: torch.Tensor, token_mask=None):
+        if not isinstance(reference, torch.Tensor) or not isinstance(current, torch.Tensor):
             return 0.0
 
-        current = raw_positive.to(old_reference.device) if raw_positive.device != old_reference.device else raw_positive
+        if list(reference.shape) != list(current.shape):
+            return 0.0
+
+        current = current.to(reference.device) if current.device != reference.device else current
         try:
-            if old_reference.dim() >= 2 and current.dim() >= 2:
-                ref_mean = self._masked_sequence_mean(old_reference, None)
-                cur_mean = self._masked_sequence_mean(current, None)
+            if reference.dim() >= 2 and current.dim() >= 2:
+                ref_mean = self._masked_sequence_mean(reference, token_mask)
+                cur_mean = self._masked_sequence_mean(current, token_mask)
                 return float(F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item())
             return float(F.cosine_similarity(
-                old_reference.flatten().unsqueeze(0),
+                reference.flatten().unsqueeze(0),
                 current.flatten().unsqueeze(0),
                 dim=-1
             ).mean().item())
         except Exception:
             return 0.0
+
+    def _conditioning_history_similarity(self, history_entry: dict, raw_positive: torch.Tensor):
+        source_data = history_entry.get("source_conditioning_embeds") or history_entry.get("reference_embeds")
+        try:
+            source_reference = serializable_to_tensor(source_data)
+        except Exception:
+            return 0.0
+
+        return self._conditioning_similarity(source_reference, raw_positive)
 
     def _find_prompt_variant_history(self, exact_prompt_key: str, current_words: list,
                                      raw_positive: torch.Tensor, prompt_histories: dict):
@@ -2380,7 +2388,11 @@ class FunPackVideoRefiner:
                     prompt_key: {
                         "canonical_prompt": positive_prompt,
                         "prompt_concept_words": current_prompt_words,
+                        "source_prompt_key": exact_prompt_key,
+                        "source_conditioning_embeds": tensor_to_serializable(raw_positive),
                         "reference_embeds": tensor_to_serializable(raw_positive),
+                        "liked_reference_embeds": None,
+                        "liked_reference_count": 0,
                         "history": [],
                         "last_rating": rating,
                         "last_rating_label": rating_label
@@ -2501,7 +2513,11 @@ class FunPackVideoRefiner:
             active = {
                 "canonical_prompt": positive_prompt,
                 "prompt_concept_words": current_prompt_words,
+                "source_prompt_key": exact_prompt_key,
+                "source_conditioning_embeds": tensor_to_serializable(raw_positive),
                 "reference_embeds": tensor_to_serializable(raw_positive),
+                "liked_reference_embeds": None,
+                "liked_reference_count": 0,
                 "history": [],
                 "last_rating": rating,
                 "last_rating_label": rating_label
@@ -2515,29 +2531,63 @@ class FunPackVideoRefiner:
             prompt_variant_match,
         )
 
-        # Safe reference loading
+        # Safe source-conditioning loading. This remains the comparison anchor
+        # even after liked results become the active refinement reference.
+        source_data = active.get("source_conditioning_embeds") or active.get("reference_embeds")
         try:
-            old_reference = serializable_to_tensor(active["reference_embeds"])
+            source_reference = serializable_to_tensor(source_data)
         except Exception as e:
-            print(f"[FunPackVideoRefiner] Failed to load reference embedding: {e}. Resetting for this prompt.")
-            old_reference = raw_positive.clone()
-            active["reference_embeds"] = tensor_to_serializable(old_reference)
+            print(f"[FunPackVideoRefiner] Failed to load source conditioning: {e}. Resetting for this prompt.")
+            source_reference = raw_positive.clone()
+            active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
+            active["reference_embeds"] = tensor_to_serializable(source_reference)
+            active["liked_reference_embeds"] = None
+            active["liked_reference_count"] = 0
             active["history"] = []
             is_new_prompt = True
 
-        device = old_reference.device
+        device = source_reference.device
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
+        source_changed = False
+        source_change_reason = ""
 
         # Shape mismatch guard
-        if old_reference.shape != cur_positive.shape:
-            print(f"[FunPackVideoRefiner] Reference shape {old_reference.shape} != current {cur_positive.shape}. Resetting reference.")
-            old_reference = cur_positive.clone()
-            active["reference_embeds"] = tensor_to_serializable(old_reference)
+        if source_reference.shape != cur_positive.shape:
+            print(f"[FunPackVideoRefiner] Source conditioning shape {source_reference.shape} != current {cur_positive.shape}. Resetting source reference.")
+            source_reference = cur_positive.clone()
+            active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
+            active["reference_embeds"] = tensor_to_serializable(source_reference)
+            active["liked_reference_embeds"] = None
+            active["liked_reference_count"] = 0
             active["history"] = []
             is_new_prompt = True
+            source_changed = True
+            source_change_reason = "shape"
 
         seq_len = self._get_conditioning_seq_len(cur_positive)
         active_token_mask = self._get_conditioning_token_mask(cur_positive) if mode == "wan" else None
+
+        source_similarity = self._conditioning_similarity(source_reference, cur_positive, active_token_mask)
+        source_prompt_key = active.get("source_prompt_key")
+        prompt_source_changed = bool(source_prompt_key and source_prompt_key != exact_prompt_key)
+        if exact_prompt_key != prompt_key:
+            prompt_source_changed = True
+        conditioning_source_changed = (
+            not source_changed and not is_new_prompt and source_similarity < 0.985
+        )
+        if prompt_source_changed or conditioning_source_changed:
+            source_reference = cur_positive.clone()
+            active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
+            active["reference_embeds"] = tensor_to_serializable(source_reference)
+            active["liked_reference_embeds"] = None
+            active["liked_reference_count"] = 0
+            active["history"] = []
+            is_new_prompt = True
+            source_changed = True
+            source_change_reason = "prompt" if prompt_source_changed else "conditioning"
+            source_similarity = 1.0
+
+        active["source_prompt_key"] = exact_prompt_key
 
         # ====================== WORD GROUPING (Level 2) ======================
         word_groups = self._build_word_groups(
@@ -2589,6 +2639,7 @@ class FunPackVideoRefiner:
         iter_num = len(history) + 1
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
         feedback_memory = global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
+        rating_key = rating_profile.get("key", "")
 
         if feedback_enabled and pending is not None:
             self._apply_concept_feedback(
@@ -2607,20 +2658,92 @@ class FunPackVideoRefiner:
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
 
-        # Safe similarity calculation
-        try:
-            if old_reference.dim() >= 2 and cur_positive.dim() >= 2:
-                ref_mean = self._masked_sequence_mean(old_reference, active_token_mask)
-                cur_mean = self._masked_sequence_mean(cur_positive, active_token_mask)
-                similarity = F.cosine_similarity(ref_mean, cur_mean, dim=-1).mean().item()
+        liked_reference = None
+        liked_reference_count = int(active.get("liked_reference_count", 0) or 0)
+        liked_data = active.get("liked_reference_embeds")
+        if liked_reference_count > 0 and liked_data is not None:
+            try:
+                candidate = serializable_to_tensor(liked_data).to(device)
+                if list(candidate.shape) == list(source_reference.shape):
+                    liked_reference = candidate
+                else:
+                    liked_reference_count = 0
+                    active["liked_reference_embeds"] = None
+                    active["liked_reference_count"] = 0
+            except Exception:
+                liked_reference_count = 0
+                active["liked_reference_embeds"] = None
+                active["liked_reference_count"] = 0
+
+        liked_reference_updated = False
+        if rating_key == "like" and not source_changed:
+            rated_reference = None
+            if history:
+                mod_data = history[-1].get("modified_embeds")
+                if mod_data is not None:
+                    try:
+                        candidate = serializable_to_tensor(mod_data).to(device)
+                        if list(candidate.shape) == list(source_reference.shape):
+                            rated_reference = candidate
+                    except Exception:
+                        rated_reference = None
+            if rated_reference is None:
+                rated_reference = source_reference.clone()
+            if liked_reference is None or liked_reference_count <= 0:
+                liked_reference = rated_reference.clone()
+                liked_reference_count = 1
             else:
-                similarity = F.cosine_similarity(
-                    old_reference.flatten().unsqueeze(0),
-                    cur_positive.flatten().unsqueeze(0),
-                    dim=-1
-                ).mean().item()
-        except Exception:
-            similarity = 0.0
+                liked_reference = (
+                    liked_reference * liked_reference_count + rated_reference
+                ) / float(liked_reference_count + 1)
+                liked_reference_count += 1
+            active["liked_reference_embeds"] = tensor_to_serializable(liked_reference)
+            active["liked_reference_count"] = liked_reference_count
+            active["liked_reference_last_iteration"] = iter_num
+            liked_reference_updated = True
+
+        if liked_reference is not None and liked_reference_count > 0:
+            reference = liked_reference.clone()
+            reference_mode = "liked average"
+        else:
+            reference = source_reference.clone()
+            reference_mode = "source"
+
+        rollback_reference_found = False
+        rollback_rating_label = ""
+        if rating_key == "dislike" and not source_changed and len(history) > 1:
+            current_level = int(rating_profile.get("level", 1))
+            for entry in reversed(history[:-1]):
+                entry_profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
+                if int(entry_profile.get("level", 0)) <= current_level:
+                    continue
+                mod_data = entry.get("modified_embeds")
+                if mod_data is None:
+                    continue
+                try:
+                    candidate = serializable_to_tensor(mod_data).to(device)
+                    if list(candidate.shape) == list(source_reference.shape):
+                        reference = candidate.clone()
+                        reference_mode = "rollback"
+                        rollback_reference_found = True
+                        rollback_rating_label = entry_profile.get("label", str(entry.get("rating", "")))
+                        break
+                except Exception:
+                    continue
+        if (
+            rating_key == "dislike" and
+            not source_changed and
+            not rollback_reference_found and
+            liked_reference is not None and
+            liked_reference_count > 0
+        ):
+            reference = liked_reference.clone()
+            reference_mode = "rollback"
+            rollback_reference_found = True
+            rollback_rating_label = "liked average"
+
+        active["reference_embeds"] = tensor_to_serializable(reference)
+        similarity = self._conditioning_similarity(reference, cur_positive, active_token_mask)
 
         last_rating = active.get("last_rating", 5)
         last_rating_profile = normalize_refiner_rating(active.get("last_rating_label", last_rating))
@@ -2688,8 +2811,6 @@ class FunPackVideoRefiner:
                 concept_groups[gid]["usage_count"] = concept_groups[gid].get("usage_count", 0) + 1
 
         # ====================== CORE REFINEMENT ======================
-        reference = cur_positive.clone()
-
         momentum = global_adaptive.get("momentum")
         if momentum is None or not isinstance(momentum, dict):
             momentum = torch.zeros_like(reference)
@@ -2703,7 +2824,6 @@ class FunPackVideoRefiner:
         global_adaptive["avg_reward_ema"] = avg_reward_ema
 
         good_ratio = global_adaptive["good_ratio"]
-        rating_key = rating_profile.get("key", "")
         if rating_key == "like":
             good_ratio = 0.9 * good_ratio + 0.1 * 1.0
             expl = max(0.015, expl * 0.96)
@@ -2718,24 +2838,30 @@ class FunPackVideoRefiner:
         sim_threshold = global_adaptive["dynamic_sim_threshold"]
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
-        if is_close and history:
+        if (is_close and history) or (rating_key == "dislike" and rollback_reference_found and history):
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
             if mod_data is not None:
                 try:
                     prev_modified = serializable_to_tensor(mod_data).to(device)
-                    if list(prev_modified.shape) != list(old_reference.shape):
-                        prev_modified = torch.zeros_like(old_reference)
+                    if list(prev_modified.shape) != list(reference.shape):
+                        prev_modified = torch.zeros_like(reference)
                 except Exception:
-                    prev_modified = torch.zeros_like(old_reference)
+                    prev_modified = torch.zeros_like(reference)
             else:
-                prev_modified = torch.zeros_like(old_reference)
-            prev_delta = prev_modified - old_reference
-            multiplier = max(0.05, 1.0 + reward * 1.45)
-            if rating == last_rating and rating_key == "like":
-                multiplier += 0.35
-            noise = torch.randn_like(old_reference) * (expl * (1.0 - avg_reward_ema * 0.7))
-            new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
+                prev_modified = torch.zeros_like(reference)
+            prev_delta = prev_modified - reference
+            noise_scale = expl * (1.0 - avg_reward_ema * 0.7)
+            if reference_mode == "liked average" and rating_key == "like":
+                noise_scale = 0.0
+            noise = torch.randn_like(reference) * noise_scale
+            if rating_key == "dislike" and rollback_reference_found:
+                new_delta = (-prev_delta * 0.9) + (momentum * 0.25)
+            else:
+                multiplier = max(0.05, 1.0 + reward * 1.45)
+                if rating == last_rating and rating_key == "like":
+                    multiplier += 0.35
+                new_delta = (prev_delta * multiplier) + noise + (momentum * 0.6)
         else:
             good_deltas = []
             for entry in history:
@@ -2747,12 +2873,14 @@ class FunPackVideoRefiner:
                     continue
                 try:
                     mod = serializable_to_tensor(mod_data).to(device)
-                    if list(mod.shape) == list(old_reference.shape):
-                        good_deltas.append(mod - old_reference)
+                    if list(mod.shape) == list(reference.shape):
+                        good_deltas.append(mod - reference)
                 except Exception:
                     continue
             if good_deltas:
                 new_delta = torch.stack(good_deltas).mean(dim=0) * (0.7 + reward * 0.4)
+            elif reference_mode == "liked average" and rating_key == "like":
+                new_delta = torch.zeros_like(reference)
             else:
                 new_delta = torch.randn_like(reference) * expl * 0.45
 
@@ -2843,6 +2971,11 @@ class FunPackVideoRefiner:
             "reward": round(reward, 3),
             "modified_embeds": tensor_to_serializable(new_positive),
             "similarity": round(similarity, 4),
+            "source_similarity": round(source_similarity, 4),
+            "reference_mode": reference_mode,
+            "liked_reference_count": int(liked_reference_count),
+            "liked_reference_updated": bool(liked_reference_updated),
+            "rollback_from_rating": rollback_rating_label,
             "prompt": positive_prompt[:180]
         }
         history.append(history_entry)
@@ -3006,6 +3139,16 @@ class FunPackVideoRefiner:
         stability_factor = max(0.0, 1.0 - similarity)
         raw_loss = (1.0 - normalized_reward) * 0.7 + stability_factor * 0.3
         learning_loss = max(0.02, raw_loss * (1.0 - min(0.95, good_ratio * 0.8)))
+        reference_status = (
+            f"Reference: {reference_mode} | liked anchors {liked_reference_count} | "
+            f"source similarity {source_similarity:.4f}"
+        )
+        if liked_reference_updated:
+            reference_status += " | liked average updated"
+        if rollback_reference_found:
+            reference_status += f" | rollback from {rollback_rating_label or 'higher rating'}"
+        if source_changed:
+            reference_status += f" | source refreshed ({source_change_reason or 'changed'})"
 
         training_info = (
             f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
@@ -3013,6 +3156,7 @@ class FunPackVideoRefiner:
             f"EMA Reward: {avg_reward_ema:+.3f} | Confidence: {confidence:.2f} | LR Scale: {lr_scale:.3f}\n"
             f"Exploration: {expl:.3f} | Similarity: {similarity:.4f} | Good Ratio: {good_ratio:.1%} | Prompt Emphasis: {prompt_emphasis:+.2f}\n"
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
+            f"{reference_status}\n"
             f"Dominant concept: {dominant_line}\n"
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
@@ -3090,7 +3234,7 @@ class FunPackVideoRefiner:
             f"{health} | Mode {mode.upper()} | Rating {rating_label} ({rating_profile.get('legacy_range', rating)}) {trend} | Iter {iter_num}\n"
             f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
             f"{len(history)} history item(s) on this prompt\n"
-            f"Focus: {dominant_line} | {feedback_state}\n"
+            f"Reference: {reference_mode} ({liked_reference_count} liked) | Focus: {dominant_line} | {feedback_state}\n"
             f"Systems: {lora_state} | {sigma_state} | {latent_state}"
         )
 

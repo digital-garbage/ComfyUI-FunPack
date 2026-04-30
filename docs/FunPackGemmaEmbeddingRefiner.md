@@ -19,6 +19,10 @@ This node sits after your text encoder and adjusts positive conditioning based o
 
 Older numeric workflows are still understood internally: `9-10` maps to `I like it`, `7-8` to `Missing details`, `5-6` to `Missing concept`, `3-4` to `Missing quality`, and `1-2` to `I don't like it`.
 
+Positive ratings are treated as direct reference updates. The node keeps the original upstream conditioning so it can detect prompt or conditioning changes, but once the first `I like it` / `9-10` result is rated, the active refinement reference switches to the conditioning that produced that liked result. Later liked ratings update that active reference as a running average.
+
+`I don't like it` is the strongest push-back signal. When possible, the node rolls back to the latest conditioning in the prompt history that was rated higher, then adjusts away from the failed conditioning instead of continuing from it.
+
 **refinement_key**: Name of the refinement session. The node stores its learned refinement data under this key so you can continue training the same style later.
 
 **scheduler_mode**: Learning behavior preset. `original` keeps the legacy behavior, while `accurate` and `aggressive` adjust how strongly the node updates the refinement.

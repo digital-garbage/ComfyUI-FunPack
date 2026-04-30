@@ -15,7 +15,7 @@ Updated rating for `FunPack Video Refiner`. Now it uses a rating system more und
 - Rating `I don't like it` - visual garbage, totally not matching the requirements.
 - Rating `-Just forget it-` - in case of failing sampling or any other result when you are unable to see the video to rate it, select this rating so the previous generation won't count in learning process.
 
-Updated logic for `FunPack Video Refiner`. Now it has a boost in stability in cases when user provides different conditioning and positive prompt with each new generation (e.g. from prompt enhancement nodes).
+Updated logic for `FunPack Video Refiner`. The original conditioning is still stored for prompt/conditioning change detection, but after the first `I like it` / `9-10` rating the active refinement reference switches to the liked generated conditioning. Later liked results update that reference as a running average, while `I don't like it` rolls back to the latest better-rated conditioning before pushing away from the failed direction.
 
 ## Dev Branch
 
