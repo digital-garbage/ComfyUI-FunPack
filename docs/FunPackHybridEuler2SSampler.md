@@ -31,7 +31,7 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 - `0.0` = pure late-step Euler ODE
 - `1.0` = full late-step DPM++(2S)-style correction
 
-**restart_steps**: How many previous late-phase sigma steps are revisited during Restart replay.
+**restart_steps**: Size of the restarted sigma interval. This behaves like the paper's restart segment length, so each replay adds `restart_steps - 1` extra denoise transitions.
 
 **restart_repeats**: How many Restart loops to run. `0` disables Restart.
 
@@ -55,6 +55,8 @@ For a first Restart test, try:
 - `restart_repeats = 1`
 - `restart_trigger_pct = 0.85`
 - `restart_noise = 1.0`
+
+Example: with `8` base sampling steps, `restart_steps = 3`, and `restart_repeats = 1`, the Restart section adds `2` extra replay denoise steps, so you should observe the equivalent of `10` denoise callbacks rather than `11`.
 
 ## Expected behavior
 

@@ -57,21 +57,39 @@ def _renoise_to_sigma(x, current_sigma, target_sigma, restart_noise, noise_sampl
     return x + noise_sampler(current_sigma, target_sigma) * (restart_noise * sigma_delta)
 
 
-def _run_restart_replay(model, x, restart_sigmas, s_in, extra_args, correction_blend):
+def _run_restart_replay(model, x, restart_sigmas, s_in, extra_args, correction_blend,
+                        callback=None, callback_step_start=0):
     if restart_sigmas.numel() <= 1:
-        return x
+        return x, callback_step_start
+
+    callback_step = int(callback_step_start)
 
     for idx in range(int(restart_sigmas.shape[0]) - 1):
+        sigma = restart_sigmas[idx]
+        sigma_next = restart_sigmas[idx + 1]
+        denoised = model(x, sigma * s_in, **extra_args)
+
+        if callback is not None:
+            callback({
+                "x": x,
+                "i": callback_step,
+                "sigma": sigma,
+                "sigma_hat": sigma,
+                "denoised": denoised,
+            })
+            callback_step += 1
+
         x, _ = _hybrid_ode_step(
             model,
             x,
-            restart_sigmas[idx],
-            restart_sigmas[idx + 1],
+            sigma,
+            sigma_next,
             s_in,
             extra_args,
             correction_blend,
+            denoised=denoised,
         )
-    return x
+    return x, callback_step
 
 
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
@@ -110,6 +128,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     s_in = x.new_ones([x.shape[0]])
     restart_anchor = min(total_steps - 1, max(late_start, int(math.floor(total_steps * restart_trigger_pct))))
     restart_has_run = False
+    callback_step = 0
 
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
@@ -119,7 +138,14 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             denoised = model(x, sigma * s_in, **extra_args)
 
             if callback is not None:
-                callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+                callback({
+                    "x": x,
+                    "i": callback_step,
+                    "sigma": sigma,
+                    "sigma_hat": sigma,
+                    "denoised": denoised,
+                })
+                callback_step += 1
 
             sigma_down, sigma_up = k_diffusion_sampling.get_ancestral_step(sigma, sigma_next, eta=eta)
 
@@ -145,20 +171,29 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                             restart_noise,
                             noise_sampler,
                         )
-                        x = _run_restart_replay(
+                        x, callback_step = _run_restart_replay(
                             model,
                             x,
                             restart_sigmas,
                             s_in,
                             extra_args,
                             correction_blend,
+                            callback=callback,
+                            callback_step_start=callback_step,
                         )
                     restart_has_run = True
 
             denoised = model(x, sigma * s_in, **extra_args)
 
             if callback is not None:
-                callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+                callback({
+                    "x": x,
+                    "i": callback_step,
+                    "sigma": sigma,
+                    "sigma_hat": sigma,
+                    "denoised": denoised,
+                })
+                callback_step += 1
 
             x, _ = _hybrid_ode_step(
                 model,
