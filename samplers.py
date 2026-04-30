@@ -57,39 +57,33 @@ def _renoise_to_sigma(x, current_sigma, target_sigma, restart_noise, noise_sampl
     return x + noise_sampler(current_sigma, target_sigma) * (restart_noise * sigma_delta)
 
 
-def _find_restart_anchor_index(sigmas, late_start, total_steps, restart_trigger_pct):
-    if late_start >= total_steps:
-        return late_start
+def _find_restart_anchor_index(sigmas, total_steps, restart_trigger_pct):
+    schedule_sigmas = sigmas[:total_steps]
+    if schedule_sigmas.numel() <= 1:
+        return 0
 
-    quality_sigmas = sigmas[late_start:total_steps]
-    if quality_sigmas.numel() <= 1:
-        return late_start
-
-    high_sigma = float(quality_sigmas[0].item())
+    high_sigma = float(schedule_sigmas[0].item())
     low_sigma = None
-    for idx in range(int(quality_sigmas.shape[0]) - 1, -1, -1):
-        value = float(quality_sigmas[idx].item())
+    for idx in range(int(schedule_sigmas.shape[0]) - 1, -1, -1):
+        value = float(schedule_sigmas[idx].item())
         if value > 0.0:
             low_sigma = value
             break
     if low_sigma is None:
         return total_steps - 1
 
-    quality_progress = 0.0
-    if total_steps > late_start:
-        quality_progress = (restart_trigger_pct * total_steps - late_start) / max(1e-6, float(total_steps - late_start))
-    quality_progress = max(0.0, min(1.0, quality_progress))
+    schedule_progress = max(0.0, min(1.0, restart_trigger_pct))
 
     if high_sigma <= 0.0 or low_sigma <= 0.0 or abs(high_sigma - low_sigma) <= 1e-12:
-        return min(total_steps - 1, max(late_start, int(round(late_start + quality_progress * max(0, total_steps - late_start - 1)))))
+        return min(total_steps - 1, max(0, int(round(schedule_progress * max(0, total_steps - 1)))))
 
     log_high = math.log(high_sigma)
     log_low = math.log(low_sigma)
-    target_log_sigma = log_high + (log_low - log_high) * quality_progress
+    target_log_sigma = log_high + (log_low - log_high) * schedule_progress
 
-    best_index = late_start
+    best_index = 0
     best_distance = None
-    for idx in range(late_start, total_steps):
+    for idx in range(total_steps):
         sigma_value = float(sigmas[idx].item())
         if sigma_value <= 0.0:
             continue
@@ -100,23 +94,23 @@ def _find_restart_anchor_index(sigmas, late_start, total_steps, restart_trigger_
     return best_index
 
 
-def _build_restart_sigmas(sigmas, late_start, total_steps, restart_trigger_pct, restart_steps):
-    if late_start >= total_steps:
-        return sigmas[late_start:late_start], late_start
+def _build_restart_sigmas(sigmas, total_steps, restart_trigger_pct, restart_steps):
+    if total_steps <= 0:
+        return sigmas[:0], 0
 
-    anchor_index = _find_restart_anchor_index(sigmas, late_start, total_steps, restart_trigger_pct)
-    anchor_index = min(total_steps - 1, max(late_start, anchor_index))
+    anchor_index = _find_restart_anchor_index(sigmas, total_steps, restart_trigger_pct)
+    anchor_index = min(total_steps - 1, max(0, anchor_index))
 
     if restart_steps <= 1:
         return sigmas[anchor_index:anchor_index + 1], anchor_index
 
-    quality_sigmas = sigmas[late_start:total_steps]
-    if quality_sigmas.numel() <= 1:
+    schedule_sigmas = sigmas[:total_steps]
+    if schedule_sigmas.numel() <= 1:
         return sigmas[anchor_index:anchor_index + 1], anchor_index
 
     positive_logs = []
-    for idx in range(int(quality_sigmas.shape[0])):
-        sigma_value = float(quality_sigmas[idx].item())
+    for idx in range(int(schedule_sigmas.shape[0])):
+        sigma_value = float(schedule_sigmas[idx].item())
         if sigma_value > 0.0:
             positive_logs.append(math.log(sigma_value))
 
@@ -129,7 +123,7 @@ def _build_restart_sigmas(sigmas, late_start, total_steps, restart_trigger_pct, 
 
     restart_from = anchor_index
     accumulated_span = 0.0
-    for idx in range(anchor_index, late_start, -1):
+    for idx in range(anchor_index, 0, -1):
         sigma_hi = float(sigmas[idx - 1].item())
         sigma_lo = float(sigmas[idx].item())
         restart_from = idx - 1
@@ -138,7 +132,7 @@ def _build_restart_sigmas(sigmas, late_start, total_steps, restart_trigger_pct, 
         if (anchor_index - restart_from) >= 1 and accumulated_span >= target_log_span:
             break
 
-    restart_from = max(late_start, restart_from)
+    restart_from = max(0, restart_from)
     return sigmas[restart_from:anchor_index + 1], anchor_index
 
 
@@ -168,7 +162,6 @@ def _expand_restart_sigmas(sigmas, high_quality_pct, restart_steps, restart_repe
 
     restart_sigmas, anchor_index = _build_restart_sigmas(
         expanded_sigmas,
-        late_start,
         total_steps,
         restart_trigger_pct,
         restart_steps,
@@ -193,7 +186,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     Hybrid sampler:
     - Early schedule: Euler ancestral for motion/anatomy buildup.
     - Late schedule: deterministic Euler / DPM-Solver++(2S) ODE refinement for detail.
-    - Restart: paper-style re-noise and short ODE replay inside the late quality window.
+    - Restart: paper-style re-noise and short replay at the user-selected schedule point.
     """
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
         return k_diffusion_sampling.sample_euler_ancestral(
@@ -336,21 +329,21 @@ class FunPackHybridEuler2SSampler:
                     "min": 2,
                     "max": 32,
                     "step": 1,
-                    "tooltip": "How many previous late-phase sigma steps are revisited during Restart replay."
+                    "tooltip": "How many previous sigma steps are revisited during Restart replay."
                 }),
                 "restart_repeats": ("INT", {
                     "default": 0,
                     "min": 0,
                     "max": 8,
                     "step": 1,
-                    "tooltip": "How many paper-style re-noise/replay loops to run in the late quality phase. Set to 0 to disable Restart."
+                    "tooltip": "How many paper-style re-noise/replay loops to run at the chosen restart point. Set to 0 to disable Restart."
                 }),
                 "restart_trigger_pct": ("FLOAT", {
                     "default": 0.85,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01,
-                    "tooltip": "Sampling progress point where Restart is triggered. Clamped into the late quality phase."
+                    "tooltip": "Sampling progress point where Restart is triggered across the full schedule."
                 }),
                 "restart_noise": ("FLOAT", {
                     "default": 1.0,
