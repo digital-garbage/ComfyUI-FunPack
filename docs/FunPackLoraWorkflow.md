@@ -19,7 +19,7 @@ Inputs:
 - **positive_prompt**: Prompt text used for lookup.
 - **refinement_key**: Same key used by `FunPack Video Refiner`.
 - **mode**: Same tokenizer mode as the refiner.
-- **per_block**: For supported `ltx2` stacks, lets the loader spread the LoRA strength across transformer blocks behind the scenes.
+- **per_block**: For supported `ltx2` stacks, lets the loader analyze LoRA block deltas and balance competing block strengths behind the scenes.
 - **lora_N**: LoRA file.
 - **lora_N_type**: `general`, `concept`, `style`, `quality`, or `character`.
 - **lora_N_base_weight**: Trainer-recommended model base weight.
@@ -41,7 +41,7 @@ Notes:
 
 This node loads the LoRA stack using the weights prepared by `FunPack Apply LoRA Weights`, then passes the same stack forward so the refiner can read it. The `clip` input is optional and uses zero CLIP strength when omitted.
 
-When `per_block` is enabled on an `ltx2` stack, the loader keeps the visible global LoRA weight and derives block weights from the LoRA patches. If the model or LoRA layout is not supported, it just loads the LoRA normally.
+When `per_block` is enabled on an `ltx2` stack, the loader keeps the visible global LoRA weight and derives block weights from the LoRA patches. With multiple supported LoRAs, it compares their block fingerprints before loading and gently boosts or dampens overlapping blocks according to each LoRA's type hint. If the model or LoRA layout is not supported, it just loads the LoRA normally.
 
 Per-block notes:
 
@@ -49,7 +49,9 @@ Per-block notes:
 - Wan and other non-LTX workflows fall back to normal global LoRA loading even if `per_block` is enabled.
 - LoRAs without at least two detectable transformer blocks fall back to normal global loading.
 - The per-block scales are not exposed as separate UI controls.
-- The loader status reports whether each LoRA used `global`, `per-block`, or a fallback path.
+- Type hints affect conflict balancing: `character` and `concept` LoRAs get more protection in contested semantic blocks, `quality` LoRAs stay more supportive, and `style` or `general` LoRAs yield more readily when they overlap heavily.
+- The loader status reports whether each LoRA used `global`, `per-block`, `smart-per-block`, or a fallback path.
+- `smart-per-block` status includes the strongest detected blocks and the largest overlap score, which is useful for spotting LoRAs that are fighting over the same region.
 
 ## Video Refiner Integration
 

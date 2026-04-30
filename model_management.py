@@ -20,6 +20,13 @@ LORA_TYPES = ["general", "concept", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
 TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
 LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
+LORA_BLOCK_TYPE_PROFILES = {
+    "character": {"priority": 1.18, "yield": 0.48},
+    "concept": {"priority": 1.12, "yield": 0.62},
+    "quality": {"priority": 1.04, "yield": 0.72},
+    "style": {"priority": 0.96, "yield": 0.96},
+    "general": {"priority": 0.90, "yield": 1.12},
+}
 
 
 @PromptServer.instance.routes.get("/funpack/loras")
@@ -184,7 +191,7 @@ class FunPackApplyLoraWeights:
                     "BOOLEAN",
                     {
                         "default": False,
-                        "tooltip": "For LTX-mode stacks, derive hidden transformer block strengths from the LoRA itself and apply them automatically.",
+                        "tooltip": "For LTX-mode stacks, analyze LoRA block deltas and balance competing block strengths automatically.",
                     },
                 ),
             },
@@ -445,7 +452,7 @@ class FunPackLoraLoader:
 
         return global_patches, dict(block_patches)
 
-    def _block_scales_from_patches(self, block_patches):
+    def _block_scores_from_patches(self, block_patches):
         block_scores = {}
         for block_index, patches in block_patches.items():
             score = 0.0
@@ -454,6 +461,9 @@ class FunPackLoraLoader:
             if score > 0.0:
                 block_scores[block_index] = score
 
+        return block_scores
+
+    def _block_scales_from_scores(self, block_scores):
         if len(block_scores) < 2:
             return {}
 
@@ -467,6 +477,113 @@ class FunPackLoraLoader:
             scales[block_index] = max(0.25, min(1.75, ratio ** 0.5))
 
         return scales
+
+    def _block_scales_from_patches(self, block_patches):
+        return self._block_scales_from_scores(self._block_scores_from_patches(block_patches))
+
+    def _normalized_block_scores(self, block_scores):
+        total = sum(block_scores.values())
+        if total <= 0.0:
+            return {}
+
+        return {block_index: score / total for block_index, score in block_scores.items()}
+
+    def _top_block_summary(self, normalized_scores, limit=4):
+        top_blocks = sorted(normalized_scores.items(), key=lambda item: item[1], reverse=True)[:limit]
+        return ",".join(str(block_index) for block_index, _ in top_blocks) if top_blocks else "none"
+
+    def _block_type_profile(self, entry):
+        return LORA_BLOCK_TYPE_PROFILES.get(entry.get("type", "general"), LORA_BLOCK_TYPE_PROFILES["general"])
+
+    def _lora_block_profile(self, entry, loaded, model_weight):
+        global_patches, block_patches = self._split_model_patches_by_block(loaded)
+        block_scores = self._block_scores_from_patches(block_patches)
+        base_scales = self._block_scales_from_scores(block_scores)
+        normalized_scores = self._normalized_block_scores(block_scores)
+        if not base_scales or not normalized_scores:
+            return None
+
+        type_profile = self._block_type_profile(entry)
+        return {
+            "entry": entry,
+            "loaded": loaded,
+            "model_weight": model_weight,
+            "global_count": len(global_patches),
+            "block_count": len(block_patches),
+            "block_scores": block_scores,
+            "base_scales": base_scales,
+            "stack_scales": dict(base_scales),
+            "normalized_scores": normalized_scores,
+            "top_blocks": self._top_block_summary(normalized_scores),
+            "concentration": max(normalized_scores.values()) if normalized_scores else 0.0,
+            "priority": type_profile["priority"],
+            "yield": type_profile["yield"],
+            "overlap_score": 0.0,
+        }
+
+    def _pair_overlap_factor(self, entry, other_entry):
+        lora_type = entry.get("type", "general")
+        other_type = other_entry.get("type", "general")
+        if "quality" in {lora_type, other_type}:
+            return 0.72
+        if lora_type in {"style", "general"} and other_type in {"concept", "character"}:
+            return 1.14
+        if lora_type in {"concept", "character"} and other_type in {"concept", "character"}:
+            return 1.08
+        return 1.0
+
+    def _block_presence_threshold(self, profile):
+        block_count = max(1, len(profile["normalized_scores"]))
+        return max(0.003, 0.40 / block_count)
+
+    def _stack_block_scales(self, profiles):
+        if len(profiles) < 2:
+            return
+
+        block_indices = sorted({block_index for profile in profiles for block_index in profile["normalized_scores"]})
+        for block_index in block_indices:
+            contributors = [
+                profile
+                for profile in profiles
+                if profile["normalized_scores"].get(block_index, 0.0) >= self._block_presence_threshold(profile)
+            ]
+            if len(contributors) < 2:
+                continue
+
+            for profile in contributors:
+                own_presence = profile["normalized_scores"].get(block_index, 0.0)
+                own_weight = max(0.05, abs(profile["model_weight"]))
+                own_signal = own_presence * own_weight * profile["priority"]
+                other_signals = []
+                other_presence = 0.0
+                for other in contributors:
+                    if other is profile:
+                        continue
+                    factor = self._pair_overlap_factor(profile["entry"], other["entry"])
+                    presence = other["normalized_scores"].get(block_index, 0.0) * factor
+                    other_presence += presence
+                    other_signals.append(
+                        presence * max(0.05, abs(other["model_weight"])) * other["priority"]
+                    )
+
+                strongest_other = max(other_signals) if other_signals else 0.0
+                if strongest_other <= 0.0:
+                    continue
+
+                overlap_ratio = other_presence / max(own_presence + other_presence, 1e-9)
+                advantage = (own_signal - strongest_other) / max(own_signal + strongest_other, 1e-9)
+                if advantage >= 0.0:
+                    multiplier = 1.0 + min(0.18, advantage * 0.14) * min(1.0, overlap_ratio * 1.25)
+                else:
+                    pressure = min(1.0, overlap_ratio * 1.35)
+                    damp = min(0.35, (-advantage) * 0.22 * profile["yield"] * pressure)
+                    multiplier = 1.0 - damp
+
+                profile["stack_scales"][block_index] = max(
+                    0.18,
+                    min(1.90, profile["stack_scales"].get(block_index, 1.0) * multiplier),
+                )
+                profile["overlap_score"] = max(profile["overlap_score"], overlap_ratio)
 
     def _apply_model_patches(self, model, loaded, model_weight, block_scales=None):
         new_model = model.clone()
@@ -490,23 +607,33 @@ class FunPackLoraLoader:
 
         return new_model, len(global_patches), len(block_patches)
 
+    def _per_block_status(self, profile):
+        scales = profile["stack_scales"]
+        min_scale = min(scales.values())
+        max_scale = max(scales.values())
+        mode = "smart-per-block" if profile["overlap_score"] > 0.0 else "per-block"
+        return (
+            f"{mode} blocks={len(scales)} non_block={profile['global_count']} "
+            f"range={min_scale:.2f}..{max_scale:.2f} "
+            f"top={profile['top_blocks']} overlap={profile['overlap_score']:.2f}"
+        )
+
     def _load_lora_per_block(self, model, lora, model_weight):
         loaded = self._load_model_lora_patches(model, lora)
-        _, block_patches = self._split_model_patches_by_block(loaded)
-        block_scales = self._block_scales_from_patches(block_patches)
-        if not block_scales:
+        profile = self._lora_block_profile({}, loaded, model_weight)
+        if not profile:
             return None, "per-block fallback=global"
 
         new_model, non_block_count, _ = self._apply_model_patches(
             model,
             loaded,
             model_weight,
-            block_scales=block_scales,
+            block_scales=profile["stack_scales"],
         )
-        min_scale = min(block_scales.values())
-        max_scale = max(block_scales.values())
+        min_scale = min(profile["stack_scales"].values())
+        max_scale = max(profile["stack_scales"].values())
         status = (
-            f"per-block blocks={len(block_scales)} non_block={non_block_count} "
+            f"per-block blocks={len(profile['stack_scales'])} non_block={non_block_count} "
             f"range={min_scale:.2f}..{max_scale:.2f}"
         )
         return new_model, status
@@ -517,6 +644,8 @@ class FunPackLoraLoader:
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
         lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         loaded_count = 0
+        prepared = []
+        per_block_profiles = []
 
         for entry in loras:
             model_weight = float(entry.get("model_weight", 0.0))
@@ -525,18 +654,68 @@ class FunPackLoraLoader:
                 continue
 
             lora = self._load_lora_file(entry["name"])
-            apply_status = "global"
             if self._per_block_supported(model, lora_stack, entry):
-                per_block_model, apply_status = self._load_lora_per_block(model, lora, model_weight)
-                if per_block_model is not None:
-                    model = per_block_model
+                loaded = self._load_model_lora_patches(model, lora)
+                profile = self._lora_block_profile(entry, loaded, model_weight)
+                if profile is not None:
+                    item = {
+                        "entry": entry,
+                        "lora": lora,
+                        "mode": "per_block",
+                        "model_weight": model_weight,
+                        "profile": profile,
+                    }
+                    prepared.append(item)
+                    per_block_profiles.append(profile)
                 else:
-                    model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
+                    prepared.append(
+                        {
+                            "entry": entry,
+                            "lora": lora,
+                            "mode": "global",
+                            "model_weight": model_weight,
+                            "status": "per-block fallback=global",
+                        }
+                    )
             elif self._per_block_requested(entry, lora_stack):
-                apply_status = "per-block unsupported -> global"
-                model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
+                prepared.append(
+                    {
+                        "entry": entry,
+                        "lora": lora,
+                        "mode": "global",
+                        "model_weight": model_weight,
+                        "status": "per-block unsupported -> global",
+                    }
+                )
             else:
-                model, clip = comfy.sd.load_lora_for_models(model, clip, lora, model_weight, 0.0)
+                prepared.append(
+                    {
+                        "entry": entry,
+                        "lora": lora,
+                        "mode": "global",
+                        "model_weight": model_weight,
+                        "status": "global",
+                    }
+                )
+
+        self._stack_block_scales(per_block_profiles)
+
+        for item in prepared:
+            entry = item["entry"]
+            model_weight = item["model_weight"]
+            if item["mode"] == "per_block":
+                profile = item["profile"]
+                model, _, _ = self._apply_model_patches(
+                    model,
+                    profile["loaded"],
+                    model_weight,
+                    block_scales=profile["stack_scales"],
+                )
+                apply_status = self._per_block_status(profile)
+            else:
+                apply_status = item["status"]
+                model, clip = comfy.sd.load_lora_for_models(model, clip, item["lora"], model_weight, 0.0)
+
             loaded_count += 1
             lines.append(
                 f"lora_{entry.get('slot', '?')}: {entry['name']} "

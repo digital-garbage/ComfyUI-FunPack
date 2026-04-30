@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+Updated LTX per-block LoRA loading so supported stacks now compare LoRA block fingerprints across the whole stack and apply type-aware conflict balancing before patches are loaded.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed
