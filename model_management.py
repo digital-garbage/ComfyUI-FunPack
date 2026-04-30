@@ -3,7 +3,7 @@ import logging
 import math
 import os
 import re
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from hashlib import md5
 
 import comfy.lora
@@ -20,6 +20,9 @@ LORA_TYPES = ["general", "concept", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
 TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
 LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
+LORA_RAW_CACHE_SIZE = 12
+LORA_PATCH_CACHE_SIZE = 24
+LORA_PROFILE_CACHE_SIZE = 24
 LORA_BLOCK_TYPE_PROFILES = {
     "character": {"priority": 1.18, "yield": 0.48},
     "concept": {"priority": 1.12, "yield": 0.62},
@@ -385,7 +388,28 @@ class FunPackLoraLoader:
     DESCRIPTION = "Loads LoRAs from a FunPack LoRA stack without doing any learning."
 
     def __init__(self):
-        self.loaded_lora = None
+        self.raw_lora_cache = OrderedDict()
+        self.model_patch_cache = OrderedDict()
+        self.block_profile_cache = OrderedDict()
+
+    def _cache_get(self, cache, key):
+        if key not in cache:
+            return None
+        value = cache.pop(key)
+        cache[key] = value
+        return value
+
+    def _cache_put(self, cache, key, value, max_items):
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > max_items:
+            cache.popitem(last=False)
+
+    def _lora_file_cache_key(self, lora_name):
+        lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
+        stat = os.stat(lora_path)
+        mtime_ns = getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1_000_000_000))
+        return (lora_path, mtime_ns, stat.st_size)
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -400,19 +424,13 @@ class FunPackLoraLoader:
         }
 
     def _load_lora_file(self, lora_name):
-        lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
-        lora = None
-        if self.loaded_lora is not None:
-            if self.loaded_lora[0] == lora_path:
-                lora = self.loaded_lora[1]
-            else:
-                self.loaded_lora = None
-
+        cache_key = self._lora_file_cache_key(lora_name)
+        lora = self._cache_get(self.raw_lora_cache, cache_key)
         if lora is None:
-            lora = comfy.utils.load_torch_file(lora_path, safe_load=True)
-            self.loaded_lora = (lora_path, lora)
+            lora = comfy.utils.load_torch_file(cache_key[0], safe_load=True)
+            self._cache_put(self.raw_lora_cache, cache_key, lora, LORA_RAW_CACHE_SIZE)
 
-        return lora
+        return lora, cache_key
 
     def _model_image_model(self, model):
         model_wrapper = getattr(model, "model", None)
@@ -434,10 +452,39 @@ class FunPackLoraLoader:
 
         return self._model_image_model(model) in LTX_IMAGE_MODELS
 
-    def _load_model_lora_patches(self, model, lora):
+    def _model_cache_key(self, model):
+        model_wrapper = getattr(model, "model", None)
+        model_config = getattr(model_wrapper, "model_config", None)
+        unet_config = getattr(model_config, "unet_config", None)
+        image_model = unet_config.get("image_model") if isinstance(unet_config, dict) else None
+        sampling = getattr(model_wrapper, "model_sampling", None)
+        return (
+            id(model_wrapper),
+            type(model_wrapper).__module__,
+            type(model_wrapper).__name__,
+            type(model_config).__module__ if model_config is not None else None,
+            type(model_config).__name__ if model_config is not None else None,
+            type(sampling).__module__ if sampling is not None else None,
+            type(sampling).__name__ if sampling is not None else None,
+            image_model,
+        )
+
+    def _load_model_lora_patches(self, model, lora, lora_cache_key, model_cache_key=None):
+        if lora_cache_key is None:
+            key_map = comfy.lora.model_lora_keys_unet(model.model, {})
+            converted_lora = comfy.lora_convert.convert_lora(lora)
+            return comfy.lora.load_lora(converted_lora, key_map)
+
+        cache_key = (lora_cache_key, model_cache_key or self._model_cache_key(model))
+        loaded = self._cache_get(self.model_patch_cache, cache_key)
+        if loaded is not None:
+            return loaded
+
         key_map = comfy.lora.model_lora_keys_unet(model.model, {})
         converted_lora = comfy.lora_convert.convert_lora(lora)
-        return comfy.lora.load_lora(converted_lora, key_map)
+        loaded = comfy.lora.load_lora(converted_lora, key_map)
+        self._cache_put(self.model_patch_cache, cache_key, loaded, LORA_PATCH_CACHE_SIZE)
+        return loaded
 
     def _split_model_patches_by_block(self, loaded):
         global_patches = {}
@@ -495,7 +542,12 @@ class FunPackLoraLoader:
     def _block_type_profile(self, entry):
         return LORA_BLOCK_TYPE_PROFILES.get(entry.get("type", "general"), LORA_BLOCK_TYPE_PROFILES["general"])
 
-    def _lora_block_profile(self, entry, loaded, model_weight):
+    def _block_profile_template(self, loaded, patch_cache_key=None):
+        if patch_cache_key is not None:
+            cached = self._cache_get(self.block_profile_cache, patch_cache_key)
+            if cached is not None:
+                return cached
+
         global_patches, block_patches = self._split_model_patches_by_block(loaded)
         block_scores = self._block_scores_from_patches(block_patches)
         base_scales = self._block_scales_from_scores(block_scores)
@@ -503,19 +555,37 @@ class FunPackLoraLoader:
         if not base_scales or not normalized_scores:
             return None
 
+        template = {
+            "global_count": len(global_patches),
+            "block_count": len(block_patches),
+            "block_scores": block_scores,
+            "base_scales": base_scales,
+            "normalized_scores": normalized_scores,
+            "top_blocks": self._top_block_summary(normalized_scores),
+            "concentration": max(normalized_scores.values()) if normalized_scores else 0.0,
+        }
+        if patch_cache_key is not None:
+            self._cache_put(self.block_profile_cache, patch_cache_key, template, LORA_PROFILE_CACHE_SIZE)
+        return template
+
+    def _lora_block_profile(self, entry, loaded, model_weight, patch_cache_key=None):
+        template = self._block_profile_template(loaded, patch_cache_key)
+        if template is None:
+            return None
+
         type_profile = self._block_type_profile(entry)
         return {
             "entry": entry,
             "loaded": loaded,
             "model_weight": model_weight,
-            "global_count": len(global_patches),
-            "block_count": len(block_patches),
-            "block_scores": block_scores,
-            "base_scales": base_scales,
-            "stack_scales": dict(base_scales),
-            "normalized_scores": normalized_scores,
-            "top_blocks": self._top_block_summary(normalized_scores),
-            "concentration": max(normalized_scores.values()) if normalized_scores else 0.0,
+            "global_count": template["global_count"],
+            "block_count": template["block_count"],
+            "block_scores": template["block_scores"],
+            "base_scales": template["base_scales"],
+            "stack_scales": dict(template["base_scales"]),
+            "normalized_scores": template["normalized_scores"],
+            "top_blocks": template["top_blocks"],
+            "concentration": template["concentration"],
             "priority": type_profile["priority"],
             "yield": type_profile["yield"],
             "overlap_score": 0.0,
@@ -619,7 +689,8 @@ class FunPackLoraLoader:
         )
 
     def _load_lora_per_block(self, model, lora, model_weight):
-        loaded = self._load_model_lora_patches(model, lora)
+        lora_cache_key = None
+        loaded = self._load_model_lora_patches(model, lora, lora_cache_key)
         profile = self._lora_block_profile({}, loaded, model_weight)
         if not profile:
             return None, "per-block fallback=global"
@@ -644,6 +715,7 @@ class FunPackLoraLoader:
         lines = [f"FunPack LoRA Loader | loading {len(loras)} LoRA(s)"]
         lines.append(f"Per-block application: {'enabled' if per_block else 'disabled'}")
         loaded_count = 0
+        model_cache_key = self._model_cache_key(model)
         prepared = []
         per_block_profiles = []
 
@@ -653,10 +725,11 @@ class FunPackLoraLoader:
                 lines.append(f"lora_{entry.get('slot', '?')}: {entry.get('name', '?')} skipped at zero weight")
                 continue
 
-            lora = self._load_lora_file(entry["name"])
+            lora, lora_cache_key = self._load_lora_file(entry["name"])
             if self._per_block_supported(model, lora_stack, entry):
-                loaded = self._load_model_lora_patches(model, lora)
-                profile = self._lora_block_profile(entry, loaded, model_weight)
+                patch_cache_key = (lora_cache_key, model_cache_key)
+                loaded = self._load_model_lora_patches(model, lora, lora_cache_key, model_cache_key)
+                profile = self._lora_block_profile(entry, loaded, model_weight, patch_cache_key)
                 if profile is not None:
                     item = {
                         "entry": entry,
@@ -671,8 +744,8 @@ class FunPackLoraLoader:
                     prepared.append(
                         {
                             "entry": entry,
-                            "lora": lora,
-                            "mode": "global",
+                            "loaded": loaded,
+                            "mode": "patch_global",
                             "model_weight": model_weight,
                             "status": "per-block fallback=global",
                         }
@@ -712,6 +785,9 @@ class FunPackLoraLoader:
                     block_scales=profile["stack_scales"],
                 )
                 apply_status = self._per_block_status(profile)
+            elif item["mode"] == "patch_global":
+                apply_status = item["status"]
+                model, _, _ = self._apply_model_patches(model, item["loaded"], model_weight)
             else:
                 apply_status = item["status"]
                 model, clip = comfy.sd.load_lora_for_models(model, clip, item["lora"], model_weight, 0.0)

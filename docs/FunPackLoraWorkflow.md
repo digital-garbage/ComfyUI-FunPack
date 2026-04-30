@@ -48,6 +48,7 @@ Per-block notes:
 - Per-block mode only applies to supported `ltx2` image model configs.
 - Wan and other non-LTX workflows fall back to normal global LoRA loading even if `per_block` is enabled.
 - LoRAs without at least two detectable transformer blocks fall back to normal global loading.
+- The loader caches recently used raw LoRA files, model-mapped LoRA patches, and block fingerprints, so adjusting weights and rerunning should avoid most repeated LoRA loading and analysis work.
 - The per-block scales are not exposed as separate UI controls.
 - Type hints affect conflict balancing: `character` and `concept` LoRAs get more protection in contested semantic blocks, `quality` LoRAs stay more supportive, and `style` or `general` LoRAs yield more readily when they overlap heavily.
 - The loader status reports whether each LoRA used `global`, `per-block`, `smart-per-block`, or a fallback path.

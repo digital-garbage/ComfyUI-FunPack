@@ -8,6 +8,8 @@ Updated LTX per-block LoRA loading so supported stacks now compare LoRA block fi
 
 Fixed `FunPack Hybrid Euler 2S Sampler` restart timing so `restart_trigger_pct` is respected across the full sigma schedule instead of being clamped to the Euler-to-2S quality transition.
 
+Improved `FunPack LoRA Loader` rerun performance by caching recently used raw LoRA files, model-mapped LoRA patches, and per-block fingerprint analysis.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed
