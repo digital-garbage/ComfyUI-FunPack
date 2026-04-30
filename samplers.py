@@ -142,46 +142,53 @@ def _build_restart_sigmas(sigmas, late_start, total_steps, restart_trigger_pct, 
     return sigmas[restart_from:anchor_index + 1], anchor_index
 
 
-def _run_restart_replay(model, x, restart_sigmas, s_in, extra_args, correction_blend,
-                        callback=None, callback_step_start=0):
+def _expand_restart_sigmas(sigmas, high_quality_pct, restart_steps, restart_repeats, restart_trigger_pct):
+    if sigmas is None or not isinstance(sigmas, torch.Tensor):
+        return None, None
+
+    expanded_sigmas = sigmas.detach().clone()
+    total_steps = max(0, int(expanded_sigmas.shape[0]) - 1)
+    if total_steps <= 0:
+        return expanded_sigmas, None
+
+    high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
+    restart_steps = max(2, int(restart_steps))
+    restart_repeats = max(0, int(restart_repeats))
+    restart_trigger_pct = max(0.0, min(1.0, float(restart_trigger_pct)))
+
+    late_steps = max(1, int(math.ceil(total_steps * high_quality_pct))) if high_quality_pct > 0.0 else 0
+    late_start = max(0, total_steps - late_steps)
+
+    quality_sigma_start = None
+    if late_start < expanded_sigmas.shape[0]:
+        quality_sigma_start = float(expanded_sigmas[late_start].item())
+
+    if restart_repeats <= 0:
+        return expanded_sigmas, quality_sigma_start
+
+    restart_sigmas, anchor_index = _build_restart_sigmas(
+        expanded_sigmas,
+        late_start,
+        total_steps,
+        restart_trigger_pct,
+        restart_steps,
+    )
     if restart_sigmas.numel() <= 1:
-        return x, callback_step_start
+        return expanded_sigmas, quality_sigma_start
 
-    callback_step = int(callback_step_start)
-
-    for idx in range(int(restart_sigmas.shape[0]) - 1):
-        sigma = restart_sigmas[idx]
-        sigma_next = restart_sigmas[idx + 1]
-        denoised = model(x, sigma * s_in, **extra_args)
-
-        if callback is not None:
-            callback({
-                "x": x,
-                "i": callback_step,
-                "sigma": sigma,
-                "sigma_hat": sigma,
-                "denoised": denoised,
-            })
-            callback_step += 1
-
-        x, _ = _hybrid_ode_step(
-            model,
-            x,
-            sigma,
-            sigma_next,
-            s_in,
-            extra_args,
-            correction_blend,
-            denoised=denoised,
-        )
-    return x, callback_step
+    prefix = expanded_sigmas[:anchor_index + 1]
+    suffix = expanded_sigmas[anchor_index + 1:]
+    repeated = [restart_sigmas.clone() for _ in range(restart_repeats)]
+    expanded_sigmas = torch.cat([prefix] + repeated + [suffix], dim=0)
+    return expanded_sigmas, quality_sigma_start
 
 
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, eta=1.0, s_noise=1.0,
                                    high_quality_pct=0.35, correction_blend=1.0,
                                    restart_steps=3, restart_repeats=0,
-                                   restart_trigger_pct=0.85, restart_noise=1.0):
+                                   restart_trigger_pct=0.85, restart_noise=1.0,
+                                   quality_sigma_start=None):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral for motion/anatomy buildup.
@@ -208,24 +215,39 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     restart_repeats = max(0, int(restart_repeats))
     restart_trigger_pct = max(0.0, min(1.0, float(restart_trigger_pct)))
     restart_noise = max(0.0, float(restart_noise))
-    late_steps = max(1, int(math.ceil(total_steps * high_quality_pct))) if high_quality_pct > 0.0 else 0
-    late_start = max(0, total_steps - late_steps)
     s_in = x.new_ones([x.shape[0]])
-    restart_sigmas, restart_anchor = _build_restart_sigmas(
-        sigmas,
-        late_start,
-        total_steps,
-        restart_trigger_pct,
-        restart_steps,
-    )
-    restart_has_run = False
     callback_step = 0
+
+    if quality_sigma_start is None:
+        late_steps = max(1, int(math.ceil(total_steps * high_quality_pct))) if high_quality_pct > 0.0 else 0
+        late_start = max(0, total_steps - late_steps)
+        if late_start < sigmas.shape[0]:
+            quality_sigma_start = float(sigmas[late_start].item())
+    else:
+        quality_sigma_start = float(quality_sigma_start)
 
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
+        is_restart_jump = sigma_next > sigma
+        in_quality_phase = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
 
-        if i < late_start:
+        if is_restart_jump:
+            denoised = None
+            if callback is not None:
+                denoised = model(x, sigma * s_in, **extra_args)
+                callback({
+                    "x": x,
+                    "i": callback_step,
+                    "sigma": sigma,
+                    "sigma_hat": sigma,
+                    "denoised": denoised,
+                })
+                callback_step += 1
+            x = _renoise_to_sigma(x, sigma, sigma_next, restart_noise, noise_sampler)
+            continue
+
+        if not in_quality_phase:
             denoised = model(x, sigma * s_in, **extra_args)
 
             if callback is not None:
@@ -250,28 +272,6 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 if sigma_next > 0 and eta > 0 and s_noise > 0:
                     x = x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up
         else:
-            if restart_repeats > 0 and not restart_has_run and i >= restart_anchor:
-                if restart_sigmas.numel() > 1 and restart_sigmas[0] > restart_sigmas[-1]:
-                    for _ in range(restart_repeats):
-                        x = _renoise_to_sigma(
-                            x,
-                            restart_sigmas[-1],
-                            restart_sigmas[0],
-                            restart_noise,
-                            noise_sampler,
-                        )
-                        x, callback_step = _run_restart_replay(
-                            model,
-                            x,
-                            restart_sigmas,
-                            s_in,
-                            extra_args,
-                            correction_blend,
-                            callback=callback,
-                            callback_step_start=callback_step,
-                        )
-                    restart_has_run = True
-
             denoised = model(x, sigma * s_in, **extra_args)
 
             if callback is not None:
@@ -359,17 +359,27 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "Noise strength used when re-noising up to the Restart interval's higher sigma."
                 }),
+            },
+            "optional": {
+                "sigmas": ("SIGMAS",),
             }
         }
 
-    RETURN_TYPES = ("SAMPLER",)
-    RETURN_NAMES = ("sampler",)
+    RETURN_TYPES = ("SAMPLER", "SIGMAS")
+    RETURN_NAMES = ("sampler", "sigmas")
     FUNCTION = "get_sampler"
     CATEGORY = "FunPack/Sampling"
-    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional paper-style Restart replay."
+    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional sigma-driven Restart replay."
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
-                    restart_steps, restart_repeats, restart_trigger_pct, restart_noise):
+                    restart_steps, restart_repeats, restart_trigger_pct, restart_noise, sigmas=None):
+        expanded_sigmas, quality_sigma_start = _expand_restart_sigmas(
+            sigmas,
+            high_quality_pct,
+            restart_steps,
+            restart_repeats,
+            restart_trigger_pct,
+        )
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_hybrid_euler_2s,
             extra_options={
@@ -381,6 +391,7 @@ class FunPackHybridEuler2SSampler:
                 "restart_repeats": restart_repeats,
                 "restart_trigger_pct": restart_trigger_pct,
                 "restart_noise": restart_noise,
+                "quality_sigma_start": quality_sigma_start,
             }
         )
-        return (sampler,)
+        return (sampler, expanded_sigmas)

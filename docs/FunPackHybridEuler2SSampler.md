@@ -1,6 +1,6 @@
 # FunPack Hybrid Euler 2S Sampler
 
-This node outputs a ComfyUI `SAMPLER` object that can be connected directly into `CustomSamplerAdvanced` / `SamplerCustomAdvanced`.
+This node outputs a ComfyUI `SAMPLER` and can also take optional `SIGMAS` input and output modified `SIGMAS` for use with `CustomSamplerAdvanced` / `SamplerCustomAdvanced`.
 
 ## Purpose
 
@@ -11,11 +11,23 @@ It is designed as a quality/speed compromise between:
 
 This sampler keeps classic Euler ancestral for the early "structure building" stage where motion, anatomy and main composition are forming. On the late denoise steps it switches to a deterministic Euler / DPM-Solver++(2S) ODE refinement path where fine detail and cleanup usually matter most.
 
-It can also run an optional paper-style Restart pass during that late quality stage:
+It can also build an optional paper-style Restart schedule during that late quality stage:
 
-- re-noise the current latent up to a higher sigma
-- replay a short late-step sigma interval with the deterministic refinement path
-- repeat that replay multiple times if requested
+- detect a restart anchor inside the late quality phase
+- insert upward sigma jumps back to a higher sigma
+- replay the chosen sigma interval one or more times
+
+Unlike the older implementation, Restart is now encoded directly into the outgoing `SIGMAS` schedule, so the visible schedule passed into `SamplerCustomAdvanced` is the actual schedule that gets executed.
+
+## Recommended wiring
+
+Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
+
+- connect your base scheduler output into this node's optional `sigmas` input
+- connect this node's `sampler` output into the sampler input
+- connect this node's `sigmas` output into the sigmas input
+
+This node is not intended for `KSampler`.
 
 ## Parameters
 
@@ -31,13 +43,15 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 - `0.0` = pure late-step Euler ODE
 - `1.0` = full late-step DPM++(2S)-style correction
 
-**restart_steps**: Target size of the restarted sigma interval. The sampler now interprets this against the actual late-phase sigma curve, so with custom sigmas it may choose a slightly different number of replay transitions in order to cover a comparable sigma span.
+**restart_steps**: Target size of the restarted sigma interval. The node interprets this against the actual late-phase sigma curve and expands the outgoing `SIGMAS` schedule accordingly.
 
 **restart_repeats**: How many Restart loops to run. `0` disables Restart.
 
 **restart_trigger_pct**: Sampling progress point where Restart is triggered. This value is converted into a target sigma inside the late quality phase, then the nearest real sigma in the provided schedule is used as the restart anchor.
 
 **restart_noise**: Noise strength used when re-noising the latent up to the restart interval's higher sigma.
+
+**sigmas**: Optional incoming sigma schedule. If connected, the node outputs a restart-expanded sigma schedule that matches the sampler settings. If not connected, the sampler output still works, but there is no schedule for the node to rewrite.
 
 ## Recommended starting values
 
@@ -56,7 +70,7 @@ For a first Restart test, try:
 - `restart_trigger_pct = 0.85`
 - `restart_noise = 1.0`
 
-Example: with `8` base sampling steps, `restart_steps = 3`, and `restart_repeats = 1`, a normal evenly spaced late schedule will usually add about `2` extra replay denoise steps. With custom sigmas, the exact replay step count can shift slightly because Restart is now anchored to the real sigma values rather than raw step indices.
+Example: with `8` base sampling steps, `restart_steps = 3`, and `restart_repeats = 1`, a normal evenly spaced late schedule will usually expand into a schedule with about `2` extra replay denoise transitions. With custom sigmas, the exact replay step count can shift slightly because Restart is anchored to the real sigma values rather than raw step indices.
 
 ## Expected behavior
 
@@ -68,6 +82,8 @@ Compared to plain `euler_ancestral`, this sampler should usually:
 - cost less than running a heavier deterministic solver for the whole schedule
 
 With Restart enabled, it may further improve late cleanup and detail consistency, but it will increase runtime and may be too aggressive for some video workflows if overused.
+
+Because Restart is now represented in the outgoing `SIGMAS`, the total number of executed transitions should match what the expanded schedule shows in the downstream custom sampler.
 
 ## Limitation
 
