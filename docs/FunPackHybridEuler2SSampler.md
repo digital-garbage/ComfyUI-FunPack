@@ -31,11 +31,11 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 - `0.0` = pure late-step Euler ODE
 - `1.0` = full late-step DPM++(2S)-style correction
 
-**restart_steps**: Size of the restarted sigma interval. This behaves like the paper's restart segment length, so each replay adds `restart_steps - 1` extra denoise transitions.
+**restart_steps**: Target size of the restarted sigma interval. The sampler now interprets this against the actual late-phase sigma curve, so with custom sigmas it may choose a slightly different number of replay transitions in order to cover a comparable sigma span.
 
 **restart_repeats**: How many Restart loops to run. `0` disables Restart.
 
-**restart_trigger_pct**: Sampling progress point where Restart is triggered. This value is clamped so Restart only happens inside the late quality phase.
+**restart_trigger_pct**: Sampling progress point where Restart is triggered. This value is converted into a target sigma inside the late quality phase, then the nearest real sigma in the provided schedule is used as the restart anchor.
 
 **restart_noise**: Noise strength used when re-noising the latent up to the restart interval's higher sigma.
 
@@ -56,7 +56,7 @@ For a first Restart test, try:
 - `restart_trigger_pct = 0.85`
 - `restart_noise = 1.0`
 
-Example: with `8` base sampling steps, `restart_steps = 3`, and `restart_repeats = 1`, the Restart section adds `2` extra replay denoise steps, so you should observe the equivalent of `10` denoise callbacks rather than `11`.
+Example: with `8` base sampling steps, `restart_steps = 3`, and `restart_repeats = 1`, a normal evenly spaced late schedule will usually add about `2` extra replay denoise steps. With custom sigmas, the exact replay step count can shift slightly because Restart is now anchored to the real sigma values rather than raw step indices.
 
 ## Expected behavior
 

@@ -57,6 +57,91 @@ def _renoise_to_sigma(x, current_sigma, target_sigma, restart_noise, noise_sampl
     return x + noise_sampler(current_sigma, target_sigma) * (restart_noise * sigma_delta)
 
 
+def _find_restart_anchor_index(sigmas, late_start, total_steps, restart_trigger_pct):
+    if late_start >= total_steps:
+        return late_start
+
+    quality_sigmas = sigmas[late_start:total_steps]
+    if quality_sigmas.numel() <= 1:
+        return late_start
+
+    high_sigma = float(quality_sigmas[0].item())
+    low_sigma = None
+    for idx in range(int(quality_sigmas.shape[0]) - 1, -1, -1):
+        value = float(quality_sigmas[idx].item())
+        if value > 0.0:
+            low_sigma = value
+            break
+    if low_sigma is None:
+        return total_steps - 1
+
+    quality_progress = 0.0
+    if total_steps > late_start:
+        quality_progress = (restart_trigger_pct * total_steps - late_start) / max(1e-6, float(total_steps - late_start))
+    quality_progress = max(0.0, min(1.0, quality_progress))
+
+    if high_sigma <= 0.0 or low_sigma <= 0.0 or abs(high_sigma - low_sigma) <= 1e-12:
+        return min(total_steps - 1, max(late_start, int(round(late_start + quality_progress * max(0, total_steps - late_start - 1)))))
+
+    log_high = math.log(high_sigma)
+    log_low = math.log(low_sigma)
+    target_log_sigma = log_high + (log_low - log_high) * quality_progress
+
+    best_index = late_start
+    best_distance = None
+    for idx in range(late_start, total_steps):
+        sigma_value = float(sigmas[idx].item())
+        if sigma_value <= 0.0:
+            continue
+        distance = abs(math.log(sigma_value) - target_log_sigma)
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_index = idx
+    return best_index
+
+
+def _build_restart_sigmas(sigmas, late_start, total_steps, restart_trigger_pct, restart_steps):
+    if late_start >= total_steps:
+        return sigmas[late_start:late_start], late_start
+
+    anchor_index = _find_restart_anchor_index(sigmas, late_start, total_steps, restart_trigger_pct)
+    anchor_index = min(total_steps - 1, max(late_start, anchor_index))
+
+    if restart_steps <= 1:
+        return sigmas[anchor_index:anchor_index + 1], anchor_index
+
+    quality_sigmas = sigmas[late_start:total_steps]
+    if quality_sigmas.numel() <= 1:
+        return sigmas[anchor_index:anchor_index + 1], anchor_index
+
+    positive_logs = []
+    for idx in range(int(quality_sigmas.shape[0])):
+        sigma_value = float(quality_sigmas[idx].item())
+        if sigma_value > 0.0:
+            positive_logs.append(math.log(sigma_value))
+
+    if len(positive_logs) >= 2:
+        total_log_span = abs(positive_logs[0] - positive_logs[-1])
+        avg_log_step = total_log_span / max(1, len(positive_logs) - 1)
+        target_log_span = avg_log_step * max(1, restart_steps - 1)
+    else:
+        target_log_span = 0.0
+
+    restart_from = anchor_index
+    accumulated_span = 0.0
+    for idx in range(anchor_index, late_start, -1):
+        sigma_hi = float(sigmas[idx - 1].item())
+        sigma_lo = float(sigmas[idx].item())
+        restart_from = idx - 1
+        if sigma_hi > 0.0 and sigma_lo > 0.0:
+            accumulated_span += abs(math.log(sigma_hi) - math.log(sigma_lo))
+        if (anchor_index - restart_from) >= 1 and accumulated_span >= target_log_span:
+            break
+
+    restart_from = max(late_start, restart_from)
+    return sigmas[restart_from:anchor_index + 1], anchor_index
+
+
 def _run_restart_replay(model, x, restart_sigmas, s_in, extra_args, correction_blend,
                         callback=None, callback_step_start=0):
     if restart_sigmas.numel() <= 1:
@@ -126,7 +211,13 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     late_steps = max(1, int(math.ceil(total_steps * high_quality_pct))) if high_quality_pct > 0.0 else 0
     late_start = max(0, total_steps - late_steps)
     s_in = x.new_ones([x.shape[0]])
-    restart_anchor = min(total_steps - 1, max(late_start, int(math.floor(total_steps * restart_trigger_pct))))
+    restart_sigmas, restart_anchor = _build_restart_sigmas(
+        sigmas,
+        late_start,
+        total_steps,
+        restart_trigger_pct,
+        restart_steps,
+    )
     restart_has_run = False
     callback_step = 0
 
@@ -160,8 +251,6 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                     x = x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up
         else:
             if restart_repeats > 0 and not restart_has_run and i >= restart_anchor:
-                restart_from = max(late_start, i - restart_steps + 1)
-                restart_sigmas = sigmas[restart_from:i + 1]
                 if restart_sigmas.numel() > 1 and restart_sigmas[0] > restart_sigmas[-1]:
                     for _ in range(restart_repeats):
                         x = _renoise_to_sigma(
