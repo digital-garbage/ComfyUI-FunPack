@@ -20,6 +20,7 @@ try:
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from .templates import FunPackTemplateManager
 except ImportError:
     from conditioning import (
         FunPackGemmaEmbeddingRefiner,
@@ -39,6 +40,7 @@ except ImportError:
     )
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from templates import FunPackTemplateManager
 
     NODE_CLASS_MAPPINGS = {
         "FunPackPromptCombiner": FunPackPromptCombiner,
@@ -56,6 +58,7 @@ except ImportError:
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
+        "FunPackTemplateManager": FunPackTemplateManager,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -74,6 +77,7 @@ except ImportError:
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
+        "FunPackTemplateManager": "FunPack Template Manager",
     }
 
 __all__ = [
@@ -94,5 +98,6 @@ __all__ = [
     "FunPackStoryMemLastFrameExtractor",
     "FunPackApplyLoraWeights",
     "FunPackLoraLoader",
+    "FunPackTemplateManager",
     "sample_funpack_hybrid_euler_2s",
 ]

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+Added `FunPack Template Manager`, a preset node for storing prompts, activation words, refinement keys, sigma schedules, and FunPack LoRA stacks with import/export support.
+
 ### Changed
 
 Updated LTX per-block LoRA loading so supported stacks now compare LoRA block fingerprints across the whole stack and apply type-aware conflict balancing before patches are loaded.

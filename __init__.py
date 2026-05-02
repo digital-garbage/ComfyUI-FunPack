@@ -18,6 +18,7 @@ from .image_processing import (
 )
 from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
 from .samplers import FunPackHybridEuler2SSampler
+from .templates import FunPackTemplateManager
 
 WEB_DIRECTORY = "./web"
 
@@ -37,6 +38,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
+    "FunPackTemplateManager": FunPackTemplateManager,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -55,6 +57,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
+    "FunPackTemplateManager": "FunPack Template Manager",
 }
 
 __all__ = [
