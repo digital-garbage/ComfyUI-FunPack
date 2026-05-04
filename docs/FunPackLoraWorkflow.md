@@ -62,11 +62,12 @@ The refiner compares each LoRA's type and filename with the concepts it extracte
 
 Examples:
 
-- `I like it` gently reinforces matching LoRAs.
-- `Missing details` nudges related concept, character, and general LoRAs upward.
-- `Missing concept` favors the best concept or character match and can reduce weaker competing concept LoRAs.
-- `Missing quality` can favor quality LoRAs and reduce unrelated concept LoRAs.
-- `I don't like it` can mute or invert a LoRA if it keeps hurting the same prompt.
+- `Perfect` gently reinforces matching LoRAs.
+- `Missing details` nudges related concept, character, style, and general LoRAs upward.
+- `Missing concept` boosts matching concept and character LoRAs.
+- `Missing quality` boosts quality LoRAs, with small support from matching style/general LoRAs.
+- Pair ratings boost both named axes in the same run.
+- `Awful` boosts details, concept, and quality together.
 - `-Just forget it-` skips LoRA suggestion updates for that run.
 
 If `lora_stack` is not connected, conditioning, sigma, and latent refinement still work, but LoRA suggestions are not updated.

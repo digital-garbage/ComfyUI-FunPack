@@ -14,6 +14,8 @@ Fixed `FunPack Hybrid Euler 2S Sampler` restart timing so `restart_trigger_pct` 
 
 Improved `FunPack LoRA Loader` rerun performance by caching recently used raw LoRA files, model-mapped LoRA patches, and per-block fingerprint analysis.
 
+Reworked `FunPack Video Refiner` ratings around explicit missing-axis signals: `Perfect`, single missing axes, paired missing axes, and `Awful`.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed

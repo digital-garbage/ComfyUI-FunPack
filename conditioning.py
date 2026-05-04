@@ -27,12 +27,15 @@ LORA_REFINER_TYPE_PROFILES = {
 }
 
 RATING_LABELS = [
-    "I like it",
+    "-Just forget it-",
+    "Perfect",
     "Missing details",
     "Missing concept",
     "Missing quality",
-    "I don't like it",
-    "-Just forget it-",
+    "Missing details + concept",
+    "Missing details + quality",
+    "Missing concept + quality",
+    "Awful",
 ]
 
 RATING_PROFILES = {
@@ -45,64 +48,117 @@ RATING_PROFILES = {
         "quality_signal": 0.0,
         "concept_signal": 0.0,
         "detail_signal": 0.0,
+        "missing_axes": [],
         "prompt_emphasis": 0.0,
         "skip_learning": True,
     },
-    "I like it": {
+    "Perfect": {
         "key": "like",
-        "level": 5,
+        "level": 8,
         "legacy_score": 10,
-        "legacy_range": "9-10",
+        "legacy_range": "keep",
         "reward": 1.0,
         "quality_signal": 1.0,
         "concept_signal": 1.0,
         "detail_signal": 1.0,
+        "missing_axes": [],
         "prompt_emphasis": 0.45,
     },
     "Missing details": {
         "key": "missing_details",
-        "level": 4,
+        "level": 7,
         "legacy_score": 8,
-        "legacy_range": "7-8",
+        "legacy_range": "boost details",
         "reward": 0.45,
         "quality_signal": 0.85,
         "concept_signal": 0.70,
-        "detail_signal": -0.55,
+        "detail_signal": -1.0,
+        "missing_axes": ["details"],
         "prompt_emphasis": 0.65,
     },
     "Missing concept": {
         "key": "missing_concept",
-        "level": 3,
+        "level": 6,
         "legacy_score": 6,
-        "legacy_range": "5-6",
-        "reward": -0.35,
-        "quality_signal": 0.65,
-        "concept_signal": -0.90,
-        "detail_signal": -0.70,
+        "legacy_range": "boost concept",
+        "reward": 0.10,
+        "quality_signal": 0.85,
+        "concept_signal": -1.0,
+        "detail_signal": 0.20,
+        "missing_axes": ["concept"],
         "prompt_emphasis": 0.95,
     },
     "Missing quality": {
         "key": "missing_quality",
-        "level": 2,
+        "level": 5,
         "legacy_score": 4,
-        "legacy_range": "3-4",
-        "reward": -0.75,
-        "quality_signal": -0.90,
-        "concept_signal": -0.75,
-        "detail_signal": -0.70,
+        "legacy_range": "boost quality",
+        "reward": -0.25,
+        "quality_signal": -1.0,
+        "concept_signal": 0.65,
+        "detail_signal": 0.65,
+        "missing_axes": ["quality"],
         "prompt_emphasis": 0.55,
     },
-    "I don't like it": {
-        "key": "dislike",
+    "Missing details + concept": {
+        "key": "missing_details_concept",
+        "level": 4,
+        "legacy_score": 5,
+        "legacy_range": "boost details+concept",
+        "reward": -0.05,
+        "quality_signal": 0.75,
+        "concept_signal": -1.0,
+        "detail_signal": -1.0,
+        "missing_axes": ["details", "concept"],
+        "prompt_emphasis": 1.05,
+    },
+    "Missing details + quality": {
+        "key": "missing_details_quality",
+        "level": 3,
+        "legacy_score": 3,
+        "legacy_range": "boost details+quality",
+        "reward": -0.35,
+        "quality_signal": -1.0,
+        "concept_signal": 0.50,
+        "detail_signal": -1.0,
+        "missing_axes": ["details", "quality"],
+        "prompt_emphasis": 0.82,
+    },
+    "Missing concept + quality": {
+        "key": "missing_concept_quality",
+        "level": 2,
+        "legacy_score": 2,
+        "legacy_range": "boost concept+quality",
+        "reward": -0.55,
+        "quality_signal": -1.0,
+        "concept_signal": -1.0,
+        "detail_signal": 0.15,
+        "missing_axes": ["concept", "quality"],
+        "prompt_emphasis": 1.02,
+    },
+    "Awful": {
+        "key": "awful",
         "level": 1,
         "legacy_score": 2,
-        "legacy_range": "1-2",
-        "reward": -1.0,
+        "legacy_range": "boost all",
+        "reward": -0.85,
         "quality_signal": -1.0,
         "concept_signal": -1.0,
         "detail_signal": -1.0,
-        "prompt_emphasis": -0.65,
+        "missing_axes": ["details", "concept", "quality"],
+        "prompt_emphasis": 1.20,
+        "rollback_on_failure": True,
     },
+}
+
+RATING_ALIASES = {
+    "I like it": "Perfect",
+    "I don't like it": "Awful",
+    "Missing details + concepts": "Missing details + concept",
+    "Missing concept + details": "Missing details + concept",
+    "Missing quality + details": "Missing details + quality",
+    "Missing quality + concept": "Missing concept + quality",
+    "Missing everything": "Awful",
 }
 
 CATEGORY_FEEDBACK_MAP = {
@@ -122,6 +178,7 @@ def _clamp(value, low, high):
 def normalize_refiner_rating(value):
     if isinstance(value, str):
         cleaned = value.strip()
+        cleaned = RATING_ALIASES.get(cleaned, cleaned)
         if cleaned in RATING_PROFILES:
             return dict(RATING_PROFILES[cleaned], label=cleaned)
         try:
@@ -136,7 +193,7 @@ def normalize_refiner_rating(value):
 
     legacy_score = int(_clamp(legacy_score, 1, 10))
     if legacy_score >= 9:
-        label = "I like it"
+        label = "Perfect"
     elif legacy_score >= 7:
         label = "Missing details"
     elif legacy_score >= 5:
@@ -144,7 +201,7 @@ def normalize_refiner_rating(value):
     elif legacy_score >= 3:
         label = "Missing quality"
     else:
-        label = "I don't like it"
+        label = "Awful"
 
     profile = dict(RATING_PROFILES[label], label=label)
     profile["legacy_score"] = legacy_score
@@ -1934,12 +1991,20 @@ class FunPackVideoRefiner:
 
         rating_profile = rating_profile or normalize_refiner_rating(rating)
         rating_key = rating_profile.get("key", "")
+        missing_axes = set(rating_profile.get("missing_axes", []))
         if rating_key == "like":
             lr = 0.035
-        elif rating_key in {"missing_quality", "dislike"}:
+        elif missing_axes:
+            lr = 0.018
+            if "details" in missing_axes:
+                lr += 0.006
+            if "concept" in missing_axes:
+                lr += 0.012
+            if "quality" in missing_axes:
+                lr += 0.035
+            lr = min(0.065, lr)
+        elif rating_key == "dislike":
             lr = 0.055
-        elif rating_key == "missing_concept":
-            lr = 0.030
         else:
             lr = 0.018
         target_delta = (saved_samples - current) * nonzero_mask.to(dtype=current.dtype)
@@ -2059,6 +2124,8 @@ class FunPackVideoRefiner:
 
         rating_profile = rating_profile or normalize_refiner_rating(rating)
         rating_key = rating_profile.get("key", "")
+        missing_axes = set(rating_profile.get("missing_axes", []))
+        missing_count = len(missing_axes)
         memory = global_adaptive.setdefault("lora_weight_memory", {})
         suggestions = {}
         status_parts = []
@@ -2090,7 +2157,7 @@ class FunPackVideoRefiner:
             if rating_key == "like":
                 state["good_streak"] = int(state.get("good_streak", 0)) + 1
                 state["bad_streak"] = 0
-            elif rating_key in {"missing_quality", "dislike"}:
+            elif rating_key == "dislike" or {"concept", "quality"}.issubset(missing_axes):
                 state["bad_streak"] = int(state.get("bad_streak", 0)) + 1
                 state["good_streak"] = 0
             else:
@@ -2101,7 +2168,7 @@ class FunPackVideoRefiner:
             stable_offset = state.get("stable_offset_ratio")
             culprit_score = float(state.get("culprit_score", 0.0))
             culprit_hits = int(state.get("culprit_hits", 0))
-            if stable_offset is not None and rating_key in {"like", "missing_details"}:
+            if stable_offset is not None and (rating_key == "like" or missing_axes == {"details"}):
                 offset = 0.72 * offset + 0.28 * float(stable_offset)
 
             step = profile["step"] * max(0.15, relation)
@@ -2135,53 +2202,49 @@ class FunPackVideoRefiner:
                         stable_offset = 0.78 * float(stable_offset) + 0.22 * offset
                     state["stable_offset_ratio"] = _clamp(stable_offset, min_offset, max_offset)
                     offset = state["stable_offset_ratio"]
-            elif rating_key == "missing_details":
-                culprit_score *= 0.86
+            elif missing_axes:
+                if "concept" in missing_axes or "quality" in missing_axes:
+                    state["stable_offset_ratio"] = None
+
+                culprit_score *= 0.74 if rating_key == "awful" else 0.82
                 culprit_hits = max(0, culprit_hits - 1)
-                if relation >= 0.25 and lora_type in {"concept", "character", "general"}:
-                    value_mult = 0.85 + min(1.2, max(0.5, concept_importance)) * 0.20
-                    offset += step * (0.30 + relation * 0.45) * value_mult
+                axis_boost = 0.0
+
+                if "details" in missing_axes:
+                    if relation >= 0.12 and lora_type in {"concept", "character", "general", "style"}:
+                        value_mult = 0.85 + min(1.2, max(0.5, concept_importance)) * 0.20
+                        axis_boost += (0.26 + relation * 0.34) * value_mult
+                    elif lora_type == "quality":
+                        axis_boost += 0.06
+
+                if "concept" in missing_axes:
+                    if lora_type in {"concept", "character"}:
+                        if is_primary_concept_lora:
+                            axis_boost += (0.95 + abs(reward) * 0.45) * concept_match_strength
+                        elif relation > 0.08:
+                            axis_boost += 0.34 + relation * 0.40
+                    elif lora_type == "general" and relation >= 0.25:
+                        axis_boost += 0.25 + relation * 0.25
+
+                if "quality" in missing_axes:
+                    if lora_type == "quality":
+                        axis_boost += 0.90 + abs(reward) * 0.35
+                    elif lora_type == "style" and relation >= 0.25:
+                        axis_boost += 0.20 + relation * 0.20
+                    elif lora_type == "general" and relation >= 0.20:
+                        axis_boost += 0.16 + relation * 0.15
+
+                if axis_boost > 0.0:
+                    if rating_key == "awful":
+                        axis_boost *= 1.25
+                    max_offset = max(max_offset, profile["bad_max_offset"] * (0.62 + 0.10 * missing_count))
+                    relation_floor = 0.35 if missing_count >= 2 else 0.22
+                    boost_step = profile["step"] * max(relation_floor, effective_relation)
+                    offset += boost_step * axis_boost
                 elif relation <= 0.05:
-                    offset *= 0.96
-                elif stable_offset is not None:
-                    offset = 0.78 * offset + 0.22 * float(stable_offset)
-            elif rating_key == "missing_concept":
-                state["stable_offset_ratio"] = None
-                if is_primary_concept_lora:
-                    max_offset = max(max_offset, profile["bad_max_offset"] * 0.82)
-                    offset += step * (1.10 + abs(reward) * 1.25) * concept_match_strength
-                    culprit_score *= 0.70
-                    culprit_hits = max(0, culprit_hits - 1)
-                elif lora_type in {"concept", "character"} and relation > 0.08:
-                    culprit_score = _clamp(culprit_score * 0.75 + 0.35 * max(0.25, relation), 0.0, 2.5)
-                    culprit_hits = culprit_hits + 1 if culprit_score >= 0.65 else culprit_hits
-                    min_offset = min(min_offset, profile["bad_min_offset"] * 0.42)
-                    offset -= step * (0.55 + abs(reward)) * max(0.25, relation)
-                elif relation <= 0.05:
-                    offset *= 0.96
+                    offset *= 0.97
                 else:
-                    offset *= 0.92
-            elif rating_key == "missing_quality":
-                state["stable_offset_ratio"] = None
-                if lora_type == "quality":
-                    max_offset = max(max_offset, profile["bad_max_offset"] * 0.70)
-                    offset += step * (1.00 + abs(reward) * 0.85) * max(0.45, effective_relation)
-                    culprit_score *= 0.76
-                elif is_primary_concept_lora:
-                    max_offset = max(max_offset, profile["bad_max_offset"] * 0.55)
-                    offset += step * (0.62 + abs(reward) * 0.55) * concept_match_strength
-                    culprit_score *= 0.82
-                elif lora_type in {"concept", "character"} and relation > 0.08:
-                    culprit_score = _clamp(culprit_score * 0.78 + 0.42 * max(0.25, relation), 0.0, 2.5)
-                    culprit_hits = culprit_hits + 1 if culprit_score >= 0.65 else culprit_hits
-                    min_offset = min(min_offset, profile["bad_min_offset"] * 0.35)
-                    offset -= step * (0.72 + abs(reward)) * max(0.25, relation)
-                else:
-                    culprit_score = _clamp(culprit_score * 0.84 + 0.18 * max(0.0, relation), 0.0, 2.5)
-                    if relation <= 0.05:
-                        offset *= 0.94
-                    else:
-                        offset -= step * 0.25 * max(0.20, relation)
+                    offset *= 0.94
             elif rating_key == "dislike":
                 severity = _clamp((5.0 - float(rating)) / 4.0, 0.0, 1.0)
                 culprit_signal = max(0.20, effective_relation) * (0.70 + base_abs * 0.30)
@@ -2226,6 +2289,7 @@ class FunPackVideoRefiner:
             action = (
                 "invert" if model_weight < 0.0 else
                 "mute" if model_weight == 0.0 else
+                "hold" if abs(model_weight - base_model) < 1e-6 else
                 "reduce" if abs(model_weight) < abs(base_model) else
                 "boost"
             )
@@ -2711,7 +2775,8 @@ class FunPackVideoRefiner:
 
         rollback_reference_found = False
         rollback_rating_label = ""
-        if rating_key == "dislike" and not source_changed and len(history) > 1:
+        rollback_requested = bool(rating_profile.get("rollback_on_failure")) or rating_key == "dislike"
+        if rollback_requested and not source_changed and len(history) > 1:
             current_level = int(rating_profile.get("level", 1))
             for entry in reversed(history[:-1]):
                 entry_profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
@@ -2731,7 +2796,7 @@ class FunPackVideoRefiner:
                 except Exception:
                     continue
         if (
-            rating_key == "dislike" and
+            rollback_requested and
             not source_changed and
             not rollback_reference_found and
             liked_reference is not None and
@@ -2827,7 +2892,7 @@ class FunPackVideoRefiner:
         if rating_key == "like":
             good_ratio = 0.9 * good_ratio + 0.1 * 1.0
             expl = max(0.015, expl * 0.96)
-        elif rating_key == "missing_details":
+        elif set(rating_profile.get("missing_axes", [])) == {"details"}:
             good_ratio = 0.9 * good_ratio + 0.1 * 0.55
             expl = min(0.12, expl * 1.02)
         else:
@@ -2838,7 +2903,7 @@ class FunPackVideoRefiner:
         sim_threshold = global_adaptive["dynamic_sim_threshold"]
         is_close = (not is_new_prompt) and (similarity >= sim_threshold)
 
-        if (is_close and history) or (rating_key == "dislike" and rollback_reference_found and history):
+        if (is_close and history) or (rollback_requested and rollback_reference_found and history):
             last_entry = history[-1]
             mod_data = last_entry.get("modified_embeds")
             if mod_data is not None:
@@ -2855,7 +2920,7 @@ class FunPackVideoRefiner:
             if reference_mode == "liked average" and rating_key == "like":
                 noise_scale = 0.0
             noise = torch.randn_like(reference) * noise_scale
-            if rating_key == "dislike" and rollback_reference_found:
+            if rollback_requested and rollback_reference_found:
                 new_delta = (-prev_delta * 0.9) + (momentum * 0.25)
             else:
                 multiplier = max(0.05, 1.0 + reward * 1.45)

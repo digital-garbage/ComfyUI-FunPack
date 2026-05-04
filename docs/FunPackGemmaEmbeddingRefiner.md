@@ -10,18 +10,21 @@ This node sits after your text encoder and adjusts positive conditioning based o
 
 **rating**: Feedback for the previous result:
 
-- `I like it`: good result, or close enough to reinforce.
-- `Missing details`: the main idea is there, but smaller requested details are missing or changed.
-- `Missing concept`: the output is usable, but the main requested thing did not show up.
-- `Missing quality`: the idea may be present, but the result is too messy to count as good.
-- `I don't like it`: bad result overall.
+- `Perfect`: good result, or close enough to reinforce.
+- `Missing details`: concept and quality are present, but smaller requested details are missing or changed.
+- `Missing concept`: the output looks good, but characters, subjects, or actions are not doing what was requested.
+- `Missing quality`: concept and details are attempted, but the result is visually messy.
+- `Missing details + concept`: details and concept both need stronger prompt/LoRA support.
+- `Missing details + quality`: details and quality both need stronger prompt/LoRA support.
+- `Missing concept + quality`: concept and quality both need stronger prompt/LoRA support.
+- `Awful`: details, concept, and quality are all missing.
 - `-Just forget it-`: do not learn from this run. Use it for bad seeds, broken references, interrupted generations, or workflow mistakes.
 
-Older numeric workflows are still understood internally: `9-10` maps to `I like it`, `7-8` to `Missing details`, `5-6` to `Missing concept`, `3-4` to `Missing quality`, and `1-2` to `I don't like it`.
+Older numeric workflows are still understood internally and mapped to the closest label. Older `I like it` and `I don't like it` values are accepted as aliases for `Perfect` and `Awful`.
 
-Positive ratings are treated as direct reference updates. The node keeps the original upstream conditioning so it can detect prompt or conditioning changes, but once the first `I like it` / `9-10` result is rated, the active refinement reference switches to the conditioning that produced that liked result. Later liked ratings update that active reference as a running average.
+Positive ratings are treated as direct reference updates. The node keeps the original upstream conditioning so it can detect prompt or conditioning changes, but once the first `Perfect` result is rated, the active refinement reference switches to the conditioning that produced that liked result. Later perfect ratings update that active reference as a running average.
 
-`I don't like it` is the strongest push-back signal. When possible, the node rolls back to the latest conditioning in the prompt history that was rated higher, then adjusts away from the failed conditioning instead of continuing from it.
+Missing ratings are corrective signals. They boost the named missing concepts and matching LoRAs instead of acting like hidden numeric scores. `Awful` means all three axes are missing and can roll back to the latest better conditioning before boosting the full prompt/LoRA support.
 
 **refinement_key**: Name of the refinement session. The node stores its learned refinement data under this key so you can continue training the same style later.
 

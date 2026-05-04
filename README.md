@@ -8,14 +8,15 @@ Updated UI for `FunPack Apply LoRA Weights`. Now it's a one-line rgthree-like st
 
 Updated rating for `FunPack Video Refiner`. Now it uses a rating system more understandable to end user:
 
-- Rating `"I like it"` - resulting video is an exact match or really close to what was requested;
-- Rating `Missing details` - really close to what was requested, main concept is present but some details/actions were omitted;
-- Rating `Missing concept` - visually pleasent in terms of quality/anatomy/style/scene, but neither main concept nor details/actions are present;
-- Rating `Missing quality` - visually pleasent, but lacking proper anatomy/style/scene and neither main concept nor details/actions are present;
-- Rating `I don't like it` - visual garbage, totally not matching the requirements.
+- Rating `Perfect` - resulting video is an exact match or really close to what was requested;
+- Rating `Missing details` - concept and quality are present, but some prompt details/actions were omitted;
+- Rating `Missing concept` - visually pleasant, but characters or subjects are not doing what was requested;
+- Rating `Missing quality` - concept and details are attempted, but anatomy/style/scene quality is messy;
+- Pair ratings such as `Missing details + concept`, `Missing details + quality`, and `Missing concept + quality` - boost the named missing axes together;
+- Rating `Awful` - details, concept, and quality are all missing.
 - Rating `-Just forget it-` - in case of failing sampling or any other result when you are unable to see the video to rate it, select this rating so the previous generation won't count in learning process.
 
-Updated logic for `FunPack Video Refiner`. The original conditioning is still stored for prompt/conditioning change detection, but after the first `I like it` / `9-10` rating the active refinement reference switches to the liked generated conditioning. Later liked results update that reference as a running average, while `I don't like it` rolls back to the latest better-rated conditioning before pushing away from the failed direction.
+Updated logic for `FunPack Video Refiner`. The original conditioning is still stored for prompt/conditioning change detection, but after the first `Perfect` rating the active refinement reference switches to the liked generated conditioning. Later perfect results update that reference as a running average, while `Awful` can roll back to the latest better-rated conditioning before boosting all missing axes.
 
 ## Dev Branch
 
