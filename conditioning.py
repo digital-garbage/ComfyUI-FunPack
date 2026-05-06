@@ -817,10 +817,9 @@ class FunPackVideoRefiner:
             liked_count = int(item.get("liked_count", 0))
             neutral_count = int(item.get("neutral_count", 0))
             awful_count = int(item.get("awful_count", 0))
-            if awful_count >= 2 and liked_count <= 0:
-                continue
             score = self._void_bank_score(item)
-            if score <= 0.05 and liked_count <= 0 and neutral_count <= 1:
+            positive_count = liked_count + neutral_count
+            if awful_count > 0 and score < -0.05 and awful_count >= max(1, positive_count):
                 continue
             try:
                 vector = serializable_to_tensor(item["embedding"]).float()
@@ -830,18 +829,7 @@ class FunPackVideoRefiner:
                 continue
             candidates.append((token, item, score))
 
-        if not candidates:
-            return []
-
-        scores = [score for _, _, score in candidates]
-        mean_score = sum(scores) / max(1, len(scores))
-        threshold = max(0.08, mean_score * 0.45)
-        broad_pool = [
-            (token, item, score)
-            for token, item, score in candidates
-            if score >= threshold or int(item.get("liked_count", 0)) > 0 or int(item.get("neutral_count", 0)) >= 2
-        ]
-        return broad_pool or candidates
+        return candidates
 
     def _select_void_tokens(self, global_adaptive, word_groups, cur_positive,
                             word_importance, token_mask=None, max_count=3):

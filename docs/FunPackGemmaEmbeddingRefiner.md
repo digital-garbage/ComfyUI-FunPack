@@ -58,7 +58,7 @@ When a similar enhanced prompt is reused, the refiner preserves the compatible h
 
 **into_the_void**: Experimental preference-discovery mode. When enabled, the refiner lightly mixes a few learned liked token embeddings into the final conditioning. These tokens come from previous prompts that were rated `Perfect`, `Missing details`, or at least not consistently `Awful`. If the learned token bank is empty, the node falls back to high-affinity tokens from the current prompt.
 
-**im_feeling_lucky**: Experimental random-discovery mode. When enabled, the refiner builds a full random conditioning field from randomly chosen learned token embeddings in the better-rated part of the token bank, then blends it softly into the final conditioning. It does not use the current prompt as the source of the random tokens. When possible, it uses better-rated saved prompts as an ordering guide so the random field follows learned composition patterns instead of becoming raw token soup.
+**im_feeling_lucky**: Experimental random-discovery mode. When enabled, the refiner builds a full random conditioning field from randomly chosen learned token embeddings in the token bank, then blends it softly into the final conditioning. The Lucky pool updates automatically with each learnable rating and considers all valid learned tokens eligible unless their rating history says they were poor. It does not use the current prompt as the source of the random tokens. When possible, it uses better-rated saved prompts as an ordering guide so the random field follows learned composition patterns instead of becoming raw token soup.
 
 ## Compatibility Name
 
@@ -90,7 +90,7 @@ Use this node when you want a workflow to learn from your ratings over several r
 
 Use it when you want to discover surprising concept-concept pairs or learn which prompt tokens line up with your preferred outputs. Leave it disabled when you want stable convergence on the current prompt only. `Awful` ratings suppress tokens, and `-Just forget it-` does not update the bank.
 
-`im_feeling_lucky` is more chaotic. Instead of reinforcing a few specific learned tokens, it samples across the broader better-rated token bank and composes a random same-shape embedding field from those token vectors. If the session has better-rated saved prompts, Lucky borrows their token order as a loose grammar while still swapping in random learned tokens. If no useful order exists yet, it falls back to raw random composition. This can surface unusual token combinations after the refiner has collected enough rated prompt history. It can run by itself or alongside `into_the_void`.
+`im_feeling_lucky` is more chaotic. Instead of reinforcing a few specific learned tokens, it samples across the learned token bank and composes a random same-shape embedding field from those token vectors. Tokens are excluded only when poor ratings outweigh useful or neutral history for that token. If the session has better-rated saved prompts, Lucky borrows their token order as a loose grammar while still swapping in random learned tokens. If no useful order exists yet, it falls back to raw random composition. This can surface unusual token combinations after the refiner has collected enough rated prompt history. It can run by itself or alongside `into_the_void`.
 
 ## Latent Refinement
 

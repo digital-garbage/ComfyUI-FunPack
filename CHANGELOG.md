@@ -6,7 +6,7 @@
 
 Added `FunPack Template Manager`, a preset node for storing prompts, activation words, refinement keys, sigma schedules, and FunPack LoRA stacks with import/export support.
 
-Added `I'm Feeling Lucky` mode to `FunPack Video Refiner`. It builds a softly blended random conditioning field from better-rated learned token embeddings, using saved prompt order as a loose composition guide when available.
+Added `I'm Feeling Lucky` mode to `FunPack Video Refiner`. It builds a softly blended random conditioning field from the learned token bank, excludes only poorly rated tokens, and uses saved prompt order as a loose composition guide when available.
 
 ### Changed
 
