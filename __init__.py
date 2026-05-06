@@ -5,6 +5,7 @@ from .conditioning import (
     FunPackLorebookEnhancer,
     FunPackPromptCombiner,
     FunPackPromptEnhancer,
+    FunPackShotPromptPlanner,
     FunPackSaveRefinementLatent,
     FunPackStoryWriter,
     FunPackVideoRefiner,
@@ -18,12 +19,14 @@ from .image_processing import (
 )
 from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
 from .samplers import FunPackHybridEuler2SSampler
+from .context_transition import FunPackContextTransitionWindows
 from .templates import FunPackTemplateManager
 
 WEB_DIRECTORY = "./web"
 
 NODE_CLASS_MAPPINGS = {
     "FunPackPromptCombiner": FunPackPromptCombiner,
+    "FunPackShotPromptPlanner": FunPackShotPromptPlanner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
@@ -36,6 +39,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackVideoRefiner": FunPackVideoRefiner,
     "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
+    "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
     "FunPackTemplateManager": FunPackTemplateManager,
@@ -43,6 +47,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackPromptCombiner": "FunPack Prompt Combiner",
+    "FunPackShotPromptPlanner": "FunPack Shot Prompt Planner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
@@ -55,6 +60,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackVideoRefiner": "FunPack Video Refiner",
     "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
+    "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
     "FunPackTemplateManager": "FunPack Template Manager",

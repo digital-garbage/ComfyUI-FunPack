@@ -209,6 +209,22 @@ def normalize_refiner_rating(value):
 
 
 PROTECTED_PHRASE_RE = re.compile(r'"([^"]+)"|“([^”]+)”|\\([^\\]+)\\')
+TRANSITION_TRIGGER_RE = re.compile(
+    r"\b("
+    r"then|after(?:wards| this| that)?|next|finally|suddenly|meanwhile|"
+    r"cut(?:s)? to|hard cut|match cut|smash cut|scene change|transition(?:s)? to|"
+    r"switch(?:es)? to|shift(?:s)? to|changes? to|reveals?|now"
+    r")\b",
+    re.IGNORECASE,
+)
+SHOT_BREAK_RE = re.compile(
+    r"\s*(?:,|;|\.|\n|\bthen\b|\bafterwards\b|\bafter this\b|\bafter that\b|"
+    r"\bnext\b|\bfinally\b|\bsuddenly\b|\bmeanwhile\b|\bcut(?:s)? to\b|"
+    r"\bhard cut\b|\bmatch cut\b|\bsmash cut\b|\bscene change\b|"
+    r"\btransition(?:s)? to\b|\bswitch(?:es)? to\b|\bshift(?:s)? to\b|"
+    r"\bchanges? to\b)\s*",
+    re.IGNORECASE,
+)
 
 
 def tensor_to_serializable(t: torch.Tensor) -> dict:
@@ -3607,6 +3623,186 @@ class FunPackPromptCombiner:
         random_choice = random.choice(results)
 
         return (*results, random_choice)
+
+
+class FunPackShotPromptPlanner:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "A traveler enters a forest, then the scene changes to a neon city, finally a close-up as rain falls."
+                }),
+                "transition_enforcement": (["off", "auto", "soft", "hard"], {
+                    "default": "auto",
+                    "tooltip": "Turn transition words and multi-concept prompts into ordered shot clauses before text encoding."
+                }),
+                "shot_count": (["auto", "2", "3", "4", "5", "6", "8", "10"], {
+                    "default": "auto",
+                    "tooltip": "Automatic uses detected transition clauses. A number forces that many shot slots."
+                }),
+                "transition_style": (["cinematic cut", "match cut", "whip pan", "camera orbit", "dolly reveal", "scene morph"], {
+                    "default": "cinematic cut",
+                    "tooltip": "Default transition wording inserted between shot clauses."
+                }),
+                "camera_intensity": (["subtle", "medium", "strong"], {
+                    "default": "strong",
+                    "tooltip": "How strongly each shot asks for camera/viewpoint change."
+                }),
+            },
+            "optional": {
+                "global_style": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Persistent style or identity text appended to every shot."
+                }),
+                "negative_hints": ("STRING", {
+                    "multiline": True,
+                    "default": "static pose, locked camera, frozen frame, slideshow stillness",
+                    "tooltip": "Positive-side anti-stiffness wording added to the structured prompt as avoidance language."
+                }),
+            },
+        }
+
+    RETURN_TYPES = (
+        "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
+        "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
+    )
+    RETURN_NAMES = (
+        "structured_prompt", "shot1", "shot2", "shot3", "shot4", "shot5",
+        "shot6", "shot7", "shot8", "shot9", "shot10", "status",
+    )
+    FUNCTION = "plan"
+    CATEGORY = "FunPack/Prompt"
+    DESCRIPTION = "Automatically rewrites transition-heavy prompts into ordered shot clauses for context-window workflows."
+
+    def _clean_clause(self, clause):
+        clause = re.sub(r"\s+", " ", (clause or "")).strip(" ,.;:-")
+        return clause
+
+    def _split_prompt(self, prompt):
+        parts = [self._clean_clause(part) for part in SHOT_BREAK_RE.split(prompt or "")]
+        return [part for part in parts if part and len(part) > 2]
+
+    def _force_count(self, clauses, target_count):
+        if target_count <= 0:
+            return clauses
+        clauses = list(clauses)
+        if not clauses:
+            return []
+        if len(clauses) >= target_count:
+            head = clauses[:target_count - 1]
+            tail = ", ".join(clauses[target_count - 1:])
+            return head + [tail]
+        while len(clauses) < target_count:
+            clauses.append(clauses[-1])
+        return clauses
+
+    def _camera_phrase(self, index, camera_intensity):
+        subtle = [
+            "gentle camera drift",
+            "slight angle change",
+            "slow push-in",
+            "soft side-angle shift",
+        ]
+        medium = [
+            "clear camera move",
+            "new side angle",
+            "dolly movement",
+            "orbiting camera angle",
+        ]
+        strong = [
+            "distinct new viewpoint",
+            "dynamic camera orbit",
+            "strong dolly reveal",
+            "dramatic angle change",
+        ]
+        options = {"subtle": subtle, "medium": medium, "strong": strong}.get(camera_intensity, strong)
+        return options[index % len(options)]
+
+    def plan(self, prompt, transition_enforcement, shot_count, transition_style,
+             camera_intensity, global_style="", negative_hints=""):
+        prompt = (prompt or "").strip()
+        global_style = (global_style or "").strip()
+        negative_hints = (negative_hints or "").strip()
+        mode = (transition_enforcement or "auto").lower()
+
+        if mode == "off" or not prompt:
+            shots = [prompt] if prompt else []
+            while len(shots) < 10:
+                shots.append("")
+            return (prompt, *shots[:10], "Shot planning disabled.")
+
+        has_trigger = bool(TRANSITION_TRIGGER_RE.search(prompt))
+        requested_count = 0 if shot_count == "auto" else int(shot_count)
+        raw_clauses = self._split_prompt(prompt)
+
+        if not has_trigger and requested_count <= 0 and mode == "auto":
+            shots = [prompt]
+            while len(shots) < 10:
+                shots.append("")
+            status = "No transition trigger detected; prompt passed through."
+            return (prompt, *shots[:10], status)
+
+        clauses = raw_clauses if has_trigger or requested_count > 0 else [prompt]
+
+        if requested_count > 0:
+            clauses = self._force_count(clauses or [prompt], requested_count)
+
+        if len(clauses) <= 1 and mode == "auto":
+            shots = [prompt]
+            while len(shots) < 10:
+                shots.append("")
+            status = "No transition trigger detected; prompt passed through."
+            return (prompt, *shots[:10], status)
+
+        max_shots = min(10, max(1, len(clauses)))
+        clauses = clauses[:max_shots]
+
+        shot_prompts = []
+        structured_parts = []
+        enforcement_phrase = "hard new shot, previous scene context drops" if mode == "hard" else "new shot, changed camera context"
+        if mode == "auto":
+            enforcement_phrase = "new shot, changed camera context"
+
+        for index, clause in enumerate(clauses):
+            camera = self._camera_phrase(index, camera_intensity)
+            shot_bits = [
+                f"Shot {index + 1}",
+                clause,
+                camera,
+            ]
+            if global_style:
+                shot_bits.append(global_style)
+            shot_prompt = ", ".join(bit for bit in shot_bits if bit)
+            shot_prompts.append(shot_prompt)
+
+            if index == 0:
+                structured_parts.append(f"Shot {index + 1}: {clause}, {camera}.")
+            else:
+                structured_parts.append(
+                    f"{transition_style}, {enforcement_phrase}. "
+                    f"Shot {index + 1}: {clause}, {camera}."
+                )
+
+        structured_prompt = " ".join(structured_parts)
+        if global_style:
+            structured_prompt += f" Persistent style and identity: {global_style}."
+        if negative_hints:
+            structured_prompt += f" Avoid {negative_hints}."
+
+        padded = list(shot_prompts)
+        while len(padded) < 10:
+            padded.append("")
+
+        status = (
+            f"Planned {len(shot_prompts)} shot(s) | "
+            f"trigger detected: {'yes' if has_trigger else 'no'} | "
+            f"mode: {mode} | style: {transition_style}"
+        )
+        return (structured_prompt, *padded[:10], status)
+
 
 class FunPackLorebookEnhancer:
     """

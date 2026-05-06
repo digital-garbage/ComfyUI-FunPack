@@ -8,7 +8,7 @@ import comfy.samplers
 import comfy.utils
 
 
-TRANSITION_MODES = ["off", "balanced", "aggressive", "custom"]
+MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
 
 
 def _sigma_fn(t):
@@ -68,11 +68,11 @@ def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
     return min(total_steps - 1, max(0, int(round(schedule_progress * max(0, total_steps - 1)))))
 
 
-def _resolve_transition_options(transition_mode, transition_start_pct,
-                                transition_count, transition_spacing_pct,
-                                transition_strength):
-    mode = (transition_mode or "off").lower()
-    if mode not in TRANSITION_MODES:
+def _resolve_motion_pulse_options(motion_pulse_mode, motion_pulse_start_pct,
+                                  motion_pulse_count, motion_pulse_spacing_pct,
+                                  motion_pulse_strength):
+    mode = (motion_pulse_mode or "off").lower()
+    if mode not in MOTION_PULSE_MODES:
         mode = "off"
 
     if mode == "off":
@@ -85,10 +85,10 @@ def _resolve_transition_options(transition_mode, transition_start_pct,
             "noise": 0.0,
         }
 
-    start_pct = 0.30 if transition_start_pct is None else float(transition_start_pct)
-    spacing_pct = 0.22 if transition_spacing_pct is None else float(transition_spacing_pct)
-    strength = 0.85 if transition_strength is None else float(transition_strength)
-    count = 2 if transition_count is None else int(transition_count)
+    start_pct = 0.30 if motion_pulse_start_pct is None else float(motion_pulse_start_pct)
+    spacing_pct = 0.22 if motion_pulse_spacing_pct is None else float(motion_pulse_spacing_pct)
+    strength = 0.85 if motion_pulse_strength is None else float(motion_pulse_strength)
+    count = 2 if motion_pulse_count is None else int(motion_pulse_count)
 
     start_pct = max(0.02, min(0.90, start_pct))
     spacing_pct = max(0.04, min(0.45, spacing_pct))
@@ -97,7 +97,7 @@ def _resolve_transition_options(transition_mode, transition_start_pct,
 
     if mode == "balanced":
         count = min(count, 1)
-        strength = 0.55 if transition_strength is None else min(strength, 0.70)
+        strength = 0.55 if motion_pulse_strength is None else min(strength, 0.70)
     elif mode == "aggressive":
         count = max(2, count)
         strength = max(strength, 0.85)
@@ -120,16 +120,16 @@ def _get_late_start_index(total_steps, high_quality_pct):
     return max(0, total_steps - late_steps)
 
 
-def _build_transition_pulse_steps(sigmas, total_steps, high_quality_pct,
-                                  transition_mode, transition_start_pct,
-                                  transition_count, transition_spacing_pct,
-                                  transition_strength):
-    options = _resolve_transition_options(
-        transition_mode,
-        transition_start_pct,
-        transition_count,
-        transition_spacing_pct,
-        transition_strength,
+def _build_motion_pulse_steps(sigmas, total_steps, high_quality_pct,
+                              motion_pulse_mode, motion_pulse_start_pct,
+                              motion_pulse_count, motion_pulse_spacing_pct,
+                              motion_pulse_strength):
+    options = _resolve_motion_pulse_options(
+        motion_pulse_mode,
+        motion_pulse_start_pct,
+        motion_pulse_count,
+        motion_pulse_spacing_pct,
+        motion_pulse_strength,
     )
     if not options["enabled"] or total_steps <= 2:
         return [], options
@@ -158,9 +158,9 @@ def _build_transition_pulse_steps(sigmas, total_steps, high_quality_pct,
     return pulse_steps, options
 
 
-def _prepare_dynamic_sigmas(sigmas, high_quality_pct, transition_mode="off",
-                           transition_start_pct=0.30, transition_count=2,
-                           transition_spacing_pct=0.22, transition_strength=0.85):
+def _prepare_dynamic_sigmas(sigmas, high_quality_pct, motion_pulse_mode="off",
+                           motion_pulse_start_pct=0.30, motion_pulse_count=2,
+                           motion_pulse_spacing_pct=0.22, motion_pulse_strength=0.85):
     if sigmas is None or not isinstance(sigmas, torch.Tensor):
         return None, None, [], 0.0
 
@@ -174,30 +174,30 @@ def _prepare_dynamic_sigmas(sigmas, high_quality_pct, transition_mode="off",
     if late_start < base_sigmas.shape[0]:
         quality_sigma_start = float(base_sigmas[late_start].item())
 
-    pulse_steps, transition_options = _build_transition_pulse_steps(
+    pulse_steps, motion_pulse_options = _build_motion_pulse_steps(
         base_sigmas,
         total_steps,
         high_quality_pct,
-        transition_mode,
-        transition_start_pct,
-        transition_count,
-        transition_spacing_pct,
-        transition_strength,
+        motion_pulse_mode,
+        motion_pulse_start_pct,
+        motion_pulse_count,
+        motion_pulse_spacing_pct,
+        motion_pulse_strength,
     )
-    return base_sigmas, quality_sigma_start, pulse_steps, transition_options["noise"]
+    return base_sigmas, quality_sigma_start, pulse_steps, motion_pulse_options["noise"]
 
 
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, eta=1.0, s_noise=1.0,
                                    high_quality_pct=0.35, correction_blend=1.0,
                                    quality_sigma_start=None,
-                                   transition_mode="off",
-                                   transition_start_pct=0.30,
-                                   transition_count=2,
-                                   transition_spacing_pct=0.22,
-                                   transition_strength=0.85,
-                                   transition_noise=0.0,
-                                   transition_pulse_steps=None):
+                                   motion_pulse_mode="off",
+                                   motion_pulse_start_pct=0.30,
+                                   motion_pulse_count=2,
+                                   motion_pulse_spacing_pct=0.22,
+                                   motion_pulse_strength=0.85,
+                                   motion_pulse_noise=0.0,
+                                   motion_pulse_steps=None):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral for motion/anatomy buildup.
@@ -220,21 +220,21 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
 
     high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
-    if not transition_pulse_steps:
-        _, _, transition_pulse_steps, computed_transition_noise = _prepare_dynamic_sigmas(
+    if not motion_pulse_steps:
+        _, _, motion_pulse_steps, computed_motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
-            transition_mode,
-            transition_start_pct,
-            transition_count,
-            transition_spacing_pct,
-            transition_strength,
+            motion_pulse_mode,
+            motion_pulse_start_pct,
+            motion_pulse_count,
+            motion_pulse_spacing_pct,
+            motion_pulse_strength,
         )
-        transition_noise = computed_transition_noise
-    transition_noise = max(0.0, float(transition_noise))
-    transition_step_noise = {
-        int(item.get("step_index", -1)): max(0.0, float(item.get("noise", transition_noise)))
-        for item in (transition_pulse_steps or [])
+        motion_pulse_noise = computed_motion_pulse_noise
+    motion_pulse_noise = max(0.0, float(motion_pulse_noise))
+    motion_step_noise = {
+        int(item.get("step_index", -1)): max(0.0, float(item.get("noise", motion_pulse_noise)))
+        for item in (motion_pulse_steps or [])
         if isinstance(item, dict)
     }
     s_in = x.new_ones([x.shape[0]])
@@ -254,7 +254,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
         in_quality_phase = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
 
         if not in_quality_phase:
-            pulse_noise = transition_step_noise.get(int(i), 0.0)
+            pulse_noise = motion_step_noise.get(int(i), 0.0)
             if pulse_noise > 0.0:
                 x = _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler)
 
@@ -341,32 +341,32 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "Blend between Euler ancestral (0.0) and late-step 2S correction (1.0)."
                 }),
-                "transition_mode": (TRANSITION_MODES, {
+                "motion_pulse_mode": (MOTION_PULSE_MODES, {
                     "default": "off",
-                    "tooltip": "Adds early/mid motion pulses for single-clip image-to-video. Off preserves legacy sampler behavior."
+                    "tooltip": "Adds early/mid anti-stiffness motion pulses. Off preserves legacy sampler behavior."
                 }),
-                "transition_start_pct": ("FLOAT", {
+                "motion_pulse_start_pct": ("FLOAT", {
                     "default": 0.30,
                     "min": 0.0,
                     "max": 0.95,
                     "step": 0.01,
-                    "tooltip": "Sampling progress where the first motion pulse starts."
+                    "tooltip": "Sampling progress where the first anti-stiffness pulse is applied."
                 }),
-                "transition_count": ("INT", {
+                "motion_pulse_count": ("INT", {
                     "default": 2,
                     "min": 1,
                     "max": 6,
                     "step": 1,
                     "tooltip": "How many early/mid motion pulses to request before the late quality phase."
                 }),
-                "transition_spacing_pct": ("FLOAT", {
+                "motion_pulse_spacing_pct": ("FLOAT", {
                     "default": 0.22,
                     "min": 0.04,
                     "max": 0.45,
                     "step": 0.01,
                     "tooltip": "Progress spacing between motion pulses."
                 }),
-                "transition_strength": ("FLOAT", {
+                "motion_pulse_strength": ("FLOAT", {
                     "default": 0.85,
                     "min": 0.0,
                     "max": 1.0,
@@ -383,20 +383,20 @@ class FunPackHybridEuler2SSampler:
     RETURN_NAMES = ("sampler", "sigmas")
     FUNCTION = "get_sampler"
     CATEGORY = "FunPack/Sampling"
-    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional audio-safe motion pulses."
+    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional anti-stiffness motion pulses."
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
-                    transition_mode="off", transition_start_pct=0.30,
-                    transition_count=2, transition_spacing_pct=0.22,
-                    transition_strength=0.85, sigmas=None):
-        prepared_sigmas, quality_sigma_start, transition_pulse_steps, transition_noise = _prepare_dynamic_sigmas(
+                    motion_pulse_mode="off", motion_pulse_start_pct=0.30,
+                    motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
+                    motion_pulse_strength=0.85, sigmas=None):
+        prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
-            transition_mode,
-            transition_start_pct,
-            transition_count,
-            transition_spacing_pct,
-            transition_strength,
+            motion_pulse_mode,
+            motion_pulse_start_pct,
+            motion_pulse_count,
+            motion_pulse_spacing_pct,
+            motion_pulse_strength,
         )
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_hybrid_euler_2s,
@@ -406,13 +406,13 @@ class FunPackHybridEuler2SSampler:
                 "high_quality_pct": high_quality_pct,
                 "correction_blend": correction_blend,
                 "quality_sigma_start": quality_sigma_start,
-                "transition_mode": transition_mode,
-                "transition_start_pct": transition_start_pct,
-                "transition_count": transition_count,
-                "transition_spacing_pct": transition_spacing_pct,
-                "transition_strength": transition_strength,
-                "transition_noise": transition_noise,
-                "transition_pulse_steps": transition_pulse_steps,
+                "motion_pulse_mode": motion_pulse_mode,
+                "motion_pulse_start_pct": motion_pulse_start_pct,
+                "motion_pulse_count": motion_pulse_count,
+                "motion_pulse_spacing_pct": motion_pulse_spacing_pct,
+                "motion_pulse_strength": motion_pulse_strength,
+                "motion_pulse_noise": motion_pulse_noise,
+                "motion_pulse_steps": motion_pulse_steps,
             }
         )
         return (sampler, prepared_sigmas)

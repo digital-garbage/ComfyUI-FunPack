@@ -7,6 +7,7 @@ try:
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
+        FunPackShotPromptPlanner,
         FunPackSaveRefinementLatent,
         FunPackStoryWriter,
         FunPackVideoRefiner,
@@ -20,6 +21,7 @@ try:
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from .context_transition import FunPackContextTransitionWindows
     from .templates import FunPackTemplateManager
 except ImportError:
     from conditioning import (
@@ -27,6 +29,7 @@ except ImportError:
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
+        FunPackShotPromptPlanner,
         FunPackSaveRefinementLatent,
         FunPackStoryWriter,
         FunPackVideoRefiner,
@@ -40,10 +43,12 @@ except ImportError:
     )
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from context_transition import FunPackContextTransitionWindows
     from templates import FunPackTemplateManager
 
     NODE_CLASS_MAPPINGS = {
         "FunPackPromptCombiner": FunPackPromptCombiner,
+        "FunPackShotPromptPlanner": FunPackShotPromptPlanner,
         "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
         "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
         "FunPackPromptEnhancer": FunPackPromptEnhancer,
@@ -56,6 +61,7 @@ except ImportError:
         "FunPackVideoRefiner": FunPackVideoRefiner,
         "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
+        "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
         "FunPackTemplateManager": FunPackTemplateManager,
@@ -63,6 +69,7 @@ except ImportError:
 
     NODE_DISPLAY_NAME_MAPPINGS = {
         "FunPackPromptCombiner": "FunPack Prompt Combiner",
+        "FunPackShotPromptPlanner": "FunPack Shot Prompt Planner",
         "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
         "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
         "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
@@ -75,6 +82,7 @@ except ImportError:
         "FunPackVideoRefiner": "FunPack Video Refiner",
         "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
+        "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
         "FunPackTemplateManager": "FunPack Template Manager",
@@ -87,7 +95,9 @@ __all__ = [
     "FunPackSaveRefinementLatent",
     "FunPackVideoRefiner",
     "FunPackHybridEuler2SSampler",
+    "FunPackContextTransitionWindows",
     "FunPackPromptCombiner",
+    "FunPackShotPromptPlanner",
     "FunPackLorebookEnhancer",
     "FunPackPromptEnhancer",
     "FunPackStoryWriter",
