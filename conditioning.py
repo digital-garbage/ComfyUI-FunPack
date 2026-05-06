@@ -1072,6 +1072,37 @@ class FunPackVideoRefiner:
             return False
         return self._get_conditioning_seq_len(candidate) > 0
 
+    def _serialized_tensor_shape(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        shape = payload.get("shape")
+        if not isinstance(shape, list) or not shape:
+            return None
+        try:
+            return tuple(int(dim) for dim in shape)
+        except (TypeError, ValueError):
+            return None
+
+    def _serialized_conditioning_compatible(self, payload, template):
+        shape = self._serialized_tensor_shape(payload)
+        if (
+            shape is None or
+            not isinstance(template, torch.Tensor) or
+            template.dim() <= 1 or
+            len(shape) != int(template.dim()) or
+            int(shape[-1]) != int(template.shape[-1])
+        ):
+            return False
+        if len(shape) == 3 and int(shape[0]) != int(template.shape[0]):
+            return False
+        return (shape[1] if len(shape) == 3 else shape[0]) > 0
+
+    def _serialized_conditioning_seq_len(self, payload):
+        shape = self._serialized_tensor_shape(payload)
+        if shape is None or len(shape) <= 1:
+            return 0
+        return int(shape[1] if len(shape) == 3 else shape[0])
+
     def _select_lucky_memory_canvas(self, prompt_histories, template, device, dtype):
         if not isinstance(prompt_histories, dict) or not isinstance(template, torch.Tensor):
             return None, ""
@@ -1079,29 +1110,18 @@ class FunPackVideoRefiner:
         candidates = []
         current_seq = self._get_conditioning_seq_len(template)
 
-        def consider(payload, label, quality=0.0, iteration=0, allow_poor=False):
+        def consider(payload, label, quality=0.0, iteration=0):
             if payload is None:
                 return
-            try:
-                candidate = serializable_to_tensor(payload).to(device=device, dtype=dtype)
-            except Exception:
+            if not self._serialized_conditioning_compatible(payload, template):
                 return
-            if not self._conditioning_canvas_compatible(candidate, template):
-                return
-            if list(candidate.shape) == list(template.shape):
-                try:
-                    if bool(torch.allclose(candidate, template.to(device=device, dtype=dtype), atol=1e-6, rtol=1e-5)):
-                        return
-                except Exception:
-                    pass
-            seq_len = self._get_conditioning_seq_len(candidate)
+            seq_len = self._serialized_conditioning_seq_len(payload)
             candidates.append({
-                "tensor": candidate,
+                "payload": payload,
                 "label": label,
                 "seq_len": int(seq_len),
                 "quality": float(quality),
                 "iteration": int(iteration or 0),
-                "allow_poor": bool(allow_poor),
             })
 
         for prompt_key, prompt_state in prompt_histories.items():
@@ -1150,7 +1170,13 @@ class FunPackVideoRefiner:
                 item["iteration"],
             )
         )
-        return best["tensor"].clone(), f"{best['label']} ({best['seq_len']} positions)"
+        try:
+            canvas = serializable_to_tensor(best["payload"]).to(device=device, dtype=dtype)
+        except Exception:
+            return None, ""
+        if not self._conditioning_canvas_compatible(canvas, template):
+            return None, ""
+        return canvas.clone(), f"{best['label']} ({best['seq_len']} positions)"
 
     def _eligible_void_bank_items(self, global_adaptive, embedding_dim):
         bank = self._ensure_void_token_bank(global_adaptive)
@@ -1175,11 +1201,8 @@ class FunPackVideoRefiner:
         candidates = []
         for token, item in bank.items():
             score = self._void_bank_score(item)
-            try:
-                vector = serializable_to_tensor(item["embedding"]).float()
-            except Exception:
-                continue
-            if vector.dim() != 1 or int(vector.shape[0]) != int(embedding_dim):
+            embedding_shape = self._serialized_tensor_shape(item.get("embedding"))
+            if embedding_shape is None or len(embedding_shape) != 1 or int(embedding_shape[0]) != int(embedding_dim):
                 continue
             candidates.append((token, item, score))
 
@@ -1310,7 +1333,14 @@ class FunPackVideoRefiner:
 
     def _compose_lucky_prompt_text(self, global_adaptive, word_groups, embedding_dim,
                                    prompt_sequences=None, target_count=64):
-        lucky_pool = self._eligible_lucky_bank_items(global_adaptive, int(embedding_dim))
+        bank = self._ensure_void_token_bank(global_adaptive)
+        lucky_pool = []
+        for token, item in bank.items():
+            embedding_shape = self._serialized_tensor_shape(item.get("embedding"))
+            if embedding_shape is None or len(embedding_shape) != 1 or int(embedding_shape[0]) != int(embedding_dim):
+                continue
+            lucky_pool.append((token, item, self._void_bank_score(item)))
+
         if len(lucky_pool) < 2:
             return "", {
                 "source": "bank too small",
@@ -1320,14 +1350,7 @@ class FunPackVideoRefiner:
                 "token_count": 0,
             }
 
-        token_vectors = {}
-        for token, item, _ in lucky_pool:
-            try:
-                vector = serializable_to_tensor(item["embedding"]).float()
-            except Exception:
-                continue
-            if vector.dim() == 1 and int(vector.shape[0]) == int(embedding_dim):
-                token_vectors[token] = vector
+        token_vectors = {token: True for token, _, _ in lucky_pool}
 
         if len(token_vectors) < 2:
             return "", {
@@ -1338,7 +1361,7 @@ class FunPackVideoRefiner:
                 "token_count": 0,
             }
 
-        count = max(4, int(target_count or 0))
+        count = max(4, min(int(target_count or 0), 64))
         chosen_tokens, compose_info = self._lucky_compose_tokens(
             global_adaptive,
             word_groups,
@@ -1456,7 +1479,7 @@ class FunPackVideoRefiner:
     def _apply_into_the_void(self, new_positive, reference, global_adaptive, word_groups,
                              word_importance, into_the_void=False, im_feeling_lucky=False,
                              token_mask=None, prompt_sequences=None, lucky_canvas=None,
-                             lucky_canvas_label="", lucky_prompt_text=""):
+                             lucky_canvas_label="", lucky_prompt_text="", lucky_prompt_tokens=None):
         if not into_the_void and not im_feeling_lucky:
             return new_positive, self._void_empty_status(False), {}
         if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
@@ -1531,136 +1554,51 @@ class FunPackVideoRefiner:
             status_parts.append("Void: off | idle | tokens: none")
 
         if im_feeling_lucky:
-            lucky_pool = self._eligible_lucky_bank_items(global_adaptive, int(mixed.shape[-1]))
             active_positions = torch.arange(active_len, device=device)
             if token_mask is not None:
                 active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
 
-            if len(lucky_pool) < 2:
-                if lucky_canvas_used:
-                    lucky_metadata = {
-                        "enabled": True,
-                        "source": "memory canvas",
-                        "tokens": [],
-                        "unique_tokens": [],
-                        "injections": [],
-                        "anchor_tokens": [],
-                        "context_tokens": [],
-                        "context_hits": 0,
-                        "canvas": lucky_canvas_status,
-                        "prompt": lucky_prompt_text,
-                    }
-                    status_parts.append(
-                        f"Lucky: on | memory canvas {lucky_canvas_status} | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none"
-                    )
-                else:
-                    status_parts.append(f"Lucky: on | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none")
-            elif active_positions.numel() <= 0:
-                if lucky_canvas_used:
-                    lucky_metadata = {
-                        "enabled": True,
-                        "source": "memory canvas",
-                        "tokens": [],
-                        "unique_tokens": [],
-                        "injections": [],
-                        "anchor_tokens": [],
-                        "context_tokens": [],
-                        "context_hits": 0,
-                        "canvas": lucky_canvas_status,
-                        "prompt": lucky_prompt_text,
-                    }
-                    status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | no active positions | tokens: none")
-                else:
-                    status_parts.append("Lucky: on | no active positions | tokens: none")
-            else:
-                token_vectors = {}
-                for token, item, _ in lucky_pool:
-                    try:
-                        vector = serializable_to_tensor(item["embedding"]).to(device=device, dtype=dtype)
-                    except Exception:
-                        continue
-                    if vector.dim() == 1 and int(vector.shape[0]) == int(mixed.shape[-1]):
-                        token_vectors[token] = vector
-
-                ordered_sequences = []
-                if isinstance(prompt_sequences, list):
-                    for sequence in prompt_sequences:
-                        if not isinstance(sequence, list):
-                            continue
-                        ordered = [token for token in sequence if token in token_vectors]
-                        if len(ordered) >= 2:
-                            ordered_sequences.append(ordered)
-
-                chosen_tokens, compose_info = self._lucky_compose_tokens(
-                    global_adaptive,
-                    word_groups,
-                    lucky_pool,
-                    token_vectors,
-                    int(active_positions.numel()),
-                )
-                if ordered_sequences and compose_info.get("source") == "global preferences":
-                    sequence = random.choice(ordered_sequences)
-                    chosen_tokens = [
-                        sequence[index % len(sequence)]
-                        if random.random() < 0.55 else chosen_tokens[index]
-                        for index in range(min(len(chosen_tokens), int(active_positions.numel())))
-                    ]
-                    compose_info["source"] = "saved prompt order"
-
-                lucky_field = mixed.clone()
-                picked_tokens = []
+            prompt_tokens = [
+                str(token).strip().lower()
+                for token in (lucky_prompt_tokens or [])
+                if self._is_valuable_token(str(token).strip())
+            ]
+            if lucky_canvas_used and prompt_tokens:
+                positions = torch.linspace(
+                    0,
+                    max(0, int(active_positions.numel()) - 1),
+                    steps=min(len(prompt_tokens), max(1, int(active_positions.numel()))),
+                    device=device,
+                ).round().long()
                 injections = []
-                for pos_tensor, token in zip(active_positions, chosen_tokens):
-                    vector = token_vectors.get(token)
-                    if vector is None:
-                        continue
-                    pos = int(pos_tensor.item())
-                    if lucky_field.dim() == 3:
-                        lucky_field[:, pos, :] = vector.view(1, -1)
-                    else:
-                        lucky_field[pos, :] = vector
-                    picked_tokens.append(token)
+                for index, token in enumerate(prompt_tokens[:int(positions.numel())]):
+                    pos = int(active_positions[int(positions[index].item())].item()) if active_positions.numel() > 0 else index
                     injections.append({"token": token, "start": pos, "end": pos + 1})
-
-                if picked_tokens:
-                    strength = 0.030 if into_the_void else 0.040
-                    mixed = mixed.lerp(lucky_field, strength)
-                    token_preview = []
-                    seen_tokens = set()
-                    for token in picked_tokens:
-                        if token in seen_tokens:
-                            continue
-                        token_preview.append(token)
-                        seen_tokens.add(token)
-                        if len(token_preview) >= 8:
-                            break
-                    token_list = ", ".join(token_preview)
-                    if len(seen_tokens) < len(set(picked_tokens)):
-                        token_list += ", ..."
-                    anchor_preview = ", ".join(compose_info.get("anchor_tokens", [])[:4]) or "none"
-                    context_preview = ", ".join(compose_info.get("context_tokens", [])[:6]) or "none"
-                    lucky_metadata = {
-                        "enabled": True,
-                        "source": compose_info.get("source", "global preferences"),
-                        "tokens": picked_tokens,
-                        "unique_tokens": sorted(set(picked_tokens)),
-                        "injections": injections,
-                        "anchor_tokens": compose_info.get("anchor_tokens", []),
-                        "context_tokens": compose_info.get("context_tokens", []),
-                        "context_hits": int(compose_info.get("context_hits", 0)),
-                        "canvas": lucky_canvas_status if lucky_canvas_used else "current conditioning",
-                        "prompt": lucky_prompt_text,
-                    }
-                    canvas_phrase = f" | canvas: {lucky_canvas_status}" if lucky_canvas_used else ""
-                    prompt_preview = re.sub(r"\s+", " ", lucky_prompt_text).strip()
-                    if len(prompt_preview) > 160:
-                        prompt_preview = prompt_preview[:157].rstrip() + "..."
-                    prompt_phrase = f" | prompt: {prompt_preview}" if prompt_preview else ""
-                    status_parts.append(
-                        f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} positions from {len(set(picked_tokens))} tokens | "
-                        f"anchors: {anchor_preview} | context add: {context_preview}{canvas_phrase}{prompt_phrase} | tokens: {token_list}"
-                    )
-                else:
+                lucky_metadata = {
+                    "enabled": True,
+                    "source": "encoded prompt",
+                    "tokens": prompt_tokens,
+                    "unique_tokens": sorted(set(prompt_tokens)),
+                    "injections": injections,
+                    "anchor_tokens": [],
+                    "context_tokens": [],
+                    "context_hits": 0,
+                    "canvas": lucky_canvas_status,
+                    "prompt": lucky_prompt_text,
+                }
+                token_preview = ", ".join(prompt_tokens[:8])
+                if len(prompt_tokens) > 8:
+                    token_preview += ", ..."
+                prompt_preview = re.sub(r"\s+", " ", lucky_prompt_text).strip()
+                if len(prompt_preview) > 160:
+                    prompt_preview = prompt_preview[:157].rstrip() + "..."
+                status_parts.append(
+                    f"Lucky: on | encoded prompt | {len(prompt_tokens)} prompt tokens | "
+                    f"canvas: {lucky_canvas_status} | prompt: {prompt_preview} | tokens: {token_preview}"
+                )
+            else:
+                lucky_pool = self._eligible_lucky_bank_items(global_adaptive, int(mixed.shape[-1]))
+                if len(lucky_pool) < 2:
                     if lucky_canvas_used:
                         lucky_metadata = {
                             "enabled": True,
@@ -1674,9 +1612,138 @@ class FunPackVideoRefiner:
                             "canvas": lucky_canvas_status,
                             "prompt": lucky_prompt_text,
                         }
-                        status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | bank unreadable | tokens: none")
+                        status_parts.append(
+                            f"Lucky: on | memory canvas {lucky_canvas_status} | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none"
+                        )
                     else:
-                        status_parts.append("Lucky: on | bank unreadable | tokens: none")
+                        status_parts.append(f"Lucky: on | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none")
+                elif active_positions.numel() <= 0:
+                    if lucky_canvas_used:
+                        lucky_metadata = {
+                            "enabled": True,
+                            "source": "memory canvas",
+                            "tokens": [],
+                            "unique_tokens": [],
+                            "injections": [],
+                            "anchor_tokens": [],
+                            "context_tokens": [],
+                            "context_hits": 0,
+                            "canvas": lucky_canvas_status,
+                            "prompt": lucky_prompt_text,
+                        }
+                        status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | no active positions | tokens: none")
+                    else:
+                        status_parts.append("Lucky: on | no active positions | tokens: none")
+                else:
+                    token_membership = {token: True for token, _, _ in lucky_pool}
+
+                    ordered_sequences = []
+                    if isinstance(prompt_sequences, list):
+                        for sequence in prompt_sequences:
+                            if not isinstance(sequence, list):
+                                continue
+                            ordered = [token for token in sequence if token in token_membership]
+                            if len(ordered) >= 2:
+                                ordered_sequences.append(ordered)
+
+                    chosen_tokens, compose_info = self._lucky_compose_tokens(
+                        global_adaptive,
+                        word_groups,
+                        lucky_pool,
+                        token_membership,
+                        int(active_positions.numel()),
+                    )
+                    if ordered_sequences and compose_info.get("source") == "global preferences":
+                        sequence = random.choice(ordered_sequences)
+                        chosen_tokens = [
+                            sequence[index % len(sequence)]
+                            if random.random() < 0.55 else chosen_tokens[index]
+                            for index in range(min(len(chosen_tokens), int(active_positions.numel())))
+                        ]
+                        compose_info["source"] = "saved prompt order"
+
+                    needed_tokens = set(chosen_tokens)
+                    token_vectors = {}
+                    for token, item, _ in lucky_pool:
+                        if token not in needed_tokens:
+                            continue
+                        try:
+                            vector = serializable_to_tensor(item["embedding"]).to(device=device, dtype=dtype)
+                        except Exception:
+                            continue
+                        if vector.dim() == 1 and int(vector.shape[0]) == int(mixed.shape[-1]):
+                            token_vectors[token] = vector
+
+                    lucky_field = mixed.clone()
+                    picked_tokens = []
+                    injections = []
+                    for pos_tensor, token in zip(active_positions, chosen_tokens):
+                        vector = token_vectors.get(token)
+                        if vector is None:
+                            continue
+                        pos = int(pos_tensor.item())
+                        if lucky_field.dim() == 3:
+                            lucky_field[:, pos, :] = vector.view(1, -1)
+                        else:
+                            lucky_field[pos, :] = vector
+                        picked_tokens.append(token)
+                        injections.append({"token": token, "start": pos, "end": pos + 1})
+
+                    if picked_tokens:
+                        strength = 0.030 if into_the_void else 0.040
+                        mixed = mixed.lerp(lucky_field, strength)
+                        token_preview = []
+                        seen_tokens = set()
+                        for token in picked_tokens:
+                            if token in seen_tokens:
+                                continue
+                            token_preview.append(token)
+                            seen_tokens.add(token)
+                            if len(token_preview) >= 8:
+                                break
+                        token_list = ", ".join(token_preview)
+                        if len(seen_tokens) < len(set(picked_tokens)):
+                            token_list += ", ..."
+                        anchor_preview = ", ".join(compose_info.get("anchor_tokens", [])[:4]) or "none"
+                        context_preview = ", ".join(compose_info.get("context_tokens", [])[:6]) or "none"
+                        lucky_metadata = {
+                            "enabled": True,
+                            "source": compose_info.get("source", "global preferences"),
+                            "tokens": picked_tokens,
+                            "unique_tokens": sorted(set(picked_tokens)),
+                            "injections": injections,
+                            "anchor_tokens": compose_info.get("anchor_tokens", []),
+                            "context_tokens": compose_info.get("context_tokens", []),
+                            "context_hits": int(compose_info.get("context_hits", 0)),
+                            "canvas": lucky_canvas_status if lucky_canvas_used else "current conditioning",
+                            "prompt": lucky_prompt_text,
+                        }
+                        canvas_phrase = f" | canvas: {lucky_canvas_status}" if lucky_canvas_used else ""
+                        prompt_preview = re.sub(r"\s+", " ", lucky_prompt_text).strip()
+                        if len(prompt_preview) > 160:
+                            prompt_preview = prompt_preview[:157].rstrip() + "..."
+                        prompt_phrase = f" | prompt: {prompt_preview}" if prompt_preview else ""
+                        status_parts.append(
+                            f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} positions from {len(set(picked_tokens))} tokens | "
+                            f"anchors: {anchor_preview} | context add: {context_preview}{canvas_phrase}{prompt_phrase} | tokens: {token_list}"
+                        )
+                    else:
+                        if lucky_canvas_used:
+                            lucky_metadata = {
+                                "enabled": True,
+                                "source": "memory canvas",
+                                "tokens": [],
+                                "unique_tokens": [],
+                                "injections": [],
+                                "anchor_tokens": [],
+                                "context_tokens": [],
+                                "context_hits": 0,
+                                "canvas": lucky_canvas_status,
+                                "prompt": lucky_prompt_text,
+                            }
+                            status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | bank unreadable | tokens: none")
+                        else:
+                            status_parts.append("Lucky: on | bank unreadable | tokens: none")
         else:
             status_parts.append("Lucky: off")
 
@@ -4352,17 +4419,20 @@ class FunPackVideoRefiner:
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
         lucky_canvas, lucky_canvas_label = (None, "")
         lucky_prompt_text = ""
+        lucky_prompt_tokens = []
         lucky_encoded_meta = None
+        lucky_prompt_sequences = []
         if im_feeling_lucky:
-            prompt_sequences = self._lucky_prompt_sequences(prompt_histories)
+            lucky_prompt_sequences = self._lucky_prompt_sequences(prompt_histories)
             if clip is not None:
                 lucky_prompt_text, lucky_prompt_info = self._compose_lucky_prompt_text(
                     global_adaptive,
                     word_groups,
                     int(cur_positive.shape[-1]),
-                    prompt_sequences=prompt_sequences,
+                    prompt_sequences=lucky_prompt_sequences,
                     target_count=self._get_conditioning_seq_len(cur_positive),
                 )
+                lucky_prompt_tokens = list(lucky_prompt_info.get("tokens", [])) if isinstance(lucky_prompt_info, dict) else []
                 encoded_canvas, encoded_meta, encoded_status = self._encode_lucky_prompt_conditioning(
                     clip,
                     lucky_prompt_text,
@@ -4393,10 +4463,11 @@ class FunPackVideoRefiner:
             into_the_void=into_the_void,
             im_feeling_lucky=im_feeling_lucky,
             token_mask=active_token_mask,
-            prompt_sequences=self._lucky_prompt_sequences(prompt_histories),
+            prompt_sequences=lucky_prompt_sequences,
             lucky_canvas=lucky_canvas,
             lucky_canvas_label=lucky_canvas_label,
             lucky_prompt_text=lucky_prompt_text,
+            lucky_prompt_tokens=lucky_prompt_tokens if lucky_encoded_meta is not None else [],
         )
         if should_seed_current_prompt_after_lucky:
             self._seed_void_token_bank(

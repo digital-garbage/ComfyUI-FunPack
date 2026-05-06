@@ -34,6 +34,8 @@ Fixed `I'm Feeling Lucky` memory-first output so vague or empty incoming conditi
 
 Added an optional `clip` input to `FunPack Video Refiner` so `I'm Feeling Lucky` can compose a learned prompt, re-encode it through the connected CLIP/Gemma text encoder, and refine from that freshly tokenized conditioning.
 
+Improved `I'm Feeling Lucky` runtime by selecting learned conditioning canvases from saved tensor metadata before decoding, capping CLIP/Gemma Lucky prompts to a practical per-run concept count, and decoding only the token vectors selected for the current generation.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed
