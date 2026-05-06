@@ -56,18 +56,7 @@ When a similar enhanced prompt is reused, the refiner preserves the compatible h
 
 **latent**: Optional latent input. It is only used when the `refined_latent` output is also connected. If no saved latent exists yet, the node uses the connected input latent as the current reference.
 
-**shot_enforcement**: Automatic multi-shot conditioning mode.
-
-- `off`: output one refined conditioning entry.
-- `auto`: split only when transition trigger words are detected in `positive_prompt`.
-- `soft`: split detected clauses and use moderate per-shot emphasis.
-- `hard`: split detected clauses with stronger intent for context-window shot routing.
-
-Detected trigger language includes words and phrases such as `then`, `after this`, `cut to`, `scene change`, `transition to`, `next`, `finally`, and `suddenly`.
-
-**shot_count**: `auto` uses detected prompt clauses. A number forces that many shot conditioning entries.
-
-**shot_strength**: How strongly each shot entry emphasizes its own prompt span and de-emphasizes other shot spans.
+**into_the_void**: Experimental preference-discovery mode. When enabled, the refiner lightly mixes a few learned liked token embeddings into the final conditioning. These tokens come from previous prompts that were rated `Perfect`, `Missing details`, or at least not consistently `Awful`. If the learned token bank is empty, the node falls back to high-affinity tokens from the current prompt.
 
 ## Compatibility Name
 
@@ -75,7 +64,7 @@ The node is now displayed as `FunPack Video Refiner`. The old `FunPackGemmaEmbed
 
 ## Outputs
 
-**modified_positive**: Refined conditioning. With shot enforcement off this contains one conditioning entry. With shot enforcement active it can contain multiple conditioning entries, one per detected or requested shot. Use Comfy context windows with `split_conds_to_windows` enabled so each temporal window receives its matching entry.
+**modified_positive**: Refined conditioning. The refiner returns one conditioning entry.
 
 **status**: Short node summary.
 
@@ -93,24 +82,11 @@ The node is now displayed as `FunPack Video Refiner`. The old `FunPackGemmaEmbed
 
 Use this node when you want a workflow to learn from your ratings over several runs instead of rewriting the prompt from scratch every time. Each `refinement_key` gets its own saved profile.
 
-## Shot Enforcement
+## Into The Void
 
-Shot enforcement is intended for prompts that contain multiple concepts connected by transition language, for example:
+`into_the_void` is for controlled randomness, not prompt rewriting. The refiner keeps a compact token bank from rated prompts and tracks which words or protected phrases tend to survive good feedback. When the toggle is enabled, it chooses a small number of eligible tokens and softly blends their averaged embeddings into the final conditioning.
 
-```text
-A knight enters a castle, then a dragon appears, after this cut to a burning village, finally close up of the knight.
-```
-
-The refiner tokenizes the provided `positive_prompt`, detects shot clauses, and returns multiple refined conditioning entries. Each entry keeps the same learned refinement but emphasizes one shot span more than the others. This keeps the workflow compact:
-
-```text
-Prompt Enhancer -> Text Encode -> FunPack Video Refiner -> sampler conditioning
-MODEL -> Context Windows (Manual or FunPack Context Transition Windows) -> sampler model
-```
-
-For best effect, enable `split_conds_to_windows` on the context-window node. The context handler then assigns conditioning entries by window region, giving the model a different semantic target in different parts of the video without manually wiring separate prompts.
-
-Leave `cond_retain_index_list` empty when testing hard transitions. Retaining frame `0` in every window can over-anchor later shot windows to the starting image.
+Use it when you want to discover surprising concept-concept pairs or learn which prompt tokens line up with your preferred outputs. Leave it disabled when you want stable convergence on the current prompt only. `Awful` ratings suppress tokens, and `-Just forget it-` does not update the bank.
 
 ## Latent Refinement
 

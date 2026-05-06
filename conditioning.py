@@ -209,24 +209,6 @@ def normalize_refiner_rating(value):
 
 
 PROTECTED_PHRASE_RE = re.compile(r'"([^"]+)"|“([^”]+)”|\\([^\\]+)\\')
-TRANSITION_TRIGGER_RE = re.compile(
-    r"\b("
-    r"then|after(?:wards| this| that)?|next|finally|suddenly|meanwhile|"
-    r"cut(?:s)? to|hard cut|match cut|smash cut|scene change|transition(?:s)? to|"
-    r"switch(?:es)? to|shift(?:s)? to|changes? to|reveals?|now"
-    r")\b",
-    re.IGNORECASE,
-)
-SHOT_BREAK_RE = re.compile(
-    r"\s*(?:,|;|\.|\n|\bthen\b|\bafterwards\b|\bafter this\b|\bafter that\b|"
-    r"\bnext\b|\bfinally\b|\bsuddenly\b|\bmeanwhile\b|\bcut(?:s)? to\b|"
-    r"\bhard cut\b|\bmatch cut\b|\bsmash cut\b|\bscene change\b|"
-    r"\btransition(?:s)? to\b|\bswitch(?:es)? to\b|\bshift(?:s)? to\b|"
-    r"\bchanges? to\b)\s*",
-    re.IGNORECASE,
-)
-
-
 def tensor_to_serializable(t: torch.Tensor) -> dict:
     if not isinstance(t, torch.Tensor):
         raise TypeError(f"Expected torch.Tensor, got {type(t)}")
@@ -685,111 +667,220 @@ class FunPackVideoRefiner:
             key=lambda group: (group[0], group[1], group[2].lower()),
         )
 
-    def _clean_shot_clause(self, clause):
-        return re.sub(r"\s+", " ", (clause or "")).strip(" ,.;:-")
+    def _void_empty_status(self, enabled=False):
+        return f"Void: {'on' if enabled else 'off'} | idle | tokens: none"
 
-    def _split_prompt_into_shots(self, prompt):
-        parts = [self._clean_shot_clause(part) for part in SHOT_BREAK_RE.split(prompt or "")]
-        return [part for part in parts if part and len(part) > 2]
-
-    def _force_shot_count(self, clauses, target_count):
-        if target_count <= 0:
-            return clauses
-        clauses = list(clauses)
-        if not clauses:
-            return []
-        if len(clauses) >= target_count:
-            head = clauses[:target_count - 1]
-            tail = ", ".join(clauses[target_count - 1:])
-            return head + [tail]
-        while len(clauses) < target_count:
-            clauses.append(clauses[-1])
-        return clauses
-
-    def _resolve_shot_clauses(self, prompt, shot_enforcement, shot_count):
-        prompt = (prompt or "").strip()
-        mode = (shot_enforcement or "off").lower()
-        if mode == "off" or not prompt:
-            return [], False, "shot enforcement off"
-
-        has_trigger = bool(TRANSITION_TRIGGER_RE.search(prompt))
-        requested_count = 0 if shot_count == "auto" else int(shot_count)
-        clauses = self._split_prompt_into_shots(prompt)
-
-        if requested_count > 0:
-            clauses = self._force_shot_count(clauses or [prompt], requested_count)
-        elif not has_trigger and mode == "auto":
-            return [], False, "no transition trigger detected"
-        elif not clauses:
-            clauses = [prompt]
-
-        clauses = clauses[:10]
-        if len(clauses) <= 1 and mode == "auto":
-            return [], has_trigger, "single shot"
-        return clauses, has_trigger, "shot clauses resolved"
-
-    def _find_token_span_for_text(self, tokenizer, full_token_ids, text, effective_seq_len):
-        if not tokenizer or not text or not full_token_ids:
+    def _void_token_embedding(self, conditioning: torch.Tensor, start: int, end: int):
+        if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1 or end <= start:
             return None
-        token_ids = self._tokenize_ids(tokenizer, text, add_special_tokens=False)
-        if not token_ids:
-            return None
-        max_start = max(0, len(full_token_ids) - len(token_ids) + 1)
-        for start in range(max_start):
-            end = start + len(token_ids)
-            if full_token_ids[start:end] == token_ids and start < effective_seq_len:
-                return (start, min(effective_seq_len, end))
-        return None
+        if conditioning.dim() == 3:
+            return conditioning[:, start:end, :].detach().mean(dim=(0, 1))
+        return conditioning[start:end, :].detach().mean(dim=0)
 
-    def _build_shot_token_spans(self, prompt, shot_clauses, tokenizer, seq_len, token_mask=None):
-        if not shot_clauses or not tokenizer or seq_len <= 0:
-            return []
+    def _void_bank_score(self, item):
+        likes = float(item.get("liked_count", 0))
+        neutral = float(item.get("neutral_count", 0))
+        awful = float(item.get("awful_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.40 + neutral * 0.08 - awful * 0.95
 
-        effective_seq_len = self._get_effective_seq_len(token_mask, seq_len)
-        full_token_ids = self._tokenize_ids(
-            tokenizer,
-            prompt,
-            add_special_tokens=True,
-            max_length=effective_seq_len,
-        )[:effective_seq_len]
+    def _ensure_void_token_bank(self, global_adaptive):
+        bank = global_adaptive.get("void_token_bank")
+        if not isinstance(bank, dict):
+            bank = {}
+        cleaned = {}
+        for token, item in bank.items():
+            if not isinstance(token, str) or not isinstance(item, dict):
+                continue
+            vector = item.get("embedding")
+            if not isinstance(vector, dict):
+                continue
+            try:
+                shape = vector.get("shape", [])
+                if len(shape) != 1 or int(shape[0]) <= 0:
+                    continue
+                score = self._void_bank_score(item)
+                if score < -1.25 and int(item.get("awful_count", 0)) >= 2:
+                    continue
+                item["score"] = round(max(-2.0, min(5.0, float(item.get("score", 0.0)))), 4)
+                item["liked_count"] = max(0, int(item.get("liked_count", 0)))
+                item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
+                item["awful_count"] = max(0, int(item.get("awful_count", 0)))
+                item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                cleaned[token] = item
+            except (TypeError, ValueError):
+                continue
+        if len(cleaned) > 96:
+            ranked = sorted(cleaned.items(), key=lambda pair: self._void_bank_score(pair[1]), reverse=True)
+            cleaned = dict(ranked[:96])
+        global_adaptive["void_token_bank"] = cleaned
+        return cleaned
 
-        spans = []
-        search_start = 0
-        for index, clause in enumerate(shot_clauses):
-            span = self._find_token_span_for_text(tokenizer, full_token_ids[search_start:], clause, effective_seq_len)
-            if span is not None:
-                start, end = span
-                start += search_start
-                end += search_start
-                search_start = max(search_start, end)
-            else:
-                start = round(index * effective_seq_len / max(1, len(shot_clauses)))
-                end = round((index + 1) * effective_seq_len / max(1, len(shot_clauses)))
-                end = max(start + 1, min(effective_seq_len, end))
-            spans.append((int(start), int(end), clause))
-        return spans
+    def _update_void_token_bank(self, global_adaptive, word_groups, cur_positive,
+                                rating_profile, iter_num, token_mask=None):
+        bank = self._ensure_void_token_bank(global_adaptive)
+        rating_key = rating_profile.get("key", "")
+        if not word_groups or not isinstance(cur_positive, torch.Tensor) or rating_profile.get("skip_learning"):
+            return bank
 
-    def _make_shot_conditionings(self, new_positive, positive_meta, shot_spans, shot_strength):
-        if not shot_spans or not isinstance(new_positive, torch.Tensor) or new_positive.dim() <= 1:
-            return [(new_positive, positive_meta)]
+        if rating_key == "like":
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.70, 1, 0, 0
+        elif rating_key == "missing_details":
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.42, 1, 0, 0
+        elif rating_key == "awful":
+            score_delta, liked_delta, neutral_delta, awful_delta = -1.10, 0, 0, 1
+        else:
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.12, 0, 1, 0
 
+        token_mask_list = None
+        if token_mask is not None:
+            token_mask_list = token_mask.detach().cpu().tolist()
+
+        for start, end, full_word, _ in word_groups:
+            if not self._is_valuable_token(full_word):
+                continue
+            if token_mask_list is not None and not all(token_mask_list[start:min(len(token_mask_list), end)]):
+                continue
+            embedding = self._void_token_embedding(cur_positive, start, end)
+            if embedding is None:
+                continue
+
+            token = full_word.strip().lower()
+            item = bank.get(token, {})
+            count = max(0, int(item.get("sample_count", 0)))
+            if "embedding" in item and count > 0 and rating_key != "awful":
+                try:
+                    previous = serializable_to_tensor(item["embedding"]).to(embedding.device)
+                    if list(previous.shape) == list(embedding.shape):
+                        mix = min(0.35, 1.0 / float(count + 1))
+                        embedding = previous.lerp(embedding, mix)
+                except Exception:
+                    pass
+
+            item["embedding"] = tensor_to_serializable(embedding.float().cpu())
+            item["score"] = round(max(-2.0, min(5.0, float(item.get("score", 0.0)) + score_delta)), 4)
+            item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
+            item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
+            item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+            item["sample_count"] = min(9999, count + (0 if rating_key == "awful" else 1))
+            item["last_seen_iter"] = int(iter_num)
+            bank[token] = item
+
+        ranked = sorted(
+            bank.items(),
+            key=lambda pair: (self._void_bank_score(pair[1]), pair[1].get("last_seen_iter", 0)),
+            reverse=True,
+        )
+        global_adaptive["void_token_bank"] = dict(ranked[:96])
+        return global_adaptive["void_token_bank"]
+
+    def _eligible_void_bank_items(self, global_adaptive, embedding_dim):
+        bank = self._ensure_void_token_bank(global_adaptive)
+        eligible = []
+        for token, item in bank.items():
+            if int(item.get("awful_count", 0)) >= 2 and int(item.get("liked_count", 0)) <= 0:
+                continue
+            score = self._void_bank_score(item)
+            if score <= 0.35:
+                continue
+            try:
+                vector = serializable_to_tensor(item["embedding"]).float()
+            except Exception:
+                continue
+            if vector.dim() != 1 or int(vector.shape[0]) != int(embedding_dim):
+                continue
+            eligible.append((token, item, score))
+        return eligible
+
+    def _select_void_tokens(self, global_adaptive, word_groups, cur_positive,
+                            word_importance, token_mask=None, max_count=3):
+        if not isinstance(cur_positive, torch.Tensor) or cur_positive.dim() <= 1:
+            return [], "idle"
+        embedding_dim = int(cur_positive.shape[-1])
+        eligible = self._eligible_void_bank_items(global_adaptive, embedding_dim)
+        if eligible:
+            pool = sorted(eligible, key=lambda item: item[2], reverse=True)[:24]
+            weights = torch.tensor([max(0.01, item[2]) for item in pool], dtype=torch.float32)
+            count = min(max_count, max(1, int(torch.randint(1, min(3, len(pool)) + 1, (1,)).item())))
+            picked_indexes = torch.multinomial(weights, count, replacement=False).tolist()
+            picked = []
+            for index in picked_indexes:
+                token, item, _ = pool[index]
+                picked.append((token, serializable_to_tensor(item["embedding"]).float()))
+            return picked, "bank"
+
+        fallback = []
+        token_mask_list = None
+        if token_mask is not None:
+            token_mask_list = token_mask.detach().cpu().tolist()
+        for start, end, full_word, _ in word_groups:
+            token = full_word.strip().lower()
+            if not self._is_valuable_token(token):
+                continue
+            if token_mask_list is not None and not all(token_mask_list[start:min(len(token_mask_list), end)]):
+                continue
+            score = float(word_importance.get(token, 1.0))
+            if score < 1.05:
+                continue
+            embedding = self._void_token_embedding(cur_positive, start, end)
+            if embedding is not None:
+                fallback.append((token, embedding.float().cpu(), score))
+        fallback = sorted(fallback, key=lambda item: item[2], reverse=True)[:max_count]
+        return [(token, vector) for token, vector, _ in fallback], "current" if fallback else "empty"
+
+    def _apply_into_the_void(self, new_positive, reference, global_adaptive, word_groups,
+                             word_importance, into_the_void=False, token_mask=None):
+        if not into_the_void:
+            return new_positive, self._void_empty_status(False)
+        if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
+            return new_positive, "Void: on | unavailable | tokens: none"
+        if new_positive.dim() <= 1 or list(new_positive.shape) != list(reference.shape):
+            return new_positive, "Void: on | incompatible conditioning | tokens: none"
+
+        selected, source = self._select_void_tokens(
+            global_adaptive,
+            word_groups,
+            new_positive,
+            word_importance,
+            token_mask=token_mask,
+        )
+        if not selected:
+            return new_positive, f"Void: on | {source} | tokens: none"
+
+        device = new_positive.device
+        dtype = new_positive.dtype
         seq_len = new_positive.shape[1] if new_positive.dim() == 3 else new_positive.shape[0]
-        shot_strength = max(0.0, min(1.0, float(shot_strength)))
-        outside_weight = 1.0 - 0.55 * shot_strength
-        inside_weight = 1.0 + 0.35 * shot_strength
+        active_len = self._get_effective_seq_len(token_mask, seq_len)
+        active_len = max(1, min(seq_len, active_len))
+        positions = torch.linspace(0, active_len - 1, steps=len(selected), device=device).round().long()
+        mixed = new_positive.clone()
+        strength = min(0.055, 0.09 / max(1, len(selected)))
 
-        modified = []
-        for start, end, _ in shot_spans:
-            weights = torch.ones(seq_len, device=new_positive.device, dtype=new_positive.dtype) * outside_weight
-            weights[max(0, start):min(seq_len, end)] = inside_weight
-            if new_positive.dim() == 3:
-                weighted = new_positive * weights.view(1, -1, 1)
+        for index, (_, vector) in enumerate(selected):
+            vector = vector.to(device=device, dtype=dtype)
+            if vector.dim() != 1 or int(vector.shape[0]) != int(new_positive.shape[-1]):
+                continue
+            pos = int(positions[index].item())
+            if token_mask is not None and pos < token_mask.shape[0] and not bool(token_mask[pos].item()):
+                active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
+                if active_positions.numel() == 0:
+                    continue
+                pos = int(active_positions[min(index, active_positions.numel() - 1)].item())
+            if mixed.dim() == 3:
+                mixed[:, pos, :] = mixed[:, pos, :].lerp(vector.view(1, -1), strength)
             else:
-                weighted = new_positive * weights.view(-1, 1)
+                mixed[pos, :] = mixed[pos, :].lerp(vector, strength)
 
-            meta = positive_meta.copy() if isinstance(positive_meta, dict) else {}
-            modified.append((weighted, meta))
-        return modified
+        delta = mixed - new_positive
+        reference_norm = reference.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        max_delta = reference_norm * 0.08
+        delta_norm = delta.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        scale = torch.minimum(torch.ones_like(delta_norm), max_delta / delta_norm)
+        mixed = new_positive + delta * scale
+        mixed = torch.clamp(mixed, min=-60.0, max=60.0)
+        norm_factor = new_positive.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * norm_factor
+        token_list = ", ".join(token for token, _ in selected)
+        return mixed, f"Void: on | {source} | tokens: {token_list}"
 
     @classmethod
     def INPUT_TYPES(s):
@@ -833,20 +924,9 @@ class FunPackVideoRefiner:
                 "latent": ("LATENT", {
                     "tooltip": "Optional latent to refine. If no saved latent exists for this key, it passes through unchanged."
                 }),
-                "shot_enforcement": (["off", "auto", "soft", "hard"], {
-                    "default": "auto",
-                    "tooltip": "Automatically split transition-heavy prompts into multiple refined conditioning entries for context-window shot routing."
-                }),
-                "shot_count": (["auto", "2", "3", "4", "5", "6", "8", "10"], {
-                    "default": "auto",
-                    "tooltip": "Automatic uses detected transition clauses. A number forces that many shot conditioning entries."
-                }),
-                "shot_strength": ("FLOAT", {
-                    "default": 0.75,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "How strongly each shot entry emphasizes its own prompt span and de-emphasizes unrelated shot spans."
+                "into_the_void": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Experimental: lightly mixes learned liked token embeddings into the final conditioning for preference discovery."
                 }),
             },
             "hidden": {
@@ -2648,7 +2728,7 @@ class FunPackVideoRefiner:
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
                sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
-               shot_enforcement: str = "auto", shot_count: str = "auto", shot_strength: float = 0.75,
+               into_the_void: bool = False,
                prompt=None, unique_id=None):
 
         mode = (mode or "ltx2").lower()
@@ -2746,6 +2826,7 @@ class FunPackVideoRefiner:
                 },
                 "loss_history": [],
                 "lora_weight_memory": {},
+                "void_token_bank": {},
                 "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
@@ -2836,6 +2917,7 @@ class FunPackVideoRefiner:
         global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
         global_adaptive.setdefault("loss_history", [])
         global_adaptive.setdefault("lora_weight_memory", {})
+        self._ensure_void_token_bank(global_adaptive)
         global_adaptive.setdefault("mode", mode)
         self._ensure_sigma_state_defaults(global_adaptive)
         for cid in list(global_adaptive["concept_clusters"].keys()):
@@ -2989,18 +3071,6 @@ class FunPackVideoRefiner:
             seq_len,
             token_mask=active_token_mask
         )
-        shot_clauses, shot_trigger_detected, shot_plan_reason = self._resolve_shot_clauses(
-            analysis_prompt,
-            shot_enforcement,
-            shot_count,
-        )
-        shot_spans = self._build_shot_token_spans(
-            analysis_prompt,
-            shot_clauses,
-            tokenizer,
-            seq_len,
-            token_mask=active_token_mask,
-        )
 
         # ====================== CONCEPT CLUSTER + GROUP SETUP (Levels 3 & 4) ======================
         concept_clusters = global_adaptive["concept_clusters"]
@@ -3045,6 +3115,14 @@ class FunPackVideoRefiner:
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
         feedback_memory = global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
         rating_key = rating_profile.get("key", "")
+        self._update_void_token_bank(
+            global_adaptive,
+            word_groups,
+            cur_positive,
+            rating_profile,
+            iter_num,
+            token_mask=active_token_mask,
+        )
 
         if feedback_enabled and pending is not None:
             self._apply_concept_feedback(
@@ -3351,6 +3429,15 @@ class FunPackVideoRefiner:
         new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
+        new_positive, void_status = self._apply_into_the_void(
+            new_positive,
+            reference,
+            global_adaptive,
+            word_groups,
+            word_importance,
+            into_the_void=into_the_void,
+            token_mask=active_token_mask,
+        )
 
         # Update momentum
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)
@@ -3395,8 +3482,8 @@ class FunPackVideoRefiner:
             "analysis_prompt": analysis_prompt,
             "prompt_words": current_prompt_words,
             "exact_prompt_key": exact_prompt_key,
-            "shot_enforcement": shot_enforcement,
-            "shot_clauses": shot_clauses,
+            "into_the_void": bool(into_the_void),
+            "void_status": void_status,
         }
         history.append(history_entry)
 
@@ -3573,11 +3660,6 @@ class FunPackVideoRefiner:
         if source_retarget_status:
             reference_status += source_retarget_status
         prompt_delta_line = f"{prompt_delta_status}\n" if prompt_delta_status else ""
-        shot_status = (
-            f"Shot enforcement: {shot_enforcement} | "
-            f"{len(shot_spans)} shot conditioning entr{'y' if len(shot_spans) == 1 else 'ies'} | "
-            f"trigger {'yes' if shot_trigger_detected else 'no'} | {shot_plan_reason}"
-        )
 
         training_info = (
             f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
@@ -3587,7 +3669,7 @@ class FunPackVideoRefiner:
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
             f"{reference_status}\n"
             f"Dominant concept: {dominant_line}\n"
-            f"{shot_status}\n"
+            f"{void_status}\n"
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
@@ -3666,7 +3748,7 @@ class FunPackVideoRefiner:
             f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
             f"{len(history)} history item(s) on this prompt\n"
             f"Reference: {reference_mode} ({liked_reference_count} liked) | Focus: {dominant_line} | {feedback_state}\n"
-            f"Systems: {lora_state} | {sigma_state} | {latent_state} | Shots {len(shot_spans) or 1}"
+            f"Systems: {lora_state} | {sigma_state} | {latent_state} | {void_status}"
         )
 
         # ====================== FINAL SAVE ======================
@@ -3674,12 +3756,7 @@ class FunPackVideoRefiner:
             json.dump(data, f, indent=2)
 
         # ====================== RETURN ======================
-        modified_positive = self._make_shot_conditionings(
-            new_positive,
-            positive_meta,
-            shot_spans,
-            shot_strength,
-        )
+        modified_positive = [(new_positive, positive_meta)]
 
         return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas, refined_latent)
 
