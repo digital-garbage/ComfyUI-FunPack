@@ -856,6 +856,53 @@ class FunPackVideoRefiner:
         global_adaptive["lucky_context_memory_validated"] = True
         return cleaned
 
+    def _phrase_position_score(self, item):
+        likes = float(item.get("liked_count", 0))
+        neutral = float(item.get("neutral_count", 0))
+        awful = float(item.get("awful_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.45 + neutral * 0.06 - awful * 0.85
+
+    def _ensure_lucky_phrase_placements(self, global_adaptive):
+        memory = global_adaptive.get("lucky_phrase_placements")
+        if not isinstance(memory, dict):
+            memory = {}
+        if memory and global_adaptive.get("lucky_phrase_placements_validated") is True:
+            return memory
+
+        cleaned = {}
+        for phrase, item in memory.items():
+            phrase_key = str(phrase).strip().lower()
+            if len(phrase_key) < 3 or not isinstance(item, dict):
+                continue
+            positions = item.get("positions")
+            if not isinstance(positions, dict):
+                continue
+            clean_positions = {}
+            for pos, pos_item in positions.items():
+                if not isinstance(pos_item, dict):
+                    continue
+                try:
+                    pos_key = str(max(0, min(31, int(pos))))
+                    pos_item["score"] = round(max(-4.0, min(8.0, float(pos_item.get("score", 0.0)))), 4)
+                    pos_item["liked_count"] = max(0, int(pos_item.get("liked_count", 0)))
+                    pos_item["neutral_count"] = max(0, int(pos_item.get("neutral_count", 0)))
+                    pos_item["awful_count"] = max(0, int(pos_item.get("awful_count", 0)))
+                    pos_item["count"] = max(0, int(pos_item.get("count", 0)))
+                    pos_item["last_seen_iter"] = max(0, int(pos_item.get("last_seen_iter", 0)))
+                    clean_positions[pos_key] = pos_item
+                except (TypeError, ValueError):
+                    continue
+            if not clean_positions:
+                continue
+            cleaned[phrase_key] = {
+                "text": str(item.get("text", phrase_key)).strip().lower() or phrase_key,
+                "positions": clean_positions,
+            }
+
+        global_adaptive["lucky_phrase_placements"] = cleaned
+        global_adaptive["lucky_phrase_placements_validated"] = True
+        return cleaned
+
     def _rating_memory_deltas(self, rating_key):
         if rating_key == "like":
             return 0.70, 1, 0, 0
@@ -906,6 +953,34 @@ class FunPackVideoRefiner:
                 item["last_seen_iter"] = int(iter_num)
                 neighbors[neighbor] = item
 
+        return memory
+
+    def _update_lucky_phrase_placements(self, global_adaptive, prompt_text, rating_key, iter_num):
+        phrases = self._ordered_prompt_phrases(prompt_text)
+        if not phrases:
+            return self._ensure_lucky_phrase_placements(global_adaptive)
+
+        memory = self._ensure_lucky_phrase_placements(global_adaptive)
+        score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        for index, phrase in enumerate(phrases[:32]):
+            text = str(phrase.get("text", "")).strip().lower()
+            if len(text) < 3:
+                continue
+            entry = memory.setdefault(text, {"text": text, "positions": {}})
+            positions = entry.setdefault("positions", {})
+            pos_key = str(index)
+            item = positions.get(pos_key, {})
+            item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)) + score_delta)), 4)
+            item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
+            item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
+            item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+            item["count"] = max(0, int(item.get("count", 0)) + 1)
+            item["last_seen_iter"] = int(iter_num)
+            positions[pos_key] = item
+            entry["text"] = text
+            memory[text] = entry
+
+        global_adaptive["lucky_phrase_placements"] = memory
         return memory
 
     def _update_void_token_pairs(self, global_adaptive, word_groups, rating_key, iter_num):
@@ -1469,6 +1544,7 @@ class FunPackVideoRefiner:
         chosen_set = set(prompt_tokens)
         if isinstance(phrase_sequences, list):
             phrase_candidates = []
+            placement_memory = self._ensure_lucky_phrase_placements(global_adaptive)
             for sequence_index, sequence in enumerate(phrase_sequences[-64:]):
                 if not isinstance(sequence, list):
                     continue
@@ -1491,16 +1567,37 @@ class FunPackVideoRefiner:
                     score = sum(max(0.05, token_scores.get(token, 0.0) + 1.25) for token in overlap)
                     score += 0.18 / float(phrase_index + 1)
                     score += 0.03 / float(max(1, len(phrase_sequences) - sequence_index))
-                    phrase_candidates.append((score, text, tokens))
+                    preferred_position, placement_score = self._lucky_phrase_preferred_position(
+                        placement_memory,
+                        text,
+                        fallback_position=phrase_index,
+                    )
+                    score += max(0.0, placement_score) * 0.20
+                    phrase_candidates.append((score, preferred_position, phrase_index, text, tokens))
 
-            for _, text, tokens in sorted(phrase_candidates, key=lambda item: item[0], reverse=True):
+            sorted_candidates = sorted(phrase_candidates, key=lambda item: item[0], reverse=True)
+            selected = []
+            for score, preferred_position, phrase_index, text, tokens in sorted_candidates:
                 key = text.lower()
                 if key in phrase_seen:
                     continue
-                prompt_phrases.append(text)
+                selected.append({
+                    "score": score,
+                    "position": preferred_position,
+                    "source_position": phrase_index,
+                    "text": text,
+                    "tokens": tokens,
+                })
                 phrase_seen.add(key)
-                if len(prompt_phrases) >= 12:
+                if len(selected) >= 12:
                     break
+            prompt_phrases = [
+                item["text"]
+                for item in sorted(
+                    selected,
+                    key=lambda item: (item["position"], -item["score"], item["source_position"], item["text"]),
+                )
+            ]
 
         if not prompt_phrases:
             prompt_phrases = prompt_tokens
@@ -1512,6 +1609,40 @@ class FunPackVideoRefiner:
             "tokens": prompt_tokens,
             "phrases": prompt_phrases,
         }
+
+    def _lucky_phrase_preferred_position(self, placement_memory, phrase_text, fallback_position=0):
+        phrase_key = str(phrase_text).strip().lower()
+        entry = placement_memory.get(phrase_key) if isinstance(placement_memory, dict) else None
+        if not isinstance(entry, dict):
+            return int(fallback_position), 0.0
+        positions = entry.get("positions")
+        if not isinstance(positions, dict) or not positions:
+            return int(fallback_position), 0.0
+
+        candidates = []
+        for pos_key, item in positions.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                pos = max(0, min(31, int(pos_key)))
+            except (TypeError, ValueError):
+                continue
+            score = self._phrase_position_score(item)
+            count_bonus = min(0.30, math.log1p(float(item.get("count", 0))) * 0.08)
+            candidates.append((score + count_bonus, pos))
+
+        if not candidates:
+            return int(fallback_position), 0.0
+
+        candidates = sorted(candidates, key=lambda item: item[0], reverse=True)
+        top_score = candidates[0][0]
+        close = [item for item in candidates if item[0] >= top_score - 0.18]
+        if len(close) > 1 and random.random() < 0.35:
+            weights = torch.tensor([max(0.05, item[0] + 1.25) for item in close], dtype=torch.float32)
+            selected = close[int(torch.multinomial(weights, 1).item())]
+        else:
+            selected = candidates[0]
+        return int(selected[1]), float(selected[0])
 
     def _encode_lucky_prompt_conditioning(self, clip, prompt_text, template, device, dtype):
         if clip is None or not prompt_text:
@@ -3942,6 +4073,7 @@ class FunPackVideoRefiner:
                 "void_token_bank": {},
                 "void_token_pairs": {},
                 "lucky_context_memory": {},
+                "lucky_phrase_placements": {},
                 "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
@@ -4036,6 +4168,7 @@ class FunPackVideoRefiner:
         self._ensure_void_token_bank(global_adaptive)
         self._ensure_void_pair_bank(global_adaptive)
         self._ensure_lucky_context_memory(global_adaptive)
+        self._ensure_lucky_phrase_placements(global_adaptive)
         global_adaptive.setdefault("mode", mode)
         self._ensure_sigma_state_defaults(global_adaptive)
         for cid in list(global_adaptive["concept_clusters"].keys()):
@@ -4241,9 +4374,12 @@ class FunPackVideoRefiner:
             rated_positive = self._history_modified_conditioning(history[-1], source_reference, device)
 
         bank_rated_prompt = analysis_prompt
+        bank_rated_lucky_prompt = ""
         bank_rated_word_groups = word_groups
         bank_rated_positive = rated_positive
         bank_rated_token_mask = active_token_mask
+        if history and isinstance(history[-1].get("lucky"), dict):
+            bank_rated_lucky_prompt = str(history[-1].get("lucky", {}).get("prompt", "")).strip()
 
         if previous_prompt_key_for_rating in prompt_histories:
             previous_active = prompt_histories.get(previous_prompt_key_for_rating)
@@ -4277,6 +4413,8 @@ class FunPackVideoRefiner:
                     )
                     if previous_word_groups:
                         bank_rated_prompt = previous_prompt
+                        if isinstance(previous_history[-1].get("lucky"), dict):
+                            bank_rated_lucky_prompt = str(previous_history[-1].get("lucky", {}).get("prompt", "")).strip()
                         bank_rated_word_groups = previous_word_groups
                         bank_rated_positive = previous_positive
                         bank_rated_token_mask = previous_token_mask
@@ -4290,6 +4428,9 @@ class FunPackVideoRefiner:
                 iter_num,
                 token_mask=bank_rated_token_mask,
             )
+            self._update_lucky_phrase_placements(global_adaptive, bank_rated_prompt, rating_key, iter_num)
+            if bank_rated_lucky_prompt:
+                self._update_lucky_phrase_placements(global_adaptive, bank_rated_lucky_prompt, rating_key, iter_num)
 
         should_seed_current_prompt_after_lucky = (
             bool(analysis_prompt) and
@@ -4670,6 +4811,7 @@ class FunPackVideoRefiner:
                 iter_num,
                 token_mask=active_token_mask,
             )
+            self._update_lucky_phrase_placements(global_adaptive, analysis_prompt, "discover", iter_num)
 
         # Update momentum
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)

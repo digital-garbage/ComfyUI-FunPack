@@ -42,6 +42,8 @@ Fixed `I'm Feeling Lucky` CLIP/Gemma re-encode crashes when the encoded Lucky pr
 
 Updated `I'm Feeling Lucky` CLIP/Gemma prompt composition to preserve learned comma/semicolon-separated concept phrases instead of emitting loose word lists when phrase memory is available.
 
+Added Lucky phrase placement memory so learned prompt phrases remember their rated order positions and CLIP/Gemma Lucky prompts can reassemble phrases into a more coherent prompt order instead of sentence salad.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed
