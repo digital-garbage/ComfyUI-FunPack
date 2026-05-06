@@ -40,6 +40,8 @@ Reduced redundant `I'm Feeling Lucky` work by keeping Lucky runs in one stable m
 
 Fixed `I'm Feeling Lucky` CLIP/Gemma re-encode crashes when the encoded Lucky prompt has a different sequence length than the incoming conditioning by resizing the refinement delta before applying it.
 
+Updated `I'm Feeling Lucky` CLIP/Gemma prompt composition to preserve learned comma/semicolon-separated concept phrases instead of emitting loose word lists when phrase memory is available.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed

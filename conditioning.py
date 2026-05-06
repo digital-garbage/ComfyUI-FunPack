@@ -1392,7 +1392,7 @@ class FunPackVideoRefiner:
         }
 
     def _compose_lucky_prompt_text(self, global_adaptive, word_groups, embedding_dim,
-                                   prompt_sequences=None, target_count=64):
+                                   prompt_sequences=None, phrase_sequences=None, target_count=64):
         bank = self._ensure_void_token_bank(global_adaptive)
         lucky_pool = []
         for token, item in bank.items():
@@ -1448,6 +1448,7 @@ class FunPackVideoRefiner:
             ]
             compose_info["source"] = "saved prompt order"
 
+        token_scores = {token: score for token, _, score in lucky_pool}
         prompt_tokens = []
         seen = set()
         for token in chosen_tokens:
@@ -1463,11 +1464,53 @@ class FunPackVideoRefiner:
                 "token_count": 0,
             }
 
-        prompt_text = ", ".join(prompt_tokens)
+        prompt_phrases = []
+        phrase_seen = set()
+        chosen_set = set(prompt_tokens)
+        if isinstance(phrase_sequences, list):
+            phrase_candidates = []
+            for sequence_index, sequence in enumerate(phrase_sequences[-64:]):
+                if not isinstance(sequence, list):
+                    continue
+                for phrase_index, phrase in enumerate(sequence):
+                    if not isinstance(phrase, dict):
+                        continue
+                    text = str(phrase.get("text", "")).strip()
+                    if not text:
+                        continue
+                    tokens = [
+                        str(token).strip().lower()
+                        for token in phrase.get("tokens", [])
+                        if self._is_valuable_token(str(token).strip())
+                    ]
+                    if not tokens:
+                        continue
+                    overlap = chosen_set & set(tokens)
+                    if not overlap:
+                        continue
+                    score = sum(max(0.05, token_scores.get(token, 0.0) + 1.25) for token in overlap)
+                    score += 0.18 / float(phrase_index + 1)
+                    score += 0.03 / float(max(1, len(phrase_sequences) - sequence_index))
+                    phrase_candidates.append((score, text, tokens))
+
+            for _, text, tokens in sorted(phrase_candidates, key=lambda item: item[0], reverse=True):
+                key = text.lower()
+                if key in phrase_seen:
+                    continue
+                prompt_phrases.append(text)
+                phrase_seen.add(key)
+                if len(prompt_phrases) >= 12:
+                    break
+
+        if not prompt_phrases:
+            prompt_phrases = prompt_tokens
+
+        prompt_text = ", ".join(prompt_phrases)
         return prompt_text, {
             **compose_info,
             "token_count": len(prompt_tokens),
             "tokens": prompt_tokens,
+            "phrases": prompt_phrases,
         }
 
     def _encode_lucky_prompt_conditioning(self, clip, prompt_text, template, device, dtype):
@@ -2256,6 +2299,76 @@ class FunPackVideoRefiner:
                 if clean and self._is_valuable_token(clean):
                     words.append(clean)
         return words
+
+    def _ordered_prompt_phrases(self, prompt: str):
+        phrases = []
+        if not prompt:
+            return phrases
+        for phrase_words in self._parse_concepts(prompt):
+            clean_words = [
+                str(word).strip().lower()
+                for word in phrase_words
+                if self._is_valuable_token(str(word).strip())
+            ]
+            if not clean_words:
+                continue
+            text = " ".join(clean_words)
+            text = re.sub(r"\s+", " ", text).strip(" ,;:.")
+            if not text or len(text) < 3:
+                continue
+            phrase_tokens = [
+                token.strip().lower()
+                for token in re.findall(r"[\w'’.-]+", text, flags=re.UNICODE)
+                if self._is_valuable_token(token.strip())
+            ]
+            if not phrase_tokens:
+                phrase_tokens = [text]
+            phrases.append({
+                "text": text,
+                "tokens": phrase_tokens,
+            })
+        return phrases
+
+    def _lucky_prompt_phrase_sequences(self, prompt_histories: dict):
+        if not isinstance(prompt_histories, dict):
+            return []
+
+        sequences = []
+        seen = set()
+        for prompt_key, history_entry in prompt_histories.items():
+            if not isinstance(history_entry, dict):
+                continue
+
+            history = history_entry.get("history", [])
+            good_history = []
+            if isinstance(history, list):
+                for item in history[-16:]:
+                    if not isinstance(item, dict):
+                        continue
+                    profile = normalize_refiner_rating(item.get("rating_label", item.get("rating", 0)))
+                    if int(profile.get("level", 0)) >= 5:
+                        good_history.append(item)
+
+            texts = []
+            for item in good_history:
+                for key in ("prompt_full", "analysis_prompt", "prompt"):
+                    text = item.get(key)
+                    if isinstance(text, str) and text.strip():
+                        texts.append(text)
+            if good_history:
+                texts.extend(self._history_prompt_texts(prompt_key, history_entry))
+
+            for text in texts:
+                phrases = self._ordered_prompt_phrases(text)
+                if not phrases:
+                    continue
+                signature = tuple(phrase["text"] for phrase in phrases)
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                sequences.append(phrases[:32])
+
+        return sequences[-48:]
 
     def _lucky_prompt_sequences(self, prompt_histories: dict):
         if not isinstance(prompt_histories, dict):
@@ -4487,14 +4600,17 @@ class FunPackVideoRefiner:
         lucky_prompt_tokens = []
         lucky_encoded_meta = None
         lucky_prompt_sequences = []
+        lucky_phrase_sequences = []
         if im_feeling_lucky:
             lucky_prompt_sequences = self._lucky_prompt_sequences(prompt_histories)
+            lucky_phrase_sequences = self._lucky_prompt_phrase_sequences(prompt_histories)
             if clip is not None:
                 lucky_prompt_text, lucky_prompt_info = self._compose_lucky_prompt_text(
                     global_adaptive,
                     word_groups,
                     int(cur_positive.shape[-1]),
                     prompt_sequences=lucky_prompt_sequences,
+                    phrase_sequences=lucky_phrase_sequences,
                     target_count=self._get_conditioning_seq_len(cur_positive),
                 )
                 lucky_prompt_tokens = list(lucky_prompt_info.get("tokens", [])) if isinstance(lucky_prompt_info, dict) else []
