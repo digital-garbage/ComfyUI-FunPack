@@ -92,7 +92,7 @@ Use it when you want to discover surprising concept-concept pairs or learn which
 
 `im_feeling_lucky` is the automated prompt-composer path. Instead of requiring the current prompt to name every action, camera move, or styling cue, it learns which tokens and concepts the user tends to prefer and applies them directly to conditioning. If the prompt contains a known anchor, Lucky can add strongly rated missing neighbours that commonly work with that anchor. If the prompt is vague, it uses global learned preferences so the result still has something intentional to look at.
 
-Lucky stores token, pair, and context memory without a fixed cap. Tokens stay available unless their embeddings are invalid; bad ratings teach the refiner to avoid specific adjacent token pairs or contexts first. With changing prompts, the previous generation's rating is applied to the previous prompt and its injected Lucky tokens, while the current prompt contributes fresh neutral tokens for Lucky to try. It can run by itself or alongside `into_the_void`.
+Lucky stores token, pair, and context memory without a fixed cap. Tokens stay available unless their embeddings are invalid; bad ratings teach the refiner to avoid specific adjacent token pairs or contexts first. With changing prompts, the previous generation's rating is applied to the previous prompt and its injected Lucky tokens, then Lucky composes the current generation from that already-learned memory. The current prompt contributes fresh neutral tokens only after current Lucky composition, so new words become material for future runs rather than steering the same run. It can run by itself or alongside `into_the_void`.
 
 ## Latent Refinement
 

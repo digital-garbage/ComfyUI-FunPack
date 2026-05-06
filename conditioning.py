@@ -3746,22 +3746,13 @@ class FunPackVideoRefiner:
                 token_mask=bank_rated_token_mask,
             )
 
-        if analysis_prompt and analysis_prompt != bank_rated_prompt:
-            self._seed_void_token_bank(
-                global_adaptive,
-                word_groups,
-                cur_positive,
-                iter_num,
-                token_mask=active_token_mask,
+        should_seed_current_prompt_after_lucky = (
+            bool(analysis_prompt) and
+            (
+                analysis_prompt != bank_rated_prompt or
+                bank_rated_positive is None
             )
-        elif bank_rated_positive is None:
-            self._seed_void_token_bank(
-                global_adaptive,
-                word_groups,
-                cur_positive,
-                iter_num,
-                token_mask=active_token_mask,
-            )
+        )
 
         if feedback_enabled and pending is not None:
             self._apply_concept_feedback(
@@ -4070,6 +4061,14 @@ class FunPackVideoRefiner:
             token_mask=active_token_mask,
             prompt_sequences=self._lucky_prompt_sequences(prompt_histories),
         )
+        if should_seed_current_prompt_after_lucky:
+            self._seed_void_token_bank(
+                global_adaptive,
+                word_groups,
+                cur_positive,
+                iter_num,
+                token_mask=active_token_mask,
+            )
 
         # Update momentum
         momentum = 0.75 * momentum + 0.25 * (new_delta * reward)

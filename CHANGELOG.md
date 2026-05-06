@@ -28,6 +28,8 @@ Updated `I'm Feeling Lucky` filtering to learn poor adjacent token pairs instead
 
 Updated `I'm Feeling Lucky` with uncapped token, pair, and context memory so it can learn which concepts belong together and call strong missing neighbors when prompt anchors are present.
 
+Fixed `I'm Feeling Lucky` composition order so the current generation uses already-learned memory first, then seeds current prompt tokens for future runs.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed
