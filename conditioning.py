@@ -1042,6 +1042,116 @@ class FunPackVideoRefiner:
             return None
         return candidate
 
+    def _history_modified_conditioning_any_shape(self, history_entry, device, dtype=None):
+        if not isinstance(history_entry, dict):
+            return None
+        mod_data = history_entry.get("modified_embeds")
+        if mod_data is None:
+            return None
+        try:
+            candidate = serializable_to_tensor(mod_data).to(device)
+            if dtype is not None:
+                candidate = candidate.to(dtype=dtype)
+        except Exception:
+            return None
+        if not isinstance(candidate, torch.Tensor) or candidate.dim() <= 1:
+            return None
+        return candidate
+
+    def _conditioning_canvas_compatible(self, candidate, template):
+        if (
+            not isinstance(candidate, torch.Tensor) or
+            not isinstance(template, torch.Tensor) or
+            candidate.dim() <= 1 or
+            template.dim() <= 1 or
+            candidate.dim() != template.dim() or
+            int(candidate.shape[-1]) != int(template.shape[-1])
+        ):
+            return False
+        if candidate.dim() == 3 and int(candidate.shape[0]) != int(template.shape[0]):
+            return False
+        return self._get_conditioning_seq_len(candidate) > 0
+
+    def _select_lucky_memory_canvas(self, prompt_histories, template, device, dtype):
+        if not isinstance(prompt_histories, dict) or not isinstance(template, torch.Tensor):
+            return None, ""
+
+        candidates = []
+        current_seq = self._get_conditioning_seq_len(template)
+
+        def consider(payload, label, quality=0.0, iteration=0, allow_poor=False):
+            if payload is None:
+                return
+            try:
+                candidate = serializable_to_tensor(payload).to(device=device, dtype=dtype)
+            except Exception:
+                return
+            if not self._conditioning_canvas_compatible(candidate, template):
+                return
+            if list(candidate.shape) == list(template.shape):
+                try:
+                    if bool(torch.allclose(candidate, template.to(device=device, dtype=dtype), atol=1e-6, rtol=1e-5)):
+                        return
+                except Exception:
+                    pass
+            seq_len = self._get_conditioning_seq_len(candidate)
+            candidates.append({
+                "tensor": candidate,
+                "label": label,
+                "seq_len": int(seq_len),
+                "quality": float(quality),
+                "iteration": int(iteration or 0),
+                "allow_poor": bool(allow_poor),
+            })
+
+        for prompt_key, prompt_state in prompt_histories.items():
+            if not isinstance(prompt_state, dict):
+                continue
+            short_key = str(prompt_key)[:48] or "prompt"
+            liked_count = int(prompt_state.get("liked_reference_count", 0) or 0)
+            if liked_count > 0:
+                consider(
+                    prompt_state.get("liked_reference_embeds"),
+                    f"liked '{short_key}'",
+                    quality=2.0 + min(3.0, liked_count * 0.25),
+                    iteration=prompt_state.get("liked_reference_last_iteration", 0),
+                )
+            consider(prompt_state.get("reference_embeds"), f"reference '{short_key}'", quality=0.5)
+            consider(prompt_state.get("source_conditioning_embeds"), f"source '{short_key}'", quality=0.25)
+
+            for entry in prompt_state.get("history", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
+                key = profile.get("key", "")
+                if key in {"forget", "awful"}:
+                    continue
+                quality = float(profile.get("reward", 0.0))
+                if key == "like":
+                    quality += 1.5
+                elif key.startswith("missing"):
+                    quality += 0.45
+                consider(
+                    entry.get("modified_embeds"),
+                    f"history {entry.get('iteration', 0)} '{short_key}'",
+                    quality=quality,
+                    iteration=entry.get("iteration", 0),
+                )
+
+        if not candidates:
+            return None, ""
+
+        best = max(
+            candidates,
+            key=lambda item: (
+                item["seq_len"] >= current_seq,
+                item["seq_len"],
+                item["quality"],
+                item["iteration"],
+            )
+        )
+        return best["tensor"].clone(), f"{best['label']} ({best['seq_len']} positions)"
+
     def _eligible_void_bank_items(self, global_adaptive, embedding_dim):
         bank = self._ensure_void_token_bank(global_adaptive)
         eligible = []
@@ -1236,7 +1346,8 @@ class FunPackVideoRefiner:
 
     def _apply_into_the_void(self, new_positive, reference, global_adaptive, word_groups,
                              word_importance, into_the_void=False, im_feeling_lucky=False,
-                             token_mask=None, prompt_sequences=None):
+                             token_mask=None, prompt_sequences=None, lucky_canvas=None,
+                             lucky_canvas_label=""):
         if not into_the_void and not im_feeling_lucky:
             return new_positive, self._void_empty_status(False), {}
         if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
@@ -1252,6 +1363,29 @@ class FunPackVideoRefiner:
         mixed = new_positive.clone()
         status_parts = []
         lucky_metadata = {}
+        lucky_canvas_used = False
+        lucky_canvas_status = ""
+
+        if (
+            im_feeling_lucky and
+            self._conditioning_canvas_compatible(lucky_canvas, new_positive)
+        ):
+            try:
+                canvas = lucky_canvas.to(device=device, dtype=dtype)
+            except Exception:
+                canvas = None
+            if isinstance(canvas, torch.Tensor):
+                mixed = canvas.clone()
+                reference = canvas.clone()
+                seq_len = mixed.shape[1] if mixed.dim() == 3 else mixed.shape[0]
+                if token_mask is None or int(token_mask.numel()) != int(seq_len):
+                    token_mask = self._get_conditioning_token_mask(mixed)
+                active_len = self._get_effective_seq_len(token_mask, seq_len)
+                active_len = max(1, min(seq_len, active_len))
+                lucky_canvas_used = True
+                lucky_canvas_status = lucky_canvas_label or f"memory ({seq_len} positions)"
+
+        clamp_base = mixed.clone()
 
         if into_the_void:
             selected, source = self._select_void_tokens(
@@ -1294,9 +1428,39 @@ class FunPackVideoRefiner:
                 active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
 
             if len(lucky_pool) < 2:
-                status_parts.append(f"Lucky: on | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none")
+                if lucky_canvas_used:
+                    lucky_metadata = {
+                        "enabled": True,
+                        "source": "memory canvas",
+                        "tokens": [],
+                        "unique_tokens": [],
+                        "injections": [],
+                        "anchor_tokens": [],
+                        "context_tokens": [],
+                        "context_hits": 0,
+                        "canvas": lucky_canvas_status,
+                    }
+                    status_parts.append(
+                        f"Lucky: on | memory canvas {lucky_canvas_status} | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none"
+                    )
+                else:
+                    status_parts.append(f"Lucky: on | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none")
             elif active_positions.numel() <= 0:
-                status_parts.append("Lucky: on | no active slots | tokens: none")
+                if lucky_canvas_used:
+                    lucky_metadata = {
+                        "enabled": True,
+                        "source": "memory canvas",
+                        "tokens": [],
+                        "unique_tokens": [],
+                        "injections": [],
+                        "anchor_tokens": [],
+                        "context_tokens": [],
+                        "context_hits": 0,
+                        "canvas": lucky_canvas_status,
+                    }
+                    status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | no active positions | tokens: none")
+                else:
+                    status_parts.append("Lucky: on | no active positions | tokens: none")
             else:
                 token_vectors = {}
                 for token, item, _ in lucky_pool:
@@ -1373,24 +1537,40 @@ class FunPackVideoRefiner:
                         "anchor_tokens": compose_info.get("anchor_tokens", []),
                         "context_tokens": compose_info.get("context_tokens", []),
                         "context_hits": int(compose_info.get("context_hits", 0)),
+                        "canvas": lucky_canvas_status if lucky_canvas_used else "current conditioning",
                     }
+                    canvas_phrase = f" | canvas: {lucky_canvas_status}" if lucky_canvas_used else ""
                     status_parts.append(
-                        f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} slots from {len(set(picked_tokens))} tokens | "
-                        f"anchors: {anchor_preview} | context add: {context_preview} | tokens: {token_list}"
+                        f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} positions from {len(set(picked_tokens))} tokens | "
+                        f"anchors: {anchor_preview} | context add: {context_preview}{canvas_phrase} | tokens: {token_list}"
                     )
                 else:
-                    status_parts.append("Lucky: on | bank unreadable | tokens: none")
+                    if lucky_canvas_used:
+                        lucky_metadata = {
+                            "enabled": True,
+                            "source": "memory canvas",
+                            "tokens": [],
+                            "unique_tokens": [],
+                            "injections": [],
+                            "anchor_tokens": [],
+                            "context_tokens": [],
+                            "context_hits": 0,
+                            "canvas": lucky_canvas_status,
+                        }
+                        status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | bank unreadable | tokens: none")
+                    else:
+                        status_parts.append("Lucky: on | bank unreadable | tokens: none")
         else:
             status_parts.append("Lucky: off")
 
-        delta = mixed - new_positive
+        delta = mixed - clamp_base
         reference_norm = reference.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         max_delta = reference_norm * 0.08
         delta_norm = delta.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         scale = torch.minimum(torch.ones_like(delta_norm), max_delta / delta_norm)
-        mixed = new_positive + delta * scale
+        mixed = clamp_base + delta * scale
         mixed = torch.clamp(mixed, min=-60.0, max=60.0)
-        norm_factor = new_positive.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        norm_factor = clamp_base.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * norm_factor
         return mixed, " | ".join(status_parts), lucky_metadata
 
@@ -1443,7 +1623,7 @@ class FunPackVideoRefiner:
                 "im_feeling_lucky": ("BOOLEAN", {
                     "default": False,
                     "label": "I'm Feeling Lucky",
-                    "tooltip": "Builds a random conditioning field from a broad set of better-rated learned token embeddings."
+                    "tooltip": "Composes conditioning from learned memory first, using stored canvases plus preferred token/context relationships."
                 }),
             },
             "hidden": {
@@ -3710,7 +3890,7 @@ class FunPackVideoRefiner:
                     ).to(device)
                 except Exception:
                     previous_source = None
-                previous_positive = self._history_modified_conditioning(previous_history[-1], previous_source, device)
+                previous_positive = self._history_modified_conditioning_any_shape(previous_history[-1], device, dtype=cur_positive.dtype)
                 if previous_positive is not None:
                     previous_prompt = (
                         previous_history[-1].get("analysis_prompt") or
@@ -4050,6 +4230,14 @@ class FunPackVideoRefiner:
         new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
+        lucky_canvas, lucky_canvas_label = (None, "")
+        if im_feeling_lucky:
+            lucky_canvas, lucky_canvas_label = self._select_lucky_memory_canvas(
+                prompt_histories,
+                cur_positive,
+                device,
+                cur_positive.dtype,
+            )
         new_positive, void_status, lucky_metadata = self._apply_into_the_void(
             new_positive,
             reference,
@@ -4060,6 +4248,8 @@ class FunPackVideoRefiner:
             im_feeling_lucky=im_feeling_lucky,
             token_mask=active_token_mask,
             prompt_sequences=self._lucky_prompt_sequences(prompt_histories),
+            lucky_canvas=lucky_canvas,
+            lucky_canvas_label=lucky_canvas_label,
         )
         if should_seed_current_prompt_after_lucky:
             self._seed_void_token_bank(
