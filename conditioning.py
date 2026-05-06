@@ -751,7 +751,12 @@ class FunPackVideoRefiner:
                 try:
                     previous = serializable_to_tensor(item["embedding"]).to(embedding.device)
                     if list(previous.shape) == list(embedding.shape):
-                        mix = min(0.35, 1.0 / float(count + 1))
+                        if rating_key == "like":
+                            mix = 0.62
+                        elif rating_key == "missing_details":
+                            mix = 0.48
+                        else:
+                            mix = min(0.30, 1.0 / float(count + 1))
                         embedding = previous.lerp(embedding, mix)
                 except Exception:
                     pass
@@ -772,6 +777,20 @@ class FunPackVideoRefiner:
         )
         global_adaptive["void_token_bank"] = dict(ranked[:96])
         return global_adaptive["void_token_bank"]
+
+    def _history_modified_conditioning(self, history_entry, reference, device):
+        if not isinstance(history_entry, dict):
+            return None
+        mod_data = history_entry.get("modified_embeds")
+        if mod_data is None:
+            return None
+        try:
+            candidate = serializable_to_tensor(mod_data).to(device)
+        except Exception:
+            return None
+        if not isinstance(reference, torch.Tensor) or list(candidate.shape) != list(reference.shape):
+            return None
+        return candidate
 
     def _eligible_void_bank_items(self, global_adaptive, embedding_dim):
         bank = self._ensure_void_token_bank(global_adaptive)
@@ -3115,10 +3134,14 @@ class FunPackVideoRefiner:
         total_iters = sum(len(p.get("history", [])) for p in prompt_histories.values())
         feedback_memory = global_adaptive.setdefault("feedback_memory", {"recent_questions": [], "rating_change_events": []})
         rating_key = rating_profile.get("key", "")
+        rated_positive = None
+        if history and not source_changed:
+            rated_positive = self._history_modified_conditioning(history[-1], source_reference, device)
+        void_learning_positive = rated_positive if rated_positive is not None else cur_positive
         self._update_void_token_bank(
             global_adaptive,
             word_groups,
-            cur_positive,
+            void_learning_positive,
             rating_profile,
             iter_num,
             token_mask=active_token_mask,
@@ -3160,16 +3183,7 @@ class FunPackVideoRefiner:
 
         liked_reference_updated = False
         if rating_key == "like" and not source_changed:
-            rated_reference = None
-            if history:
-                mod_data = history[-1].get("modified_embeds")
-                if mod_data is not None:
-                    try:
-                        candidate = serializable_to_tensor(mod_data).to(device)
-                        if list(candidate.shape) == list(source_reference.shape):
-                            rated_reference = candidate
-                    except Exception:
-                        rated_reference = None
+            rated_reference = rated_positive
             if rated_reference is None:
                 rated_reference = source_reference.clone()
             if liked_reference is None or liked_reference_count <= 0:
