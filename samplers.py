@@ -341,34 +341,6 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "Blend between Euler ancestral (0.0) and late-step 2S correction (1.0)."
                 }),
-                "restart_steps": ("INT", {
-                    "default": 3,
-                    "min": 2,
-                    "max": 32,
-                    "step": 1,
-                    "tooltip": "Legacy Restart control. Ignored because Restart replay is disabled for LTX audio safety."
-                }),
-                "restart_repeats": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 8,
-                    "step": 1,
-                    "tooltip": "Legacy Restart control. Ignored because Restart replay is disabled for LTX audio safety."
-                }),
-                "restart_trigger_pct": ("FLOAT", {
-                    "default": 0.85,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Legacy Restart control. Ignored because Restart replay is disabled for LTX audio safety."
-                }),
-                "restart_noise": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 2.0,
-                    "step": 0.01,
-                    "tooltip": "Legacy Restart control. Ignored because Restart replay is disabled for LTX audio safety."
-                }),
                 "transition_mode": (TRANSITION_MODES, {
                     "default": "off",
                     "tooltip": "Adds early/mid motion pulses for single-clip image-to-video. Off preserves legacy sampler behavior."
@@ -414,7 +386,6 @@ class FunPackHybridEuler2SSampler:
     DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional audio-safe motion pulses."
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
-                    restart_steps, restart_repeats, restart_trigger_pct, restart_noise,
                     transition_mode="off", transition_start_pct=0.30,
                     transition_count=2, transition_spacing_pct=0.22,
                     transition_strength=0.85, sigmas=None):

@@ -13,7 +13,7 @@ This sampler keeps classic Euler ancestral for the early "structure building" st
 
 It can also apply optional early/mid **motion transition pulses** for single-clip image-to-video workflows. These pulses add monotonic noise kicks at selected normal denoise steps instead of inserting upward sigma jumps. This is intended to push LTX2.3 away from stale frame-1 reference behavior while avoiding the audio damage caused by Restart replay.
 
-Restart replay is disabled. Legacy restart widgets may still appear for workflow compatibility, but they are ignored.
+Restart replay has been removed because upward sigma replay can break LTX audio generation.
 
 ## Recommended wiring
 
@@ -38,14 +38,6 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 
 - `0.0` = pure late-step Euler ODE
 - `1.0` = full late-step DPM++(2S)-style correction
-
-**restart_steps**: Legacy compatibility control. Ignored.
-
-**restart_repeats**: Legacy compatibility control. Ignored.
-
-**restart_trigger_pct**: Legacy compatibility control. Ignored.
-
-**restart_noise**: Legacy compatibility control. Ignored.
 
 **transition_mode**: Motion pulse preset:
 
