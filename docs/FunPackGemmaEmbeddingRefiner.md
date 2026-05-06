@@ -58,6 +58,8 @@ When a similar enhanced prompt is reused, the refiner preserves the compatible h
 
 **into_the_void**: Experimental preference-discovery mode. When enabled, the refiner lightly mixes a few learned liked token embeddings into the final conditioning. These tokens come from previous prompts that were rated `Perfect`, `Missing details`, or at least not consistently `Awful`. If the learned token bank is empty, the node falls back to high-affinity tokens from the current prompt.
 
+**im_feeling_lucky**: Experimental random-discovery mode. When enabled, the refiner builds a full random conditioning field from randomly chosen learned token embeddings in the better-rated part of the token bank, then blends it softly into the final conditioning. It does not use the current prompt as the source of the random tokens. When possible, it uses better-rated saved prompts as an ordering guide so the random field follows learned composition patterns instead of becoming raw token soup.
+
 ## Compatibility Name
 
 The node is now displayed as `FunPack Video Refiner`. The old `FunPackGemmaEmbeddingRefiner` node key remains available as a compatibility alias for existing workflows and older documentation links.
@@ -87,6 +89,8 @@ Use this node when you want a workflow to learn from your ratings over several r
 `into_the_void` is for controlled randomness, not prompt rewriting. The refiner keeps a compact token bank from rated prompts and tracks which words or protected phrases tend to survive good feedback. When the toggle is enabled, it chooses a small number of eligible tokens and softly blends their averaged embeddings into the final conditioning.
 
 Use it when you want to discover surprising concept-concept pairs or learn which prompt tokens line up with your preferred outputs. Leave it disabled when you want stable convergence on the current prompt only. `Awful` ratings suppress tokens, and `-Just forget it-` does not update the bank.
+
+`im_feeling_lucky` is more chaotic. Instead of reinforcing a few specific learned tokens, it samples across the broader better-rated token bank and composes a random same-shape embedding field from those token vectors. If the session has better-rated saved prompts, Lucky borrows their token order as a loose grammar while still swapping in random learned tokens. If no useful order exists yet, it falls back to raw random composition. This can surface unusual token combinations after the refiner has collected enough rated prompt history. It can run by itself or alongside `into_the_void`.
 
 ## Latent Refinement
 

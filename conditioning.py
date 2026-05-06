@@ -810,6 +810,39 @@ class FunPackVideoRefiner:
             eligible.append((token, item, score))
         return eligible
 
+    def _eligible_lucky_bank_items(self, global_adaptive, embedding_dim):
+        bank = self._ensure_void_token_bank(global_adaptive)
+        candidates = []
+        for token, item in bank.items():
+            liked_count = int(item.get("liked_count", 0))
+            neutral_count = int(item.get("neutral_count", 0))
+            awful_count = int(item.get("awful_count", 0))
+            if awful_count >= 2 and liked_count <= 0:
+                continue
+            score = self._void_bank_score(item)
+            if score <= 0.05 and liked_count <= 0 and neutral_count <= 1:
+                continue
+            try:
+                vector = serializable_to_tensor(item["embedding"]).float()
+            except Exception:
+                continue
+            if vector.dim() != 1 or int(vector.shape[0]) != int(embedding_dim):
+                continue
+            candidates.append((token, item, score))
+
+        if not candidates:
+            return []
+
+        scores = [score for _, _, score in candidates]
+        mean_score = sum(scores) / max(1, len(scores))
+        threshold = max(0.08, mean_score * 0.45)
+        broad_pool = [
+            (token, item, score)
+            for token, item, score in candidates
+            if score >= threshold or int(item.get("liked_count", 0)) > 0 or int(item.get("neutral_count", 0)) >= 2
+        ]
+        return broad_pool or candidates
+
     def _select_void_tokens(self, global_adaptive, word_groups, cur_positive,
                             word_importance, token_mask=None, max_count=3):
         if not isinstance(cur_positive, torch.Tensor) or cur_positive.dim() <= 1:
@@ -847,47 +880,137 @@ class FunPackVideoRefiner:
         return [(token, vector) for token, vector, _ in fallback], "current" if fallback else "empty"
 
     def _apply_into_the_void(self, new_positive, reference, global_adaptive, word_groups,
-                             word_importance, into_the_void=False, token_mask=None):
-        if not into_the_void:
+                             word_importance, into_the_void=False, im_feeling_lucky=False,
+                             token_mask=None, prompt_sequences=None):
+        if not into_the_void and not im_feeling_lucky:
             return new_positive, self._void_empty_status(False)
         if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
             return new_positive, "Void: on | unavailable | tokens: none"
         if new_positive.dim() <= 1 or list(new_positive.shape) != list(reference.shape):
             return new_positive, "Void: on | incompatible conditioning | tokens: none"
 
-        selected, source = self._select_void_tokens(
-            global_adaptive,
-            word_groups,
-            new_positive,
-            word_importance,
-            token_mask=token_mask,
-        )
-        if not selected:
-            return new_positive, f"Void: on | {source} | tokens: none"
-
         device = new_positive.device
         dtype = new_positive.dtype
         seq_len = new_positive.shape[1] if new_positive.dim() == 3 else new_positive.shape[0]
         active_len = self._get_effective_seq_len(token_mask, seq_len)
         active_len = max(1, min(seq_len, active_len))
-        positions = torch.linspace(0, active_len - 1, steps=len(selected), device=device).round().long()
         mixed = new_positive.clone()
-        strength = min(0.055, 0.09 / max(1, len(selected)))
+        status_parts = []
 
-        for index, (_, vector) in enumerate(selected):
-            vector = vector.to(device=device, dtype=dtype)
-            if vector.dim() != 1 or int(vector.shape[0]) != int(new_positive.shape[-1]):
-                continue
-            pos = int(positions[index].item())
-            if token_mask is not None and pos < token_mask.shape[0] and not bool(token_mask[pos].item()):
-                active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
-                if active_positions.numel() == 0:
-                    continue
-                pos = int(active_positions[min(index, active_positions.numel() - 1)].item())
-            if mixed.dim() == 3:
-                mixed[:, pos, :] = mixed[:, pos, :].lerp(vector.view(1, -1), strength)
+        if into_the_void:
+            selected, source = self._select_void_tokens(
+                global_adaptive,
+                word_groups,
+                mixed,
+                word_importance,
+                token_mask=token_mask,
+            )
+            if selected:
+                positions = torch.linspace(0, active_len - 1, steps=len(selected), device=device).round().long()
+                strength = min(0.055, 0.09 / max(1, len(selected)))
+
+                for index, (_, vector) in enumerate(selected):
+                    vector = vector.to(device=device, dtype=dtype)
+                    if vector.dim() != 1 or int(vector.shape[0]) != int(mixed.shape[-1]):
+                        continue
+                    pos = int(positions[index].item())
+                    if token_mask is not None and pos < token_mask.shape[0] and not bool(token_mask[pos].item()):
+                        active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
+                        if active_positions.numel() == 0:
+                            continue
+                        pos = int(active_positions[min(index, active_positions.numel() - 1)].item())
+                    if mixed.dim() == 3:
+                        mixed[:, pos, :] = mixed[:, pos, :].lerp(vector.view(1, -1), strength)
+                    else:
+                        mixed[pos, :] = mixed[pos, :].lerp(vector, strength)
+
+                token_list = ", ".join(token for token, _ in selected)
+                status_parts.append(f"Void: on | {source} | tokens: {token_list}")
             else:
-                mixed[pos, :] = mixed[pos, :].lerp(vector, strength)
+                status_parts.append(f"Void: on | {source} | tokens: none")
+        else:
+            status_parts.append("Void: off | idle | tokens: none")
+
+        if im_feeling_lucky:
+            lucky_pool = self._eligible_lucky_bank_items(global_adaptive, int(mixed.shape[-1]))
+            active_positions = torch.arange(active_len, device=device)
+            if token_mask is not None:
+                active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
+
+            if len(lucky_pool) < 2:
+                status_parts.append("Lucky: on | bank too small | tokens: none")
+            elif active_positions.numel() <= 0:
+                status_parts.append("Lucky: on | no active slots | tokens: none")
+            else:
+                token_vectors = {}
+                for token, item, _ in lucky_pool:
+                    try:
+                        vector = serializable_to_tensor(item["embedding"]).to(device=device, dtype=dtype)
+                    except Exception:
+                        continue
+                    if vector.dim() == 1 and int(vector.shape[0]) == int(mixed.shape[-1]):
+                        token_vectors[token] = vector
+
+                ordered_sequences = []
+                if isinstance(prompt_sequences, list):
+                    for sequence in prompt_sequences:
+                        if not isinstance(sequence, list):
+                            continue
+                        ordered = [token for token in sequence if token in token_vectors]
+                        if len(ordered) >= 2:
+                            ordered_sequences.append(ordered)
+
+                if ordered_sequences:
+                    sequence = random.choice(ordered_sequences)
+                    offset = random.randrange(len(sequence))
+                    random_indexes = torch.randint(0, len(lucky_pool), (int(active_positions.numel()),)).tolist()
+                    chosen_tokens = []
+                    for slot_index, random_index in enumerate(random_indexes):
+                        if random.random() < 0.32:
+                            chosen_tokens.append(lucky_pool[random_index][0])
+                        else:
+                            chosen_tokens.append(sequence[(slot_index + offset) % len(sequence)])
+                    order_source = "saved prompt order"
+                else:
+                    picked_indexes = torch.randint(0, len(lucky_pool), (int(active_positions.numel()),)).tolist()
+                    chosen_tokens = [lucky_pool[index][0] for index in picked_indexes]
+                    order_source = "raw random"
+
+                lucky_field = mixed.clone()
+                picked_tokens = []
+                for pos_tensor, token in zip(active_positions, chosen_tokens):
+                    vector = token_vectors.get(token)
+                    if vector is None:
+                        continue
+                    pos = int(pos_tensor.item())
+                    if lucky_field.dim() == 3:
+                        lucky_field[:, pos, :] = vector.view(1, -1)
+                    else:
+                        lucky_field[pos, :] = vector
+                    picked_tokens.append(token)
+
+                if picked_tokens:
+                    strength = 0.022 if into_the_void else 0.030
+                    mixed = mixed.lerp(lucky_field, strength)
+                    token_preview = []
+                    seen_tokens = set()
+                    for token in picked_tokens:
+                        if token in seen_tokens:
+                            continue
+                        token_preview.append(token)
+                        seen_tokens.add(token)
+                        if len(token_preview) >= 8:
+                            break
+                    token_list = ", ".join(token_preview)
+                    if len(seen_tokens) < len(set(picked_tokens)):
+                        token_list += ", ..."
+                    status_parts.append(
+                        f"Lucky: on | {order_source} | random field {len(picked_tokens)} slots from {len(set(picked_tokens))} tokens | tokens: {token_list}"
+                    )
+                else:
+                    status_parts.append("Lucky: on | bank unreadable | tokens: none")
+        else:
+            status_parts.append("Lucky: off")
 
         delta = mixed - new_positive
         reference_norm = reference.norm(dim=-1, keepdim=True).clamp_min(1e-8)
@@ -898,8 +1021,7 @@ class FunPackVideoRefiner:
         mixed = torch.clamp(mixed, min=-60.0, max=60.0)
         norm_factor = new_positive.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * norm_factor
-        token_list = ", ".join(token for token, _ in selected)
-        return mixed, f"Void: on | {source} | tokens: {token_list}"
+        return mixed, " | ".join(status_parts)
 
     @classmethod
     def INPUT_TYPES(s):
@@ -946,6 +1068,11 @@ class FunPackVideoRefiner:
                 "into_the_void": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Experimental: lightly mixes learned liked token embeddings into the final conditioning for preference discovery."
+                }),
+                "im_feeling_lucky": ("BOOLEAN", {
+                    "default": False,
+                    "label": "I'm Feeling Lucky",
+                    "tooltip": "Builds a random conditioning field from a broad set of better-rated learned token embeddings."
                 }),
             },
             "hidden": {
@@ -1322,6 +1449,60 @@ class FunPackVideoRefiner:
                 seen.add(clean)
                 words.append(clean)
         return words
+
+    def _ordered_prompt_words(self, prompt: str):
+        words = []
+        for phrase_words in self._parse_concepts(prompt):
+            for word in phrase_words:
+                clean = str(word).strip().lower()
+                if clean and self._is_valuable_token(clean):
+                    words.append(clean)
+        return words
+
+    def _lucky_prompt_sequences(self, prompt_histories: dict):
+        if not isinstance(prompt_histories, dict):
+            return []
+
+        sequences = []
+        seen = set()
+        for prompt_key, history_entry in prompt_histories.items():
+            if not isinstance(history_entry, dict):
+                continue
+
+            history = history_entry.get("history", [])
+            good_history = []
+            if isinstance(history, list):
+                for item in history[-24:]:
+                    if not isinstance(item, dict):
+                        continue
+                    profile = normalize_refiner_rating(item.get("rating_label", item.get("rating", 0)))
+                    if int(profile.get("level", 0)) >= 5:
+                        good_history.append(item)
+
+            for item in good_history:
+                for key in ("prompt_full", "analysis_prompt", "prompt"):
+                    text = item.get(key)
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    ordered = self._ordered_prompt_words(text)
+                    if len(ordered) < 2:
+                        continue
+                    signature = tuple(ordered)
+                    if signature not in seen:
+                        seen.add(signature)
+                        sequences.append(ordered[:64])
+
+            if good_history:
+                for text in self._history_prompt_texts(prompt_key, history_entry):
+                    ordered = self._ordered_prompt_words(text)
+                    if len(ordered) < 2:
+                        continue
+                    signature = tuple(ordered)
+                    if signature not in seen:
+                        seen.add(signature)
+                        sequences.append(ordered[:64])
+
+        return sequences[-96:]
 
     def _history_prompt_texts(self, prompt_key: str, history_entry: dict):
         texts = []
@@ -2747,7 +2928,7 @@ class FunPackVideoRefiner:
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
                sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
-               into_the_void: bool = False,
+               into_the_void: bool = False, im_feeling_lucky: bool = False,
                prompt=None, unique_id=None):
 
         mode = (mode or "ltx2").lower()
@@ -3450,7 +3631,9 @@ class FunPackVideoRefiner:
             word_groups,
             word_importance,
             into_the_void=into_the_void,
+            im_feeling_lucky=im_feeling_lucky,
             token_mask=active_token_mask,
+            prompt_sequences=self._lucky_prompt_sequences(prompt_histories),
         )
 
         # Update momentum
@@ -3497,6 +3680,7 @@ class FunPackVideoRefiner:
             "prompt_words": current_prompt_words,
             "exact_prompt_key": exact_prompt_key,
             "into_the_void": bool(into_the_void),
+            "im_feeling_lucky": bool(im_feeling_lucky),
             "void_status": void_status,
         }
         history.append(history_entry)
