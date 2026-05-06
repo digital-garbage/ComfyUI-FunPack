@@ -1308,6 +1308,115 @@ class FunPackVideoRefiner:
             "context_hits": context_hits,
         }
 
+    def _compose_lucky_prompt_text(self, global_adaptive, word_groups, embedding_dim,
+                                   prompt_sequences=None, target_count=64):
+        lucky_pool = self._eligible_lucky_bank_items(global_adaptive, int(embedding_dim))
+        if len(lucky_pool) < 2:
+            return "", {
+                "source": "bank too small",
+                "anchor_tokens": [],
+                "context_tokens": [],
+                "context_hits": 0,
+                "token_count": 0,
+            }
+
+        token_vectors = {}
+        for token, item, _ in lucky_pool:
+            try:
+                vector = serializable_to_tensor(item["embedding"]).float()
+            except Exception:
+                continue
+            if vector.dim() == 1 and int(vector.shape[0]) == int(embedding_dim):
+                token_vectors[token] = vector
+
+        if len(token_vectors) < 2:
+            return "", {
+                "source": "bank unreadable",
+                "anchor_tokens": [],
+                "context_tokens": [],
+                "context_hits": 0,
+                "token_count": 0,
+            }
+
+        count = max(4, int(target_count or 0))
+        chosen_tokens, compose_info = self._lucky_compose_tokens(
+            global_adaptive,
+            word_groups,
+            lucky_pool,
+            token_vectors,
+            count,
+        )
+
+        ordered_sequences = []
+        if isinstance(prompt_sequences, list):
+            for sequence in prompt_sequences:
+                if not isinstance(sequence, list):
+                    continue
+                ordered = [str(token).strip().lower() for token in sequence if str(token).strip().lower() in token_vectors]
+                if len(ordered) >= 2:
+                    ordered_sequences.append(ordered)
+
+        if ordered_sequences and compose_info.get("source") == "global preferences":
+            sequence = random.choice(ordered_sequences)
+            chosen_tokens = [
+                sequence[index % len(sequence)]
+                if random.random() < 0.55 else chosen_tokens[index]
+                for index in range(min(len(chosen_tokens), count))
+            ]
+            compose_info["source"] = "saved prompt order"
+
+        prompt_tokens = []
+        seen = set()
+        for token in chosen_tokens:
+            token = str(token).strip().lower()
+            if token in seen or not self._is_valuable_token(token):
+                continue
+            prompt_tokens.append(token)
+            seen.add(token)
+
+        if not prompt_tokens:
+            return "", {
+                **compose_info,
+                "token_count": 0,
+            }
+
+        prompt_text = ", ".join(prompt_tokens)
+        return prompt_text, {
+            **compose_info,
+            "token_count": len(prompt_tokens),
+            "tokens": prompt_tokens,
+        }
+
+    def _encode_lucky_prompt_conditioning(self, clip, prompt_text, template, device, dtype):
+        if clip is None or not prompt_text:
+            return None, None, ""
+        try:
+            tokens = clip.tokenize(prompt_text)
+            encoded = clip.encode_from_tokens_scheduled(tokens)
+        except Exception as e:
+            print(f"[FunPackVideoRefiner] Lucky prompt CLIP/Gemma encode failed: {e}")
+            return None, None, f"encode failed: {e}"
+
+        if not isinstance(encoded, list) or not encoded:
+            return None, None, "encode returned empty conditioning"
+
+        item = encoded[0]
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            cond = item[0]
+            meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
+        else:
+            cond = item if isinstance(item, torch.Tensor) else None
+            meta = {"pooled_output": None}
+
+        if not isinstance(cond, torch.Tensor):
+            return None, None, "encode returned invalid conditioning"
+
+        cond = cond.to(device=device, dtype=dtype)
+        if not self._conditioning_canvas_compatible(cond, template):
+            return None, None, f"encoded shape {tuple(cond.shape)} incompatible"
+
+        return cond, meta, f"encoded prompt ({self._get_conditioning_seq_len(cond)} positions)"
+
     def _select_void_tokens(self, global_adaptive, word_groups, cur_positive,
                             word_importance, token_mask=None, max_count=3):
         if not isinstance(cur_positive, torch.Tensor) or cur_positive.dim() <= 1:
@@ -1347,7 +1456,7 @@ class FunPackVideoRefiner:
     def _apply_into_the_void(self, new_positive, reference, global_adaptive, word_groups,
                              word_importance, into_the_void=False, im_feeling_lucky=False,
                              token_mask=None, prompt_sequences=None, lucky_canvas=None,
-                             lucky_canvas_label=""):
+                             lucky_canvas_label="", lucky_prompt_text=""):
         if not into_the_void and not im_feeling_lucky:
             return new_positive, self._void_empty_status(False), {}
         if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
@@ -1439,6 +1548,7 @@ class FunPackVideoRefiner:
                         "context_tokens": [],
                         "context_hits": 0,
                         "canvas": lucky_canvas_status,
+                        "prompt": lucky_prompt_text,
                     }
                     status_parts.append(
                         f"Lucky: on | memory canvas {lucky_canvas_status} | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none"
@@ -1457,6 +1567,7 @@ class FunPackVideoRefiner:
                         "context_tokens": [],
                         "context_hits": 0,
                         "canvas": lucky_canvas_status,
+                        "prompt": lucky_prompt_text,
                     }
                     status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | no active positions | tokens: none")
                 else:
@@ -1538,11 +1649,16 @@ class FunPackVideoRefiner:
                         "context_tokens": compose_info.get("context_tokens", []),
                         "context_hits": int(compose_info.get("context_hits", 0)),
                         "canvas": lucky_canvas_status if lucky_canvas_used else "current conditioning",
+                        "prompt": lucky_prompt_text,
                     }
                     canvas_phrase = f" | canvas: {lucky_canvas_status}" if lucky_canvas_used else ""
+                    prompt_preview = re.sub(r"\s+", " ", lucky_prompt_text).strip()
+                    if len(prompt_preview) > 160:
+                        prompt_preview = prompt_preview[:157].rstrip() + "..."
+                    prompt_phrase = f" | prompt: {prompt_preview}" if prompt_preview else ""
                     status_parts.append(
                         f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} positions from {len(set(picked_tokens))} tokens | "
-                        f"anchors: {anchor_preview} | context add: {context_preview}{canvas_phrase} | tokens: {token_list}"
+                        f"anchors: {anchor_preview} | context add: {context_preview}{canvas_phrase}{prompt_phrase} | tokens: {token_list}"
                     )
                 else:
                     if lucky_canvas_used:
@@ -1556,6 +1672,7 @@ class FunPackVideoRefiner:
                             "context_tokens": [],
                             "context_hits": 0,
                             "canvas": lucky_canvas_status,
+                            "prompt": lucky_prompt_text,
                         }
                         status_parts.append(f"Lucky: on | memory canvas {lucky_canvas_status} | bank unreadable | tokens: none")
                     else:
@@ -1589,6 +1706,9 @@ class FunPackVideoRefiner:
                     "multiline": True,
                     "default": "",
                     "placeholder": "Positive prompt"
+                }),
+                "clip": ("CLIP", {
+                    "tooltip": "Optional text encoder. When connected, Lucky composes a learned prompt and re-encodes it before refinement."
                 }),
                 "sigmas": ("SIGMAS",),
                 "sigma_strength": (["off", "subtle", "medium", "strong", "max"], {
@@ -3476,7 +3596,7 @@ class FunPackVideoRefiner:
 
     def refine(self, positive_conditioning, mode: str, rating: int, refinement_key: str,
                scheduler_mode: str = "original", positive_prompt: str = "",
-               reset_session: bool = False, unlimited_history: bool = False,
+               clip=None, reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
                sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
                into_the_void: bool = False, im_feeling_lucky: bool = False,
@@ -4231,13 +4351,39 @@ class FunPackVideoRefiner:
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
         lucky_canvas, lucky_canvas_label = (None, "")
+        lucky_prompt_text = ""
+        lucky_encoded_meta = None
         if im_feeling_lucky:
-            lucky_canvas, lucky_canvas_label = self._select_lucky_memory_canvas(
-                prompt_histories,
-                cur_positive,
-                device,
-                cur_positive.dtype,
-            )
+            prompt_sequences = self._lucky_prompt_sequences(prompt_histories)
+            if clip is not None:
+                lucky_prompt_text, lucky_prompt_info = self._compose_lucky_prompt_text(
+                    global_adaptive,
+                    word_groups,
+                    int(cur_positive.shape[-1]),
+                    prompt_sequences=prompt_sequences,
+                    target_count=self._get_conditioning_seq_len(cur_positive),
+                )
+                encoded_canvas, encoded_meta, encoded_status = self._encode_lucky_prompt_conditioning(
+                    clip,
+                    lucky_prompt_text,
+                    cur_positive,
+                    device,
+                    cur_positive.dtype,
+                )
+                if encoded_canvas is not None:
+                    lucky_canvas = encoded_canvas
+                    lucky_canvas_label = encoded_status
+                    lucky_encoded_meta = encoded_meta
+                elif encoded_status:
+                    print(f"[FunPackVideoRefiner] Lucky CLIP/Gemma canvas unavailable: {encoded_status}")
+
+            if lucky_canvas is None:
+                lucky_canvas, lucky_canvas_label = self._select_lucky_memory_canvas(
+                    prompt_histories,
+                    cur_positive,
+                    device,
+                    cur_positive.dtype,
+                )
         new_positive, void_status, lucky_metadata = self._apply_into_the_void(
             new_positive,
             reference,
@@ -4250,6 +4396,7 @@ class FunPackVideoRefiner:
             prompt_sequences=self._lucky_prompt_sequences(prompt_histories),
             lucky_canvas=lucky_canvas,
             lucky_canvas_label=lucky_canvas_label,
+            lucky_prompt_text=lucky_prompt_text,
         )
         if should_seed_current_prompt_after_lucky:
             self._seed_void_token_bank(
@@ -4579,7 +4726,8 @@ class FunPackVideoRefiner:
             json.dump(data, f, indent=2)
 
         # ====================== RETURN ======================
-        modified_positive = [(new_positive, positive_meta)]
+        output_positive_meta = lucky_encoded_meta if isinstance(lucky_encoded_meta, dict) else positive_meta
+        modified_positive = [(new_positive, output_positive_meta)]
 
         return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas, refined_latent)
 
