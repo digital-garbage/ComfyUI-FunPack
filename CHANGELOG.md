@@ -38,6 +38,8 @@ Improved `I'm Feeling Lucky` runtime by selecting learned conditioning canvases 
 
 Reduced redundant `I'm Feeling Lucky` work by keeping Lucky runs in one stable memory history, skipping normal prompt-variant conditioning scans while Lucky is active, validating large Lucky memories once per loaded session, and updating context relationships locally instead of writing all-to-all token graphs every run.
 
+Fixed `I'm Feeling Lucky` CLIP/Gemma re-encode crashes when the encoded Lucky prompt has a different sequence length than the incoming conditioning by resizing the refinement delta before applying it.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed

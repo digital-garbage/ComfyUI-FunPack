@@ -1093,6 +1093,45 @@ class FunPackVideoRefiner:
             return False
         return self._get_conditioning_seq_len(candidate) > 0
 
+    def _resize_conditioning_sequence_like(self, source, target):
+        if not isinstance(source, torch.Tensor) or not isinstance(target, torch.Tensor):
+            return None
+        if source.dim() != target.dim() or source.dim() <= 1:
+            return None
+        if int(source.shape[-1]) != int(target.shape[-1]):
+            return None
+        if source.dim() == 3 and int(source.shape[0]) != int(target.shape[0]):
+            return None
+        if list(source.shape) == list(target.shape):
+            return source.to(device=target.device, dtype=target.dtype)
+
+        target_seq = self._get_conditioning_seq_len(target)
+        if target_seq <= 0:
+            return None
+
+        try:
+            working = source.to(device=target.device, dtype=target.dtype)
+            if working.dim() == 3:
+                resized = F.interpolate(
+                    working.transpose(1, 2),
+                    size=target_seq,
+                    mode="linear",
+                    align_corners=False,
+                ).transpose(1, 2)
+            else:
+                resized = F.interpolate(
+                    working.transpose(0, 1).unsqueeze(0),
+                    size=target_seq,
+                    mode="linear",
+                    align_corners=False,
+                ).squeeze(0).transpose(0, 1)
+        except Exception:
+            return None
+
+        if list(resized.shape) != list(target.shape):
+            return None
+        return resized
+
     def _serialized_tensor_shape(self, payload):
         if not isinstance(payload, dict):
             return None
@@ -4467,14 +4506,18 @@ class FunPackVideoRefiner:
                     cur_positive.dtype,
                 )
                 if encoded_canvas is not None:
-                    refined_encoded_canvas = encoded_canvas + new_delta.to(device=encoded_canvas.device, dtype=encoded_canvas.dtype)
-                    refined_encoded_canvas = torch.clamp(refined_encoded_canvas, min=-60.0, max=60.0)
-                    encoded_norm = encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8)
-                    refined_encoded_canvas = (
-                        refined_encoded_canvas /
-                        refined_encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8) *
-                        encoded_norm
-                    )
+                    encoded_delta = self._resize_conditioning_sequence_like(new_delta, encoded_canvas)
+                    if encoded_delta is not None:
+                        refined_encoded_canvas = encoded_canvas + encoded_delta
+                        refined_encoded_canvas = torch.clamp(refined_encoded_canvas, min=-60.0, max=60.0)
+                        encoded_norm = encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                        refined_encoded_canvas = (
+                            refined_encoded_canvas /
+                            refined_encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8) *
+                            encoded_norm
+                        )
+                    else:
+                        refined_encoded_canvas = encoded_canvas
                     lucky_canvas = refined_encoded_canvas
                     lucky_canvas_label = encoded_status
                     lucky_encoded_meta = encoded_meta
