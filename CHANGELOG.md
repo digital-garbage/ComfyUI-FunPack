@@ -18,6 +18,14 @@ Improved `FunPack LoRA Loader` rerun performance by caching recently used raw Lo
 
 Reworked `FunPack Video Refiner` ratings around explicit missing-axis signals: `Perfect`, single missing axes, paired missing axes, and `Awful`.
 
+### Fixed
+
+Fixed `I'm Feeling Lucky` token-bank learning for changing prompt/conditioning workflows by falling back to prompt-order token placement when exact tokenizer position matching cannot find enough words.
+
+Fixed `I'm Feeling Lucky` rating attribution for changing prompts so ratings update the previous prompt's learned tokens while the current prompt seeds new neutral discovery tokens.
+
+Updated `I'm Feeling Lucky` filtering to learn poor adjacent token pairs instead of refusing individual tokens outright.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed

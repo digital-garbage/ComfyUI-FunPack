@@ -589,9 +589,65 @@ class FunPackVideoRefiner:
             return ""
         return PROTECTED_PHRASE_RE.sub(lambda match: " " * len(match.group(0)), prompt)
 
-    def _build_word_groups(self, prompt: str, tokenizer, seq_len: int, token_mask=None):
-        if not tokenizer or not prompt or seq_len <= 0:
+    def _fallback_word_groups_from_prompt(self, prompt: str, seq_len: int, token_mask=None, existing_groups=None):
+        if not prompt or seq_len <= 0:
             return []
+
+        effective_seq_len = self._get_effective_seq_len(token_mask, seq_len)
+        if effective_seq_len <= 0:
+            return []
+
+        active_positions = list(range(effective_seq_len))
+        if token_mask is not None:
+            active_positions = [
+                index
+                for index, enabled in enumerate(token_mask[:effective_seq_len].detach().cpu().tolist())
+                if enabled
+            ]
+        if not active_positions:
+            return []
+
+        existing = {
+            str(group[2]).strip().lower()
+            for group in (existing_groups or [])
+            if isinstance(group, (list, tuple)) and len(group) >= 3
+        }
+        candidates = []
+        seen = set(existing)
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type == "protected":
+                pieces = [segment_text.strip()]
+            else:
+                pieces = re.findall(r"[\w'’.-]+", segment_text, flags=re.UNICODE)
+            for piece in pieces:
+                clean = piece.strip(" \t\r\n,;:!?()[]{}\"'")
+                lower = clean.lower()
+                if lower in seen or not self._is_valuable_token(clean):
+                    continue
+                seen.add(lower)
+                candidates.append(clean)
+
+        if not candidates:
+            return []
+
+        fallback = []
+        step_count = len(candidates)
+        max_slots = len(active_positions)
+        for index, word in enumerate(candidates[:max_slots]):
+            if step_count == 1:
+                pos_index = len(active_positions) // 2
+            else:
+                pos_index = round(index * (len(active_positions) - 1) / max(1, min(step_count, max_slots) - 1))
+            start = int(active_positions[max(0, min(len(active_positions) - 1, pos_index))])
+            fallback.append((start, min(effective_seq_len, start + 1), word, []))
+        return fallback
+
+    def _build_word_groups(self, prompt: str, tokenizer, seq_len: int, token_mask=None):
+        if not prompt or seq_len <= 0:
+            return []
+
+        if not tokenizer:
+            return self._fallback_word_groups_from_prompt(prompt, seq_len, token_mask)
 
         effective_seq_len = self._get_effective_seq_len(token_mask, seq_len)
         token_mask_list = None
@@ -662,6 +718,16 @@ class FunPackVideoRefiner:
             if not found:
                 continue
 
+        if len(word_groups) < 2:
+            word_groups.extend(
+                self._fallback_word_groups_from_prompt(
+                    prompt,
+                    seq_len,
+                    token_mask,
+                    existing_groups=word_groups,
+                )
+            )
+
         return sorted(
             [group for group in word_groups if group[1] > group[0]],
             key=lambda group: (group[0], group[1], group[2].lower()),
@@ -714,6 +780,102 @@ class FunPackVideoRefiner:
             cleaned = dict(ranked[:96])
         global_adaptive["void_token_bank"] = cleaned
         return cleaned
+
+    def _void_pair_key(self, left_token, right_token):
+        return f"{str(left_token).strip().lower()}\t{str(right_token).strip().lower()}"
+
+    def _void_pair_score(self, item):
+        likes = float(item.get("liked_count", 0))
+        neutral = float(item.get("neutral_count", 0))
+        awful = float(item.get("awful_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.35 + neutral * 0.05 - awful * 0.85
+
+    def _ensure_void_pair_bank(self, global_adaptive):
+        bank = global_adaptive.get("void_token_pairs")
+        if not isinstance(bank, dict):
+            bank = {}
+        cleaned = {}
+        for key, item in bank.items():
+            if not isinstance(key, str) or "\t" not in key or not isinstance(item, dict):
+                continue
+            try:
+                left, right = key.split("\t", 1)
+                if not self._is_valuable_token(left) or not self._is_valuable_token(right):
+                    continue
+                item["score"] = round(max(-3.0, min(5.0, float(item.get("score", 0.0)))), 4)
+                item["liked_count"] = max(0, int(item.get("liked_count", 0)))
+                item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
+                item["awful_count"] = max(0, int(item.get("awful_count", 0)))
+                item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                cleaned[key] = item
+            except (TypeError, ValueError):
+                continue
+        if len(cleaned) > 256:
+            ranked = sorted(cleaned.items(), key=lambda pair: self._void_pair_score(pair[1]), reverse=True)
+            cleaned = dict(ranked[:256])
+        global_adaptive["void_token_pairs"] = cleaned
+        return cleaned
+
+    def _update_void_token_pairs(self, global_adaptive, word_groups, rating_key, iter_num):
+        pair_bank = self._ensure_void_pair_bank(global_adaptive)
+        ordered_tokens = []
+        seen_positions = set()
+        for start, _, full_word, _ in sorted(word_groups or [], key=lambda group: (group[0], group[1])):
+            token = str(full_word).strip().lower()
+            if not self._is_valuable_token(token):
+                continue
+            marker = (int(start), token)
+            if marker in seen_positions:
+                continue
+            seen_positions.add(marker)
+            ordered_tokens.append(token)
+
+        if len(ordered_tokens) < 2:
+            return pair_bank
+
+        if rating_key == "like":
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.58, 1, 0, 0
+        elif rating_key == "missing_details":
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.30, 1, 0, 0
+        elif rating_key == "awful":
+            score_delta, liked_delta, neutral_delta, awful_delta = -0.95, 0, 0, 1
+        elif rating_key == "discover":
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.0, 0, 1, 0
+        else:
+            score_delta, liked_delta, neutral_delta, awful_delta = 0.08, 0, 1, 0
+
+        for left, right in zip(ordered_tokens, ordered_tokens[1:]):
+            if left == right:
+                continue
+            key = self._void_pair_key(left, right)
+            item = pair_bank.get(key, {})
+            item["left"] = left
+            item["right"] = right
+            item["score"] = round(max(-3.0, min(5.0, float(item.get("score", 0.0)) + score_delta)), 4)
+            item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
+            item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
+            item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+            item["last_seen_iter"] = int(iter_num)
+            pair_bank[key] = item
+
+        ranked = sorted(
+            pair_bank.items(),
+            key=lambda pair: (self._void_pair_score(pair[1]), pair[1].get("last_seen_iter", 0)),
+            reverse=True,
+        )
+        global_adaptive["void_token_pairs"] = dict(ranked[:256])
+        return global_adaptive["void_token_pairs"]
+
+    def _void_pair_is_poor(self, global_adaptive, left_token, right_token):
+        if not left_token or not right_token:
+            return False
+        pair_bank = self._ensure_void_pair_bank(global_adaptive)
+        item = pair_bank.get(self._void_pair_key(left_token, right_token))
+        if not isinstance(item, dict):
+            return False
+        awful_count = int(item.get("awful_count", 0))
+        positive_count = int(item.get("liked_count", 0)) + int(item.get("neutral_count", 0))
+        return awful_count > 0 and self._void_pair_score(item) < -0.05 and awful_count >= max(1, positive_count)
 
     def _update_void_token_bank(self, global_adaptive, word_groups, cur_positive,
                                 rating_profile, iter_num, token_mask=None):
@@ -770,6 +932,8 @@ class FunPackVideoRefiner:
             item["last_seen_iter"] = int(iter_num)
             bank[token] = item
 
+        self._update_void_token_pairs(global_adaptive, word_groups, rating_key, iter_num)
+
         ranked = sorted(
             bank.items(),
             key=lambda pair: (self._void_bank_score(pair[1]), pair[1].get("last_seen_iter", 0)),
@@ -777,6 +941,16 @@ class FunPackVideoRefiner:
         )
         global_adaptive["void_token_bank"] = dict(ranked[:96])
         return global_adaptive["void_token_bank"]
+
+    def _seed_void_token_bank(self, global_adaptive, word_groups, cur_positive, iter_num, token_mask=None):
+        return self._update_void_token_bank(
+            global_adaptive,
+            word_groups,
+            cur_positive,
+            {"key": "discover", "skip_learning": False},
+            iter_num,
+            token_mask=token_mask,
+        )
 
     def _history_modified_conditioning(self, history_entry, reference, device):
         if not isinstance(history_entry, dict):
@@ -814,13 +988,7 @@ class FunPackVideoRefiner:
         bank = self._ensure_void_token_bank(global_adaptive)
         candidates = []
         for token, item in bank.items():
-            liked_count = int(item.get("liked_count", 0))
-            neutral_count = int(item.get("neutral_count", 0))
-            awful_count = int(item.get("awful_count", 0))
             score = self._void_bank_score(item)
-            positive_count = liked_count + neutral_count
-            if awful_count > 0 and score < -0.05 and awful_count >= max(1, positive_count):
-                continue
             try:
                 vector = serializable_to_tensor(item["embedding"]).float()
             except Exception:
@@ -926,7 +1094,7 @@ class FunPackVideoRefiner:
                 active_positions = torch.nonzero(token_mask[:active_len], as_tuple=False).flatten()
 
             if len(lucky_pool) < 2:
-                status_parts.append("Lucky: on | bank too small | tokens: none")
+                status_parts.append(f"Lucky: on | bank too small ({len(lucky_pool)}/2 eligible) | tokens: none")
             elif active_positions.numel() <= 0:
                 status_parts.append("Lucky: on | no active slots | tokens: none")
             else:
@@ -953,15 +1121,35 @@ class FunPackVideoRefiner:
                     offset = random.randrange(len(sequence))
                     random_indexes = torch.randint(0, len(lucky_pool), (int(active_positions.numel()),)).tolist()
                     chosen_tokens = []
+                    previous_token = None
                     for slot_index, random_index in enumerate(random_indexes):
                         if random.random() < 0.32:
-                            chosen_tokens.append(lucky_pool[random_index][0])
+                            token = lucky_pool[random_index][0]
                         else:
-                            chosen_tokens.append(sequence[(slot_index + offset) % len(sequence)])
+                            token = sequence[(slot_index + offset) % len(sequence)]
+                        if previous_token and self._void_pair_is_poor(global_adaptive, previous_token, token):
+                            for _ in range(8):
+                                candidate = lucky_pool[int(torch.randint(0, len(lucky_pool), (1,)).item())][0]
+                                if not self._void_pair_is_poor(global_adaptive, previous_token, candidate):
+                                    token = candidate
+                                    break
+                        chosen_tokens.append(token)
+                        previous_token = token
                     order_source = "saved prompt order"
                 else:
                     picked_indexes = torch.randint(0, len(lucky_pool), (int(active_positions.numel()),)).tolist()
-                    chosen_tokens = [lucky_pool[index][0] for index in picked_indexes]
+                    chosen_tokens = []
+                    previous_token = None
+                    for index in picked_indexes:
+                        token = lucky_pool[index][0]
+                        if previous_token and self._void_pair_is_poor(global_adaptive, previous_token, token):
+                            for _ in range(8):
+                                candidate = lucky_pool[int(torch.randint(0, len(lucky_pool), (1,)).item())][0]
+                                if not self._void_pair_is_poor(global_adaptive, previous_token, candidate):
+                                    token = candidate
+                                    break
+                        chosen_tokens.append(token)
+                        previous_token = token
                     order_source = "raw random"
 
                 lucky_field = mixed.clone()
@@ -3015,6 +3203,7 @@ class FunPackVideoRefiner:
                 "loss_history": [],
                 "lora_weight_memory": {},
                 "void_token_bank": {},
+                "void_token_pairs": {},
                 "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
@@ -3097,6 +3286,7 @@ class FunPackVideoRefiner:
             return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
 
         global_adaptive = data["global_adaptive"]
+        previous_prompt_key_for_rating = data.get("last_prompt_key")
         # Migrate sessions created before the multi-level concept system was added
         global_adaptive.setdefault("concept_clusters", {})
         global_adaptive.setdefault("concept_groups", {})
@@ -3106,6 +3296,7 @@ class FunPackVideoRefiner:
         global_adaptive.setdefault("loss_history", [])
         global_adaptive.setdefault("lora_weight_memory", {})
         self._ensure_void_token_bank(global_adaptive)
+        self._ensure_void_pair_bank(global_adaptive)
         global_adaptive.setdefault("mode", mode)
         self._ensure_sigma_state_defaults(global_adaptive)
         for cid in list(global_adaptive["concept_clusters"].keys()):
@@ -3306,15 +3497,70 @@ class FunPackVideoRefiner:
         rated_positive = None
         if history and not source_changed:
             rated_positive = self._history_modified_conditioning(history[-1], source_reference, device)
-        void_learning_positive = rated_positive if rated_positive is not None else cur_positive
-        self._update_void_token_bank(
-            global_adaptive,
-            word_groups,
-            void_learning_positive,
-            rating_profile,
-            iter_num,
-            token_mask=active_token_mask,
-        )
+
+        bank_rated_prompt = analysis_prompt
+        bank_rated_word_groups = word_groups
+        bank_rated_positive = rated_positive
+        bank_rated_token_mask = active_token_mask
+
+        if previous_prompt_key_for_rating in prompt_histories:
+            previous_active = prompt_histories.get(previous_prompt_key_for_rating)
+            previous_history = previous_active.get("history", []) if isinstance(previous_active, dict) else []
+            if previous_history:
+                try:
+                    previous_source = serializable_to_tensor(
+                        previous_active.get("source_conditioning_embeds") or previous_active.get("reference_embeds")
+                    ).to(device)
+                except Exception:
+                    previous_source = None
+                previous_positive = self._history_modified_conditioning(previous_history[-1], previous_source, device)
+                if previous_positive is not None:
+                    previous_prompt = (
+                        previous_history[-1].get("analysis_prompt") or
+                        previous_history[-1].get("prompt_full") or
+                        previous_history[-1].get("prompt") or
+                        previous_active.get("canonical_prompt", "")
+                    )
+                    previous_seq_len = self._get_conditioning_seq_len(previous_positive)
+                    previous_token_mask = self._get_conditioning_token_mask(previous_positive) if mode == "wan" else None
+                    previous_word_groups = self._build_word_groups(
+                        previous_prompt,
+                        tokenizer,
+                        previous_seq_len,
+                        token_mask=previous_token_mask,
+                    )
+                    if previous_word_groups:
+                        bank_rated_prompt = previous_prompt
+                        bank_rated_word_groups = previous_word_groups
+                        bank_rated_positive = previous_positive
+                        bank_rated_token_mask = previous_token_mask
+
+        if bank_rated_positive is not None:
+            self._update_void_token_bank(
+                global_adaptive,
+                bank_rated_word_groups,
+                bank_rated_positive,
+                rating_profile,
+                iter_num,
+                token_mask=bank_rated_token_mask,
+            )
+
+        if analysis_prompt and analysis_prompt != bank_rated_prompt:
+            self._seed_void_token_bank(
+                global_adaptive,
+                word_groups,
+                cur_positive,
+                iter_num,
+                token_mask=active_token_mask,
+            )
+        elif bank_rated_positive is None:
+            self._seed_void_token_bank(
+                global_adaptive,
+                word_groups,
+                cur_positive,
+                iter_num,
+                token_mask=active_token_mask,
+            )
 
         if feedback_enabled and pending is not None:
             self._apply_concept_feedback(
