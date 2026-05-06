@@ -764,20 +764,15 @@ class FunPackVideoRefiner:
                 shape = vector.get("shape", [])
                 if len(shape) != 1 or int(shape[0]) <= 0:
                     continue
-                score = self._void_bank_score(item)
-                if score < -1.25 and int(item.get("awful_count", 0)) >= 2:
-                    continue
                 item["score"] = round(max(-2.0, min(5.0, float(item.get("score", 0.0)))), 4)
                 item["liked_count"] = max(0, int(item.get("liked_count", 0)))
                 item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
                 item["awful_count"] = max(0, int(item.get("awful_count", 0)))
                 item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                item["sample_count"] = max(0, int(item.get("sample_count", 0)))
                 cleaned[token] = item
             except (TypeError, ValueError):
                 continue
-        if len(cleaned) > 96:
-            ranked = sorted(cleaned.items(), key=lambda pair: self._void_bank_score(pair[1]), reverse=True)
-            cleaned = dict(ranked[:96])
         global_adaptive["void_token_bank"] = cleaned
         return cleaned
 
@@ -810,11 +805,89 @@ class FunPackVideoRefiner:
                 cleaned[key] = item
             except (TypeError, ValueError):
                 continue
-        if len(cleaned) > 256:
-            ranked = sorted(cleaned.items(), key=lambda pair: self._void_pair_score(pair[1]), reverse=True)
-            cleaned = dict(ranked[:256])
         global_adaptive["void_token_pairs"] = cleaned
         return cleaned
+
+    def _lucky_context_score(self, item):
+        likes = float(item.get("liked_count", 0))
+        neutral = float(item.get("neutral_count", 0))
+        awful = float(item.get("awful_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.38 + neutral * 0.06 - awful * 0.90
+
+    def _ensure_lucky_context_memory(self, global_adaptive):
+        memory = global_adaptive.get("lucky_context_memory")
+        if not isinstance(memory, dict):
+            memory = {}
+
+        cleaned = {}
+        for anchor, neighbors in memory.items():
+            anchor = str(anchor).strip().lower()
+            if not self._is_valuable_token(anchor) or not isinstance(neighbors, dict):
+                continue
+
+            clean_neighbors = {}
+            for neighbor, item in neighbors.items():
+                neighbor = str(neighbor).strip().lower()
+                if neighbor == anchor or not self._is_valuable_token(neighbor) or not isinstance(item, dict):
+                    continue
+                try:
+                    item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)))), 4)
+                    item["liked_count"] = max(0, int(item.get("liked_count", 0)))
+                    item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
+                    item["awful_count"] = max(0, int(item.get("awful_count", 0)))
+                    item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                    item["co_count"] = max(0, int(item.get("co_count", 0)))
+                    clean_neighbors[neighbor] = item
+                except (TypeError, ValueError):
+                    continue
+
+            if clean_neighbors:
+                cleaned[anchor] = clean_neighbors
+
+        global_adaptive["lucky_context_memory"] = cleaned
+        return cleaned
+
+    def _rating_memory_deltas(self, rating_key):
+        if rating_key == "like":
+            return 0.70, 1, 0, 0
+        if rating_key == "missing_details":
+            return 0.42, 1, 0, 0
+        if rating_key == "awful":
+            return -1.10, 0, 0, 1
+        if rating_key == "discover":
+            return 0.0, 0, 1, 0
+        return 0.12, 0, 1, 0
+
+    def _update_lucky_context_memory(self, global_adaptive, tokens, rating_key, iter_num):
+        memory = self._ensure_lucky_context_memory(global_adaptive)
+        ordered_tokens = []
+        seen = set()
+        for token in tokens or []:
+            token = str(token).strip().lower()
+            if token in seen or not self._is_valuable_token(token):
+                continue
+            seen.add(token)
+            ordered_tokens.append(token)
+
+        if len(ordered_tokens) < 2:
+            return memory
+
+        score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        for anchor in ordered_tokens:
+            neighbors = memory.setdefault(anchor, {})
+            for neighbor in ordered_tokens:
+                if neighbor == anchor:
+                    continue
+                item = neighbors.get(neighbor, {})
+                item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)) + score_delta)), 4)
+                item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
+                item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
+                item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+                item["co_count"] = max(0, int(item.get("co_count", 0)) + 1)
+                item["last_seen_iter"] = int(iter_num)
+                neighbors[neighbor] = item
+
+        return memory
 
     def _update_void_token_pairs(self, global_adaptive, word_groups, rating_key, iter_num):
         pair_bank = self._ensure_void_pair_bank(global_adaptive)
@@ -833,16 +906,8 @@ class FunPackVideoRefiner:
         if len(ordered_tokens) < 2:
             return pair_bank
 
-        if rating_key == "like":
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.58, 1, 0, 0
-        elif rating_key == "missing_details":
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.30, 1, 0, 0
-        elif rating_key == "awful":
-            score_delta, liked_delta, neutral_delta, awful_delta = -0.95, 0, 0, 1
-        elif rating_key == "discover":
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.0, 0, 1, 0
-        else:
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.08, 0, 1, 0
+        base_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        score_delta = base_delta * 0.84
 
         for left, right in zip(ordered_tokens, ordered_tokens[1:]):
             if left == right:
@@ -858,12 +923,8 @@ class FunPackVideoRefiner:
             item["last_seen_iter"] = int(iter_num)
             pair_bank[key] = item
 
-        ranked = sorted(
-            pair_bank.items(),
-            key=lambda pair: (self._void_pair_score(pair[1]), pair[1].get("last_seen_iter", 0)),
-            reverse=True,
-        )
-        global_adaptive["void_token_pairs"] = dict(ranked[:256])
+        self._update_lucky_context_memory(global_adaptive, ordered_tokens, rating_key, iter_num)
+        global_adaptive["void_token_pairs"] = pair_bank
         return global_adaptive["void_token_pairs"]
 
     def _void_pair_is_poor(self, global_adaptive, left_token, right_token):
@@ -884,14 +945,7 @@ class FunPackVideoRefiner:
         if not word_groups or not isinstance(cur_positive, torch.Tensor) or rating_profile.get("skip_learning"):
             return bank
 
-        if rating_key == "like":
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.70, 1, 0, 0
-        elif rating_key == "missing_details":
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.42, 1, 0, 0
-        elif rating_key == "awful":
-            score_delta, liked_delta, neutral_delta, awful_delta = -1.10, 0, 0, 1
-        else:
-            score_delta, liked_delta, neutral_delta, awful_delta = 0.12, 0, 1, 0
+        score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
 
         token_mask_list = None
         if token_mask is not None:
@@ -928,18 +982,13 @@ class FunPackVideoRefiner:
             item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
             item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
             item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
-            item["sample_count"] = min(9999, count + (0 if rating_key == "awful" else 1))
+            item["sample_count"] = count + (0 if rating_key == "awful" else 1)
             item["last_seen_iter"] = int(iter_num)
             bank[token] = item
 
         self._update_void_token_pairs(global_adaptive, word_groups, rating_key, iter_num)
 
-        ranked = sorted(
-            bank.items(),
-            key=lambda pair: (self._void_bank_score(pair[1]), pair[1].get("last_seen_iter", 0)),
-            reverse=True,
-        )
-        global_adaptive["void_token_bank"] = dict(ranked[:96])
+        global_adaptive["void_token_bank"] = bank
         return global_adaptive["void_token_bank"]
 
     def _seed_void_token_bank(self, global_adaptive, word_groups, cur_positive, iter_num, token_mask=None):
@@ -951,6 +1000,33 @@ class FunPackVideoRefiner:
             iter_num,
             token_mask=token_mask,
         )
+
+    def _lucky_groups_from_history(self, history_entry, seq_len):
+        if not isinstance(history_entry, dict) or seq_len <= 0:
+            return []
+        lucky = history_entry.get("lucky") if isinstance(history_entry.get("lucky"), dict) else {}
+        injections = lucky.get("injections", [])
+        groups = []
+        seen = set()
+        for item in injections:
+            if not isinstance(item, dict):
+                continue
+            token = str(item.get("token", "")).strip().lower()
+            if not self._is_valuable_token(token):
+                continue
+            try:
+                start = int(item.get("start", 0))
+                end = int(item.get("end", start + 1))
+            except (TypeError, ValueError):
+                continue
+            start = max(0, min(seq_len - 1, start))
+            end = max(start + 1, min(seq_len, end))
+            marker = (start, token)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            groups.append((start, end, token, []))
+        return groups
 
     def _history_modified_conditioning(self, history_entry, reference, device):
         if not isinstance(history_entry, dict):
@@ -999,6 +1075,129 @@ class FunPackVideoRefiner:
 
         return candidates
 
+    def _lucky_prompt_anchor_tokens(self, word_groups, token_vectors, global_adaptive):
+        context_memory = self._ensure_lucky_context_memory(global_adaptive)
+        anchors = []
+        seen = set()
+        for _, _, full_word, _ in sorted(word_groups or [], key=lambda group: (group[0], group[1])):
+            token = str(full_word).strip().lower()
+            if token in seen or not self._is_valuable_token(token):
+                continue
+            if token in token_vectors or token in context_memory:
+                anchors.append(token)
+                seen.add(token)
+        return anchors
+
+    def _lucky_context_neighbors(self, global_adaptive, anchor_tokens, token_vectors, present_tokens=None):
+        context_memory = self._ensure_lucky_context_memory(global_adaptive)
+        present = set(present_tokens or [])
+        scored = {}
+        for anchor in anchor_tokens or []:
+            for neighbor, item in context_memory.get(anchor, {}).items():
+                if neighbor in present or neighbor not in token_vectors:
+                    continue
+                score = self._lucky_context_score(item)
+                if score <= 0.15 and int(item.get("liked_count", 0)) <= 0:
+                    continue
+                if self._void_pair_is_poor(global_adaptive, anchor, neighbor):
+                    continue
+                scored[neighbor] = max(scored.get(neighbor, -999.0), score)
+        return [
+            token for token, _ in sorted(scored.items(), key=lambda pair: pair[1], reverse=True)
+        ]
+
+    def _lucky_global_tokens(self, lucky_pool):
+        scored = sorted(lucky_pool, key=lambda item: item[2], reverse=True)
+        preferred = [
+            token for token, item, score in scored
+            if score > 0.10 or int(item.get("liked_count", 0)) > 0 or int(item.get("neutral_count", 0)) > 0
+        ]
+        return preferred or [token for token, _, _ in scored]
+
+    def _lucky_weighted_pick(self, token_scores, candidates, previous_token=None, global_adaptive=None):
+        usable = []
+        weights = []
+        for token in candidates or []:
+            token = str(token).strip().lower()
+            if not token:
+                continue
+            if previous_token and global_adaptive is not None and self._void_pair_is_poor(global_adaptive, previous_token, token):
+                continue
+            usable.append(token)
+            weights.append(max(0.05, float(token_scores.get(token, 0.0)) + 1.25))
+
+        if not usable:
+            return None
+
+        if len(usable) == 1:
+            return usable[0]
+
+        weights_tensor = torch.tensor(weights, dtype=torch.float32)
+        index = int(torch.multinomial(weights_tensor, 1).item())
+        return usable[index]
+
+    def _lucky_compose_tokens(self, global_adaptive, word_groups, lucky_pool, token_vectors, slot_count):
+        token_scores = {token: score for token, _, score in lucky_pool}
+        present_tokens = {
+            str(group[2]).strip().lower()
+            for group in (word_groups or [])
+            if isinstance(group, (list, tuple)) and len(group) >= 3 and self._is_valuable_token(str(group[2]).strip())
+        }
+        anchor_tokens = self._lucky_prompt_anchor_tokens(word_groups, token_vectors, global_adaptive)
+        context_tokens = self._lucky_context_neighbors(
+            global_adaptive,
+            anchor_tokens,
+            token_vectors,
+            present_tokens=present_tokens,
+        )
+        global_tokens = self._lucky_global_tokens(lucky_pool)
+
+        seed_sequence = []
+        for token in anchor_tokens + context_tokens + global_tokens:
+            if token in token_vectors and token not in seed_sequence:
+                seed_sequence.append(token)
+
+        if not seed_sequence:
+            seed_sequence = [token for token, _, _ in lucky_pool]
+
+        chosen_tokens = []
+        previous_token = None
+        context_hits = 0
+        for index in range(max(0, int(slot_count))):
+            if context_tokens and index < len(context_tokens):
+                candidates = [context_tokens[index]]
+            elif seed_sequence and random.random() < 0.72:
+                candidates = seed_sequence
+            else:
+                candidates = [token for token, _, _ in lucky_pool]
+
+            token = self._lucky_weighted_pick(token_scores, candidates, previous_token, global_adaptive)
+            if token is None:
+                token = self._lucky_weighted_pick(token_scores, [token for token, _, _ in lucky_pool], previous_token, global_adaptive)
+            if token is None:
+                continue
+
+            if token in context_tokens:
+                context_hits += 1
+            chosen_tokens.append(token)
+            previous_token = token
+
+        if anchor_tokens and context_hits:
+            source = "anchors+context"
+        elif anchor_tokens:
+            source = "prompt anchors"
+        elif context_hits:
+            source = "context"
+        else:
+            source = "global preferences"
+
+        return chosen_tokens, {
+            "source": source,
+            "anchor_tokens": anchor_tokens,
+            "context_tokens": context_tokens,
+            "context_hits": context_hits,
+        }
+
     def _select_void_tokens(self, global_adaptive, word_groups, cur_positive,
                             word_importance, token_mask=None, max_count=3):
         if not isinstance(cur_positive, torch.Tensor) or cur_positive.dim() <= 1:
@@ -1039,11 +1238,11 @@ class FunPackVideoRefiner:
                              word_importance, into_the_void=False, im_feeling_lucky=False,
                              token_mask=None, prompt_sequences=None):
         if not into_the_void and not im_feeling_lucky:
-            return new_positive, self._void_empty_status(False)
+            return new_positive, self._void_empty_status(False), {}
         if not isinstance(new_positive, torch.Tensor) or not isinstance(reference, torch.Tensor):
-            return new_positive, "Void: on | unavailable | tokens: none"
+            return new_positive, "Void: on | unavailable | tokens: none", {}
         if new_positive.dim() <= 1 or list(new_positive.shape) != list(reference.shape):
-            return new_positive, "Void: on | incompatible conditioning | tokens: none"
+            return new_positive, "Void: on | incompatible conditioning | tokens: none", {}
 
         device = new_positive.device
         dtype = new_positive.dtype
@@ -1052,6 +1251,7 @@ class FunPackVideoRefiner:
         active_len = max(1, min(seq_len, active_len))
         mixed = new_positive.clone()
         status_parts = []
+        lucky_metadata = {}
 
         if into_the_void:
             selected, source = self._select_void_tokens(
@@ -1116,44 +1316,25 @@ class FunPackVideoRefiner:
                         if len(ordered) >= 2:
                             ordered_sequences.append(ordered)
 
-                if ordered_sequences:
+                chosen_tokens, compose_info = self._lucky_compose_tokens(
+                    global_adaptive,
+                    word_groups,
+                    lucky_pool,
+                    token_vectors,
+                    int(active_positions.numel()),
+                )
+                if ordered_sequences and compose_info.get("source") == "global preferences":
                     sequence = random.choice(ordered_sequences)
-                    offset = random.randrange(len(sequence))
-                    random_indexes = torch.randint(0, len(lucky_pool), (int(active_positions.numel()),)).tolist()
-                    chosen_tokens = []
-                    previous_token = None
-                    for slot_index, random_index in enumerate(random_indexes):
-                        if random.random() < 0.32:
-                            token = lucky_pool[random_index][0]
-                        else:
-                            token = sequence[(slot_index + offset) % len(sequence)]
-                        if previous_token and self._void_pair_is_poor(global_adaptive, previous_token, token):
-                            for _ in range(8):
-                                candidate = lucky_pool[int(torch.randint(0, len(lucky_pool), (1,)).item())][0]
-                                if not self._void_pair_is_poor(global_adaptive, previous_token, candidate):
-                                    token = candidate
-                                    break
-                        chosen_tokens.append(token)
-                        previous_token = token
-                    order_source = "saved prompt order"
-                else:
-                    picked_indexes = torch.randint(0, len(lucky_pool), (int(active_positions.numel()),)).tolist()
-                    chosen_tokens = []
-                    previous_token = None
-                    for index in picked_indexes:
-                        token = lucky_pool[index][0]
-                        if previous_token and self._void_pair_is_poor(global_adaptive, previous_token, token):
-                            for _ in range(8):
-                                candidate = lucky_pool[int(torch.randint(0, len(lucky_pool), (1,)).item())][0]
-                                if not self._void_pair_is_poor(global_adaptive, previous_token, candidate):
-                                    token = candidate
-                                    break
-                        chosen_tokens.append(token)
-                        previous_token = token
-                    order_source = "raw random"
+                    chosen_tokens = [
+                        sequence[index % len(sequence)]
+                        if random.random() < 0.55 else chosen_tokens[index]
+                        for index in range(min(len(chosen_tokens), int(active_positions.numel())))
+                    ]
+                    compose_info["source"] = "saved prompt order"
 
                 lucky_field = mixed.clone()
                 picked_tokens = []
+                injections = []
                 for pos_tensor, token in zip(active_positions, chosen_tokens):
                     vector = token_vectors.get(token)
                     if vector is None:
@@ -1164,9 +1345,10 @@ class FunPackVideoRefiner:
                     else:
                         lucky_field[pos, :] = vector
                     picked_tokens.append(token)
+                    injections.append({"token": token, "start": pos, "end": pos + 1})
 
                 if picked_tokens:
-                    strength = 0.022 if into_the_void else 0.030
+                    strength = 0.030 if into_the_void else 0.040
                     mixed = mixed.lerp(lucky_field, strength)
                     token_preview = []
                     seen_tokens = set()
@@ -1180,8 +1362,21 @@ class FunPackVideoRefiner:
                     token_list = ", ".join(token_preview)
                     if len(seen_tokens) < len(set(picked_tokens)):
                         token_list += ", ..."
+                    anchor_preview = ", ".join(compose_info.get("anchor_tokens", [])[:4]) or "none"
+                    context_preview = ", ".join(compose_info.get("context_tokens", [])[:6]) or "none"
+                    lucky_metadata = {
+                        "enabled": True,
+                        "source": compose_info.get("source", "global preferences"),
+                        "tokens": picked_tokens,
+                        "unique_tokens": sorted(set(picked_tokens)),
+                        "injections": injections,
+                        "anchor_tokens": compose_info.get("anchor_tokens", []),
+                        "context_tokens": compose_info.get("context_tokens", []),
+                        "context_hits": int(compose_info.get("context_hits", 0)),
+                    }
                     status_parts.append(
-                        f"Lucky: on | {order_source} | random field {len(picked_tokens)} slots from {len(set(picked_tokens))} tokens | tokens: {token_list}"
+                        f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} slots from {len(set(picked_tokens))} tokens | "
+                        f"anchors: {anchor_preview} | context add: {context_preview} | tokens: {token_list}"
                     )
                 else:
                     status_parts.append("Lucky: on | bank unreadable | tokens: none")
@@ -1197,7 +1392,7 @@ class FunPackVideoRefiner:
         mixed = torch.clamp(mixed, min=-60.0, max=60.0)
         norm_factor = new_positive.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * norm_factor
-        return mixed, " | ".join(status_parts)
+        return mixed, " | ".join(status_parts), lucky_metadata
 
     @classmethod
     def INPUT_TYPES(s):
@@ -3204,6 +3399,7 @@ class FunPackVideoRefiner:
                 "lora_weight_memory": {},
                 "void_token_bank": {},
                 "void_token_pairs": {},
+                "lucky_context_memory": {},
                 "mode": mode,
                 "scheduler_mode": scheduler_mode,
                 "prodigy_d": {},
@@ -3297,6 +3493,7 @@ class FunPackVideoRefiner:
         global_adaptive.setdefault("lora_weight_memory", {})
         self._ensure_void_token_bank(global_adaptive)
         self._ensure_void_pair_bank(global_adaptive)
+        self._ensure_lucky_context_memory(global_adaptive)
         global_adaptive.setdefault("mode", mode)
         self._ensure_sigma_state_defaults(global_adaptive)
         for cid in list(global_adaptive["concept_clusters"].keys()):
@@ -3528,6 +3725,10 @@ class FunPackVideoRefiner:
                         tokenizer,
                         previous_seq_len,
                         token_mask=previous_token_mask,
+                    )
+                    previous_word_groups = previous_word_groups + self._lucky_groups_from_history(
+                        previous_history[-1],
+                        previous_seq_len,
                     )
                     if previous_word_groups:
                         bank_rated_prompt = previous_prompt
@@ -3858,7 +4059,7 @@ class FunPackVideoRefiner:
         new_positive = torch.clamp(new_positive, min=-60.0, max=60.0)
         norm_factor = reference.norm(dim=-1, keepdim=True) + 1e-8
         new_positive = new_positive / (new_positive.norm(dim=-1, keepdim=True) + 1e-8) * norm_factor
-        new_positive, void_status = self._apply_into_the_void(
+        new_positive, void_status, lucky_metadata = self._apply_into_the_void(
             new_positive,
             reference,
             global_adaptive,
@@ -3916,6 +4117,7 @@ class FunPackVideoRefiner:
             "into_the_void": bool(into_the_void),
             "im_feeling_lucky": bool(im_feeling_lucky),
             "void_status": void_status,
+            "lucky": lucky_metadata,
         }
         history.append(history_entry)
 
