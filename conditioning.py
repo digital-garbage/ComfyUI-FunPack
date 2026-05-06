@@ -753,6 +753,8 @@ class FunPackVideoRefiner:
         bank = global_adaptive.get("void_token_bank")
         if not isinstance(bank, dict):
             bank = {}
+        if bank and global_adaptive.get("void_token_bank_validated") is True:
+            return bank
         cleaned = {}
         for token, item in bank.items():
             if not isinstance(token, str) or not isinstance(item, dict):
@@ -774,6 +776,7 @@ class FunPackVideoRefiner:
             except (TypeError, ValueError):
                 continue
         global_adaptive["void_token_bank"] = cleaned
+        global_adaptive["void_token_bank_validated"] = True
         return cleaned
 
     def _void_pair_key(self, left_token, right_token):
@@ -789,6 +792,8 @@ class FunPackVideoRefiner:
         bank = global_adaptive.get("void_token_pairs")
         if not isinstance(bank, dict):
             bank = {}
+        if bank and global_adaptive.get("void_token_pairs_validated") is True:
+            return bank
         cleaned = {}
         for key, item in bank.items():
             if not isinstance(key, str) or "\t" not in key or not isinstance(item, dict):
@@ -806,6 +811,7 @@ class FunPackVideoRefiner:
             except (TypeError, ValueError):
                 continue
         global_adaptive["void_token_pairs"] = cleaned
+        global_adaptive["void_token_pairs_validated"] = True
         return cleaned
 
     def _lucky_context_score(self, item):
@@ -818,6 +824,8 @@ class FunPackVideoRefiner:
         memory = global_adaptive.get("lucky_context_memory")
         if not isinstance(memory, dict):
             memory = {}
+        if memory and global_adaptive.get("lucky_context_memory_validated") is True:
+            return memory
 
         cleaned = {}
         for anchor, neighbors in memory.items():
@@ -845,6 +853,7 @@ class FunPackVideoRefiner:
                 cleaned[anchor] = clean_neighbors
 
         global_adaptive["lucky_context_memory"] = cleaned
+        global_adaptive["lucky_context_memory_validated"] = True
         return cleaned
 
     def _rating_memory_deltas(self, rating_key):
@@ -873,13 +882,23 @@ class FunPackVideoRefiner:
             return memory
 
         score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
-        for anchor in ordered_tokens:
+        # Keep context learning local and ordered. A full all-to-all update makes
+        # long Lucky prompts create thousands of JSON entries per click.
+        window = 6
+        for index, anchor in enumerate(ordered_tokens):
             neighbors = memory.setdefault(anchor, {})
-            for neighbor in ordered_tokens:
-                if neighbor == anchor:
+            start = max(0, index - window)
+            end = min(len(ordered_tokens), index + window + 1)
+            for neighbor_index in range(start, end):
+                if neighbor_index == index:
                     continue
+                neighbor = ordered_tokens[neighbor_index]
+                distance = abs(neighbor_index - index)
+                if distance <= 0:
+                    continue
+                local_weight = 1.0 / float(distance)
                 item = neighbors.get(neighbor, {})
-                item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)) + score_delta)), 4)
+                item["score"] = round(max(-4.0, min(8.0, float(item.get("score", 0.0)) + score_delta * local_weight)), 4)
                 item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
                 item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
                 item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
@@ -930,7 +949,9 @@ class FunPackVideoRefiner:
     def _void_pair_is_poor(self, global_adaptive, left_token, right_token):
         if not left_token or not right_token:
             return False
-        pair_bank = self._ensure_void_pair_bank(global_adaptive)
+        pair_bank = global_adaptive.get("void_token_pairs")
+        if not isinstance(pair_bank, dict):
+            return False
         item = pair_bank.get(self._void_pair_key(left_token, right_token))
         if not isinstance(item, dict):
             return False
@@ -1361,7 +1382,7 @@ class FunPackVideoRefiner:
                 "token_count": 0,
             }
 
-        count = max(4, min(int(target_count or 0), 64))
+        count = max(4, min(int(target_count or 0), 32))
         chosen_tokens, compose_info = self._lucky_compose_tokens(
             global_adaptive,
             word_groups,
@@ -3741,6 +3762,8 @@ class FunPackVideoRefiner:
         analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
         prompt_key = analysis_prompt if mode == "wan" else positive_prompt
         exact_prompt_key = prompt_key
+        if im_feeling_lucky:
+            prompt_key = "__lucky_memory__"
         current_prompt_words = self._concept_overlap_words(analysis_prompt)
         prompt_variant_match = None
 
@@ -3871,7 +3894,7 @@ class FunPackVideoRefiner:
         prompt_histories = data.get("prompt_histories", {})
         tokenizer = self._get_tokenizer(mode)
 
-        if prompt_key not in prompt_histories:
+        if prompt_key not in prompt_histories and not im_feeling_lucky:
             matched_prompt_key, prompt_variant_match = self._find_prompt_variant_history(
                 exact_prompt_key,
                 current_prompt_words,
@@ -3978,6 +4001,9 @@ class FunPackVideoRefiner:
         conditioning_source_changed = (
             not source_changed and not is_new_prompt and source_similarity < 0.985
         )
+        if im_feeling_lucky:
+            prompt_source_changed = False
+            conditioning_source_changed = False
         if prompt_source_changed or conditioning_source_changed:
             can_retarget_variant = (
                 prompt_variant_match is not None and
@@ -4441,7 +4467,15 @@ class FunPackVideoRefiner:
                     cur_positive.dtype,
                 )
                 if encoded_canvas is not None:
-                    lucky_canvas = encoded_canvas
+                    refined_encoded_canvas = encoded_canvas + new_delta.to(device=encoded_canvas.device, dtype=encoded_canvas.dtype)
+                    refined_encoded_canvas = torch.clamp(refined_encoded_canvas, min=-60.0, max=60.0)
+                    encoded_norm = encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                    refined_encoded_canvas = (
+                        refined_encoded_canvas /
+                        refined_encoded_canvas.norm(dim=-1, keepdim=True).clamp_min(1e-8) *
+                        encoded_norm
+                    )
+                    lucky_canvas = refined_encoded_canvas
                     lucky_canvas_label = encoded_status
                     lucky_encoded_meta = encoded_meta
                 elif encoded_status:
