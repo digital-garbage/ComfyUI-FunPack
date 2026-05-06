@@ -1234,6 +1234,181 @@ class FunPackVideoRefiner:
         variants.append(variant)
         active["prompt_variants"] = variants
 
+    def _history_entry_prompt_words(self, entry: dict):
+        if not isinstance(entry, dict):
+            return []
+        stored = entry.get("prompt_words")
+        if isinstance(stored, list) and stored:
+            return [str(word).lower() for word in stored if str(word).strip()]
+        prompt_text = entry.get("prompt_full") or entry.get("prompt") or ""
+        return self._concept_overlap_words(prompt_text)
+
+    def _retarget_prompt_history_to_source(self, active: dict, old_source: torch.Tensor,
+                                           new_source: torch.Tensor):
+        if (
+            not isinstance(active, dict) or
+            not isinstance(old_source, torch.Tensor) or
+            not isinstance(new_source, torch.Tensor) or
+            list(old_source.shape) != list(new_source.shape)
+        ):
+            return 0
+
+        shift = new_source.to(old_source.device) - old_source
+        migrated = 0
+
+        def _shift_serialized(field_name: str):
+            nonlocal migrated
+            payload = active.get(field_name)
+            if payload is None:
+                return
+            try:
+                tensor = serializable_to_tensor(payload).to(old_source.device)
+                if list(tensor.shape) != list(old_source.shape):
+                    return
+                active[field_name] = tensor_to_serializable(tensor + shift)
+                migrated += 1
+            except Exception:
+                return
+
+        _shift_serialized("reference_embeds")
+        _shift_serialized("liked_reference_embeds")
+
+        for item in active.get("history", []):
+            if not isinstance(item, dict) or item.get("modified_embeds") is None:
+                continue
+            try:
+                tensor = serializable_to_tensor(item.get("modified_embeds")).to(old_source.device)
+                if list(tensor.shape) != list(old_source.shape):
+                    continue
+                item["modified_embeds"] = tensor_to_serializable(tensor + shift)
+                item["retargeted_to_prompt_variant"] = True
+                migrated += 1
+            except Exception:
+                continue
+
+        return migrated
+
+    def _nudge_delta_words(self, words: list, delta: float, concept_clusters: dict,
+                           word_importance: dict, iter_num: int, role: str):
+        touched = []
+        for raw_word in words:
+            word = str(raw_word).strip().lower()
+            if not self._is_valuable_token(word):
+                continue
+            cid, is_new = self._match_concept([word], concept_clusters, threshold=0.18)
+            if cid is None:
+                continue
+            if is_new or cid not in concept_clusters:
+                concept_clusters[cid] = self._default_concept_cluster([word])
+            else:
+                concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
+                if word not in concept_clusters[cid].get("anchor_words", []):
+                    concept_clusters[cid]["anchor_words"].append(word)
+
+            cluster = concept_clusters[cid]
+            local_imp = cluster.setdefault("word_importance", {})
+            local_imp[word] = max(0.35, min(2.8, float(local_imp.get(word, 1.0)) + delta))
+            word_importance[word] = max(0.35, min(2.8, float(word_importance.get(word, 1.0)) + delta * 0.45))
+            cluster["presence_target"] = self._clip_profile_value(
+                float(cluster.get("presence_target", 1.0)) + delta * 0.28
+            )
+            cluster["priority_weight"] = self._clip_profile_value(
+                float(cluster.get("priority_weight", 1.0)) + delta * 0.20
+            )
+            if delta > 0:
+                cluster["semantic_fidelity"] = self._clip_profile_value(
+                    float(cluster.get("semantic_fidelity", 1.0)) + delta * 0.12,
+                    low=0.6,
+                    high=1.8,
+                )
+            else:
+                cluster["overrep_sensitivity"] = self._clip_profile_value(
+                    float(cluster.get("overrep_sensitivity", 1.0)) + abs(delta) * 0.12
+                )
+            cluster["last_seen_iter"] = iter_num
+            cluster["usage_count"] = int(cluster.get("usage_count", 0)) + 1
+            cluster["last_prompt_delta_role"] = role
+            touched.append(word)
+        return touched
+
+    def _apply_prompt_delta_attribution(self, history: list, current_words: list,
+                                        rating_profile: dict, concept_clusters: dict,
+                                        word_importance: dict, iter_num: int):
+        if len(history) < 2:
+            return ""
+
+        previous_entry = history[-2]
+        rated_entry = history[-1]
+        previous_words = self._history_entry_prompt_words(previous_entry)
+        rated_words = self._history_entry_prompt_words(rated_entry) or current_words
+        if not previous_words or not rated_words:
+            return ""
+
+        previous_set = set(previous_words)
+        rated_set = set(rated_words)
+        added = sorted(rated_set - previous_set)
+        removed = sorted(previous_set - rated_set)
+        if not added and not removed:
+            return ""
+
+        previous_profile = normalize_refiner_rating(rated_entry.get("rating_label", rated_entry.get("rating", 0)))
+        current_key = rating_profile.get("key", "")
+        previous_missing_axes = set(previous_profile.get("missing_axes", []))
+        current_missing_axes = set(rating_profile.get("missing_axes", []))
+        word_importance = word_importance if isinstance(word_importance, dict) else {}
+
+        boosted = []
+        softened = []
+        reason = ""
+        if current_key == "like" and previous_missing_axes:
+            boost = 0.22 + (0.10 if "concept" in previous_missing_axes else 0.0)
+            boosted = self._nudge_delta_words(
+                added[:24],
+                boost,
+                concept_clusters,
+                word_importance,
+                iter_num,
+                "added_helped",
+            )
+            softened = self._nudge_delta_words(
+                removed[:24],
+                -0.08,
+                concept_clusters,
+                word_importance,
+                iter_num,
+                "removed_after_missing",
+            )
+            reason = f"{previous_profile.get('label', 'missing')} -> {rating_profile.get('label', 'Perfect')}"
+        elif current_missing_axes and previous_profile.get("key") == "like":
+            boost = 0.14 + (0.08 if "concept" in current_missing_axes else 0.0)
+            boosted = self._nudge_delta_words(
+                removed[:24],
+                boost,
+                concept_clusters,
+                word_importance,
+                iter_num,
+                "removed_needed",
+            )
+            softened = self._nudge_delta_words(
+                added[:24],
+                -0.10,
+                concept_clusters,
+                word_importance,
+                iter_num,
+                "added_hurt",
+            )
+            reason = f"{previous_profile.get('label', 'Perfect')} -> {rating_profile.get('label', 'missing')}"
+
+        if not boosted and not softened:
+            return ""
+
+        parts = [f"Prompt delta: {reason}."]
+        if boosted:
+            parts.append("boosted " + ", ".join(boosted[:8]))
+        if softened:
+            parts.append("softened " + ", ".join(softened[:8]))
+        return " ".join(parts)
+
     def _build_prompt_fallback_concept(self, prompt: str, concept_clusters: dict):
         if not prompt:
             return None
@@ -2614,6 +2789,7 @@ class FunPackVideoRefiner:
         cur_positive = raw_positive.to(device) if raw_positive.device != device else raw_positive
         source_changed = False
         source_change_reason = ""
+        source_retarget_status = ""
 
         # Shape mismatch guard
         if source_reference.shape != cur_positive.shape:
@@ -2640,16 +2816,31 @@ class FunPackVideoRefiner:
             not source_changed and not is_new_prompt and source_similarity < 0.985
         )
         if prompt_source_changed or conditioning_source_changed:
-            source_reference = cur_positive.clone()
-            active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
-            active["reference_embeds"] = tensor_to_serializable(source_reference)
-            active["liked_reference_embeds"] = None
-            active["liked_reference_count"] = 0
-            active["history"] = []
-            is_new_prompt = True
-            source_changed = True
-            source_change_reason = "prompt" if prompt_source_changed else "conditioning"
-            source_similarity = 1.0
+            can_retarget_variant = (
+                prompt_variant_match is not None and
+                prompt_source_changed and
+                not source_changed and
+                list(source_reference.shape) == list(cur_positive.shape)
+            )
+            if can_retarget_variant:
+                migrated = self._retarget_prompt_history_to_source(active, source_reference, cur_positive)
+                source_reference = cur_positive.clone()
+                active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
+                active["source_prompt_key"] = exact_prompt_key
+                is_new_prompt = False
+                source_similarity = 1.0
+                source_retarget_status = f" | prompt variant retargeted ({migrated} anchors)"
+            else:
+                source_reference = cur_positive.clone()
+                active["source_conditioning_embeds"] = tensor_to_serializable(source_reference)
+                active["reference_embeds"] = tensor_to_serializable(source_reference)
+                active["liked_reference_embeds"] = None
+                active["liked_reference_count"] = 0
+                active["history"] = []
+                is_new_prompt = True
+                source_changed = True
+                source_change_reason = "prompt" if prompt_source_changed else "conditioning"
+                source_similarity = 1.0
 
         active["source_prompt_key"] = exact_prompt_key
 
@@ -2826,6 +3017,14 @@ class FunPackVideoRefiner:
         })
 
         word_importance = global_adaptive["word_importance"]
+        prompt_delta_status = self._apply_prompt_delta_attribution(
+            history,
+            current_prompt_words,
+            rating_profile,
+            concept_clusters,
+            word_importance,
+            iter_num,
+        )
         prompt_emphasis = float(rating_profile.get("prompt_emphasis", reward))
 
         lr_scale, confidence, exploration_mult, word_lr_mult = self._get_scheduler_factors(
@@ -3041,7 +3240,11 @@ class FunPackVideoRefiner:
             "liked_reference_count": int(liked_reference_count),
             "liked_reference_updated": bool(liked_reference_updated),
             "rollback_from_rating": rollback_rating_label,
-            "prompt": positive_prompt[:180]
+            "prompt": positive_prompt[:180],
+            "prompt_full": positive_prompt,
+            "analysis_prompt": analysis_prompt,
+            "prompt_words": current_prompt_words,
+            "exact_prompt_key": exact_prompt_key,
         }
         history.append(history_entry)
 
@@ -3056,6 +3259,7 @@ class FunPackVideoRefiner:
         active["last_rating"] = rating
         active["last_rating_label"] = rating_label
         active["last_positive_prompt"] = positive_prompt
+        active["last_exact_prompt_words"] = current_prompt_words
         data["last_prompt_key"] = prompt_key
         data["prompt_histories"] = prompt_histories
         data["global_adaptive"] = global_adaptive
@@ -3214,6 +3418,9 @@ class FunPackVideoRefiner:
             reference_status += f" | rollback from {rollback_rating_label or 'higher rating'}"
         if source_changed:
             reference_status += f" | source refreshed ({source_change_reason or 'changed'})"
+        if source_retarget_status:
+            reference_status += source_retarget_status
+        prompt_delta_line = f"{prompt_delta_status}\n" if prompt_delta_status else ""
 
         training_info = (
             f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
@@ -3226,6 +3433,7 @@ class FunPackVideoRefiner:
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
+            f"{prompt_delta_line}"
             f"{prompt_history_status}\n"
             f"{lora_suggestion_status}\n"
             f"{sigma_status}\n"

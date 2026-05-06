@@ -36,6 +36,8 @@ Wrap dialogue in quotes. Wrap any other phrase that should stay together in back
 
 If an upstream prompt enhancer rewrites the prompt on every run, pass the final enhanced text here. The refiner keeps exact prompt histories when possible, but it can reuse a similar prompt history when the new prompt has enough concept overlap and the conditioning is close enough. This helps Gemma-style prompt variants share learning without forcing unrelated prompts into the same history.
 
+When a similar enhanced prompt is reused, the refiner preserves the compatible history and retargets its saved conditioning anchors to the new source prompt. It also compares consecutive prompt variants after rating changes: if a `Missing concept` or other missing-axis result becomes `Perfect`, newly added meaningful words are treated as likely helpful and receive a small concept boost; if a previously perfect prompt regresses after words are added or removed, the removed words are treated as likely needed and the added words are softened.
+
 **sigmas**: Optional input sigma schedule to co-refine alongside the conditioning. When connected, the node preserves the first and last sigma exactly and only adjusts the middle values.
 
 **sigma_strength**: Preset strength for sigma refinement. `off` disables sigma changes, while `subtle`, `medium`, `strong`, and `max` allow progressively larger movement of the middle sigma values.
