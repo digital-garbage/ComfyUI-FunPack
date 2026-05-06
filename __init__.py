@@ -5,7 +5,6 @@ from .conditioning import (
     FunPackLorebookEnhancer,
     FunPackPromptCombiner,
     FunPackPromptEnhancer,
-    FunPackShotPromptPlanner,
     FunPackSaveRefinementLatent,
     FunPackStoryWriter,
     FunPackVideoRefiner,
@@ -26,7 +25,6 @@ WEB_DIRECTORY = "./web"
 
 NODE_CLASS_MAPPINGS = {
     "FunPackPromptCombiner": FunPackPromptCombiner,
-    "FunPackShotPromptPlanner": FunPackShotPromptPlanner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
     "FunPackPromptEnhancer": FunPackPromptEnhancer,
@@ -47,7 +45,6 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackPromptCombiner": "FunPack Prompt Combiner",
-    "FunPackShotPromptPlanner": "FunPack Shot Prompt Planner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
     "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",

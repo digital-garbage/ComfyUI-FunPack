@@ -685,6 +685,112 @@ class FunPackVideoRefiner:
             key=lambda group: (group[0], group[1], group[2].lower()),
         )
 
+    def _clean_shot_clause(self, clause):
+        return re.sub(r"\s+", " ", (clause or "")).strip(" ,.;:-")
+
+    def _split_prompt_into_shots(self, prompt):
+        parts = [self._clean_shot_clause(part) for part in SHOT_BREAK_RE.split(prompt or "")]
+        return [part for part in parts if part and len(part) > 2]
+
+    def _force_shot_count(self, clauses, target_count):
+        if target_count <= 0:
+            return clauses
+        clauses = list(clauses)
+        if not clauses:
+            return []
+        if len(clauses) >= target_count:
+            head = clauses[:target_count - 1]
+            tail = ", ".join(clauses[target_count - 1:])
+            return head + [tail]
+        while len(clauses) < target_count:
+            clauses.append(clauses[-1])
+        return clauses
+
+    def _resolve_shot_clauses(self, prompt, shot_enforcement, shot_count):
+        prompt = (prompt or "").strip()
+        mode = (shot_enforcement or "off").lower()
+        if mode == "off" or not prompt:
+            return [], False, "shot enforcement off"
+
+        has_trigger = bool(TRANSITION_TRIGGER_RE.search(prompt))
+        requested_count = 0 if shot_count == "auto" else int(shot_count)
+        clauses = self._split_prompt_into_shots(prompt)
+
+        if requested_count > 0:
+            clauses = self._force_shot_count(clauses or [prompt], requested_count)
+        elif not has_trigger and mode == "auto":
+            return [], False, "no transition trigger detected"
+        elif not clauses:
+            clauses = [prompt]
+
+        clauses = clauses[:10]
+        if len(clauses) <= 1 and mode == "auto":
+            return [], has_trigger, "single shot"
+        return clauses, has_trigger, "shot clauses resolved"
+
+    def _find_token_span_for_text(self, tokenizer, full_token_ids, text, effective_seq_len):
+        if not tokenizer or not text or not full_token_ids:
+            return None
+        token_ids = self._tokenize_ids(tokenizer, text, add_special_tokens=False)
+        if not token_ids:
+            return None
+        max_start = max(0, len(full_token_ids) - len(token_ids) + 1)
+        for start in range(max_start):
+            end = start + len(token_ids)
+            if full_token_ids[start:end] == token_ids and start < effective_seq_len:
+                return (start, min(effective_seq_len, end))
+        return None
+
+    def _build_shot_token_spans(self, prompt, shot_clauses, tokenizer, seq_len, token_mask=None):
+        if not shot_clauses or not tokenizer or seq_len <= 0:
+            return []
+
+        effective_seq_len = self._get_effective_seq_len(token_mask, seq_len)
+        full_token_ids = self._tokenize_ids(
+            tokenizer,
+            prompt,
+            add_special_tokens=True,
+            max_length=effective_seq_len,
+        )[:effective_seq_len]
+
+        spans = []
+        search_start = 0
+        for index, clause in enumerate(shot_clauses):
+            span = self._find_token_span_for_text(tokenizer, full_token_ids[search_start:], clause, effective_seq_len)
+            if span is not None:
+                start, end = span
+                start += search_start
+                end += search_start
+                search_start = max(search_start, end)
+            else:
+                start = round(index * effective_seq_len / max(1, len(shot_clauses)))
+                end = round((index + 1) * effective_seq_len / max(1, len(shot_clauses)))
+                end = max(start + 1, min(effective_seq_len, end))
+            spans.append((int(start), int(end), clause))
+        return spans
+
+    def _make_shot_conditionings(self, new_positive, positive_meta, shot_spans, shot_strength):
+        if not shot_spans or not isinstance(new_positive, torch.Tensor) or new_positive.dim() <= 1:
+            return [(new_positive, positive_meta)]
+
+        seq_len = new_positive.shape[1] if new_positive.dim() == 3 else new_positive.shape[0]
+        shot_strength = max(0.0, min(1.0, float(shot_strength)))
+        outside_weight = 1.0 - 0.55 * shot_strength
+        inside_weight = 1.0 + 0.35 * shot_strength
+
+        modified = []
+        for start, end, _ in shot_spans:
+            weights = torch.ones(seq_len, device=new_positive.device, dtype=new_positive.dtype) * outside_weight
+            weights[max(0, start):min(seq_len, end)] = inside_weight
+            if new_positive.dim() == 3:
+                weighted = new_positive * weights.view(1, -1, 1)
+            else:
+                weighted = new_positive * weights.view(-1, 1)
+
+            meta = positive_meta.copy() if isinstance(positive_meta, dict) else {}
+            modified.append((weighted, meta))
+        return modified
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -726,6 +832,21 @@ class FunPackVideoRefiner:
                 }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional latent to refine. If no saved latent exists for this key, it passes through unchanged."
+                }),
+                "shot_enforcement": (["off", "auto", "soft", "hard"], {
+                    "default": "auto",
+                    "tooltip": "Automatically split transition-heavy prompts into multiple refined conditioning entries for context-window shot routing."
+                }),
+                "shot_count": (["auto", "2", "3", "4", "5", "6", "8", "10"], {
+                    "default": "auto",
+                    "tooltip": "Automatic uses detected transition clauses. A number forces that many shot conditioning entries."
+                }),
+                "shot_strength": ("FLOAT", {
+                    "default": 0.75,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "tooltip": "How strongly each shot entry emphasizes its own prompt span and de-emphasizes unrelated shot spans."
                 }),
             },
             "hidden": {
@@ -2527,6 +2648,7 @@ class FunPackVideoRefiner:
                reset_session: bool = False, unlimited_history: bool = False,
                seed: int = 0, feedback_enabled: bool = False, feedback_rating: int = 3,
                sigmas=None, sigma_strength: str = "subtle", lora_stack=None, latent=None,
+               shot_enforcement: str = "auto", shot_count: str = "auto", shot_strength: float = 0.75,
                prompt=None, unique_id=None):
 
         mode = (mode or "ltx2").lower()
@@ -2866,6 +2988,18 @@ class FunPackVideoRefiner:
             tokenizer,
             seq_len,
             token_mask=active_token_mask
+        )
+        shot_clauses, shot_trigger_detected, shot_plan_reason = self._resolve_shot_clauses(
+            analysis_prompt,
+            shot_enforcement,
+            shot_count,
+        )
+        shot_spans = self._build_shot_token_spans(
+            analysis_prompt,
+            shot_clauses,
+            tokenizer,
+            seq_len,
+            token_mask=active_token_mask,
         )
 
         # ====================== CONCEPT CLUSTER + GROUP SETUP (Levels 3 & 4) ======================
@@ -3261,6 +3395,8 @@ class FunPackVideoRefiner:
             "analysis_prompt": analysis_prompt,
             "prompt_words": current_prompt_words,
             "exact_prompt_key": exact_prompt_key,
+            "shot_enforcement": shot_enforcement,
+            "shot_clauses": shot_clauses,
         }
         history.append(history_entry)
 
@@ -3437,6 +3573,11 @@ class FunPackVideoRefiner:
         if source_retarget_status:
             reference_status += source_retarget_status
         prompt_delta_line = f"{prompt_delta_status}\n" if prompt_delta_status else ""
+        shot_status = (
+            f"Shot enforcement: {shot_enforcement} | "
+            f"{len(shot_spans)} shot conditioning entr{'y' if len(shot_spans) == 1 else 'ies'} | "
+            f"trigger {'yes' if shot_trigger_detected else 'no'} | {shot_plan_reason}"
+        )
 
         training_info = (
             f"Mode: {mode.upper()} | Scheduler: {scheduler_mode.upper()} | Step: {global_adaptive['current_step']} | "
@@ -3446,6 +3587,7 @@ class FunPackVideoRefiner:
             f"**Learning Loss: {learning_loss:.4f}** (lower is better)\n"
             f"{reference_status}\n"
             f"Dominant concept: {dominant_line}\n"
+            f"{shot_status}\n"
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
@@ -3524,7 +3666,7 @@ class FunPackVideoRefiner:
             f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
             f"{len(history)} history item(s) on this prompt\n"
             f"Reference: {reference_mode} ({liked_reference_count} liked) | Focus: {dominant_line} | {feedback_state}\n"
-            f"Systems: {lora_state} | {sigma_state} | {latent_state}"
+            f"Systems: {lora_state} | {sigma_state} | {latent_state} | Shots {len(shot_spans) or 1}"
         )
 
         # ====================== FINAL SAVE ======================
@@ -3532,7 +3674,12 @@ class FunPackVideoRefiner:
             json.dump(data, f, indent=2)
 
         # ====================== RETURN ======================
-        modified_positive = [(new_positive, positive_meta)]
+        modified_positive = self._make_shot_conditionings(
+            new_positive,
+            positive_meta,
+            shot_spans,
+            shot_strength,
+        )
 
         return (modified_positive, status, feedback_question_output, training_info, loss_graph, refined_sigmas, refined_latent)
 
@@ -3623,185 +3770,6 @@ class FunPackPromptCombiner:
         random_choice = random.choice(results)
 
         return (*results, random_choice)
-
-
-class FunPackShotPromptPlanner:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "A traveler enters a forest, then the scene changes to a neon city, finally a close-up as rain falls."
-                }),
-                "transition_enforcement": (["off", "auto", "soft", "hard"], {
-                    "default": "auto",
-                    "tooltip": "Turn transition words and multi-concept prompts into ordered shot clauses before text encoding."
-                }),
-                "shot_count": (["auto", "2", "3", "4", "5", "6", "8", "10"], {
-                    "default": "auto",
-                    "tooltip": "Automatic uses detected transition clauses. A number forces that many shot slots."
-                }),
-                "transition_style": (["cinematic cut", "match cut", "whip pan", "camera orbit", "dolly reveal", "scene morph"], {
-                    "default": "cinematic cut",
-                    "tooltip": "Default transition wording inserted between shot clauses."
-                }),
-                "camera_intensity": (["subtle", "medium", "strong"], {
-                    "default": "strong",
-                    "tooltip": "How strongly each shot asks for camera/viewpoint change."
-                }),
-            },
-            "optional": {
-                "global_style": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Persistent style or identity text appended to every shot."
-                }),
-                "negative_hints": ("STRING", {
-                    "multiline": True,
-                    "default": "static pose, locked camera, frozen frame, slideshow stillness",
-                    "tooltip": "Positive-side anti-stiffness wording added to the structured prompt as avoidance language."
-                }),
-            },
-        }
-
-    RETURN_TYPES = (
-        "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
-        "STRING", "STRING", "STRING", "STRING", "STRING", "STRING",
-    )
-    RETURN_NAMES = (
-        "structured_prompt", "shot1", "shot2", "shot3", "shot4", "shot5",
-        "shot6", "shot7", "shot8", "shot9", "shot10", "status",
-    )
-    FUNCTION = "plan"
-    CATEGORY = "FunPack/Prompt"
-    DESCRIPTION = "Automatically rewrites transition-heavy prompts into ordered shot clauses for context-window workflows."
-
-    def _clean_clause(self, clause):
-        clause = re.sub(r"\s+", " ", (clause or "")).strip(" ,.;:-")
-        return clause
-
-    def _split_prompt(self, prompt):
-        parts = [self._clean_clause(part) for part in SHOT_BREAK_RE.split(prompt or "")]
-        return [part for part in parts if part and len(part) > 2]
-
-    def _force_count(self, clauses, target_count):
-        if target_count <= 0:
-            return clauses
-        clauses = list(clauses)
-        if not clauses:
-            return []
-        if len(clauses) >= target_count:
-            head = clauses[:target_count - 1]
-            tail = ", ".join(clauses[target_count - 1:])
-            return head + [tail]
-        while len(clauses) < target_count:
-            clauses.append(clauses[-1])
-        return clauses
-
-    def _camera_phrase(self, index, camera_intensity):
-        subtle = [
-            "gentle camera drift",
-            "slight angle change",
-            "slow push-in",
-            "soft side-angle shift",
-        ]
-        medium = [
-            "clear camera move",
-            "new side angle",
-            "dolly movement",
-            "orbiting camera angle",
-        ]
-        strong = [
-            "distinct new viewpoint",
-            "dynamic camera orbit",
-            "strong dolly reveal",
-            "dramatic angle change",
-        ]
-        options = {"subtle": subtle, "medium": medium, "strong": strong}.get(camera_intensity, strong)
-        return options[index % len(options)]
-
-    def plan(self, prompt, transition_enforcement, shot_count, transition_style,
-             camera_intensity, global_style="", negative_hints=""):
-        prompt = (prompt or "").strip()
-        global_style = (global_style or "").strip()
-        negative_hints = (negative_hints or "").strip()
-        mode = (transition_enforcement or "auto").lower()
-
-        if mode == "off" or not prompt:
-            shots = [prompt] if prompt else []
-            while len(shots) < 10:
-                shots.append("")
-            return (prompt, *shots[:10], "Shot planning disabled.")
-
-        has_trigger = bool(TRANSITION_TRIGGER_RE.search(prompt))
-        requested_count = 0 if shot_count == "auto" else int(shot_count)
-        raw_clauses = self._split_prompt(prompt)
-
-        if not has_trigger and requested_count <= 0 and mode == "auto":
-            shots = [prompt]
-            while len(shots) < 10:
-                shots.append("")
-            status = "No transition trigger detected; prompt passed through."
-            return (prompt, *shots[:10], status)
-
-        clauses = raw_clauses if has_trigger or requested_count > 0 else [prompt]
-
-        if requested_count > 0:
-            clauses = self._force_count(clauses or [prompt], requested_count)
-
-        if len(clauses) <= 1 and mode == "auto":
-            shots = [prompt]
-            while len(shots) < 10:
-                shots.append("")
-            status = "No transition trigger detected; prompt passed through."
-            return (prompt, *shots[:10], status)
-
-        max_shots = min(10, max(1, len(clauses)))
-        clauses = clauses[:max_shots]
-
-        shot_prompts = []
-        structured_parts = []
-        enforcement_phrase = "hard new shot, previous scene context drops" if mode == "hard" else "new shot, changed camera context"
-        if mode == "auto":
-            enforcement_phrase = "new shot, changed camera context"
-
-        for index, clause in enumerate(clauses):
-            camera = self._camera_phrase(index, camera_intensity)
-            shot_bits = [
-                f"Shot {index + 1}",
-                clause,
-                camera,
-            ]
-            if global_style:
-                shot_bits.append(global_style)
-            shot_prompt = ", ".join(bit for bit in shot_bits if bit)
-            shot_prompts.append(shot_prompt)
-
-            if index == 0:
-                structured_parts.append(f"Shot {index + 1}: {clause}, {camera}.")
-            else:
-                structured_parts.append(
-                    f"{transition_style}, {enforcement_phrase}. "
-                    f"Shot {index + 1}: {clause}, {camera}."
-                )
-
-        structured_prompt = " ".join(structured_parts)
-        if global_style:
-            structured_prompt += f" Persistent style and identity: {global_style}."
-        if negative_hints:
-            structured_prompt += f" Avoid {negative_hints}."
-
-        padded = list(shot_prompts)
-        while len(padded) < 10:
-            padded.append("")
-
-        status = (
-            f"Planned {len(shot_prompts)} shot(s) | "
-            f"trigger detected: {'yes' if has_trigger else 'no'} | "
-            f"mode: {mode} | style: {transition_style}"
-        )
-        return (structured_prompt, *padded[:10], status)
 
 
 class FunPackLorebookEnhancer:

@@ -7,7 +7,6 @@ try:
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
-        FunPackShotPromptPlanner,
         FunPackSaveRefinementLatent,
         FunPackStoryWriter,
         FunPackVideoRefiner,
@@ -29,7 +28,6 @@ except ImportError:
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
-        FunPackShotPromptPlanner,
         FunPackSaveRefinementLatent,
         FunPackStoryWriter,
         FunPackVideoRefiner,
@@ -48,7 +46,6 @@ except ImportError:
 
     NODE_CLASS_MAPPINGS = {
         "FunPackPromptCombiner": FunPackPromptCombiner,
-        "FunPackShotPromptPlanner": FunPackShotPromptPlanner,
         "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
         "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
         "FunPackPromptEnhancer": FunPackPromptEnhancer,
@@ -69,7 +66,6 @@ except ImportError:
 
     NODE_DISPLAY_NAME_MAPPINGS = {
         "FunPackPromptCombiner": "FunPack Prompt Combiner",
-        "FunPackShotPromptPlanner": "FunPack Shot Prompt Planner",
         "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
         "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
         "FunPackPromptEnhancer": "FunPack Prompt Enhancer (Standalone)",
@@ -97,7 +93,6 @@ __all__ = [
     "FunPackHybridEuler2SSampler",
     "FunPackContextTransitionWindows",
     "FunPackPromptCombiner",
-    "FunPackShotPromptPlanner",
     "FunPackLorebookEnhancer",
     "FunPackPromptEnhancer",
     "FunPackStoryWriter",
