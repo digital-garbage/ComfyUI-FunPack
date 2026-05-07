@@ -44,6 +44,14 @@ Updated `I'm Feeling Lucky` CLIP/Gemma prompt composition to preserve learned co
 
 Added Lucky phrase placement memory so learned prompt phrases remember their rated order positions and CLIP/Gemma Lucky prompts can reassemble phrases into a more coherent prompt order instead of sentence salad.
 
+Fixed `I'm Feeling Lucky` bootstrap learning so sessions that start with Lucky enabled now create a real discovery history entry, seed prompt tokens/phrases, and can learn from ratings without first running the classic refinement loop.
+
+Updated Lucky memory so normal non-Lucky runs still seed reusable token, phrase, context, and placement memory for later Lucky runs.
+
+Updated all missing-axis ratings so `Missing details`, `Missing concept`, `Missing quality`, and paired missing ratings now mark prompt tokens as wanted-but-underrepresented instead of weak neutral feedback; repeated missing feedback reserves Lucky composition room for those tokens and their compatible neighbours.
+
+Fixed Lucky diagnostics so the collapsed Lucky memory stream reports real Lucky update counts and learned memory size instead of implying the session is still prompt 1 out of 1.
+
 ## [2.1.3] - 2026-04-24
 
 ### Changed

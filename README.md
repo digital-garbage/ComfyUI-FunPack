@@ -18,6 +18,8 @@ Updated rating for `FunPack Video Refiner`. Now it uses a rating system more und
 
 Updated logic for `FunPack Video Refiner`. The original conditioning is still stored for prompt/conditioning change detection, but after the first `Perfect` rating the active refinement reference switches to the liked generated conditioning. Later perfect results update that reference as a running average, while `Awful` can roll back to the latest better-rated conditioning before boosting all missing axes.
 
+Updated `I'm Feeling Lucky` learning. Lucky can now start a session by itself, seed prompt memory on the first Lucky run, keep collecting reusable prompt concepts while Lucky is off, and treat every missing-axis rating as wanted-but-underrepresented prompt material that should be tried more strongly on later runs.
+
 ## Dev Branch
 
 The `dev` branch is intended for testing unfinished changes, implementing new logic and basically, flipping everything just because I can. It can be broken, renamed, or changed without warning.

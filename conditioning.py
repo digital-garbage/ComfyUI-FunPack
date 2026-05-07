@@ -52,6 +52,18 @@ RATING_PROFILES = {
         "prompt_emphasis": 0.0,
         "skip_learning": True,
     },
+    "Initial discovery": {
+        "key": "discover",
+        "level": 5,
+        "legacy_score": 6,
+        "legacy_range": "discovery",
+        "reward": 0.0,
+        "quality_signal": 0.0,
+        "concept_signal": 0.0,
+        "detail_signal": 0.0,
+        "missing_axes": [],
+        "prompt_emphasis": 0.0,
+    },
     "Perfect": {
         "key": "like",
         "level": 8,
@@ -747,7 +759,54 @@ class FunPackVideoRefiner:
         likes = float(item.get("liked_count", 0))
         neutral = float(item.get("neutral_count", 0))
         awful = float(item.get("awful_count", 0))
-        return float(item.get("score", 0.0)) + likes * 0.40 + neutral * 0.08 - awful * 0.95
+        wanted = float(item.get("wanted_count", 0))
+        missing = float(item.get("missing_count", 0))
+        concept_missing = float(item.get("missing_concept_count", 0))
+        detail_missing = float(item.get("missing_detail_count", 0))
+        quality_missing = float(item.get("missing_quality_count", 0))
+        missing_pressure = missing * 0.22 + concept_missing * 0.14 + detail_missing * 0.10 + quality_missing * 0.08
+        return float(item.get("score", 0.0)) + likes * 0.40 + neutral * 0.08 + wanted * 0.30 + missing_pressure - awful * 0.95
+
+    def _missing_axes_for_rating_key(self, rating_key):
+        for profile in RATING_PROFILES.values():
+            if profile.get("key") == rating_key:
+                return set(profile.get("missing_axes", []))
+        return set()
+
+    def _axis_counter_name(self, axis):
+        if axis == "concept":
+            return "missing_concept_count"
+        if axis == "details":
+            return "missing_detail_count"
+        if axis == "quality":
+            return "missing_quality_count"
+        return None
+
+    def _axis_memory_boost(self, missing_axes):
+        axes = set(missing_axes or [])
+        boost = 0.0
+        if "concept" in axes:
+            boost += 0.42
+        if "details" in axes:
+            boost += 0.30
+        if "quality" in axes:
+            boost += 0.24
+        if len(axes) >= 2:
+            boost += 0.16
+        return boost
+
+    def _apply_missing_memory_pressure(self, item, missing_axes, iter_num):
+        axes = set(missing_axes or [])
+        if not isinstance(item, dict) or not axes:
+            return item
+        item["wanted_count"] = max(0, int(item.get("wanted_count", 0)) + 1)
+        item["missing_count"] = max(0, int(item.get("missing_count", 0)) + 1)
+        for axis in axes:
+            counter = self._axis_counter_name(axis)
+            if counter:
+                item[counter] = max(0, int(item.get(counter, 0)) + 1)
+        item["last_missing_iter"] = int(iter_num)
+        return item
 
     def _ensure_void_token_bank(self, global_adaptive):
         bank = global_adaptive.get("void_token_bank")
@@ -766,11 +825,17 @@ class FunPackVideoRefiner:
                 shape = vector.get("shape", [])
                 if len(shape) != 1 or int(shape[0]) <= 0:
                     continue
-                item["score"] = round(max(-2.0, min(5.0, float(item.get("score", 0.0)))), 4)
+                item["score"] = round(max(-2.0, min(8.0, float(item.get("score", 0.0)))), 4)
                 item["liked_count"] = max(0, int(item.get("liked_count", 0)))
                 item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
                 item["awful_count"] = max(0, int(item.get("awful_count", 0)))
+                item["wanted_count"] = max(0, int(item.get("wanted_count", 0)))
+                item["missing_count"] = max(0, int(item.get("missing_count", 0)))
+                item["missing_concept_count"] = max(0, int(item.get("missing_concept_count", 0)))
+                item["missing_detail_count"] = max(0, int(item.get("missing_detail_count", 0)))
+                item["missing_quality_count"] = max(0, int(item.get("missing_quality_count", 0)))
                 item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                item["last_missing_iter"] = max(0, int(item.get("last_missing_iter", 0)))
                 item["sample_count"] = max(0, int(item.get("sample_count", 0)))
                 cleaned[token] = item
             except (TypeError, ValueError):
@@ -786,7 +851,9 @@ class FunPackVideoRefiner:
         likes = float(item.get("liked_count", 0))
         neutral = float(item.get("neutral_count", 0))
         awful = float(item.get("awful_count", 0))
-        return float(item.get("score", 0.0)) + likes * 0.35 + neutral * 0.05 - awful * 0.85
+        wanted = float(item.get("wanted_count", 0))
+        missing = float(item.get("missing_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.35 + neutral * 0.05 + wanted * 0.22 + missing * 0.16 - awful * 0.85
 
     def _ensure_void_pair_bank(self, global_adaptive):
         bank = global_adaptive.get("void_token_pairs")
@@ -802,11 +869,17 @@ class FunPackVideoRefiner:
                 left, right = key.split("\t", 1)
                 if not self._is_valuable_token(left) or not self._is_valuable_token(right):
                     continue
-                item["score"] = round(max(-3.0, min(5.0, float(item.get("score", 0.0)))), 4)
+                item["score"] = round(max(-3.0, min(6.0, float(item.get("score", 0.0)))), 4)
                 item["liked_count"] = max(0, int(item.get("liked_count", 0)))
                 item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
                 item["awful_count"] = max(0, int(item.get("awful_count", 0)))
+                item["wanted_count"] = max(0, int(item.get("wanted_count", 0)))
+                item["missing_count"] = max(0, int(item.get("missing_count", 0)))
+                item["missing_concept_count"] = max(0, int(item.get("missing_concept_count", 0)))
+                item["missing_detail_count"] = max(0, int(item.get("missing_detail_count", 0)))
+                item["missing_quality_count"] = max(0, int(item.get("missing_quality_count", 0)))
                 item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                item["last_missing_iter"] = max(0, int(item.get("last_missing_iter", 0)))
                 cleaned[key] = item
             except (TypeError, ValueError):
                 continue
@@ -818,7 +891,11 @@ class FunPackVideoRefiner:
         likes = float(item.get("liked_count", 0))
         neutral = float(item.get("neutral_count", 0))
         awful = float(item.get("awful_count", 0))
-        return float(item.get("score", 0.0)) + likes * 0.38 + neutral * 0.06 - awful * 0.90
+        wanted = float(item.get("wanted_count", 0))
+        missing = float(item.get("missing_count", 0))
+        concept_missing = float(item.get("missing_concept_count", 0))
+        detail_missing = float(item.get("missing_detail_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.38 + neutral * 0.06 + wanted * 0.24 + missing * 0.18 + concept_missing * 0.10 + detail_missing * 0.08 - awful * 0.90
 
     def _ensure_lucky_context_memory(self, global_adaptive):
         memory = global_adaptive.get("lucky_context_memory")
@@ -843,7 +920,13 @@ class FunPackVideoRefiner:
                     item["liked_count"] = max(0, int(item.get("liked_count", 0)))
                     item["neutral_count"] = max(0, int(item.get("neutral_count", 0)))
                     item["awful_count"] = max(0, int(item.get("awful_count", 0)))
+                    item["wanted_count"] = max(0, int(item.get("wanted_count", 0)))
+                    item["missing_count"] = max(0, int(item.get("missing_count", 0)))
+                    item["missing_concept_count"] = max(0, int(item.get("missing_concept_count", 0)))
+                    item["missing_detail_count"] = max(0, int(item.get("missing_detail_count", 0)))
+                    item["missing_quality_count"] = max(0, int(item.get("missing_quality_count", 0)))
                     item["last_seen_iter"] = max(0, int(item.get("last_seen_iter", 0)))
+                    item["last_missing_iter"] = max(0, int(item.get("last_missing_iter", 0)))
                     item["co_count"] = max(0, int(item.get("co_count", 0)))
                     clean_neighbors[neighbor] = item
                 except (TypeError, ValueError):
@@ -860,7 +943,9 @@ class FunPackVideoRefiner:
         likes = float(item.get("liked_count", 0))
         neutral = float(item.get("neutral_count", 0))
         awful = float(item.get("awful_count", 0))
-        return float(item.get("score", 0.0)) + likes * 0.45 + neutral * 0.06 - awful * 0.85
+        wanted = float(item.get("wanted_count", 0))
+        missing = float(item.get("missing_count", 0))
+        return float(item.get("score", 0.0)) + likes * 0.45 + neutral * 0.06 + wanted * 0.26 + missing * 0.18 - awful * 0.85
 
     def _ensure_lucky_phrase_placements(self, global_adaptive):
         memory = global_adaptive.get("lucky_phrase_placements")
@@ -887,8 +972,14 @@ class FunPackVideoRefiner:
                     pos_item["liked_count"] = max(0, int(pos_item.get("liked_count", 0)))
                     pos_item["neutral_count"] = max(0, int(pos_item.get("neutral_count", 0)))
                     pos_item["awful_count"] = max(0, int(pos_item.get("awful_count", 0)))
+                    pos_item["wanted_count"] = max(0, int(pos_item.get("wanted_count", 0)))
+                    pos_item["missing_count"] = max(0, int(pos_item.get("missing_count", 0)))
+                    pos_item["missing_concept_count"] = max(0, int(pos_item.get("missing_concept_count", 0)))
+                    pos_item["missing_detail_count"] = max(0, int(pos_item.get("missing_detail_count", 0)))
+                    pos_item["missing_quality_count"] = max(0, int(pos_item.get("missing_quality_count", 0)))
                     pos_item["count"] = max(0, int(pos_item.get("count", 0)))
                     pos_item["last_seen_iter"] = max(0, int(pos_item.get("last_seen_iter", 0)))
+                    pos_item["last_missing_iter"] = max(0, int(pos_item.get("last_missing_iter", 0)))
                     clean_positions[pos_key] = pos_item
                 except (TypeError, ValueError):
                     continue
@@ -907,7 +998,17 @@ class FunPackVideoRefiner:
         if rating_key == "like":
             return 0.70, 1, 0, 0
         if rating_key == "missing_details":
-            return 0.42, 1, 0, 0
+            return 0.56, 0, 1, 0
+        if rating_key == "missing_concept":
+            return 0.72, 0, 1, 0
+        if rating_key == "missing_quality":
+            return 0.48, 0, 1, 0
+        if rating_key == "missing_details_concept":
+            return 0.84, 0, 1, 0
+        if rating_key == "missing_details_quality":
+            return 0.68, 0, 1, 0
+        if rating_key == "missing_concept_quality":
+            return 0.80, 0, 1, 0
         if rating_key == "awful":
             return -1.10, 0, 0, 1
         if rating_key == "discover":
@@ -929,6 +1030,9 @@ class FunPackVideoRefiner:
             return memory
 
         score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        missing_axes = self._missing_axes_for_rating_key(rating_key)
+        if missing_axes:
+            score_delta += self._axis_memory_boost(missing_axes) * 0.55
         # Keep context learning local and ordered. A full all-to-all update makes
         # long Lucky prompts create thousands of JSON entries per click.
         window = 6
@@ -949,6 +1053,8 @@ class FunPackVideoRefiner:
                 item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
                 item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
                 item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+                if missing_axes:
+                    item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
                 item["co_count"] = max(0, int(item.get("co_count", 0)) + 1)
                 item["last_seen_iter"] = int(iter_num)
                 neighbors[neighbor] = item
@@ -962,6 +1068,9 @@ class FunPackVideoRefiner:
 
         memory = self._ensure_lucky_phrase_placements(global_adaptive)
         score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        missing_axes = self._missing_axes_for_rating_key(rating_key)
+        if missing_axes:
+            score_delta += self._axis_memory_boost(missing_axes) * 0.70
         for index, phrase in enumerate(phrases[:32]):
             text = str(phrase.get("text", "")).strip().lower()
             if len(text) < 3:
@@ -974,6 +1083,8 @@ class FunPackVideoRefiner:
             item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
             item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
             item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+            if missing_axes:
+                item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
             item["count"] = max(0, int(item.get("count", 0)) + 1)
             item["last_seen_iter"] = int(iter_num)
             positions[pos_key] = item
@@ -1001,7 +1112,10 @@ class FunPackVideoRefiner:
             return pair_bank
 
         base_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        missing_axes = self._missing_axes_for_rating_key(rating_key)
         score_delta = base_delta * 0.84
+        if missing_axes:
+            score_delta += self._axis_memory_boost(missing_axes) * 0.48
 
         for left, right in zip(ordered_tokens, ordered_tokens[1:]):
             if left == right:
@@ -1010,10 +1124,12 @@ class FunPackVideoRefiner:
             item = pair_bank.get(key, {})
             item["left"] = left
             item["right"] = right
-            item["score"] = round(max(-3.0, min(5.0, float(item.get("score", 0.0)) + score_delta)), 4)
+            item["score"] = round(max(-3.0, min(6.0, float(item.get("score", 0.0)) + score_delta)), 4)
             item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
             item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
             item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+            if missing_axes:
+                item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
             item["last_seen_iter"] = int(iter_num)
             pair_bank[key] = item
 
@@ -1042,6 +1158,9 @@ class FunPackVideoRefiner:
             return bank
 
         score_delta, liked_delta, neutral_delta, awful_delta = self._rating_memory_deltas(rating_key)
+        missing_axes = set(rating_profile.get("missing_axes", []))
+        if missing_axes:
+            score_delta += self._axis_memory_boost(missing_axes)
 
         token_mask_list = None
         if token_mask is not None:
@@ -1074,10 +1193,12 @@ class FunPackVideoRefiner:
                     pass
 
             item["embedding"] = tensor_to_serializable(embedding.float().cpu())
-            item["score"] = round(max(-2.0, min(5.0, float(item.get("score", 0.0)) + score_delta)), 4)
+            item["score"] = round(max(-2.0, min(8.0, float(item.get("score", 0.0)) + score_delta)), 4)
             item["liked_count"] = max(0, int(item.get("liked_count", 0)) + liked_delta)
             item["neutral_count"] = max(0, int(item.get("neutral_count", 0)) + neutral_delta)
             item["awful_count"] = max(0, int(item.get("awful_count", 0)) + awful_delta)
+            if missing_axes:
+                item = self._apply_missing_memory_pressure(item, missing_axes, iter_num)
             item["sample_count"] = count + (0 if rating_key == "awful" else 1)
             item["last_seen_iter"] = int(iter_num)
             bank[token] = item
@@ -1406,6 +1527,7 @@ class FunPackVideoRefiner:
 
     def _lucky_compose_tokens(self, global_adaptive, word_groups, lucky_pool, token_vectors, slot_count):
         token_scores = {token: score for token, _, score in lucky_pool}
+        token_items = {token: item for token, item, _ in lucky_pool}
         present_tokens = {
             str(group[2]).strip().lower()
             for group in (word_groups or [])
@@ -1428,12 +1550,38 @@ class FunPackVideoRefiner:
         if not seed_sequence:
             seed_sequence = [token for token, _, _ in lucky_pool]
 
-        chosen_tokens = []
+        max_slots = max(0, int(slot_count))
+        required_candidates = []
+        for index, token in enumerate(anchor_tokens):
+            item = token_items.get(token, {})
+            missing_pressure = (
+                int(item.get("wanted_count", 0)) +
+                int(item.get("missing_count", 0)) +
+                int(item.get("missing_concept_count", 0)) +
+                int(item.get("missing_detail_count", 0)) +
+                int(item.get("missing_quality_count", 0))
+            )
+            # Current prompt anchors are required; missing pressure decides which
+            # ones win when the conditioning budget is tight.
+            priority = float(token_scores.get(token, 0.0)) + missing_pressure * 0.55 + 0.12 / float(index + 1)
+            required_candidates.append((priority, index, token))
+        required_candidates = sorted(required_candidates, key=lambda item: (-item[0], item[1]))
+        reserve_count = min(len(required_candidates), max_slots)
+        if reserve_count > 3:
+            reserve_count = min(reserve_count, max(3, min(16, int(math.ceil(max_slots * 0.40)))))
+        required_tokens = [
+            token for _, _, token in sorted(required_candidates[:reserve_count], key=lambda item: item[1])
+        ]
+
+        chosen_tokens = list(required_tokens)
         previous_token = None
         context_hits = 0
-        for index in range(max(0, int(slot_count))):
-            if context_tokens and index < len(context_tokens):
-                candidates = [context_tokens[index]]
+        if chosen_tokens:
+            previous_token = chosen_tokens[-1]
+        for index in range(len(chosen_tokens), max_slots):
+            context_index = index - len(required_tokens)
+            if context_tokens and 0 <= context_index < len(context_tokens):
+                candidates = [context_tokens[context_index]]
             elif seed_sequence and random.random() < 0.72:
                 candidates = seed_sequence
             else:
@@ -1462,6 +1610,7 @@ class FunPackVideoRefiner:
         return chosen_tokens, {
             "source": source,
             "anchor_tokens": anchor_tokens,
+            "required_tokens": required_tokens,
             "context_tokens": context_tokens,
             "context_hits": context_hits,
         }
@@ -1815,6 +1964,7 @@ class FunPackVideoRefiner:
                     "unique_tokens": sorted(set(prompt_tokens)),
                     "injections": injections,
                     "anchor_tokens": [],
+                    "required_tokens": prompt_tokens,
                     "context_tokens": [],
                     "context_hits": 0,
                     "canvas": lucky_canvas_status,
@@ -1841,6 +1991,7 @@ class FunPackVideoRefiner:
                             "unique_tokens": [],
                             "injections": [],
                             "anchor_tokens": [],
+                            "required_tokens": [],
                             "context_tokens": [],
                             "context_hits": 0,
                             "canvas": lucky_canvas_status,
@@ -1860,6 +2011,7 @@ class FunPackVideoRefiner:
                             "unique_tokens": [],
                             "injections": [],
                             "anchor_tokens": [],
+                            "required_tokens": [],
                             "context_tokens": [],
                             "context_hits": 0,
                             "canvas": lucky_canvas_status,
@@ -1939,6 +2091,7 @@ class FunPackVideoRefiner:
                         if len(seen_tokens) < len(set(picked_tokens)):
                             token_list += ", ..."
                         anchor_preview = ", ".join(compose_info.get("anchor_tokens", [])[:4]) or "none"
+                        required_preview = ", ".join(compose_info.get("required_tokens", [])[:6]) or "none"
                         context_preview = ", ".join(compose_info.get("context_tokens", [])[:6]) or "none"
                         lucky_metadata = {
                             "enabled": True,
@@ -1947,6 +2100,7 @@ class FunPackVideoRefiner:
                             "unique_tokens": sorted(set(picked_tokens)),
                             "injections": injections,
                             "anchor_tokens": compose_info.get("anchor_tokens", []),
+                            "required_tokens": compose_info.get("required_tokens", []),
                             "context_tokens": compose_info.get("context_tokens", []),
                             "context_hits": int(compose_info.get("context_hits", 0)),
                             "canvas": lucky_canvas_status if lucky_canvas_used else "current conditioning",
@@ -1959,7 +2113,7 @@ class FunPackVideoRefiner:
                         prompt_phrase = f" | prompt: {prompt_preview}" if prompt_preview else ""
                         status_parts.append(
                             f"Lucky: on | {lucky_metadata['source']} | field {len(picked_tokens)} positions from {len(set(picked_tokens))} tokens | "
-                            f"anchors: {anchor_preview} | context add: {context_preview}{canvas_phrase}{prompt_phrase} | tokens: {token_list}"
+                            f"anchors: {anchor_preview} | required: {required_preview} | context add: {context_preview}{canvas_phrase}{prompt_phrase} | tokens: {token_list}"
                         )
                     else:
                         if lucky_canvas_used:
@@ -1970,6 +2124,7 @@ class FunPackVideoRefiner:
                                 "unique_tokens": [],
                                 "injections": [],
                                 "anchor_tokens": [],
+                                "required_tokens": [],
                                 "context_tokens": [],
                                 "context_hits": 0,
                                 "canvas": lucky_canvas_status,
@@ -2789,6 +2944,76 @@ class FunPackVideoRefiner:
             cluster["last_prompt_delta_role"] = role
             touched.append(word)
         return touched
+
+    def _missing_axis_matches_category(self, axis: str, category: str):
+        category = (category or "general").lower()
+        if axis == "concept":
+            return category in {"subject", "action", "appearance", "character", "concept", "general"}
+        if axis == "details":
+            return category in {"camera", "action", "environment", "appearance", "style", "general"}
+        if axis == "quality":
+            return category in {"quality", "style", "general"}
+        return False
+
+    def _apply_missing_axis_prompt_pressure(self, word_groups, word_to_concept, rating_profile,
+                                            concept_clusters, word_importance, iter_num):
+        missing_axes = set(rating_profile.get("missing_axes", []))
+        if not missing_axes or not word_groups:
+            return ""
+
+        axis_boosts = {"concept": 0.34, "details": 0.26, "quality": 0.22}
+        touched = []
+        for _, _, full_word, _ in word_groups:
+            word = str(full_word).strip().lower()
+            if not self._is_valuable_token(word):
+                continue
+            cid = word_to_concept.get(word)
+            category = "general"
+            cluster = None
+            if cid and cid in concept_clusters:
+                concept_clusters[cid] = self._ensure_concept_cluster_defaults(concept_clusters[cid])
+                cluster = concept_clusters[cid]
+                category = cluster.get("category", "general")
+
+            matched_axes = [axis for axis in missing_axes if self._missing_axis_matches_category(axis, category)]
+            pressure = sum(axis_boosts.get(axis, 0.0) for axis in matched_axes)
+            if not pressure:
+                pressure = sum(axis_boosts.get(axis, 0.0) for axis in missing_axes) * 0.35
+            if not pressure:
+                continue
+
+            word_importance[word] = max(0.35, min(2.8, float(word_importance.get(word, 1.0)) + pressure * 0.32))
+            if cluster is not None:
+                local_imp = cluster.setdefault("word_importance", {})
+                local_imp[word] = max(0.35, min(2.8, float(local_imp.get(word, 1.0)) + pressure * 0.55))
+                cluster["missing_count"] = int(cluster.get("missing_count", 0)) + 1
+                for axis in missing_axes:
+                    counter = self._axis_counter_name(axis)
+                    if counter:
+                        cluster[counter] = int(cluster.get(counter, 0)) + 1
+                if "concept" in missing_axes or "details" in missing_axes:
+                    cluster["presence_target"] = self._clip_profile_value(
+                        float(cluster.get("presence_target", 1.0)) + pressure * 0.18
+                    )
+                    cluster["priority_weight"] = self._clip_profile_value(
+                        float(cluster.get("priority_weight", 1.0)) + pressure * 0.14
+                    )
+                if "quality" in missing_axes:
+                    cluster["semantic_fidelity"] = self._clip_profile_value(
+                        float(cluster.get("semantic_fidelity", 1.0)) + pressure * 0.16,
+                        low=0.6,
+                        high=1.8,
+                    )
+                    cluster["stability_weight"] = self._clip_profile_value(
+                        float(cluster.get("stability_weight", 1.0)) + pressure * 0.12
+                    )
+                cluster["last_missing_iter"] = iter_num
+            touched.append(word)
+
+        if not touched:
+            return ""
+        axes = "+".join(sorted(missing_axes))
+        return f"Missing-axis pressure: {axes} reinforced {', '.join(touched[:10])}{'...' if len(touched) > 10 else ''}."
 
     def _apply_prompt_delta_attribution(self, history: list, current_words: list,
                                         rating_profile: dict, concept_clusters: dict,
@@ -4107,53 +4332,94 @@ class FunPackVideoRefiner:
                 "pending_feedback": None
             }
 
+        def _seed_fresh_prompt_discovery(data):
+            if not analysis_prompt or not isinstance(data, dict):
+                return False
+            global_state = data.get("global_adaptive")
+            if not isinstance(global_state, dict):
+                return False
+            seq_len = self._get_conditioning_seq_len(raw_positive)
+            token_mask = self._get_conditioning_token_mask(raw_positive) if mode == "wan" else None
+            discovery_groups = self._build_word_groups(
+                analysis_prompt,
+                None,
+                seq_len,
+                token_mask=token_mask,
+            )
+            if discovery_groups:
+                self._seed_void_token_bank(
+                    global_state,
+                    discovery_groups,
+                    raw_positive,
+                    0,
+                    token_mask=token_mask,
+                )
+            self._update_lucky_phrase_placements(global_state, analysis_prompt, "discover", 0)
+            return bool(discovery_groups)
+
         # ====================== RESET / NEW SESSION ======================
+        lucky_bootstrap = False
+        fresh_discovery_seeded = False
         if reset_session or not os.path.exists(json_file):
             if reset_session:
                 self._delete_latent_reference(refinement_key, mode)
-            if latent_output_connected:
-                fallback_latent, fallback_latent_status = self._refine_latent(
-                    latent,
-                    refinement_key,
-                    mode,
-                    rating,
-                    reward,
-                    {},
-                    rating_profile,
-                )
-            else:
-                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
             data = _fresh_data()
+            fresh_discovery_seeded = _seed_fresh_prompt_discovery(data)
             with open(json_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            return (positive_conditioning, "New session started - Reference saved", "", f"New session started. Reference embedding saved.\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
-
-        # ====================== SAFE JSON LOAD ======================
-        try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError, ValueError) as e:
-            print(f"[FunPackVideoRefiner] Corrupt session file, resetting: {e}")
+            if im_feeling_lucky:
+                lucky_bootstrap = True
+            else:
+                if latent_output_connected:
+                    fallback_latent, fallback_latent_status = self._refine_latent(
+                        latent,
+                        refinement_key,
+                        mode,
+                        rating,
+                        reward,
+                        {},
+                        rating_profile,
+                    )
+                else:
+                    fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
+                return (positive_conditioning, "New session started - Reference saved", "", f"New session started. Reference embedding saved.\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
+        else:
+            # ====================== SAFE JSON LOAD ======================
             try:
-                os.remove(json_file)
-            except OSError:
-                pass
-            if latent_output_connected:
-                fallback_latent, fallback_latent_status = self._refine_latent(
-                    latent,
-                    refinement_key,
-                    mode,
-                    rating,
-                    reward,
-                    {},
-                    rating_profile,
-                )
-            else:
-                fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
-            data = _fresh_data()
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                print(f"[FunPackVideoRefiner] Corrupt session file, resetting: {e}")
+                try:
+                    os.remove(json_file)
+                except OSError:
+                    pass
+                data = _fresh_data()
+                fresh_discovery_seeded = _seed_fresh_prompt_discovery(data)
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                if im_feeling_lucky:
+                    lucky_bootstrap = True
+                else:
+                    if latent_output_connected:
+                        fallback_latent, fallback_latent_status = self._refine_latent(
+                            latent,
+                            refinement_key,
+                            mode,
+                            rating,
+                            reward,
+                            {},
+                            rating_profile,
+                        )
+                    else:
+                        fallback_latent, fallback_latent_status = self._latent_refinement_disabled(latent)
+                    return (positive_conditioning, "Session file was corrupt - Reset and started fresh", "", f"Session reset due to corrupt file\n{fallback_latent_status}", fallback_loss_graph, fallback_sigmas, fallback_latent)
+
+        if lucky_bootstrap:
+            rating_profile = dict(RATING_PROFILES["Initial discovery"], label="Initial discovery")
+            rating_label = rating_profile["label"]
+            rating = int(rating_profile.get("legacy_score", 6))
+            reward = float(rating_profile.get("reward", 0.0))
 
         global_adaptive = data["global_adaptive"]
         previous_prompt_key_for_rating = data.get("last_prompt_key")
@@ -4434,6 +4700,7 @@ class FunPackVideoRefiner:
 
         should_seed_current_prompt_after_lucky = (
             bool(analysis_prompt) and
+            not (lucky_bootstrap and fresh_discovery_seeded) and
             (
                 analysis_prompt != bank_rated_prompt or
                 bank_rated_positive is None
@@ -4552,6 +4819,14 @@ class FunPackVideoRefiner:
         })
 
         word_importance = global_adaptive["word_importance"]
+        missing_axis_status = self._apply_missing_axis_prompt_pressure(
+            word_groups,
+            word_to_concept,
+            rating_profile,
+            concept_clusters,
+            word_importance,
+            iter_num,
+        )
         prompt_delta_status = self._apply_prompt_delta_attribution(
             history,
             current_prompt_words,
@@ -5007,7 +5282,16 @@ class FunPackVideoRefiner:
             reward,
             rating_profile,
         )
-        if prompt_variant_match:
+        if im_feeling_lucky:
+            learned_prompt_memories = sum(
+                1 for key, item in prompt_histories.items()
+                if key != "__lucky_memory__" and isinstance(item, dict) and item.get("history")
+            )
+            prompt_history_status = (
+                "Prompt history: Lucky memory stream "
+                f"({len(history)} Lucky updates, {learned_prompt_memories} learned prompt memories)."
+            )
+        elif prompt_variant_match:
             prompt_history_status = (
                 "Prompt history: reused similar enhanced prompt "
                 f"(overlap {prompt_variant_match.get('overlap', 0.0):.0%}, "
@@ -5035,6 +5319,7 @@ class FunPackVideoRefiner:
             reference_status += f" | source refreshed ({source_change_reason or 'changed'})"
         if source_retarget_status:
             reference_status += source_retarget_status
+        missing_axis_line = f"{missing_axis_status}\n" if missing_axis_status else ""
         prompt_delta_line = f"{prompt_delta_status}\n" if prompt_delta_status else ""
 
         training_info = (
@@ -5049,6 +5334,7 @@ class FunPackVideoRefiner:
             f"Concept phrases ({len(concept_clusters)} total): {concept_line}\n"
             f"Concept groups ({len(concept_groups)} total): {group_line}\n"
             f"Global top words: {current_top}\n"
+            f"{missing_axis_line}"
             f"{prompt_delta_line}"
             f"{prompt_history_status}\n"
             f"{lora_suggestion_status}\n"
@@ -5119,10 +5405,27 @@ class FunPackVideoRefiner:
             "Latent idle"
         )
 
+        if im_feeling_lucky:
+            learned_prompt_memories = sum(
+                1 for key, item in prompt_histories.items()
+                if key != "__lucky_memory__" and isinstance(item, dict) and item.get("history")
+            )
+            lucky_bank_size = len(global_adaptive.get("void_token_bank", {}))
+            lucky_phrase_size = len(global_adaptive.get("lucky_phrase_placements", {}))
+            session_line = (
+                f"Session: Lucky memory {len(history)} update(s), {global_total_iterations} total update(s), "
+                f"{learned_prompt_memories} learned prompt memory(s), "
+                f"{lucky_bank_size} token(s), {lucky_phrase_size} phrase placement(s)"
+            )
+        else:
+            session_line = (
+                f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
+                f"{len(history)} history item(s) on this prompt"
+            )
+
         status = (
             f"{health} | Mode {mode.upper()} | Rating {rating_label} ({rating_profile.get('legacy_range', rating)}) {trend} | Iter {iter_num}\n"
-            f"Session: {len(prompt_histories)} prompt(s), {global_total_iterations} total update(s), "
-            f"{len(history)} history item(s) on this prompt\n"
+            f"{session_line}\n"
             f"Reference: {reference_mode} ({liked_reference_count} liked) | Focus: {dominant_line} | {feedback_state}\n"
             f"Systems: {lora_state} | {sigma_state} | {latent_state} | {void_status}"
         )
