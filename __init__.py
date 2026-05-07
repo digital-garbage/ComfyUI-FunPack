@@ -1,13 +1,10 @@
 # ComfyUI-FunPack/__init__.py
 
 from .conditioning import (
-    FunPackGemmaEmbeddingRefiner,
     FunPackLorebookEnhancer,
     FunPackPromptCombiner,
     FunPackPromptEnhancer,
-    FunPackSaveRefinementLatent,
     FunPackStoryWriter,
-    FunPackVideoRefiner,
     FunPackVideoRefinerV2,
 )
 from .image_processing import (
@@ -34,10 +31,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackClipVisionOutputCombine": FunPackClipVisionOutputCombine,
     "FunPackContinueVideo": FunPackContinueVideo,
     "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
-    "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
-    "FunPackVideoRefiner": FunPackVideoRefiner,
     "FunPackVideoRefinerV2": FunPackVideoRefinerV2,
-    "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
     "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
@@ -55,10 +49,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackClipVisionOutputCombine": "FunPack CLIP Vision Output Combine",
     "FunPackContinueVideo": "FunPack Continue Video",
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
-    "FunPackGemmaEmbeddingRefiner": "FunPack Video Refiner (Compatibility)",
-    "FunPackVideoRefiner": "FunPack Video Refiner",
     "FunPackVideoRefinerV2": "FunPack Video Refiner V2",
-    "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
     "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",

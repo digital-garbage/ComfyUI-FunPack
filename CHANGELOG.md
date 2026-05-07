@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
+## [2.2.0] - 2026-05-07
 
 ### Added
 
+Added `FunPack Video Refiner V2`, a simplified prompt-owned refiner that accepts `positive_prompt` and a connected `CLIP`, owns prompt encoding internally, learns from ratings, and returns refined positive conditioning plus diagnostics.
+
 Added `FunPack Template Manager`, a preset node for storing prompts, activation words, refinement keys, sigma schedules, and FunPack LoRA stacks with import/export support.
 
-Added `I'm Feeling Lucky` mode to `FunPack Video Refiner`. It now works as a preference composer that can inject learned user-preferred concepts, actions, camera moves, and styles even when the current prompt is vague.
+Added `I'm Feeling Lucky` mode to `FunPack Video Refiner V2`. It works as a preference composer that can inject learned user-preferred actions, camera moves, details, and styles even when the current prompt is vague.
 
 ### Changed
 
@@ -16,7 +18,13 @@ Fixed `FunPack Hybrid Euler 2S Sampler` restart timing so `restart_trigger_pct` 
 
 Improved `FunPack LoRA Loader` rerun performance by caching recently used raw LoRA files, model-mapped LoRA patches, and per-block fingerprint analysis.
 
-Reworked `FunPack Video Refiner` ratings around explicit missing-axis signals: `Perfect`, single missing axes, paired missing axes, and `Awful`.
+Reworked `FunPack Video Refiner V2` ratings around explicit missing-axis signals: `Perfect`, single missing axes, paired missing axes, and `Awful`.
+
+Removed the Refiner V2 `mode` input. V2 now accepts whatever connected `CLIP` the workflow provides and stores state in a CLIP-owned namespace.
+
+Renamed visible Refiner and LoRA intent from `concept` to `action`. Old `Missing concept` ratings and old `concept` LoRA rows are still accepted as compatibility aliases, but V2 stores and displays `action`.
+
+Updated `I'm Feeling Lucky` in Refiner V2 so Lucky only composes prompt text when enabled. When disabled, it may train memory from rated runs but does not compose or alter output.
 
 ### Fixed
 
@@ -51,6 +59,12 @@ Updated Lucky memory so normal non-Lucky runs still seed reusable token, phrase,
 Updated all missing-axis ratings so `Missing details`, `Missing concept`, `Missing quality`, and paired missing ratings now mark prompt tokens as wanted-but-underrepresented instead of weak neutral feedback; repeated missing feedback reserves Lucky composition room for those tokens and their compatible neighbours.
 
 Fixed Lucky diagnostics so the collapsed Lucky memory stream reports real Lucky update counts and learned memory size instead of implying the session is still prompt 1 out of 1.
+
+### Removed
+
+Removed the old public `FunPack Video Refiner` node, the `FunPackGemmaEmbeddingRefiner` compatibility alias, and `FunPack Save Refinement Latent` from the registered node list.
+
+Removed sigma refinement, latent refinement, manual scheduler controls, and feedback-question inputs from the active Refiner workflow. These systems are not part of Refiner V2.
 
 ## [2.1.3] - 2026-04-24
 

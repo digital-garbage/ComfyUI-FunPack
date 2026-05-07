@@ -5586,7 +5586,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "clip": ("CLIP", {"tooltip": "Connected text encoder used for all V2 prompt encoding and similarity checks."}),
                 "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
                 "refinement_key": ("STRING", {"default": "my_style_v2", "multiline": False}),
-                "mode": (["ltx2", "wan"], {"default": "ltx2", "label": "Tokenizer Mode"}),
             },
             "optional": {
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
@@ -5604,14 +5603,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def _v2_state_path(self, refinement_key, mode):
-        return refinement_state_path(refinement_key, mode, prefix=self.V2_STATE_PREFIX)
+    def _v2_state_path(self, refinement_key):
+        return refinement_state_path(refinement_key, "clip", prefix=self.V2_STATE_PREFIX)
 
-    def _v2_empty_state(self, refinement_key, mode):
+    def _v2_empty_state(self, refinement_key):
         return {
             "version": 2,
             "refinement_key": refinement_key,
-            "mode": mode,
+            "state_namespace": "clip",
             "global": {
                 "total_iterations": 0,
                 "avg_reward_ema": 0.0,
@@ -5627,30 +5626,30 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "last_run": None,
         }
 
-    def _v2_load_state(self, refinement_key, mode, reset_session=False):
-        path = self._v2_state_path(refinement_key, mode)
+    def _v2_load_state(self, refinement_key, reset_session=False):
+        path = self._v2_state_path(refinement_key)
         if reset_session or not os.path.exists(path):
-            return self._v2_empty_state(refinement_key, mode), "fresh"
+            return self._v2_empty_state(refinement_key), "fresh"
         try:
             with open(path, "r", encoding="utf-8") as file:
                 data = json.load(file)
             if not isinstance(data, dict) or int(data.get("version", 0)) != 2:
-                return self._v2_empty_state(refinement_key, mode), "reset invalid"
+                return self._v2_empty_state(refinement_key), "reset invalid"
             data.setdefault("global", {})
             data.setdefault("prompt_histories", {})
             data.setdefault("last_run", None)
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
-            return self._v2_empty_state(refinement_key, mode), "reset unreadable"
+            return self._v2_empty_state(refinement_key), "reset unreadable"
 
-    def _v2_save_state(self, data, refinement_key, mode):
-        path = self._v2_state_path(refinement_key, mode)
+    def _v2_save_state(self, data, refinement_key):
+        path = self._v2_state_path(refinement_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
             json.dump(data, file, indent=2)
 
-    def _v2_prompt_key(self, prompt, mode):
-        return self._normalize_prompt_for_mode(prompt, mode)
+    def _v2_prompt_key(self, prompt):
+        return re.sub(r"\s+", " ", str(prompt or "").strip())
 
     def _v2_extract_conditioning(self, encoded):
         if not isinstance(encoded, list) or not encoded:
@@ -6092,18 +6091,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_history["lora_weight_suggestions"] = suggestions
         return "LoRA suggestions: " + " | ".join(parts)
 
-    def refine_v2(self, positive_prompt, clip, rating, refinement_key, mode="ltx2",
+    def refine_v2(self, positive_prompt, clip, rating, refinement_key,
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False):
-        mode = (mode or "ltx2").lower()
-        if mode not in {"ltx2", "wan"}:
-            mode = "ltx2"
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
 
         rating_profile = normalize_refiner_v2_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
-        state, state_status = self._v2_load_state(refinement_key, mode, reset_session=reset_session)
+        state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
         global_state = state.setdefault("global", {})
         global_state.setdefault("phrase_memory", {})
         global_state.setdefault("lora_weight_memory", {})
@@ -6121,7 +6117,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
 
-        analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
+        analysis_prompt = self._v2_prompt_key(positive_prompt)
         phrases = self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt))
         if im_feeling_lucky:
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
@@ -6132,14 +6128,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encoded_role = "current prompt"
 
         cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_to_encode)
-        fallback_graph = render_refinement_loss_graph(refinement_key, "v2", mode, 0, 0.0, [])
+        fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
             status = f"ERROR: V2 could not encode prompt | {encode_status}"
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
             return ([], status, training_info, fallback_graph)
 
         refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile)
-        prompt_key = self._v2_prompt_key(analysis_prompt, mode)
+        prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = state.setdefault("prompt_histories", {}).setdefault(prompt_key, {
             "canonical_prompt": analysis_prompt,
             "history": [],
@@ -6156,7 +6152,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "rating_label": rating_label,
             "similarity": 1.0,
             "scheduler_mode": "automatic",
-            "mode": mode,
+            "mode": "clip",
         })
         global_state["loss_history"] = loss_history
 
@@ -6188,18 +6184,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "iteration": int(global_state["total_iterations"]),
         }
         state["global"] = global_state
-        self._v2_save_state(state, refinement_key, mode)
+        self._v2_save_state(state, refinement_key)
 
         loss_graph = render_refinement_loss_graph(
             refinement_key=refinement_key,
             scheduler_mode="v2-auto",
-            mode=mode,
+            mode="clip",
             total_iterations=int(global_state["total_iterations"]),
             latest_learning_loss=float(learning_loss),
             points=loss_history[-256:],
         )
         status = (
-            f"V2 {state_status} | Mode {mode.upper()} | Rating {rating_label} | Iter {global_state['total_iterations']}\n"
+            f"V2 {state_status} | CLIP-owned | Rating {rating_label} | Iter {global_state['total_iterations']}\n"
             f"{adaptation_status}\n"
             f"{lucky_status}"
         )

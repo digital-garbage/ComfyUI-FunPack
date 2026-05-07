@@ -8,13 +8,13 @@
 
 **name**: New template name. This is only used by Save when the name is unique. If the name already exists or is empty, Save targets the selected dropdown template.
 
-**mode**: Refiner mode used when reading saved conditioning from a refinement key. Use the same mode as `FunPack Video Refiner`.
+**mode**: Stored workflow namespace. Refiner V2 conditioning lookup ignores this value, while legacy refiner fallback still uses it.
 
 **wildcard_seed**: Seed for resolving `{option A|option B}` groups in the stored positive prompt. `0` uses random choices on each execution.
 
 **activation_word**: Optional trigger or concept word stored with the template.
 
-**refinement_key**: Optional `FunPack Video Refiner` key. When stored, the node outputs this key and tries to load the best saved positive conditioning from the matching refiner state.
+**refinement_key**: Optional `FunPack Video Refiner V2` key. When stored, the node outputs this key and tries to load the best saved positive conditioning from the matching refiner state.
 
 **positive_prompt**: Optional prompt stored with the template. Supports wildcard groups such as `{wide shot|close-up}`.
 

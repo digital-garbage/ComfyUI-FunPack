@@ -93,6 +93,10 @@ def prompt_key_for_mode(prompt, mode):
     return prompt or ""
 
 
+def prompt_key_for_v2(prompt):
+    return re.sub(r"\s+", " ", str(prompt or "").strip())
+
+
 def lora_state_id(lora_name, lora_type):
     return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
 
@@ -111,10 +115,10 @@ def refiner_state_path(refinement_key, mode):
     return os.path.join(refinements_dir, f"refine_{safe_key}.json")
 
 
-def refiner_v2_state_path(refinement_key, mode):
+def refiner_v2_state_path(refinement_key):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     refinements_dir = os.path.join(base_dir, "refinements")
-    safe_key = md5(f"{(mode or 'ltx2').lower()}::{refinement_key}".encode("utf-8")).hexdigest()
+    safe_key = md5(f"clip::{refinement_key}".encode("utf-8")).hexdigest()
     return os.path.join(refinements_dir, f"refine_v2_{safe_key}.json")
 
 
@@ -224,10 +228,10 @@ class FunPackApplyLoraWeights:
     def VALIDATE_INPUTS(cls, lora_list=None, lora_0=None):
         return True
 
-    def _load_suggestions(self, refinement_key, mode, prompt_key):
-        for path, label in (
-            (refiner_v2_state_path(refinement_key, mode), "V2 refiner suggestions applied"),
-            (refiner_state_path(refinement_key, mode), "refiner suggestions applied"),
+    def _load_suggestions(self, refinement_key, mode, prompt_key, v2_prompt_key):
+        for path, key, label in (
+            (refiner_v2_state_path(refinement_key), v2_prompt_key, "V2 refiner suggestions applied"),
+            (refiner_state_path(refinement_key, mode), prompt_key, "legacy refiner suggestions applied"),
         ):
             if not os.path.exists(path):
                 continue
@@ -238,7 +242,7 @@ class FunPackApplyLoraWeights:
             except (json.JSONDecodeError, OSError, ValueError):
                 continue
 
-            prompt_history = data.get("prompt_histories", {}).get(prompt_key)
+            prompt_history = data.get("prompt_histories", {}).get(key)
             if not prompt_history:
                 continue
 
@@ -357,7 +361,8 @@ class FunPackApplyLoraWeights:
         mode = (mode or "ltx2").lower()
         per_block = coerce_bool(per_block)
         prompt_key = prompt_key_for_mode(positive_prompt, mode)
-        suggestions, source_message = self._load_suggestions(refinement_key, mode, prompt_key)
+        v2_prompt_key = prompt_key_for_v2(positive_prompt)
+        suggestions, source_message = self._load_suggestions(refinement_key, mode, prompt_key, v2_prompt_key)
 
         loras = []
         lines = [f"FunPack Apply LoRA Weights | {source_message}"]

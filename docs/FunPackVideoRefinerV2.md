@@ -2,7 +2,7 @@
 
 Video Refiner V2 is a simplified prompt-owned refiner. It takes prompt text and a connected `CLIP`, encodes the prompt inside the node, learns from ratings, and returns refined positive conditioning.
 
-The old `FunPack Video Refiner` remains available for existing workflows. V2 uses separate fresh state and does not migrate old histories.
+V2 replaces the old `FunPack Video Refiner` public node in version `2.2.0`. It uses separate fresh state and does not migrate old histories.
 
 ## Inputs
 
@@ -25,8 +25,6 @@ The old `FunPack Video Refiner` remains available for existing workflows. V2 use
 Older `Missing concept` labels are accepted as aliases for `Missing action`.
 
 **refinement_key**: V2 session key. V2 stores separate `refine_v2` state under this key.
-
-**mode**: Prompt normalization mode, currently `ltx2` or `wan`.
 
 **seed**: Optional seed for deterministic exploration paths.
 
