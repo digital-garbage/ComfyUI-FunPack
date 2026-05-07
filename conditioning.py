@@ -5470,6 +5470,8 @@ V2_RATING_PROFILES = {
     "Awful": {"key": "awful", "reward": -0.90, "level": 0, "missing_axes": ["details", "action", "quality"]},
 }
 
+V2_FEEDBACK_AXES = ("details", "action", "quality")
+
 V2_RATING_ALIASES = {
     "I like it": "Perfect",
     "I don't like it": "Awful",
@@ -5667,6 +5669,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "last_rating_label": "Initial discovery",
                 "last_missing_axes": [],
                 "phrase_memory": {},
+                "axis_conditioning_memory": {},
                 "lora_weight_memory": {},
                 "loss_history": [],
             },
@@ -5686,6 +5689,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data.setdefault("global", {})
             data.setdefault("prompt_histories", {})
             data.setdefault("last_run", None)
+            data["global"].setdefault("axis_conditioning_memory", {})
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
             return self._v2_empty_state(refinement_key), "reset unreadable"
@@ -5897,12 +5901,75 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return category in {"quality", "style"}
         return False
 
-    def _v2_update_phrase_memory(self, global_state, last_run, rating_profile, iter_num):
+    def _v2_order_axes(self, axes):
+        axis_set = {axis for axis in axes or [] if axis in V2_FEEDBACK_AXES}
+        return [axis for axis in V2_FEEDBACK_AXES if axis in axis_set]
+
+    def _v2_axes_for_category(self, category):
+        return {
+            axis
+            for axis in V2_FEEDBACK_AXES
+            if self._v2_axis_matches_category(axis, category)
+        }
+
+    def _v2_axis_feedback(self, rating_profile, previous_missing_axes=None):
+        key = rating_profile.get("key", "")
+        if rating_profile.get("skip_learning") or key == "discover":
+            return {
+                "missing_axes": [],
+                "satisfied_axes": [],
+                "resolved_axes": [],
+                "regressed_axes": [],
+            }
+
+        all_axes = set(V2_FEEDBACK_AXES)
+        missing_axes = set(rating_profile.get("missing_axes", [])) & all_axes
+        if key == "awful":
+            missing_axes = set(all_axes)
+        elif key == "like":
+            missing_axes = set()
+
+        has_previous_axis_signal = previous_missing_axes is not None
+        previous_missing = set(previous_missing_axes or []) & all_axes
+        satisfied_axes = all_axes - missing_axes
+        resolved_axes = previous_missing - missing_axes
+        regressed_axes = missing_axes - previous_missing if has_previous_axis_signal else set()
+
+        return {
+            "missing_axes": self._v2_order_axes(missing_axes),
+            "satisfied_axes": self._v2_order_axes(satisfied_axes),
+            "resolved_axes": self._v2_order_axes(resolved_axes),
+            "regressed_axes": self._v2_order_axes(regressed_axes),
+        }
+
+    def _v2_axis_feedback_status(self, axis_feedback):
+        if not isinstance(axis_feedback, dict):
+            return "Axis feedback: none."
+
+        def fmt(name):
+            values = self._v2_order_axes(axis_feedback.get(name, []))
+            return ", ".join(values) if values else "none"
+
+        return (
+            f"Axis feedback: missing {fmt('missing_axes')} | "
+            f"satisfied {fmt('satisfied_axes')} | "
+            f"resolved {fmt('resolved_axes')} | "
+            f"regressed {fmt('regressed_axes')}."
+        )
+
+    def _v2_update_phrase_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return "Lucky memory: no learning update."
         memory = global_state.setdefault("phrase_memory", {})
         phrases = last_run.get("phrases", [])
-        missing_axes = set(rating_profile.get("missing_axes", []))
+        axis_feedback = axis_feedback or self._v2_axis_feedback(
+            rating_profile,
+            global_state.get("last_missing_axes", []),
+        )
+        missing_axes = set(axis_feedback.get("missing_axes", []))
+        satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
+        resolved_axes = set(axis_feedback.get("resolved_axes", []))
+        regressed_axes = set(axis_feedback.get("regressed_axes", []))
         reward = float(rating_profile.get("reward", 0.0))
         touched = []
         for phrase in phrases:
@@ -5918,8 +5985,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "score": 0.0,
                 "liked_count": 0,
                 "missing_count": 0,
+                "satisfied_count": 0,
+                "resolved_count": 0,
+                "regressed_count": 0,
                 "bad_count": 0,
                 "wanted_axes": {},
+                "satisfied_axes": {},
+                "resolved_axes": {},
                 "positions": {},
             })
             entry["primary"] = primary
@@ -5929,6 +6001,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 int(entry.setdefault("positions", {}).get(str(int(phrase.get("position", 0))), 0)) + 1
             )
 
+            phrase_axes = self._v2_axes_for_category(primary)
+            matched_missing = phrase_axes & missing_axes
+            matched_satisfied = phrase_axes & satisfied_axes
+            matched_resolved = phrase_axes & resolved_axes
+            matched_regressed = phrase_axes & regressed_axes
+
             if rating_profile.get("key") == "like":
                 delta = 0.55
                 entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
@@ -5936,12 +6014,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 delta = -0.90
                 entry["bad_count"] = int(entry.get("bad_count", 0)) + 1
             elif missing_axes:
-                matched = [axis for axis in missing_axes if self._v2_axis_matches_category(axis, primary)]
-                delta = 0.34 if matched else 0.08
-                entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+                if matched_missing:
+                    delta = 0.34 + (0.08 if matched_regressed else 0.0)
+                    entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+                elif matched_resolved:
+                    delta = 0.46
+                    entry["resolved_count"] = int(entry.get("resolved_count", 0)) + 1
+                elif matched_satisfied:
+                    delta = 0.20
+                    entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+                else:
+                    delta = 0.04
+
                 wanted_axes = entry.setdefault("wanted_axes", {})
-                for axis in matched or missing_axes:
+                for axis in self._v2_order_axes(matched_missing):
                     wanted_axes[axis] = int(wanted_axes.get(axis, 0)) + 1
+                satisfied_axis_counts = entry.setdefault("satisfied_axes", {})
+                for axis in self._v2_order_axes(matched_satisfied):
+                    satisfied_axis_counts[axis] = int(satisfied_axis_counts.get(axis, 0)) + 1
+                resolved_axis_counts = entry.setdefault("resolved_axes", {})
+                for axis in self._v2_order_axes(matched_resolved):
+                    resolved_axis_counts[axis] = int(resolved_axis_counts.get(axis, 0)) + 1
             else:
                 delta = reward * 0.20
 
@@ -5952,18 +6045,69 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         if not touched:
             return "Lucky memory: no prompt phrases stored."
-        return f"Lucky memory stored: {len(touched)} phrase(s), top: {', '.join(touched[:6])}{'...' if len(touched) > 6 else ''}."
+        return (
+            f"Lucky memory stored: {len(touched)} phrase(s), top: "
+            f"{', '.join(touched[:6])}{'...' if len(touched) > 6 else ''}. "
+            f"{self._v2_axis_feedback_status(axis_feedback)}"
+        )
 
     def _v2_shape_compatible(self, payload, conditioning):
         return self._serialized_conditioning_compatible(payload, conditioning)
 
-    def _v2_update_conditioning_memory(self, global_state, last_run, rating_profile):
+    def _v2_store_conditioning_average(self, slot, payload):
+        count = int(slot.get("count", 0))
+        existing = slot.get("conditioning")
+        if count <= 0 or not isinstance(existing, dict):
+            slot["conditioning"] = payload
+            slot["count"] = 1
+            return
+        try:
+            previous = serializable_to_tensor(existing)
+            current = serializable_to_tensor(payload).to(previous.device)
+            if list(previous.shape) != list(current.shape):
+                slot["conditioning"] = payload
+                slot["count"] = 1
+                return
+            averaged = (previous * count + current) / float(count + 1)
+            slot["conditioning"] = tensor_to_serializable(averaged.cpu())
+            slot["count"] = count + 1
+        except Exception:
+            slot["conditioning"] = payload
+            slot["count"] = 1
+
+    def _v2_update_axis_conditioning_memory(self, global_state, payload, axis_feedback):
+        if not isinstance(payload, dict):
+            return
+        memory = global_state.setdefault("axis_conditioning_memory", {})
+        for axis in self._v2_order_axes(axis_feedback.get("satisfied_axes", [])):
+            axis_slot = memory.setdefault(axis, {})
+            positive = axis_slot.setdefault("positive", {})
+            self._v2_store_conditioning_average(positive, payload)
+        for axis in self._v2_order_axes(axis_feedback.get("resolved_axes", [])):
+            axis_slot = memory.setdefault(axis, {})
+            positive = axis_slot.setdefault("positive", {})
+            self._v2_store_conditioning_average(positive, payload)
+            axis_slot["resolved_count"] = int(axis_slot.get("resolved_count", 0)) + 1
+        for axis in self._v2_order_axes(axis_feedback.get("missing_axes", [])):
+            axis_slot = memory.setdefault(axis, {})
+            negative = axis_slot.setdefault("negative", {})
+            self._v2_store_conditioning_average(negative, payload)
+        for axis in self._v2_order_axes(axis_feedback.get("regressed_axes", [])):
+            axis_slot = memory.setdefault(axis, {})
+            axis_slot["regressed_count"] = int(axis_slot.get("regressed_count", 0)) + 1
+
+    def _v2_update_conditioning_memory(self, global_state, last_run, rating_profile, axis_feedback=None):
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return
         payload = last_run.get("conditioning")
         if not isinstance(payload, dict):
             return
         key = rating_profile.get("key", "")
+        axis_feedback = axis_feedback or self._v2_axis_feedback(
+            rating_profile,
+            global_state.get("last_missing_axes", []),
+        )
+        self._v2_update_axis_conditioning_memory(global_state, payload, axis_feedback)
         if key == "like":
             count = int(global_state.get("liked_conditioning_count", 0))
             if count <= 0 or not isinstance(global_state.get("liked_conditioning"), dict):
@@ -6019,12 +6163,34 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             strength *= 1.45
         return max(0.008, min(0.085, strength))
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile):
+    def _v2_apply_conditioning_payload(self, mixed, payload, strength):
+        if not self._v2_shape_compatible(payload, mixed):
+            return mixed
+        try:
+            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+            return mixed.lerp(target, strength)
+        except Exception:
+            return mixed
+
+    def _v2_repel_conditioning_payload(self, mixed, payload, strength):
+        if not self._v2_shape_compatible(payload, mixed):
+            return mixed
+        try:
+            target = serializable_to_tensor(payload).to(device=mixed.device, dtype=mixed.dtype)
+            return mixed + (mixed - target) * strength
+        except Exception:
+            return mixed
+
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
         mixed = conditioning.clone()
         strength = self._v2_auto_strength(global_state)
+        axis_feedback = axis_feedback or self._v2_axis_feedback(
+            rating_profile,
+            global_state.get("last_missing_axes", []),
+        )
         liked_payload = global_state.get("liked_conditioning")
         if self._v2_shape_compatible(liked_payload, mixed):
             try:
@@ -6032,6 +6198,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 mixed = mixed.lerp(liked, strength)
             except Exception:
                 pass
+        axis_memory = global_state.get("axis_conditioning_memory", {})
+        axis_actions = []
+        missing_axes = set(axis_feedback.get("missing_axes", []))
+        satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
+        for axis in V2_FEEDBACK_AXES:
+            axis_slot = axis_memory.get(axis, {}) if isinstance(axis_memory, dict) else {}
+            positive = axis_slot.get("positive", {}).get("conditioning") if isinstance(axis_slot, dict) else None
+            negative = axis_slot.get("negative", {}).get("conditioning") if isinstance(axis_slot, dict) else None
+            if axis in missing_axes:
+                before = mixed
+                mixed = self._v2_apply_conditioning_payload(mixed, positive, min(0.070, strength * 1.10))
+                mixed = self._v2_repel_conditioning_payload(mixed, negative, min(0.055, strength * 0.82))
+                if mixed is not before:
+                    axis_actions.append(f"{axis}:repair")
+            elif axis in satisfied_axes:
+                before = mixed
+                mixed = self._v2_apply_conditioning_payload(mixed, positive, min(0.026, strength * 0.34))
+                if mixed is not before:
+                    axis_actions.append(f"{axis}:preserve")
         bad_payload = global_state.get("bad_conditioning")
         if self._v2_shape_compatible(bad_payload, mixed) and float(rating_profile.get("reward", 0.0)) < 0.0:
             try:
@@ -6052,7 +6237,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"Adaptation: automatic strength {strength:.3f} | "
             f"good streak {int(global_state.get('good_streak', 0))} | "
             f"bad streak {int(global_state.get('bad_streak', 0))} | "
-            f"reward ema {float(global_state.get('avg_reward_ema', 0.0)):+.3f}"
+            f"reward ema {float(global_state.get('avg_reward_ema', 0.0)):+.3f} | "
+            f"axis memory {', '.join(axis_actions) if axis_actions else 'idle'}"
         )
 
     def _v2_emphasized_prompt(self, prompt, phrases, global_state, rating_profile):
@@ -6124,7 +6310,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if self._is_valuable_token(word.strip())
         }
 
-    def _v2_update_lora_suggestions(self, lora_stack, prompt_history, global_state, phrases, rating_profile):
+    def _v2_lora_feedback_axes(self, lora_type):
+        lora_type = self._v2_lora_type(lora_type)
+        if lora_type == "action":
+            return {"action"}
+        if lora_type == "quality":
+            return {"quality"}
+        if lora_type == "style":
+            return {"quality", "details"}
+        if lora_type == "character":
+            return {"action", "details"}
+        return set(V2_FEEDBACK_AXES)
+
+    def _v2_update_lora_suggestions(self, lora_stack, prompt_history, global_state, phrases, rating_profile, axis_feedback=None):
         if not isinstance(lora_stack, dict) or not lora_stack.get("loras"):
             return "LoRA suggestions: no FunPack LoRA stack connected."
         memory = global_state.setdefault("lora_weight_memory", {})
@@ -6137,7 +6335,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             phrase_by_category.setdefault(primary, set()).update(words)
         suggestions = {}
         parts = []
-        missing_axes = set(rating_profile.get("missing_axes", []))
+        axis_feedback = axis_feedback or self._v2_axis_feedback(
+            rating_profile,
+            global_state.get("last_missing_axes", []),
+        )
+        missing_axes = set(axis_feedback.get("missing_axes", []))
+        satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
+        resolved_axes = set(axis_feedback.get("resolved_axes", []))
         reward = float(rating_profile.get("reward", 0.0))
         for entry in lora_stack.get("loras", []):
             name = entry.get("name", "")
@@ -6160,14 +6364,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             state = memory.setdefault(lora_id, {"name": name, "type": lora_type, "offset_ratio": 0.0, "iterations": 0})
             offset = float(state.get("offset_ratio", 0.0))
             step = 0.036 if lora_type == "action" else 0.026
+            lora_axes = self._v2_lora_feedback_axes(lora_type)
             if rating_profile.get("key") == "like":
                 offset += step * max(0.18, relation) * 0.55
-            elif "action" in missing_axes and lora_type in {"action", "character", "general"}:
-                offset += step * max(0.28, relation) * 1.35
-            elif "quality" in missing_axes and lora_type in {"quality", "style", "general"}:
-                offset += step * max(0.22, relation) * 1.10
             elif rating_profile.get("key") == "awful":
                 offset -= step * max(0.22, relation) * 1.20
+            elif lora_axes & missing_axes:
+                offset += step * max(0.28, relation) * 1.35
+            elif lora_axes & resolved_axes:
+                offset += step * max(0.18, relation) * 0.62
+            elif lora_axes & satisfied_axes:
+                offset += step * max(0.12, relation) * 0.18
             else:
                 offset += step * reward * max(0.12, relation)
             offset = _clamp(offset, -0.75, 0.55)
@@ -6192,7 +6399,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "relation": relation,
                 "action": action,
                 "rating_label": rating_profile.get("label", ""),
-                "rating_range": "boost action" if "action" in missing_axes else rating_profile.get("key", ""),
+                "rating_range": (
+                    "reduce awful"
+                    if rating_profile.get("key") == "awful" else
+                    "boost " + "+".join(self._v2_order_axes(lora_axes & missing_axes))
+                    if lora_axes & missing_axes else
+                    "preserve " + "+".join(self._v2_order_axes(lora_axes & resolved_axes))
+                    if lora_axes & resolved_axes else
+                    rating_profile.get("key", "")
+                ),
             }
             parts.append(f"{name}[{lora_type}] rel={relation:.2f} next={model_weight:+.3f}")
         prompt_history["lora_weight_suggestions"] = suggestions
@@ -6209,18 +6424,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
         global_state = state.setdefault("global", {})
         global_state.setdefault("phrase_memory", {})
+        global_state.setdefault("axis_conditioning_memory", {})
         global_state.setdefault("lora_weight_memory", {})
         global_state.setdefault("loss_history", [])
         has_previous_run = isinstance(state.get("last_run"), dict)
         learning_profile = rating_profile if has_previous_run else dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
+        previous_rating_label = str(global_state.get("last_rating_label", "Initial discovery"))
+        previous_missing_axes = (
+            list(global_state.get("last_missing_axes", []))
+            if previous_rating_label != "Initial discovery" else
+            None
+        )
+        axis_feedback = self._v2_axis_feedback(learning_profile, previous_missing_axes)
 
         memory_status = self._v2_update_phrase_memory(
             global_state,
             state.get("last_run"),
             learning_profile,
             int(global_state.get("total_iterations", 0)) + 1,
+            axis_feedback,
         )
-        self._v2_update_conditioning_memory(global_state, state.get("last_run"), learning_profile)
+        self._v2_update_conditioning_memory(global_state, state.get("last_run"), learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
 
@@ -6241,13 +6465,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
             return ([], status, training_info, fallback_graph)
 
-        refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile)
+        refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile, axis_feedback)
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = state.setdefault("prompt_histories", {}).setdefault(prompt_key, {
             "canonical_prompt": analysis_prompt,
             "history": [],
         })
-        lora_status = self._v2_update_lora_suggestions(lora_stack, prompt_history, global_state, phrases, learning_profile)
+        lora_status = self._v2_update_lora_suggestions(
+            lora_stack,
+            prompt_history,
+            global_state,
+            phrases,
+            learning_profile,
+            axis_feedback,
+        )
 
         global_state["total_iterations"] = int(global_state.get("total_iterations", 0)) + 1
         learning_loss = max(0.02, (1.0 - max(-1.0, min(1.0, float(global_state.get("avg_reward_ema", 0.0))))) * 0.5)
@@ -6309,6 +6540,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         training_info = (
             f"Encoded: {encoded_role} | {encode_status}\n"
             f"Learning applied to previous run: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
+            f"{self._v2_axis_feedback_status(axis_feedback)}\n"
             f"Prompt: {prompt_preview}\n"
             f"{memory_status}\n"
             f"{adaptation_status}\n"
