@@ -16,7 +16,7 @@ from aiohttp import web
 from server import PromptServer
 
 
-LORA_TYPES = ["general", "concept", "style", "quality", "character"]
+LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
 TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
 LTX_IMAGE_MODELS = {"ltxv", "ltxav"}
@@ -25,6 +25,7 @@ LORA_PATCH_CACHE_SIZE = 24
 LORA_PROFILE_CACHE_SIZE = 24
 LORA_BLOCK_TYPE_PROFILES = {
     "character": {"priority": 1.18, "yield": 0.48},
+    "action": {"priority": 1.12, "yield": 0.62},
     "concept": {"priority": 1.12, "yield": 0.62},
     "quality": {"priority": 1.04, "yield": 0.72},
     "style": {"priority": 0.96, "yield": 0.96},
@@ -92,8 +93,19 @@ def prompt_key_for_mode(prompt, mode):
     return prompt or ""
 
 
+def prompt_key_for_v2(prompt):
+    return re.sub(r"\s+", " ", str(prompt or "").strip())
+
+
 def lora_state_id(lora_name, lora_type):
     return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_lora_type(lora_type):
+    lora_type = str(lora_type or "general").strip().lower()
+    if lora_type == "concept":
+        return "action"
+    return lora_type if lora_type in LORA_TYPES else "general"
 
 
 def refiner_state_path(refinement_key, mode):
@@ -101,6 +113,13 @@ def refiner_state_path(refinement_key, mode):
     refinements_dir = os.path.join(base_dir, "refinements")
     safe_key = md5(f"{(mode or 'ltx2').lower()}::{refinement_key}".encode("utf-8")).hexdigest()
     return os.path.join(refinements_dir, f"refine_{safe_key}.json")
+
+
+def refiner_v2_state_path(refinement_key):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    refinements_dir = os.path.join(base_dir, "refinements")
+    safe_key = md5(f"clip::{refinement_key}".encode("utf-8")).hexdigest()
+    return os.path.join(refinements_dir, f"refine_v2_{safe_key}.json")
 
 
 def coerce_bool(value):
@@ -209,26 +228,29 @@ class FunPackApplyLoraWeights:
     def VALIDATE_INPUTS(cls, lora_list=None, lora_0=None):
         return True
 
-    def _load_suggestions(self, refinement_key, mode, prompt_key):
-        path = refiner_state_path(refinement_key, mode)
-        if not os.path.exists(path):
-            return {}, "base weights: no refiner state file"
+    def _load_suggestions(self, refinement_key, mode, prompt_key, v2_prompt_key):
+        for path, key, label in (
+            (refiner_v2_state_path(refinement_key), v2_prompt_key, "V2 refiner suggestions applied"),
+            (refiner_state_path(refinement_key, mode), prompt_key, "legacy refiner suggestions applied"),
+        ):
+            if not os.path.exists(path):
+                continue
 
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                data = json.load(file)
-        except (json.JSONDecodeError, OSError, ValueError):
-            return {}, "base weights: refiner state unreadable"
+            try:
+                with open(path, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
 
-        prompt_history = data.get("prompt_histories", {}).get(prompt_key)
-        if not prompt_history:
-            return {}, "base weights: prompt has no exact-match suggestions"
+            prompt_history = data.get("prompt_histories", {}).get(key)
+            if not prompt_history:
+                continue
 
-        suggestions = prompt_history.get("lora_weight_suggestions", {})
-        if not suggestions:
-            return {}, "base weights: prompt suggestions not available yet"
+            suggestions = prompt_history.get("lora_weight_suggestions", {})
+            if suggestions:
+                return suggestions, label
 
-        return suggestions, "refiner suggestions applied"
+        return {}, "base weights: prompt suggestions not available yet"
 
     def _entry_from_row(self, index, row):
         if not isinstance(row, dict):
@@ -240,9 +262,7 @@ class FunPackApplyLoraWeights:
         if not name or name == "None":
             return None
 
-        lora_type = row.get("type", row.get("lora_type", "general"))
-        if lora_type not in LORA_TYPES:
-            lora_type = "general"
+        lora_type = normalize_lora_type(row.get("type", row.get("lora_type", "general")))
 
         return {
             "slot": index,
@@ -292,7 +312,7 @@ class FunPackApplyLoraWeights:
 
             shifted_base_weight = None
             lora_type = kwargs.get(f"lora_{index}_type", "general")
-            if not isinstance(lora_name, str) and isinstance(lora_type, str) and lora_type not in LORA_TYPES:
+            if not isinstance(lora_name, str) and isinstance(lora_type, str) and lora_type not in LORA_TYPES and lora_type != "concept":
                 shifted_base_weight = safe_float(lora_name, 1.0)
                 lora_name = lora_type
                 lora_type = "general"
@@ -300,8 +320,7 @@ class FunPackApplyLoraWeights:
             if not lora_name or lora_name == "None":
                 continue
 
-            if lora_type not in LORA_TYPES:
-                lora_type = "general"
+            lora_type = normalize_lora_type(lora_type)
             base_weight = safe_float(kwargs.get(f"lora_{index}_base_weight", 1.0), shifted_base_weight or 1.0)
 
             yield {
@@ -342,7 +361,8 @@ class FunPackApplyLoraWeights:
         mode = (mode or "ltx2").lower()
         per_block = coerce_bool(per_block)
         prompt_key = prompt_key_for_mode(positive_prompt, mode)
-        suggestions, source_message = self._load_suggestions(refinement_key, mode, prompt_key)
+        v2_prompt_key = prompt_key_for_v2(positive_prompt)
+        suggestions, source_message = self._load_suggestions(refinement_key, mode, prompt_key, v2_prompt_key)
 
         loras = []
         lines = [f"FunPack Apply LoRA Weights | {source_message}"]
@@ -596,9 +616,11 @@ class FunPackLoraLoader:
         other_type = other_entry.get("type", "general")
         if "quality" in {lora_type, other_type}:
             return 0.72
-        if lora_type in {"style", "general"} and other_type in {"concept", "character"}:
+        lora_type = normalize_lora_type(lora_type)
+        other_type = normalize_lora_type(other_type)
+        if lora_type in {"style", "general"} and other_type in {"action", "character"}:
             return 1.14
-        if lora_type in {"concept", "character"} and other_type in {"concept", "character"}:
+        if lora_type in {"action", "character"} and other_type in {"action", "character"}:
             return 1.08
         return 1.0
 

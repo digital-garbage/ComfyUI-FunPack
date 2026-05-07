@@ -11,13 +11,11 @@ It is designed as a quality/speed compromise between:
 
 This sampler keeps classic Euler ancestral for the early "structure building" stage where motion, anatomy and main composition are forming. On the late denoise steps it switches to a deterministic Euler / DPM-Solver++(2S) ODE refinement path where fine detail and cleanup usually matter most.
 
-It can also build an optional paper-style Restart schedule at the progress point you choose:
+It can also apply optional early/mid **motion pulses** for single-clip image-to-video workflows. These pulses add monotonic noise kicks at selected normal denoise steps instead of inserting upward sigma jumps. This is intended to push LTX2.3 away from stale frame-1 reference stiffness while avoiding the audio damage caused by Restart replay.
 
-- detect a restart anchor across the full sigma schedule
-- insert upward sigma jumps back to a higher sigma
-- replay the chosen sigma interval one or more times
+Restart replay has been removed because upward sigma replay can break LTX audio generation.
 
-Unlike the older implementation, Restart is now encoded directly into the outgoing `SIGMAS` schedule, so the visible schedule passed into `SamplerCustomAdvanced` is the actual schedule that gets executed.
+For hard viewpoint or scene-context resets, use `FunPack Context Transition Windows` before sampling. That node changes which frames the model can see in each denoise evaluation; this sampler only changes the denoise trajectory.
 
 ## Recommended wiring
 
@@ -43,15 +41,22 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 - `0.0` = pure late-step Euler ODE
 - `1.0` = full late-step DPM++(2S)-style correction
 
-**restart_steps**: Target size of the restarted sigma interval. The node interprets this against the actual sigma curve and expands the outgoing `SIGMAS` schedule accordingly.
+**motion_pulse_mode**: Anti-stiffness motion pulse preset:
 
-**restart_repeats**: How many Restart loops to run. `0` disables Restart.
+- `off`: preserve legacy sampler behavior.
+- `balanced`: one moderate early/mid pulse.
+- `aggressive`: at least two stronger early/mid pulses for stale image-to-video generations.
+- `custom`: use the transition count, spacing, and strength exactly as configured.
 
-**restart_trigger_pct**: Sampling progress point where Restart is triggered across the full schedule. This is independent from `high_quality_pct`, so values such as `0.30` can trigger an early restart instead of being clamped to the Euler-to-2S transition point.
+**motion_pulse_start_pct**: Sampling progress point where the first motion pulse is applied.
 
-**restart_noise**: Noise strength used when re-noising the latent up to the restart interval's higher sigma.
+**motion_pulse_count**: Number of requested early/mid motion pulses. Pulses that would land in the late quality phase are skipped.
 
-**sigmas**: Optional incoming sigma schedule. If connected, the node outputs a restart-expanded sigma schedule that matches the sampler settings. If not connected, the sampler output still works, but there is no schedule for the node to rewrite.
+**motion_pulse_spacing_pct**: Progress spacing between motion pulses.
+
+**motion_pulse_strength**: Strength of the monotonic noise kick. Higher values push harder against stale image references, with more drift risk.
+
+**sigmas**: Optional incoming sigma schedule. If connected, the node returns the same monotonic schedule plus sampler-side metadata for motion pulses. If not connected, the sampler computes pulse positions from the runtime schedule.
 
 ## Recommended starting values
 
@@ -59,18 +64,19 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 - `s_noise = 1.0`
 - `high_quality_pct = 0.30` to `0.40`
 - `correction_blend = 1.0`
-- `restart_repeats = 0` for baseline testing
+- `motion_pulse_mode = off` for baseline testing
 
-For a first Restart test, try:
+For an aggressive LTX2.3 image-to-video motion test, try:
 
 - `high_quality_pct = 0.35`
 - `correction_blend = 1.0`
-- `restart_steps = 3`
-- `restart_repeats = 1`
-- `restart_trigger_pct = 0.85`
-- `restart_noise = 1.0`
+- `motion_pulse_mode = aggressive`
+- `motion_pulse_start_pct = 0.30`
+- `motion_pulse_count = 2`
+- `motion_pulse_spacing_pct = 0.22`
+- `motion_pulse_strength = 0.85`
 
-Example: with `8` base sampling steps, `restart_steps = 3`, and `restart_repeats = 1`, a normal evenly spaced schedule will usually expand into a schedule with about `3` extra restart transitions. With custom sigmas, the exact replay step count can shift slightly because Restart is anchored to the real sigma values rather than raw step indices.
+Keep the prompt/refiner conditioning explicit about both action and camera change, for example `orbiting camera`, `dolly in`, `zoom out`, `new side angle`, `turning`, or `dynamic pose change`.
 
 ## Expected behavior
 
@@ -81,9 +87,11 @@ Compared to plain `euler_ancestral`, this sampler should usually:
 - keep the early motion/anatomy formation more lively
 - cost less than running a heavier deterministic solver for the whole schedule
 
-With Restart enabled, it may further improve late cleanup and detail consistency, but it will increase runtime and may be too aggressive for some video workflows if overused.
+With motion pulses enabled, it should more strongly encourage action, camera movement, and viewpoint changes inside a single clip. Stronger settings can increase subject drift or visual instability.
 
-Because Restart is now represented in the outgoing `SIGMAS`, the total number of executed transitions should match what the expanded schedule shows in the downstream custom sampler.
+The outgoing `SIGMAS` remain monotonic. Motion pulses happen inside the sampler at selected denoise steps rather than by expanding the schedule.
+
+If you need the model to stop carrying the previous segment's temporal context forward, add `FunPack Context Transition Windows`. It is the stronger transition tool and should be preferred for multi-view or "scene reset" testing.
 
 ## Limitation
 

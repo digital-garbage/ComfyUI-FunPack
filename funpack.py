@@ -3,13 +3,11 @@
 try:
     from . import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
     from .conditioning import (
-        FunPackGemmaEmbeddingRefiner,
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
-        FunPackSaveRefinementLatent,
         FunPackStoryWriter,
-        FunPackVideoRefiner,
+        FunPackVideoRefinerV2,
     )
     from .image_processing import (
         FunPackClipVisionOutputCombine,
@@ -20,16 +18,15 @@ try:
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from .context_transition import FunPackContextTransitionWindows
     from .templates import FunPackTemplateManager
 except ImportError:
     from conditioning import (
-        FunPackGemmaEmbeddingRefiner,
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
-        FunPackSaveRefinementLatent,
         FunPackStoryWriter,
-        FunPackVideoRefiner,
+        FunPackVideoRefinerV2,
     )
     from image_processing import (
         FunPackClipVisionOutputCombine,
@@ -40,6 +37,7 @@ except ImportError:
     )
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from context_transition import FunPackContextTransitionWindows
     from templates import FunPackTemplateManager
 
     NODE_CLASS_MAPPINGS = {
@@ -52,10 +50,9 @@ except ImportError:
         "FunPackClipVisionOutputCombine": FunPackClipVisionOutputCombine,
         "FunPackContinueVideo": FunPackContinueVideo,
         "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
-        "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
-        "FunPackVideoRefiner": FunPackVideoRefiner,
-        "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
+        "FunPackVideoRefinerV2": FunPackVideoRefinerV2,
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
+        "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
         "FunPackTemplateManager": FunPackTemplateManager,
@@ -71,10 +68,9 @@ except ImportError:
         "FunPackClipVisionOutputCombine": "FunPack CLIP Vision Output Combine",
         "FunPackContinueVideo": "FunPack Continue Video",
         "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
-        "FunPackGemmaEmbeddingRefiner": "FunPack Video Refiner (Compatibility)",
-        "FunPackVideoRefiner": "FunPack Video Refiner",
-        "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
+        "FunPackVideoRefinerV2": "FunPack Video Refiner V2",
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
+        "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
         "FunPackTemplateManager": "FunPack Template Manager",
@@ -83,10 +79,9 @@ except ImportError:
 __all__ = [
     "NODE_CLASS_MAPPINGS",
     "NODE_DISPLAY_NAME_MAPPINGS",
-    "FunPackGemmaEmbeddingRefiner",
-    "FunPackSaveRefinementLatent",
-    "FunPackVideoRefiner",
+    "FunPackVideoRefinerV2",
     "FunPackHybridEuler2SSampler",
+    "FunPackContextTransitionWindows",
     "FunPackPromptCombiner",
     "FunPackLorebookEnhancer",
     "FunPackPromptEnhancer",

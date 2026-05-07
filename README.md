@@ -2,21 +2,19 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-## Updates in 2.1.3
+## Updates in 2.2.0
 
-Updated UI for `FunPack Apply LoRA Weights`. Now it's a one-line rgthree-like styled loader which takes up significantly less space in the workflow and looks more pleasent.
+Added `FunPack Video Refiner V2`, a simpler prompt-owned refiner that takes `positive_prompt` and a connected `CLIP`, encodes the prompt inside the node, learns from ratings, and returns refined positive conditioning plus diagnostics.
 
-Updated rating for `FunPack Video Refiner`. Now it uses a rating system more understandable to end user:
+Removed Refiner V2's `mode` input. The node now accepts whatever connected `CLIP` the workflow provides and stores V2 state in a CLIP-owned namespace.
 
-- Rating `Perfect` - resulting video is an exact match or really close to what was requested;
-- Rating `Missing details` - concept and quality are present, but some prompt details/actions were omitted;
-- Rating `Missing concept` - visually pleasant, but characters or subjects are not doing what was requested;
-- Rating `Missing quality` - concept and details are attempted, but anatomy/style/scene quality is messy;
-- Pair ratings such as `Missing details + concept`, `Missing details + quality`, and `Missing concept + quality` - boost the named missing axes together;
-- Rating `Awful` - details, concept, and quality are all missing.
-- Rating `-Just forget it-` - in case of failing sampling or any other result when you are unable to see the video to rate it, select this rating so the previous generation won't count in learning process.
+Refiner V2 removes the old sigma refinement, latent refinement, manual scheduler controls, and feedback question workflow. It now adapts internally: consistently good ratings make updates gentler, while consistently bad ratings make updates stronger.
 
-Updated logic for `FunPack Video Refiner`. The original conditioning is still stored for prompt/conditioning change detection, but after the first `Perfect` rating the active refinement reference switches to the liked generated conditioning. Later perfect results update that reference as a running average, while `Awful` can roll back to the latest better-rated conditioning before boosting all missing axes.
+Renamed visible Refiner and LoRA intent from `concept` to `action`. Internally, `action` means action plus motion, so movement verbs, physical motion, subject motion, and camera motion are treated together. Old `Missing concept` ratings and old `concept` LoRA rows are accepted as aliases.
+
+Updated `I'm Feeling Lucky` in Refiner V2 so Lucky is only a prompt composer. When Lucky is off, it can still train memory from rated runs, but it does not compose or alter the output.
+
+Removed the old public `FunPack Video Refiner`, its compatibility alias, and `FunPack Save Refinement Latent` from the node list. Use `FunPack Video Refiner V2` for new refinement workflows.
 
 ## Dev Branch
 
@@ -65,8 +63,7 @@ Per-node documentation is available in the [`docs`](docs) folder.
 
 Start with:
 
-- [`docs/FunPackGemmaEmbeddingRefiner.md`](docs/FunPackGemmaEmbeddingRefiner.md) for `FunPack Video Refiner`
-- [`docs/FunPackSaveRefinementLatent.md`](docs/FunPackSaveRefinementLatent.md) for latent references
+- [`docs/FunPackVideoRefinerV2.md`](docs/FunPackVideoRefinerV2.md) for `FunPack Video Refiner V2`
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).

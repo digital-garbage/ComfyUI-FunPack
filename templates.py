@@ -168,23 +168,29 @@ def resolve_wildcards(text, seed=0):
 
 
 def prompt_key_for_refiner(prompt, mode):
-    prompt = (prompt or "").strip()
-    if (mode or "ltx2").lower() == "wan":
-        return re.sub(r"\s+", " ", prompt)
-    return prompt
+    del mode
+    return re.sub(r"\s+", " ", str(prompt or "").strip())
 
 
 def load_refiner_state(refinement_key, mode):
     if not refinement_key:
         return None, "No refinement key stored."
-    path = refinement_state_path(refinement_key, mode)
-    if not os.path.exists(path):
-        return None, f"No refiner state found for key '{refinement_key}'."
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            return json.load(file), f"Refiner state loaded for key '{refinement_key}'."
-    except (json.JSONDecodeError, OSError, ValueError):
-        return None, f"Refiner state for key '{refinement_key}' is unreadable."
+    candidates = (
+        (refinement_state_path(refinement_key, "clip", prefix="refine_v2"), "V2 refiner state"),
+        (refinement_state_path(refinement_key, mode), "legacy refiner state"),
+    )
+    for path, label in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            if isinstance(data, dict):
+                data["_funpack_state_label"] = label
+            return data, f"{label} loaded for key '{refinement_key}'."
+        except (json.JSONDecodeError, OSError, ValueError):
+            return None, f"{label} for key '{refinement_key}' is unreadable."
+    return None, f"No refiner state found for key '{refinement_key}'."
 
 
 def choose_prompt_history(data, prompt, mode):
@@ -246,6 +252,14 @@ def conditioning_from_refiner(refinement_key, mode, prompt):
 
     history, _, history_status = choose_prompt_history(data, prompt, mode)
     serialized, conditioning_status = best_history_conditioning(history)
+    if serialized is None and isinstance(data, dict):
+        global_state = data.get("global") if isinstance(data.get("global"), dict) else {}
+        if isinstance(global_state.get("liked_conditioning"), dict):
+            serialized = global_state.get("liked_conditioning")
+            conditioning_status = "Loaded V2 liked-average conditioning."
+        elif isinstance(data.get("last_run"), dict) and isinstance(data["last_run"].get("conditioning"), dict):
+            serialized = data["last_run"].get("conditioning")
+            conditioning_status = "Loaded V2 latest-run conditioning."
     if serialized is None:
         return None, f"{state_status} {history_status} {conditioning_status}"
 

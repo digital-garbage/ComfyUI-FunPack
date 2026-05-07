@@ -8,6 +8,9 @@ import comfy.samplers
 import comfy.utils
 
 
+MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
+
+
 def _sigma_fn(t):
     return t.neg().exp()
 
@@ -45,148 +48,161 @@ def _hybrid_ode_step(model, x, sigma, sigma_next, s_in, extra_args, correction_b
     return x_euler.lerp(x_2s, correction_blend), denoised
 
 
-def _renoise_to_sigma(x, current_sigma, target_sigma, restart_noise, noise_sampler):
-    if target_sigma <= current_sigma or restart_noise <= 0.0:
+def _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler):
+    if pulse_noise <= 0.0 or sigma_next >= sigma:
         return x
 
-    sigma_delta_sq = max(0.0, float(target_sigma * target_sigma - current_sigma * current_sigma))
+    sigma_delta_sq = max(0.0, float(sigma * sigma - sigma_next * sigma_next))
     if sigma_delta_sq <= 0.0:
         return x
 
     sigma_delta = math.sqrt(sigma_delta_sq)
-    return x + noise_sampler(current_sigma, target_sigma) * (restart_noise * sigma_delta)
+    return x + noise_sampler(sigma, sigma_next) * (pulse_noise * sigma_delta)
 
 
-def _find_restart_anchor_index(sigmas, total_steps, restart_trigger_pct):
-    schedule_sigmas = sigmas[:total_steps]
-    if schedule_sigmas.numel() <= 1:
+def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
+    if sigmas is None or total_steps <= 1:
         return 0
 
-    high_sigma = float(schedule_sigmas[0].item())
-    low_sigma = None
-    for idx in range(int(schedule_sigmas.shape[0]) - 1, -1, -1):
-        value = float(schedule_sigmas[idx].item())
-        if value > 0.0:
-            low_sigma = value
-            break
-    if low_sigma is None:
-        return total_steps - 1
-
-    schedule_progress = max(0.0, min(1.0, restart_trigger_pct))
-
-    if high_sigma <= 0.0 or low_sigma <= 0.0 or abs(high_sigma - low_sigma) <= 1e-12:
-        return min(total_steps - 1, max(0, int(round(schedule_progress * max(0, total_steps - 1)))))
-
-    log_high = math.log(high_sigma)
-    log_low = math.log(low_sigma)
-    target_log_sigma = log_high + (log_low - log_high) * schedule_progress
-
-    best_index = 0
-    best_distance = None
-    for idx in range(total_steps):
-        sigma_value = float(sigmas[idx].item())
-        if sigma_value <= 0.0:
-            continue
-        distance = abs(math.log(sigma_value) - target_log_sigma)
-        if best_distance is None or distance < best_distance:
-            best_distance = distance
-            best_index = idx
-    return best_index
+    schedule_progress = max(0.0, min(1.0, schedule_progress))
+    return min(total_steps - 1, max(0, int(round(schedule_progress * max(0, total_steps - 1)))))
 
 
-def _build_restart_sigmas(sigmas, total_steps, restart_trigger_pct, restart_steps):
-    if total_steps <= 0:
-        return sigmas[:0], 0
+def _resolve_motion_pulse_options(motion_pulse_mode, motion_pulse_start_pct,
+                                  motion_pulse_count, motion_pulse_spacing_pct,
+                                  motion_pulse_strength):
+    mode = (motion_pulse_mode or "off").lower()
+    if mode not in MOTION_PULSE_MODES:
+        mode = "off"
 
-    anchor_index = _find_restart_anchor_index(sigmas, total_steps, restart_trigger_pct)
-    anchor_index = min(total_steps - 1, max(0, anchor_index))
+    if mode == "off":
+        return {
+            "enabled": False,
+            "start_pct": 0.30,
+            "count": 0,
+            "spacing_pct": 0.22,
+            "strength": 0.0,
+            "noise": 0.0,
+        }
 
-    if restart_steps <= 1:
-        return sigmas[anchor_index:anchor_index + 1], anchor_index
+    start_pct = 0.30 if motion_pulse_start_pct is None else float(motion_pulse_start_pct)
+    spacing_pct = 0.22 if motion_pulse_spacing_pct is None else float(motion_pulse_spacing_pct)
+    strength = 0.85 if motion_pulse_strength is None else float(motion_pulse_strength)
+    count = 2 if motion_pulse_count is None else int(motion_pulse_count)
 
-    schedule_sigmas = sigmas[:total_steps]
-    if schedule_sigmas.numel() <= 1:
-        return sigmas[anchor_index:anchor_index + 1], anchor_index
+    start_pct = max(0.02, min(0.90, start_pct))
+    spacing_pct = max(0.04, min(0.45, spacing_pct))
+    strength = max(0.0, min(1.0, strength))
+    count = max(1, min(6, count))
 
-    positive_logs = []
-    for idx in range(int(schedule_sigmas.shape[0])):
-        sigma_value = float(schedule_sigmas[idx].item())
-        if sigma_value > 0.0:
-            positive_logs.append(math.log(sigma_value))
+    if mode == "balanced":
+        count = min(count, 1)
+        strength = 0.55 if motion_pulse_strength is None else min(strength, 0.70)
+    elif mode == "aggressive":
+        count = max(2, count)
+        strength = max(strength, 0.85)
 
-    if len(positive_logs) >= 2:
-        total_log_span = abs(positive_logs[0] - positive_logs[-1])
-        avg_log_step = total_log_span / max(1, len(positive_logs) - 1)
-        target_log_span = avg_log_step * max(1, restart_steps - 1)
-    else:
-        target_log_span = 0.0
+    noise = 0.10 + strength * 0.55
 
-    restart_from = anchor_index
-    accumulated_span = 0.0
-    for idx in range(anchor_index, 0, -1):
-        sigma_hi = float(sigmas[idx - 1].item())
-        sigma_lo = float(sigmas[idx].item())
-        restart_from = idx - 1
-        if sigma_hi > 0.0 and sigma_lo > 0.0:
-            accumulated_span += abs(math.log(sigma_hi) - math.log(sigma_lo))
-        if (anchor_index - restart_from) >= 1 and accumulated_span >= target_log_span:
-            break
-
-    restart_from = max(0, restart_from)
-    return sigmas[restart_from:anchor_index + 1], anchor_index
+    return {
+        "enabled": True,
+        "start_pct": start_pct,
+        "count": count,
+        "spacing_pct": spacing_pct,
+        "strength": strength,
+        "noise": max(0.0, min(0.80, noise)),
+    }
 
 
-def _expand_restart_sigmas(sigmas, high_quality_pct, restart_steps, restart_repeats, restart_trigger_pct):
-    if sigmas is None or not isinstance(sigmas, torch.Tensor):
-        return None, None
-
-    expanded_sigmas = sigmas.detach().clone()
-    total_steps = max(0, int(expanded_sigmas.shape[0]) - 1)
-    if total_steps <= 0:
-        return expanded_sigmas, None
-
+def _get_late_start_index(total_steps, high_quality_pct):
     high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
-    restart_steps = max(2, int(restart_steps))
-    restart_repeats = max(0, int(restart_repeats))
-    restart_trigger_pct = max(0.0, min(1.0, float(restart_trigger_pct)))
-
     late_steps = max(1, int(math.ceil(total_steps * high_quality_pct))) if high_quality_pct > 0.0 else 0
-    late_start = max(0, total_steps - late_steps)
+    return max(0, total_steps - late_steps)
 
-    quality_sigma_start = None
-    if late_start < expanded_sigmas.shape[0]:
-        quality_sigma_start = float(expanded_sigmas[late_start].item())
 
-    if restart_repeats <= 0:
-        return expanded_sigmas, quality_sigma_start
-
-    restart_sigmas, anchor_index = _build_restart_sigmas(
-        expanded_sigmas,
-        total_steps,
-        restart_trigger_pct,
-        restart_steps,
+def _build_motion_pulse_steps(sigmas, total_steps, high_quality_pct,
+                              motion_pulse_mode, motion_pulse_start_pct,
+                              motion_pulse_count, motion_pulse_spacing_pct,
+                              motion_pulse_strength):
+    options = _resolve_motion_pulse_options(
+        motion_pulse_mode,
+        motion_pulse_start_pct,
+        motion_pulse_count,
+        motion_pulse_spacing_pct,
+        motion_pulse_strength,
     )
-    if restart_sigmas.numel() <= 1:
-        return expanded_sigmas, quality_sigma_start
+    if not options["enabled"] or total_steps <= 2:
+        return [], options
 
-    prefix = expanded_sigmas[:anchor_index + 1]
-    suffix = expanded_sigmas[anchor_index + 1:]
-    repeated = [restart_sigmas.clone() for _ in range(restart_repeats)]
-    expanded_sigmas = torch.cat([prefix] + repeated + [suffix], dim=0)
-    return expanded_sigmas, quality_sigma_start
+    late_start = _get_late_start_index(total_steps, high_quality_pct)
+    latest_anchor_pct = max(0.04, min(0.92, (late_start - 1) / max(1, total_steps - 1)))
+    pulse_steps = []
+    used_anchors = set()
+
+    for pulse_index in range(options["count"]):
+        trigger_pct = options["start_pct"] + options["spacing_pct"] * pulse_index
+        if trigger_pct >= latest_anchor_pct:
+            break
+
+        anchor_index = _find_schedule_anchor_index(sigmas, total_steps, trigger_pct)
+        anchor_index = min(total_steps - 1, max(0, anchor_index))
+        if anchor_index in used_anchors or anchor_index >= late_start:
+            continue
+
+        used_anchors.add(anchor_index)
+        pulse_steps.append({
+            "step_index": anchor_index,
+            "noise": options["noise"],
+        })
+
+    return pulse_steps, options
+
+
+def _prepare_dynamic_sigmas(sigmas, high_quality_pct, motion_pulse_mode="off",
+                           motion_pulse_start_pct=0.30, motion_pulse_count=2,
+                           motion_pulse_spacing_pct=0.22, motion_pulse_strength=0.85):
+    if sigmas is None or not isinstance(sigmas, torch.Tensor):
+        return None, None, [], 0.0
+
+    base_sigmas = sigmas.detach().clone()
+    total_steps = max(0, int(base_sigmas.shape[0]) - 1)
+    if total_steps <= 0:
+        return base_sigmas, None, [], 0.0
+
+    late_start = _get_late_start_index(total_steps, high_quality_pct)
+    quality_sigma_start = None
+    if late_start < base_sigmas.shape[0]:
+        quality_sigma_start = float(base_sigmas[late_start].item())
+
+    pulse_steps, motion_pulse_options = _build_motion_pulse_steps(
+        base_sigmas,
+        total_steps,
+        high_quality_pct,
+        motion_pulse_mode,
+        motion_pulse_start_pct,
+        motion_pulse_count,
+        motion_pulse_spacing_pct,
+        motion_pulse_strength,
+    )
+    return base_sigmas, quality_sigma_start, pulse_steps, motion_pulse_options["noise"]
 
 
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, eta=1.0, s_noise=1.0,
                                    high_quality_pct=0.35, correction_blend=1.0,
-                                   restart_steps=3, restart_repeats=0,
-                                   restart_trigger_pct=0.85, restart_noise=1.0,
-                                   quality_sigma_start=None):
+                                   quality_sigma_start=None,
+                                   motion_pulse_mode="off",
+                                   motion_pulse_start_pct=0.30,
+                                   motion_pulse_count=2,
+                                   motion_pulse_spacing_pct=0.22,
+                                   motion_pulse_strength=0.85,
+                                   motion_pulse_noise=0.0,
+                                   motion_pulse_steps=None):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral for motion/anatomy buildup.
     - Late schedule: deterministic Euler / DPM-Solver++(2S) ODE refinement for detail.
-    - Restart: paper-style re-noise and short replay at the user-selected schedule point.
+    - Motion pulses: optional monotonic noise kicks before the late quality phase.
     """
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
         return k_diffusion_sampling.sample_euler_ancestral(
@@ -204,10 +220,23 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
 
     high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
-    restart_steps = max(2, int(restart_steps))
-    restart_repeats = max(0, int(restart_repeats))
-    restart_trigger_pct = max(0.0, min(1.0, float(restart_trigger_pct)))
-    restart_noise = max(0.0, float(restart_noise))
+    if not motion_pulse_steps:
+        _, _, motion_pulse_steps, computed_motion_pulse_noise = _prepare_dynamic_sigmas(
+            sigmas,
+            high_quality_pct,
+            motion_pulse_mode,
+            motion_pulse_start_pct,
+            motion_pulse_count,
+            motion_pulse_spacing_pct,
+            motion_pulse_strength,
+        )
+        motion_pulse_noise = computed_motion_pulse_noise
+    motion_pulse_noise = max(0.0, float(motion_pulse_noise))
+    motion_step_noise = {
+        int(item.get("step_index", -1)): max(0.0, float(item.get("noise", motion_pulse_noise)))
+        for item in (motion_pulse_steps or [])
+        if isinstance(item, dict)
+    }
     s_in = x.new_ones([x.shape[0]])
     callback_step = 0
 
@@ -222,25 +251,13 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
-        is_restart_jump = sigma_next > sigma
         in_quality_phase = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
 
-        if is_restart_jump:
-            denoised = None
-            if callback is not None:
-                denoised = model(x, sigma * s_in, **extra_args)
-                callback({
-                    "x": x,
-                    "i": callback_step,
-                    "sigma": sigma,
-                    "sigma_hat": sigma,
-                    "denoised": denoised,
-                })
-                callback_step += 1
-            x = _renoise_to_sigma(x, sigma, sigma_next, restart_noise, noise_sampler)
-            continue
-
         if not in_quality_phase:
+            pulse_noise = motion_step_noise.get(int(i), 0.0)
+            if pulse_noise > 0.0:
+                x = _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler)
+
             denoised = model(x, sigma * s_in, **extra_args)
 
             if callback is not None:
@@ -324,33 +341,37 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "Blend between Euler ancestral (0.0) and late-step 2S correction (1.0)."
                 }),
-                "restart_steps": ("INT", {
-                    "default": 3,
-                    "min": 2,
-                    "max": 32,
-                    "step": 1,
-                    "tooltip": "How many previous sigma steps are revisited during Restart replay."
+                "motion_pulse_mode": (MOTION_PULSE_MODES, {
+                    "default": "off",
+                    "tooltip": "Adds early/mid anti-stiffness motion pulses. Off preserves legacy sampler behavior."
                 }),
-                "restart_repeats": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 8,
-                    "step": 1,
-                    "tooltip": "How many paper-style re-noise/replay loops to run at the chosen restart point. Set to 0 to disable Restart."
+                "motion_pulse_start_pct": ("FLOAT", {
+                    "default": 0.30,
+                    "min": 0.0,
+                    "max": 0.95,
+                    "step": 0.01,
+                    "tooltip": "Sampling progress where the first anti-stiffness pulse is applied."
                 }),
-                "restart_trigger_pct": ("FLOAT", {
+                "motion_pulse_count": ("INT", {
+                    "default": 2,
+                    "min": 1,
+                    "max": 6,
+                    "step": 1,
+                    "tooltip": "How many early/mid motion pulses to request before the late quality phase."
+                }),
+                "motion_pulse_spacing_pct": ("FLOAT", {
+                    "default": 0.22,
+                    "min": 0.04,
+                    "max": 0.45,
+                    "step": 0.01,
+                    "tooltip": "Progress spacing between motion pulses."
+                }),
+                "motion_pulse_strength": ("FLOAT", {
                     "default": 0.85,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01,
-                    "tooltip": "Sampling progress point where Restart is triggered across the full schedule."
-                }),
-                "restart_noise": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 2.0,
-                    "step": 0.01,
-                    "tooltip": "Noise strength used when re-noising up to the Restart interval's higher sigma."
+                    "tooltip": "How strongly motion pulses add monotonic noise kicks. Higher values push harder against stale image references."
                 }),
             },
             "optional": {
@@ -362,16 +383,20 @@ class FunPackHybridEuler2SSampler:
     RETURN_NAMES = ("sampler", "sigmas")
     FUNCTION = "get_sampler"
     CATEGORY = "FunPack/Sampling"
-    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional sigma-driven Restart replay."
+    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional anti-stiffness motion pulses."
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
-                    restart_steps, restart_repeats, restart_trigger_pct, restart_noise, sigmas=None):
-        expanded_sigmas, quality_sigma_start = _expand_restart_sigmas(
+                    motion_pulse_mode="off", motion_pulse_start_pct=0.30,
+                    motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
+                    motion_pulse_strength=0.85, sigmas=None):
+        prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
-            restart_steps,
-            restart_repeats,
-            restart_trigger_pct,
+            motion_pulse_mode,
+            motion_pulse_start_pct,
+            motion_pulse_count,
+            motion_pulse_spacing_pct,
+            motion_pulse_strength,
         )
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_hybrid_euler_2s,
@@ -380,11 +405,14 @@ class FunPackHybridEuler2SSampler:
                 "s_noise": s_noise,
                 "high_quality_pct": high_quality_pct,
                 "correction_blend": correction_blend,
-                "restart_steps": restart_steps,
-                "restart_repeats": restart_repeats,
-                "restart_trigger_pct": restart_trigger_pct,
-                "restart_noise": restart_noise,
                 "quality_sigma_start": quality_sigma_start,
+                "motion_pulse_mode": motion_pulse_mode,
+                "motion_pulse_start_pct": motion_pulse_start_pct,
+                "motion_pulse_count": motion_pulse_count,
+                "motion_pulse_spacing_pct": motion_pulse_spacing_pct,
+                "motion_pulse_strength": motion_pulse_strength,
+                "motion_pulse_noise": motion_pulse_noise,
+                "motion_pulse_steps": motion_pulse_steps,
             }
         )
-        return (sampler, expanded_sigmas)
+        return (sampler, prepared_sigmas)
