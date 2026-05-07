@@ -10,6 +10,7 @@ try:
         FunPackSaveRefinementLatent,
         FunPackStoryWriter,
         FunPackVideoRefiner,
+        FunPackVideoRefinerV2,
     )
     from .image_processing import (
         FunPackClipVisionOutputCombine,
@@ -31,6 +32,7 @@ except ImportError:
         FunPackSaveRefinementLatent,
         FunPackStoryWriter,
         FunPackVideoRefiner,
+        FunPackVideoRefinerV2,
     )
     from image_processing import (
         FunPackClipVisionOutputCombine,
@@ -56,6 +58,7 @@ except ImportError:
         "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
         "FunPackGemmaEmbeddingRefiner": FunPackGemmaEmbeddingRefiner,
         "FunPackVideoRefiner": FunPackVideoRefiner,
+        "FunPackVideoRefinerV2": FunPackVideoRefinerV2,
         "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
         "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
@@ -76,6 +79,7 @@ except ImportError:
         "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
         "FunPackGemmaEmbeddingRefiner": "FunPack Video Refiner (Compatibility)",
         "FunPackVideoRefiner": "FunPack Video Refiner",
+        "FunPackVideoRefinerV2": "FunPack Video Refiner V2",
         "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
         "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
@@ -90,6 +94,7 @@ __all__ = [
     "FunPackGemmaEmbeddingRefiner",
     "FunPackSaveRefinementLatent",
     "FunPackVideoRefiner",
+    "FunPackVideoRefinerV2",
     "FunPackHybridEuler2SSampler",
     "FunPackContextTransitionWindows",
     "FunPackPromptCombiner",

@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "FunPackApplyLoraWeights";
-const LORA_TYPES = ["general", "concept", "style", "quality", "character"];
+const LORA_TYPES = ["general", "action", "style", "quality", "character"];
 const ADD_BUTTON_NAME = "+ Add LoRA";
 const HEADER_WIDGET_NAME = "funpack_lora_header";
 const LORA_LIST_WIDGET_NAME = "lora_list";
@@ -151,6 +151,14 @@ function valuesWithCurrent(values, current) {
   return [...values, current];
 }
 
+function normalizeLoraType(value) {
+  const type = value || "general";
+  if (type === "concept") {
+    return "action";
+  }
+  return LORA_TYPES.includes(type) ? type : "general";
+}
+
 function normalizeRowValue(value = {}) {
   if (typeof value !== "object" || value === null) {
     return {
@@ -165,7 +173,7 @@ function normalizeRowValue(value = {}) {
   return {
     on: value.on !== false,
     lora: value.lora || value.name || "None",
-    type: LORA_TYPES.includes(value.type || value.lora_type) ? (value.type || value.lora_type) : "general",
+    type: normalizeLoraType(value.type || value.lora_type),
     strength: Number.isFinite(strength) ? strength : 1.0,
   };
 }
@@ -335,7 +343,7 @@ class FunPackLoraRowWidget extends FunPackBaseWidget {
     return {
       on: this.value.on !== false,
       lora: this.value.lora || "None",
-      type: LORA_TYPES.includes(this.value.type) ? this.value.type : "general",
+      type: normalizeLoraType(this.value.type),
       strength: Number(this.value.strength ?? 1.0),
     };
   }
@@ -608,7 +616,7 @@ function collectVisibleDefaultRows(node) {
     if (field === "lora") {
       row.lora = widget.value || "None";
     } else if (field === "type") {
-      row.type = LORA_TYPES.includes(widget.value) ? widget.value : "general";
+      row.type = normalizeLoraType(widget.value);
     } else {
       row.strength = Number(widget.value ?? 1.0);
     }

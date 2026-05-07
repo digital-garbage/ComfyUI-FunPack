@@ -68,6 +68,7 @@ Per-node documentation is available in the [`docs`](docs) folder.
 Start with:
 
 - [`docs/FunPackGemmaEmbeddingRefiner.md`](docs/FunPackGemmaEmbeddingRefiner.md) for `FunPack Video Refiner`
+- [`docs/FunPackVideoRefinerV2.md`](docs/FunPackVideoRefinerV2.md) for the simplified prompt-owned `FunPack Video Refiner V2`
 - [`docs/FunPackSaveRefinementLatent.md`](docs/FunPackSaveRefinementLatent.md) for latent references
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 

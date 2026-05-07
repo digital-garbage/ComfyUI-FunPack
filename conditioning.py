@@ -20,6 +20,7 @@ import folder_paths
 
 LORA_REFINER_TYPE_PROFILES = {
     "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
+    "action": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
     "concept": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
     "style": {"step": 0.032, "max_offset": 0.28, "min_offset": -0.38, "bad_max_offset": 0.58, "bad_min_offset": -1.55, "culprit_bias": 0.20},
     "quality": {"step": 0.022, "max_offset": 0.18, "min_offset": -0.30, "bad_max_offset": 0.38, "bad_min_offset": -1.20, "culprit_bias": 0.18},
@@ -3956,7 +3957,7 @@ class FunPackVideoRefiner:
 
             overlap = len(lora_words & prompt_words) / max(1, len(lora_words)) if lora_words else 0.0
             category_score = 0.62 if lora_type == category else 0.0
-            if lora_type == "concept" and category in {"concept", "details", "subject", "appearance", "action", "environment"}:
+            if lora_type in {"action", "concept"} and category in {"concept", "details", "subject", "appearance", "action", "environment"}:
                 category_score = max(category_score, 0.58)
             if lora_type == "character" and category in {"character", "subject", "appearance"}:
                 category_score = max(category_score, 0.72)
@@ -4002,7 +4003,7 @@ class FunPackVideoRefiner:
                 current_concept_labels,
             )
             relation_cache[lora_id] = (relation, matched_labels, concept_importance)
-            if lora_type in {"concept", "character"}:
+            if lora_type in {"action", "concept", "character"}:
                 concept_lora_count += 1
                 top_concept_relation = max(top_concept_relation, relation)
 
@@ -4036,14 +4037,14 @@ class FunPackVideoRefiner:
             effective_relation = max(relation, profile.get("culprit_bias", 0.0))
             base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
             base_abs = abs(base_model)
-            is_concept_lora = lora_type == "concept"
+            is_concept_lora = lora_type in {"action", "concept"}
             concept_match_strength = 1.0
             if is_concept_lora:
                 concept_match_strength += 0.30 if matched_labels else 0.0
                 concept_match_strength += max(0.0, relation - 0.30) * 1.35
 
             is_primary_concept_lora = (
-                lora_type in {"concept", "character"} and
+                lora_type in {"action", "concept", "character"} and
                 (
                     concept_lora_count == 1 or
                     (top_concept_relation > 0.0 and relation >= max(0.30, top_concept_relation - 1e-6))
@@ -4070,14 +4071,14 @@ class FunPackVideoRefiner:
                 axis_boost = 0.0
 
                 if "details" in missing_axes:
-                    if relation >= 0.12 and lora_type in {"concept", "character", "general", "style"}:
+                    if relation >= 0.12 and lora_type in {"action", "concept", "character", "general", "style"}:
                         value_mult = 0.85 + min(1.2, max(0.5, concept_importance)) * 0.20
                         axis_boost += (0.26 + relation * 0.34) * value_mult
                     elif lora_type == "quality":
                         axis_boost += 0.06
 
                 if "concept" in missing_axes:
-                    if lora_type in {"concept", "character"}:
+                    if lora_type in {"action", "concept", "character"}:
                         if is_primary_concept_lora:
                             axis_boost += (0.95 + abs(reward) * 0.45) * concept_match_strength
                         elif relation > 0.08:
@@ -5442,6 +5443,777 @@ class FunPackVideoRefiner:
 
 
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
+
+
+V2_RATING_LABELS = [
+    "-Just forget it-",
+    "Perfect",
+    "Missing details",
+    "Missing action",
+    "Missing quality",
+    "Missing details + action",
+    "Missing details + quality",
+    "Missing action + quality",
+    "Awful",
+]
+
+V2_RATING_PROFILES = {
+    "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
+    "Initial discovery": {"key": "discover", "reward": 0.0, "level": 4, "missing_axes": []},
+    "Perfect": {"key": "like", "reward": 1.0, "level": 8, "missing_axes": []},
+    "Missing details": {"key": "missing_details", "reward": 0.35, "level": 6, "missing_axes": ["details"]},
+    "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
+    "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
+    "Missing details + action": {"key": "missing_details_action", "reward": -0.10, "level": 3, "missing_axes": ["details", "action"]},
+    "Missing details + quality": {"key": "missing_details_quality", "reward": -0.40, "level": 2, "missing_axes": ["details", "quality"]},
+    "Missing action + quality": {"key": "missing_action_quality", "reward": -0.55, "level": 1, "missing_axes": ["action", "quality"]},
+    "Awful": {"key": "awful", "reward": -0.90, "level": 0, "missing_axes": ["details", "action", "quality"]},
+}
+
+V2_RATING_ALIASES = {
+    "I like it": "Perfect",
+    "I don't like it": "Awful",
+    "Missing concept": "Missing action",
+    "Missing concepts": "Missing action",
+    "Missing details + concept": "Missing details + action",
+    "Missing details + concepts": "Missing details + action",
+    "Missing concept + details": "Missing details + action",
+    "Missing concepts + details": "Missing details + action",
+    "Missing concept + quality": "Missing action + quality",
+    "Missing concepts + quality": "Missing action + quality",
+    "Missing quality + concept": "Missing action + quality",
+    "Missing quality + concepts": "Missing action + quality",
+    "Missing quality + action": "Missing action + quality",
+    "Missing action + details": "Missing details + action",
+    "Missing everything": "Awful",
+}
+
+
+def normalize_refiner_v2_rating(value):
+    if isinstance(value, str):
+        cleaned = V2_RATING_ALIASES.get(value.strip(), value.strip())
+        if cleaned in V2_RATING_PROFILES:
+            return dict(V2_RATING_PROFILES[cleaned], label=cleaned)
+        try:
+            value = int(float(cleaned))
+        except (TypeError, ValueError):
+            return dict(V2_RATING_PROFILES["Missing action"], label="Missing action")
+
+    try:
+        legacy_score = int(value)
+    except (TypeError, ValueError):
+        legacy_score = 6
+
+    legacy_score = int(_clamp(legacy_score, 1, 10))
+    if legacy_score >= 9:
+        label = "Perfect"
+    elif legacy_score >= 7:
+        label = "Missing details"
+    elif legacy_score >= 5:
+        label = "Missing action"
+    elif legacy_score >= 3:
+        label = "Missing quality"
+    else:
+        label = "Awful"
+
+    profile = dict(V2_RATING_PROFILES[label], label=label)
+    profile["legacy_score"] = legacy_score
+    return profile
+
+
+class FunPackVideoRefinerV2(FunPackVideoRefiner):
+    CATEGORY = "FunPack/Refinement"
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph")
+    FUNCTION = "refine_v2"
+    DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
+
+    V2_STATE_PREFIX = "refine_v2"
+    ACTION_LORA_TYPES = {"action", "concept"}
+    CATEGORY_DESCRIPTIONS = {
+        "action": "physical actions, body movement, animation, motion, gestures, moving subjects",
+        "camera": "camera motion, framing, zoom, pan, dolly, close-up, wide shot, focus behavior",
+        "subject": "main person, object, creature, vehicle, character, or scene subject",
+        "appearance": "character appearance, clothing, face, hair, pose, anatomy, visible traits",
+        "environment": "place, location, background, weather, room, landscape, setting",
+        "style": "visual style, art direction, lighting style, color grading, cinematic look",
+        "quality": "sharpness, detail, realism, clean image quality, low noise, high resolution",
+        "details": "small objects, props, reflections, texture, secondary prompt details",
+    }
+    CATEGORY_KEYWORDS = {
+        "action": {
+            "walk", "walking", "run", "running", "turn", "turning", "dance", "dancing", "jump",
+            "jumping", "fly", "flying", "move", "moving", "motion", "gesture", "gesturing",
+            "hold", "holding", "reach", "reaching", "look", "looking", "blink", "blinking",
+            "smile", "smiling", "sit", "sitting", "stand", "standing", "kneel", "kneeling",
+            "flow", "flowing", "sway", "swaying", "spin", "spinning", "fall", "falling",
+        },
+        "camera": {
+            "camera", "shot", "closeup", "close-up", "wide", "angle", "zoom", "pan", "panning",
+            "dolly", "tracking", "handheld", "focus", "framing", "push", "pull", "tilt",
+        },
+        "subject": {
+            "woman", "man", "girl", "boy", "person", "character", "robot", "creature", "dragon",
+            "animal", "dog", "cat", "car", "vehicle", "object", "sculpture", "glass",
+        },
+        "appearance": {
+            "hair", "eyes", "face", "skin", "dress", "jacket", "armor", "outfit", "clothing",
+            "hands", "pose", "expression", "beard", "makeup", "body", "anatomy",
+        },
+        "environment": {
+            "forest", "city", "street", "room", "kitchen", "beach", "mountain", "temple",
+            "sunset", "night", "rain", "snow", "sky", "background", "studio", "tabletop",
+        },
+        "style": {
+            "anime", "cinematic", "photorealistic", "painterly", "illustration", "stylized",
+            "realistic", "film", "noir", "vintage", "dramatic", "soft", "lighting",
+        },
+        "quality": {
+            "masterpiece", "best", "quality", "detailed", "sharp", "highres", "high-res",
+            "ultra", "perfect", "clean", "realism", "realistic", "smooth",
+        },
+        "details": {
+            "reflection", "reflections", "texture", "textures", "shadow", "shadows", "smoke",
+            "dust", "particles", "small", "tiny", "prop", "props", "fabric", "glass",
+        },
+    }
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "positive_prompt": ("STRING", {"multiline": True, "default": "", "placeholder": "Positive prompt"}),
+                "clip": ("CLIP", {"tooltip": "Connected text encoder used for all V2 prompt encoding and similarity checks."}),
+                "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
+                "refinement_key": ("STRING", {"default": "my_style_v2", "multiline": False}),
+                "mode": (["ltx2", "wan"], {"default": "ltx2", "label": "Tokenizer Mode"}),
+            },
+            "optional": {
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
+                "reset_session": ("BOOLEAN", {"default": False, "label": "Reset V2 Session"}),
+                "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional stack from FunPack LoRA Loader. V2 writes prompt-specific suggested weights."}),
+                "im_feeling_lucky": ("BOOLEAN", {
+                    "default": False,
+                    "label": "I'm Feeling Lucky",
+                    "tooltip": "Compose a learned prompt from V2 phrase memory, then encode it through the connected CLIP.",
+                }),
+            },
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
+    def _v2_state_path(self, refinement_key, mode):
+        return refinement_state_path(refinement_key, mode, prefix=self.V2_STATE_PREFIX)
+
+    def _v2_empty_state(self, refinement_key, mode):
+        return {
+            "version": 2,
+            "refinement_key": refinement_key,
+            "mode": mode,
+            "global": {
+                "total_iterations": 0,
+                "avg_reward_ema": 0.0,
+                "good_streak": 0,
+                "bad_streak": 0,
+                "last_rating_label": "Initial discovery",
+                "last_missing_axes": [],
+                "phrase_memory": {},
+                "lora_weight_memory": {},
+                "loss_history": [],
+            },
+            "prompt_histories": {},
+            "last_run": None,
+        }
+
+    def _v2_load_state(self, refinement_key, mode, reset_session=False):
+        path = self._v2_state_path(refinement_key, mode)
+        if reset_session or not os.path.exists(path):
+            return self._v2_empty_state(refinement_key, mode), "fresh"
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            if not isinstance(data, dict) or int(data.get("version", 0)) != 2:
+                return self._v2_empty_state(refinement_key, mode), "reset invalid"
+            data.setdefault("global", {})
+            data.setdefault("prompt_histories", {})
+            data.setdefault("last_run", None)
+            return data, "loaded"
+        except (json.JSONDecodeError, OSError, ValueError):
+            return self._v2_empty_state(refinement_key, mode), "reset unreadable"
+
+    def _v2_save_state(self, data, refinement_key, mode):
+        path = self._v2_state_path(refinement_key, mode)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(data, file, indent=2)
+
+    def _v2_prompt_key(self, prompt, mode):
+        return self._normalize_prompt_for_mode(prompt, mode)
+
+    def _v2_extract_conditioning(self, encoded):
+        if not isinstance(encoded, list) or not encoded:
+            return None, {"pooled_output": None}
+        item = encoded[0]
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            cond = item[0]
+            meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
+        else:
+            cond = item if isinstance(item, torch.Tensor) else None
+            meta = {"pooled_output": None}
+        return cond, meta
+
+    def _v2_encode_prompt(self, clip, prompt_text):
+        if clip is None:
+            return None, {"pooled_output": None}, "CLIP missing"
+        prompt_text = str(prompt_text or "").strip()
+        if not prompt_text:
+            return None, {"pooled_output": None}, "prompt empty"
+        try:
+            encoded = clip.encode_from_tokens_scheduled(clip.tokenize(prompt_text))
+        except Exception as error:
+            return None, {"pooled_output": None}, f"encode failed: {error}"
+        cond, meta = self._v2_extract_conditioning(encoded)
+        if not isinstance(cond, torch.Tensor):
+            return None, {"pooled_output": None}, "encode returned invalid conditioning"
+        return cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions"
+
+    def _v2_conditioning_vector(self, conditioning):
+        if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
+            return None
+        if conditioning.dim() == 3:
+            return conditioning.detach().float().mean(dim=(0, 1))
+        return conditioning.detach().float().mean(dim=0)
+
+    def _v2_phrase_words(self, text):
+        return [
+            word.strip().lower()
+            for word in re.findall(r"[\w'’.-]+", str(text or ""), flags=re.UNICODE)
+            if self._is_valuable_token(word.strip())
+        ]
+
+    def _v2_heuristic_scores(self, phrase):
+        words = set(self._v2_phrase_words(phrase))
+        scores = {category: 0.0 for category in self.CATEGORY_DESCRIPTIONS}
+        for category, keywords in self.CATEGORY_KEYWORDS.items():
+            hits = len(words & keywords)
+            if hits:
+                scores[category] += min(0.85, 0.38 + hits * 0.17)
+
+        text = str(phrase or "").lower()
+        if re.search(r"\b\w+(ing|ed)\b", text):
+            scores["action"] = max(scores["action"], 0.52)
+        if "camera" in text and re.search(r"\b(move|moves|moving|push|pull|pan|zoom|track|dolly|tilt)", text):
+            scores["camera"] = max(scores["camera"], 0.78)
+            scores["action"] = max(scores["action"], 0.48)
+        if re.search(r"\b(slowly|quickly|gentle|smooth|fast)\b", text) and scores["action"] > 0.0:
+            scores["action"] = min(0.92, scores["action"] + 0.12)
+        return scores
+
+    def _v2_scores_primary(self, scores):
+        if not scores:
+            return "details", 0.0
+        primary, confidence = max(scores.items(), key=lambda item: item[1])
+        return primary, float(confidence)
+
+    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors):
+        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase)
+        phrase_vector = self._v2_conditioning_vector(phrase_cond)
+        if phrase_vector is None:
+            return {}
+        scores = {}
+        for category, vector in category_vectors.items():
+            if not isinstance(vector, torch.Tensor) or vector.shape != phrase_vector.shape:
+                continue
+            sim = F.cosine_similarity(phrase_vector.unsqueeze(0), vector.to(phrase_vector.device).unsqueeze(0), dim=-1)
+            scores[category] = float(((sim.item() + 1.0) * 0.5))
+        return scores
+
+    def _v2_category_vectors(self, clip):
+        vectors = {}
+        for category, description in self.CATEGORY_DESCRIPTIONS.items():
+            cond, _, _ = self._v2_encode_prompt(clip, description)
+            vector = self._v2_conditioning_vector(cond)
+            if vector is not None:
+                vectors[category] = vector.cpu()
+        return vectors
+
+    def _v2_classify_phrases(self, clip, phrases):
+        phrase_items = []
+        uncertain = []
+        for index, phrase in enumerate(phrases or []):
+            text = str(phrase.get("text", "")).strip().lower()
+            if not text:
+                continue
+            scores = self._v2_heuristic_scores(text)
+            primary, confidence = self._v2_scores_primary(scores)
+            item = {
+                "text": text,
+                "tokens": list(phrase.get("tokens", [])),
+                "position": index,
+                "category_scores": scores,
+                "primary": primary,
+                "confidence": round(float(confidence), 4),
+                "source": "heuristic",
+            }
+            if confidence < 0.62:
+                uncertain.append(item)
+            phrase_items.append(item)
+
+        if uncertain and clip is not None:
+            category_vectors = self._v2_category_vectors(clip)
+            for item in uncertain:
+                clip_scores = self._v2_clip_similarity_scores(clip, item["text"], category_vectors)
+                if not clip_scores:
+                    continue
+                merged = {}
+                for category in self.CATEGORY_DESCRIPTIONS:
+                    merged[category] = max(
+                        float(item["category_scores"].get(category, 0.0)) * 0.58,
+                        float(clip_scores.get(category, 0.0)) * 0.82,
+                    )
+                primary, confidence = self._v2_scores_primary(merged)
+                item["category_scores"] = merged
+                item["primary"] = primary
+                item["confidence"] = round(float(confidence), 4)
+                item["source"] = "clip_similarity"
+
+        return phrase_items
+
+    def _v2_axis_matches_category(self, axis, category):
+        category = (category or "details").lower()
+        if axis == "action":
+            return category in {"action", "camera"}
+        if axis == "details":
+            return category in {"details", "appearance", "environment", "camera"}
+        if axis == "quality":
+            return category in {"quality", "style"}
+        return False
+
+    def _v2_update_phrase_memory(self, global_state, last_run, rating_profile, iter_num):
+        if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
+            return "Lucky memory: no learning update."
+        memory = global_state.setdefault("phrase_memory", {})
+        phrases = last_run.get("phrases", [])
+        missing_axes = set(rating_profile.get("missing_axes", []))
+        reward = float(rating_profile.get("reward", 0.0))
+        touched = []
+        for phrase in phrases:
+            text = str(phrase.get("text", "")).strip().lower()
+            if not text:
+                continue
+            primary = phrase.get("primary", "details")
+            entry = memory.setdefault(text, {
+                "text": text,
+                "tokens": phrase.get("tokens", []),
+                "primary": primary,
+                "category_scores": phrase.get("category_scores", {}),
+                "score": 0.0,
+                "liked_count": 0,
+                "missing_count": 0,
+                "bad_count": 0,
+                "wanted_axes": {},
+                "positions": {},
+            })
+            entry["primary"] = primary
+            entry["category_scores"] = phrase.get("category_scores", entry.get("category_scores", {}))
+            entry["tokens"] = phrase.get("tokens", entry.get("tokens", []))
+            entry.setdefault("positions", {})[str(int(phrase.get("position", 0)))] = (
+                int(entry.setdefault("positions", {}).get(str(int(phrase.get("position", 0))), 0)) + 1
+            )
+
+            if rating_profile.get("key") == "like":
+                delta = 0.55
+                entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+            elif rating_profile.get("key") == "awful":
+                delta = -0.90
+                entry["bad_count"] = int(entry.get("bad_count", 0)) + 1
+            elif missing_axes:
+                matched = [axis for axis in missing_axes if self._v2_axis_matches_category(axis, primary)]
+                delta = 0.34 if matched else 0.08
+                entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+                wanted_axes = entry.setdefault("wanted_axes", {})
+                for axis in matched or missing_axes:
+                    wanted_axes[axis] = int(wanted_axes.get(axis, 0)) + 1
+            else:
+                delta = reward * 0.20
+
+            entry["score"] = round(max(-3.0, min(6.0, float(entry.get("score", 0.0)) + delta)), 4)
+            entry["last_seen_iter"] = int(iter_num)
+            memory[text] = entry
+            touched.append(text)
+
+        if not touched:
+            return "Lucky memory: no prompt phrases stored."
+        return f"Lucky memory stored: {len(touched)} phrase(s), top: {', '.join(touched[:6])}{'...' if len(touched) > 6 else ''}."
+
+    def _v2_shape_compatible(self, payload, conditioning):
+        return self._serialized_conditioning_compatible(payload, conditioning)
+
+    def _v2_update_conditioning_memory(self, global_state, last_run, rating_profile):
+        if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
+            return
+        payload = last_run.get("conditioning")
+        if not isinstance(payload, dict):
+            return
+        key = rating_profile.get("key", "")
+        if key == "like":
+            count = int(global_state.get("liked_conditioning_count", 0))
+            if count <= 0 or not isinstance(global_state.get("liked_conditioning"), dict):
+                global_state["liked_conditioning"] = payload
+                global_state["liked_conditioning_count"] = 1
+                return
+            try:
+                previous = serializable_to_tensor(global_state["liked_conditioning"])
+                current = serializable_to_tensor(payload).to(previous.device)
+                if list(previous.shape) != list(current.shape):
+                    global_state["liked_conditioning"] = payload
+                    global_state["liked_conditioning_count"] = 1
+                    return
+                averaged = (previous * count + current) / float(count + 1)
+                global_state["liked_conditioning"] = tensor_to_serializable(averaged.cpu())
+                global_state["liked_conditioning_count"] = count + 1
+            except Exception:
+                global_state["liked_conditioning"] = payload
+                global_state["liked_conditioning_count"] = 1
+        elif key == "awful" or float(rating_profile.get("reward", 0.0)) < -0.35:
+            global_state["bad_conditioning"] = payload
+            global_state["bad_conditioning_count"] = int(global_state.get("bad_conditioning_count", 0)) + 1
+
+    def _v2_update_streaks(self, global_state, rating_profile):
+        reward = float(rating_profile.get("reward", 0.0))
+        avg = float(global_state.get("avg_reward_ema", 0.0))
+        avg = 0.86 * avg + 0.14 * reward
+        global_state["avg_reward_ema"] = round(avg, 6)
+        if rating_profile.get("key") == "like":
+            global_state["good_streak"] = int(global_state.get("good_streak", 0)) + 1
+            global_state["bad_streak"] = 0
+        elif reward < -0.25:
+            global_state["bad_streak"] = int(global_state.get("bad_streak", 0)) + 1
+            global_state["good_streak"] = 0
+        else:
+            global_state["good_streak"] = 0
+            global_state["bad_streak"] = 0
+        global_state["last_rating_label"] = rating_profile.get("label", "")
+        global_state["last_missing_axes"] = list(rating_profile.get("missing_axes", []))
+
+    def _v2_auto_strength(self, global_state):
+        avg = float(global_state.get("avg_reward_ema", 0.0))
+        good = int(global_state.get("good_streak", 0))
+        bad = int(global_state.get("bad_streak", 0))
+        strength = 0.030
+        if good >= 3 or avg > 0.55:
+            strength *= 0.42
+        elif good >= 1 or avg > 0.25:
+            strength *= 0.68
+        if bad >= 3 or avg < -0.45:
+            strength *= 2.20
+        elif bad >= 1 or avg < -0.15:
+            strength *= 1.45
+        return max(0.008, min(0.085, strength))
+
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile):
+        if not isinstance(conditioning, torch.Tensor):
+            return conditioning, "Adaptation: unavailable."
+        original = conditioning.clone()
+        mixed = conditioning.clone()
+        strength = self._v2_auto_strength(global_state)
+        liked_payload = global_state.get("liked_conditioning")
+        if self._v2_shape_compatible(liked_payload, mixed):
+            try:
+                liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
+                mixed = mixed.lerp(liked, strength)
+            except Exception:
+                pass
+        bad_payload = global_state.get("bad_conditioning")
+        if self._v2_shape_compatible(bad_payload, mixed) and float(rating_profile.get("reward", 0.0)) < 0.0:
+            try:
+                bad = serializable_to_tensor(bad_payload).to(device=mixed.device, dtype=mixed.dtype)
+                repel = (mixed - bad) * min(0.055, strength * 0.72)
+                mixed = mixed + repel
+            except Exception:
+                pass
+        delta = mixed - original
+        original_norm = original.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        max_delta = original_norm * 0.075
+        delta_norm = delta.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+        scale = torch.minimum(torch.ones_like(delta_norm), max_delta / delta_norm)
+        mixed = original + delta * scale
+        mixed = torch.clamp(mixed, min=-60.0, max=60.0)
+        mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * original_norm
+        return mixed, (
+            f"Adaptation: automatic strength {strength:.3f} | "
+            f"good streak {int(global_state.get('good_streak', 0))} | "
+            f"bad streak {int(global_state.get('bad_streak', 0))} | "
+            f"reward ema {float(global_state.get('avg_reward_ema', 0.0)):+.3f}"
+        )
+
+    def _v2_emphasized_prompt(self, prompt, phrases, global_state, rating_profile):
+        missing_axes = set(global_state.get("last_missing_axes", [])) | set(rating_profile.get("missing_axes", []))
+        if not missing_axes:
+            return prompt, "Prompt emphasis: none."
+        candidates = []
+        for phrase in phrases:
+            primary = phrase.get("primary", "details")
+            if any(self._v2_axis_matches_category(axis, primary) for axis in missing_axes):
+                candidates.append(phrase.get("text", ""))
+        candidates = [item for item in candidates if item]
+        if not candidates:
+            return prompt, "Prompt emphasis: no matching current phrases."
+        emphasized = []
+        seen = set()
+        for text in candidates:
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            emphasized.append(text)
+            if len(emphasized) >= 3:
+                break
+        return f"{prompt}, {', '.join(emphasized)}", f"Prompt emphasis: repeated {', '.join(emphasized)}."
+
+    def _v2_compose_lucky_prompt(self, prompt, phrases, global_state):
+        memory = global_state.get("phrase_memory", {})
+        scored = []
+        for text, entry in memory.items():
+            if not isinstance(entry, dict):
+                continue
+            score = float(entry.get("score", 0.0))
+            score += min(1.0, int(entry.get("liked_count", 0)) * 0.14)
+            score += min(1.2, sum(int(v) for v in entry.get("wanted_axes", {}).values()) * 0.10)
+            score -= min(1.6, int(entry.get("bad_count", 0)) * 0.22)
+            if score <= 0.10:
+                continue
+            scored.append((score, entry.get("primary", "details"), str(entry.get("text", text)).strip()))
+        scored = sorted(scored, key=lambda item: (item[0], item[1] == "action"), reverse=True)
+        current_texts = [str(item.get("text", "")).strip().lower() for item in phrases]
+        selected = []
+        seen = set()
+        for phrase in current_texts:
+            if phrase and phrase not in seen:
+                selected.append(phrase)
+                seen.add(phrase)
+        for _, _, text in scored:
+            key = text.lower()
+            if not key or key in seen:
+                continue
+            selected.append(text)
+            seen.add(key)
+            if len(selected) >= 14:
+                break
+        if not selected:
+            return prompt, "Lucky: on | memory empty, used current prompt."
+        lucky_prompt = ", ".join(selected)
+        return lucky_prompt, f"Lucky: on | composed {len(selected)} phrase(s): {', '.join(selected[:8])}{'...' if len(selected) > 8 else ''}."
+
+    def _v2_lora_type(self, lora_type):
+        lora_type = str(lora_type or "general").strip().lower()
+        return "action" if lora_type == "concept" else lora_type
+
+    def _v2_lora_words(self, text):
+        return {
+            word.strip().lower()
+            for word in re.split(r"[\s,;:_\\/\-().\[\]{}]+", text or "")
+            if self._is_valuable_token(word.strip())
+        }
+
+    def _v2_update_lora_suggestions(self, lora_stack, prompt_history, global_state, phrases, rating_profile):
+        if not isinstance(lora_stack, dict) or not lora_stack.get("loras"):
+            return "LoRA suggestions: no FunPack LoRA stack connected."
+        memory = global_state.setdefault("lora_weight_memory", {})
+        phrase_by_category = {}
+        all_phrase_words = set()
+        for phrase in phrases:
+            primary = phrase.get("primary", "details")
+            words = self._v2_lora_words(phrase.get("text", ""))
+            all_phrase_words |= words
+            phrase_by_category.setdefault(primary, set()).update(words)
+        suggestions = {}
+        parts = []
+        missing_axes = set(rating_profile.get("missing_axes", []))
+        reward = float(rating_profile.get("reward", 0.0))
+        for entry in lora_stack.get("loras", []):
+            name = entry.get("name", "")
+            raw_type = entry.get("type", "general")
+            lora_type = self._v2_lora_type(raw_type)
+            lora_id = entry.get("id") or self._lora_state_id(name, raw_type)
+            lora_words = self._v2_lora_words(name)
+            relation = 0.20 if lora_type == "general" else 0.0
+            if lora_words and all_phrase_words:
+                relation = max(relation, len(lora_words & all_phrase_words) / max(1, len(lora_words)))
+            if lora_type == "action":
+                relation = max(relation, 0.62 if phrase_by_category.get("action") else 0.0)
+            elif lora_type == "quality":
+                relation = max(relation, 0.62 if phrase_by_category.get("quality") else 0.0)
+            elif lora_type == "style":
+                relation = max(relation, 0.54 if phrase_by_category.get("style") or phrase_by_category.get("camera") else 0.0)
+            elif lora_type == "character":
+                relation = max(relation, 0.58 if phrase_by_category.get("subject") or phrase_by_category.get("appearance") else 0.0)
+
+            state = memory.setdefault(lora_id, {"name": name, "type": lora_type, "offset_ratio": 0.0, "iterations": 0})
+            offset = float(state.get("offset_ratio", 0.0))
+            step = 0.036 if lora_type == "action" else 0.026
+            if rating_profile.get("key") == "like":
+                offset += step * max(0.18, relation) * 0.55
+            elif "action" in missing_axes and lora_type in {"action", "character", "general"}:
+                offset += step * max(0.28, relation) * 1.35
+            elif "quality" in missing_axes and lora_type in {"quality", "style", "general"}:
+                offset += step * max(0.22, relation) * 1.10
+            elif rating_profile.get("key") == "awful":
+                offset -= step * max(0.22, relation) * 1.20
+            else:
+                offset += step * reward * max(0.12, relation)
+            offset = _clamp(offset, -0.75, 0.55)
+            state["offset_ratio"] = round(float(offset), 6)
+            state["iterations"] = int(state.get("iterations", 0)) + 1
+            state["type"] = lora_type
+            state["name"] = name
+            base_model = float(entry.get("base_model_weight", entry.get("model_weight", 1.0)))
+            model_weight = base_model * (1.0 + offset)
+            action = (
+                "mute" if model_weight == 0.0 else
+                "reduce" if abs(model_weight) < abs(base_model) else
+                "hold" if abs(model_weight - base_model) < 1e-6 else
+                "boost"
+            )
+            suggestions[lora_id] = {
+                "name": name,
+                "type": lora_type,
+                "model_weight": model_weight,
+                "base_model_weight": base_model,
+                "offset_ratio": offset,
+                "relation": relation,
+                "action": action,
+                "rating_label": rating_profile.get("label", ""),
+                "rating_range": "boost action" if "action" in missing_axes else rating_profile.get("key", ""),
+            }
+            parts.append(f"{name}[{lora_type}] rel={relation:.2f} next={model_weight:+.3f}")
+        prompt_history["lora_weight_suggestions"] = suggestions
+        return "LoRA suggestions: " + " | ".join(parts)
+
+    def refine_v2(self, positive_prompt, clip, rating, refinement_key, mode="ltx2",
+                  seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False):
+        mode = (mode or "ltx2").lower()
+        if mode not in {"ltx2", "wan"}:
+            mode = "ltx2"
+        if seed != 0:
+            torch.manual_seed(seed)
+            random.seed(seed)
+
+        rating_profile = normalize_refiner_v2_rating(rating)
+        rating_label = rating_profile.get("label", str(rating))
+        state, state_status = self._v2_load_state(refinement_key, mode, reset_session=reset_session)
+        global_state = state.setdefault("global", {})
+        global_state.setdefault("phrase_memory", {})
+        global_state.setdefault("lora_weight_memory", {})
+        global_state.setdefault("loss_history", [])
+        has_previous_run = isinstance(state.get("last_run"), dict)
+        learning_profile = rating_profile if has_previous_run else dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
+
+        memory_status = self._v2_update_phrase_memory(
+            global_state,
+            state.get("last_run"),
+            learning_profile,
+            int(global_state.get("total_iterations", 0)) + 1,
+        )
+        self._v2_update_conditioning_memory(global_state, state.get("last_run"), learning_profile)
+        if has_previous_run and not learning_profile.get("skip_learning"):
+            self._v2_update_streaks(global_state, learning_profile)
+
+        analysis_prompt = self._normalize_prompt_for_mode(positive_prompt, mode)
+        phrases = self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt))
+        if im_feeling_lucky:
+            prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
+            encoded_role = "lucky prompt"
+        else:
+            prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(analysis_prompt, phrases, global_state, learning_profile)
+            lucky_status = "Lucky: off | trained memory only; no prompt composition applied."
+            encoded_role = "current prompt"
+
+        cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_to_encode)
+        fallback_graph = render_refinement_loss_graph(refinement_key, "v2", mode, 0, 0.0, [])
+        if not isinstance(cond, torch.Tensor):
+            status = f"ERROR: V2 could not encode prompt | {encode_status}"
+            training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
+            return ([], status, training_info, fallback_graph)
+
+        refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile)
+        prompt_key = self._v2_prompt_key(analysis_prompt, mode)
+        prompt_history = state.setdefault("prompt_histories", {}).setdefault(prompt_key, {
+            "canonical_prompt": analysis_prompt,
+            "history": [],
+        })
+        lora_status = self._v2_update_lora_suggestions(lora_stack, prompt_history, global_state, phrases, learning_profile)
+
+        global_state["total_iterations"] = int(global_state.get("total_iterations", 0)) + 1
+        learning_loss = max(0.02, (1.0 - max(-1.0, min(1.0, float(global_state.get("avg_reward_ema", 0.0))))) * 0.5)
+        loss_history = list(global_state.get("loss_history", []))[-511:]
+        loss_history.append({
+            "total_iteration": int(global_state["total_iterations"]),
+            "learning_loss": round(float(learning_loss), 6),
+            "rating": int(rating_profile.get("legacy_score", 6)),
+            "rating_label": rating_label,
+            "similarity": 1.0,
+            "scheduler_mode": "automatic",
+            "mode": mode,
+        })
+        global_state["loss_history"] = loss_history
+
+        phrase_preview = "; ".join(
+            f"{item['text']}[{item['primary']}:{item['confidence']:.2f}/{item['source']}]"
+            for item in phrases[:10]
+        ) or "none"
+        prompt_preview = re.sub(r"\s+", " ", prompt_to_encode).strip()
+        if len(prompt_preview) > 240:
+            prompt_preview = prompt_preview[:237].rstrip() + "..."
+
+        prompt_history["canonical_prompt"] = analysis_prompt
+        prompt_history.setdefault("history", [])
+        prompt_history["history"] = list(prompt_history.get("history", []))[-119:]
+        prompt_history["history"].append({
+            "iteration": int(global_state["total_iterations"]),
+            "rating_label": rating_label if has_previous_run else "Unrated",
+            "encoded_role": encoded_role,
+            "prompt": prompt_to_encode,
+            "phrases": phrases,
+        })
+
+        state["last_run"] = {
+            "prompt": analysis_prompt,
+            "encoded_prompt": prompt_to_encode,
+            "conditioning": tensor_to_serializable(refined.detach().cpu()),
+            "phrases": phrases,
+            "rating_label": "Unrated",
+            "iteration": int(global_state["total_iterations"]),
+        }
+        state["global"] = global_state
+        self._v2_save_state(state, refinement_key, mode)
+
+        loss_graph = render_refinement_loss_graph(
+            refinement_key=refinement_key,
+            scheduler_mode="v2-auto",
+            mode=mode,
+            total_iterations=int(global_state["total_iterations"]),
+            latest_learning_loss=float(learning_loss),
+            points=loss_history[-256:],
+        )
+        status = (
+            f"V2 {state_status} | Mode {mode.upper()} | Rating {rating_label} | Iter {global_state['total_iterations']}\n"
+            f"{adaptation_status}\n"
+            f"{lucky_status}"
+        )
+        training_info = (
+            f"Encoded: {encoded_role} | {encode_status}\n"
+            f"Learning applied to previous run: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
+            f"Prompt: {prompt_preview}\n"
+            f"{memory_status}\n"
+            f"{adaptation_status}\n"
+            f"{lucky_status}\n"
+            f"Categories: {phrase_preview}\n"
+            f"{lora_status}"
+        )
+        return ([(refined, meta)], status, training_info, loss_graph)
 
 
 class FunPackSaveRefinementLatent:
