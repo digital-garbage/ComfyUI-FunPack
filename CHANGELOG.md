@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.2.1] - 2026-05-07
+
+### Fixed
+
+Fixed `FunPack Video Refiner V2` prompt phrase categorization so environment and appearance descriptions are not pulled into action learning by generic `-ing` or `-ed` words.
+
+Updated Refiner V2 category similarity blending so CLIP category comparisons only help uncertain phrases instead of overriding strong local action, camera, appearance, environment, quality, or detail anchors.
+
 ## [2.2.0] - 2026-05-07
 
 ### Added

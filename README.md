@@ -2,6 +2,10 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.2.1
+
+Fixed Refiner V2 prompt phrase categorization so background, appearance, quality, camera, and action phrases stay aligned before the node updates Lucky memory or LoRA suggestions.
+
 ## Updates in 2.2.0
 
 Added `FunPack Video Refiner V2`, a simpler prompt-owned refiner that takes `positive_prompt` and a connected `CLIP`, encodes the prompt inside the node, learns from ratings, and returns refined positive conditioning plus diagnostics.

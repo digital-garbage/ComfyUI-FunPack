@@ -5546,36 +5546,84 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "jumping", "fly", "flying", "move", "moving", "motion", "gesture", "gesturing",
             "hold", "holding", "reach", "reaching", "look", "looking", "blink", "blinking",
             "smile", "smiling", "sit", "sitting", "stand", "standing", "kneel", "kneeling",
-            "flow", "flowing", "sway", "swaying", "spin", "spinning", "fall", "falling",
+            "sway", "swaying", "spin", "spinning", "fall", "falling", "grab", "grabbing",
+            "throw", "throwing", "catch", "catching", "climb", "climbing", "fight", "fighting",
+            "talk", "talking", "speak", "speaking", "wave", "waving", "crawl", "crawling",
+            "drive", "driving", "ride", "riding", "open", "opening", "close", "closing",
         },
         "camera": {
             "camera", "shot", "closeup", "close-up", "wide", "angle", "zoom", "pan", "panning",
-            "dolly", "tracking", "handheld", "focus", "framing", "push", "pull", "tilt",
+            "dolly", "tracking", "handheld", "focus", "framing", "push", "push-in", "pull",
+            "pull-back", "tilt", "orbit", "orbiting", "crane", "rack", "lens", "viewpoint",
+            "perspective", "overhead", "low-angle", "high-angle", "close-up", "macro",
         },
         "subject": {
             "woman", "man", "girl", "boy", "person", "character", "robot", "creature", "dragon",
-            "animal", "dog", "cat", "car", "vehicle", "object", "sculpture", "glass",
+            "animal", "dog", "cat", "car", "vehicle", "object", "sculpture", "monster",
+            "child", "baby", "adult", "crowd", "dancer", "runner", "warrior", "knight",
         },
         "appearance": {
             "hair", "eyes", "face", "skin", "dress", "jacket", "armor", "outfit", "clothing",
-            "hands", "pose", "expression", "beard", "makeup", "body", "anatomy",
+            "hands", "pose", "expression", "beard", "makeup", "body", "anatomy", "wearing",
+            "wears", "dressed", "clothed", "costume", "shirt", "coat", "robe", "boots",
+            "hat", "helmet", "gloves", "mask", "tattoo", "freckles", "scar", "silhouette",
+            "flowing", "curly", "straight", "long", "short", "blonde", "brunette",
         },
         "environment": {
             "forest", "city", "street", "room", "kitchen", "beach", "mountain", "temple",
             "sunset", "night", "rain", "snow", "sky", "background", "studio", "tabletop",
+            "setting", "environment", "landscape", "interior", "exterior", "alley", "road",
+            "field", "desert", "ocean", "sea", "lake", "river", "waterfall", "clouds",
+            "weather", "fog", "mist", "storm", "snowfall", "backdrop", "horizon",
         },
         "style": {
             "anime", "cinematic", "photorealistic", "painterly", "illustration", "stylized",
             "realistic", "film", "noir", "vintage", "dramatic", "soft", "lighting",
+            "moody", "surreal", "documentary", "editorial", "watercolor", "sketch",
+            "render", "rendered", "monochrome", "pastel", "neon", "gothic",
         },
         "quality": {
             "masterpiece", "best", "quality", "detailed", "sharp", "highres", "high-res",
-            "ultra", "perfect", "clean", "realism", "realistic", "smooth",
+            "ultra", "perfect", "clean", "realism", "realistic", "smooth", "crisp",
+            "high-detail", "highly-detailed", "ultra-detailed", "noise-free", "polished",
+            "refined", "clear", "high-resolution", "8k", "4k",
         },
         "details": {
             "reflection", "reflections", "texture", "textures", "shadow", "shadows", "smoke",
             "dust", "particles", "small", "tiny", "prop", "props", "fabric", "glass",
+            "sparkles", "embers", "debris", "scratches", "cracks", "drops", "droplets",
+            "pattern", "patterns", "grain", "details", "ornament", "ornaments",
         },
+    }
+    CATEGORY_PRIORITY = {
+        "action": 0.018,
+        "camera": 0.014,
+        "subject": 0.008,
+        "appearance": 0.012,
+        "environment": 0.012,
+        "style": 0.006,
+        "quality": 0.004,
+        "details": 0.002,
+    }
+    ACTION_SUFFIX_STEMS = {
+        "walk", "run", "turn", "danc", "jump", "fly", "mov", "gestur", "hold", "reach",
+        "look", "blink", "smil", "sit", "stand", "kneel", "sway", "spin", "fall",
+        "grab", "throw", "catch", "climb", "fight", "talk", "speak", "wav", "crawl",
+        "driv", "rid", "open", "clos",
+    }
+    APPEARANCE_CONTEXT_WORDS = {
+        "hair", "eyes", "face", "skin", "dress", "jacket", "armor", "outfit", "clothing",
+        "shirt", "coat", "robe", "boots", "hat", "helmet", "gloves", "mask", "body",
+        "anatomy", "beard", "makeup", "costume",
+    }
+    ENVIRONMENT_CONTEXT_WORDS = {
+        "background", "setting", "environment", "landscape", "room", "street", "forest",
+        "city", "beach", "mountain", "temple", "sky", "studio", "interior", "exterior",
+        "backdrop", "horizon", "weather",
+    }
+    QUALITY_CONTEXT_WORDS = {
+        "quality", "detail", "details", "detailed", "sharp", "clean", "crisp", "realism",
+        "resolution", "highres", "high-resolution", "smooth", "polished",
     }
 
     @classmethod
@@ -5692,28 +5740,67 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if self._is_valuable_token(word.strip())
         ]
 
+    def _v2_has_action_suffix(self, words):
+        for word in words:
+            if word.endswith("ing"):
+                stem = word[:-3]
+            elif word.endswith("ed"):
+                stem = word[:-2]
+            else:
+                continue
+            if stem in self.ACTION_SUFFIX_STEMS:
+                return True
+            if stem.endswith("n") and stem[:-1] in self.ACTION_SUFFIX_STEMS:
+                return True
+            if stem.endswith("p") and stem[:-1] in self.ACTION_SUFFIX_STEMS:
+                return True
+        return False
+
+    def _v2_rebalance_anchored_scores(self, scores, words):
+        words = set(words or [])
+        has_action = bool(words & self.CATEGORY_KEYWORDS["action"]) or self._v2_has_action_suffix(words)
+        if words & self.APPEARANCE_CONTEXT_WORDS:
+            scores["appearance"] = max(scores["appearance"], 0.66)
+            if not has_action:
+                scores["action"] = min(scores["action"], 0.40)
+        if words & self.ENVIRONMENT_CONTEXT_WORDS:
+            scores["environment"] = max(scores["environment"], 0.66)
+            if not has_action:
+                scores["action"] = min(scores["action"], 0.36)
+        if words & self.QUALITY_CONTEXT_WORDS:
+            scores["quality"] = max(scores["quality"], 0.64)
+            if not has_action:
+                scores["action"] = min(scores["action"], 0.34)
+        if has_action:
+            scores["action"] = max(scores["action"], 0.66)
+        return scores
+
     def _v2_heuristic_scores(self, phrase):
         words = set(self._v2_phrase_words(phrase))
         scores = {category: 0.0 for category in self.CATEGORY_DESCRIPTIONS}
         for category, keywords in self.CATEGORY_KEYWORDS.items():
             hits = len(words & keywords)
             if hits:
-                scores[category] += min(0.85, 0.38 + hits * 0.17)
+                scores[category] += min(0.92, 0.48 + hits * 0.18)
 
         text = str(phrase or "").lower()
-        if re.search(r"\b\w+(ing|ed)\b", text):
+        if self._v2_has_action_suffix(words):
             scores["action"] = max(scores["action"], 0.52)
         if "camera" in text and re.search(r"\b(move|moves|moving|push|pull|pan|zoom|track|dolly|tilt)", text):
             scores["camera"] = max(scores["camera"], 0.78)
             scores["action"] = max(scores["action"], 0.48)
         if re.search(r"\b(slowly|quickly|gentle|smooth|fast)\b", text) and scores["action"] > 0.0:
             scores["action"] = min(0.92, scores["action"] + 0.12)
+        scores = self._v2_rebalance_anchored_scores(scores, words)
         return scores
 
     def _v2_scores_primary(self, scores):
         if not scores:
             return "details", 0.0
-        primary, confidence = max(scores.items(), key=lambda item: item[1])
+        primary, confidence = max(
+            scores.items(),
+            key=lambda item: (item[1], self.CATEGORY_PRIORITY.get(item[0], 0.0)),
+        )
         return primary, float(confidence)
 
     def _v2_clip_similarity_scores(self, clip, phrase, category_vectors):
@@ -5737,6 +5824,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if vector is not None:
                 vectors[category] = vector.cpu()
         return vectors
+
+    def _v2_merge_clip_category_scores(self, heuristic_scores, clip_scores):
+        if not clip_scores:
+            return heuristic_scores
+        merged = dict(heuristic_scores)
+        heuristic_primary, heuristic_confidence = self._v2_scores_primary(heuristic_scores)
+        ranked_clip = sorted(clip_scores.items(), key=lambda item: item[1], reverse=True)
+        if not ranked_clip:
+            return merged
+        clip_primary, clip_confidence = ranked_clip[0]
+        clip_runner_up = ranked_clip[1][1] if len(ranked_clip) > 1 else 0.0
+        clip_margin = float(clip_confidence) - float(clip_runner_up)
+
+        if heuristic_confidence >= 0.60:
+            return merged
+        if heuristic_confidence >= 0.44 and clip_primary != heuristic_primary and clip_margin < 0.075:
+            return merged
+
+        mean_clip = sum(float(value) for value in clip_scores.values()) / max(1, len(clip_scores))
+        for category, score in clip_scores.items():
+            relative = max(0.0, float(score) - mean_clip)
+            merged[category] = max(float(merged.get(category, 0.0)), min(0.56, relative * 2.40))
+        if clip_margin >= 0.045:
+            merged[clip_primary] = max(float(merged.get(clip_primary, 0.0)), min(0.68, 0.48 + clip_margin * 2.20))
+        return merged
 
     def _v2_classify_phrases(self, clip, phrases):
         phrase_items = []
@@ -5766,12 +5878,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clip_scores = self._v2_clip_similarity_scores(clip, item["text"], category_vectors)
                 if not clip_scores:
                     continue
-                merged = {}
-                for category in self.CATEGORY_DESCRIPTIONS:
-                    merged[category] = max(
-                        float(item["category_scores"].get(category, 0.0)) * 0.58,
-                        float(clip_scores.get(category, 0.0)) * 0.82,
-                    )
+                merged = self._v2_merge_clip_category_scores(item["category_scores"], clip_scores)
                 primary, confidence = self._v2_scores_primary(merged)
                 item["category_scores"] = merged
                 item["primary"] = primary
