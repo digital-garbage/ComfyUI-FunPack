@@ -354,3 +354,25 @@ def test_context_senses_are_pruned_by_evidence_and_recency():
     assert len(entry["context_senses"]) == 24
     assert "mid|context-29" in entry["context_senses"]
     assert "mid|context-0" not in entry["context_senses"]
+
+
+def test_training_diagnostics_explain_learning_state_and_guidance():
+    refiner = FunPackVideoRefinerV2()
+    phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, ["smoke", "rising"]))
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    first_run_guidance = refiner._v2_training_guidance(
+        False,
+        profile,
+        feedback,
+        phrases,
+        "Category memory trained: 0 concept unit(s).",
+        "LoRA suggestions: no FunPack LoRA stack connected.",
+    )
+    diagnostics = refiner._v2_category_diagnostics(phrases)
+
+    assert "first V2 run only seeds" in first_run_guidance
+    assert "Category diagnostics:" in diagnostics
+    assert "smoke:" in diagnostics
+    assert "ctx=" in diagnostics

@@ -6338,6 +6338,81 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"regressed {fmt('regressed_axes')}."
         )
 
+    def _v2_top_category_summary(self, scores, limit=3):
+        cleaned = self._v2_clean_category_scores(scores)
+        ranked = [
+            (category, value)
+            for category, value in sorted(cleaned.items(), key=lambda item: item[1], reverse=True)
+            if abs(float(value)) > 0.0001
+        ]
+        if not ranked:
+            return "neutral"
+        return ", ".join(f"{category}:{value:.2f}" for category, value in ranked[:limit])
+
+    def _v2_training_guidance(self, has_previous_run, learning_profile, axis_feedback, phrases, memory_status, lora_status):
+        if not has_previous_run:
+            return (
+                "Guidance: first V2 run only seeds the current prompt. "
+                "Set the rating after reviewing this output, then run again with the same refinement key to train."
+            )
+        if learning_profile.get("skip_learning"):
+            return (
+                "Guidance: '-Just forget it-' skipped learning. Use it for workflow/model/seed failures; "
+                "use a missing-axis rating when the prompt should teach the node."
+            )
+
+        missing_axes = set(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else set()
+        resolved_axes = set(axis_feedback.get("resolved_axes", [])) if isinstance(axis_feedback, dict) else set()
+        regressed_axes = set(axis_feedback.get("regressed_axes", [])) if isinstance(axis_feedback, dict) else set()
+        phrase_axes = set()
+        context_sources = set()
+        weak_contexts = 0
+        for phrase in phrases or []:
+            phrase_axes |= self._v2_axes_for_scores(
+                phrase.get("effective_category_scores", phrase.get("category_scores", {})) or
+                {phrase.get("primary", "details"): 1.0}
+            )
+            context_source = str(phrase.get("context_source", "none"))
+            context_sources.add(context_source)
+            if context_source == "none":
+                weak_contexts += 1
+
+        notes = []
+        if missing_axes:
+            if not (missing_axes & phrase_axes):
+                notes.append(
+                    "missing axes did not strongly match current prompt concepts; make the missing action/detail/quality words more explicit"
+                )
+            else:
+                notes.append(
+                    "missing axes matched prompt concepts; repeated consistent ratings will strengthen those category weights"
+                )
+        if resolved_axes:
+            notes.append("resolved axes were preserved as positive evidence")
+        if regressed_axes:
+            notes.append("regressed axes were marked as needing repair")
+        if weak_contexts and phrases:
+            notes.append("some concepts have no learned context yet; repeat similar phrasing if you want stable sense learning")
+        if "exact" in context_sources:
+            notes.append("at least one concept matched an exact learned context")
+        if lora_status.startswith("LoRA suggestions: no"):
+            notes.append("no LoRA stack connected, so only prompt/conditioning memory trained")
+        if "no prompt phrases stored" in memory_status:
+            notes.append("no valuable prompt concepts were found; add concrete descriptive words")
+        return "Guidance: " + "; ".join(notes[:4]) + "." if notes else "Guidance: training signal looks usable."
+
+    def _v2_category_diagnostics(self, phrases, limit=8):
+        parts = []
+        for item in (phrases or [])[:limit]:
+            text = item.get("text", "")
+            machine = item.get("machine_primary", item.get("primary", "details"))
+            effective = item.get("primary", "details")
+            context = item.get("context_source", "none")
+            evidence = int(item.get("category_evidence_count", 0))
+            top = self._v2_top_category_summary(item.get("effective_category_scores", item.get("category_scores", {})), limit=2)
+            parts.append(f"{text}: {machine}->{effective}, ctx={context}, e={evidence}, top={top}")
+        return "Category diagnostics: " + (" | ".join(parts) if parts else "none")
+
     def _v2_update_phrase_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return "Lucky memory: no learning update."
@@ -6353,12 +6428,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         regressed_axes = set(axis_feedback.get("regressed_axes", []))
         reward = float(rating_profile.get("reward", 0.0))
         touched = []
+        trained = []
+        kind_counts = {}
         for phrase in concepts:
             text = str(phrase.get("text", "")).strip().lower()
             if not text:
                 continue
             entry = self._v2_ensure_phrase_memory_entry(memory, text, phrase)
             entry["kind"] = phrase.get("kind", entry.get("kind", "phrase"))
+            kind_counts[entry["kind"]] = int(kind_counts.get(entry["kind"], 0)) + 1
             entry["machine_primary"] = phrase.get("machine_primary", entry.get("machine_primary", entry.get("primary", "details")))
             entry["clip_heuristic_scores"] = self._v2_clean_category_scores(
                 phrase.get("clip_heuristic_scores", phrase.get("category_scores", entry.get("clip_heuristic_scores", {})))
@@ -6504,12 +6582,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             entry["last_seen_iter"] = int(iter_num)
             memory[text] = entry
             touched.append(text)
+            if len(trained) < 8 and entry.get("kind") in {"phrase", "token", "ngram"}:
+                trained.append(
+                    f"{text}[{entry.get('kind')}:{entry['machine_primary']}->{primary}, "
+                    f"ctx={phrase.get('context_signature', 'none') or 'none'}, "
+                    f"e={int(entry.get('category_evidence_count', 0))}, "
+                    f"top={self._v2_top_category_summary(entry['effective_category_scores'], limit=2)}]"
+                )
 
         if not touched:
             return "Lucky memory: no prompt phrases stored."
+        kind_summary = ", ".join(f"{name}:{count}" for name, count in sorted(kind_counts.items())) or "none"
         return (
-            f"Lucky memory stored: {len(touched)} phrase(s), top: "
-            f"{', '.join(touched[:6])}{'...' if len(touched) > 6 else ''}. "
+            f"Category memory trained: {len(touched)} concept unit(s) ({kind_summary}). "
+            f"Sample: {', '.join(trained) if trained else ', '.join(touched[:6])}. "
             f"{self._v2_axis_feedback_status(axis_feedback)}"
         )
 
@@ -6927,7 +7013,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encoded_role = "lucky prompt"
         else:
             prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(analysis_prompt, phrases, global_state, learning_profile)
-            lucky_status = "Lucky: off | trained memory only; no prompt composition applied."
+            lucky_status = f"Lucky: off | trained memory only. {emphasis_status}"
             encoded_role = "current prompt"
 
         cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_to_encode)
@@ -6976,6 +7062,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             for item in phrases[:10]
         ) or "none"
+        category_diagnostics = self._v2_category_diagnostics(phrases)
+        training_guidance = self._v2_training_guidance(
+            has_previous_run,
+            learning_profile,
+            axis_feedback,
+            phrases,
+            memory_status,
+            lora_status,
+        )
         prompt_preview = re.sub(r"\s+", " ", prompt_to_encode).strip()
         if len(prompt_preview) > 240:
             prompt_preview = prompt_preview[:237].rstrip() + "..."
@@ -7011,19 +7106,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             points=loss_history[-256:],
         )
         status = (
-            f"V2 {state_status} | CLIP-owned | Rating {rating_label} | Iter {global_state['total_iterations']}\n"
+            f"V2 {state_status} | CLIP-owned | Rating {rating_label} | Iter {global_state['total_iterations']} | "
+            f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
             f"{adaptation_status}\n"
+            f"{training_guidance}\n"
             f"{lucky_status}"
         )
         training_info = (
             f"Encoded: {encoded_role} | {encode_status}\n"
-            f"Learning applied to previous run: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
+            f"Learning target: {'previous run' if has_previous_run else 'none yet'} | "
+            f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'} | "
+            f"Reason: {'rating skipped learning' if learning_profile.get('skip_learning') else 'waiting for a rated previous run' if not has_previous_run else 'rating trained memory'}\n"
             f"{self._v2_axis_feedback_status(axis_feedback)}\n"
             f"Prompt: {prompt_preview}\n"
             f"{memory_status}\n"
+            f"{category_diagnostics}\n"
+            f"{training_guidance}\n"
             f"{adaptation_status}\n"
             f"{lucky_status}\n"
-            f"Categories: {phrase_preview}\n"
+            f"Category compact view: {phrase_preview}\n"
             f"{lora_status}"
         )
         return ([(refined, meta)], status, training_info, loss_graph)
