@@ -5690,6 +5690,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data.setdefault("prompt_histories", {})
             data.setdefault("last_run", None)
             data["global"].setdefault("axis_conditioning_memory", {})
+            data["global"].setdefault("phrase_memory", {})
+            data["global"].setdefault("lora_weight_memory", {})
+            data["global"].setdefault("loss_history", [])
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
             return self._v2_empty_state(refinement_key), "reset unreadable"
@@ -5854,20 +5857,389 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             merged[clip_primary] = max(float(merged.get(clip_primary, 0.0)), min(0.68, 0.48 + clip_margin * 2.20))
         return merged
 
-    def _v2_classify_phrases(self, clip, phrases):
+    def _v2_category_template(self, value=0.0):
+        return {category: float(value) for category in self.CATEGORY_DESCRIPTIONS}
+
+    def _v2_clean_category_scores(self, scores, default=0.0):
+        cleaned = self._v2_category_template(default)
+        if isinstance(scores, dict):
+            for category in cleaned:
+                try:
+                    cleaned[category] = float(scores.get(category, cleaned[category]))
+                except (TypeError, ValueError):
+                    cleaned[category] = float(default)
+        return cleaned
+
+    def _v2_axis_categories(self, axis):
+        if axis == "action":
+            return {"action", "camera"}
+        if axis == "details":
+            return {"details", "appearance", "environment", "camera", "action"}
+        if axis == "quality":
+            return {"quality", "style"}
+        return set()
+
+    def _v2_axis_category_weight(self, axis, category, scores=None):
+        if category not in self._v2_axis_categories(axis):
+            return 0.0
+        if axis == "details" and category == "details":
+            return 1.18
+        if axis == "details" and category == "action":
+            return 0.58
+        if axis == "details" and category in {"appearance", "environment"}:
+            return 0.72
+        if axis == "action" and category == "camera":
+            return 0.58
+        if axis == "details" and category == "camera":
+            return 0.64
+        scores = scores or {}
+        primary, _ = self._v2_scores_primary(scores)
+        return 1.0 if category == primary else 0.78
+
+    def _v2_effective_category_scores(self, machine_scores, category_weights, evidence_count=0):
+        machine = self._v2_clean_category_scores(machine_scores)
+        learned = self._v2_clean_category_scores(category_weights)
+        evidence_count = max(0, int(evidence_count or 0))
+        learned_power = min(1.85, 0.30 + evidence_count * 0.18)
+        effective = {}
+        for category in machine:
+            value = float(machine.get(category, 0.0)) + float(learned.get(category, 0.0)) * learned_power
+            effective[category] = round(max(-1.0, min(8.0, value)), 6)
+        return effective
+
+    def _v2_position_bucket(self, index, total):
+        total = max(1, int(total or 1))
+        index = max(0, int(index or 0))
+        if total <= 2:
+            return "solo" if total == 1 else ("early" if index == 0 else "late")
+        ratio = index / float(max(1, total - 1))
+        if ratio < 0.34:
+            return "early"
+        if ratio > 0.66:
+            return "late"
+        return "mid"
+
+    def _v2_context_for_phrase(self, phrases, index, text, window=3):
+        phrases = phrases or []
+        index = max(0, min(len(phrases) - 1, int(index or 0))) if phrases else 0
+        anchor_words = set(self._v2_phrase_words(text))
+        context_words = []
+        for offset in range(max(0, index - window), min(len(phrases), index + window + 1)):
+            if offset == index:
+                continue
+            item = phrases[offset]
+            item_text = item.get("text", "") if isinstance(item, dict) else str(item)
+            for word in self._v2_phrase_words(item_text):
+                if word in anchor_words or word in context_words:
+                    continue
+                context_words.append(word)
+        bucket = self._v2_position_bucket(index, len(phrases))
+        return {
+            "anchor_words": sorted(anchor_words),
+            "context_words": context_words[:10],
+            "position_bucket": bucket,
+            "window": int(window),
+        }
+
+    def _v2_context_signature(self, context):
+        if not isinstance(context, dict):
+            return ""
+        words = sorted({
+            word
+            for word in context.get("context_words", [])
+            if self._is_valuable_token(str(word).strip())
+        })[:8]
+        bucket = str(context.get("position_bucket", "mid"))
+        return f"{bucket}|{','.join(words)}" if words else bucket
+
+    def _v2_context_similarity(self, left, right):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return 0.0
+        left_words = {
+            word for word in left.get("context_words", [])
+            if self._is_valuable_token(str(word).strip())
+        }
+        right_words = {
+            word for word in right.get("context_words", [])
+            if self._is_valuable_token(str(word).strip())
+        }
+        if not left_words and not right_words:
+            word_score = 0.0
+        else:
+            word_score = len(left_words & right_words) / float(max(1, len(left_words | right_words)))
+        bucket_bonus = 0.12 if left.get("position_bucket") == right.get("position_bucket") else 0.0
+        return max(0.0, min(1.0, word_score + bucket_bonus))
+
+    def _v2_ensure_context_sense(self, entry, context):
+        signature = self._v2_context_signature(context)
+        if not signature:
+            return None
+        senses = entry.setdefault("context_senses", {})
+        initial_weights = self._v2_clean_category_scores(entry.get("category_weights", {}))
+        sense = senses.setdefault(signature, {
+            "signature": signature,
+            "context": context,
+            "category_weights": {
+                category: round(float(value) * 0.35, 6)
+                for category, value in initial_weights.items()
+            },
+            "effective_category_scores": self._v2_clean_category_scores(entry.get("effective_category_scores", {})),
+            "category_evidence_count": 0,
+            "occurrence_count": 0,
+            "last_seen_iter": 0,
+            "rating_evidence": {},
+        })
+        sense["context"] = context
+        sense["category_weights"] = self._v2_clean_category_scores(sense.get("category_weights", {}))
+        sense["effective_category_scores"] = self._v2_clean_category_scores(sense.get("effective_category_scores", {}))
+        sense.setdefault("category_evidence_count", 0)
+        sense.setdefault("occurrence_count", 0)
+        sense.setdefault("last_seen_iter", 0)
+        sense.setdefault("rating_evidence", {})
+        return sense
+
+    def _v2_prune_context_senses(self, entry, limit=24):
+        senses = entry.get("context_senses", {})
+        if not isinstance(senses, dict) or len(senses) <= limit:
+            return
+
+        def rank(item):
+            _, sense = item
+            if not isinstance(sense, dict):
+                return (-1, -1, -1)
+            return (
+                int(sense.get("category_evidence_count", 0)),
+                int(sense.get("occurrence_count", 0)),
+                int(sense.get("last_seen_iter", 0)),
+            )
+
+        kept = dict(sorted(senses.items(), key=rank, reverse=True)[:limit])
+        entry["context_senses"] = kept
+
+    def _v2_best_context_sense(self, entry, context):
+        if not isinstance(entry, dict) or not isinstance(context, dict):
+            return None, 0.0
+        senses = entry.get("context_senses", {})
+        if not isinstance(senses, dict):
+            return None, 0.0
+        signature = self._v2_context_signature(context)
+        if signature and isinstance(senses.get(signature), dict):
+            return senses[signature], 1.0
+        best_sense = None
+        best_score = 0.0
+        for sense in senses.values():
+            if not isinstance(sense, dict):
+                continue
+            score = self._v2_context_similarity(context, sense.get("context", {}))
+            if score > best_score:
+                best_sense = sense
+                best_score = score
+        if best_score < 0.22:
+            return None, 0.0
+        return best_sense, best_score
+
+    def _v2_blend_category_weights(self, target, source, scale=1.0):
+        source = self._v2_clean_category_scores(source)
+        for category, value in source.items():
+            target[category] = float(target.get(category, 0.0)) + float(value) * float(scale)
+        return target
+
+    def _v2_ensure_phrase_memory_entry(self, memory, text, phrase=None):
+        text = str(text or "").strip().lower()
+        phrase = phrase or {}
+        primary = phrase.get("primary") or phrase.get("machine_primary") or "details"
+        entry = memory.setdefault(text, {
+            "text": text,
+            "tokens": phrase.get("tokens", []),
+            "primary": primary,
+            "machine_primary": primary,
+            "category_scores": phrase.get("category_scores", {}),
+            "clip_heuristic_scores": phrase.get("clip_heuristic_scores", phrase.get("category_scores", {})),
+            "category_weights": self._v2_category_template(0.0),
+            "effective_category_scores": phrase.get("effective_category_scores", phrase.get("category_scores", {})),
+            "category_evidence_count": 0,
+            "rating_evidence": {},
+            "context_senses": {},
+            "occurrence_count": 0,
+            "score": 0.0,
+            "liked_count": 0,
+            "missing_count": 0,
+            "satisfied_count": 0,
+            "resolved_count": 0,
+            "regressed_count": 0,
+            "bad_count": 0,
+            "wanted_axes": {},
+            "satisfied_axes": {},
+            "resolved_axes": {},
+            "positions": {},
+        })
+        entry.setdefault("text", text)
+        entry.setdefault("tokens", phrase.get("tokens", []))
+        entry.setdefault("primary", primary)
+        entry.setdefault("machine_primary", phrase.get("machine_primary", entry.get("primary", primary)))
+        entry["category_scores"] = self._v2_clean_category_scores(entry.get("category_scores", phrase.get("category_scores", {})))
+        entry["clip_heuristic_scores"] = self._v2_clean_category_scores(
+            entry.get("clip_heuristic_scores", entry.get("category_scores", {}))
+        )
+        entry["category_weights"] = self._v2_clean_category_scores(entry.get("category_weights", {}))
+        entry["effective_category_scores"] = self._v2_clean_category_scores(
+            entry.get("effective_category_scores", entry.get("category_scores", {}))
+        )
+        entry.setdefault("category_evidence_count", 0)
+        entry.setdefault("rating_evidence", {})
+        entry.setdefault("context_senses", {})
+        entry.setdefault("occurrence_count", 0)
+        entry.setdefault("score", 0.0)
+        entry.setdefault("liked_count", 0)
+        entry.setdefault("missing_count", 0)
+        entry.setdefault("satisfied_count", 0)
+        entry.setdefault("resolved_count", 0)
+        entry.setdefault("regressed_count", 0)
+        entry.setdefault("bad_count", 0)
+        entry.setdefault("wanted_axes", {})
+        entry.setdefault("satisfied_axes", {})
+        entry.setdefault("resolved_axes", {})
+        entry.setdefault("positions", {})
+        return entry
+
+    def _v2_apply_learned_category_scores(self, item, phrase_memory):
+        if not isinstance(phrase_memory, dict):
+            return item
+        text = str(item.get("text", "")).strip().lower()
+        context = item.get("context", {})
+        entry = phrase_memory.get(text)
+        machine_scores = self._v2_clean_category_scores(item.get("category_scores", {}))
+        weights = self._v2_category_template(0.0)
+        evidence_count = 0
+        context_status = "none"
+        if isinstance(entry, dict):
+            sense, sense_similarity = self._v2_best_context_sense(entry, context)
+            entry_scale = 0.35 if isinstance(sense, dict) else 1.0
+            self._v2_blend_category_weights(weights, entry.get("category_weights", {}), entry_scale)
+            evidence_count += int(int(entry.get("category_evidence_count", 0)) * entry_scale)
+            if isinstance(sense, dict):
+                self._v2_blend_category_weights(
+                    weights,
+                    sense.get("category_weights", {}),
+                    1.20 + sense_similarity * 0.65,
+                )
+                evidence_count += int(int(sense.get("category_evidence_count", 0)) * max(0.35, sense_similarity))
+                context_status = "exact" if sense_similarity >= 0.99 else f"near:{sense_similarity:.2f}"
+
+        for word in self._v2_phrase_words(text):
+            token_entry = phrase_memory.get(word)
+            if not isinstance(token_entry, dict) or token_entry is entry:
+                continue
+            self._v2_blend_category_weights(weights, token_entry.get("category_weights", {}), 0.32)
+            evidence_count += int(int(token_entry.get("category_evidence_count", 0)) * 0.22)
+            sense, sense_similarity = self._v2_best_context_sense(token_entry, context)
+            if isinstance(sense, dict):
+                self._v2_blend_category_weights(
+                    weights,
+                    sense.get("category_weights", {}),
+                    0.65 + sense_similarity * 0.55,
+                )
+                evidence_count += int(int(sense.get("category_evidence_count", 0)) * max(0.42, sense_similarity))
+                context_status = "exact" if sense_similarity >= 0.99 else f"near:{sense_similarity:.2f}"
+
+        effective = self._v2_effective_category_scores(machine_scores, weights, evidence_count)
+        primary, confidence = self._v2_scores_primary(effective)
+        machine_primary, machine_confidence = self._v2_scores_primary(machine_scores)
+        item["clip_heuristic_scores"] = machine_scores
+        item["machine_primary"] = machine_primary
+        item["machine_confidence"] = round(float(machine_confidence), 4)
+        item["category_weights"] = weights
+        item["category_evidence_count"] = evidence_count
+        item["effective_category_scores"] = effective
+        item["category_scores"] = effective
+        item["primary"] = primary
+        item["confidence"] = round(float(confidence), 4)
+        item["source"] = "rating_weighted" if evidence_count > 0 else item.get("source", "heuristic")
+        item["context_signature"] = self._v2_context_signature(context)
+        item["context_source"] = context_status
+        return item
+
+    def _v2_concept_units_for_run(self, last_run):
+        units = []
+        seen = set()
+
+        def add(text, kind, phrase=None, position=0, context=None):
+            clean = str(text or "").strip().lower()
+            context = context or {}
+            seen_key = f"{clean}:{self._v2_context_signature(context)}"
+            if len(clean) < 3 or seen_key in seen or not any(c.isalpha() for c in clean):
+                return
+            words = self._v2_phrase_words(clean)
+            if not words:
+                return
+            seen.add(seen_key)
+            source = phrase or {}
+            scores = source.get("clip_heuristic_scores", source.get("category_scores", self._v2_heuristic_scores(clean)))
+            primary, confidence = self._v2_scores_primary(scores)
+            units.append({
+                "text": clean,
+                "kind": kind,
+                "tokens": source.get("tokens", words),
+                "position": int(position),
+                "context": context,
+                "context_signature": self._v2_context_signature(context),
+                "category_scores": self._v2_clean_category_scores(scores),
+                "clip_heuristic_scores": self._v2_clean_category_scores(scores),
+                "effective_category_scores": self._v2_clean_category_scores(source.get("effective_category_scores", scores)),
+                "primary": source.get("primary", primary),
+                "machine_primary": source.get("machine_primary", primary),
+                "confidence": source.get("confidence", round(float(confidence), 4)),
+            })
+
+        for index, phrase in enumerate(last_run.get("phrases", []) or []):
+            if not isinstance(phrase, dict):
+                continue
+            text = str(phrase.get("text", "")).strip().lower()
+            phrase_context = phrase.get("context") or self._v2_context_for_phrase(last_run.get("phrases", []), index, text)
+            add(text, "phrase", phrase, phrase.get("position", index), phrase_context)
+            words = self._v2_phrase_words(text)
+            for word_index, word in enumerate(words):
+                token_context = self._v2_context_for_phrase(last_run.get("phrases", []), index, word)
+                add(word, "token", phrase, phrase.get("position", index) + word_index, token_context)
+            for size in (2, 3):
+                for start in range(0, max(0, len(words) - size + 1)):
+                    add(" ".join(words[start:start + size]), "ngram", phrase, phrase.get("position", index) + start, phrase_context)
+
+        prompt = str(last_run.get("prompt", "") or "")
+        prompt_segments = [
+            {"text": segment.strip()}
+            for segment in re.split(r"[,.;\n]+", prompt)
+            if segment.strip()
+        ]
+        for position, segment in enumerate(prompt_segments):
+            add(segment.get("text", ""), "prompt_phrase", None, position, self._v2_context_for_phrase(prompt_segments, position, segment.get("text", "")))
+        return units[:96]
+
+    def _v2_classify_phrases(self, clip, phrases, global_state=None):
         phrase_items = []
         uncertain = []
-        for index, phrase in enumerate(phrases or []):
+        phrase_memory = (global_state or {}).get("phrase_memory", {}) if isinstance(global_state, dict) else {}
+        phrases = phrases or []
+        for index, phrase in enumerate(phrases):
             text = str(phrase.get("text", "")).strip().lower()
             if not text:
                 continue
             scores = self._v2_heuristic_scores(text)
             primary, confidence = self._v2_scores_primary(scores)
+            context = self._v2_context_for_phrase(phrases, index, text)
             item = {
                 "text": text,
                 "tokens": list(phrase.get("tokens", [])),
                 "position": index,
+                "context": context,
+                "context_signature": self._v2_context_signature(context),
                 "category_scores": scores,
+                "clip_heuristic_scores": dict(scores),
+                "machine_primary": primary,
+                "machine_confidence": round(float(confidence), 4),
+                "category_weights": self._v2_category_template(0.0),
+                "category_evidence_count": 0,
+                "effective_category_scores": dict(scores),
                 "primary": primary,
                 "confidence": round(float(confidence), 4),
                 "source": "heuristic",
@@ -5885,21 +6257,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 merged = self._v2_merge_clip_category_scores(item["category_scores"], clip_scores)
                 primary, confidence = self._v2_scores_primary(merged)
                 item["category_scores"] = merged
+                item["clip_heuristic_scores"] = dict(merged)
+                item["machine_primary"] = primary
+                item["machine_confidence"] = round(float(confidence), 4)
+                item["effective_category_scores"] = dict(merged)
                 item["primary"] = primary
                 item["confidence"] = round(float(confidence), 4)
                 item["source"] = "clip_similarity"
+
+        for item in phrase_items:
+            self._v2_apply_learned_category_scores(item, phrase_memory)
 
         return phrase_items
 
     def _v2_axis_matches_category(self, axis, category):
         category = (category or "details").lower()
-        if axis == "action":
-            return category in {"action", "camera"}
-        if axis == "details":
-            return category in {"details", "appearance", "environment", "camera"}
-        if axis == "quality":
-            return category in {"quality", "style"}
-        return False
+        return category in self._v2_axis_categories(axis)
 
     def _v2_order_axes(self, axes):
         axis_set = {axis for axis in axes or [] if axis in V2_FEEDBACK_AXES}
@@ -5911,6 +6284,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             for axis in V2_FEEDBACK_AXES
             if self._v2_axis_matches_category(axis, category)
         }
+
+    def _v2_axes_for_scores(self, scores):
+        primary, confidence = self._v2_scores_primary(scores)
+        axes = set(self._v2_axes_for_category(primary))
+        for category, score in (scores or {}).items():
+            if float(score or 0.0) >= max(0.28, float(confidence) * 0.72):
+                axes |= self._v2_axes_for_category(category)
+        return axes
 
     def _v2_axis_feedback(self, rating_profile, previous_missing_axes=None):
         key = rating_profile.get("key", "")
@@ -5961,7 +6342,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return "Lucky memory: no learning update."
         memory = global_state.setdefault("phrase_memory", {})
-        phrases = last_run.get("phrases", [])
+        concepts = self._v2_concept_units_for_run(last_run)
         axis_feedback = axis_feedback or self._v2_axis_feedback(
             rating_profile,
             global_state.get("last_missing_axes", []),
@@ -5972,57 +6353,94 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         regressed_axes = set(axis_feedback.get("regressed_axes", []))
         reward = float(rating_profile.get("reward", 0.0))
         touched = []
-        for phrase in phrases:
+        for phrase in concepts:
             text = str(phrase.get("text", "")).strip().lower()
             if not text:
                 continue
-            primary = phrase.get("primary", "details")
-            entry = memory.setdefault(text, {
-                "text": text,
-                "tokens": phrase.get("tokens", []),
-                "primary": primary,
-                "category_scores": phrase.get("category_scores", {}),
-                "score": 0.0,
-                "liked_count": 0,
-                "missing_count": 0,
-                "satisfied_count": 0,
-                "resolved_count": 0,
-                "regressed_count": 0,
-                "bad_count": 0,
-                "wanted_axes": {},
-                "satisfied_axes": {},
-                "resolved_axes": {},
-                "positions": {},
-            })
-            entry["primary"] = primary
-            entry["category_scores"] = phrase.get("category_scores", entry.get("category_scores", {}))
+            entry = self._v2_ensure_phrase_memory_entry(memory, text, phrase)
+            entry["kind"] = phrase.get("kind", entry.get("kind", "phrase"))
+            entry["machine_primary"] = phrase.get("machine_primary", entry.get("machine_primary", entry.get("primary", "details")))
+            entry["clip_heuristic_scores"] = self._v2_clean_category_scores(
+                phrase.get("clip_heuristic_scores", phrase.get("category_scores", entry.get("clip_heuristic_scores", {})))
+            )
+            context = phrase.get("context", {})
+            context_sense = self._v2_ensure_context_sense(entry, context)
+            if isinstance(context_sense, dict):
+                context_sense["occurrence_count"] = int(context_sense.get("occurrence_count", 0)) + 1
+                context_sense["last_seen_iter"] = int(iter_num)
             entry["tokens"] = phrase.get("tokens", entry.get("tokens", []))
+            entry["occurrence_count"] = int(entry.get("occurrence_count", 0)) + 1
+            entry.setdefault("first_seen_iter", int(iter_num))
             entry.setdefault("positions", {})[str(int(phrase.get("position", 0)))] = (
                 int(entry.setdefault("positions", {}).get(str(int(phrase.get("position", 0))), 0)) + 1
             )
 
-            phrase_axes = self._v2_axes_for_category(primary)
+            machine_scores = self._v2_clean_category_scores(entry.get("clip_heuristic_scores", {}))
+            weights = self._v2_clean_category_scores(entry.get("category_weights", {}))
+            effective_before = self._v2_effective_category_scores(
+                machine_scores,
+                weights,
+                int(entry.get("category_evidence_count", 0)),
+            )
+            phrase_axes = self._v2_axes_for_scores(effective_before)
             matched_missing = phrase_axes & missing_axes
             matched_satisfied = phrase_axes & satisfied_axes
             matched_resolved = phrase_axes & resolved_axes
             matched_regressed = phrase_axes & regressed_axes
+            rating_evidence = entry.setdefault("rating_evidence", {})
+            weights_before = dict(weights)
+
+            def bump_evidence(name, axes):
+                axis_counts = rating_evidence.setdefault(name, {})
+                for axis in self._v2_order_axes(axes):
+                    axis_counts[axis] = int(axis_counts.get(axis, 0)) + 1
+
+            def train_axis(axis, amount, prefer_current=True):
+                for category in self._v2_axis_categories(axis):
+                    relation = self._v2_axis_category_weight(axis, category, effective_before if prefer_current else machine_scores)
+                    weights[category] = float(weights.get(category, 0.0)) + amount * relation
 
             if rating_profile.get("key") == "like":
                 delta = 0.55
                 entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+                rating_evidence["liked"] = int(rating_evidence.get("liked", 0)) + 1
+                entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+                satisfied_axis_counts = entry.setdefault("satisfied_axes", {})
+                for axis in V2_FEEDBACK_AXES:
+                    satisfied_axis_counts[axis] = int(satisfied_axis_counts.get(axis, 0)) + 1
+                bump_evidence("satisfied_axes", V2_FEEDBACK_AXES)
+                for category, score in effective_before.items():
+                    if float(score) >= 0.28:
+                        weights[category] = float(weights.get(category, 0.0)) + 0.13
+                for axis in V2_FEEDBACK_AXES:
+                    train_axis(axis, 0.035)
             elif rating_profile.get("key") == "awful":
                 delta = -0.90
                 entry["bad_count"] = int(entry.get("bad_count", 0)) + 1
+                rating_evidence["bad"] = int(rating_evidence.get("bad", 0)) + 1
+                primary_before, _ = self._v2_scores_primary(effective_before)
+                weights[primary_before] = float(weights.get(primary_before, 0.0)) - 0.045
+                bump_evidence("missing_axes", missing_axes)
+                for axis in self._v2_order_axes(missing_axes):
+                    train_axis(axis, 0.045, prefer_current=False)
             elif missing_axes:
+                for axis in self._v2_order_axes(missing_axes - matched_missing):
+                    train_axis(axis, 0.14, prefer_current=False)
                 if matched_missing:
                     delta = 0.34 + (0.08 if matched_regressed else 0.0)
                     entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+                    for axis in self._v2_order_axes(matched_missing):
+                        train_axis(axis, 0.18 + (0.05 if axis in matched_regressed else 0.0))
                 elif matched_resolved:
                     delta = 0.46
                     entry["resolved_count"] = int(entry.get("resolved_count", 0)) + 1
+                    for axis in self._v2_order_axes(matched_resolved):
+                        train_axis(axis, 0.15)
                 elif matched_satisfied:
                     delta = 0.20
                     entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+                    for axis in self._v2_order_axes(matched_satisfied):
+                        train_axis(axis, 0.075)
                 else:
                     delta = 0.04
 
@@ -6035,9 +6453,53 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 resolved_axis_counts = entry.setdefault("resolved_axes", {})
                 for axis in self._v2_order_axes(matched_resolved):
                     resolved_axis_counts[axis] = int(resolved_axis_counts.get(axis, 0)) + 1
+                bump_evidence("missing_axes", missing_axes)
+                bump_evidence("satisfied_axes", satisfied_axes)
+                bump_evidence("resolved_axes", resolved_axes)
+                bump_evidence("regressed_axes", regressed_axes)
             else:
                 delta = reward * 0.20
+                for category, score in effective_before.items():
+                    if float(score) >= 0.32:
+                        weights[category] = float(weights.get(category, 0.0)) + reward * 0.035
 
+            entry["category_weights"] = {
+                category: round(max(-1.5, min(2.5, float(value))), 6)
+                for category, value in weights.items()
+            }
+            entry["category_evidence_count"] = int(entry.get("category_evidence_count", 0)) + (
+                0 if rating_profile.get("key") == "discover" else 1
+            )
+            if isinstance(context_sense, dict) and rating_profile.get("key") != "discover":
+                sense_weights = self._v2_clean_category_scores(context_sense.get("category_weights", {}))
+                for category, value in entry["category_weights"].items():
+                    sense_weights[category] = float(sense_weights.get(category, 0.0)) + (
+                        float(value) - float(weights_before.get(category, 0.0))
+                    ) * 1.15
+                context_sense["category_weights"] = {
+                    category: round(max(-1.5, min(2.5, float(value))), 6)
+                    for category, value in sense_weights.items()
+                }
+                context_sense["category_evidence_count"] = int(context_sense.get("category_evidence_count", 0)) + 1
+                context_sense["effective_category_scores"] = self._v2_effective_category_scores(
+                    machine_scores,
+                    context_sense["category_weights"],
+                    int(context_sense.get("category_evidence_count", 0)),
+                )
+                sense_evidence = context_sense.setdefault("rating_evidence", {})
+                sense_evidence[rating_profile.get("key", "unknown")] = (
+                    int(sense_evidence.get(rating_profile.get("key", "unknown"), 0)) + 1
+                )
+                self._v2_prune_context_senses(entry)
+            entry["effective_category_scores"] = self._v2_effective_category_scores(
+                machine_scores,
+                entry["category_weights"],
+                int(entry.get("category_evidence_count", 0)),
+            )
+            primary, confidence = self._v2_scores_primary(entry["effective_category_scores"])
+            entry["primary"] = primary
+            entry["confidence"] = round(float(confidence), 4)
+            entry["category_scores"] = dict(entry["effective_category_scores"])
             entry["score"] = round(max(-3.0, min(6.0, float(entry.get("score", 0.0)) + delta)), 4)
             entry["last_seen_iter"] = int(iter_num)
             memory[text] = entry
@@ -6247,8 +6709,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return prompt, "Prompt emphasis: none."
         candidates = []
         for phrase in phrases:
-            primary = phrase.get("primary", "details")
-            if any(self._v2_axis_matches_category(axis, primary) for axis in missing_axes):
+            phrase_axes = self._v2_axes_for_scores(
+                phrase.get("effective_category_scores", phrase.get("category_scores", {})) or
+                {phrase.get("primary", "details"): 1.0}
+            )
+            if phrase_axes & missing_axes:
                 candidates.append(phrase.get("text", ""))
         candidates = [item for item in candidates if item]
         if not candidates:
@@ -6329,10 +6794,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         phrase_by_category = {}
         all_phrase_words = set()
         for phrase in phrases:
-            primary = phrase.get("primary", "details")
+            scores = (
+                phrase.get("effective_category_scores", phrase.get("category_scores", {})) or
+                {phrase.get("primary", "details"): 1.0}
+            )
+            primary, confidence = self._v2_scores_primary(scores)
             words = self._v2_lora_words(phrase.get("text", ""))
             all_phrase_words |= words
             phrase_by_category.setdefault(primary, set()).update(words)
+            for category, score in scores.items():
+                if category != primary and float(score or 0.0) >= max(0.30, confidence * 0.72):
+                    phrase_by_category.setdefault(category, set()).update(words)
         suggestions = {}
         parts = []
         axis_feedback = axis_feedback or self._v2_axis_feedback(
@@ -6449,7 +6921,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._v2_update_streaks(global_state, learning_profile)
 
         analysis_prompt = self._v2_prompt_key(positive_prompt)
-        phrases = self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt))
+        phrases = self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt), global_state)
         if im_feeling_lucky:
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
             encoded_role = "lucky prompt"
@@ -6495,7 +6967,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state["loss_history"] = loss_history
 
         phrase_preview = "; ".join(
-            f"{item['text']}[{item['primary']}:{item['confidence']:.2f}/{item['source']}]"
+            (
+                f"{item['text']}["
+                f"{item.get('machine_primary', item['primary'])}->{item['primary']}:"
+                f"{item['confidence']:.2f}/{item['source']}/"
+                f"ctx={item.get('context_source', 'none')}/"
+                f"e{int(item.get('category_evidence_count', 0))}]"
+            )
             for item in phrases[:10]
         ) or "none"
         prompt_preview = re.sub(r"\s+", " ", prompt_to_encode).strip()
