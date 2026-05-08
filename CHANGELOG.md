@@ -14,6 +14,8 @@ Improved `FunPack Video Refiner V2` training data output with clearer sections a
 
 Updated `FunPack Video Refiner V2` to remember liked action/detail phrase clusters with their neighbors and use those ordered clusters before weaker ngram or token memory when repairing missing axes.
 
+Added `Wrong details`, `Wrong action`, and `Wrong details + action` ratings for good-looking videos that do not match the requested intent; these preserve satisfied quality/composition signals while marking the mismatched action/detail context for repair.
+
 ## [2.2.0] - 2026-05-07
 
 ### Added

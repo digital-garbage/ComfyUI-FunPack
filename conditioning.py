@@ -5474,6 +5474,9 @@ V2_RATING_LABELS = [
     "Missing action",
     "Missing quality",
     "Missing details + action",
+    "Wrong details",
+    "Wrong action",
+    "Wrong details + action",
     "Missing details + quality",
     "Missing action + quality",
     "Awful",
@@ -5487,6 +5490,9 @@ V2_RATING_PROFILES = {
     "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
     "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
     "Missing details + action": {"key": "missing_details_action", "reward": -0.10, "level": 3, "missing_axes": ["details", "action"]},
+    "Wrong details": {"key": "wrong_details", "reward": 0.20, "level": 5, "missing_axes": ["details"], "wrong_axes": ["details"]},
+    "Wrong action": {"key": "wrong_action", "reward": 0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"]},
+    "Wrong details + action": {"key": "wrong_details_action", "reward": 0.00, "level": 3, "missing_axes": ["details", "action"], "wrong_axes": ["details", "action"]},
     "Missing details + quality": {"key": "missing_details_quality", "reward": -0.40, "level": 2, "missing_axes": ["details", "quality"]},
     "Missing action + quality": {"key": "missing_action_quality", "reward": -0.55, "level": 1, "missing_axes": ["action", "quality"]},
     "Awful": {"key": "awful", "reward": -0.90, "level": 0, "missing_axes": ["details", "action", "quality"]},
@@ -5509,6 +5515,12 @@ V2_RATING_ALIASES = {
     "Missing quality + concepts": "Missing action + quality",
     "Missing quality + action": "Missing action + quality",
     "Missing action + details": "Missing details + action",
+    "Wrong action + details": "Wrong details + action",
+    "Wrong intent": "Wrong details + action",
+    "Wrong concept": "Wrong action",
+    "Wrong concepts": "Wrong action",
+    "Wrong movement": "Wrong action",
+    "Wrong micro-movements": "Wrong details",
     "Missing everything": "Awful",
 }
 
@@ -6105,10 +6117,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "satisfied_count": 0,
             "resolved_count": 0,
             "regressed_count": 0,
+            "wrong_count": 0,
             "bad_count": 0,
             "wanted_axes": {},
             "satisfied_axes": {},
             "resolved_axes": {},
+            "wrong_axes": {},
             "positions": {},
         })
         entry.setdefault("text", text)
@@ -6133,10 +6147,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         entry.setdefault("satisfied_count", 0)
         entry.setdefault("resolved_count", 0)
         entry.setdefault("regressed_count", 0)
+        entry.setdefault("wrong_count", 0)
         entry.setdefault("bad_count", 0)
         entry.setdefault("wanted_axes", {})
         entry.setdefault("satisfied_axes", {})
         entry.setdefault("resolved_axes", {})
+        entry.setdefault("wrong_axes", {})
         entry.setdefault("positions", {})
         return entry
 
@@ -6339,14 +6355,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "satisfied_axes": [],
                 "resolved_axes": [],
                 "regressed_axes": [],
+                "wrong_axes": [],
             }
 
         all_axes = set(V2_FEEDBACK_AXES)
         missing_axes = set(rating_profile.get("missing_axes", [])) & all_axes
+        wrong_axes = set(rating_profile.get("wrong_axes", [])) & all_axes
         if key == "awful":
             missing_axes = set(all_axes)
         elif key == "like":
             missing_axes = set()
+            wrong_axes = set()
 
         has_previous_axis_signal = previous_missing_axes is not None
         previous_missing = set(previous_missing_axes or []) & all_axes
@@ -6359,6 +6378,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "satisfied_axes": self._v2_order_axes(satisfied_axes),
             "resolved_axes": self._v2_order_axes(resolved_axes),
             "regressed_axes": self._v2_order_axes(regressed_axes),
+            "wrong_axes": self._v2_order_axes(wrong_axes),
         }
 
     def _v2_axis_feedback_status(self, axis_feedback):
@@ -6373,7 +6393,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"Axis feedback: missing {fmt('missing_axes')} | "
             f"satisfied {fmt('satisfied_axes')} | "
             f"resolved {fmt('resolved_axes')} | "
-            f"regressed {fmt('regressed_axes')}."
+            f"regressed {fmt('regressed_axes')} | "
+            f"wrong {fmt('wrong_axes')}."
         )
 
     def _v2_top_category_summary(self, scores, limit=3):
@@ -6397,6 +6418,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return (
                 "Guidance: '-Just forget it-' skipped learning. Use it for workflow/model/seed failures; "
                 "use a missing-axis rating when the prompt should teach the node."
+            )
+        if learning_profile.get("wrong_axes"):
+            return (
+                "Guidance: wrong-intent rating preserved satisfied axes but marked the current "
+                "action/detail context as wrong for this request. The next run will repair from intent "
+                "and preferred context clusters."
             )
 
         missing_axes = set(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else set()
@@ -6586,6 +6613,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
         resolved_axes = set(axis_feedback.get("resolved_axes", []))
         regressed_axes = set(axis_feedback.get("regressed_axes", []))
+        wrong_axes = set(axis_feedback.get("wrong_axes", []))
         reward = float(rating_profile.get("reward", 0.0))
         preferred_context_status = self._v2_update_preferred_context_memory(
             global_state,
@@ -6633,6 +6661,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             matched_satisfied = phrase_axes & satisfied_axes
             matched_resolved = phrase_axes & resolved_axes
             matched_regressed = phrase_axes & regressed_axes
+            matched_wrong = phrase_axes & wrong_axes
             rating_evidence = entry.setdefault("rating_evidence", {})
             weights_before = dict(weights)
 
@@ -6669,6 +6698,32 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 bump_evidence("missing_axes", missing_axes)
                 for axis in self._v2_order_axes(missing_axes):
                     train_axis(axis, 0.045 * kind_scale, prefer_current=False)
+            elif wrong_axes:
+                if matched_wrong:
+                    delta = -0.18 * kind_scale
+                    entry["wrong_count"] = int(entry.get("wrong_count", 0)) + 1
+                    wrong_axis_counts = entry.setdefault("wrong_axes", {})
+                    for axis in self._v2_order_axes(matched_wrong):
+                        wrong_axis_counts[axis] = int(wrong_axis_counts.get(axis, 0)) + 1
+                        train_axis(axis, 0.12 * kind_scale, prefer_current=False)
+                    primary_before, _ = self._v2_scores_primary(effective_before)
+                    weights[primary_before] = float(weights.get(primary_before, 0.0)) - 0.055 * kind_scale
+                elif matched_satisfied:
+                    delta = 0.18 * kind_scale
+                    entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+                    for axis in self._v2_order_axes(matched_satisfied):
+                        train_axis(axis, 0.070 * kind_scale)
+                else:
+                    delta = 0.02 * kind_scale
+
+                wanted_axes = entry.setdefault("wanted_axes", {})
+                for axis in self._v2_order_axes(wrong_axes):
+                    wanted_axes[axis] = int(wanted_axes.get(axis, 0)) + 1
+                satisfied_axis_counts = entry.setdefault("satisfied_axes", {})
+                for axis in self._v2_order_axes(matched_satisfied):
+                    satisfied_axis_counts[axis] = int(satisfied_axis_counts.get(axis, 0)) + 1
+                bump_evidence("wrong_axes", wrong_axes)
+                bump_evidence("satisfied_axes", satisfied_axes)
             elif missing_axes:
                 for axis in self._v2_order_axes(missing_axes - matched_missing):
                     train_axis(axis, 0.14 * kind_scale, prefer_current=False)
@@ -7096,7 +7151,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 min(1.2, axis_hits * 0.34) +
                 min(0.5, evidence * 0.05) +
                 min(0.4, int(entry.get("liked_count", 0) or 0) * 0.08) -
-                min(1.0, int(entry.get("bad_count", 0) or 0) * 0.20)
+                min(1.0, int(entry.get("bad_count", 0) or 0) * 0.20) -
+                min(0.9, int(entry.get("wrong_count", 0) or 0) * 0.16)
             )
             if axes & missing_axes and score > 0.60:
                 add_candidate(entry.get("text", text), axes, score, "memory")
@@ -7186,6 +7242,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             score += min(1.0, int(entry.get("liked_count", 0)) * 0.14)
             score += min(1.2, sum(int(v) for v in entry.get("wanted_axes", {}).values()) * 0.10)
             score -= min(1.6, int(entry.get("bad_count", 0)) * 0.22)
+            score -= min(1.1, int(entry.get("wrong_count", 0)) * 0.18)
             if score <= 0.10:
                 continue
             scored.append((score, entry.get("primary", "details"), str(entry.get("text", text)).strip()))

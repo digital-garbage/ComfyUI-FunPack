@@ -577,3 +577,29 @@ def test_repair_candidates_saved_as_json_lists(tmp_path):
     assert candidates
     assert isinstance(candidates[0]["axes"], list)
     assert "walking" in state["last_run"]["encoded_prompt"]
+
+
+def test_wrong_action_rating_preserves_quality_but_marks_action_wrong():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["walking", "cinematic lighting"]),
+        global_state,
+    )
+    profile = normalize_refiner_v2_rating("Wrong action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {"prompt": "walking cinematic lighting", "phrases": phrases},
+        profile,
+        1,
+        feedback,
+    )
+
+    assert feedback["missing_axes"] == ["action"]
+    assert feedback["wrong_axes"] == ["action"]
+    assert feedback["satisfied_axes"] == ["details", "quality"]
+    assert global_state["phrase_memory"]["walking"]["wrong_count"] == 1
+    assert global_state["phrase_memory"]["cinematic lighting"]["satisfied_count"] == 1
