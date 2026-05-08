@@ -737,6 +737,82 @@ def test_refiner_training_info_uses_readable_sections(tmp_path):
     assert "Category compact view:\n-" in training_info
 
 
+def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
+    inputs = FunPackVideoRefinerV2.INPUT_TYPES()
+
+    assert "clip" not in inputs["required"]
+    assert "positive_conditioning" not in inputs["required"]
+    assert "clip" in inputs["optional"]
+    assert "positive_conditioning" in inputs["optional"]
+
+
+def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer(tmp_path, monkeypatch):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    tokenizer_modes = []
+
+    class FakeTokenizer:
+        name_or_path = "DreamFast/gemma-3-12b-it-heretic-v2"
+
+    def fake_get_tokenizer(mode="ltx2"):
+        tokenizer_modes.append(mode)
+        return FakeTokenizer()
+
+    monkeypatch.setattr(refiner, "_get_tokenizer", fake_get_tokenizer)
+    positive_conditioning = [(torch.full((1, 4, 3), 2.0), {"pooled_output": torch.ones(1, 3)})]
+
+    modified, status, training_info, _ = refiner.refine_v2(
+        "woman walking through neon rain",
+        None,
+        "Perfect",
+        "conditioning-input-test",
+        positive_conditioning=positive_conditioning,
+    )
+
+    assert tokenizer_modes == ["ltx2"]
+    assert "CONDITIONING-owned" in status
+    assert "Gemma3 tokenizer loaded: DreamFast/gemma-3-12b-it-heretic-v2" in training_info
+    assert modified[0][0].shape == positive_conditioning[0][0].shape
+
+
+def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(tmp_path, monkeypatch):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    monkeypatch.setattr(refiner, "_get_tokenizer", lambda mode="ltx2": (_ for _ in ()).throw(AssertionError("unexpected tokenizer load")))
+    positive_conditioning = [(torch.full((1, 4, 3), 9.0), {"pooled_output": torch.ones(1, 3)})]
+
+    modified, status, training_info, _ = refiner.refine_v2(
+        "woman walking through neon rain",
+        FakeClip(),
+        "Perfect",
+        "clip-priority-test",
+        positive_conditioning=positive_conditioning,
+    )
+
+    assert "CLIP-owned" in status
+    assert "accepted connected positive CONDITIONING" not in training_info
+    assert torch.allclose(modified[0][0], torch.ones(1, 4, 3))
+
+
+def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    modified, status, training_info, _ = refiner.refine_v2(
+        "woman walking through neon rain",
+        None,
+        "Perfect",
+        "missing-conditioning-test",
+    )
+
+    assert modified == []
+    assert "ERROR: V2 could not prepare conditioning" in status
+    assert "CLIP missing and no positive CONDITIONING connected" in training_info
+
+
 def test_prompt_enhancer_refusal_is_not_stored_as_last_run(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"

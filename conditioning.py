@@ -5701,10 +5701,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return {
             "required": {
                 "positive_prompt": ("STRING", {"multiline": True, "default": "", "placeholder": "Positive prompt"}),
-                "clip": ("CLIP", {"tooltip": "Connected text encoder used for all V2 prompt encoding and similarity checks."}),
                 "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
             },
             "optional": {
+                "clip": ("CLIP", {"tooltip": "Optional text encoder. When connected, V2 encodes the prompt itself."}),
+                "positive_conditioning": ("CONDITIONING", {
+                    "tooltip": "Optional pre-encoded Gemma3/LTX2 conditioning. Used only when CLIP is not connected.",
+                }),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset V2 Session"}),
                 "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional stack from FunPack LoRA Loader. V2 writes prompt-specific suggested weights."}),
@@ -5823,6 +5826,44 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not isinstance(cond, torch.Tensor):
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         return cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions"
+
+    def _v2_gemma3_tokenizer_status(self):
+        tokenizer = self._get_tokenizer("ltx2")
+        if tokenizer is None:
+            return "Gemma3 tokenizer unavailable"
+        source = str(getattr(tokenizer, "name_or_path", "") or "").strip()
+        if source:
+            return f"Gemma3 tokenizer loaded: {source}"
+        return "Gemma3 tokenizer loaded"
+
+    def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning):
+        if clip is not None:
+            cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_text)
+            return cond, meta, encode_status, "CLIP-owned"
+
+        if positive_conditioning is None:
+            return (
+                None,
+                {"pooled_output": None},
+                "CLIP missing and no positive CONDITIONING connected",
+                "CONDITIONING-owned",
+            )
+
+        cond, meta = self._v2_extract_conditioning(positive_conditioning)
+        if not isinstance(cond, torch.Tensor):
+            return (
+                None,
+                {"pooled_output": None},
+                "connected positive CONDITIONING is invalid",
+                "CONDITIONING-owned",
+            )
+
+        tokenizer_status = self._v2_gemma3_tokenizer_status()
+        encode_status = (
+            f"accepted connected positive CONDITIONING "
+            f"({self._get_conditioning_seq_len(cond)} positions); {tokenizer_status}"
+        )
+        return cond, meta, encode_status, "CONDITIONING-owned"
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -8071,9 +8112,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_history["lora_weight_suggestions"] = suggestions
         return "LoRA suggestions: " + " | ".join(parts)
 
-    def refine_v2(self, positive_prompt, clip, rating, refinement_key="",
+    def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
-                  refinement_key_input=""):
+                  refinement_key_input="", positive_conditioning=None):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -8150,7 +8191,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
             encoded_role = "refusal passthrough"
             refusal_status = "Current prompt refused by enhancer; storage skipped."
-        elif im_feeling_lucky:
+        elif im_feeling_lucky and clip is not None:
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
             encoded_role = "lucky prompt"
         else:
@@ -8170,13 +8211,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axis_feedback,
                 intent_phrases=intent_phrases,
             )
-            lucky_status = f"Lucky: off | trained memory only. {emphasis_status}"
+            if im_feeling_lucky and clip is None:
+                lucky_status = f"Lucky: unavailable without CLIP | connected CONDITIONING accepted. {emphasis_status}"
+            else:
+                lucky_status = f"Lucky: off | trained memory only. {emphasis_status}"
             encoded_role = "current prompt"
 
-        cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_to_encode)
+        cond, meta, encode_status, conditioning_owner = self._v2_conditioning_source(
+            clip,
+            prompt_to_encode,
+            positive_conditioning,
+        )
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
-            status = f"ERROR: V2 could not encode prompt | {encode_status}"
+            status = f"ERROR: V2 could not prepare conditioning | {encode_status}"
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
             return ([], status, training_info, fallback_graph)
 
@@ -8300,7 +8348,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         refusal_status_line = f"\n{refusal_status}" if refusal_status else ""
         status = (
-            f"V2 {state_status} | CLIP-owned | Rating {rating_label} | Iter {global_state['total_iterations']} | "
+            f"V2 {state_status} | {conditioning_owner} | Rating {rating_label} | Iter {global_state['total_iterations']} | "
             f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
             f"{adaptation_status}\n"
             f"{training_guidance}\n"

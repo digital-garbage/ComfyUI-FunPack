@@ -2,6 +2,10 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.3.3
+
+Refiner V2 now supports the restored pre-encoded conditioning workflow: connect `positive_conditioning` without `CLIP` and it accepts the finished Gemma3/LTX2 conditioning while loading only the Gemma3 tokenizer. If `CLIP` is connected, V2 still encodes the prompt itself and ignores the fallback conditioning path.
+
 ## Updates in 2.3.2
 
 Refiner V2 now learns original-intent alignment when `user_intent_prompt` stays the same but an enhancer gives different `positive_prompt` variants. Ratings teach it which intent-enhance pairs represented the original request, which original phrases were missing, and which enhancer-only additions were rejected.

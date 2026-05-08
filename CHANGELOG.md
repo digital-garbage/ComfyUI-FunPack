@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.3.3] - 2026-05-08
+
+### Fixed
+
+Fixed Refiner V2 so `CLIP` and pre-encoded `positive_conditioning` can both be optional inputs. When `CLIP` is connected, V2 keeps owning prompt encoding as before. When `CLIP` is not connected but `positive_conditioning` is connected, V2 accepts the finished Gemma3/LTX2 conditioning, uses the prompt for analysis, and loads only the Gemma3 tokenizer.
+
 ## [2.3.2] - 2026-05-08
 
 ### Added
