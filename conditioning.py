@@ -506,6 +506,28 @@ class FunPackVideoRefiner:
             return re.sub(r"\s+", " ", prompt)
         return prompt
 
+    def _prompt_looks_like_refusal(self, prompt: str) -> bool:
+        text = re.sub(r"\s+", " ", str(prompt or "").strip().lower())
+        if not text:
+            return False
+        text = text.replace("’", "'").replace("`", "'")
+        prefix = text[:520]
+        refusal_patterns = (
+            r"^(?:i'?m|i am)?\s*sorry\b.{0,120}\b(?:can(?:not|'?t)|unable|not able|won'?t)\b.{0,120}\b(?:help|assist|comply|fulfill|provide|create|generate|do that|with this request)\b",
+            r"^(?:i|we)\s+(?:can(?:not|'?t)|won'?t|am unable|are unable|am not able|are not able)\b.{0,120}\b(?:help|assist|comply|fulfill|provide|create|generate|do that|with this request)\b",
+            r"^as an ai\b.{0,160}\b(?:can(?:not|'?t)|unable|not able|won'?t)\b.{0,120}\b(?:help|assist|comply|fulfill|provide|create|generate)\b",
+            r"^(?:i|we)\s+(?:must|have to|need to)\s+(?:decline|refuse)\b",
+        )
+        return any(re.search(pattern, prefix) for pattern in refusal_patterns)
+
+    def _v2_run_looks_like_refusal(self, run):
+        if not isinstance(run, dict):
+            return False
+        return (
+            self._prompt_looks_like_refusal(run.get("prompt", "")) or
+            self._prompt_looks_like_refusal(run.get("encoded_prompt", ""))
+        )
+
     def _get_conditioning_seq_len(self, conditioning: torch.Tensor) -> int:
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
             return 0
@@ -6410,8 +6432,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             context = item.get("context_source", "none")
             evidence = int(item.get("category_evidence_count", 0))
             top = self._v2_top_category_summary(item.get("effective_category_scores", item.get("category_scores", {})), limit=2)
-            parts.append(f"{text}: {machine}->{effective}, ctx={context}, e={evidence}, top={top}")
-        return "Category diagnostics: " + (" | ".join(parts) if parts else "none")
+            parts.append(f"- {text}: {machine}->{effective}, ctx={context}, evidence={evidence}, top={top}")
+        return "Category diagnostics:\n" + ("\n".join(parts) if parts else "none")
 
     def _v2_update_phrase_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
@@ -6985,8 +7007,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("axis_conditioning_memory", {})
         global_state.setdefault("lora_weight_memory", {})
         global_state.setdefault("loss_history", [])
-        has_previous_run = isinstance(state.get("last_run"), dict)
-        learning_profile = rating_profile if has_previous_run else dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
+        previous_run = state.get("last_run")
+        previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
+        has_previous_run = isinstance(previous_run, dict) and not previous_run_refusal
+        if previous_run_refusal:
+            learning_profile = dict(rating_profile)
+            learning_profile["skip_learning"] = True
+            learning_profile["refusal_filtered"] = True
+        else:
+            learning_profile = rating_profile if has_previous_run else dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
         previous_rating_label = str(global_state.get("last_rating_label", "Initial discovery"))
         previous_missing_axes = (
             list(global_state.get("last_missing_axes", []))
@@ -6997,18 +7026,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         memory_status = self._v2_update_phrase_memory(
             global_state,
-            state.get("last_run"),
+            previous_run,
             learning_profile,
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
-        self._v2_update_conditioning_memory(global_state, state.get("last_run"), learning_profile, axis_feedback)
+        self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
 
         analysis_prompt = self._v2_prompt_key(positive_prompt)
-        phrases = self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt), global_state)
-        if im_feeling_lucky:
+        current_prompt_refusal = self._prompt_looks_like_refusal(analysis_prompt)
+        phrases = [] if current_prompt_refusal else self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt), global_state)
+        refusal_status = ""
+        if current_prompt_refusal:
+            prompt_to_encode = analysis_prompt
+            lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
+            encoded_role = "refusal passthrough"
+            refusal_status = "Current prompt refused by enhancer; storage skipped."
+        elif im_feeling_lucky:
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
             encoded_role = "lucky prompt"
         else:
@@ -7025,36 +7061,45 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile, axis_feedback)
         prompt_key = self._v2_prompt_key(analysis_prompt)
-        prompt_history = state.setdefault("prompt_histories", {}).setdefault(prompt_key, {
-            "canonical_prompt": analysis_prompt,
-            "history": [],
-        })
-        lora_status = self._v2_update_lora_suggestions(
-            lora_stack,
-            prompt_history,
-            global_state,
-            phrases,
-            learning_profile,
-            axis_feedback,
-        )
+        prompt_history = None
+        if current_prompt_refusal:
+            lora_status = "LoRA suggestions: skipped for prompt-enhancer refusal."
+        else:
+            prompt_history = state.setdefault("prompt_histories", {}).setdefault(prompt_key, {
+                "canonical_prompt": analysis_prompt,
+                "history": [],
+            })
+            lora_status = self._v2_update_lora_suggestions(
+                lora_stack,
+                prompt_history,
+                global_state,
+                phrases,
+                learning_profile,
+                axis_feedback,
+            )
 
-        global_state["total_iterations"] = int(global_state.get("total_iterations", 0)) + 1
+        should_record_iteration = bool(has_previous_run or not current_prompt_refusal)
+        if should_record_iteration:
+            global_state["total_iterations"] = int(global_state.get("total_iterations", 0)) + 1
+        else:
+            global_state["total_iterations"] = int(global_state.get("total_iterations", 0))
         learning_loss = max(0.02, (1.0 - max(-1.0, min(1.0, float(global_state.get("avg_reward_ema", 0.0))))) * 0.5)
         loss_history = list(global_state.get("loss_history", []))[-511:]
-        loss_history.append({
-            "total_iteration": int(global_state["total_iterations"]),
-            "learning_loss": round(float(learning_loss), 6),
-            "rating": int(rating_profile.get("legacy_score", 6)),
-            "rating_label": rating_label,
-            "similarity": 1.0,
-            "scheduler_mode": "automatic",
-            "mode": "clip",
-        })
+        if should_record_iteration:
+            loss_history.append({
+                "total_iteration": int(global_state["total_iterations"]),
+                "learning_loss": round(float(learning_loss), 6),
+                "rating": int(rating_profile.get("legacy_score", 6)),
+                "rating_label": rating_label,
+                "similarity": 1.0,
+                "scheduler_mode": "automatic",
+                "mode": "clip",
+            })
         global_state["loss_history"] = loss_history
 
-        phrase_preview = "; ".join(
+        phrase_preview = "\n".join(
             (
-                f"{item['text']}["
+                f"- {item['text']} ["
                 f"{item.get('machine_primary', item['primary'])}->{item['primary']}:"
                 f"{item['confidence']:.2f}/{item['source']}/"
                 f"ctx={item.get('context_source', 'none')}/"
@@ -7075,25 +7120,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if len(prompt_preview) > 240:
             prompt_preview = prompt_preview[:237].rstrip() + "..."
 
-        prompt_history["canonical_prompt"] = analysis_prompt
-        prompt_history.setdefault("history", [])
-        prompt_history["history"] = list(prompt_history.get("history", []))[-119:]
-        prompt_history["history"].append({
-            "iteration": int(global_state["total_iterations"]),
-            "rating_label": rating_label if has_previous_run else "Unrated",
-            "encoded_role": encoded_role,
-            "prompt": prompt_to_encode,
-            "phrases": phrases,
-        })
+        if prompt_history is not None:
+            prompt_history["canonical_prompt"] = analysis_prompt
+            prompt_history.setdefault("history", [])
+            prompt_history["history"] = list(prompt_history.get("history", []))[-119:]
+            prompt_history["history"].append({
+                "iteration": int(global_state["total_iterations"]),
+                "rating_label": rating_label if has_previous_run else "Unrated",
+                "encoded_role": encoded_role,
+                "prompt": prompt_to_encode,
+                "phrases": phrases,
+            })
 
-        state["last_run"] = {
-            "prompt": analysis_prompt,
-            "encoded_prompt": prompt_to_encode,
-            "conditioning": tensor_to_serializable(refined.detach().cpu()),
-            "phrases": phrases,
-            "rating_label": "Unrated",
-            "iteration": int(global_state["total_iterations"]),
-        }
+        if current_prompt_refusal:
+            state["last_run"] = None
+        else:
+            state["last_run"] = {
+                "prompt": analysis_prompt,
+                "encoded_prompt": prompt_to_encode,
+                "conditioning": tensor_to_serializable(refined.detach().cpu()),
+                "phrases": phrases,
+                "rating_label": "Unrated",
+                "iteration": int(global_state["total_iterations"]),
+            }
         state["global"] = global_state
         self._v2_save_state(state, refinement_key)
 
@@ -7105,28 +7154,59 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             latest_learning_loss=float(learning_loss),
             points=loss_history[-256:],
         )
+        refusal_status_line = f"\n{refusal_status}" if refusal_status else ""
         status = (
             f"V2 {state_status} | CLIP-owned | Rating {rating_label} | Iter {global_state['total_iterations']} | "
             f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
             f"{lucky_status}"
+            f"{refusal_status_line}"
         )
-        training_info = (
-            f"Encoded: {encoded_role} | {encode_status}\n"
-            f"Learning target: {'previous run' if has_previous_run else 'none yet'} | "
-            f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'} | "
-            f"Reason: {'rating skipped learning' if learning_profile.get('skip_learning') else 'waiting for a rated previous run' if not has_previous_run else 'rating trained memory'}\n"
-            f"{self._v2_axis_feedback_status(axis_feedback)}\n"
-            f"Prompt: {prompt_preview}\n"
-            f"{memory_status}\n"
-            f"{category_diagnostics}\n"
-            f"{training_guidance}\n"
-            f"{adaptation_status}\n"
-            f"{lucky_status}\n"
-            f"Category compact view: {phrase_preview}\n"
-            f"{lora_status}"
-        )
+        if previous_run_refusal:
+            learning_reason = "previous prompt was an enhancer refusal"
+        elif learning_profile.get("skip_learning"):
+            learning_reason = "rating skipped learning"
+        elif not has_previous_run:
+            learning_reason = "waiting for a rated previous run"
+        else:
+            learning_reason = "rating trained memory"
+
+        training_info = "\n\n".join([
+            (
+                "Run\n"
+                f"Encoded: {encoded_role} | {encode_status}\n"
+                f"Rating: {rating_label}\n"
+                f"Prompt: {prompt_preview}"
+            ),
+            (
+                "Learning\n"
+                f"Target: {'previous run' if has_previous_run else 'none yet'}\n"
+                f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
+                f"Reason: {learning_reason}\n"
+                f"{self._v2_axis_feedback_status(axis_feedback)}\n"
+                f"{memory_status}"
+            ),
+            (
+                "Prompt Analysis\n"
+                f"{category_diagnostics}\n"
+                f"Category compact view:\n{phrase_preview}"
+            ),
+            (
+                "Adaptation\n"
+                f"{adaptation_status}\n"
+                f"{lucky_status}"
+                f"{refusal_status_line}"
+            ),
+            (
+                "Guidance\n"
+                f"{training_guidance}"
+            ),
+            (
+                "LoRA\n"
+                f"{lora_status}"
+            ),
+        ])
         return ([(refined, meta)], status, training_info, loss_graph)
 
 

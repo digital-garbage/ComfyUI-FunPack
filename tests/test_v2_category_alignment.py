@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from pathlib import Path
@@ -13,6 +14,14 @@ from conditioning import (
     normalize_refiner_v2_rating,
     tensor_to_serializable,
 )
+
+
+class FakeClip:
+    def tokenize(self, text):
+        return text
+
+    def encode_from_tokens_scheduled(self, tokens):
+        return [(torch.ones(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
 
 
 def primary_category(phrase):
@@ -376,3 +385,98 @@ def test_training_diagnostics_explain_learning_state_and_guidance():
     assert "Category diagnostics:" in diagnostics
     assert "smoke:" in diagnostics
     assert "ctx=" in diagnostics
+
+
+def test_refiner_training_info_uses_readable_sections(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    _, _, training_info, _ = refiner.refine_v2(
+        "woman walking through neon rain",
+        FakeClip(),
+        "Perfect",
+        "readable-test",
+    )
+
+    assert "\n\nLearning\n" in training_info
+    assert "\n\nPrompt Analysis\n" in training_info
+    assert "\n\nAdaptation\n" in training_info
+    assert "\n\nLoRA\n" in training_info
+    assert "Category compact view:\n-" in training_info
+
+
+def test_prompt_enhancer_refusal_is_not_stored_as_last_run(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    refiner.refine_v2(
+        "I'm sorry, I cannot help you with this request.",
+        FakeClip(),
+        "Perfect",
+        "refusal-test",
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_run"] is None
+    assert state["prompt_histories"] == {}
+    assert state["global"]["phrase_memory"] == {}
+    assert state["global"]["total_iterations"] == 0
+
+
+def test_saved_refusal_last_run_does_not_train_memory(tmp_path):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "refinement_key": "refusal-test",
+        "state_namespace": "clip",
+        "global": {
+            "total_iterations": 1,
+            "avg_reward_ema": 0.0,
+            "good_streak": 0,
+            "bad_streak": 0,
+            "last_rating_label": "Initial discovery",
+            "last_missing_axes": [],
+            "phrase_memory": {},
+            "axis_conditioning_memory": {},
+            "lora_weight_memory": {},
+            "loss_history": [],
+        },
+        "prompt_histories": {},
+        "last_run": {
+            "prompt": "I'm sorry, I cannot help you with this request.",
+            "encoded_prompt": "I'm sorry, I cannot help you with this request.",
+            "conditioning": {},
+            "phrases": [{"text": "i'm sorry", "tokens": ["sorry"], "primary": "details"}],
+            "rating_label": "Unrated",
+            "iteration": 1,
+        },
+    }), encoding="utf-8")
+    refiner = FunPackVideoRefinerV2()
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    refiner.refine_v2("wide cinematic shot", FakeClip(), "Perfect", "refusal-test")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["global"]["phrase_memory"] == {}
+    assert state["last_run"]["prompt"] == "wide cinematic shot"
+
+
+def test_normal_previous_run_can_train_before_current_refusal_is_discarded(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    refiner.refine_v2("woman walking through neon rain", FakeClip(), "Perfect", "refusal-test")
+    refiner.refine_v2(
+        "Sorry, but I can't assist with that request.",
+        FakeClip(),
+        "Perfect",
+        "refusal-test",
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "woman walking through neon rain" in state["global"]["phrase_memory"]
+    assert state["last_run"] is None
+    assert "sorry, but i can't assist with that request." not in state["prompt_histories"]

@@ -8,6 +8,10 @@ Fixed `FunPack Video Refiner V2` prompt phrase categorization so environment and
 
 Updated Refiner V2 category similarity blending so CLIP category comparisons only help uncertain phrases instead of overriding strong local action, camera, appearance, environment, quality, or detail anchors.
 
+Fixed `FunPack Video Refiner V2` so prompt-enhancer refusal text like "I'm sorry, I cannot help..." is passed through without being saved into prompt history, phrase memory, or future learning targets.
+
+Improved `FunPack Video Refiner V2` training data output with clearer sections and extra line breaks for run state, learning, prompt analysis, adaptation, guidance, and LoRA diagnostics.
+
 ## [2.2.0] - 2026-05-07
 
 ### Added
