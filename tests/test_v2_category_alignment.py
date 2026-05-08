@@ -480,3 +480,83 @@ def test_normal_previous_run_can_train_before_current_refusal_is_discarded(tmp_p
     assert "woman walking through neon rain" in state["global"]["phrase_memory"]
     assert state["last_run"] is None
     assert "sorry, but i can't assist with that request." not in state["prompt_histories"]
+
+
+def test_liked_action_detail_context_clusters_repair_missing_axes():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    liked_phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, [
+            "woman",
+            "walking",
+            "reaching hand",
+            "tiny particles",
+            "rain reflections",
+        ]),
+        global_state,
+    )
+    profile = normalize_refiner_v2_rating("Perfect")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {"prompt": "woman walking reaching hand tiny particles rain reflections", "phrases": liked_phrases},
+        profile,
+        1,
+        feedback,
+    )
+
+    missing_profile = normalize_refiner_v2_rating("Missing details + action")
+    missing_feedback = refiner._v2_axis_feedback(missing_profile, None)
+    current_phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["woman", "rain"]),
+        global_state,
+    )
+
+    repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "woman, rain",
+        current_phrases,
+        global_state,
+        None,
+        missing_feedback,
+    )
+
+    assert "Preferred context stored" in refiner._v2_update_preferred_context_memory(
+        global_state,
+        {"phrases": liked_phrases},
+        profile,
+        2,
+        feedback,
+    )
+    assert "walking" in repaired
+    assert "tiny particles" in repaired
+    assert "preferred_context" in status
+    assert len(candidates) >= 2
+
+
+def test_phrase_clusters_train_more_strongly_than_ngrams_and_tokens():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(
+        None,
+        [{"text": "reaching hand slowly", "tokens": ["reaching", "hand", "slowly"]}],
+        global_state,
+    )
+    profile = normalize_refiner_v2_rating("Perfect")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {"prompt": "reaching hand slowly", "phrases": phrases},
+        profile,
+        1,
+        feedback,
+    )
+
+    phrase_score = global_state["phrase_memory"]["reaching hand slowly"]["score"]
+    ngram_score = global_state["phrase_memory"]["reaching hand"]["score"]
+    token_score = global_state["phrase_memory"]["reaching"]["score"]
+
+    assert phrase_score > ngram_score > token_score

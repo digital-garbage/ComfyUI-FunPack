@@ -5663,6 +5663,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset V2 Session"}),
                 "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional stack from FunPack LoRA Loader. V2 writes prompt-specific suggested weights."}),
+                "user_intent_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Optional raw user/request prompt. V2 can use this as an intent source to repair missing action/detail/quality phrases if an enhancer omits them.",
+                }),
                 "im_feeling_lucky": ("BOOLEAN", {
                     "default": False,
                     "label": "I'm Feeling Lucky",
@@ -5693,6 +5698,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "phrase_memory": {},
                 "axis_conditioning_memory": {},
                 "lora_weight_memory": {},
+                "preferred_context_memory": {},
                 "loss_history": [],
             },
             "prompt_histories": {},
@@ -5714,6 +5720,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data["global"].setdefault("axis_conditioning_memory", {})
             data["global"].setdefault("phrase_memory", {})
             data["global"].setdefault("lora_weight_memory", {})
+            data["global"].setdefault("preferred_context_memory", {})
             data["global"].setdefault("loss_history", [])
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
@@ -6435,6 +6442,128 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             parts.append(f"- {text}: {machine}->{effective}, ctx={context}, evidence={evidence}, top={top}")
         return "Category diagnostics:\n" + ("\n".join(parts) if parts else "none")
 
+    def _v2_phrase_axes(self, phrase):
+        if not isinstance(phrase, dict):
+            return set()
+        scores = phrase.get("effective_category_scores", phrase.get("category_scores", {}))
+        axes = self._v2_axes_for_scores(scores) if isinstance(scores, dict) else set()
+        primary = phrase.get("primary")
+        if primary:
+            axes |= self._v2_axes_for_category(primary)
+        return axes
+
+    def _v2_clean_phrase_text(self, text):
+        text = re.sub(r"\s+", " ", str(text or "").strip().lower()).strip(" ,;:.")
+        if len(text) < 3 or not any(char.isalpha() for char in text):
+            return ""
+        if not self._v2_phrase_words(text):
+            return ""
+        return text
+
+    def _v2_context_cluster_key(self, text, context):
+        signature = self._v2_context_signature(context)
+        key = f"{text}|{signature}" if signature else text
+        return md5(key.encode("utf-8")).hexdigest()
+
+    def _v2_memory_kind_scale(self, kind):
+        if kind in {"prompt_phrase", "phrase"}:
+            return 1.0
+        if kind == "ngram":
+            return 0.62
+        if kind == "token":
+            return 0.24
+        return 0.50
+
+    def _v2_update_preferred_context_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
+        if not isinstance(global_state, dict) or not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
+            return "Preferred context: no update."
+        phrases = [phrase for phrase in last_run.get("phrases", []) or [] if isinstance(phrase, dict)]
+        if not phrases:
+            return "Preferred context: no prompt phrases."
+
+        axis_feedback = axis_feedback or self._v2_axis_feedback(
+            rating_profile,
+            global_state.get("last_missing_axes", []),
+        )
+        positive_axes = set()
+        if rating_profile.get("key") == "like":
+            positive_axes = {"action", "details"}
+            base_delta = 1.0
+        else:
+            positive_axes = (set(axis_feedback.get("satisfied_axes", [])) | set(axis_feedback.get("resolved_axes", []))) & {"action", "details"}
+            base_delta = 0.38
+        if not positive_axes:
+            return "Preferred context: no liked action/detail axes."
+
+        memory = global_state.setdefault("preferred_context_memory", {})
+        touched = []
+        for index, phrase in enumerate(phrases):
+            text = self._v2_clean_phrase_text(phrase.get("text", ""))
+            axes = self._v2_phrase_axes(phrase) & positive_axes
+            if not text or not axes:
+                continue
+
+            start = max(0, index - 3)
+            end = min(len(phrases), index + 4)
+            cluster = []
+            for pos in range(start, end):
+                item_text = self._v2_clean_phrase_text(phrases[pos].get("text", ""))
+                if item_text and item_text not in cluster:
+                    cluster.append(item_text)
+            if text not in cluster:
+                cluster.insert(min(index - start, len(cluster)), text)
+
+            context = phrase.get("context") or self._v2_context_for_phrase(phrases, index, text, window=3)
+            key = self._v2_context_cluster_key(text, context)
+            entry = memory.setdefault(key, {
+                "anchor": text,
+                "axes": {},
+                "context": context,
+                "phrases": [],
+                "neighbors": [],
+                "score": 0.0,
+                "liked_count": 0,
+                "satisfied_count": 0,
+                "last_seen_iter": 0,
+            })
+            entry["anchor"] = text
+            entry["context"] = context
+            entry["score"] = round(max(-2.0, min(12.0, float(entry.get("score", 0.0)) + base_delta)), 4)
+            if rating_profile.get("key") == "like":
+                entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+            else:
+                entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+            entry["last_seen_iter"] = int(iter_num)
+
+            axis_counts = entry.setdefault("axes", {})
+            for axis in self._v2_order_axes(axes):
+                axis_counts[axis] = int(axis_counts.get(axis, 0)) + 1
+
+            existing_phrases = list(entry.get("phrases", []))
+            for item_text in cluster:
+                if item_text not in existing_phrases:
+                    existing_phrases.append(item_text)
+            entry["phrases"] = existing_phrases[:12]
+            entry["neighbors"] = [item for item in entry["phrases"] if item != text][:10]
+            memory[key] = entry
+            touched.append(text)
+
+        if len(memory) > 160:
+            memory = dict(sorted(
+                memory.items(),
+                key=lambda item: (
+                    float(item[1].get("score", 0.0)) if isinstance(item[1], dict) else -99.0,
+                    int(item[1].get("liked_count", 0)) if isinstance(item[1], dict) else 0,
+                    int(item[1].get("last_seen_iter", 0)) if isinstance(item[1], dict) else 0,
+                ),
+                reverse=True,
+            )[:160])
+            global_state["preferred_context_memory"] = memory
+
+        if not touched:
+            return "Preferred context: no action/detail clusters matched."
+        return f"Preferred context stored: {len(touched)} action/detail cluster(s): {', '.join(touched[:5])}{'...' if len(touched) > 5 else ''}."
+
     def _v2_update_phrase_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return "Lucky memory: no learning update."
@@ -6449,6 +6578,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         resolved_axes = set(axis_feedback.get("resolved_axes", []))
         regressed_axes = set(axis_feedback.get("regressed_axes", []))
         reward = float(rating_profile.get("reward", 0.0))
+        preferred_context_status = self._v2_update_preferred_context_memory(
+            global_state,
+            last_run,
+            rating_profile,
+            iter_num,
+            axis_feedback,
+        )
         touched = []
         trained = []
         kind_counts = {}
@@ -6474,6 +6610,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             entry.setdefault("positions", {})[str(int(phrase.get("position", 0)))] = (
                 int(entry.setdefault("positions", {}).get(str(int(phrase.get("position", 0))), 0)) + 1
             )
+            kind_scale = self._v2_memory_kind_scale(entry.get("kind", "phrase"))
 
             machine_scores = self._v2_clean_category_scores(entry.get("clip_heuristic_scores", {}))
             weights = self._v2_clean_category_scores(entry.get("category_weights", {}))
@@ -6501,7 +6638,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     weights[category] = float(weights.get(category, 0.0)) + amount * relation
 
             if rating_profile.get("key") == "like":
-                delta = 0.55
+                delta = 0.55 * kind_scale
                 entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
                 rating_evidence["liked"] = int(rating_evidence.get("liked", 0)) + 1
                 entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
@@ -6511,38 +6648,38 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 bump_evidence("satisfied_axes", V2_FEEDBACK_AXES)
                 for category, score in effective_before.items():
                     if float(score) >= 0.28:
-                        weights[category] = float(weights.get(category, 0.0)) + 0.13
+                        weights[category] = float(weights.get(category, 0.0)) + 0.13 * kind_scale
                 for axis in V2_FEEDBACK_AXES:
-                    train_axis(axis, 0.035)
+                    train_axis(axis, 0.035 * kind_scale)
             elif rating_profile.get("key") == "awful":
-                delta = -0.90
+                delta = -0.90 * kind_scale
                 entry["bad_count"] = int(entry.get("bad_count", 0)) + 1
                 rating_evidence["bad"] = int(rating_evidence.get("bad", 0)) + 1
                 primary_before, _ = self._v2_scores_primary(effective_before)
-                weights[primary_before] = float(weights.get(primary_before, 0.0)) - 0.045
+                weights[primary_before] = float(weights.get(primary_before, 0.0)) - 0.045 * kind_scale
                 bump_evidence("missing_axes", missing_axes)
                 for axis in self._v2_order_axes(missing_axes):
-                    train_axis(axis, 0.045, prefer_current=False)
+                    train_axis(axis, 0.045 * kind_scale, prefer_current=False)
             elif missing_axes:
                 for axis in self._v2_order_axes(missing_axes - matched_missing):
-                    train_axis(axis, 0.14, prefer_current=False)
+                    train_axis(axis, 0.14 * kind_scale, prefer_current=False)
                 if matched_missing:
-                    delta = 0.34 + (0.08 if matched_regressed else 0.0)
+                    delta = (0.34 + (0.08 if matched_regressed else 0.0)) * kind_scale
                     entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
                     for axis in self._v2_order_axes(matched_missing):
-                        train_axis(axis, 0.18 + (0.05 if axis in matched_regressed else 0.0))
+                        train_axis(axis, (0.18 + (0.05 if axis in matched_regressed else 0.0)) * kind_scale)
                 elif matched_resolved:
-                    delta = 0.46
+                    delta = 0.46 * kind_scale
                     entry["resolved_count"] = int(entry.get("resolved_count", 0)) + 1
                     for axis in self._v2_order_axes(matched_resolved):
-                        train_axis(axis, 0.15)
+                        train_axis(axis, 0.15 * kind_scale)
                 elif matched_satisfied:
-                    delta = 0.20
+                    delta = 0.20 * kind_scale
                     entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
                     for axis in self._v2_order_axes(matched_satisfied):
-                        train_axis(axis, 0.075)
+                        train_axis(axis, 0.075 * kind_scale)
                 else:
-                    delta = 0.04
+                    delta = 0.04 * kind_scale
 
                 wanted_axes = entry.setdefault("wanted_axes", {})
                 for axis in self._v2_order_axes(matched_missing):
@@ -6558,10 +6695,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 bump_evidence("resolved_axes", resolved_axes)
                 bump_evidence("regressed_axes", regressed_axes)
             else:
-                delta = reward * 0.20
+                delta = reward * 0.20 * kind_scale
                 for category, score in effective_before.items():
                     if float(score) >= 0.32:
-                        weights[category] = float(weights.get(category, 0.0)) + reward * 0.035
+                        weights[category] = float(weights.get(category, 0.0)) + reward * 0.035 * kind_scale
 
             entry["category_weights"] = {
                 category: round(max(-1.5, min(2.5, float(value))), 6)
@@ -6575,7 +6712,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 for category, value in entry["category_weights"].items():
                     sense_weights[category] = float(sense_weights.get(category, 0.0)) + (
                         float(value) - float(weights_before.get(category, 0.0))
-                    ) * 1.15
+                    ) * (1.15 * kind_scale)
                 context_sense["category_weights"] = {
                     category: round(max(-1.5, min(2.5, float(value))), 6)
                     for category, value in sense_weights.items()
@@ -6618,6 +6755,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return (
             f"Category memory trained: {len(touched)} concept unit(s) ({kind_summary}). "
             f"Sample: {', '.join(trained) if trained else ', '.join(touched[:6])}. "
+            f"{preferred_context_status} "
             f"{self._v2_axis_feedback_status(axis_feedback)}"
         )
 
@@ -6838,6 +6976,178 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 break
         return f"{prompt}, {', '.join(emphasized)}", f"Prompt emphasis: repeated {', '.join(emphasized)}."
 
+    def _v2_prompt_contains_text(self, prompt, text):
+        prompt_key = re.sub(r"\s+", " ", str(prompt or "").strip().lower())
+        text_key = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not prompt_key or not text_key:
+            return False
+        if text_key in prompt_key:
+            return True
+        prompt_words = set(self._v2_phrase_words(prompt_key))
+        text_words = set(self._v2_phrase_words(text_key))
+        return bool(text_words) and text_words <= prompt_words
+
+    def _v2_repair_prompt_for_missing_axes(
+        self,
+        prompt,
+        current_phrases,
+        global_state,
+        previous_run,
+        axis_feedback,
+        intent_phrases=None,
+    ):
+        missing_axes = set(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else set()
+        missing_axes = set(self._v2_order_axes(missing_axes))
+        if not missing_axes:
+            return prompt, "Prompt repair: none.", []
+
+        candidates = {}
+
+        def candidate_axes(item):
+            if not isinstance(item, dict):
+                return set()
+            axes = self._v2_phrase_axes(item)
+            wanted_axes = item.get("wanted_axes", {})
+            if isinstance(wanted_axes, dict):
+                axes |= {axis for axis, count in wanted_axes.items() if int(count or 0) > 0}
+            axis_counts = item.get("axes", {})
+            if isinstance(axis_counts, dict):
+                axes |= {axis for axis, count in axis_counts.items() if int(count or 0) > 0}
+            return axes
+
+        def add_candidate(text, axes, score, source, cluster=None):
+            clean = self._v2_clean_phrase_text(text)
+            if not clean:
+                return
+            words = self._v2_phrase_words(clean)
+            if len(words) > 16:
+                return
+            axes = set(axes or set()) & missing_axes
+            if not axes or self._v2_prompt_contains_text(prompt, clean):
+                return
+            existing = candidates.get(clean)
+            payload = {
+                "text": clean,
+                "axes": axes,
+                "score": float(score),
+                "source": source,
+                "cluster": list(cluster or []),
+            }
+            if existing is None or payload["score"] > existing["score"]:
+                candidates[clean] = payload
+
+        for item in intent_phrases or []:
+            axes = candidate_axes(item)
+            if axes & missing_axes:
+                add_candidate(item.get("text", ""), axes, 3.0, "intent")
+
+        if isinstance(previous_run, dict):
+            for item in self._v2_concept_units_for_run(previous_run):
+                if item.get("kind") == "token":
+                    continue
+                axes = candidate_axes(item)
+                if axes & missing_axes:
+                    add_candidate(item.get("text", ""), axes, 1.75, "previous")
+
+        preferred_memory = global_state.get("preferred_context_memory", {}) if isinstance(global_state, dict) else {}
+        for entry in preferred_memory.values() if isinstance(preferred_memory, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            axes = candidate_axes(entry)
+            if not (axes & missing_axes):
+                continue
+            cluster = [
+                self._v2_clean_phrase_text(item)
+                for item in entry.get("phrases", [])
+            ]
+            cluster = [item for item in cluster if item and not self._v2_prompt_contains_text(prompt, item)]
+            score = (
+                2.0 +
+                float(entry.get("score", 0.0)) * 0.34 +
+                min(1.8, int(entry.get("liked_count", 0) or 0) * 0.42) +
+                min(0.8, int(entry.get("satisfied_count", 0) or 0) * 0.16)
+            )
+            if cluster:
+                for offset, item_text in enumerate(cluster[:8]):
+                    add_candidate(item_text, axes, score - offset * 0.03, "preferred_context", cluster=cluster[:8])
+            else:
+                add_candidate(entry.get("anchor", ""), axes, score, "preferred_context")
+
+        memory = global_state.get("phrase_memory", {}) if isinstance(global_state, dict) else {}
+        for text, entry in memory.items():
+            if not isinstance(entry, dict):
+                continue
+            axes = candidate_axes(entry)
+            wanted_axes = entry.get("wanted_axes", {}) if isinstance(entry.get("wanted_axes", {}), dict) else {}
+            axis_hits = sum(int(wanted_axes.get(axis, 0) or 0) for axis in missing_axes)
+            evidence = int(entry.get("category_evidence_count", 0) or 0)
+            score = (
+                1.0 +
+                float(entry.get("score", 0.0)) * 0.18 +
+                min(1.2, axis_hits * 0.34) +
+                min(0.5, evidence * 0.05) +
+                min(0.4, int(entry.get("liked_count", 0) or 0) * 0.08) -
+                min(1.0, int(entry.get("bad_count", 0) or 0) * 0.20)
+            )
+            if axes & missing_axes and score > 0.60:
+                add_candidate(entry.get("text", text), axes, score, "memory")
+
+        current_axes = set()
+        for phrase in current_phrases or []:
+            current_axes |= candidate_axes(phrase)
+        missing_not_represented = missing_axes - current_axes
+
+        ranked = sorted(
+            candidates.values(),
+            key=lambda item: (
+                bool(item["axes"] & missing_not_represented),
+                item["source"] == "preferred_context",
+                item["source"] == "intent",
+                item["score"],
+                len(item["text"]),
+            ),
+            reverse=True,
+        )
+        selected = []
+        selected_texts = set()
+        seen_axes = set()
+        for item in ranked:
+            cluster = item.get("cluster", []) if item.get("source") == "preferred_context" else []
+            for cluster_text in cluster:
+                if cluster_text in selected_texts or self._v2_prompt_contains_text(prompt, cluster_text):
+                    continue
+                cluster_item = dict(item)
+                cluster_item["text"] = cluster_text
+                selected.append(cluster_item)
+                selected_texts.add(cluster_text)
+                seen_axes |= item["axes"]
+                if len(selected) >= 10:
+                    break
+            if len(selected) >= 10:
+                break
+            if item["text"] in selected_texts:
+                continue
+            selected.append(item)
+            selected_texts.add(item["text"])
+            seen_axes |= item["axes"]
+            if len(selected) >= 10 or (len(selected) >= 4 and missing_axes <= seen_axes):
+                break
+
+        if not selected:
+            return prompt, f"Prompt repair: no stored candidates for missing {', '.join(self._v2_order_axes(missing_axes))}.", []
+
+        additions = [item["text"] for item in selected]
+        repaired = f"{prompt}, {', '.join(additions)}" if str(prompt or "").strip() else ", ".join(additions)
+        source_counts = {}
+        for item in selected:
+            source_counts[item["source"]] = int(source_counts.get(item["source"], 0)) + 1
+        source_summary = ", ".join(f"{source}:{count}" for source, count in sorted(source_counts.items()))
+        return (
+            repaired,
+            f"Prompt repair: added {len(additions)} phrase(s) for missing {', '.join(self._v2_order_axes(missing_axes))} ({source_summary}): {', '.join(additions)}.",
+            selected,
+        )
+
     def _v2_compose_lucky_prompt(self, prompt, phrases, global_state):
         memory = global_state.get("phrase_memory", {})
         scored = []
@@ -6994,7 +7304,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return "LoRA suggestions: " + " | ".join(parts)
 
     def refine_v2(self, positive_prompt, clip, rating, refinement_key,
-                  seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False):
+                  seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt=""):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -7006,6 +7316,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("phrase_memory", {})
         global_state.setdefault("axis_conditioning_memory", {})
         global_state.setdefault("lora_weight_memory", {})
+        global_state.setdefault("preferred_context_memory", {})
         global_state.setdefault("loss_history", [])
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
@@ -7036,9 +7347,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._v2_update_streaks(global_state, learning_profile)
 
         analysis_prompt = self._v2_prompt_key(positive_prompt)
+        intent_prompt = self._v2_prompt_key(user_intent_prompt)
         current_prompt_refusal = self._prompt_looks_like_refusal(analysis_prompt)
         phrases = [] if current_prompt_refusal else self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt), global_state)
+        intent_phrases = []
+        if intent_prompt and not current_prompt_refusal:
+            intent_phrases = self._v2_classify_phrases(
+                clip,
+                self._ordered_prompt_phrases(intent_prompt),
+                global_state,
+            )
         refusal_status = ""
+        repair_status = "Prompt repair: none."
+        repair_candidates = []
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
@@ -7049,6 +7370,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             encoded_role = "lucky prompt"
         else:
             prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(analysis_prompt, phrases, global_state, learning_profile)
+            prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
+                prompt_to_encode,
+                phrases,
+                global_state,
+                previous_run,
+                axis_feedback,
+                intent_phrases=intent_phrases,
+            )
             lucky_status = f"Lucky: off | trained memory only. {emphasis_status}"
             encoded_role = "current prompt"
 
@@ -7130,6 +7459,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "encoded_role": encoded_role,
                 "prompt": prompt_to_encode,
                 "phrases": phrases,
+                "repair_candidates": repair_candidates,
             })
 
         if current_prompt_refusal:
@@ -7140,6 +7470,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "encoded_prompt": prompt_to_encode,
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
                 "phrases": phrases,
+                "intent_prompt": intent_prompt,
+                "repair_candidates": repair_candidates,
                 "rating_label": "Unrated",
                 "iteration": int(global_state["total_iterations"]),
             }
@@ -7161,6 +7493,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
             f"{lucky_status}"
+            f"\n{repair_status}"
             f"{refusal_status_line}"
         )
         if previous_run_refusal:
@@ -7195,7 +7528,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             (
                 "Adaptation\n"
                 f"{adaptation_status}\n"
-                f"{lucky_status}"
+                f"{lucky_status}\n"
+                f"{repair_status}"
                 f"{refusal_status_line}"
             ),
             (

@@ -12,6 +12,8 @@ Fixed `FunPack Video Refiner V2` so prompt-enhancer refusal text like "I'm sorry
 
 Improved `FunPack Video Refiner V2` training data output with clearer sections and extra line breaks for run state, learning, prompt analysis, adaptation, guidance, and LoRA diagnostics.
 
+Updated `FunPack Video Refiner V2` to remember liked action/detail phrase clusters with their neighbors and use those ordered clusters before weaker ngram or token memory when repairing missing axes.
+
 ## [2.2.0] - 2026-05-07
 
 ### Added
