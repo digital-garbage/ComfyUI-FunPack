@@ -7202,6 +7202,85 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         text_words = set(self._v2_phrase_words(text_key))
         return bool(text_words) and text_words <= prompt_words
 
+    def _v2_repair_intent_roots(self, text):
+        roots = set()
+        for word in self._v2_phrase_words(text):
+            roots.add(word)
+            if len(word) > 4 and word.endswith("ing"):
+                stem = word[:-3]
+                roots.add(stem)
+                if len(stem) > 2 and stem[-1] == stem[-2]:
+                    roots.add(stem[:-1])
+                roots.add(stem + "e")
+            elif len(word) > 3 and word.endswith("ed"):
+                stem = word[:-2]
+                roots.add(stem)
+                roots.add(stem + "e")
+            elif len(word) > 3 and word.endswith("s"):
+                roots.add(word[:-1])
+        return {root for root in roots if len(root) >= 3}
+
+    def _v2_repair_candidate_matches_intent(self, text, intent_roots):
+        if not intent_roots:
+            return False
+        candidate_roots = self._v2_repair_intent_roots(text)
+        return bool(candidate_roots & intent_roots)
+
+    def _v2_user_intent_prompt_is_vague(self, prompt):
+        text = re.sub(r"\s+", " ", str(prompt or "").strip().lower())
+        if not text:
+            return True
+        words = set(self._v2_phrase_words(text))
+        if not words:
+            return True
+        vague_words = {
+            "figure", "out", "something", "anything", "whatever", "surprise", "random",
+            "choice", "choose", "decide", "good", "nice", "cool", "best", "you", "your",
+            "it", "make", "do",
+        }
+        if len(words) <= 5 and words <= vague_words:
+            return True
+        if re.fullmatch(r"(figure it out|surprise me|anything|whatever|your choice|you decide|do something|make it good|make it cool)", text):
+            return True
+        scores = self._v2_heuristic_scores(text)
+        return len(words) <= 3 and not self._v2_axes_for_scores(scores)
+
+    def _v2_repair_reference_context(self, text, reference_phrases):
+        candidate_roots = self._v2_repair_intent_roots(text)
+        if not candidate_roots:
+            return {}
+        best_phrase = None
+        best_overlap = 0
+        for phrase in reference_phrases or []:
+            if not isinstance(phrase, dict):
+                continue
+            overlap = len(candidate_roots & self._v2_repair_intent_roots(phrase.get("text", "")))
+            if overlap > best_overlap:
+                best_phrase = phrase
+                best_overlap = overlap
+        if not isinstance(best_phrase, dict):
+            return {}
+        return best_phrase.get("context", {}) if isinstance(best_phrase.get("context", {}), dict) else {}
+
+    def _v2_repair_context_matches_memory(self, text, entry, reference_phrases):
+        if not isinstance(entry, dict):
+            return True
+        context = self._v2_repair_reference_context(text, reference_phrases)
+        context_words = context.get("context_words", []) if isinstance(context, dict) else []
+        senses = entry.get("context_senses", {})
+        if isinstance(senses, dict) and senses:
+            sense, similarity = self._v2_best_context_sense(entry, context)
+            if isinstance(sense, dict) and similarity >= 0.30:
+                return True
+            return len(self._v2_phrase_words(text)) > 1 and not context_words
+        learned_context = entry.get("context", {})
+        learned_words = learned_context.get("context_words", []) if isinstance(learned_context, dict) else []
+        if learned_words and context_words:
+            return self._v2_context_similarity(learned_context, context) >= 0.30
+        if learned_words and len(self._v2_phrase_words(text)) <= 1:
+            return False
+        return True
+
     def _v2_repair_prompt_for_missing_axes(
         self,
         prompt,
@@ -7217,6 +7296,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return prompt, "Prompt repair: none.", []
 
         candidates = {}
+        intent_roots = self._v2_repair_intent_roots(prompt)
+        reference_phrases = [
+            phrase
+            for phrase in list(current_phrases or []) + list(intent_phrases or [])
+            if isinstance(phrase, dict)
+        ]
+        for item in intent_phrases or []:
+            intent_roots |= self._v2_repair_intent_roots(item.get("text", ""))
 
         def candidate_axes(item):
             if not isinstance(item, dict):
@@ -7230,7 +7317,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axes |= {axis for axis, count in axis_counts.items() if int(count or 0) > 0}
             return axes
 
-        def add_candidate(text, axes, score, source, cluster=None):
+        def add_candidate(text, axes, score, source, cluster=None, memory_entry=None):
             clean = self._v2_clean_phrase_text(text)
             if not clean:
                 return
@@ -7242,10 +7329,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             axes = set(axes or set()) & missing_axes
             if not axes or self._v2_prompt_contains_text(prompt, clean):
                 return
+            if source != "intent" and not self._v2_repair_candidate_matches_intent(clean, intent_roots):
+                return
+            if source != "intent" and not self._v2_repair_context_matches_memory(clean, memory_entry, reference_phrases):
+                return
             safe_cluster = [
                 self._v2_clean_phrase_text(item)
                 for item in (cluster or [])
-                if self._v2_prompt_repair_text_allowed(item)
+                if (
+                    self._v2_prompt_repair_text_allowed(item) and
+                    self._v2_repair_candidate_matches_intent(item, intent_roots) and
+                    self._v2_repair_context_matches_memory(item, memory_entry, reference_phrases)
+                )
             ]
             safe_cluster = [item for item in safe_cluster if item]
             existing = candidates.get(clean)
@@ -7270,7 +7365,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     continue
                 axes = candidate_axes(item)
                 if axes & missing_axes:
-                    add_candidate(item.get("text", ""), axes, 1.75, "previous")
+                    add_candidate(item.get("text", ""), axes, 1.75, "previous", memory_entry=item)
 
         preferred_memory = global_state.get("preferred_context_memory", {}) if isinstance(global_state, dict) else {}
         for entry in preferred_memory.values() if isinstance(preferred_memory, dict) else []:
@@ -7295,9 +7390,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             if cluster:
                 for offset, item_text in enumerate(cluster[:8]):
-                    add_candidate(item_text, axes, score - offset * 0.03, "preferred_context", cluster=cluster[:8])
+                    add_candidate(item_text, axes, score - offset * 0.03, "preferred_context", cluster=cluster[:8], memory_entry=entry)
             else:
-                add_candidate(entry.get("anchor", ""), axes, score, "preferred_context")
+                add_candidate(entry.get("anchor", ""), axes, score, "preferred_context", memory_entry=entry)
 
         memory = global_state.get("phrase_memory", {}) if isinstance(global_state, dict) else {}
         for text, entry in memory.items():
@@ -7317,19 +7412,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 min(0.9, int(entry.get("wrong_count", 0) or 0) * 0.16)
             )
             if axes & missing_axes and score > 0.60:
-                add_candidate(entry.get("text", text), axes, score, "memory")
+                add_candidate(entry.get("text", text), axes, score, "memory", memory_entry=entry)
 
         current_axes = set()
         for phrase in current_phrases or []:
             current_axes |= candidate_axes(phrase)
         missing_not_represented = missing_axes - current_axes
 
+        source_priority = {
+            "intent": 4,
+            "previous": 3,
+            "preferred_context": 2,
+            "memory": 1,
+        }
         ranked = sorted(
             candidates.values(),
             key=lambda item: (
                 bool(item["axes"] & missing_not_represented),
-                item["source"] == "preferred_context",
-                item["source"] == "intent",
+                source_priority.get(item["source"], 0),
                 item["score"],
                 len(item["text"]),
             ),
@@ -7607,10 +7707,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         analysis_prompt = self._v2_prompt_key(positive_prompt)
         intent_prompt = self._v2_prompt_key(user_intent_prompt)
+        intent_prompt_is_vague = self._v2_user_intent_prompt_is_vague(intent_prompt)
         current_prompt_refusal = self._prompt_looks_like_refusal(analysis_prompt)
         phrases = [] if current_prompt_refusal else self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt), global_state)
         intent_phrases = []
-        if intent_prompt and not current_prompt_refusal:
+        if intent_prompt and not intent_prompt_is_vague and not current_prompt_refusal:
             intent_phrases = self._v2_classify_phrases(
                 clip,
                 self._ordered_prompt_phrases(intent_prompt),

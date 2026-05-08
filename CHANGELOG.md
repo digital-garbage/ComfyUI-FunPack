@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.1] - 2026-05-08
+
+### Fixed
+
+Fixed Refiner V2 Prompt Repair so missing/wrong ratings only repair from the current prompt or explicit user intent, instead of pulling unrelated learned favorite actions, details, quality cues, camera moves, or styles from memory.
+
+Fixed Prompt Repair memory matching so the same word with different neighboring prompt context is treated as different evidence.
+
+Fixed vague raw user intent handling so prompts like `Figure it out` let the enhanced `positive_prompt` drive repair matching when available.
+
 ## [2.3.0] - 2026-05-08
 
 ### Added

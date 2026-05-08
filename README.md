@@ -2,6 +2,14 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.3.1
+
+Refiner V2 Prompt Repair now keeps all missing/wrong ratings tied to the current prompt or explicit user intent. Learned favorite actions, details, quality cues, camera moves, and styles are not repaired into unrelated requests just because they scored well before.
+
+Prompt Repair now treats the same word in different neighbor contexts as separate evidence, so a liked phrase does not automatically transfer to a different request that happens to share one word.
+
+When the optional raw user intent is vague, such as `Figure it out`, Refiner V2 now treats the enhanced `positive_prompt` as the stronger repair anchor.
+
 ## Updates in 2.3.0
 
 Refiner V2 now blocks learned appearance, character, subject, and background concepts from Prompt Repair, Lucky auto-injection, and legacy Void memory unless the current prompt explicitly asks for them.
