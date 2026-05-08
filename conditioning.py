@@ -5750,6 +5750,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "axis_conditioning_memory": {},
                 "lora_weight_memory": {},
                 "preferred_context_memory": {},
+                "intent_alignment_memory": {},
                 "loss_history": [],
             },
             "prompt_histories": {},
@@ -5772,6 +5773,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data["global"].setdefault("phrase_memory", {})
             data["global"].setdefault("lora_weight_memory", {})
             data["global"].setdefault("preferred_context_memory", {})
+            data["global"].setdefault("intent_alignment_memory", {})
             data["global"].setdefault("loss_history", [])
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
@@ -6613,6 +6615,418 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not self._v2_phrase_words(text):
             return ""
         return text
+
+    def _v2_phrase_root_set(self, text):
+        return self._v2_repair_intent_roots(text)
+
+    def _v2_phrase_texts_match(self, left, right):
+        left_clean = self._v2_clean_phrase_text(left)
+        right_clean = self._v2_clean_phrase_text(right)
+        if not left_clean or not right_clean:
+            return False
+        if self._v2_prompt_contains_text(left_clean, right_clean) or self._v2_prompt_contains_text(right_clean, left_clean):
+            return True
+        left_roots = self._v2_phrase_root_set(left_clean)
+        right_roots = self._v2_phrase_root_set(right_clean)
+        if not left_roots or not right_roots:
+            return False
+        overlap = left_roots & right_roots
+        if not overlap:
+            return False
+        needed = min(2, len(left_roots))
+        return len(overlap) >= needed or (len(overlap) / max(1, len(left_roots))) >= 0.58
+
+    def _v2_phrase_represented_by(self, text, phrases):
+        return any(
+            self._v2_phrase_texts_match(text, phrase.get("text", "") if isinstance(phrase, dict) else phrase)
+            for phrase in phrases or []
+        )
+
+    def _v2_alignment_token_units(self, text):
+        words = self._v2_phrase_words(text)
+        units = [{"token": word, "kind": "word", "words": [word]} for word in words]
+        for index in range(0, max(0, len(words) - 1)):
+            pair = " ".join(words[index:index + 2])
+            units.append({"token": pair, "kind": "pair", "words": words[index:index + 2]})
+        return units
+
+    def _v2_intent_alignment_key(self, intent_prompt):
+        clean = self._v2_prompt_key(intent_prompt).lower()
+        return md5(clean.encode("utf-8")).hexdigest()
+
+    def _v2_intent_alignment_phrase_payload(self, phrase):
+        text = self._v2_clean_phrase_text(phrase.get("text", "") if isinstance(phrase, dict) else phrase)
+        if not text:
+            return None
+        source = phrase if isinstance(phrase, dict) else {}
+        scores = source.get("effective_category_scores", source.get("category_scores", self._v2_heuristic_scores(text)))
+        axes = self._v2_order_axes(self._v2_axes_for_scores(scores))
+        return {
+            "text": text,
+            "axes": axes,
+            "primary": source.get("primary", self._v2_primary_category_for_text(text)),
+            "effective_category_scores": self._v2_clean_category_scores(scores),
+        }
+
+    def _v2_update_intent_alignment_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
+        if not isinstance(global_state, dict) or not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
+            return "Intent alignment: no learning update."
+        intent_prompt = self._v2_prompt_key(last_run.get("intent_prompt", ""))
+        if not intent_prompt or last_run.get("intent_prompt_is_vague") or self._v2_user_intent_prompt_is_vague(intent_prompt):
+            return "Intent alignment: no explicit original intent."
+
+        positive_prompt = self._v2_prompt_key(last_run.get("prompt", ""))
+        positive_phrases = [phrase for phrase in last_run.get("phrases", []) or [] if isinstance(phrase, dict)]
+        intent_phrases = [phrase for phrase in last_run.get("intent_phrases", []) or [] if isinstance(phrase, dict)]
+        if not intent_phrases:
+            intent_phrases = self._v2_classify_phrases(None, self._ordered_prompt_phrases(intent_prompt), global_state)
+        if not positive_phrases or not intent_phrases:
+            return "Intent alignment: no comparable prompt phrases."
+
+        missing_intent = [
+            phrase for phrase in intent_phrases
+            if not self._v2_phrase_represented_by(phrase.get("text", ""), positive_phrases)
+        ]
+        extra_positive = [
+            phrase for phrase in positive_phrases
+            if (
+                not self._v2_phrase_represented_by(phrase.get("text", ""), intent_phrases) and
+                not self._v2_prompt_contains_text(intent_prompt, phrase.get("text", ""))
+            )
+        ]
+
+        memory = global_state.setdefault("intent_alignment_memory", {})
+        intent_key = self._v2_intent_alignment_key(intent_prompt)
+        slot = memory.setdefault(intent_key, {
+            "intent_prompt": intent_prompt,
+            "variants": {},
+            "intent_enhance_pairs": {},
+            "intent_tokens": {},
+            "provided_tokens": {},
+            "bad_tokens": {},
+            "missing_intent_phrases": {},
+            "extra_positive_phrases": {},
+            "last_seen_iter": 0,
+        })
+        slot["intent_prompt"] = intent_prompt
+        slot["last_seen_iter"] = int(iter_num)
+
+        reward = float(rating_profile.get("reward", 0.0))
+        rating_key = rating_profile.get("key", "")
+        axis_feedback = axis_feedback or self._v2_axis_feedback(
+            rating_profile,
+            global_state.get("last_missing_axes", []),
+        )
+        missing_axes = set(axis_feedback.get("missing_axes", []))
+        wrong_axes = set(axis_feedback.get("wrong_axes", []))
+
+        variant_key = md5(positive_prompt.encode("utf-8")).hexdigest()
+        variants = slot.setdefault("variants", {})
+        variant = variants.setdefault(variant_key, {
+            "positive_prompt": positive_prompt,
+            "rating_count": 0,
+            "avg_reward": 0.0,
+            "missing_intent_count": 0,
+            "extra_positive_count": 0,
+            "last_rating_label": "",
+            "last_seen_iter": 0,
+        })
+        count = int(variant.get("rating_count", 0))
+        variant["avg_reward"] = round((float(variant.get("avg_reward", 0.0)) * count + reward) / float(count + 1), 6)
+        variant["rating_count"] = count + 1
+        variant["missing_intent_count"] = len(missing_intent)
+        variant["extra_positive_count"] = len(extra_positive)
+        variant["last_rating_label"] = rating_profile.get("label", "")
+        variant["last_seen_iter"] = int(iter_num)
+        pairs = slot.setdefault("intent_enhance_pairs", {})
+        pairs[variant_key] = {
+            "intent_prompt": intent_prompt,
+            "positive_prompt": positive_prompt,
+            "rating_count": int(variant["rating_count"]),
+            "avg_reward": float(variant["avg_reward"]),
+            "missing_intent_count": int(variant["missing_intent_count"]),
+            "extra_positive_count": int(variant["extra_positive_count"]),
+            "last_rating_label": variant["last_rating_label"],
+            "last_seen_iter": int(iter_num),
+        }
+
+        intent_token_memory = slot.setdefault("intent_tokens", {})
+        intent_token_set = set()
+        for unit in self._v2_alignment_token_units(intent_prompt):
+            token = unit["token"]
+            intent_token_set.add(token)
+            entry = intent_token_memory.setdefault(token, {
+                "token": token,
+                "kind": unit["kind"],
+                "words": list(unit["words"]),
+                "seen_count": 0,
+                "last_seen_iter": 0,
+            })
+            entry["kind"] = unit["kind"]
+            entry["words"] = list(unit["words"])
+            entry["seen_count"] = int(entry.get("seen_count", 0)) + 1
+            entry["last_seen_iter"] = int(iter_num)
+
+        provided_token_memory = slot.setdefault("provided_tokens", {})
+        bad_token_memory = slot.setdefault("bad_tokens", {})
+        token_updates = 0
+        for phrase in positive_phrases:
+            text = self._v2_clean_phrase_text(phrase.get("text", ""))
+            if not text:
+                continue
+            phrase_axes = self._v2_phrase_axes(phrase)
+            phrase_is_blocked_extra = (
+                not self._v2_phrase_represented_by(text, intent_phrases) and
+                not self._v2_prompt_contains_text(intent_prompt, text)
+            )
+            phrase_is_bad_extra = (
+                rating_key == "awful" or
+                (rating_key == "wrong_appearance" and self._v2_item_has_blocked_auto_category(phrase)) or
+                bool(wrong_axes & phrase_axes) or
+                (float(reward) < -0.35 and phrase_is_blocked_extra)
+            )
+            for unit in self._v2_alignment_token_units(text):
+                token = unit["token"]
+                entry = provided_token_memory.setdefault(token, {
+                    "token": token,
+                    "kind": unit["kind"],
+                    "words": list(unit["words"]),
+                    "score": 0.0,
+                    "seen_count": 0,
+                    "accepted_count": 0,
+                    "rejected_count": 0,
+                    "intent_count": 0,
+                    "enhancer_only_count": 0,
+                    "phrases": [],
+                    "variants": {},
+                    "omit": False,
+                    "last_seen_iter": 0,
+                })
+                entry["kind"] = unit["kind"]
+                entry["words"] = list(unit["words"])
+                entry["seen_count"] = int(entry.get("seen_count", 0)) + 1
+                entry["last_seen_iter"] = int(iter_num)
+                entry.setdefault("variants", {})[variant_key] = int(entry.setdefault("variants", {}).get(variant_key, 0)) + 1
+                phrases_for_token = list(entry.get("phrases", []))
+                if text not in phrases_for_token:
+                    phrases_for_token.append(text)
+                entry["phrases"] = phrases_for_token[-12:]
+                if token in intent_token_set:
+                    entry["intent_count"] = int(entry.get("intent_count", 0)) + 1
+                    delta = 0.06 if rating_key == "like" else 0.0
+                else:
+                    entry["enhancer_only_count"] = int(entry.get("enhancer_only_count", 0)) + 1
+                    if rating_key == "like":
+                        delta = 0.12
+                        entry["accepted_count"] = int(entry.get("accepted_count", 0)) + 1
+                    elif phrase_is_bad_extra:
+                        delta = -0.60 if rating_key == "wrong_appearance" else -0.36
+                        entry["rejected_count"] = int(entry.get("rejected_count", 0)) + 1
+                    else:
+                        delta = max(-0.06, min(0.08, reward * 0.06))
+                entry["score"] = round(max(-6.0, min(6.0, float(entry.get("score", 0.0)) + delta)), 4)
+                entry["omit"] = (
+                    token not in intent_token_set and
+                    float(entry.get("score", 0.0)) <= -0.50 and
+                    int(entry.get("rejected_count", 0)) > int(entry.get("accepted_count", 0))
+                )
+                if entry["omit"]:
+                    bad_token_memory[token] = {
+                        "token": token,
+                        "kind": unit["kind"],
+                        "words": list(unit["words"]),
+                        "score": float(entry.get("score", 0.0)),
+                        "rejected_count": int(entry.get("rejected_count", 0)),
+                        "accepted_count": int(entry.get("accepted_count", 0)),
+                        "phrases": list(entry.get("phrases", []))[-8:],
+                        "last_seen_iter": int(iter_num),
+                    }
+                else:
+                    bad_token_memory.pop(token, None)
+                token_updates += 1
+
+        missing_updates = 0
+        for phrase in missing_intent:
+            payload = self._v2_intent_alignment_phrase_payload(phrase)
+            if not payload:
+                continue
+            axes = set(payload.get("axes", []))
+            entry = slot.setdefault("missing_intent_phrases", {}).setdefault(payload["text"], {
+                **payload,
+                "score": 0.0,
+                "missing_count": 0,
+                "forgiven_count": 0,
+                "last_seen_iter": 0,
+            })
+            if rating_key == "like":
+                delta = -0.18
+                entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
+            elif rating_key == "awful":
+                delta = 0.70
+                entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+            elif missing_axes:
+                delta = 0.95 if axes & missing_axes else 0.28
+                entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+            elif wrong_axes:
+                delta = 0.42 if axes & wrong_axes else 0.16
+                entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
+            else:
+                delta = -0.10 if reward > 0.35 else 0.18 if reward < -0.20 else 0.0
+            entry.update(payload)
+            entry["score"] = round(max(-2.0, min(6.0, float(entry.get("score", 0.0)) + delta)), 4)
+            entry["last_seen_iter"] = int(iter_num)
+            missing_updates += 1
+
+        extra_updates = 0
+        for phrase in extra_positive:
+            payload = self._v2_intent_alignment_phrase_payload(phrase)
+            if not payload:
+                continue
+            axes = set(payload.get("axes", []))
+            entry = slot.setdefault("extra_positive_phrases", {}).setdefault(payload["text"], {
+                **payload,
+                "score": 0.0,
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "last_seen_iter": 0,
+            })
+            if rating_key == "like":
+                delta = 0.42
+                entry["accepted_count"] = int(entry.get("accepted_count", 0)) + 1
+            elif rating_key == "wrong_appearance" and self._v2_item_has_blocked_auto_category(payload):
+                delta = -0.95
+                entry["rejected_count"] = int(entry.get("rejected_count", 0)) + 1
+            elif rating_key == "awful":
+                delta = -0.78
+                entry["rejected_count"] = int(entry.get("rejected_count", 0)) + 1
+            elif wrong_axes:
+                delta = -0.70 if axes & wrong_axes else -0.25
+                entry["rejected_count"] = int(entry.get("rejected_count", 0)) + 1
+            elif reward < -0.35:
+                delta = -0.46
+                entry["rejected_count"] = int(entry.get("rejected_count", 0)) + 1
+            else:
+                delta = max(-0.08, min(0.12, reward * 0.10))
+            entry.update(payload)
+            entry["score"] = round(max(-6.0, min(6.0, float(entry.get("score", 0.0)) + delta)), 4)
+            entry["last_seen_iter"] = int(iter_num)
+            extra_updates += 1
+
+        if len(variants) > 40:
+            slot["variants"] = dict(sorted(
+                variants.items(),
+                key=lambda item: (
+                    float(item[1].get("avg_reward", 0.0)) if isinstance(item[1], dict) else -99.0,
+                    int(item[1].get("rating_count", 0)) if isinstance(item[1], dict) else 0,
+                    int(item[1].get("last_seen_iter", 0)) if isinstance(item[1], dict) else 0,
+                ),
+                reverse=True,
+            )[:40])
+
+        if memory and len(memory) > 80:
+            global_state["intent_alignment_memory"] = dict(sorted(
+                memory.items(),
+                key=lambda item: int(item[1].get("last_seen_iter", 0)) if isinstance(item[1], dict) else 0,
+                reverse=True,
+            )[:80])
+
+        return (
+            "Intent alignment learned: "
+            f"{missing_updates} omitted original phrase(s), {extra_updates} enhancer-only phrase(s), "
+            f"{token_updates} provided token(s), {len(bad_token_memory)} omit token(s), "
+            f"variant reward {variant['avg_reward']:+.2f}."
+        )
+
+    def _v2_apply_intent_alignment_memory(self, prompt, current_phrases, intent_prompt, intent_phrases, global_state):
+        intent_prompt = self._v2_prompt_key(intent_prompt)
+        if not intent_prompt or self._v2_user_intent_prompt_is_vague(intent_prompt):
+            return prompt, "Intent alignment: no explicit original intent.", []
+        memory = global_state.get("intent_alignment_memory", {}) if isinstance(global_state, dict) else {}
+        slot = memory.get(self._v2_intent_alignment_key(intent_prompt)) if isinstance(memory, dict) else None
+        if not isinstance(slot, dict):
+            return prompt, "Intent alignment: no learned enhancer variants for this original prompt.", []
+
+        intent_phrases = [phrase for phrase in intent_phrases or [] if isinstance(phrase, dict)]
+        current_phrases = [phrase for phrase in current_phrases or [] if isinstance(phrase, dict)]
+        additions = []
+        for entry in sorted(
+            slot.get("missing_intent_phrases", {}).values(),
+            key=lambda item: (
+                float(item.get("score", 0.0)) if isinstance(item, dict) else -99.0,
+                int(item.get("missing_count", 0)) if isinstance(item, dict) else 0,
+            ),
+            reverse=True,
+        ):
+            if not isinstance(entry, dict):
+                continue
+            text = self._v2_clean_phrase_text(entry.get("text", ""))
+            if (
+                not text or
+                float(entry.get("score", 0.0)) < 0.55 or
+                self._v2_prompt_contains_text(prompt, text) or
+                self._v2_phrase_represented_by(text, current_phrases) or
+                not self._v2_phrase_represented_by(text, intent_phrases)
+            ):
+                continue
+            additions.append(text)
+            if len(additions) >= 4:
+                break
+
+        bad_extra_texts = []
+        for entry in slot.get("extra_positive_phrases", {}).values():
+            if not isinstance(entry, dict):
+                continue
+            text = self._v2_clean_phrase_text(entry.get("text", ""))
+            if (
+                text and
+                float(entry.get("score", 0.0)) <= -0.55 and
+                int(entry.get("rejected_count", 0)) > int(entry.get("accepted_count", 0)) and
+                not self._v2_phrase_represented_by(text, intent_phrases)
+            ):
+                bad_extra_texts.append(text)
+        bad_extra_tokens = {
+            str(token)
+            for token, entry in slot.get("bad_tokens", {}).items()
+            if isinstance(entry, dict) and bool(entry.get("token"))
+        }
+        intent_token_set = {unit["token"] for unit in self._v2_alignment_token_units(intent_prompt)}
+
+        removed = []
+        segments = [segment.strip() for segment in re.split(r"[,;\n]+", str(prompt or "")) if segment.strip()]
+        if segments and (bad_extra_texts or bad_extra_tokens):
+            kept = []
+            for segment in segments:
+                segment_is_intent = self._v2_phrase_represented_by(segment, intent_phrases)
+                segment_is_bad_extra = any(
+                    self._v2_phrase_texts_match(segment, extra_text) or self._v2_prompt_contains_text(segment, extra_text)
+                    for extra_text in bad_extra_texts
+                )
+                segment_tokens = {unit["token"] for unit in self._v2_alignment_token_units(segment)}
+                segment_has_bad_token = bool((segment_tokens - intent_token_set) & bad_extra_tokens)
+                if (segment_is_bad_extra or segment_has_bad_token) and not segment_is_intent:
+                    removed.append(segment)
+                    continue
+                kept.append(segment)
+            prompt = ", ".join(kept) if kept else str(prompt or "").strip()
+
+        if additions:
+            prompt = f"{prompt}, {', '.join(additions)}" if str(prompt or "").strip() else ", ".join(additions)
+
+        if not additions and not removed:
+            return prompt, "Intent alignment: learned variants present, no prompt changes needed.", []
+
+        adjustments = [
+            {"text": text, "source": "intent_missing", "action": "added"}
+            for text in additions
+        ] + [
+            {"text": text, "source": "enhancer_extra", "action": "removed"}
+            for text in removed
+        ]
+        return (
+            prompt,
+            f"Intent alignment: restored {len(additions)} original phrase(s), removed {len(removed)} rejected enhancer-only phrase(s).",
+            adjustments,
+        )
 
     def _v2_context_cluster_key(self, text, context):
         signature = self._v2_context_signature(context)
@@ -7676,6 +8090,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("axis_conditioning_memory", {})
         global_state.setdefault("lora_weight_memory", {})
         global_state.setdefault("preferred_context_memory", {})
+        global_state.setdefault("intent_alignment_memory", {})
         global_state.setdefault("loss_history", [])
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
@@ -7701,6 +8116,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
+        intent_learning_status = self._v2_update_intent_alignment_memory(
+            global_state,
+            previous_run,
+            learning_profile,
+            int(global_state.get("total_iterations", 0)) + 1,
+            axis_feedback,
+        )
+        memory_status = f"{memory_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
@@ -7720,6 +8143,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         refusal_status = ""
         repair_status = "Prompt repair: none."
         repair_candidates = []
+        intent_alignment_status = "Intent alignment: no explicit original intent."
+        intent_alignment_adjustments = []
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
@@ -7729,7 +8154,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
             encoded_role = "lucky prompt"
         else:
-            prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(analysis_prompt, phrases, global_state, learning_profile)
+            aligned_prompt, intent_alignment_status, intent_alignment_adjustments = self._v2_apply_intent_alignment_memory(
+                analysis_prompt,
+                phrases,
+                intent_prompt,
+                intent_phrases,
+                global_state,
+            )
+            prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(aligned_prompt, phrases, global_state, learning_profile)
             prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
                 prompt_to_encode,
                 phrases,
@@ -7809,6 +8241,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if len(prompt_preview) > 240:
             prompt_preview = prompt_preview[:237].rstrip() + "..."
         state_repair_candidates = self._v2_serializable_repair_candidates(repair_candidates)
+        state_intent_alignment_adjustments = [
+            {
+                "text": str(item.get("text", "")),
+                "source": str(item.get("source", "")),
+                "action": str(item.get("action", "")),
+            }
+            for item in intent_alignment_adjustments
+            if isinstance(item, dict) and str(item.get("text", "")).strip()
+        ]
 
         if prompt_history is not None:
             prompt_history["canonical_prompt"] = analysis_prompt
@@ -7821,6 +8262,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "prompt": prompt_to_encode,
                 "phrases": phrases,
                 "repair_candidates": state_repair_candidates,
+                "intent_alignment_adjustments": state_intent_alignment_adjustments,
             })
 
         if current_prompt_refusal:
@@ -7832,6 +8274,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
                 "phrases": phrases,
                 "intent_prompt": intent_prompt,
+                "intent_phrases": intent_phrases,
+                "intent_prompt_is_vague": bool(intent_prompt_is_vague),
+                "intent_alignment_adjustments": state_intent_alignment_adjustments,
                 "repair_candidates": state_repair_candidates,
                 "encoded_role": encoded_role,
                 "auto_injected_prompt_additions": [
@@ -7860,6 +8305,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
             f"{lucky_status}"
+            f"\n{intent_alignment_status}"
             f"\n{repair_status}"
             f"{refusal_status_line}"
         )
@@ -7896,6 +8342,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "Adaptation\n"
                 f"{adaptation_status}\n"
                 f"{lucky_status}\n"
+                f"{intent_alignment_status}\n"
                 f"{repair_status}"
                 f"{refusal_status_line}"
             ),

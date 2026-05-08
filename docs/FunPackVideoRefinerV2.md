@@ -40,6 +40,8 @@ Use `Wrong appearance` when the video is polluted by remembered clothing, charac
 
 **lora_stack**: Optional stack from `FunPack Apply LoRA Weights` / `FunPack LoRA Loader`. V2 writes prompt-specific suggested model weights.
 
+**user_intent_prompt**: Optional raw/original request. When connected, V2 compares it with the enhanced `positive_prompt`, stores intent-enhance pairs, remembers all provided full-word and adjacent word-pair tokens for that intent, and can omit enhancer-only tokens that repeatedly led to bad ratings.
+
 **im_feeling_lucky**: When enabled, V2 composes a learned prompt from rated phrase memory and encodes it through the connected CLIP. When disabled, V2 may still store Lucky memory from rated runs, but it does not compose or apply a Lucky prompt.
 
 ## Appearance Safety

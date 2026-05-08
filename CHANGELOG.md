@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.2] - 2026-05-08
+
+### Added
+
+Added Refiner V2 original-intent alignment memory. When `user_intent_prompt` stays the same but an enhancer produces different `positive_prompt` variants, the refiner now remembers intent-enhance pairs, which variants rated well, which original-intent phrases were omitted, and which enhancer-only phrases were rejected.
+
+### Fixed
+
+Fixed Refiner V2 so learned original-intent omissions can be restored on later runs, while repeatedly rejected enhancer-only additions can be removed before encoding. Rejected enhancer-only full words and adjacent word pairs are stored as omit evidence for that original intent.
+
 ## [2.3.1] - 2026-05-08
 
 ### Fixed

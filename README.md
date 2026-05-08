@@ -2,6 +2,12 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.3.2
+
+Refiner V2 now learns original-intent alignment when `user_intent_prompt` stays the same but an enhancer gives different `positive_prompt` variants. Ratings teach it which intent-enhance pairs represented the original request, which original phrases were missing, and which enhancer-only additions were rejected.
+
+Learned original-intent omissions can now be restored on later runs, while repeatedly rejected enhancer-only full words and adjacent word pairs can be omitted before encoding.
+
 ## Updates in 2.3.1
 
 Refiner V2 Prompt Repair now keeps all missing/wrong ratings tied to the current prompt or explicit user intent. Learned favorite actions, details, quality cues, camera moves, and styles are not repaired into unrelated requests just because they scored well before.

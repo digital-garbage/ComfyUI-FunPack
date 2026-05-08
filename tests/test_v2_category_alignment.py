@@ -59,6 +59,14 @@ def prompt_items(refiner, words):
     ]
 
 
+def prompt_phrases(refiner, prompt, global_state=None):
+    return refiner._v2_classify_phrases(
+        None,
+        refiner._ordered_prompt_phrases(prompt),
+        global_state or {"phrase_memory": {}},
+    )
+
+
 def train_prompt_context(refiner, words, rating_label, global_state=None, iterations=1):
     global_state = global_state or {"phrase_memory": {}}
     phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, words), global_state)
@@ -277,6 +285,174 @@ def test_prompt_repair_blocks_appearance_subject_and_environment():
     assert "detailed background" not in repaired
     assert "female character" not in repaired
     assert all(candidate["text"] != "white tights" for candidate in candidates)
+
+
+def test_intent_alignment_learns_missing_original_intent_from_enhancer_variant():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    enhanced_prompt = "woman smiling, cinematic studio portrait"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    status = refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    missing = slot["missing_intent_phrases"]["woman walking through neon rain"]
+    variant = next(iter(slot["variants"].values()))
+    assert "Intent alignment learned" in status
+    assert missing["score"] > 0.5
+    assert missing["missing_count"] == 1
+    assert variant["missing_intent_count"] == 1
+
+
+def test_intent_alignment_restores_learned_missing_original_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": "woman smiling, cinematic studio portrait",
+            "phrases": prompt_phrases(refiner, "woman smiling, cinematic studio portrait", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    aligned, status, adjustments = refiner._v2_apply_intent_alignment_memory(
+        "woman smiling, moody closeup",
+        prompt_phrases(refiner, "woman smiling, moody closeup", global_state),
+        intent_prompt,
+        prompt_phrases(refiner, intent_prompt, global_state),
+        global_state,
+    )
+
+    assert "woman walking through neon rain" in aligned
+    assert "restored 1 original phrase" in status
+    assert adjustments == [
+        {"text": "woman walking through neon rain", "source": "intent_missing", "action": "added"}
+    ]
+
+
+def test_intent_alignment_removes_rejected_enhancer_only_extra():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    enhanced_prompt = "woman walking through neon rain, white tights"
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    aligned, status, adjustments = refiner._v2_apply_intent_alignment_memory(
+        enhanced_prompt,
+        prompt_phrases(refiner, enhanced_prompt, global_state),
+        intent_prompt,
+        prompt_phrases(refiner, intent_prompt, global_state),
+        global_state,
+    )
+
+    assert "white tights" not in aligned
+    assert "woman walking through neon rain" in aligned
+    assert "removed 1 rejected enhancer-only phrase" in status
+    assert adjustments == [
+        {"text": "white tights", "source": "enhancer_extra", "action": "removed"}
+    ]
+
+
+def test_intent_alignment_stores_pairs_and_bad_tokens_to_omit():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    enhanced_prompt = "woman walking through neon rain, white tights"
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    pair = next(iter(slot["intent_enhance_pairs"].values()))
+    assert pair["intent_prompt"] == intent_prompt
+    assert pair["positive_prompt"] == enhanced_prompt
+    assert "woman" in slot["provided_tokens"]
+    assert slot["provided_tokens"]["woman"]["omit"] is False
+    assert slot["provided_tokens"]["white"]["omit"] is True
+    assert slot["provided_tokens"]["tights"]["omit"] is True
+    assert slot["provided_tokens"]["white tights"]["kind"] == "pair"
+    assert slot["provided_tokens"]["white tights"]["omit"] is True
+    assert set(slot["bad_tokens"]) >= {"white", "tights", "white tights"}
+
+
+def test_intent_alignment_omits_bad_token_in_new_enhancer_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": "woman walking through neon rain, white tights",
+            "phrases": prompt_phrases(refiner, "woman walking through neon rain, white tights", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    aligned, _, adjustments = refiner._v2_apply_intent_alignment_memory(
+        "woman walking through neon rain, red tights",
+        prompt_phrases(refiner, "woman walking through neon rain, red tights", global_state),
+        intent_prompt,
+        prompt_phrases(refiner, intent_prompt, global_state),
+        global_state,
+    )
+
+    assert "red tights" not in aligned
+    assert "woman walking through neon rain" in aligned
+    assert adjustments == [
+        {"text": "red tights", "source": "enhancer_extra", "action": "removed"}
+    ]
 
 
 def test_lucky_skips_appearance_memory_unless_prompt_mentions_it():
