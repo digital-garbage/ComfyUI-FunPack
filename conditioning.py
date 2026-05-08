@@ -5703,7 +5703,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "positive_prompt": ("STRING", {"multiline": True, "default": "", "placeholder": "Positive prompt"}),
                 "clip": ("CLIP", {"tooltip": "Connected text encoder used for all V2 prompt encoding and similarity checks."}),
                 "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
-                "refinement_key": ("STRING", {"default": "my_style_v2", "multiline": False}),
             },
             "optional": {
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
@@ -7558,7 +7557,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_history["lora_weight_suggestions"] = suggestions
         return "LoRA suggestions: " + " | ".join(parts)
 
-    def refine_v2(self, positive_prompt, clip, rating, refinement_key,
+    def refine_v2(self, positive_prompt, clip, rating, refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input=""):
         if seed != 0:
