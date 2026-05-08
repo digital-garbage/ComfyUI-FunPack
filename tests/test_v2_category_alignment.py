@@ -201,7 +201,10 @@ def test_awful_lora_feedback_reduces_before_missing_axis_boosts():
 
 def test_category_weights_are_recorded_for_every_learning_rating():
     refiner = FunPackVideoRefinerV2()
-    learning_labels = [label for label in V2_RATING_LABELS if label != "-Just forget it-"]
+    learning_labels = [
+        label for label in V2_RATING_LABELS
+        if label not in {"-Just forget it-", "Wrong appearance"}
+    ]
 
     for label in learning_labels:
         entry, _, _ = train_phrase(refiner, f"running test {label}", label)
@@ -210,6 +213,158 @@ def test_category_weights_are_recorded_for_every_learning_rating():
         assert set(entry["category_weights"]) == set(refiner.CATEGORY_DESCRIPTIONS)
         assert set(entry["clip_heuristic_scores"]) == set(refiner.CATEGORY_DESCRIPTIONS)
         assert set(entry["effective_category_scores"]) == set(refiner.CATEGORY_DESCRIPTIONS)
+
+
+def test_wrong_appearance_rating_is_available():
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+
+    assert "Wrong appearance" in V2_RATING_LABELS
+    assert profile["key"] == "wrong_appearance"
+    assert profile["wrong_categories"] == ["appearance", "subject", "environment"]
+
+
+def test_prompt_repair_blocks_appearance_subject_and_environment():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "white tights": {
+                "text": "white tights",
+                "primary": "appearance",
+                "effective_category_scores": refiner._v2_heuristic_scores("white tights"),
+                "wanted_axes": {"details": 3},
+                "score": 6.0,
+                "liked_count": 4,
+            },
+            "detailed background": {
+                "text": "detailed background",
+                "primary": "environment",
+                "effective_category_scores": refiner._v2_heuristic_scores("detailed background"),
+                "wanted_axes": {"details": 3},
+                "score": 6.0,
+                "liked_count": 4,
+            },
+            "female character": {
+                "text": "female character",
+                "primary": "subject",
+                "effective_category_scores": refiner._v2_heuristic_scores("female character"),
+                "wanted_axes": {"details": 3},
+                "score": 6.0,
+                "liked_count": 4,
+            },
+            "tiny smoke curls": {
+                "text": "tiny smoke curls",
+                "primary": "details",
+                "effective_category_scores": refiner._v2_heuristic_scores("tiny smoke curls"),
+                "wanted_axes": {"details": 3},
+                "score": 4.0,
+                "liked_count": 2,
+            },
+        }
+    }
+    profile = normalize_refiner_v2_rating("Missing details")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "person smoking",
+        refiner._v2_classify_phrases(None, prompt_items(refiner, ["person smoking"]), global_state),
+        global_state,
+        None,
+        feedback,
+    )
+
+    assert "tiny smoke curls" in repaired
+    assert "white tights" not in repaired
+    assert "detailed background" not in repaired
+    assert "female character" not in repaired
+    assert all(candidate["text"] != "white tights" for candidate in candidates)
+
+
+def test_lucky_skips_appearance_memory_unless_prompt_mentions_it():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["white tights", "walking"]),
+        global_state,
+    )
+    profile = normalize_refiner_v2_rating("Perfect")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {"prompt": "white tights walking", "phrases": phrases},
+        profile,
+        1,
+        feedback,
+    )
+
+    lucky_prompt, _ = refiner._v2_compose_lucky_prompt("", [], global_state)
+    explicit_prompt, _ = refiner._v2_compose_lucky_prompt(
+        "white tights",
+        refiner._v2_classify_phrases(None, prompt_items(refiner, ["white tights"]), global_state),
+        global_state,
+    )
+
+    assert "walking" in lucky_prompt
+    assert "white tights" not in lucky_prompt
+    assert "tights" not in lucky_prompt
+    assert "white tights" in explicit_prompt
+
+
+def test_wrong_appearance_suppresses_only_auto_inserted_appearance_memory():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, ["walking"]), global_state)
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {
+            "prompt": "walking",
+            "encoded_prompt": "walking, white tights",
+            "phrases": phrases,
+            "repair_candidates": [{"text": "white tights", "axes": ["details"], "score": 3.0, "source": "memory"}],
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    appearance = global_state["phrase_memory"]["white tights"]
+    motion = global_state["phrase_memory"]["walking"]
+    assert appearance["auto_inject_suppressed"] is True
+    assert appearance["wrong_appearance_count"] >= 1
+    assert motion.get("wrong_appearance_count", 0) == 0
+    assert motion["category_evidence_count"] == 0
+
+
+def test_repeated_wrong_appearance_keeps_entry_out_of_lucky():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, ["walking"]), global_state)
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    for iteration in range(2):
+        refiner._v2_update_phrase_memory(
+            global_state,
+            {
+                "prompt": "walking",
+                "encoded_prompt": "walking, white tights",
+                "phrases": phrases,
+                "repair_candidates": [{"text": "white tights", "axes": ["details"], "score": 3.0, "source": "memory"}],
+            },
+            profile,
+            iteration + 1,
+            feedback,
+        )
+
+    global_state["phrase_memory"]["white tights"]["score"] = 6.0
+    global_state["phrase_memory"]["white tights"]["liked_count"] = 8
+    lucky_prompt, _ = refiner._v2_compose_lucky_prompt("", [], global_state)
+
+    assert global_state["phrase_memory"]["white tights"]["auto_inject_blocked_count"] >= 2
+    assert "white tights" not in lucky_prompt
 
 
 def test_forget_rating_skips_category_weight_learning():

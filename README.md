@@ -2,6 +2,16 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.3.0
+
+Refiner V2 now blocks learned appearance, character, subject, and background concepts from Prompt Repair, Lucky auto-injection, and legacy Void memory unless the current prompt explicitly asks for them.
+
+Added `Wrong appearance` for outputs polluted by remembered clothing or character traits. This suppresses the responsible appearance memory without penalizing unrelated action, camera, detail, or quality learning.
+
+Added `FunPack Refinement Key Loader` for selecting, creating, importing, and exporting Refiner V2 keys. The loader can feed both Refiner V2 and `FunPack Apply LoRA Weights`.
+
+Added a paste-friendly [`Refiner V2 quick guide`](docs/FunPackVideoRefinerV2QuickGuide.md) for new users.
+
 ## Updates in 2.2.1
 
 Fixed Refiner V2 prompt phrase categorization so background, appearance, quality, camera, and action phrases stay aligned before the node updates Lucky memory or LoRA suggestions.
@@ -68,6 +78,7 @@ Per-node documentation is available in the [`docs`](docs) folder.
 Start with:
 
 - [`docs/FunPackVideoRefinerV2.md`](docs/FunPackVideoRefinerV2.md) for `FunPack Video Refiner V2`
+- [`docs/FunPackVideoRefinerV2QuickGuide.md`](docs/FunPackVideoRefinerV2QuickGuide.md) for a short Discord-friendly Refiner V2 guide
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).

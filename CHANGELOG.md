@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.3.0] - 2026-05-08
+
+### Added
+
+Added `Wrong appearance` rating to `FunPack Video Refiner V2` for outputs contaminated by remembered clothing, character, subject, or background concepts.
+
+Added `FunPack Refinement Key Loader`, with a selectable key dropdown, create-on-load behavior, and browser-side JSON import/export buttons.
+
+Added a Discord-friendly Refiner V2 quick guide for new users.
+
+### Changed
+
+Updated Refiner V2 Prompt Repair so it only auto-adds safe repair concepts such as action, camera, details, quality, and style. Appearance, subject/character, and environment/background concepts are now blocked from Prompt Repair.
+
+Updated `I'm Feeling Lucky` in Refiner V2 so appearance, subject/character, and environment/background memory is not auto-injected unless the user explicitly includes that phrase in the current prompt.
+
+Updated legacy Void/Lucky token-bank selection to skip appearance, subject/character, and environment/background tokens.
+
+Updated Refiner V2 and `FunPack Apply LoRA Weights` so both can accept a linked refinement key from `FunPack Refinement Key Loader`.
+
+### Fixed
+
+Fixed appearance bleed-over where highly liked clothing or character tags could reappear in unrelated image-to-video prompts.
+
 ## [2.2.1] - 2026-05-07
 
 ### Fixed
