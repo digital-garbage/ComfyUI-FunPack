@@ -5730,7 +5730,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         path = self._v2_state_path(refinement_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(data, file, indent=2)
+            json.dump(self._v2_json_safe(data), file, indent=2)
+
+    def _v2_json_safe(self, value):
+        if isinstance(value, dict):
+            return {str(key): self._v2_json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._v2_json_safe(item) for item in value]
+        if isinstance(value, set):
+            return [self._v2_json_safe(item) for item in sorted(value)]
+        return value
 
     def _v2_prompt_key(self, prompt):
         return re.sub(r"\s+", " ", str(prompt or "").strip())
@@ -7148,6 +7157,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             selected,
         )
 
+    def _v2_serializable_repair_candidates(self, candidates):
+        serializable = []
+        for item in candidates or []:
+            if not isinstance(item, dict):
+                continue
+            axes = set(item.get("axes", []))
+            serializable.append({
+                "text": str(item.get("text", "")),
+                "axes": self._v2_order_axes(axes),
+                "score": round(float(item.get("score", 0.0)), 6),
+                "source": str(item.get("source", "")),
+                "cluster": [
+                    str(text)
+                    for text in item.get("cluster", [])
+                    if str(text).strip()
+                ],
+            })
+        return serializable
+
     def _v2_compose_lucky_prompt(self, prompt, phrases, global_state):
         memory = global_state.get("phrase_memory", {})
         scored = []
@@ -7448,6 +7476,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_preview = re.sub(r"\s+", " ", prompt_to_encode).strip()
         if len(prompt_preview) > 240:
             prompt_preview = prompt_preview[:237].rstrip() + "..."
+        state_repair_candidates = self._v2_serializable_repair_candidates(repair_candidates)
 
         if prompt_history is not None:
             prompt_history["canonical_prompt"] = analysis_prompt
@@ -7459,7 +7488,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "encoded_role": encoded_role,
                 "prompt": prompt_to_encode,
                 "phrases": phrases,
-                "repair_candidates": repair_candidates,
+                "repair_candidates": state_repair_candidates,
             })
 
         if current_prompt_refusal:
@@ -7471,7 +7500,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
                 "phrases": phrases,
                 "intent_prompt": intent_prompt,
-                "repair_candidates": repair_candidates,
+                "repair_candidates": state_repair_candidates,
                 "rating_label": "Unrated",
                 "iteration": int(global_state["total_iterations"]),
             }

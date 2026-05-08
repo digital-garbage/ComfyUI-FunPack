@@ -560,3 +560,20 @@ def test_phrase_clusters_train_more_strongly_than_ngrams_and_tokens():
     token_score = global_state["phrase_memory"]["reaching"]["score"]
 
     assert phrase_score > ngram_score > token_score
+
+
+def test_repair_candidates_saved_as_json_lists(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    rich_prompt = "woman, walking, reaching hand, tiny particles, rain reflections"
+
+    refiner.refine_v2(rich_prompt, FakeClip(), "Perfect", "json-repair-test")
+    refiner.refine_v2(rich_prompt, FakeClip(), "Perfect", "json-repair-test")
+    refiner.refine_v2("woman, rain", FakeClip(), "Missing details + action", "json-repair-test")
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    candidates = state["last_run"]["repair_candidates"]
+    assert candidates
+    assert isinstance(candidates[0]["axes"], list)
+    assert "walking" in state["last_run"]["encoded_prompt"]
