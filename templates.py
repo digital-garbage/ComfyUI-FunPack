@@ -27,6 +27,7 @@ except ImportError:
 
 
 TEMPLATE_NONE = "-None-"
+REFINEMENT_KEY_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
 WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
 
@@ -44,6 +45,120 @@ def template_store_dir():
 
 def template_store_path():
     return os.path.join(template_store_dir(), "templates.json")
+
+
+def refinement_store_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements")
+
+
+def normalize_refinement_key(value):
+    value = str(value or "").strip()
+    if not value or value == REFINEMENT_KEY_NONE:
+        return ""
+    return value
+
+
+def empty_v2_refinement_state(refinement_key):
+    return {
+        "version": 2,
+        "refinement_key": refinement_key,
+        "state_namespace": "clip",
+        "global": {
+            "total_iterations": 0,
+            "avg_reward_ema": 0.0,
+            "good_streak": 0,
+            "bad_streak": 0,
+            "last_rating_label": "Initial discovery",
+            "last_missing_axes": [],
+            "phrase_memory": {},
+            "axis_conditioning_memory": {},
+            "lora_weight_memory": {},
+            "preferred_context_memory": {},
+            "loss_history": [],
+        },
+        "prompt_histories": {},
+        "last_run": None,
+    }
+
+
+def refinement_key_path(refinement_key):
+    return refinement_state_path(refinement_key, "clip", prefix="refine_v2")
+
+
+def normalize_refinement_state(data, fallback_key=""):
+    if not isinstance(data, dict):
+        return None, ""
+    key = normalize_refinement_key(data.get("refinement_key") or fallback_key)
+    if not key:
+        return None, ""
+    state = dict(data)
+    state["version"] = 2
+    state["refinement_key"] = key
+    state["state_namespace"] = "clip"
+    state.setdefault("global", {})
+    state["global"].setdefault("phrase_memory", {})
+    state["global"].setdefault("axis_conditioning_memory", {})
+    state["global"].setdefault("lora_weight_memory", {})
+    state["global"].setdefault("preferred_context_memory", {})
+    state["global"].setdefault("loss_history", [])
+    state.setdefault("prompt_histories", {})
+    state.setdefault("last_run", None)
+    return state, key
+
+
+def load_refinement_key_state(refinement_key, create=False):
+    key = normalize_refinement_key(refinement_key)
+    if not key:
+        return None, "", "No refinement key selected."
+    path = refinement_key_path(key)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            state, loaded_key = normalize_refinement_state(data, key)
+            if state is None:
+                return None, key, f"Refinement key '{key}' is unreadable."
+            return state, loaded_key, f"Loaded refinement key '{loaded_key}'."
+        except (json.JSONDecodeError, OSError, ValueError):
+            return None, key, f"Refinement key '{key}' is unreadable."
+    if not create:
+        return None, key, f"Refinement key '{key}' does not exist."
+    state = empty_v2_refinement_state(key)
+    save_refinement_key_state(state, key)
+    return state, key, f"Created refinement key '{key}'."
+
+
+def save_refinement_key_state(state, refinement_key):
+    key = normalize_refinement_key(refinement_key)
+    if not key:
+        return ""
+    state, key = normalize_refinement_state(state, key)
+    if state is None:
+        return ""
+    path = refinement_key_path(key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(state, file, indent=2)
+    return path
+
+
+def refinement_key_names():
+    keys = set()
+    directory = refinement_store_dir()
+    if os.path.isdir(directory):
+        for filename in os.listdir(directory):
+            if not filename.startswith("refine_v2_") or not filename.endswith(".json"):
+                continue
+            path = os.path.join(directory, filename)
+            try:
+                with open(path, "r", encoding="utf-8") as file:
+                    data = json.load(file)
+                key = normalize_refinement_key(data.get("refinement_key") if isinstance(data, dict) else "")
+                if key:
+                    keys.add(key)
+            except (json.JSONDecodeError, OSError, ValueError):
+                continue
+    return [REFINEMENT_KEY_NONE] + sorted(keys)
 
 
 def empty_template_db():
@@ -320,6 +435,79 @@ async def funpack_templates_import(request):
         imported += 1
     save_template_db(data)
     return web.json_response({"imported": imported, "templates": template_names()})
+
+
+@PromptServer.instance.routes.get("/funpack/refinement_keys")
+async def funpack_refinement_keys(_):
+    return web.json_response(
+        {"keys": refinement_key_names(), "path": refinement_store_dir()},
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@PromptServer.instance.routes.get("/funpack/refinement_keys/export")
+async def funpack_refinement_keys_export(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    state, loaded_key, status = load_refinement_key_state(key, create=False)
+    if state is None:
+        return web.json_response({"error": status}, status=404)
+    return web.json_response(
+        state,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Content-Disposition": f"attachment; filename=funpack_refinement_{loaded_key}.json",
+        },
+    )
+
+
+@PromptServer.instance.routes.post("/funpack/refinement_keys/import")
+async def funpack_refinement_keys_import(request):
+    incoming = await request.json()
+    if isinstance(incoming, dict) and isinstance(incoming.get("state"), dict):
+        incoming = incoming["state"]
+    state, key = normalize_refinement_state(incoming)
+    if state is None:
+        return web.json_response({"error": "Imported file is not a valid V2 refinement key JSON."}, status=400)
+    path = save_refinement_key_state(state, key)
+    if not path:
+        return web.json_response({"error": "Could not save imported refinement key."}, status=400)
+    return web.json_response({"imported": key, "keys": refinement_key_names()})
+
+
+class FunPackRefinementKeyLoader:
+    CATEGORY = "FunPack/Refinement"
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("refinement_key", "status")
+    FUNCTION = "load_refinement_key"
+    OUTPUT_NODE = True
+    DESCRIPTION = "Loads, creates, imports, and exports FunPack Video Refiner V2 refinement keys."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "refinement_key": (refinement_key_names(), {"default": REFINEMENT_KEY_NONE}),
+                "key_name": ("STRING", {"default": "", "multiline": False}),
+                "create_if_missing": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, refinement_key=None, **kwargs):
+        return True
+
+    def load_refinement_key(self, refinement_key, key_name, create_if_missing=True):
+        selected = normalize_refinement_key(refinement_key)
+        typed = normalize_refinement_key(key_name)
+        target = selected or typed
+        if not target:
+            return ("", "No refinement key selected. Pick an existing key or type a new key name.")
+        _, loaded_key, status = load_refinement_key_state(target, create=bool(create_if_missing))
+        return (loaded_key if loaded_key else target, status)
 
 
 class FunPackTemplateManager:

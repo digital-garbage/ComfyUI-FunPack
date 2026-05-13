@@ -189,6 +189,12 @@ class FunPackApplyLoraWeights:
             any_type,
             {
                 "lora_list": ("STRING", {"default": "[]", "multiline": False}),
+                "refinement_key_input": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "forceInput": True,
+                    "tooltip": "Optional linked refinement key, for example from FunPack Refinement Key Loader. Overrides the refinement_key widget when connected.",
+                }),
                 "lora_0": (loras, {"default": "None"}),
                 "lora_0_type": (LORA_TYPES, {"default": "general"}),
                 "lora_0_base_weight": (
@@ -358,6 +364,9 @@ class FunPackApplyLoraWeights:
         return abs(float(saved_base) - float(entry["base_model_weight"])) <= 1e-6
 
     def apply_lora_weights(self, positive_prompt, refinement_key, mode, per_block=False, **kwargs):
+        linked_refinement_key = str(kwargs.pop("refinement_key_input", "") or "").strip()
+        if linked_refinement_key:
+            refinement_key = linked_refinement_key
         mode = (mode or "ltx2").lower()
         per_block = coerce_bool(per_block)
         prompt_key = prompt_key_for_mode(positive_prompt, mode)

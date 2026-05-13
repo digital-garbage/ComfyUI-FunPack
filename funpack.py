@@ -19,7 +19,7 @@ try:
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
     from .context_transition import FunPackContextTransitionWindows
-    from .templates import FunPackTemplateManager
+    from .templates import FunPackRefinementKeyLoader, FunPackTemplateManager
 except ImportError:
     from conditioning import (
         FunPackLorebookEnhancer,
@@ -38,7 +38,7 @@ except ImportError:
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
     from context_transition import FunPackContextTransitionWindows
-    from templates import FunPackTemplateManager
+    from templates import FunPackRefinementKeyLoader, FunPackTemplateManager
 
     NODE_CLASS_MAPPINGS = {
         "FunPackPromptCombiner": FunPackPromptCombiner,
@@ -55,6 +55,7 @@ except ImportError:
         "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
+        "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
         "FunPackTemplateManager": FunPackTemplateManager,
     }
 
@@ -73,6 +74,7 @@ except ImportError:
         "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
+        "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
         "FunPackTemplateManager": "FunPack Template Manager",
     }
 
@@ -93,6 +95,7 @@ __all__ = [
     "FunPackStoryMemLastFrameExtractor",
     "FunPackApplyLoraWeights",
     "FunPackLoraLoader",
+    "FunPackRefinementKeyLoader",
     "FunPackTemplateManager",
     "sample_funpack_hybrid_euler_2s",
 ]

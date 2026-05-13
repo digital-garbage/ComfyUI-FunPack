@@ -1,6 +1,6 @@
 # Changelog
 
-## [2.2.2] - 2026-05-13
+## [2.3.4] - 2026-05-13
 
 ### Added
 
@@ -8,7 +8,7 @@ Added searchable LoRA picking to `FunPack Apply LoRA Weights`. The compact row U
 
 Added optional `clip_vision_output`, `source_image`, and `negative_prompt` inputs to `FunPack Video Refiner V2`.
 
-Added a final `modified_negative` conditioning output to `FunPack Video Refiner V2`. When negative repair has prompt text to encode, the node returns repaired negative conditioning; otherwise it returns an empty conditioning list.
+Added a final `modified_negative` conditioning output to `FunPack Video Refiner V2`. When negative repair has prompt text to encode and `CLIP` is connected, the node returns repaired negative conditioning; otherwise it returns an empty conditioning list.
 
 Added advisory V2 vision context storage for source image dimensions, aspect ratio bucket, image fingerprint, CLIP Vision tensor summaries, and changed-image detection. Vision context is diagnostic only and is not blended into positive conditioning.
 
@@ -21,6 +21,56 @@ Updated V2 prompt repair so repaired phrases preserve stopwords and phrase text 
 Reduced repeated Refiner V2 CLIP model calls by caching category and phrase encodes within each run.
 
 Updated negative repair to persist poorly rated or wrong-context tags and append them to future negative prompts before encoding negative conditioning.
+
+## [2.3.3] - 2026-05-08
+
+### Fixed
+
+Fixed Refiner V2 so `CLIP` and pre-encoded `positive_conditioning` can both be optional inputs. When `CLIP` is connected, V2 keeps owning prompt encoding as before. When `CLIP` is not connected but `positive_conditioning` is connected, V2 accepts the finished Gemma3/LTX2 conditioning, uses the prompt for analysis, and loads only the Gemma3 tokenizer.
+
+## [2.3.2] - 2026-05-08
+
+### Added
+
+Added Refiner V2 original-intent alignment memory. When `user_intent_prompt` stays the same but an enhancer produces different `positive_prompt` variants, the refiner now remembers intent-enhance pairs, which variants rated well, which original-intent phrases were omitted, and which enhancer-only phrases were rejected.
+
+### Fixed
+
+Fixed Refiner V2 so learned original-intent omissions can be restored on later runs, while repeatedly rejected enhancer-only additions can be removed before encoding. Rejected enhancer-only full words and adjacent word pairs are stored as omit evidence for that original intent.
+
+## [2.3.1] - 2026-05-08
+
+### Fixed
+
+Fixed Refiner V2 Prompt Repair so missing/wrong ratings only repair from the current prompt or explicit user intent, instead of pulling unrelated learned favorite actions, details, quality cues, camera moves, or styles from memory.
+
+Fixed Prompt Repair memory matching so the same word with different neighboring prompt context is treated as different evidence.
+
+Fixed vague raw user intent handling so prompts like `Figure it out` let the enhanced `positive_prompt` drive repair matching when available.
+
+## [2.3.0] - 2026-05-08
+
+### Added
+
+Added `Wrong appearance` rating to `FunPack Video Refiner V2` for outputs contaminated by remembered clothing, character, subject, or background concepts.
+
+Added `FunPack Refinement Key Loader`, with a selectable key dropdown, create-on-load behavior, and browser-side JSON import/export buttons.
+
+Added a Discord-friendly Refiner V2 quick guide for new users.
+
+### Changed
+
+Updated Refiner V2 Prompt Repair so it only auto-adds safe repair concepts such as action, camera, details, quality, and style. Appearance, subject/character, and environment/background concepts are now blocked from Prompt Repair.
+
+Updated `I'm Feeling Lucky` in Refiner V2 so appearance, subject/character, and environment/background memory is not auto-injected unless the user explicitly includes that phrase in the current prompt.
+
+Updated legacy Void/Lucky token-bank selection to skip appearance, subject/character, and environment/background tokens.
+
+Updated Refiner V2 and `FunPack Apply LoRA Weights` so both can accept a linked refinement key from `FunPack Refinement Key Loader`.
+
+### Fixed
+
+Fixed appearance bleed-over where highly liked clothing or character tags could reappear in unrelated image-to-video prompts.
 
 ## [2.2.1] - 2026-05-07
 

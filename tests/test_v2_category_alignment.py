@@ -68,6 +68,14 @@ def prompt_items(refiner, words):
     ]
 
 
+def prompt_phrases(refiner, prompt, global_state=None):
+    return refiner._v2_classify_phrases(
+        None,
+        refiner._ordered_prompt_phrases(prompt),
+        global_state or {"phrase_memory": {}},
+    )
+
+
 def train_prompt_context(refiner, words, rating_label, global_state=None, iterations=1):
     global_state = global_state or {"phrase_memory": {}}
     phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, words), global_state)
@@ -210,7 +218,10 @@ def test_awful_lora_feedback_reduces_before_missing_axis_boosts():
 
 def test_category_weights_are_recorded_for_every_learning_rating():
     refiner = FunPackVideoRefinerV2()
-    learning_labels = [label for label in V2_RATING_LABELS if label != "-Just forget it-"]
+    learning_labels = [
+        label for label in V2_RATING_LABELS
+        if label not in {"-Just forget it-", "Wrong appearance"}
+    ]
 
     for label in learning_labels:
         entry, _, _ = train_phrase(refiner, f"running test {label}", label)
@@ -219,6 +230,326 @@ def test_category_weights_are_recorded_for_every_learning_rating():
         assert set(entry["category_weights"]) == set(refiner.CATEGORY_DESCRIPTIONS)
         assert set(entry["clip_heuristic_scores"]) == set(refiner.CATEGORY_DESCRIPTIONS)
         assert set(entry["effective_category_scores"]) == set(refiner.CATEGORY_DESCRIPTIONS)
+
+
+def test_wrong_appearance_rating_is_available():
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+
+    assert "Wrong appearance" in V2_RATING_LABELS
+    assert profile["key"] == "wrong_appearance"
+    assert profile["wrong_categories"] == ["appearance", "subject", "environment"]
+
+
+def test_prompt_repair_blocks_appearance_subject_and_environment():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "white tights": {
+                "text": "white tights",
+                "primary": "appearance",
+                "effective_category_scores": refiner._v2_heuristic_scores("white tights"),
+                "wanted_axes": {"details": 3},
+                "score": 6.0,
+                "liked_count": 4,
+            },
+            "detailed background": {
+                "text": "detailed background",
+                "primary": "environment",
+                "effective_category_scores": refiner._v2_heuristic_scores("detailed background"),
+                "wanted_axes": {"details": 3},
+                "score": 6.0,
+                "liked_count": 4,
+            },
+            "female character": {
+                "text": "female character",
+                "primary": "subject",
+                "effective_category_scores": refiner._v2_heuristic_scores("female character"),
+                "wanted_axes": {"details": 3},
+                "score": 6.0,
+                "liked_count": 4,
+            },
+            "tiny smoke curls": {
+                "text": "tiny smoke curls",
+                "primary": "details",
+                "effective_category_scores": refiner._v2_heuristic_scores("tiny smoke curls"),
+                "wanted_axes": {"details": 3},
+                "score": 4.0,
+                "liked_count": 2,
+            },
+        }
+    }
+    profile = normalize_refiner_v2_rating("Missing details")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "person smoking",
+        refiner._v2_classify_phrases(None, prompt_items(refiner, ["person smoking"]), global_state),
+        global_state,
+        None,
+        feedback,
+    )
+
+    assert "tiny smoke curls" in repaired
+    assert "white tights" not in repaired
+    assert "detailed background" not in repaired
+    assert "female character" not in repaired
+    assert all(candidate["text"] != "white tights" for candidate in candidates)
+
+
+def test_intent_alignment_learns_missing_original_intent_from_enhancer_variant():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    enhanced_prompt = "woman smiling, cinematic studio portrait"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    status = refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    missing = slot["missing_intent_phrases"]["woman walking through neon rain"]
+    variant = next(iter(slot["variants"].values()))
+    assert "Intent alignment learned" in status
+    assert missing["score"] > 0.5
+    assert missing["missing_count"] == 1
+    assert variant["missing_intent_count"] == 1
+
+
+def test_intent_alignment_restores_learned_missing_original_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": "woman smiling, cinematic studio portrait",
+            "phrases": prompt_phrases(refiner, "woman smiling, cinematic studio portrait", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    aligned, status, adjustments = refiner._v2_apply_intent_alignment_memory(
+        "woman smiling, moody closeup",
+        prompt_phrases(refiner, "woman smiling, moody closeup", global_state),
+        intent_prompt,
+        prompt_phrases(refiner, intent_prompt, global_state),
+        global_state,
+    )
+
+    assert "woman walking through neon rain" in aligned
+    assert "restored 1 original phrase" in status
+    assert adjustments == [
+        {"text": "woman walking through neon rain", "source": "intent_missing", "action": "added"}
+    ]
+
+
+def test_intent_alignment_removes_rejected_enhancer_only_extra():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    enhanced_prompt = "woman walking through neon rain, white tights"
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    aligned, status, adjustments = refiner._v2_apply_intent_alignment_memory(
+        enhanced_prompt,
+        prompt_phrases(refiner, enhanced_prompt, global_state),
+        intent_prompt,
+        prompt_phrases(refiner, intent_prompt, global_state),
+        global_state,
+    )
+
+    assert "white tights" not in aligned
+    assert "woman walking through neon rain" in aligned
+    assert "removed 1 rejected enhancer-only phrase" in status
+    assert adjustments == [
+        {"text": "white tights", "source": "enhancer_extra", "action": "removed"}
+    ]
+
+
+def test_intent_alignment_stores_pairs_and_bad_tokens_to_omit():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    enhanced_prompt = "woman walking through neon rain, white tights"
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    pair = next(iter(slot["intent_enhance_pairs"].values()))
+    assert pair["intent_prompt"] == intent_prompt
+    assert pair["positive_prompt"] == enhanced_prompt
+    assert "woman" in slot["provided_tokens"]
+    assert slot["provided_tokens"]["woman"]["omit"] is False
+    assert slot["provided_tokens"]["white"]["omit"] is True
+    assert slot["provided_tokens"]["tights"]["omit"] is True
+    assert slot["provided_tokens"]["white tights"]["kind"] == "pair"
+    assert slot["provided_tokens"]["white tights"]["omit"] is True
+    assert set(slot["bad_tokens"]) >= {"white", "tights", "white tights"}
+
+
+def test_intent_alignment_omits_bad_token_in_new_enhancer_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": "woman walking through neon rain, white tights",
+            "phrases": prompt_phrases(refiner, "woman walking through neon rain, white tights", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    aligned, _, adjustments = refiner._v2_apply_intent_alignment_memory(
+        "woman walking through neon rain, red tights",
+        prompt_phrases(refiner, "woman walking through neon rain, red tights", global_state),
+        intent_prompt,
+        prompt_phrases(refiner, intent_prompt, global_state),
+        global_state,
+    )
+
+    assert "red tights" not in aligned
+    assert "woman walking through neon rain" in aligned
+    assert adjustments == [
+        {"text": "red tights", "source": "enhancer_extra", "action": "removed"}
+    ]
+
+
+def test_lucky_skips_appearance_memory_unless_prompt_mentions_it():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["white tights", "walking"]),
+        global_state,
+    )
+    profile = normalize_refiner_v2_rating("Perfect")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {"prompt": "white tights walking", "phrases": phrases},
+        profile,
+        1,
+        feedback,
+    )
+
+    lucky_prompt, _ = refiner._v2_compose_lucky_prompt("", [], global_state)
+    explicit_prompt, _ = refiner._v2_compose_lucky_prompt(
+        "white tights",
+        refiner._v2_classify_phrases(None, prompt_items(refiner, ["white tights"]), global_state),
+        global_state,
+    )
+
+    assert "walking" in lucky_prompt
+    assert "white tights" not in lucky_prompt
+    assert "tights" not in lucky_prompt
+    assert "white tights" in explicit_prompt
+
+
+def test_wrong_appearance_suppresses_only_auto_inserted_appearance_memory():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, ["walking"]), global_state)
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {
+            "prompt": "walking",
+            "encoded_prompt": "walking, white tights",
+            "phrases": phrases,
+            "repair_candidates": [{"text": "white tights", "axes": ["details"], "score": 3.0, "source": "memory"}],
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    appearance = global_state["phrase_memory"]["white tights"]
+    motion = global_state["phrase_memory"]["walking"]
+    assert appearance["auto_inject_suppressed"] is True
+    assert appearance["wrong_appearance_count"] >= 1
+    assert motion.get("wrong_appearance_count", 0) == 0
+    assert motion["category_evidence_count"] == 0
+
+
+def test_repeated_wrong_appearance_keeps_entry_out_of_lucky():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    phrases = refiner._v2_classify_phrases(None, prompt_items(refiner, ["walking"]), global_state)
+    profile = normalize_refiner_v2_rating("Wrong appearance")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    for iteration in range(2):
+        refiner._v2_update_phrase_memory(
+            global_state,
+            {
+                "prompt": "walking",
+                "encoded_prompt": "walking, white tights",
+                "phrases": phrases,
+                "repair_candidates": [{"text": "white tights", "axes": ["details"], "score": 3.0, "source": "memory"}],
+            },
+            profile,
+            iteration + 1,
+            feedback,
+        )
+
+    global_state["phrase_memory"]["white tights"]["score"] = 6.0
+    global_state["phrase_memory"]["white tights"]["liked_count"] = 8
+    lucky_prompt, _ = refiner._v2_compose_lucky_prompt("", [], global_state)
+
+    assert global_state["phrase_memory"]["white tights"]["auto_inject_blocked_count"] >= 2
+    assert "white tights" not in lucky_prompt
 
 
 def test_forget_rating_skips_category_weight_learning():
@@ -415,6 +746,85 @@ def test_refiner_training_info_uses_readable_sections(tmp_path):
     assert "Category compact view:\n-" in training_info
 
 
+def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
+    inputs = FunPackVideoRefinerV2.INPUT_TYPES()
+
+    assert "clip" not in inputs["required"]
+    assert "positive_conditioning" not in inputs["required"]
+    assert "clip" in inputs["optional"]
+    assert "positive_conditioning" in inputs["optional"]
+
+
+def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer(tmp_path, monkeypatch):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    tokenizer_modes = []
+
+    class FakeTokenizer:
+        name_or_path = "DreamFast/gemma-3-12b-it-heretic-v2"
+
+    def fake_get_tokenizer(mode="ltx2"):
+        tokenizer_modes.append(mode)
+        return FakeTokenizer()
+
+    monkeypatch.setattr(refiner, "_get_tokenizer", fake_get_tokenizer)
+    positive_conditioning = [(torch.full((1, 4, 3), 2.0), {"pooled_output": torch.ones(1, 3)})]
+
+    modified, status, training_info, _, negative = refiner.refine_v2(
+        "woman walking through neon rain",
+        None,
+        "Perfect",
+        "conditioning-input-test",
+        positive_conditioning=positive_conditioning,
+    )
+
+    assert tokenizer_modes == ["ltx2"]
+    assert "CONDITIONING-owned" in status
+    assert "Gemma3 tokenizer loaded: DreamFast/gemma-3-12b-it-heretic-v2" in training_info
+    assert modified[0][0].shape == positive_conditioning[0][0].shape
+    assert negative == []
+
+
+def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(tmp_path, monkeypatch):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    monkeypatch.setattr(refiner, "_get_tokenizer", lambda mode="ltx2": (_ for _ in ()).throw(AssertionError("unexpected tokenizer load")))
+    positive_conditioning = [(torch.full((1, 4, 3), 9.0), {"pooled_output": torch.ones(1, 3)})]
+
+    modified, status, training_info, _, negative = refiner.refine_v2(
+        "woman walking through neon rain",
+        FakeClip(),
+        "Perfect",
+        "clip-priority-test",
+        positive_conditioning=positive_conditioning,
+    )
+
+    assert "CLIP-owned" in status
+    assert "accepted connected positive CONDITIONING" not in training_info
+    assert torch.allclose(modified[0][0], torch.ones(1, 4, 3))
+    assert negative == []
+
+
+def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    modified, status, training_info, _, negative = refiner.refine_v2(
+        "woman walking through neon rain",
+        None,
+        "Perfect",
+        "missing-conditioning-test",
+    )
+
+    assert modified == []
+    assert negative == []
+    assert "ERROR: V2 could not prepare conditioning" in status
+    assert "CLIP missing and no positive CONDITIONING connected" in training_info
+
+
 def test_prompt_enhancer_refusal_is_not_stored_as_last_run(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
@@ -494,6 +904,7 @@ def test_normal_previous_run_can_train_before_current_refusal_is_discarded(tmp_p
 def test_liked_action_detail_context_clusters_repair_missing_axes():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
+    rich_prompt = "woman walking reaching hand tiny particles rain reflections"
     liked_phrases = refiner._v2_classify_phrases(
         None,
         prompt_items(refiner, [
@@ -510,9 +921,16 @@ def test_liked_action_detail_context_clusters_repair_missing_axes():
 
     refiner._v2_update_phrase_memory(
         global_state,
-        {"prompt": "woman walking reaching hand tiny particles rain reflections", "phrases": liked_phrases},
+        {"prompt": rich_prompt, "phrases": liked_phrases},
         profile,
         1,
+        feedback,
+    )
+    assert "Preferred context stored" in refiner._v2_update_preferred_context_memory(
+        global_state,
+        {"phrases": liked_phrases},
+        profile,
+        2,
         feedback,
     )
 
@@ -523,6 +941,11 @@ def test_liked_action_detail_context_clusters_repair_missing_axes():
         prompt_items(refiner, ["woman", "rain"]),
         global_state,
     )
+    intent_phrases = refiner._v2_classify_phrases(
+        None,
+        refiner._ordered_prompt_phrases(rich_prompt),
+        global_state,
+    )
 
     repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
         "woman, rain",
@@ -530,19 +953,204 @@ def test_liked_action_detail_context_clusters_repair_missing_axes():
         global_state,
         None,
         missing_feedback,
+        intent_phrases=intent_phrases,
     )
 
-    assert "Preferred context stored" in refiner._v2_update_preferred_context_memory(
-        global_state,
-        {"phrases": liked_phrases},
-        profile,
-        2,
-        feedback,
-    )
     assert "walking" in repaired
     assert "tiny particles" in repaired
-    assert "preferred_context" in status
+    assert "intent" in status or "preferred_context" in status
     assert len(candidates) >= 2
+
+
+def test_prompt_repair_does_not_pull_unrequested_memory_for_any_missing_axis():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "walking": {
+                "text": "walking",
+                "primary": "action",
+                "effective_category_scores": refiner._v2_heuristic_scores("walking"),
+                "wanted_axes": {"action": 5},
+                "score": 5.0,
+                "liked_count": 5,
+            },
+            "tiny particles": {
+                "text": "tiny particles",
+                "primary": "details",
+                "effective_category_scores": refiner._v2_heuristic_scores("tiny particles"),
+                "wanted_axes": {"details": 5},
+                "score": 5.0,
+                "liked_count": 5,
+            },
+            "cinematic lighting": {
+                "text": "cinematic lighting",
+                "primary": "style",
+                "effective_category_scores": refiner._v2_heuristic_scores("cinematic lighting"),
+                "wanted_axes": {"quality": 5},
+                "score": 5.0,
+                "liked_count": 5,
+            },
+            "glass reflections": {
+                "text": "glass reflections",
+                "primary": "details",
+                "effective_category_scores": refiner._v2_heuristic_scores("glass reflections"),
+                "wanted_axes": {"details": 2},
+                "score": 2.0,
+                "liked_count": 1,
+            },
+        },
+    }
+    profile = normalize_refiner_v2_rating("Awful")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    current_phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["woman", "glass"]),
+        global_state,
+    )
+
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "woman, glass",
+        current_phrases,
+        global_state,
+        None,
+        feedback,
+    )
+
+    candidate_texts = {candidate["text"] for candidate in candidates}
+    assert "glass reflections" in repaired
+    assert "walking" not in repaired
+    assert "tiny particles" not in repaired
+    assert "cinematic lighting" not in repaired
+    assert "walking" not in candidate_texts
+    assert "tiny particles" not in candidate_texts
+    assert "cinematic lighting" not in candidate_texts
+
+
+def test_prompt_repair_treats_same_word_with_different_neighbours_as_different():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "turning head": {
+                "text": "turning head",
+                "primary": "action",
+                "effective_category_scores": refiner._v2_heuristic_scores("turning head"),
+                "wanted_axes": {"action": 4},
+                "score": 4.0,
+                "liked_count": 4,
+                "context_senses": {
+                    "mid|eyes,portrait": {
+                        "context": {
+                            "anchor_words": ["head", "turning"],
+                            "context_words": ["portrait", "eyes"],
+                            "position_bucket": "mid",
+                            "window": 3,
+                        },
+                        "category_weights": refiner._v2_category_template(0.0),
+                        "effective_category_scores": refiner._v2_heuristic_scores("turning head"),
+                        "category_evidence_count": 4,
+                        "occurrence_count": 4,
+                    },
+                },
+            },
+        },
+    }
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    current_phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["car", "turning wheel", "street"]),
+        global_state,
+    )
+
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "car, turning wheel, street",
+        current_phrases,
+        global_state,
+        None,
+        feedback,
+    )
+
+    assert "turning head" not in repaired
+    assert all(candidate["text"] != "turning head" for candidate in candidates)
+
+
+def test_vague_user_intent_lets_enhanced_positive_prompt_anchor_repair():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "walking slowly": {
+                "text": "walking slowly",
+                "primary": "action",
+                "effective_category_scores": refiner._v2_heuristic_scores("walking slowly"),
+                "wanted_axes": {"action": 3},
+                "score": 3.0,
+                "liked_count": 3,
+            },
+        },
+    }
+    assert refiner._v2_user_intent_prompt_is_vague("Figure it out")
+    assert not refiner._v2_user_intent_prompt_is_vague("person walking")
+
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    current_phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["woman", "walking through glass hallway"]),
+        global_state,
+    )
+
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "woman, walking through glass hallway",
+        current_phrases,
+        global_state,
+        None,
+        feedback,
+        intent_phrases=[],
+    )
+
+    assert "walking slowly" in repaired
+    assert any(candidate["text"] == "walking slowly" for candidate in candidates)
+
+
+def test_complex_user_intent_ranks_before_matching_preferred_memory():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {},
+        "preferred_context_memory": {
+            "reach-memory": {
+                "anchor": "reaching hand slowly",
+                "axes": {"action": 4},
+                "context": {},
+                "phrases": ["reaching hand slowly"],
+                "score": 10.0,
+                "liked_count": 8,
+            },
+        },
+    }
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    current_phrases = refiner._v2_classify_phrases(
+        None,
+        prompt_items(refiner, ["woman"]),
+        global_state,
+    )
+    intent_phrases = refiner._v2_classify_phrases(
+        None,
+        refiner._ordered_prompt_phrases("woman reaching hand toward glass"),
+        global_state,
+    )
+
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "woman",
+        current_phrases,
+        global_state,
+        None,
+        feedback,
+        intent_phrases=intent_phrases,
+    )
+
+    assert "reaching hand toward glass" in repaired
+    assert candidates[0]["source"] == "intent"
 
 
 def test_phrase_clusters_train_more_strongly_than_ngrams_and_tokens():
@@ -579,7 +1187,13 @@ def test_repair_candidates_saved_as_json_lists(tmp_path):
 
     refiner.refine_v2(rich_prompt, FakeClip(), "Perfect", "json-repair-test")
     refiner.refine_v2(rich_prompt, FakeClip(), "Perfect", "json-repair-test")
-    refiner.refine_v2("woman, rain", FakeClip(), "Missing details + action", "json-repair-test")
+    refiner.refine_v2(
+        "woman, rain",
+        FakeClip(),
+        "Missing details + action",
+        "json-repair-test",
+        user_intent_prompt=rich_prompt,
+    )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     candidates = state["last_run"]["repair_candidates"]

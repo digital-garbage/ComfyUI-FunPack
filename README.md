@@ -2,13 +2,41 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-## Updates in 2.2.2
+## Updates in 2.3.4
 
 Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
 
 Added advisory image/CLIP Vision context and repaired negative conditioning to `FunPack Video Refiner V2`. Vision inputs are stored as metadata and diagnostics only; they are not blended into positive conditioning.
 
 Added an opt-in experimental early velocity bias mode to `FunPack Hybrid Euler 2S Sampler` for capturing/applying averaged early denoise directions around normalized sigma 0.9 and 0.8.
+
+## Updates in 2.3.3
+
+Refiner V2 now supports the restored pre-encoded conditioning workflow: connect `positive_conditioning` without `CLIP` and it accepts the finished Gemma3/LTX2 conditioning while loading only the Gemma3 tokenizer. If `CLIP` is connected, V2 still encodes the prompt itself and ignores the fallback conditioning path.
+
+## Updates in 2.3.2
+
+Refiner V2 now learns original-intent alignment when `user_intent_prompt` stays the same but an enhancer gives different `positive_prompt` variants. Ratings teach it which intent-enhance pairs represented the original request, which original phrases were missing, and which enhancer-only additions were rejected.
+
+Learned original-intent omissions can now be restored on later runs, while repeatedly rejected enhancer-only full words and adjacent word pairs can be omitted before encoding.
+
+## Updates in 2.3.1
+
+Refiner V2 Prompt Repair now keeps all missing/wrong ratings tied to the current prompt or explicit user intent. Learned favorite actions, details, quality cues, camera moves, and styles are not repaired into unrelated requests just because they scored well before.
+
+Prompt Repair now treats the same word in different neighbor contexts as separate evidence, so a liked phrase does not automatically transfer to a different request that happens to share one word.
+
+When the optional raw user intent is vague, such as `Figure it out`, Refiner V2 now treats the enhanced `positive_prompt` as the stronger repair anchor.
+
+## Updates in 2.3.0
+
+Refiner V2 now blocks learned appearance, character, subject, and background concepts from Prompt Repair, Lucky auto-injection, and legacy Void memory unless the current prompt explicitly asks for them.
+
+Added `Wrong appearance` for outputs polluted by remembered clothing or character traits. This suppresses the responsible appearance memory without penalizing unrelated action, camera, detail, or quality learning.
+
+Added `FunPack Refinement Key Loader` for selecting, creating, importing, and exporting Refiner V2 keys. The loader can feed both Refiner V2 and `FunPack Apply LoRA Weights`.
+
+Added a paste-friendly [`Refiner V2 quick guide`](docs/FunPackVideoRefinerV2QuickGuide.md) for new users.
 
 ## Updates in 2.2.1
 
@@ -76,6 +104,7 @@ Per-node documentation is available in the [`docs`](docs) folder.
 Start with:
 
 - [`docs/FunPackVideoRefinerV2.md`](docs/FunPackVideoRefinerV2.md) for `FunPack Video Refiner V2`
+- [`docs/FunPackVideoRefinerV2QuickGuide.md`](docs/FunPackVideoRefinerV2QuickGuide.md) for a short Discord-friendly Refiner V2 guide
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
