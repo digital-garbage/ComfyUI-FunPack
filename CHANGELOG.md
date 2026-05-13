@@ -8,7 +8,9 @@ Added `FunPack Scene Builder`, a scene preset node that replaces `FunPack Templa
 
 Simplified `FunPack Scene Builder` so prompt and intent text are connection-only inputs, removed model-mode and per-block controls, and outputs only scene prompt data plus the pass-through FunPack LoRA stack instead of conditioning.
 
-Added `Learning` mode to `FunPack Scene Builder`; it records connected prompt phrases into the selected refinement key's scene memory while passing positive prompt, negative prompt, sigmas, refinement key, and LoRA stack through unchanged. Refiner reset clears conditioning-delta learning while preserving the refinement key's Scene Builder memory.
+Added `Learning` mode to `FunPack Scene Builder`; it records connected prompt phrases into the selected refinement key's scene memory while passing positive prompt, negative prompt, and LoRA stack through unchanged. Refiner reset clears conditioning-delta learning while preserving the refinement key's Scene Builder memory.
+
+Redesigned `FunPack Scene Builder` as a compact editor with visible scene name/mode controls, Positive Prompt and Negative Prompt text composers, a Database menu for phrase/category/wildcard editing, and only prompt/LoRA stack/status outputs.
 
 Added searchable LoRA picking to `FunPack Apply LoRA Weights`. The compact row UI remains the primary workflow, and saved workflows still serialize through the existing `lora_list` JSON value.
 

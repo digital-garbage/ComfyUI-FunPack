@@ -3,12 +3,19 @@ import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "FunPackSceneBuilder";
 const NONE_SCENE = "-None-";
-const PAYLOAD_WIDGET = "scene_payload";
-const ACTION_WIDGET = "action";
+const HIDDEN_WIDGETS = new Set([
+  "scene",
+  "aliases",
+  "action",
+  "scene_positive",
+  "scene_negative",
+  "refinement_key",
+  "scene_payload",
+]);
 const GROUP_ORDER = ["subject", "appearance", "action", "camera", "environment", "style", "quality", "details", "negative"];
 
 let sceneData = null;
-let activePicker = null;
+let activePanel = null;
 const trackedNodes = new Set();
 
 function widgetByName(node, name) {
@@ -36,6 +43,11 @@ function setWidgetValue(node, name, value) {
   }
 }
 
+function setDirty(node) {
+  node.setDirtyCanvas?.(true, true);
+  app.graph?.setDirtyCanvas?.(true, true);
+}
+
 function fitString(ctx, text, maxWidth) {
   text = String(text ?? "");
   if (ctx.measureText(text).width <= maxWidth) {
@@ -60,30 +72,21 @@ function roundRect(ctx, x, y, width, height, radius = 5) {
   ctx.roundRect(x, y, width, height, [radius]);
 }
 
-function normalizePayload(payload) {
-  if (typeof payload === "string") {
-    try {
-      payload = JSON.parse(payload);
-    } catch (_error) {
-      payload = {};
-    }
-  }
-  if (!payload || typeof payload !== "object") {
-    payload = {};
-  }
-  return {
-    positive_phrases: Array.isArray(payload.positive_phrases) ? payload.positive_phrases.filter(Boolean) : [],
-    negative_phrases: Array.isArray(payload.negative_phrases) ? payload.negative_phrases.filter(Boolean) : [],
-  };
+function button(ctx, widget, key, label, x, y, width, height) {
+  widget.hitAreas[key] = [x, y, width, height];
+  roundRect(ctx, x, y, width, height, 5);
+  ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR;
+  ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR;
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(fitString(ctx, label, width - 8), x + width / 2, y + height / 2);
 }
 
-function payloadFromNode(node) {
-  return normalizePayload(getWidgetValue(node, PAYLOAD_WIDGET, "{}"));
-}
-
-function writePayload(node, payload) {
-  setWidgetValue(node, PAYLOAD_WIDGET, JSON.stringify(normalizePayload(payload)));
-  node.setDirtyCanvas(true, true);
+function currentRefinementKey(node) {
+  return String(getWidgetValue(node, "refinement_key", "") || "").trim();
 }
 
 function sceneNames() {
@@ -91,21 +94,35 @@ function sceneNames() {
   return Array.isArray(names) && names.length ? names : [NONE_SCENE];
 }
 
-function updateSceneCombo(node) {
-  const widget = widgetByName(node, "scene");
-  if (!widget) {
-    return;
-  }
-  const values = sceneNames();
-  const current = widget.value;
-  widget.options.values = current && !values.includes(current) ? [...values, current] : values;
-  if (!widget.value || !widget.options.values.includes(widget.value)) {
-    widget.value = widget.options.values[0] || NONE_SCENE;
-  }
+function sceneByName(name) {
+  return sceneData?.data?.scenes?.[name] || null;
 }
 
-function currentRefinementKey(node) {
-  return String(getWidgetValue(node, "refinement_key", "") || "").trim();
+function memoryItems() {
+  return Array.isArray(sceneData?.memory) ? sceneData.memory : [];
+}
+
+function normalizeMemoryMap(items) {
+  const output = {};
+  for (const item of items || []) {
+    const text = String(item.text || item.key || "").trim();
+    if (!text) {
+      continue;
+    }
+    const key = String(item.key || text).toLowerCase().replace(/[^\w'’]+/g, " ").replace(/\s+/g, " ").trim() || text.toLowerCase();
+    output[key] = {
+      text,
+      key,
+      source: item.source === "negative" || item.category === "negative" ? "negative" : "positive",
+      category: GROUP_ORDER.includes(item.category) ? item.category : "details",
+      tokens: Array.isArray(item.tokens) ? item.tokens : [],
+      count: Number.isFinite(Number(item.count)) ? Number(item.count) : 0,
+      created_at: item.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      wildcard_group: String(item.wildcard_group || "").trim(),
+    };
+  }
+  return output;
 }
 
 async function fetchScenes(refinementKey = "") {
@@ -125,15 +142,32 @@ async function fetchScenes(refinementKey = "") {
   return sceneData;
 }
 
+function updateSceneCombo(node) {
+  const widget = widgetByName(node, "scene");
+  if (!widget) {
+    return;
+  }
+  const values = sceneNames();
+  const current = widget.value;
+  widget.options.values = current && !values.includes(current) ? [...values, current] : values;
+  if (!widget.value || !widget.options.values.includes(widget.value)) {
+    widget.value = widget.options.values[0] || NONE_SCENE;
+  }
+}
+
+async function refreshNode(node) {
+  await fetchScenes(currentRefinementKey(node));
+  updateSceneCombo(node);
+  setDirty(node);
+}
+
 async function refreshTracked() {
   for (const node of [...trackedNodes]) {
     if (!node?.graph) {
       trackedNodes.delete(node);
       continue;
     }
-    await fetchScenes(currentRefinementKey(node));
-    updateSceneCombo(node);
-    node.setDirtyCanvas(true, true);
+    await refreshNode(node);
   }
 }
 
@@ -141,28 +175,93 @@ function scheduleRefresh() {
   window.setTimeout(() => void refreshTracked(), 100);
 }
 
-async function queueGraph() {
-  if (typeof app.queuePrompt === "function") {
-    return await app.queuePrompt(0);
+function loadSceneIntoNode(node, name) {
+  const scene = sceneByName(name);
+  if (!scene || name === NONE_SCENE) {
+    return;
   }
-  const button = document.querySelector("#queue-button, .queue-button, button[title='Queue Prompt']");
-  if (button) {
-    button.click();
-  }
+  setWidgetValue(node, "scene", name);
+  setWidgetValue(node, "scene_name", scene.name || name);
+  setWidgetValue(node, "aliases", Array.isArray(scene.aliases) ? scene.aliases.join(", ") : "");
+  setWidgetValue(node, "mode", scene.output_mode || "Manual");
+  setWidgetValue(node, "refinement_key", scene.refinement_key || "");
+  setWidgetValue(node, "scene_positive", scene.positive_text || (scene.positive_phrases || []).join(", "));
+  setWidgetValue(node, "scene_negative", scene.negative_text || (scene.negative_phrases || []).join(", "));
+  setDirty(node);
 }
 
-async function runSceneAction(node, action) {
-  setWidgetValue(node, ACTION_WIDGET, action);
-  node.setDirtyCanvas(true, true);
-  try {
-    await queueGraph();
-  } finally {
-    window.setTimeout(() => {
-      setWidgetValue(node, ACTION_WIDGET, "load");
-      scheduleRefresh();
-      node.setDirtyCanvas(true, true);
-    }, 250);
+async function saveSceneFromNode(node) {
+  const name = String(getWidgetValue(node, "scene_name", "") || "").trim();
+  if (!name) {
+    throw new Error("Scene name is required.");
   }
+  const params = new URLSearchParams();
+  const key = currentRefinementKey(node);
+  if (key) {
+    params.set("key", key);
+  }
+  const response = await api.fetchApi(`/funpack/scenes/scene${params.toString() ? `?${params.toString()}` : ""}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: "save",
+      name,
+      aliases: getWidgetValue(node, "aliases", ""),
+      mode: getWidgetValue(node, "mode", "Manual"),
+      positive_text: getWidgetValue(node, "scene_positive", ""),
+      negative_text: getWidgetValue(node, "scene_negative", ""),
+    }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Save failed with HTTP ${response.status}`);
+  }
+  await refreshNode(node);
+  setWidgetValue(node, "scene", name);
+}
+
+async function deleteSceneFromNode(node) {
+  const name = String(getWidgetValue(node, "scene_name", "") || "").trim();
+  if (!name) {
+    throw new Error("Scene name is required.");
+  }
+  const params = new URLSearchParams();
+  const key = currentRefinementKey(node);
+  if (key) {
+    params.set("key", key);
+  }
+  const response = await api.fetchApi(`/funpack/scenes/scene${params.toString() ? `?${params.toString()}` : ""}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "delete", name }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Delete failed with HTTP ${response.status}`);
+  }
+  setWidgetValue(node, "scene", NONE_SCENE);
+  setWidgetValue(node, "scene_name", "");
+  setWidgetValue(node, "scene_positive", "");
+  setWidgetValue(node, "scene_negative", "");
+  await refreshNode(node);
+}
+
+async function saveDatabase(node, items) {
+  const params = new URLSearchParams();
+  const key = currentRefinementKey(node);
+  if (key) {
+    params.set("key", key);
+  }
+  const response = await api.fetchApi(`/funpack/scenes/database${params.toString() ? `?${params.toString()}` : ""}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ universal_memory: normalizeMemoryMap(items) }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Database save failed with HTTP ${response.status}`);
+  }
+  await refreshNode(node);
 }
 
 async function exportScenes(node) {
@@ -211,182 +310,602 @@ function importScenes(node) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || `Import failed with HTTP ${response.status}`);
       }
-      await refreshTracked();
+      await refreshNode(node);
+      renderPanel(activePanel, node, "menu");
     } catch (error) {
-      console.warn("FunPack: scene import failed", error);
-      app.canvas?.prompt?.("Scene import failed", error.message || String(error), () => {});
+      showPanelError(error);
     }
   };
   input.click();
 }
 
-function closePicker() {
-  if (activePicker) {
-    activePicker.remove();
-    activePicker = null;
+function closePanel() {
+  if (activePanel?.root) {
+    activePanel.root.remove();
+  }
+  activePanel = null;
+}
+
+function showPanelError(error) {
+  const target = activePanel?.root?.querySelector("[data-role='error']");
+  if (target) {
+    target.textContent = error.message || String(error);
+  } else {
+    console.warn("FunPack Scene Builder:", error);
   }
 }
 
-function searchablePicker(event, values, currentValue, onSelect, title = "Search") {
-  closePicker();
-  const root = document.createElement("div");
-  Object.assign(root.style, {
-    position: "fixed",
-    zIndex: 10000,
-    minWidth: "320px",
-    maxWidth: "520px",
-    maxHeight: "420px",
-    padding: "8px",
-    border: "1px solid rgba(180, 190, 200, 0.35)",
-    borderRadius: "8px",
-    background: "rgba(30, 32, 36, 0.98)",
-    boxShadow: "0 16px 40px rgba(0, 0, 0, 0.35)",
-    color: "#ddd",
-    font: "12px sans-serif",
+function panelButton(label, className = "") {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.textContent = label;
+  element.className = `funpack-scene-button ${className}`.trim();
+  return element;
+}
+
+function phraseButton(text, onInsert) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "funpack-scene-chip";
+  element.textContent = text;
+  element.title = text;
+  element.draggable = true;
+  element.addEventListener("click", () => onInsert(text));
+  element.addEventListener("dragstart", (event) => {
+    event.dataTransfer?.setData("text/plain", text);
   });
-  const input = document.createElement("input");
-  input.type = "search";
-  input.placeholder = title;
-  input.value = currentValue && currentValue !== "None" ? currentValue : "";
-  Object.assign(input.style, {
-    boxSizing: "border-box",
-    width: "100%",
-    margin: "0 0 6px 0",
-    padding: "7px 8px",
-    border: "1px solid rgba(180, 190, 200, 0.35)",
-    borderRadius: "5px",
-    background: "#15171a",
-    color: "#fff",
-    outline: "none",
+  return element;
+}
+
+function insertAtCursor(textarea, text) {
+  const start = textarea.selectionStart ?? textarea.value.length;
+  const end = textarea.selectionEnd ?? textarea.value.length;
+  const prefix = textarea.value.slice(0, start);
+  const suffix = textarea.value.slice(end);
+  const needsComma = prefix.trim() && !/[,\s.;\n]$/.test(prefix);
+  const insertion = `${needsComma ? ", " : ""}${text}`;
+  textarea.value = `${prefix}${insertion}${suffix}`;
+  const cursor = prefix.length + insertion.length;
+  textarea.focus();
+  textarea.setSelectionRange(cursor, cursor);
+}
+
+function shell(root, title, view) {
+  root.replaceChildren();
+  const header = document.createElement("div");
+  header.className = "funpack-scene-panel-header";
+  const h = document.createElement("div");
+  h.textContent = title;
+  const close = panelButton("Close");
+  close.addEventListener("click", closePanel);
+  header.append(h, close);
+
+  const error = document.createElement("div");
+  error.dataset.role = "error";
+  error.className = "funpack-scene-error";
+
+  const body = document.createElement("div");
+  body.className = `funpack-scene-body funpack-scene-${view}`;
+  root.append(header, error, body);
+  return body;
+}
+
+function renderPanel(panel, node, view) {
+  if (!panel?.root) {
+    return;
+  }
+  if (view === "positive" || view === "negative") {
+    renderPromptEditor(panel, node, view);
+  } else if (view === "database") {
+    renderDatabaseEditor(panel, node);
+  } else {
+    renderMenu(panel, node);
+  }
+}
+
+function renderMenu(panel, node) {
+  const body = shell(panel.root, "FunPack Scene Builder", "menu");
+
+  const current = document.createElement("div");
+  current.className = "funpack-scene-current";
+  const positive = String(getWidgetValue(node, "scene_positive", "") || "").trim();
+  const negative = String(getWidgetValue(node, "scene_negative", "") || "").trim();
+  for (const [label, value] of [
+    ["Scene", String(getWidgetValue(node, "scene_name", "") || "Unnamed")],
+    ["Mode", String(getWidgetValue(node, "mode", "Manual"))],
+    ["Positive", positive || "empty"],
+    ["Negative", negative || "empty"],
+  ]) {
+    const row = document.createElement("div");
+    const b = document.createElement("b");
+    b.textContent = label;
+    const span = document.createElement("span");
+    span.textContent = value;
+    row.append(b, span);
+    current.append(row);
+  }
+  body.append(current);
+
+  const menu = document.createElement("div");
+  menu.className = "funpack-scene-menu-buttons";
+  for (const [label, target] of [["Positive prompt", "positive"], ["Negative prompt", "negative"], ["Database", "database"]]) {
+    const item = panelButton(label, "large");
+    item.addEventListener("click", () => renderPanel(panel, node, target));
+    menu.append(item);
+  }
+  body.append(menu);
+
+  const savedHeader = document.createElement("div");
+  savedHeader.className = "funpack-scene-section-title";
+  savedHeader.textContent = "Saved scenes";
+  body.append(savedHeader);
+
+  const saved = document.createElement("div");
+  saved.className = "funpack-scene-saved";
+  for (const name of sceneNames().filter((item) => item !== NONE_SCENE)) {
+    const item = panelButton(name);
+    item.title = name;
+    item.addEventListener("click", () => {
+      loadSceneIntoNode(node, name);
+      renderPanel(panel, node, "menu");
+    });
+    saved.append(item);
+  }
+  if (!saved.children.length) {
+    const empty = document.createElement("div");
+    empty.className = "funpack-scene-muted";
+    empty.textContent = "No saved scenes yet.";
+    saved.append(empty);
+  }
+  body.append(saved);
+
+  const footer = document.createElement("div");
+  footer.className = "funpack-scene-footer";
+  const refresh = panelButton("Refresh");
+  refresh.addEventListener("click", async () => {
+    await refreshNode(node);
+    renderPanel(panel, node, "menu");
   });
-  const list = document.createElement("div");
-  Object.assign(list.style, { maxHeight: "350px", overflowY: "auto" });
-  const render = () => {
-    const parts = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    const filtered = values.filter((value) => {
-      const haystack = String(value).toLowerCase().replace(/[_\-./\\]+/g, " ");
-      return parts.every((part) => haystack.includes(part));
-    }).slice(0, 160);
-    list.replaceChildren();
-    for (const value of filtered) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.textContent = value;
-      row.title = value;
-      Object.assign(row.style, {
-        display: "block",
-        width: "100%",
-        padding: "6px 8px",
-        border: "0",
-        borderRadius: "4px",
-        background: value === currentValue ? "rgba(120, 150, 170, 0.32)" : "transparent",
-        color: "#ddd",
-        textAlign: "left",
-        cursor: "pointer",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-      });
-      row.addEventListener("click", () => {
-        onSelect(value);
-        closePicker();
-      });
-      list.append(row);
+  const save = panelButton("Save scene", "primary");
+  save.addEventListener("click", async () => {
+    try {
+      await saveSceneFromNode(node);
+      renderPanel(panel, node, "menu");
+    } catch (error) {
+      showPanelError(error);
+    }
+  });
+  const del = panelButton("Delete scene", "danger");
+  del.addEventListener("click", async () => {
+    try {
+      await deleteSceneFromNode(node);
+      renderPanel(panel, node, "menu");
+    } catch (error) {
+      showPanelError(error);
+    }
+  });
+  const imp = panelButton("Import");
+  imp.addEventListener("click", () => importScenes(node));
+  const exp = panelButton("Export");
+  exp.addEventListener("click", async () => {
+    try {
+      await exportScenes(node);
+    } catch (error) {
+      showPanelError(error);
+    }
+  });
+  footer.append(refresh, save, del, imp, exp);
+  body.append(footer);
+}
+
+function renderPromptEditor(panel, node, kind) {
+  const isNegative = kind === "negative";
+  const widgetName = isNegative ? "scene_negative" : "scene_positive";
+  const snapshotKey = `${kind}_snapshot`;
+  if (!(snapshotKey in panel.snapshots)) {
+    panel.snapshots[snapshotKey] = String(getWidgetValue(node, widgetName, "") || "");
+  }
+
+  const body = shell(panel.root, isNegative ? "Negative prompt" : "Positive prompt", "prompt");
+  const textarea = document.createElement("textarea");
+  textarea.className = "funpack-scene-textarea";
+  textarea.spellcheck = false;
+  textarea.value = String(getWidgetValue(node, widgetName, "") || "");
+  textarea.placeholder = isNegative ? "Write negative prompt words and phrases here." : "Write positive prompt words and phrases here.";
+  textarea.addEventListener("input", () => {
+    setWidgetValue(node, widgetName, textarea.value);
+    setDirty(node);
+  });
+  textarea.addEventListener("dragover", (event) => event.preventDefault());
+  textarea.addEventListener("drop", (event) => {
+    event.preventDefault();
+    const text = event.dataTransfer?.getData("text/plain");
+    if (text) {
+      insertAtCursor(textarea, text);
+      textarea.dispatchEvent(new Event("input"));
+    }
+  });
+  body.append(textarea);
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Search phrase bank";
+  search.className = "funpack-scene-search";
+  body.append(search);
+
+  const bank = document.createElement("div");
+  bank.className = "funpack-scene-bank";
+  body.append(bank);
+
+  const renderBank = () => {
+    const query = search.value.toLowerCase().trim();
+    bank.replaceChildren();
+    const items = memoryItems()
+      .filter((item) => isNegative ? item.source === "negative" || item.category === "negative" : item.source !== "negative" && item.category !== "negative")
+      .filter((item) => !query || String(item.text || "").toLowerCase().includes(query));
+    const byGroup = new Map();
+    for (const item of items) {
+      const group = item.category || (item.source === "negative" ? "negative" : "details");
+      if (!byGroup.has(group)) {
+        byGroup.set(group, []);
+      }
+      byGroup.get(group).push(item);
+    }
+    for (const group of GROUP_ORDER) {
+      const groupItems = byGroup.get(group) || [];
+      if (!groupItems.length) {
+        continue;
+      }
+      const title = document.createElement("div");
+      title.className = "funpack-scene-category";
+      title.textContent = group;
+      bank.append(title);
+      const chips = document.createElement("div");
+      chips.className = "funpack-scene-chip-row";
+      for (const item of groupItems) {
+        chips.append(phraseButton(item.text || item.key, (text) => {
+          insertAtCursor(textarea, text);
+          textarea.dispatchEvent(new Event("input"));
+        }));
+      }
+      bank.append(chips);
     }
   };
-  input.addEventListener("input", render);
-  input.addEventListener("keydown", (keyEvent) => {
-    if (keyEvent.key === "Escape") {
-      closePicker();
-      keyEvent.stopPropagation();
-    } else if (keyEvent.key === "Enter") {
-      const first = list.querySelector("button");
-      if (first) {
-        onSelect(first.textContent);
-        closePicker();
-      }
-      keyEvent.preventDefault();
-      keyEvent.stopPropagation();
+  search.addEventListener("input", renderBank);
+  renderBank();
+
+  const footer = document.createElement("div");
+  footer.className = "funpack-scene-footer";
+  const back = panelButton("Back");
+  back.addEventListener("click", () => renderPanel(panel, node, "menu"));
+  const cancel = panelButton("Cancel");
+  cancel.addEventListener("click", () => {
+    setWidgetValue(node, widgetName, panel.snapshots[snapshotKey]);
+    setDirty(node);
+    delete panel.snapshots[snapshotKey];
+    renderPanel(panel, node, "menu");
+  });
+  const confirm = panelButton("Confirm", "primary");
+  confirm.addEventListener("click", async () => {
+    try {
+      setWidgetValue(node, widgetName, textarea.value);
+      await saveSceneFromNode(node);
+      delete panel.snapshots[snapshotKey];
+      renderPanel(panel, node, "menu");
+    } catch (error) {
+      showPanelError(error);
     }
   });
-  root.append(input, list);
-  document.body.append(root);
-  activePicker = root;
-  const rect = root.getBoundingClientRect();
-  root.style.left = `${Math.min(window.innerWidth - rect.width - 12, Math.max(12, event.clientX ?? 12))}px`;
-  root.style.top = `${Math.min(window.innerHeight - rect.height - 12, Math.max(12, event.clientY ?? 12))}px`;
-  window.setTimeout(() => {
-    document.addEventListener("pointerdown", function outsideClick(clickEvent) {
-      if (!root.contains(clickEvent.target)) {
-        closePicker();
-        document.removeEventListener("pointerdown", outsideClick, true);
-      }
-    }, true);
-  }, 0);
-  render();
-  input.focus();
-  input.select();
+  footer.append(back, cancel, confirm);
+  body.append(footer);
+  textarea.focus();
 }
 
-function scenePayloadFromStoredScene(scene) {
-  return normalizePayload({
-    positive_phrases: scene?.positive_phrases || [],
-    negative_phrases: scene?.negative_phrases || [],
+function renderDatabaseEditor(panel, node) {
+  if (!("database_snapshot" in panel.snapshots)) {
+    panel.snapshots.database_snapshot = JSON.parse(JSON.stringify(memoryItems()));
+    panel.databaseItems = JSON.parse(JSON.stringify(memoryItems()));
+  }
+
+  const body = shell(panel.root, "Database", "database");
+  const tools = document.createElement("div");
+  tools.className = "funpack-scene-db-tools";
+  const addText = document.createElement("input");
+  addText.placeholder = "Add word or phrase";
+  const addCategory = document.createElement("select");
+  for (const category of GROUP_ORDER) {
+    const option = document.createElement("option");
+    option.value = category;
+    option.textContent = category;
+    addCategory.append(option);
+  }
+  const addWildcard = document.createElement("input");
+  addWildcard.placeholder = "Wildcard group";
+  const add = panelButton("Add", "primary");
+  add.addEventListener("click", () => {
+    const text = addText.value.trim();
+    if (!text) {
+      return;
+    }
+    panel.databaseItems.unshift({
+      text,
+      key: text.toLowerCase(),
+      source: addCategory.value === "negative" ? "negative" : "positive",
+      category: addCategory.value,
+      count: 0,
+      wildcard_group: addWildcard.value.trim(),
+    });
+    addText.value = "";
+    renderPanel(panel, node, "database");
   });
+  tools.append(addText, addCategory, addWildcard, add);
+  body.append(tools);
+
+  const search = document.createElement("input");
+  search.type = "search";
+  search.placeholder = "Search database";
+  search.className = "funpack-scene-search";
+  body.append(search);
+
+  const list = document.createElement("div");
+  list.className = "funpack-scene-db-list";
+  body.append(list);
+
+  const renderList = () => {
+    const query = search.value.toLowerCase().trim();
+    list.replaceChildren();
+    const items = panel.databaseItems.filter((item) => !query || String(item.text || "").toLowerCase().includes(query));
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "funpack-scene-db-row";
+      const text = document.createElement("input");
+      text.value = item.text || "";
+      text.addEventListener("input", () => {
+        item.text = text.value;
+        item.key = text.value.toLowerCase();
+      });
+      const category = document.createElement("select");
+      for (const categoryName of GROUP_ORDER) {
+        const option = document.createElement("option");
+        option.value = categoryName;
+        option.textContent = categoryName;
+        option.selected = categoryName === item.category;
+        category.append(option);
+      }
+      category.addEventListener("change", () => {
+        item.category = category.value;
+        item.source = category.value === "negative" ? "negative" : "positive";
+      });
+      const wildcard = document.createElement("input");
+      wildcard.value = item.wildcard_group || "";
+      wildcard.placeholder = "Wildcard";
+      wildcard.addEventListener("input", () => {
+        item.wildcard_group = wildcard.value.trim();
+      });
+      const del = panelButton("Delete", "danger");
+      del.addEventListener("click", () => {
+        panel.databaseItems = panel.databaseItems.filter((candidate) => candidate !== item);
+        renderList();
+      });
+      row.append(text, category, wildcard, del);
+      list.append(row);
+    });
+  };
+  search.addEventListener("input", renderList);
+  renderList();
+
+  const footer = document.createElement("div");
+  footer.className = "funpack-scene-footer";
+  const back = panelButton("Back");
+  back.addEventListener("click", () => renderPanel(panel, node, "menu"));
+  const cancel = panelButton("Cancel");
+  cancel.addEventListener("click", () => {
+    panel.databaseItems = JSON.parse(JSON.stringify(panel.snapshots.database_snapshot));
+    delete panel.snapshots.database_snapshot;
+    renderPanel(panel, node, "menu");
+  });
+  const confirm = panelButton("Confirm", "primary");
+  confirm.addEventListener("click", async () => {
+    try {
+      await saveDatabase(node, panel.databaseItems);
+      delete panel.snapshots.database_snapshot;
+      renderPanel(panel, node, "menu");
+    } catch (error) {
+      showPanelError(error);
+    }
+  });
+  footer.append(back, cancel, confirm);
+  body.append(footer);
 }
 
-function storedScene(node) {
-  const name = getWidgetValue(node, "scene", NONE_SCENE);
-  return sceneData?.data?.scenes?.[name] || null;
+function openPanel(node, view = "menu") {
+  closePanel();
+  injectStyles();
+  const root = document.createElement("div");
+  root.className = "funpack-scene-panel";
+  document.body.append(root);
+  activePanel = { root, snapshots: {}, databaseItems: [] };
+  const canvasRect = app.canvas?.canvas?.getBoundingClientRect?.();
+  const scale = app.canvas?.ds?.scale || 1;
+  const offset = app.canvas?.ds?.offset || [0, 0];
+  const screenX = (canvasRect?.left || 0) + (node.pos[0] + node.size[0]) * scale + offset[0];
+  const screenY = (canvasRect?.top || 0) + node.pos[1] * scale + offset[1];
+  const left = Math.min(Math.max(12, window.innerWidth - 460), Math.max(12, screenX + 16));
+  const top = Math.min(Math.max(12, window.innerHeight - 620), Math.max(12, screenY));
+  root.style.left = `${left}px`;
+  root.style.top = `${top}px`;
+  renderPanel(activePanel, node, view);
 }
 
-function loadStoredSceneIntoNode(node) {
-  const name = getWidgetValue(node, "scene", NONE_SCENE);
-  const scene = storedScene(node);
-  if (!scene || name === NONE_SCENE) {
+let stylesInjected = false;
+function injectStyles() {
+  if (stylesInjected) {
     return;
   }
-  if (node.__funpackLoadedScene === name) {
-    return;
-  }
-  node.__funpackLoadedScene = name;
-  setWidgetValue(node, "scene_name", scene.name || name);
-  setWidgetValue(node, "aliases", Array.isArray(scene.aliases) ? scene.aliases.join(", ") : "");
-  setWidgetValue(node, "output_mode", scene.output_mode || "Manual");
-  setWidgetValue(node, "refinement_key", scene.refinement_key || "");
-  writePayload(node, scenePayloadFromStoredScene(scene));
-}
-
-function button(ctx, widget, key, label, x, y, width, height) {
-  widget.hitAreas[key] = [x, y, width, height];
-  roundRect(ctx, x, y, width, height, 4);
-  ctx.fillStyle = LiteGraph.WIDGET_BGCOLOR;
-  ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR;
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(fitString(ctx, label, width - 8), x + width / 2, y + height / 2);
-}
-
-function drawChip(ctx, widget, key, text, x, y, selected, maxWidth) {
-  const width = Math.min(maxWidth, Math.max(34, ctx.measureText(text).width + 18));
-  widget.hitAreas[key] = [x, y, width, 19];
-  roundRect(ctx, x, y, width, 19, 5);
-  ctx.fillStyle = selected ? "rgba(72, 178, 112, 0.85)" : "rgba(255,255,255,0.065)";
-  ctx.strokeStyle = selected ? "rgba(150, 230, 170, 0.75)" : "rgba(255,255,255,0.13)";
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = selected ? "#06140b" : LiteGraph.WIDGET_TEXT_COLOR;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(fitString(ctx, text, width - 10), x + width / 2, y + 9.5);
-  return width;
-}
-
-function selectedSet(list) {
-  return new Set((list || []).map((item) => String(item).toLowerCase()));
+  stylesInjected = true;
+  const style = document.createElement("style");
+  style.textContent = `
+    .funpack-scene-panel {
+      position: fixed;
+      z-index: 10000;
+      width: min(448px, calc(100vw - 24px));
+      max-height: min(620px, calc(100vh - 24px));
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      border: 1px solid rgba(180, 190, 200, 0.35);
+      border-radius: 8px;
+      background: rgba(30, 32, 36, 0.98);
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.42);
+      color: #ddd;
+      font: 12px sans-serif;
+      box-sizing: border-box;
+    }
+    .funpack-scene-panel * { box-sizing: border-box; }
+    .funpack-scene-panel-header,
+    .funpack-scene-footer {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .funpack-scene-panel-header {
+      font-weight: 700;
+      font-size: 14px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .funpack-scene-body {
+      overflow: auto;
+      padding-top: 8px;
+      min-height: 0;
+    }
+    .funpack-scene-error {
+      min-height: 16px;
+      color: #ff9f9f;
+      padding-top: 5px;
+    }
+    .funpack-scene-button {
+      min-height: 26px;
+      padding: 4px 10px;
+      border: 1px solid rgba(180, 190, 200, 0.35);
+      border-radius: 5px;
+      background: #22252a;
+      color: #eee;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .funpack-scene-button:hover { background: #2b3037; }
+    .funpack-scene-button.primary { border-color: rgba(100, 210, 140, 0.6); background: #244832; }
+    .funpack-scene-button.danger { border-color: rgba(255, 130, 130, 0.45); background: #472626; }
+    .funpack-scene-button.large {
+      width: 100%;
+      height: 42px;
+      text-align: left;
+      font-weight: 700;
+    }
+    .funpack-scene-current {
+      display: grid;
+      gap: 5px;
+      margin-bottom: 10px;
+    }
+    .funpack-scene-current div {
+      display: grid;
+      grid-template-columns: 78px minmax(0, 1fr);
+      gap: 8px;
+    }
+    .funpack-scene-current span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #b8c0ca;
+    }
+    .funpack-scene-menu-buttons,
+    .funpack-scene-saved {
+      display: grid;
+      gap: 7px;
+    }
+    .funpack-scene-section-title,
+    .funpack-scene-category {
+      margin: 12px 0 6px;
+      color: #58a6d6;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .funpack-scene-textarea {
+      width: 100%;
+      min-height: 156px;
+      resize: vertical;
+      padding: 8px;
+      border: 1px solid rgba(180, 190, 200, 0.35);
+      border-radius: 6px;
+      background: #17191d;
+      color: #f4f4f4;
+      line-height: 1.35;
+      outline: none;
+    }
+    .funpack-scene-search,
+    .funpack-scene-db-tools input,
+    .funpack-scene-db-tools select,
+    .funpack-scene-db-row input,
+    .funpack-scene-db-row select {
+      width: 100%;
+      min-height: 28px;
+      padding: 5px 7px;
+      border: 1px solid rgba(180, 190, 200, 0.28);
+      border-radius: 5px;
+      background: #17191d;
+      color: #f2f2f2;
+      outline: none;
+    }
+    .funpack-scene-search { margin: 8px 0; }
+    .funpack-scene-bank,
+    .funpack-scene-db-list {
+      max-height: 270px;
+      overflow: auto;
+      padding-right: 3px;
+    }
+    .funpack-scene-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .funpack-scene-chip {
+      max-width: 100%;
+      padding: 4px 8px;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.07);
+      color: #eee;
+      cursor: grab;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .funpack-scene-db-tools {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) 110px minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: center;
+    }
+    .funpack-scene-db-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) 110px minmax(0, 0.9fr) auto;
+      gap: 6px;
+      align-items: center;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .funpack-scene-footer {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      justify-content: flex-end;
+    }
+    .funpack-scene-muted { color: #9da6b0; }
+  `;
+  document.head.append(style);
 }
 
 class SceneBuilderWidget {
@@ -400,146 +919,47 @@ class SceneBuilderWidget {
   }
 
   computeSize(width) {
-    return [width, 430];
+    return [width, 142];
   }
 
   draw(ctx, node, width, y) {
-    loadStoredSceneIntoNode(node);
     this.hitAreas = {};
-    const payload = payloadFromNode(node);
-    const memory = Array.isArray(sceneData?.memory) ? sceneData.memory : [];
     const margin = 10;
     let cy = y + 4;
     const innerWidth = width - margin * 2;
-    const widgetHeight = this.computeSize(width)[1];
-    const bottom = y + widgetHeight - 8;
+    const mode = getWidgetValue(node, "mode", "Manual");
+    const positive = String(getWidgetValue(node, "scene_positive", "") || "").trim();
+    const negative = String(getWidgetValue(node, "scene_negative", "") || "").trim();
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, y, width, widgetHeight);
+    ctx.rect(0, y, width, this.computeSize(width)[1]);
     ctx.clip();
     ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
     ctx.font = "12px sans-serif";
-    ctx.fillText(`Scene Builder: ${getWidgetValue(node, "output_mode", "Manual")}`, margin, cy + 9);
-    button(ctx, this, "refresh", "Refresh", width - 244, cy, 56, 20);
-    button(ctx, this, "save", "Save", width - 184, cy, 44, 20);
-    button(ctx, this, "update", "Update", width - 136, cy, 56, 20);
-    button(ctx, this, "delete", "Delete", width - 76, cy, 56, 20);
-    cy += 27;
-    button(ctx, this, "import", "Import", width - 136, cy, 56, 20);
-    button(ctx, this, "export", "Export", width - 76, cy, 56, 20);
-    ctx.globalAlpha = app.canvas.editor_alpha * 0.72;
-    ctx.fillText("Prompt and intent text are collected from connected inputs.", margin, cy + 10);
-    ctx.globalAlpha = app.canvas.editor_alpha;
-    cy += 29;
+    ctx.fillText(`Scene Builder: ${mode}`, margin, cy + 9);
+    button(ctx, this, "open:menu", "Open Editor", width - 112, cy, 92, 20);
+    cy += 28;
 
-    const preview = payload.positive_phrases.join(", ");
+    const third = Math.floor((innerWidth - 12) / 3);
+    button(ctx, this, "open:positive", "Positive", margin, cy, third, 28);
+    button(ctx, this, "open:negative", "Negative", margin + third + 6, cy, third, 28);
+    button(ctx, this, "open:database", "Database", margin + (third + 6) * 2, cy, innerWidth - (third + 6) * 2, 28);
+    cy += 42;
+
     ctx.fillStyle = "#58a6d6";
-    ctx.fillText(`Preview: ${fitString(ctx, preview || "no positive scene phrases selected", innerWidth)}`, margin, cy + 8);
-    cy += 25;
-
-    cy = this.drawSelectedSection(ctx, payload, "positive_phrases", "Selected Positive", margin, cy, innerWidth, node, bottom);
-    cy = this.drawSelectedSection(ctx, payload, "negative_phrases", "Selected Negative", margin, cy + 2, innerWidth, node, bottom);
-    this.drawMemoryBank(ctx, memory, payload, margin, cy + 8, innerWidth, node, bottom);
+    ctx.fillText(`+ ${fitString(ctx, positive || "empty positive prompt", innerWidth - 12)}`, margin, cy);
+    cy += 20;
+    ctx.fillStyle = "#d67b7b";
+    ctx.fillText(`- ${fitString(ctx, negative || "empty negative prompt", innerWidth - 12)}`, margin, cy);
+    cy += 20;
+    ctx.globalAlpha = app.canvas.editor_alpha * 0.62;
+    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+    ctx.fillText(`${memoryItems().length} database phrase(s). Connected prompts learn on queue.`, margin, cy);
+    ctx.globalAlpha = app.canvas.editor_alpha;
     ctx.restore();
-  }
-
-  drawSelectedSection(ctx, payload, field, title, x, y, width, node, bottom) {
-    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-    ctx.textAlign = "left";
-    ctx.fillText(title, x, y + 8);
-    const buttonWidth = field === "positive_phrases" ? 82 : 88;
-    button(ctx, this, `${field}:add`, field === "positive_phrases" ? "+ Positive" : "+ Negative", x + width - buttonWidth, y, buttonWidth, 20);
-    let cx = x;
-    let cy = y + 18;
-    const items = payload[field] || [];
-    if (!items.length) {
-      ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-      ctx.fillText("none", x, cy + 9);
-      ctx.globalAlpha = app.canvas.editor_alpha;
-      return cy + 24;
-    }
-    let rows = 0;
-    for (const item of items.slice(0, 40)) {
-      const key = `${field}:remove:${item}`;
-      const chipWidth = Math.min(width, Math.max(34, ctx.measureText(item).width + 18));
-      if (cx + chipWidth > x + width) {
-        cx = x;
-        cy += 23;
-        rows += 1;
-      }
-      if (cy + 21 > bottom || rows >= 2) {
-        ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-        ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-        ctx.fillText(`+${items.length - items.indexOf(item)} more`, cx, cy + 9);
-        ctx.globalAlpha = app.canvas.editor_alpha;
-        break;
-      }
-      const used = drawChip(ctx, this, key, item, cx, cy, true, width);
-      cx += used + 5;
-    }
-    return cy + 25;
-  }
-
-  drawMemoryBank(ctx, memory, payload, x, y, width, node, bottom) {
-    if (y + 24 > bottom) {
-      return;
-    }
-    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-    ctx.textAlign = "left";
-    ctx.fillText("Universal Phrase Bank", x, y + 8);
-    let cy = y + 23;
-    const positive = selectedSet(payload.positive_phrases);
-    const negative = selectedSet(payload.negative_phrases);
-    const byGroup = new Map();
-    for (const item of memory) {
-      const group = item.category || (item.source === "negative" ? "negative" : "details");
-      if (!byGroup.has(group)) {
-        byGroup.set(group, []);
-      }
-      byGroup.get(group).push(item);
-    }
-    for (const group of GROUP_ORDER) {
-      const items = (byGroup.get(group) || []).slice(0, 24);
-      if (!items.length) {
-        continue;
-      }
-      if (cy + 42 > bottom) {
-        break;
-      }
-      ctx.fillStyle = "#58a6d6";
-      ctx.fillText(group.toUpperCase(), x, cy + 8);
-      cy += 17;
-      let cx = x;
-      for (const item of items) {
-        const text = item.text || item.key;
-        const selected = group === "negative" ? negative.has(text.toLowerCase()) : positive.has(text.toLowerCase());
-        const key = `bank:${group}:${text}`;
-        const chipWidth = Math.min(width, Math.max(34, ctx.measureText(text).width + 18));
-        if (cx + chipWidth > x + width) {
-          cx = x;
-          cy += 23;
-        }
-        if (cy + 21 > bottom) {
-          ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-          ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-          ctx.fillText("Open + Positive or + Negative to pick more phrases.", x, Math.min(bottom - 6, cy + 9));
-          ctx.globalAlpha = app.canvas.editor_alpha;
-          return;
-        }
-        const used = drawChip(ctx, this, key, text, cx, cy, selected, width);
-        cx += used + 5;
-      }
-      cy += 25;
-    }
-    if (!memory.length) {
-      ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-      ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-      ctx.fillText("Queue once with positive/negative prompts connected to collect phrases.", x, cy + 8);
-      ctx.globalAlpha = app.canvas.editor_alpha;
-    }
   }
 
   mouse(event, pos, node) {
@@ -553,7 +973,8 @@ class SceneBuilderWidget {
     if (!hit) {
       return false;
     }
-    this.handleHit(hit[0], event, node);
+    const [, view] = hit[0].split(":");
+    openPanel(node, view || "menu");
     return true;
   }
 
@@ -563,66 +984,6 @@ class SceneBuilderWidget {
       pos[1] >= bounds[1] && pos[1] <= bounds[1] + bounds[3]
     ));
   }
-
-  handleHit(key, event, node) {
-    const payload = payloadFromNode(node);
-    if (key === "refresh") {
-      void refreshTracked();
-      return;
-    }
-    if (["save", "update", "delete"].includes(key)) {
-      void runSceneAction(node, key);
-      return;
-    }
-    if (key === "import") {
-      importScenes(node);
-      return;
-    }
-    if (key === "export") {
-      void exportScenes(node);
-      return;
-    }
-    if (key.startsWith("positive_phrases:remove:")) {
-      const text = key.slice("positive_phrases:remove:".length);
-      payload.positive_phrases = payload.positive_phrases.filter((item) => item !== text);
-      writePayload(node, payload);
-      return;
-    }
-    if (key === "positive_phrases:add" || key === "negative_phrases:add") {
-      const field = key === "positive_phrases:add" ? "positive_phrases" : "negative_phrases";
-      const preferredSource = field === "negative_phrases" ? "negative" : "positive";
-      const values = (sceneData?.memory || [])
-        .filter((item) => field === "negative_phrases" ? item.source === "negative" || item.category === "negative" : item.source !== "negative" && item.category !== "negative")
-        .map((item) => item.text || item.key)
-        .filter(Boolean);
-      searchablePicker(event, values.length ? values : (sceneData?.memory || []).map((item) => item.text || item.key).filter(Boolean), "", (value) => {
-        if (!payload[field].some((item) => item.toLowerCase() === String(value).toLowerCase())) {
-          payload[field].push(value);
-          writePayload(node, payload);
-        }
-      }, preferredSource === "negative" ? "Search negative phrases" : "Search positive phrases");
-      return;
-    }
-    if (key.startsWith("negative_phrases:remove:")) {
-      const text = key.slice("negative_phrases:remove:".length);
-      payload.negative_phrases = payload.negative_phrases.filter((item) => item !== text);
-      writePayload(node, payload);
-      return;
-    }
-    if (key.startsWith("bank:")) {
-      const [, group, ...rest] = key.split(":");
-      const text = rest.join(":");
-      const field = group === "negative" ? "negative_phrases" : "positive_phrases";
-      const lower = text.toLowerCase();
-      if (payload[field].some((item) => item.toLowerCase() === lower)) {
-        payload[field] = payload[field].filter((item) => item.toLowerCase() !== lower);
-      } else {
-        payload[field].push(text);
-      }
-      writePayload(node, payload);
-      return;
-    }
-  }
 }
 
 function removeSceneBuilderWidget(node) {
@@ -631,14 +992,17 @@ function removeSceneBuilderWidget(node) {
 
 function setupSceneBuilderNode(node) {
   trackedNodes.add(node);
-  hideWidget(widgetByName(node, ACTION_WIDGET));
-  hideWidget(widgetByName(node, PAYLOAD_WIDGET));
+  for (const widget of node.widgets || []) {
+    if (HIDDEN_WIDGETS.has(widget.name)) {
+      hideWidget(widget);
+    }
+  }
   removeSceneBuilderWidget(node);
   node.addCustomWidget(new SceneBuilderWidget(node));
   updateSceneCombo(node);
   void fetchScenes(currentRefinementKey(node)).then(() => {
     updateSceneCombo(node);
-    node.setDirtyCanvas(true, true);
+    setDirty(node);
   });
 }
 

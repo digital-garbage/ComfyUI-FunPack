@@ -324,7 +324,7 @@ def categorize_scene_phrase(text, source="positive"):
 def extract_scene_phrases(text, source="positive"):
     phrases = []
     seen = set()
-    for raw in re.split(r"[,;\n]+", str(text or "")):
+    for raw in re.split(r"[,;.\n]+", str(text or "")):
         clean = re.sub(r"\s+", " ", raw).strip(" ,;:.").strip()
         if len(clean) < 2:
             continue
@@ -385,8 +385,45 @@ def scene_memory_items(data):
             "category": item.get("category", "details"),
             "tokens": item.get("tokens", scene_token_words(text)),
             "count": int(item.get("count", 0) or 0),
+            "wildcard_group": str(item.get("wildcard_group") or "").strip(),
         })
     return sorted(items, key=lambda item: (item["category"], item["text"].lower()))
+
+
+def normalize_scene_memory_items(value):
+    if isinstance(value, dict):
+        iterable = value.items()
+    elif isinstance(value, list):
+        iterable = ((None, item) for item in value)
+    else:
+        return {}
+
+    memory = {}
+    for fallback_key, item in iterable:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            continue
+        text = re.sub(r"\s+", " ", str(item.get("text") or fallback_key or "").strip())
+        if not text:
+            continue
+        key = normalize_scene_key(item.get("key") or text) or text.lower()
+        source = "negative" if item.get("source") == "negative" or item.get("category") == "negative" else "positive"
+        category = str(item.get("category") or categorize_scene_phrase(text, source)).strip().lower()
+        if category not in SCENE_CATEGORIES:
+            category = "negative" if source == "negative" else "details"
+        tokens = scene_token_words(text)
+        memory[key] = {
+            "text": text,
+            "source": source,
+            "category": category,
+            "tokens": tokens,
+            "count": max(0, int(item.get("count", 0) or 0)),
+            "created_at": str(item.get("created_at") or now_iso()),
+            "updated_at": now_iso(),
+            "wildcard_group": str(item.get("wildcard_group") or "").strip(),
+        }
+    return memory
 
 
 def normalize_scene_phrase_list(value):
@@ -428,6 +465,13 @@ def parse_scene_payload(value):
     }
 
 
+def scene_text_or_payload(text, phrases):
+    text = str(text or "").strip()
+    if text:
+        return text
+    return scene_text_from_phrases(phrases)
+
+
 def scene_payload_from_scene(scene):
     if not isinstance(scene, dict):
         return {"positive_phrases": [], "negative_phrases": []}
@@ -441,10 +485,29 @@ def scene_text_from_phrases(phrases):
     return ", ".join(normalize_scene_phrase_list(phrases))
 
 
+def scene_from_texts(name, aliases, output_mode, positive_text, negative_text, refinement_key=""):
+    positive_text = str(positive_text or "").strip()
+    negative_text = str(negative_text or "").strip()
+    return {
+        "name": normalize_scene_name(name),
+        "aliases": aliases_from_text(aliases),
+        "output_mode": output_mode if output_mode in {"Manual", "Auto", "Learning"} else "Manual",
+        "refinement_key": normalize_refinement_key(refinement_key),
+        "positive_text": positive_text,
+        "negative_text": negative_text,
+        "positive_phrases": normalize_scene_phrase_list(extract_scene_phrases(positive_text, "positive")),
+        "negative_phrases": normalize_scene_phrase_list(extract_scene_phrases(negative_text, "negative")),
+    }
+
+
 def aliases_from_text(value):
     aliases = []
     seen = set()
-    for raw in re.split(r"[,;\n]+", str(value or "")):
+    if isinstance(value, list):
+        raw_values = value
+    else:
+        raw_values = re.split(r"[,;\n]+", str(value or ""))
+    for raw in raw_values:
         clean = re.sub(r"\s+", " ", raw).strip()
         key = normalize_scene_key(clean)
         if clean and key not in seen:
@@ -505,9 +568,13 @@ def scene_field_summary(scene):
     if not isinstance(scene, dict):
         return "none"
     fields = []
-    for field in ("positive_phrases", "negative_phrases", "refinement_key", "sigmas"):
+    for field in ("positive_phrases", "negative_phrases", "refinement_key"):
         if scene.get(field):
             fields.append(field)
+    if scene.get("positive_text"):
+        fields.append("positive_text")
+    if scene.get("negative_text"):
+        fields.append("negative_text")
     return ", ".join(fields) if fields else "none"
 
 
@@ -587,6 +654,56 @@ def resolve_wildcards(text, seed=0):
         previous = current
         current = WILDCARD_RE.sub(replace, current)
     return current
+
+
+def resolve_scene_database_wildcards(text, scene_db):
+    text = str(text or "")
+    if not text or not isinstance(scene_db, dict):
+        return text
+
+    groups = {}
+    for item in scene_db.get("universal_memory", {}).values():
+        if not isinstance(item, dict):
+            continue
+        group = str(item.get("wildcard_group") or "").strip()
+        phrase = str(item.get("text") or "").strip()
+        if not group or not phrase:
+            continue
+        groups.setdefault(group, {})[normalize_scene_key(phrase)] = phrase
+
+    if not groups:
+        return text
+
+    parts = re.split(r"([,;.\n]+)", text)
+    matches_by_group = {}
+    for index in range(0, len(parts), 2):
+        phrase_key = normalize_scene_key(parts[index])
+        if not phrase_key:
+            continue
+        for group, phrases in groups.items():
+            if phrase_key in phrases:
+                matches_by_group.setdefault(group, []).append((index, phrase_key))
+                break
+
+    changed = False
+    for matches in matches_by_group.values():
+        unique_keys = sorted({phrase_key for _, phrase_key in matches})
+        if len(unique_keys) < 2:
+            continue
+        keep = random.choice(unique_keys)
+        for index, phrase_key in matches:
+            if phrase_key != keep:
+                parts[index] = ""
+                changed = True
+
+    if not changed:
+        return text
+
+    output = "".join(parts)
+    output = re.sub(r"\s*([,;.])\s*([,;.]\s*)+", r"\1 ", output)
+    output = re.sub(r"(?:^|[\s,;.])+\n", "\n", output)
+    output = re.sub(r"\s+", " ", output.replace("\n", ", ")).strip(" ,;.")
+    return output
 
 
 def prompt_key_for_refiner(prompt, mode):
@@ -773,6 +890,56 @@ async def funpack_scenes_export(request):
     )
 
 
+@PromptServer.instance.routes.post("/funpack/scenes/scene")
+async def funpack_scene_save(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    body = await request.json()
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Scene payload must be an object."}, status=400)
+
+    action = str(body.get("action") or "save").lower()
+    name = normalize_scene_name(body.get("name"))
+    if not name:
+        return web.json_response({"error": "Scene name is required."}, status=400)
+
+    data = load_scene_db(key)
+    scenes = data.setdefault("scenes", {})
+    if action == "delete":
+        scenes.pop(name, None)
+        save_scene_db(data, key)
+        return web.json_response({"deleted": name, "scenes": scene_names(key), "data": data})
+
+    previous = scenes.get(name, {}) if isinstance(scenes.get(name), dict) else {}
+    scene = scene_from_texts(
+        name,
+        body.get("aliases", previous.get("aliases", [])),
+        body.get("mode") or body.get("output_mode") or previous.get("output_mode", "Manual"),
+        body.get("positive_text", previous.get("positive_text", "")),
+        body.get("negative_text", previous.get("negative_text", "")),
+        key,
+    )
+    scene["created_at"] = previous.get("created_at", now_iso())
+    scene["updated_at"] = now_iso()
+    scenes[name] = scene
+    save_scene_db(data, key)
+    return web.json_response({"saved": name, "scenes": scene_names(key), "data": data})
+
+
+@PromptServer.instance.routes.post("/funpack/scenes/database")
+async def funpack_scene_database_save(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    body = await request.json()
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Database payload must be an object."}, status=400)
+
+    incoming = body.get("universal_memory", body.get("memory", {}))
+    memory = normalize_scene_memory_items(incoming)
+    data = load_scene_db(key)
+    data["universal_memory"] = memory
+    save_scene_db(data, key)
+    return web.json_response({"saved": len(memory), "data": data, "memory": scene_memory_items(data)})
+
+
 @PromptServer.instance.routes.post("/funpack/scenes/import")
 async def funpack_scenes_import(request):
     key = normalize_refinement_key(request.query.get("key", ""))
@@ -784,9 +951,9 @@ async def funpack_scenes_import(request):
     imported_memory = incoming.get("universal_memory", {})
     if isinstance(imported_memory, dict):
         memory = data.setdefault("universal_memory", {})
-        for key, item in imported_memory.items():
+        for memory_key, item in imported_memory.items():
             if isinstance(item, dict):
-                memory[str(key)] = item
+                memory[str(memory_key)] = item
 
     imported_scenes = incoming.get("scenes", {})
     if not isinstance(imported_scenes, dict):
@@ -882,14 +1049,11 @@ class FunPackRefinementKeyLoader:
 
 class FunPackSceneBuilder:
     CATEGORY = "FunPack/Scene"
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "SIGMAS", "FUNPACK_LORA_STACK", "STRING", "STRING")
+    RETURN_TYPES = ("STRING", "STRING", "FUNPACK_LORA_STACK", "STRING")
     RETURN_NAMES = (
         "positive_prompt",
         "negative_prompt",
-        "scene_name",
-        "sigmas",
         "lora_stack",
-        "refinement_key",
         "status",
     )
     FUNCTION = "build_scene"
@@ -900,11 +1064,21 @@ class FunPackSceneBuilder:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "scene": (scene_names(), {"default": SCENE_NONE}),
                 "scene_name": ("STRING", {"default": "", "multiline": False}),
+                "mode": (["Manual", "Auto", "Learning"], {"default": "Manual"}),
+                "scene": (scene_names(), {"default": SCENE_NONE}),
                 "aliases": ("STRING", {"default": "", "multiline": False}),
                 "action": (["load", "save", "update", "delete"], {"default": "load"}),
-                "output_mode": (["Manual", "Auto", "Learning"], {"default": "Manual"}),
+                "scene_positive": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "placeholder": "Write or arrange positive scene words and phrases here.",
+                }),
+                "scene_negative": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "placeholder": "Write or arrange negative scene words and phrases here.",
+                }),
                 "refinement_key": ("STRING", {"default": "", "multiline": False}),
                 "scene_payload": ("STRING", {"default": "{}", "multiline": False}),
             },
@@ -933,7 +1107,6 @@ class FunPackSceneBuilder:
                     "forceInput": True,
                     "tooltip": "Optional linked refinement key, for example from FunPack Refinement Key Loader.",
                 }),
-                "sigmas": ("SIGMAS",),
                 "lora_stack": ("FUNPACK_LORA_STACK", {
                     "tooltip": "Optional current LoRA stack. Scene Builder passes it through unchanged so Refiner can use it for suggestions.",
                 }),
@@ -948,38 +1121,17 @@ class FunPackSceneBuilder:
     def VALIDATE_INPUTS(cls, scene=None, **kwargs):
         return True
 
-    def _empty_sigmas(self):
-        return torch.FloatTensor([])
-
-    def _manual_scene(self, selected_name, scene_name, aliases, output_mode, refinement_key, payload, sigmas=None):
+    def _manual_scene(self, selected_name, scene_name, aliases, mode, scene_positive, scene_negative, refinement_key, payload):
         target_name = normalize_scene_name(scene_name) or selected_name
-        scene = {
-            "name": target_name,
-            "aliases": aliases_from_text(aliases),
-            "output_mode": output_mode if output_mode in {"Manual", "Auto", "Learning"} else "Manual",
-            "refinement_key": normalize_refinement_key(refinement_key),
-            "positive_phrases": payload["positive_phrases"],
-            "negative_phrases": payload["negative_phrases"],
-        }
-        if isinstance(sigmas, torch.Tensor) and sigmas.numel() > 0:
-            scene["sigmas"] = tensor_to_serializable(sigmas.detach().cpu())
-        return scene
+        positive_text = scene_text_or_payload(scene_positive, payload["positive_phrases"])
+        negative_text = scene_text_or_payload(scene_negative, payload["negative_phrases"])
+        return scene_from_texts(target_name, aliases, mode, positive_text, negative_text, refinement_key)
 
-    def _scene_sigmas(self, scene, fallback=None):
-        if isinstance(scene.get("sigmas"), dict):
-            try:
-                return serializable_to_tensor(scene["sigmas"]).detach().clone().cpu()
-            except Exception:
-                pass
-        if isinstance(fallback, torch.Tensor):
-            return fallback.detach().clone().cpu()
-        return self._empty_sigmas()
-
-    def _outputs_for_scene(self, name, scene, sigmas=None, lora_stack=None, source="Manual"):
-        positive = scene_text_from_phrases(scene.get("positive_phrases", []))
-        negative = scene_text_from_phrases(scene.get("negative_phrases", []))
-        refinement_key = normalize_refinement_key(scene.get("refinement_key", ""))
-        output_sigmas = self._scene_sigmas(scene, sigmas)
+    def _outputs_for_scene(self, name, scene, scene_db=None, lora_stack=None, source="Manual"):
+        positive = str(scene.get("positive_text") or scene_text_from_phrases(scene.get("positive_phrases", [])))
+        negative = str(scene.get("negative_text") or scene_text_from_phrases(scene.get("negative_phrases", [])))
+        positive = resolve_scene_database_wildcards(positive, scene_db)
+        negative = resolve_scene_database_wildcards(negative, scene_db)
         lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
         status = (
             f"Scene Builder {source}: '{name or scene.get('name', '') or 'unsaved'}'. "
@@ -988,12 +1140,11 @@ class FunPackSceneBuilder:
             f"Negative phrases: {len(scene.get('negative_phrases', []) or [])}. "
             f"LoRA stack pass-through: {lora_count} LoRA(s)."
         )
-        return (positive, negative, name or scene.get("name", ""), output_sigmas, lora_stack, refinement_key, status)
+        return (positive, negative, lora_stack, status)
 
-    def _learning_outputs(self, positive_prompt, negative_prompt, refinement_key, sigmas=None, lora_stack=None):
+    def _learning_outputs(self, positive_prompt, negative_prompt, lora_stack=None):
         positive = str(positive_prompt or "")
         negative = str(negative_prompt or "")
-        output_sigmas = sigmas.detach().clone().cpu() if isinstance(sigmas, torch.Tensor) else self._empty_sigmas()
         lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
         status = (
             "Scene Builder Learning: pass-through active. "
@@ -1001,34 +1152,36 @@ class FunPackSceneBuilder:
             f"Collected negative source: {'yes' if negative else 'no'}. "
             f"LoRA stack pass-through: {lora_count} LoRA(s)."
         )
-        return (positive, negative, "", output_sigmas, lora_stack, normalize_refinement_key(refinement_key), status)
+        return (positive, negative, lora_stack, status)
 
     def _empty_outputs(self, status):
-        return ("", "", "", self._empty_sigmas(), None, "", status)
+        return ("", "", None, status)
 
     def build_scene(
         self,
-        scene,
         scene_name,
-        aliases,
-        action,
-        output_mode,
-        refinement_key,
-        scene_payload,
+        mode="Manual",
+        scene=SCENE_NONE,
+        aliases="",
+        action="load",
+        scene_positive="",
+        scene_negative="",
+        refinement_key="",
+        scene_payload="{}",
         intent_prompt="",
         positive_prompt="",
         negative_prompt="",
         refinement_key_input="",
-        sigmas=None,
         lora_stack=None,
-        mode="ltx2",
+        output_mode=None,
     ):
-        del mode
         linked_key = normalize_refinement_key(refinement_key_input)
         if linked_key:
             refinement_key = linked_key
         selected_name = normalize_scene_name(scene)
-        output_mode = output_mode if output_mode in {"Manual", "Auto", "Learning"} else "Manual"
+        if output_mode in {"Manual", "Auto", "Learning"}:
+            mode = output_mode
+        mode = mode if mode in {"Manual", "Auto", "Learning"} else "Manual"
         action = action if action in {"load", "save", "update", "delete"} else "load"
         payload = parse_scene_payload(scene_payload)
 
@@ -1039,10 +1192,11 @@ class FunPackSceneBuilder:
             selected_name,
             scene_name,
             aliases,
-            output_mode,
+            mode,
+            scene_positive,
+            scene_negative,
             refinement_key,
             payload,
-            sigmas,
         )
 
         if action == "delete":
@@ -1067,7 +1221,7 @@ class FunPackSceneBuilder:
             manual["updated_at"] = now_iso()
             scenes[target_name] = manual
             save_scene_db(data, refinement_key)
-            return self._outputs_for_scene(target_name, manual, sigmas, lora_stack, "Manual saved")
+            return self._outputs_for_scene(target_name, manual, data, lora_stack, "Manual saved")
 
         if action == "update":
             target_name = selected_name or normalize_scene_name(scene_name)
@@ -1081,20 +1235,20 @@ class FunPackSceneBuilder:
             manual["updated_at"] = now_iso()
             scenes[target_name] = manual
             save_scene_db(data, refinement_key)
-            return self._outputs_for_scene(target_name, manual, sigmas, lora_stack, "Manual updated")
+            return self._outputs_for_scene(target_name, manual, data, lora_stack, "Manual updated")
 
-        if output_mode == "Learning":
+        if mode == "Learning":
             if memory_changed:
                 save_scene_db(data, refinement_key)
-            return self._learning_outputs(positive_prompt, negative_prompt, refinement_key, sigmas, lora_stack)
+            return self._learning_outputs(positive_prompt, negative_prompt, lora_stack)
 
-        if output_mode == "Auto":
+        if mode == "Auto":
             matched_name, matched_scene, match_type = find_scene_for_intent(intent_prompt, scenes)
             if matched_name and isinstance(matched_scene, dict):
                 if memory_changed:
                     save_scene_db(data, refinement_key)
-                return self._outputs_for_scene(matched_name, matched_scene, sigmas, lora_stack, f"Auto {match_type}")
+                return self._outputs_for_scene(matched_name, matched_scene, data, lora_stack, f"Auto {match_type}")
 
         if memory_changed:
             save_scene_db(data, refinement_key)
-        return self._outputs_for_scene(manual.get("name", ""), manual, sigmas, lora_stack, "Manual")
+        return self._outputs_for_scene(manual.get("name", ""), manual, data, lora_stack, "Manual")
