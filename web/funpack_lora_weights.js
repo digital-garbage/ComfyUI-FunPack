@@ -12,6 +12,7 @@ let cachedLoraValues = null;
 let latestNodeData = null;
 const trackedNodes = new Set();
 let pendingRefresh = null;
+let activeLoraPicker = null;
 
 function fitString(ctx, text, maxWidth) {
   text = String(text ?? "");
@@ -149,6 +150,160 @@ function valuesWithCurrent(values, current) {
     return values;
   }
   return [...values, current];
+}
+
+function normalizeSearchText(value) {
+  return String(value ?? "").toLowerCase().replace(/[_\-./\\]+/g, " ");
+}
+
+function closeLoraPicker() {
+  if (!activeLoraPicker) {
+    return;
+  }
+  activeLoraPicker.remove();
+  activeLoraPicker = null;
+}
+
+function openSearchableLoraPicker(event, values, currentValue, onSelect) {
+  closeLoraPicker();
+
+  const sourceValues = Array.from(new Set(valuesWithCurrent(values || ["None"], currentValue)));
+  const root = document.createElement("div");
+  root.className = "funpack-lora-picker";
+  Object.assign(root.style, {
+    position: "fixed",
+    zIndex: 10000,
+    minWidth: "320px",
+    maxWidth: "520px",
+    maxHeight: "420px",
+    padding: "8px",
+    border: "1px solid rgba(180, 190, 200, 0.35)",
+    borderRadius: "8px",
+    background: "rgba(30, 32, 36, 0.98)",
+    boxShadow: "0 16px 40px rgba(0, 0, 0, 0.35)",
+    color: "#ddd",
+    font: "12px sans-serif",
+  });
+
+  const input = document.createElement("input");
+  input.type = "search";
+  input.placeholder = "Search LoRA";
+  input.value = currentValue && currentValue !== "None" ? currentValue : "";
+  Object.assign(input.style, {
+    boxSizing: "border-box",
+    width: "100%",
+    margin: "0 0 6px 0",
+    padding: "7px 8px",
+    border: "1px solid rgba(180, 190, 200, 0.35)",
+    borderRadius: "5px",
+    background: "#15171a",
+    color: "#fff",
+    outline: "none",
+  });
+
+  const list = document.createElement("div");
+  Object.assign(list.style, {
+    maxHeight: "350px",
+    overflowY: "auto",
+  });
+
+  const render = () => {
+    const needle = normalizeSearchText(input.value);
+    const parts = needle.split(/\s+/).filter(Boolean);
+    const filtered = sourceValues
+      .filter((value) => {
+        if (!parts.length) {
+          return true;
+        }
+        const haystack = normalizeSearchText(value);
+        return parts.every((part) => haystack.includes(part));
+      })
+      .slice(0, 160);
+
+    list.replaceChildren();
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "No matching LoRAs";
+      Object.assign(empty.style, {
+        padding: "10px 8px",
+        opacity: "0.7",
+      });
+      list.append(empty);
+      return;
+    }
+
+    for (const value of filtered) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.textContent = value;
+      row.title = value;
+      Object.assign(row.style, {
+        display: "block",
+        width: "100%",
+        padding: "6px 8px",
+        border: "0",
+        borderRadius: "4px",
+        background: value === currentValue ? "rgba(120, 150, 170, 0.32)" : "transparent",
+        color: "#ddd",
+        textAlign: "left",
+        cursor: "pointer",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      });
+      row.addEventListener("mouseenter", () => {
+        row.style.background = "rgba(120, 150, 170, 0.24)";
+      });
+      row.addEventListener("mouseleave", () => {
+        row.style.background = value === currentValue ? "rgba(120, 150, 170, 0.32)" : "transparent";
+      });
+      row.addEventListener("click", () => {
+        onSelect(value);
+        closeLoraPicker();
+      });
+      list.append(row);
+    }
+  };
+
+  input.addEventListener("input", render);
+  input.addEventListener("keydown", (keyEvent) => {
+    if (keyEvent.key === "Escape") {
+      closeLoraPicker();
+      keyEvent.stopPropagation();
+    } else if (keyEvent.key === "Enter") {
+      const first = list.querySelector("button");
+      if (first) {
+        onSelect(first.textContent);
+        closeLoraPicker();
+      }
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+    }
+  });
+
+  root.append(input, list);
+  document.body.append(root);
+  activeLoraPicker = root;
+
+  const rect = root.getBoundingClientRect();
+  const x = Math.min(window.innerWidth - rect.width - 12, Math.max(12, event.clientX ?? 12));
+  const y = Math.min(window.innerHeight - rect.height - 12, Math.max(12, event.clientY ?? 12));
+  root.style.left = `${x}px`;
+  root.style.top = `${y}px`;
+
+  const outsideClick = (clickEvent) => {
+    if (!root.contains(clickEvent.target)) {
+      closeLoraPicker();
+      document.removeEventListener("pointerdown", outsideClick, true);
+    }
+  };
+  window.setTimeout(() => {
+    document.addEventListener("pointerdown", outsideClick, true);
+  }, 0);
+
+  render();
+  input.focus();
+  input.select();
 }
 
 function normalizeLoraType(value) {
@@ -406,16 +561,11 @@ class FunPackLoraRowWidget extends FunPackBaseWidget {
 
   onLoraClick(event, pos, node) {
     void fetchLoraValues(this.nodeData).then((freshValues) => {
-      const values = valuesWithCurrent(freshValues, this.value.lora);
-      new LiteGraph.ContextMenu(values, {
-        event,
-        title: "Choose LoRA",
-        callback: (value) => {
-          if (typeof value === "string") {
-            this.value.lora = value;
-            node.setDirtyCanvas(true, true);
-          }
-        },
+      openSearchableLoraPicker(event, freshValues, this.value.lora, (value) => {
+        if (typeof value === "string") {
+          this.value.lora = value;
+          node.setDirtyCanvas(true, true);
+        }
       });
     });
     return true;
@@ -698,16 +848,12 @@ function ensureCompactLoraUi(node, nodeData, info = null) {
   }
   node.addCustomWidget(new FunPackButtonWidget(ADD_BUTTON_NAME, "+ Add LoRA", (event, pos, currentNode) => {
     void fetchLoraValues(nodeData).then((values) => {
-      new LiteGraph.ContextMenu(values, {
-        event,
-        title: "Choose LoRA",
-        callback: (value) => {
-          if (typeof value === "string" && value !== "None") {
-            addLoraRow(currentNode, nodeData, { lora: value });
-          } else {
-            addLoraRow(currentNode, nodeData, {});
-          }
-        },
+      openSearchableLoraPicker(event, values, "None", (value) => {
+        if (typeof value === "string" && value !== "None") {
+          addLoraRow(currentNode, nodeData, { lora: value });
+        } else {
+          addLoraRow(currentNode, nodeData, {});
+        }
       });
     });
     return true;

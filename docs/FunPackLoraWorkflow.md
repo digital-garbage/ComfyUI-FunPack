@@ -24,7 +24,7 @@ Inputs:
 - **lora_N_type**: `general`, `action`, `style`, `quality`, or `character`.
 - **lora_N_base_weight**: Trainer-recommended model base weight.
 
-Use **+ Add LoRA** for more rows.
+Use **+ Add LoRA** for more rows. Clicking a LoRA name opens a searchable picker, so large LoRA folders can be filtered by partial filename instead of scrolling the full list.
 
 The first run uses base weights. Later runs can use saved V2 suggestions for the same `refinement_key` and prompt.
 

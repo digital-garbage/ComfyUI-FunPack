@@ -24,6 +24,15 @@ class FakeClip:
         return [(torch.ones(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
 
 
+class CountingClip(FakeClip):
+    def __init__(self):
+        self.calls = 0
+
+    def encode_from_tokens_scheduled(self, tokens):
+        self.calls += 1
+        return super().encode_from_tokens_scheduled(tokens)
+
+
 def primary_category(phrase):
     refiner = FunPackVideoRefinerV2()
     scores = refiner._v2_heuristic_scores(phrase)
@@ -392,7 +401,7 @@ def test_refiner_training_info_uses_readable_sections(tmp_path):
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
-    _, _, training_info, _ = refiner.refine_v2(
+    _, _, training_info, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         FakeClip(),
         "Perfect",
@@ -603,3 +612,80 @@ def test_wrong_action_rating_preserves_quality_but_marks_action_wrong():
     assert feedback["satisfied_axes"] == ["details", "quality"]
     assert global_state["phrase_memory"]["walking"]["wrong_count"] == 1
     assert global_state["phrase_memory"]["cinematic lighting"]["satisfied_count"] == 1
+
+
+def test_ordered_prompt_phrases_preserve_stopwords_for_repair_text():
+    refiner = FunPackVideoRefinerV2()
+
+    phrases = refiner._ordered_prompt_phrases("running through the street, hands in the frame")
+
+    assert phrases[0]["text"] == "running through the street"
+    assert phrases[0]["tokens"] == ["running", "through", "street"]
+    assert phrases[1]["text"] == "hands in the frame"
+
+
+def test_v2_image_metadata_detects_aspect_bucket_and_changed_fingerprint():
+    refiner = FunPackVideoRefinerV2()
+    first = torch.zeros(1, 32, 64, 3)
+    second = torch.ones(1, 32, 64, 3)
+
+    metadata, status = refiner._v2_image_metadata(first)
+    changed, _ = refiner._v2_image_metadata(second, metadata)
+
+    assert metadata["width"] == 64
+    assert metadata["height"] == 32
+    assert metadata["aspect_bucket"] == "ultrawide"
+    assert "64x32" in status
+    assert changed["changed_from_previous"] is True
+
+
+def test_refiner_v2_returns_empty_negative_conditioning_when_negative_blank(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    _, _, training_info, _, negative = refiner.refine_v2(
+        "woman walking through neon rain",
+        FakeClip(),
+        "Perfect",
+        "negative-empty-test",
+        negative_prompt="",
+    )
+
+    assert negative == []
+    assert "Negative repair:" in training_info
+
+
+def test_negative_prompt_repair_adds_poorly_rated_tags_persistently(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    refiner.refine_v2("woman, walking through the street", FakeClip(), "Perfect", "negative-repair-test")
+    refiner.refine_v2("woman, walking through the street", FakeClip(), "Wrong action", "negative-repair-test")
+    _, _, training_info, _, negative = refiner.refine_v2(
+        "woman portrait",
+        FakeClip(),
+        "Missing action",
+        "negative-repair-test",
+        negative_prompt="bad anatomy",
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert negative
+    assert "walking through the street" in state["global"]["negative_prompt_memory"]["tags"]
+    assert "walking through the street" in state["last_run"]["negative_prompt"]
+    assert "persistent poor-rated tag" in training_info
+
+
+def test_refiner_v2_caches_repeated_clip_category_encodes():
+    refiner = FunPackVideoRefinerV2()
+    clip = CountingClip()
+    phrases = [
+        {"text": "soft glow", "tokens": ["soft", "glow"]},
+        {"text": "soft glow", "tokens": ["soft", "glow"]},
+    ]
+
+    refiner._v2_classify_phrases(clip, phrases, {"phrase_memory": {}}, encode_cache={})
+
+    assert clip.calls <= len(refiner.CATEGORY_DESCRIPTIONS) + 1

@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.2.2] - 2026-05-13
+
+### Added
+
+Added searchable LoRA picking to `FunPack Apply LoRA Weights`. The compact row UI remains the primary workflow, and saved workflows still serialize through the existing `lora_list` JSON value.
+
+Added optional `clip_vision_output`, `source_image`, and `negative_prompt` inputs to `FunPack Video Refiner V2`.
+
+Added a final `modified_negative` conditioning output to `FunPack Video Refiner V2`. When negative repair has prompt text to encode, the node returns repaired negative conditioning; otherwise it returns an empty conditioning list.
+
+Added advisory V2 vision context storage for source image dimensions, aspect ratio bucket, image fingerprint, CLIP Vision tensor summaries, and changed-image detection. Vision context is diagnostic only and is not blended into positive conditioning.
+
+Added experimental early velocity bias capture/application controls to `FunPack Hybrid Euler 2S Sampler`, defaulting off.
+
+### Changed
+
+Updated V2 prompt repair so repaired phrases preserve stopwords and phrase text while still using filtered semantic tokens for matching and categorization.
+
+Reduced repeated Refiner V2 CLIP model calls by caching category and phrase encodes within each run.
+
+Updated negative repair to persist poorly rated or wrong-context tags and append them to future negative prompts before encoding negative conditioning.
+
 ## [2.2.1] - 2026-05-07
 
 ### Fixed

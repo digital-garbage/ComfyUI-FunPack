@@ -2,6 +2,14 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.2.2
+
+Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
+
+Added advisory image/CLIP Vision context and repaired negative conditioning to `FunPack Video Refiner V2`. Vision inputs are stored as metadata and diagnostics only; they are not blended into positive conditioning.
+
+Added an opt-in experimental early velocity bias mode to `FunPack Hybrid Euler 2S Sampler` for capturing/applying averaged early denoise directions around normalized sigma 0.9 and 0.8.
+
 ## Updates in 2.2.1
 
 Fixed Refiner V2 prompt phrase categorization so background, appearance, quality, camera, and action phrases stay aligned before the node updates Lucky memory or LoRA suggestions.

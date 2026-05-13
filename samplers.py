@@ -9,6 +9,9 @@ import comfy.utils
 
 
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
+VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"]
+VELOCITY_BIAS_TARGETS = (0.90, 0.80)
+VELOCITY_BIAS_MEMORY = {}
 
 
 def _sigma_fn(t):
@@ -58,6 +61,80 @@ def _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler):
 
     sigma_delta = math.sqrt(sigma_delta_sq)
     return x + noise_sampler(sigma, sigma_next) * (pulse_noise * sigma_delta)
+
+
+def _velocity_bias_enabled(mode, action):
+    mode = (mode or "off").lower()
+    if mode == "capture_and_apply":
+        return action in {"capture", "apply"}
+    return mode == action
+
+
+def _velocity_bias_key(refinement_key, aspect_bucket, target, x):
+    shape = tuple(int(item) for item in getattr(x, "shape", ()))
+    key = str(refinement_key or "default").strip() or "default"
+    aspect = str(aspect_bucket or "any").strip() or "any"
+    return (key, aspect, f"{float(target):.2f}", shape)
+
+
+def _sigma_ratio(sigmas, sigma):
+    try:
+        start = float(sigmas[0].item())
+        current = float(sigma.item())
+    except Exception:
+        return None
+    if start <= 0.0:
+        return None
+    return current / start
+
+
+def _velocity_bias_target(sigmas, sigma):
+    ratio = _sigma_ratio(sigmas, sigma)
+    if ratio is None:
+        return None
+    target = min(VELOCITY_BIAS_TARGETS, key=lambda item: abs(float(item) - ratio))
+    return target if abs(float(target) - ratio) <= 0.065 else None
+
+
+def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, denoised):
+    if target is None:
+        return
+    try:
+        direction = k_diffusion_sampling.to_d(x, sigma, denoised).detach().float().cpu()
+    except Exception:
+        return
+    key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
+    slot = VELOCITY_BIAS_MEMORY.setdefault(key, {"count": 0, "direction": None})
+    count = int(slot.get("count", 0))
+    previous = slot.get("direction")
+    if count <= 0 or not isinstance(previous, torch.Tensor) or tuple(previous.shape) != tuple(direction.shape):
+        slot["direction"] = direction
+        slot["count"] = 1
+        return
+    slot["direction"] = (previous * count + direction) / float(count + 1)
+    slot["count"] = min(count + 1, 256)
+
+
+def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
+    if target is None or strength <= 0.0:
+        return x
+    key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
+    slot = VELOCITY_BIAS_MEMORY.get(key)
+    if not isinstance(slot, dict) or not isinstance(slot.get("direction"), torch.Tensor):
+        return x
+    direction = slot["direction"]
+    if tuple(direction.shape) != tuple(x.shape):
+        return x
+    try:
+        direction = direction.to(device=x.device, dtype=x.dtype)
+        delta = direction * max(0.0, min(0.35, float(strength)))
+        max_delta = x.detach().float().norm().clamp_min(1e-8) * 0.045
+        delta_norm = delta.detach().float().norm().clamp_min(1e-8)
+        if delta_norm > max_delta:
+            delta = delta * (max_delta / delta_norm).to(device=x.device, dtype=x.dtype)
+        return x + delta
+    except Exception:
+        return x
 
 
 def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
@@ -197,7 +274,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    motion_pulse_spacing_pct=0.22,
                                    motion_pulse_strength=0.85,
                                    motion_pulse_noise=0.0,
-                                   motion_pulse_steps=None):
+                                   motion_pulse_steps=None,
+                                   velocity_bias_mode="off",
+                                   velocity_bias_strength=0.0,
+                                   velocity_refinement_key="default",
+                                   velocity_aspect_bucket="any"):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral for motion/anatomy buildup.
@@ -220,6 +301,10 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
 
     high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
+    velocity_bias_mode = (velocity_bias_mode or "off").lower()
+    if velocity_bias_mode not in VELOCITY_BIAS_MODES:
+        velocity_bias_mode = "off"
+    velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, computed_motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
@@ -258,7 +343,12 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             if pulse_noise > 0.0:
                 x = _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler)
 
+            velocity_target = _velocity_bias_target(sigmas, sigma)
+            if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
             denoised = model(x, sigma * s_in, **extra_args)
+            if _velocity_bias_enabled(velocity_bias_mode, "capture"):
+                _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised)
 
             if callback is not None:
                 callback({
@@ -373,6 +463,27 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "How strongly motion pulses add monotonic noise kicks. Higher values push harder against stale image references."
                 }),
+                "velocity_bias_mode": (VELOCITY_BIAS_MODES, {
+                    "default": "off",
+                    "tooltip": "Experimental: capture/apply averaged early model velocity around normalized sigma 0.9 and 0.8. Off preserves legacy sampler behavior."
+                }),
+                "velocity_bias_strength": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 0.35,
+                    "step": 0.01,
+                    "tooltip": "Experimental strength for applying captured early velocity bias. Keep low; 0 disables the applied delta."
+                }),
+                "velocity_refinement_key": ("STRING", {
+                    "default": "default",
+                    "multiline": False,
+                    "tooltip": "Memory key used to capture/apply early velocity bias."
+                }),
+                "velocity_aspect_bucket": ("STRING", {
+                    "default": "any",
+                    "multiline": False,
+                    "tooltip": "Optional aspect bucket such as landscape, portrait, square, ultrawide, or vertical."
+                }),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -388,7 +499,9 @@ class FunPackHybridEuler2SSampler:
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
                     motion_pulse_mode="off", motion_pulse_start_pct=0.30,
                     motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
-                    motion_pulse_strength=0.85, sigmas=None):
+                    motion_pulse_strength=0.85, velocity_bias_mode="off",
+                    velocity_bias_strength=0.0, velocity_refinement_key="default",
+                    velocity_aspect_bucket="any", sigmas=None):
         prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
@@ -413,6 +526,10 @@ class FunPackHybridEuler2SSampler:
                 "motion_pulse_strength": motion_pulse_strength,
                 "motion_pulse_noise": motion_pulse_noise,
                 "motion_pulse_steps": motion_pulse_steps,
+                "velocity_bias_mode": velocity_bias_mode,
+                "velocity_bias_strength": velocity_bias_strength,
+                "velocity_refinement_key": velocity_refinement_key,
+                "velocity_aspect_bucket": velocity_aspect_bucket,
             }
         )
         return (sampler, prepared_sigmas)

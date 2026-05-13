@@ -56,6 +56,19 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 
 **motion_pulse_strength**: Strength of the monotonic noise kick. Higher values push harder against stale image references, with more drift risk.
 
+**velocity_bias_mode**: Experimental early velocity steering mode:
+
+- `off`: preserve legacy sampler behavior.
+- `capture`: save averaged early velocity directions around normalized sigma `0.9` and `0.8`.
+- `apply`: apply a previously captured matching bias.
+- `capture_and_apply`: do both in one run.
+
+**velocity_bias_strength**: Strength for applying captured early velocity bias. Keep this low; `0.0` disables the applied delta.
+
+**velocity_refinement_key**: In-memory key used to group captured velocity directions.
+
+**velocity_aspect_bucket**: Optional grouping value such as `landscape`, `portrait`, `square`, `ultrawide`, or `vertical`.
+
 **sigmas**: Optional incoming sigma schedule. If connected, the node returns the same monotonic schedule plus sampler-side metadata for motion pulses. If not connected, the sampler computes pulse positions from the runtime schedule.
 
 ## Recommended starting values
@@ -65,6 +78,7 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 - `high_quality_pct = 0.30` to `0.40`
 - `correction_blend = 1.0`
 - `motion_pulse_mode = off` for baseline testing
+- `velocity_bias_mode = off` unless you are deliberately testing captured good-run steering
 
 For an aggressive LTX2.3 image-to-video motion test, try:
 
@@ -90,6 +104,8 @@ Compared to plain `euler_ancestral`, this sampler should usually:
 With motion pulses enabled, it should more strongly encourage action, camera movement, and viewpoint changes inside a single clip. Stronger settings can increase subject drift or visual instability.
 
 The outgoing `SIGMAS` remain monotonic. Motion pulses happen inside the sampler at selected denoise steps rather than by expanding the schedule.
+
+Velocity bias memory is process-local and experimental. Capture only runs you consider good references, then apply with the same refinement key, aspect bucket, and latent shape. Incompatible shapes are ignored.
 
 If you need the model to stop carrying the previous segment's temporal context forward, add `FunPack Context Transition Windows`. It is the stronger transition tool and should be preferred for multi-view or "scene reset" testing.
 

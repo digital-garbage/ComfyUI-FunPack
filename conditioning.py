@@ -2613,16 +2613,15 @@ class FunPackVideoRefiner:
         phrases = []
         if not prompt:
             return phrases
-        for phrase_words in self._parse_concepts(prompt):
-            clean_words = [
-                str(word).strip().lower()
-                for word in phrase_words
-                if self._is_valuable_token(str(word).strip())
-            ]
-            if not clean_words:
-                continue
-            text = " ".join(clean_words)
-            text = re.sub(r"\s+", " ", text).strip(" ,;:.")
+        phrase_texts = []
+        for segment_type, segment_text in self._iter_prompt_segments(prompt):
+            if segment_type == "protected":
+                phrase_texts.append(segment_text)
+            else:
+                phrase_texts.extend(p.strip() for p in re.split(r'[,;]', segment_text) if p.strip())
+
+        for phrase_text in phrase_texts:
+            text = re.sub(r"\s+", " ", str(phrase_text or "").strip().lower()).strip(" ,;:.")
             if not text or len(text) < 3:
                 continue
             phrase_tokens = [
@@ -2631,7 +2630,7 @@ class FunPackVideoRefiner:
                 if self._is_valuable_token(token.strip())
             ]
             if not phrase_tokens:
-                phrase_tokens = [text]
+                continue
             phrases.append({
                 "text": text,
                 "tokens": phrase_tokens,
@@ -5559,8 +5558,8 @@ def normalize_refiner_v2_rating(value):
 
 class FunPackVideoRefinerV2(FunPackVideoRefiner):
     CATEGORY = "FunPack/Refinement"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "CONDITIONING")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "modified_negative")
     FUNCTION = "refine_v2"
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
@@ -5675,6 +5674,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset V2 Session"}),
                 "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional stack from FunPack LoRA Loader. V2 writes prompt-specific suggested weights."}),
+                "clip_vision_output": ("CLIP_VISION_OUTPUT", {
+                    "tooltip": "Optional CLIP Vision output describing the source image. Stored as advisory context; it is not blended into positive conditioning.",
+                }),
+                "source_image": ("IMAGE", {
+                    "tooltip": "Optional original/source image or frame batch. V2 stores size, aspect ratio, and a simple fingerprint to notice changed inputs.",
+                }),
+                "negative_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Optional negative prompt. V2 can persistently add poorly rated tags and return repaired negative conditioning.",
+                }),
                 "user_intent_prompt": ("STRING", {
                     "multiline": True,
                     "default": "",
@@ -5709,8 +5719,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "last_missing_axes": [],
                 "phrase_memory": {},
                 "axis_conditioning_memory": {},
+                "negative_prompt_memory": {},
                 "lora_weight_memory": {},
                 "preferred_context_memory": {},
+                "vision_memory": {},
                 "loss_history": [],
             },
             "prompt_histories": {},
@@ -5730,9 +5742,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data.setdefault("prompt_histories", {})
             data.setdefault("last_run", None)
             data["global"].setdefault("axis_conditioning_memory", {})
+            data["global"].setdefault("negative_prompt_memory", {})
             data["global"].setdefault("phrase_memory", {})
             data["global"].setdefault("lora_weight_memory", {})
             data["global"].setdefault("preferred_context_memory", {})
+            data["global"].setdefault("vision_memory", {})
             data["global"].setdefault("loss_history", [])
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
@@ -5768,12 +5782,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             meta = {"pooled_output": None}
         return cond, meta
 
-    def _v2_encode_prompt(self, clip, prompt_text):
+    def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None):
         if clip is None:
             return None, {"pooled_output": None}, "CLIP missing"
         prompt_text = str(prompt_text or "").strip()
         if not prompt_text:
             return None, {"pooled_output": None}, "prompt empty"
+        cache_key = None
+        if isinstance(encode_cache, dict):
+            cache_key = (id(clip), prompt_text)
+            cached = encode_cache.get(cache_key)
+            if cached is not None:
+                return cached
         try:
             encoded = clip.encode_from_tokens_scheduled(clip.tokenize(prompt_text))
         except Exception as error:
@@ -5781,7 +5801,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         cond, meta = self._v2_extract_conditioning(encoded)
         if not isinstance(cond, torch.Tensor):
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
-        return cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions"
+        result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions")
+        if cache_key is not None:
+            encode_cache[cache_key] = result
+        return result
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -5860,8 +5883,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         return primary, float(confidence)
 
-    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors):
-        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase)
+    def _v2_clip_similarity_scores(self, clip, phrase, category_vectors, encode_cache=None):
+        phrase_cond, _, _ = self._v2_encode_prompt(clip, phrase, encode_cache=encode_cache)
         phrase_vector = self._v2_conditioning_vector(phrase_cond)
         if phrase_vector is None:
             return {}
@@ -5873,13 +5896,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scores[category] = float(((sim.item() + 1.0) * 0.5))
         return scores
 
-    def _v2_category_vectors(self, clip):
+    def _v2_category_vectors(self, clip, encode_cache=None):
+        if isinstance(encode_cache, dict):
+            cache_key = ("category_vectors", id(clip))
+            cached = encode_cache.get(cache_key)
+            if cached is not None:
+                return cached
         vectors = {}
         for category, description in self.CATEGORY_DESCRIPTIONS.items():
-            cond, _, _ = self._v2_encode_prompt(clip, description)
+            cond, _, _ = self._v2_encode_prompt(clip, description, encode_cache=encode_cache)
             vector = self._v2_conditioning_vector(cond)
             if vector is not None:
                 vectors[category] = vector.cpu()
+        if isinstance(encode_cache, dict):
+            encode_cache[cache_key] = vectors
         return vectors
 
     def _v2_merge_clip_category_scores(self, heuristic_scores, clip_scores):
@@ -6269,7 +6299,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             add(segment.get("text", ""), "prompt_phrase", None, position, self._v2_context_for_phrase(prompt_segments, position, segment.get("text", "")))
         return units[:96]
 
-    def _v2_classify_phrases(self, clip, phrases, global_state=None):
+    def _v2_classify_phrases(self, clip, phrases, global_state=None, encode_cache=None):
         phrase_items = []
         uncertain = []
         phrase_memory = (global_state or {}).get("phrase_memory", {}) if isinstance(global_state, dict) else {}
@@ -6303,9 +6333,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             phrase_items.append(item)
 
         if uncertain and clip is not None:
-            category_vectors = self._v2_category_vectors(clip)
+            category_vectors = self._v2_category_vectors(clip, encode_cache=encode_cache)
             for item in uncertain:
-                clip_scores = self._v2_clip_similarity_scores(clip, item["text"], category_vectors)
+                clip_scores = self._v2_clip_similarity_scores(clip, item["text"], category_vectors, encode_cache=encode_cache)
                 if not clip_scores:
                     continue
                 merged = self._v2_merge_clip_category_scores(item["category_scores"], clip_scores)
@@ -7267,6 +7297,204 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         lucky_prompt = ", ".join(selected)
         return lucky_prompt, f"Lucky: on | composed {len(selected)} phrase(s): {', '.join(selected[:8])}{'...' if len(selected) > 8 else ''}."
 
+    def _v2_aspect_bucket(self, width, height):
+        width = max(1, int(width or 1))
+        height = max(1, int(height or 1))
+        ratio = width / float(height)
+        if ratio >= 1.95:
+            return "ultrawide"
+        if ratio >= 1.20:
+            return "landscape"
+        if ratio <= 0.52:
+            return "vertical"
+        if ratio <= 0.83:
+            return "portrait"
+        return "square"
+
+    def _v2_image_fingerprint(self, image):
+        if not isinstance(image, torch.Tensor) or image.numel() == 0:
+            return ""
+        try:
+            frame = image.detach().float()
+            if frame.dim() == 4:
+                frame = frame[0]
+            if frame.dim() != 3:
+                return ""
+            if frame.shape[-1] in {1, 3, 4}:
+                frame = frame.permute(2, 0, 1).unsqueeze(0)
+            else:
+                frame = frame.unsqueeze(0)
+            sample = F.interpolate(frame[:, :3], size=(8, 8), mode="bilinear", align_corners=False)
+            quantized = torch.clamp(sample[0].detach().cpu(), 0.0, 1.0).mul(255).round().to(torch.uint8)
+            return md5(quantized.numpy().tobytes()).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def _v2_image_metadata(self, source_image, previous_metadata=None):
+        if not isinstance(source_image, torch.Tensor) or source_image.numel() == 0:
+            return {}, "Vision image: none."
+        shape = list(source_image.shape)
+        if len(shape) < 3:
+            return {}, "Vision image: unsupported shape."
+        if len(shape) >= 4:
+            batch = int(shape[0])
+            height = int(shape[1])
+            width = int(shape[2])
+        else:
+            batch = 1
+            height = int(shape[0])
+            width = int(shape[1])
+        fingerprint = self._v2_image_fingerprint(source_image)
+        previous_fingerprint = ""
+        if isinstance(previous_metadata, dict):
+            previous_fingerprint = str(previous_metadata.get("fingerprint", ""))
+        changed = bool(previous_fingerprint and fingerprint and previous_fingerprint != fingerprint)
+        metadata = {
+            "width": width,
+            "height": height,
+            "batch": batch,
+            "aspect_ratio": round(width / float(max(1, height)), 6),
+            "aspect_bucket": self._v2_aspect_bucket(width, height),
+            "fingerprint": fingerprint,
+            "changed_from_previous": changed,
+        }
+        changed_text = "changed" if changed else ("same/first" if fingerprint else "unknown")
+        return metadata, (
+            f"Vision image: {width}x{height} {metadata['aspect_bucket']} "
+            f"ratio={metadata['aspect_ratio']:.3f} fingerprint={fingerprint or 'none'} {changed_text}."
+        )
+
+    def _v2_clip_vision_summary(self, clip_vision_output):
+        tensors = []
+
+        def walk(value, path="root", depth=0):
+            if depth > 3 or value is None:
+                return
+            if isinstance(value, torch.Tensor):
+                tensors.append((path, value))
+                return
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    walk(item, f"{path}.{key}", depth + 1)
+                return
+            for key in ("image_embeds", "last_hidden_state", "penultimate_hidden_states", "hidden_states"):
+                if hasattr(value, key):
+                    walk(getattr(value, key), f"{path}.{key}", depth + 1)
+
+        walk(clip_vision_output)
+        summaries = []
+        for key, tensor in tensors[:8]:
+            try:
+                detached = tensor.detach().float().cpu()
+                summaries.append({
+                    "key": key,
+                    "shape": list(detached.shape),
+                    "mean": round(float(detached.mean().item()), 6),
+                    "std": round(float(detached.std().item()) if detached.numel() > 1 else 0.0, 6),
+                    "norm": round(float(detached.norm().item()), 6),
+                })
+            except Exception:
+                continue
+        if not summaries:
+            return {}, "CLIP Vision: none."
+        digest_source = json.dumps(summaries, sort_keys=True)
+        summary = {
+            "tensor_count": len(tensors),
+            "fields": summaries,
+            "fingerprint": md5(digest_source.encode("utf-8")).hexdigest()[:16],
+        }
+        return summary, f"CLIP Vision: {len(tensors)} tensor field(s), fingerprint={summary['fingerprint']}."
+
+    def _v2_update_vision_memory(self, global_state, clip_vision_output=None, source_image=None):
+        memory = global_state.setdefault("vision_memory", {})
+        previous_image = memory.get("last_image") if isinstance(memory.get("last_image"), dict) else {}
+        image_metadata, image_status = self._v2_image_metadata(source_image, previous_image)
+        clip_summary, clip_status = self._v2_clip_vision_summary(clip_vision_output)
+        current = {
+            "image": image_metadata,
+            "clip_vision": clip_summary,
+        }
+        if image_metadata:
+            memory["last_image"] = image_metadata
+        if clip_summary:
+            memory["last_clip_vision"] = clip_summary
+        memory["last_context"] = current
+        return current, f"{image_status} {clip_status}"
+
+    def _v2_update_negative_prompt_memory(self, global_state, previous_run, rating_profile, axis_feedback=None):
+        memory = global_state.setdefault("negative_prompt_memory", {})
+        tags = memory.setdefault("tags", {})
+        if not isinstance(previous_run, dict) or rating_profile.get("skip_learning"):
+            return "Negative repair memory: no update."
+        axis_feedback = axis_feedback or self._v2_axis_feedback(rating_profile, global_state.get("last_missing_axes", []))
+        wrong_axes = set(axis_feedback.get("wrong_axes", []))
+        missing_axes = set(axis_feedback.get("missing_axes", []))
+        reward = float(rating_profile.get("reward", 0.0))
+        should_store = bool(wrong_axes) or rating_profile.get("key") == "awful" or reward < -0.30
+        if not should_store:
+            return "Negative repair memory: no poor-rated tags added."
+
+        added = []
+        for phrase in previous_run.get("phrases", []) or []:
+            if not isinstance(phrase, dict):
+                continue
+            phrase_axes = self._v2_phrase_axes(phrase)
+            if wrong_axes and not (phrase_axes & wrong_axes):
+                continue
+            if not wrong_axes and missing_axes and not (phrase_axes & missing_axes):
+                continue
+            text = self._v2_clean_phrase_text(phrase.get("text", ""))
+            if not text:
+                continue
+            entry = tags.setdefault(text, {
+                "text": text,
+                "count": 0,
+                "axes": {},
+                "last_rating": "",
+                "last_seen_iter": 0,
+            })
+            entry["count"] = int(entry.get("count", 0)) + (2 if wrong_axes else 1)
+            entry["last_rating"] = rating_profile.get("label", "")
+            entry["last_seen_iter"] = int(global_state.get("total_iterations", 0)) + 1
+            axes = entry.setdefault("axes", {})
+            for axis in self._v2_order_axes((phrase_axes & (wrong_axes or missing_axes)) or phrase_axes):
+                axes[axis] = int(axes.get(axis, 0)) + 1
+            added.append(text)
+
+        if not added:
+            return "Negative repair memory: no matching poor-rated tags."
+        memory["tags"] = dict(sorted(
+            tags.items(),
+            key=lambda item: (int(item[1].get("count", 0)), int(item[1].get("last_seen_iter", 0))),
+            reverse=True,
+        )[:80])
+        return f"Negative repair memory: added {len(added)} poor-rated tag(s): {', '.join(added[:8])}."
+
+    def _v2_repair_negative_prompt(self, negative_prompt, global_state, axis_feedback=None):
+        prompt = self._v2_prompt_key(negative_prompt)
+        memory = global_state.get("negative_prompt_memory", {})
+        tags = memory.get("tags", {}) if isinstance(memory, dict) else {}
+        if not isinstance(tags, dict) or not tags:
+            return prompt, "Negative repair: no stored poor-rated tags."
+        wanted_axes = set(axis_feedback.get("missing_axes", [])) | set(axis_feedback.get("wrong_axes", [])) if isinstance(axis_feedback, dict) else set()
+        ranked = []
+        for text, entry in tags.items():
+            if not isinstance(entry, dict):
+                continue
+            clean = self._v2_clean_phrase_text(entry.get("text", text))
+            if not clean or self._v2_prompt_contains_text(prompt, clean):
+                continue
+            axes = set(entry.get("axes", {}).keys()) if isinstance(entry.get("axes"), dict) else set()
+            axis_bonus = 1.0 if wanted_axes and axes & wanted_axes else 0.0
+            score = float(entry.get("count", 0)) + axis_bonus + min(0.5, int(entry.get("last_seen_iter", 0)) * 0.001)
+            ranked.append((score, clean))
+        ranked.sort(reverse=True)
+        additions = [text for _, text in ranked[:8]]
+        if not additions:
+            return prompt, "Negative repair: stored poor-rated tags already present."
+        repaired = f"{prompt}, {', '.join(additions)}" if prompt else ", ".join(additions)
+        return repaired, f"Negative repair: added {len(additions)} persistent poor-rated tag(s): {', '.join(additions)}."
+
     def _v2_lora_type(self, lora_type):
         lora_type = str(lora_type or "general").strip().lower()
         return "action" if lora_type == "concept" else lora_type
@@ -7389,19 +7617,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return "LoRA suggestions: " + " | ".join(parts)
 
     def refine_v2(self, positive_prompt, clip, rating, refinement_key,
-                  seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt=""):
+                  seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False,
+                  user_intent_prompt="", clip_vision_output=None, source_image=None, negative_prompt=""):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
 
+        encode_cache = {}
         rating_profile = normalize_refiner_v2_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
         global_state = state.setdefault("global", {})
         global_state.setdefault("phrase_memory", {})
         global_state.setdefault("axis_conditioning_memory", {})
+        global_state.setdefault("negative_prompt_memory", {})
         global_state.setdefault("lora_weight_memory", {})
         global_state.setdefault("preferred_context_memory", {})
+        global_state.setdefault("vision_memory", {})
         global_state.setdefault("loss_history", [])
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
@@ -7427,20 +7659,37 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
+        negative_memory_status = self._v2_update_negative_prompt_memory(
+            global_state,
+            previous_run,
+            learning_profile,
+            axis_feedback,
+        )
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
 
+        vision_context, vision_status = self._v2_update_vision_memory(
+            global_state,
+            clip_vision_output=clip_vision_output,
+            source_image=source_image,
+        )
         analysis_prompt = self._v2_prompt_key(positive_prompt)
         intent_prompt = self._v2_prompt_key(user_intent_prompt)
         current_prompt_refusal = self._prompt_looks_like_refusal(analysis_prompt)
-        phrases = [] if current_prompt_refusal else self._v2_classify_phrases(clip, self._ordered_prompt_phrases(analysis_prompt), global_state)
+        phrases = [] if current_prompt_refusal else self._v2_classify_phrases(
+            clip,
+            self._ordered_prompt_phrases(analysis_prompt),
+            global_state,
+            encode_cache=encode_cache,
+        )
         intent_phrases = []
         if intent_prompt and not current_prompt_refusal:
             intent_phrases = self._v2_classify_phrases(
                 clip,
                 self._ordered_prompt_phrases(intent_prompt),
                 global_state,
+                encode_cache=encode_cache,
             )
         refusal_status = ""
         repair_status = "Prompt repair: none."
@@ -7466,14 +7715,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lucky_status = f"Lucky: off | trained memory only. {emphasis_status}"
             encoded_role = "current prompt"
 
-        cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_to_encode)
+        cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_to_encode, encode_cache=encode_cache)
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
             status = f"ERROR: V2 could not encode prompt | {encode_status}"
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
-            return ([], status, training_info, fallback_graph)
+            return ([], status, training_info, fallback_graph, [])
 
         refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile, axis_feedback)
+        repaired_negative_prompt, negative_repair_status = self._v2_repair_negative_prompt(
+            negative_prompt,
+            global_state,
+            axis_feedback,
+        )
+        negative_conditioning = []
+        negative_encode_status = "negative prompt empty"
+        if repaired_negative_prompt:
+            negative_cond, negative_meta, negative_encode_status = self._v2_encode_prompt(
+                clip,
+                repaired_negative_prompt,
+                encode_cache=encode_cache,
+            )
+            if isinstance(negative_cond, torch.Tensor):
+                negative_conditioning = [(negative_cond, negative_meta)]
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = None
         if current_prompt_refusal:
@@ -7544,8 +7808,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "rating_label": rating_label if has_previous_run else "Unrated",
                 "encoded_role": encoded_role,
                 "prompt": prompt_to_encode,
+                "negative_prompt": repaired_negative_prompt,
                 "phrases": phrases,
                 "repair_candidates": state_repair_candidates,
+                "vision_context": vision_context,
             })
 
         if current_prompt_refusal:
@@ -7557,7 +7823,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
                 "phrases": phrases,
                 "intent_prompt": intent_prompt,
+                "negative_prompt": repaired_negative_prompt,
                 "repair_candidates": state_repair_candidates,
+                "vision_context": vision_context,
                 "rating_label": "Unrated",
                 "iteration": int(global_state["total_iterations"]),
             }
@@ -7580,6 +7848,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"{training_guidance}\n"
             f"{lucky_status}"
             f"\n{repair_status}"
+            f"\n{negative_repair_status}"
+            f"\n{vision_status}"
             f"{refusal_status_line}"
         )
         if previous_run_refusal:
@@ -7604,7 +7874,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
                 f"Reason: {learning_reason}\n"
                 f"{self._v2_axis_feedback_status(axis_feedback)}\n"
-                f"{memory_status}"
+                f"{memory_status}\n"
+                f"{negative_memory_status}"
             ),
             (
                 "Prompt Analysis\n"
@@ -7615,7 +7886,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "Adaptation\n"
                 f"{adaptation_status}\n"
                 f"{lucky_status}\n"
-                f"{repair_status}"
+                f"{repair_status}\n"
+                f"{negative_repair_status}\n"
+                f"Negative encode: {negative_encode_status}\n"
+                f"{vision_status}"
                 f"{refusal_status_line}"
             ),
             (
@@ -7627,7 +7901,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{lora_status}"
             ),
         ])
-        return ([(refined, meta)], status, training_info, loss_graph)
+        return ([(refined, meta)], status, training_info, loss_graph, negative_conditioning)
 
 
 class FunPackSaveRefinementLatent:
