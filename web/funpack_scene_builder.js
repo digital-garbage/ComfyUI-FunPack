@@ -5,11 +5,9 @@ const NODE_NAME = "FunPackSceneBuilder";
 const NONE_SCENE = "-None-";
 const PAYLOAD_WIDGET = "scene_payload";
 const ACTION_WIDGET = "action";
-const LORA_TYPES = ["general", "action", "style", "quality", "character"];
 const GROUP_ORDER = ["subject", "appearance", "action", "camera", "environment", "style", "quality", "details", "negative"];
 
 let sceneData = null;
-let loraValues = ["None"];
 let activePicker = null;
 const trackedNodes = new Set();
 
@@ -76,7 +74,6 @@ function normalizePayload(payload) {
   return {
     positive_phrases: Array.isArray(payload.positive_phrases) ? payload.positive_phrases.filter(Boolean) : [],
     negative_phrases: Array.isArray(payload.negative_phrases) ? payload.negative_phrases.filter(Boolean) : [],
-    loras: Array.isArray(payload.loras) ? payload.loras.map(normalizeLoraRow) : [],
   };
 }
 
@@ -120,24 +117,8 @@ async function fetchScenes() {
   return sceneData;
 }
 
-async function fetchLoras() {
-  try {
-    const response = await api.fetchApi(`/funpack/loras?cache_bust=${Date.now()}`, { cache: "no-store" });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const values = await response.json();
-    if (Array.isArray(values) && values.length) {
-      loraValues = values;
-    }
-  } catch (error) {
-    console.warn("FunPack: failed to refresh LoRAs", error);
-  }
-  return loraValues;
-}
-
 async function refreshTracked() {
-  await Promise.all([fetchScenes(), fetchLoras()]);
+  await fetchScenes();
   for (const node of [...trackedNodes]) {
     if (!node?.graph) {
       trackedNodes.delete(node);
@@ -329,22 +310,10 @@ function searchablePicker(event, values, currentValue, onSelect, title = "Search
   input.select();
 }
 
-function normalizeLoraRow(row = {}) {
-  const strength = Number(row.strength ?? row.base_model_weight ?? 1.0);
-  const type = row.type === "concept" ? "action" : row.type;
-  return {
-    on: row.on !== false,
-    lora: row.lora || row.name || "None",
-    type: LORA_TYPES.includes(type) ? type : "general",
-    strength: Number.isFinite(strength) ? strength : 1.0,
-  };
-}
-
 function scenePayloadFromStoredScene(scene) {
   return normalizePayload({
     positive_phrases: scene?.positive_phrases || [],
     negative_phrases: scene?.negative_phrases || [],
-    loras: scene?.loras || [],
   });
 }
 
@@ -366,8 +335,6 @@ function loadStoredSceneIntoNode(node) {
   setWidgetValue(node, "scene_name", scene.name || name);
   setWidgetValue(node, "aliases", Array.isArray(scene.aliases) ? scene.aliases.join(", ") : "");
   setWidgetValue(node, "output_mode", scene.output_mode || "Manual");
-  setWidgetValue(node, "mode", scene.mode || "ltx2");
-  setWidgetValue(node, "per_block", scene.per_block === true);
   setWidgetValue(node, "refinement_key", scene.refinement_key || "");
   writePayload(node, scenePayloadFromStoredScene(scene));
 }
@@ -415,9 +382,7 @@ class SceneBuilderWidget {
   }
 
   computeSize(width) {
-    const payload = payloadFromNode(this.node);
-    const loraRows = Math.max(1, payload.loras.length);
-    return [width, 330 + loraRows * 22];
+    return [width, 430];
   }
 
   draw(ctx, node, width, y) {
@@ -428,8 +393,13 @@ class SceneBuilderWidget {
     const margin = 10;
     let cy = y + 4;
     const innerWidth = width - margin * 2;
+    const widgetHeight = this.computeSize(width)[1];
+    const bottom = y + widgetHeight - 8;
 
     ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, y, width, widgetHeight);
+    ctx.clip();
     ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
@@ -442,9 +412,8 @@ class SceneBuilderWidget {
     cy += 27;
     button(ctx, this, "import", "Import", width - 136, cy, 56, 20);
     button(ctx, this, "export", "Export", width - 76, cy, 56, 20);
-    const intent = String(getWidgetValue(node, "intent_prompt", "") || "").trim();
     ctx.globalAlpha = app.canvas.editor_alpha * 0.72;
-    ctx.fillText(intent ? `Intent: ${fitString(ctx, intent, innerWidth - 150)}` : "Intent: empty", margin, cy + 10);
+    ctx.fillText("Prompt and intent text are collected from connected inputs.", margin, cy + 10);
     ctx.globalAlpha = app.canvas.editor_alpha;
     cy += 29;
 
@@ -453,17 +422,18 @@ class SceneBuilderWidget {
     ctx.fillText(`Preview: ${fitString(ctx, preview || "no positive scene phrases selected", innerWidth)}`, margin, cy + 8);
     cy += 25;
 
-    cy = this.drawSelectedSection(ctx, payload, "positive_phrases", "Selected Positive", margin, cy, innerWidth, node);
-    cy = this.drawSelectedSection(ctx, payload, "negative_phrases", "Selected Negative", margin, cy + 2, innerWidth, node);
-    cy = this.drawLoraSection(ctx, payload, margin, cy + 4, innerWidth, node);
-    this.drawMemoryBank(ctx, memory, payload, margin, cy + 8, innerWidth, node);
+    cy = this.drawSelectedSection(ctx, payload, "positive_phrases", "Selected Positive", margin, cy, innerWidth, node, bottom);
+    cy = this.drawSelectedSection(ctx, payload, "negative_phrases", "Selected Negative", margin, cy + 2, innerWidth, node, bottom);
+    this.drawMemoryBank(ctx, memory, payload, margin, cy + 8, innerWidth, node, bottom);
     ctx.restore();
   }
 
-  drawSelectedSection(ctx, payload, field, title, x, y, width, node) {
+  drawSelectedSection(ctx, payload, field, title, x, y, width, node, bottom) {
     ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
     ctx.textAlign = "left";
     ctx.fillText(title, x, y + 8);
+    const buttonWidth = field === "positive_phrases" ? 82 : 88;
+    button(ctx, this, `${field}:add`, field === "positive_phrases" ? "+ Positive" : "+ Negative", x + width - buttonWidth, y, buttonWidth, 20);
     let cx = x;
     let cy = y + 18;
     const items = payload[field] || [];
@@ -473,12 +443,21 @@ class SceneBuilderWidget {
       ctx.globalAlpha = app.canvas.editor_alpha;
       return cy + 24;
     }
-    for (const item of items.slice(0, 18)) {
+    let rows = 0;
+    for (const item of items.slice(0, 40)) {
       const key = `${field}:remove:${item}`;
       const chipWidth = Math.min(width, Math.max(34, ctx.measureText(item).width + 18));
       if (cx + chipWidth > x + width) {
         cx = x;
         cy += 23;
+        rows += 1;
+      }
+      if (cy + 21 > bottom || rows >= 2) {
+        ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
+        ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+        ctx.fillText(`+${items.length - items.indexOf(item)} more`, cx, cy + 9);
+        ctx.globalAlpha = app.canvas.editor_alpha;
+        break;
       }
       const used = drawChip(ctx, this, key, item, cx, cy, true, width);
       cx += used + 5;
@@ -486,32 +465,10 @@ class SceneBuilderWidget {
     return cy + 25;
   }
 
-  drawLoraSection(ctx, payload, x, y, width, node) {
-    ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-    ctx.textAlign = "left";
-    ctx.fillText("Scene LoRAs", x, y + 8);
-    button(ctx, this, "lora:add", "+ Add LoRA", x + width - 90, y, 90, 20);
-    let cy = y + 23;
-    const rows = payload.loras.length ? payload.loras : [];
-    if (!rows.length) {
-      ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-      ctx.fillText("none", x, cy + 9);
-      ctx.globalAlpha = app.canvas.editor_alpha;
-      return cy + 24;
+  drawMemoryBank(ctx, memory, payload, x, y, width, node, bottom) {
+    if (y + 24 > bottom) {
+      return;
     }
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      button(ctx, this, `lora:toggle:${index}`, row.on === false ? "OFF" : "ON", x, cy, 38, 19);
-      button(ctx, this, `lora:name:${index}`, row.lora || "None", x + 43, cy, Math.max(80, width - 190), 19);
-      button(ctx, this, `lora:type:${index}`, row.type || "general", x + width - 142, cy, 64, 19);
-      button(ctx, this, `lora:strength:${index}`, Number(row.strength ?? 1).toFixed(2), x + width - 73, cy, 48, 19);
-      button(ctx, this, `lora:delete:${index}`, "x", x + width - 20, cy, 20, 19);
-      cy += 22;
-    }
-    return cy;
-  }
-
-  drawMemoryBank(ctx, memory, payload, x, y, width, node) {
     ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
     ctx.textAlign = "left";
     ctx.fillText("Universal Phrase Bank", x, y + 8);
@@ -531,6 +488,9 @@ class SceneBuilderWidget {
       if (!items.length) {
         continue;
       }
+      if (cy + 42 > bottom) {
+        break;
+      }
       ctx.fillStyle = "#58a6d6";
       ctx.fillText(group.toUpperCase(), x, cy + 8);
       cy += 17;
@@ -544,17 +504,17 @@ class SceneBuilderWidget {
           cx = x;
           cy += 23;
         }
+        if (cy + 21 > bottom) {
+          ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
+          ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
+          ctx.fillText("Open + Positive or + Negative to pick more phrases.", x, Math.min(bottom - 6, cy + 9));
+          ctx.globalAlpha = app.canvas.editor_alpha;
+          return;
+        }
         const used = drawChip(ctx, this, key, text, cx, cy, selected, width);
         cx += used + 5;
       }
       cy += 25;
-      if (cy > y + 185) {
-        ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
-        ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-        ctx.fillText("Refresh after queueing to see more collected phrases.", x, cy + 8);
-        ctx.globalAlpha = app.canvas.editor_alpha;
-        break;
-      }
     }
     if (!memory.length) {
       ctx.globalAlpha = app.canvas.editor_alpha * 0.55;
@@ -610,6 +570,21 @@ class SceneBuilderWidget {
       writePayload(node, payload);
       return;
     }
+    if (key === "positive_phrases:add" || key === "negative_phrases:add") {
+      const field = key === "positive_phrases:add" ? "positive_phrases" : "negative_phrases";
+      const preferredSource = field === "negative_phrases" ? "negative" : "positive";
+      const values = (sceneData?.memory || [])
+        .filter((item) => field === "negative_phrases" ? item.source === "negative" || item.category === "negative" : item.source !== "negative" && item.category !== "negative")
+        .map((item) => item.text || item.key)
+        .filter(Boolean);
+      searchablePicker(event, values.length ? values : (sceneData?.memory || []).map((item) => item.text || item.key).filter(Boolean), "", (value) => {
+        if (!payload[field].some((item) => item.toLowerCase() === String(value).toLowerCase())) {
+          payload[field].push(value);
+          writePayload(node, payload);
+        }
+      }, preferredSource === "negative" ? "Search negative phrases" : "Search positive phrases");
+      return;
+    }
     if (key.startsWith("negative_phrases:remove:")) {
       const text = key.slice("negative_phrases:remove:".length);
       payload.negative_phrases = payload.negative_phrases.filter((item) => item !== text);
@@ -628,54 +603,6 @@ class SceneBuilderWidget {
       }
       writePayload(node, payload);
       return;
-    }
-    if (key === "lora:add") {
-      void fetchLoras().then((values) => {
-        searchablePicker(event, values, "None", (value) => {
-          payload.loras.push(normalizeLoraRow({ lora: value }));
-          writePayload(node, payload);
-        }, "Search LoRA");
-      });
-      return;
-    }
-    if (key.startsWith("lora:")) {
-      const [, action, rawIndex] = key.split(":");
-      const index = Number(rawIndex);
-      const row = payload.loras[index];
-      if (!row) {
-        return;
-      }
-      if (action === "toggle") {
-        row.on = row.on === false;
-        writePayload(node, payload);
-      } else if (action === "delete") {
-        payload.loras.splice(index, 1);
-        writePayload(node, payload);
-      } else if (action === "name") {
-        void fetchLoras().then((values) => {
-          searchablePicker(event, values, row.lora, (value) => {
-            row.lora = value;
-            writePayload(node, payload);
-          }, "Search LoRA");
-        });
-      } else if (action === "type") {
-        new LiteGraph.ContextMenu(LORA_TYPES, {
-          event,
-          title: "LoRA Type",
-          callback: (value) => {
-            row.type = value;
-            writePayload(node, payload);
-          },
-        });
-      } else if (action === "strength") {
-        app.canvas.prompt("LoRA strength", row.strength, (value) => {
-          const parsed = Number(value);
-          if (Number.isFinite(parsed)) {
-            row.strength = parsed;
-            writePayload(node, payload);
-          }
-        }, event);
-      }
     }
   }
 }

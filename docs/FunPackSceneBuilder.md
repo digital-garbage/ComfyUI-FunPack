@@ -4,7 +4,7 @@
 
 ## Modes
 
-**Manual** outputs the current Scene Builder GUI selection: selected positive phrases, selected negative phrases, scene LoRAs, mode, per-block setting, sigmas, and refinement key.
+**Manual** outputs the current Scene Builder GUI selection: selected positive phrases, selected negative phrases, sigmas, refinement key, and the connected LoRA stack passed through unchanged.
 
 **Auto** scans `intent_prompt` for a saved scene name or alias. Exact matches are preferred, then a conservative word-match fallback is used. If nothing matches, the node falls back to Manual output.
 
@@ -18,17 +18,15 @@
 
 **output_mode**: `Manual` or `Auto`.
 
-**intent_prompt**: Text used for Auto scene detection. This can be the same intent prompt that feeds Refiner V2.
+**intent_prompt**: Connection-only text used for Auto scene detection. This can be the same intent prompt that feeds Refiner V2.
 
-**positive_prompt** and **negative_prompt**: Universal memory sources. They do not override scene output.
+**positive_prompt** and **negative_prompt**: Connection-only universal memory sources. They do not override scene output and do not appear as editable text fields on the node.
 
-**mode**: Stored model namespace, currently `ltx2` or `wan`.
-
-**per_block**: Stored LoRA loader per-block preference.
-
-**refinement_key** / **refinement_key_input**: Optional Refiner V2 key. When present, Scene Builder also tries to load matching stored positive conditioning.
+**refinement_key** / **refinement_key_input**: Optional key passed through with the scene.
 
 **sigmas**: Optional sigma schedule stored with saved scenes.
+
+**lora_stack**: Optional current LoRA stack. Scene Builder passes it through unchanged so Refiner can use the active LoRAs for suggestions.
 
 ## Outputs
 
@@ -40,18 +38,16 @@
 
 **sigmas**: Stored scene sigmas, current connected sigmas, or an empty sigma tensor.
 
-**positive_conditioning**: Best available conditioning from the scene refinement key, if any.
-
-**lora_stack**: A `FUNPACK_LORA_STACK` that can connect directly to `FunPack LoRA Loader`.
+**lora_stack**: The connected `FUNPACK_LORA_STACK`, passed through unchanged.
 
 **refinement_key**: The scene refinement key.
 
-**status**: Summary of selected mode, matched scene, phrase counts, LoRA count, and conditioning lookup.
+**status**: Summary of selected mode, matched scene, phrase counts, and pass-through LoRA stack count.
 
 ## Workflow
 
-1. Connect or type positive and negative prompts, then queue once to collect phrase memory.
+1. Connect positive and negative prompt text, then queue once to collect phrase memory.
 2. Select phrase chips from the universal phrase bank.
-3. Add scene LoRAs and set mode/per-block/refinement key as needed.
+3. Connect the current LoRA stack if Refiner should receive active LoRAs for suggestions.
 4. Enter a scene name and press **Save**.
 5. Switch to **Auto** and write a saved scene name or alias into `intent_prompt` to apply that preset automatically.

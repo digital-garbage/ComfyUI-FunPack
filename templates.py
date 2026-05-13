@@ -4,7 +4,6 @@ import os
 import random
 import re
 from datetime import datetime, timezone
-from hashlib import md5
 
 import folder_paths
 import torch
@@ -33,7 +32,6 @@ SCENE_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
 SCENE_DB_VERSION = 1
 WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
-SCENE_LORA_TYPES = {"general", "action", "style", "quality", "character"}
 SCENE_CATEGORIES = {
     "negative": {"bad", "blurry", "worst", "low", "noise", "deformed", "artifact", "ugly", "broken"},
     "action": {"walk", "walking", "run", "running", "turn", "turning", "dance", "dancing", "jump", "jumping", "move", "moving", "motion", "hold", "holding", "look", "looking", "smile", "smiling"},
@@ -280,22 +278,6 @@ def normalize_scene_key(value):
     return re.sub(r"\s+", " ", value).strip()
 
 
-def scene_lora_type(value):
-    value = str(value or "general").strip().lower()
-    if value == "concept":
-        value = "action"
-    return value if value in SCENE_LORA_TYPES else "general"
-
-
-def scene_lora_id(lora_name, lora_type):
-    return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
-
-
-def scene_prompt_key(prompt, mode):
-    del mode
-    return re.sub(r"\s+", " ", str(prompt or "").strip())
-
-
 def scene_token_words(text):
     return [
         token.lower()
@@ -407,34 +389,6 @@ def normalize_scene_phrase_list(value):
     return result
 
 
-def normalize_scene_loras(value):
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return []
-    if not isinstance(value, list):
-        return []
-    rows = []
-    for row in value:
-        if not isinstance(row, dict) or row.get("on", True) is False:
-            continue
-        name = str(row.get("lora") or row.get("name") or "None").strip()
-        if not name or name == "None":
-            continue
-        try:
-            strength = float(row.get("strength", row.get("base_model_weight", 1.0)))
-        except (TypeError, ValueError):
-            strength = 1.0
-        rows.append({
-            "on": True,
-            "lora": name,
-            "type": scene_lora_type(row.get("type", row.get("lora_type", "general"))),
-            "strength": strength,
-        })
-    return rows
-
-
 def parse_scene_payload(value):
     if isinstance(value, dict):
         payload = value
@@ -450,17 +404,15 @@ def parse_scene_payload(value):
     return {
         "positive_phrases": normalize_scene_phrase_list(payload.get("positive_phrases", [])),
         "negative_phrases": normalize_scene_phrase_list(payload.get("negative_phrases", [])),
-        "loras": normalize_scene_loras(payload.get("loras", [])),
     }
 
 
 def scene_payload_from_scene(scene):
     if not isinstance(scene, dict):
-        return {"positive_phrases": [], "negative_phrases": [], "loras": []}
+        return {"positive_phrases": [], "negative_phrases": []}
     return {
         "positive_phrases": normalize_scene_phrase_list(scene.get("positive_phrases", [])),
         "negative_phrases": normalize_scene_phrase_list(scene.get("negative_phrases", [])),
-        "loras": normalize_scene_loras(scene.get("loras", [])),
     }
 
 
@@ -532,7 +484,7 @@ def scene_field_summary(scene):
     if not isinstance(scene, dict):
         return "none"
     fields = []
-    for field in ("positive_phrases", "negative_phrases", "loras", "refinement_key", "sigmas"):
+    for field in ("positive_phrases", "negative_phrases", "refinement_key", "sigmas"):
         if scene.get(field):
             fields.append(field)
     return ", ".join(fields) if fields else "none"
@@ -905,20 +857,19 @@ class FunPackRefinementKeyLoader:
 
 class FunPackSceneBuilder:
     CATEGORY = "FunPack/Scene"
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "SIGMAS", "CONDITIONING", "FUNPACK_LORA_STACK", "STRING", "STRING")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "SIGMAS", "FUNPACK_LORA_STACK", "STRING", "STRING")
     RETURN_NAMES = (
         "positive_prompt",
         "negative_prompt",
         "scene_name",
         "sigmas",
-        "positive_conditioning",
         "lora_stack",
         "refinement_key",
         "status",
     )
     FUNCTION = "build_scene"
     OUTPUT_NODE = True
-    DESCRIPTION = "Builds named scene presets from manually selected universal prompt phrases and scene LoRAs."
+    DESCRIPTION = "Builds named scene presets from manually selected universal prompt phrases."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -929,15 +880,28 @@ class FunPackSceneBuilder:
                 "aliases": ("STRING", {"default": "", "multiline": False}),
                 "action": (["load", "save", "update", "delete"], {"default": "load"}),
                 "output_mode": (["Manual", "Auto"], {"default": "Manual"}),
-                "intent_prompt": ("STRING", {"default": "", "multiline": True}),
-                "positive_prompt": ("STRING", {"default": "", "multiline": True}),
-                "negative_prompt": ("STRING", {"default": "", "multiline": True}),
-                "mode": (["ltx2", "wan"], {"default": "ltx2"}),
-                "per_block": ("BOOLEAN", {"default": False}),
                 "refinement_key": ("STRING", {"default": "", "multiline": False}),
                 "scene_payload": ("STRING", {"default": "{}", "multiline": False}),
             },
             "optional": {
+                "intent_prompt": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "forceInput": True,
+                    "tooltip": "Connected intent text used for Auto scene detection.",
+                }),
+                "positive_prompt": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "forceInput": True,
+                    "tooltip": "Connected positive prompt used only to collect universal scene phrase memory.",
+                }),
+                "negative_prompt": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "forceInput": True,
+                    "tooltip": "Connected negative prompt used only to collect universal negative phrase memory.",
+                }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -945,6 +909,9 @@ class FunPackSceneBuilder:
                     "tooltip": "Optional linked refinement key, for example from FunPack Refinement Key Loader.",
                 }),
                 "sigmas": ("SIGMAS",),
+                "lora_stack": ("FUNPACK_LORA_STACK", {
+                    "tooltip": "Optional current LoRA stack. Scene Builder passes it through unchanged so Refiner can use it for suggestions.",
+                }),
             },
         }
 
@@ -959,18 +926,15 @@ class FunPackSceneBuilder:
     def _empty_sigmas(self):
         return torch.FloatTensor([])
 
-    def _manual_scene(self, selected_name, scene_name, aliases, output_mode, mode, per_block, refinement_key, payload, sigmas=None):
+    def _manual_scene(self, selected_name, scene_name, aliases, output_mode, refinement_key, payload, sigmas=None):
         target_name = normalize_scene_name(scene_name) or selected_name
         scene = {
             "name": target_name,
             "aliases": aliases_from_text(aliases),
             "output_mode": output_mode if output_mode in {"Manual", "Auto"} else "Manual",
-            "mode": mode if mode in {"ltx2", "wan"} else "ltx2",
-            "per_block": bool(per_block),
             "refinement_key": normalize_refinement_key(refinement_key),
             "positive_phrases": payload["positive_phrases"],
             "negative_phrases": payload["negative_phrases"],
-            "loras": payload["loras"],
         }
         if isinstance(sigmas, torch.Tensor) and sigmas.numel() > 0:
             scene["sigmas"] = tensor_to_serializable(sigmas.detach().cpu())
@@ -986,56 +950,23 @@ class FunPackSceneBuilder:
             return fallback.detach().clone().cpu()
         return self._empty_sigmas()
 
-    def _scene_lora_stack(self, scene, positive_prompt):
-        mode = (scene.get("mode") or "ltx2").lower()
-        refinement_key = normalize_refinement_key(scene.get("refinement_key", ""))
-        loras = []
-        for index, row in enumerate(normalize_scene_loras(scene.get("loras", []))):
-            base_weight = float(row.get("strength", 1.0))
-            lora_type = scene_lora_type(row.get("type", "general"))
-            name = row["lora"]
-            loras.append({
-                "slot": index,
-                "name": name,
-                "type": lora_type,
-                "id": scene_lora_id(name, lora_type),
-                "base_model_weight": base_weight,
-                "model_weight": base_weight,
-                "source": "scene",
-            })
-        return {
-            "version": 2,
-            "refinement_key": refinement_key,
-            "mode": mode,
-            "per_block": bool(scene.get("per_block", False)),
-            "positive_prompt": positive_prompt,
-            "prompt_key": scene_prompt_key(positive_prompt, mode),
-            "loras": loras,
-        }
-
-    def _outputs_for_scene(self, name, scene, sigmas=None, source="Manual"):
+    def _outputs_for_scene(self, name, scene, sigmas=None, lora_stack=None, source="Manual"):
         positive = scene_text_from_phrases(scene.get("positive_phrases", []))
         negative = scene_text_from_phrases(scene.get("negative_phrases", []))
         refinement_key = normalize_refinement_key(scene.get("refinement_key", ""))
-        mode = scene.get("mode", "ltx2")
         output_sigmas = self._scene_sigmas(scene, sigmas)
-        conditioning = None
-        conditioning_status = "No refinement key stored; conditioning not loaded."
-        if refinement_key:
-            conditioning, conditioning_status = conditioning_from_refiner(refinement_key, mode, positive)
-        lora_stack = self._scene_lora_stack(scene, positive)
+        lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
         status = (
             f"Scene Builder {source}: '{name or scene.get('name', '') or 'unsaved'}'. "
             f"Stored fields: {scene_field_summary(scene)}.\n"
             f"Positive phrases: {len(scene.get('positive_phrases', []) or [])}. "
             f"Negative phrases: {len(scene.get('negative_phrases', []) or [])}. "
-            f"LoRAs: {len(lora_stack.get('loras', []))}.\n"
-            f"{conditioning_status}"
+            f"LoRA stack pass-through: {lora_count} LoRA(s)."
         )
-        return (positive, negative, name or scene.get("name", ""), output_sigmas, conditioning, lora_stack, refinement_key, status)
+        return (positive, negative, name or scene.get("name", ""), output_sigmas, lora_stack, refinement_key, status)
 
     def _empty_outputs(self, status):
-        return ("", "", "", self._empty_sigmas(), None, None, "", status)
+        return ("", "", "", self._empty_sigmas(), None, "", status)
 
     def build_scene(
         self,
@@ -1044,16 +975,17 @@ class FunPackSceneBuilder:
         aliases,
         action,
         output_mode,
-        intent_prompt,
-        positive_prompt,
-        negative_prompt,
-        mode,
-        per_block,
         refinement_key,
         scene_payload,
+        intent_prompt="",
+        positive_prompt="",
+        negative_prompt="",
         refinement_key_input="",
         sigmas=None,
+        lora_stack=None,
+        mode="ltx2",
     ):
+        del mode
         linked_key = normalize_refinement_key(refinement_key_input)
         if linked_key:
             refinement_key = linked_key
@@ -1070,8 +1002,6 @@ class FunPackSceneBuilder:
             scene_name,
             aliases,
             output_mode,
-            mode,
-            per_block,
             refinement_key,
             payload,
             sigmas,
@@ -1099,7 +1029,7 @@ class FunPackSceneBuilder:
             manual["updated_at"] = now_iso()
             scenes[target_name] = manual
             save_scene_db(data)
-            return self._outputs_for_scene(target_name, manual, sigmas, "Manual saved")
+            return self._outputs_for_scene(target_name, manual, sigmas, lora_stack, "Manual saved")
 
         if action == "update":
             target_name = selected_name or normalize_scene_name(scene_name)
@@ -1113,15 +1043,15 @@ class FunPackSceneBuilder:
             manual["updated_at"] = now_iso()
             scenes[target_name] = manual
             save_scene_db(data)
-            return self._outputs_for_scene(target_name, manual, sigmas, "Manual updated")
+            return self._outputs_for_scene(target_name, manual, sigmas, lora_stack, "Manual updated")
 
         if output_mode == "Auto":
             matched_name, matched_scene, match_type = find_scene_for_intent(intent_prompt, scenes)
             if matched_name and isinstance(matched_scene, dict):
                 if memory_changed:
                     save_scene_db(data)
-                return self._outputs_for_scene(matched_name, matched_scene, sigmas, f"Auto {match_type}")
+                return self._outputs_for_scene(matched_name, matched_scene, sigmas, lora_stack, f"Auto {match_type}")
 
         if memory_changed:
             save_scene_db(data)
-        return self._outputs_for_scene(manual.get("name", ""), manual, sigmas, "Manual")
+        return self._outputs_for_scene(manual.get("name", ""), manual, sigmas, lora_stack, "Manual")

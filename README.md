@@ -4,7 +4,7 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
 
 ## Updates in 2.3.4
 
-Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It stores named scenes from manually selected universal prompt phrases, outputs scene LoRAs as a FunPack LoRA stack, and can auto-apply a scene when its name or alias appears in an intent prompt.
+Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It stores named scenes from manually selected universal prompt phrases, takes prompt/intent text through connection-only inputs, passes the current LoRA stack through unchanged, and can auto-apply a scene when its name or alias appears in an intent prompt.
 
 Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
 

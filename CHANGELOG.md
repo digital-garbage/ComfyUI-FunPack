@@ -4,7 +4,9 @@
 
 ### Added
 
-Added `FunPack Scene Builder`, a scene preset node that replaces `FunPack Template Manager`. It collects universal prompt phrase memory, lets users manually assign positive/negative scene phrases and LoRAs, and can auto-apply a saved scene from an intent prompt match.
+Added `FunPack Scene Builder`, a scene preset node that replaces `FunPack Template Manager`. It collects universal prompt phrase memory, lets users manually assign positive/negative scene phrases, passes the current LoRA stack through unchanged, and can auto-apply a saved scene from an intent prompt match.
+
+Simplified `FunPack Scene Builder` so prompt and intent text are connection-only inputs, removed model-mode and per-block controls, and outputs only scene prompt data plus the pass-through FunPack LoRA stack instead of conditioning.
 
 Added searchable LoRA picking to `FunPack Apply LoRA Weights`. The compact row UI remains the primary workflow, and saved workflows still serialize through the existing `lora_list` JSON value.
 
