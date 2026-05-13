@@ -31,6 +31,7 @@ REFINEMENT_KEY_NONE = "-None-"
 SCENE_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
 SCENE_DB_VERSION = 1
+SCENE_STATE_FIELD = "scene_builder"
 WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
 SCENE_CATEGORIES = {
     "negative": {"bad", "blurry", "worst", "low", "noise", "deformed", "artifact", "ugly", "broken"},
@@ -230,18 +231,9 @@ def empty_scene_db():
     }
 
 
-def load_scene_db():
-    path = scene_store_path()
-    if not os.path.exists(path):
-        return empty_scene_db()
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except (json.JSONDecodeError, OSError, ValueError):
-        return empty_scene_db()
-
+def normalize_scene_db(data):
     if not isinstance(data, dict):
-        return empty_scene_db()
+        data = empty_scene_db()
     data.setdefault("version", SCENE_DB_VERSION)
     data.setdefault("source", "ComfyUI-FunPack")
     if not isinstance(data.get("universal_memory"), dict):
@@ -251,14 +243,43 @@ def load_scene_db():
     return data
 
 
-def save_scene_db(data):
+def load_scene_db(refinement_key=""):
+    key = normalize_refinement_key(refinement_key)
+    if key:
+        state, _, _ = load_refinement_key_state(key, create=False)
+        if isinstance(state, dict):
+            return normalize_scene_db(state.get(SCENE_STATE_FIELD, {}))
+        return empty_scene_db()
+
+    path = scene_store_path()
+    if not os.path.exists(path):
+        return empty_scene_db()
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return empty_scene_db()
+
+    return normalize_scene_db(data)
+
+
+def save_scene_db(data, refinement_key=""):
+    key = normalize_refinement_key(refinement_key)
+    data = normalize_scene_db(data)
+    if key:
+        state, _, _ = load_refinement_key_state(key, create=True)
+        if isinstance(state, dict):
+            state[SCENE_STATE_FIELD] = data
+            save_refinement_key_state(state, key)
+        return
+
     os.makedirs(template_store_dir(), exist_ok=True)
     with open(scene_store_path(), "w", encoding="utf-8") as file:
         json.dump(data, file, indent=2, sort_keys=True)
 
 
-def scene_names():
-    data = load_scene_db()
+def scene_names(refinement_key=""):
+    data = load_scene_db(refinement_key)
     names = sorted(
         name for name in data.get("scenes", {}).keys()
         if isinstance(name, str) and name.strip()
@@ -724,12 +745,14 @@ async def funpack_templates_import(request):
 
 
 @PromptServer.instance.routes.get("/funpack/scenes")
-async def funpack_scenes(_):
-    data = load_scene_db()
+async def funpack_scenes(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    data = load_scene_db(key)
     return web.json_response(
         {
-            "scenes": scene_names(),
-            "path": scene_store_path(),
+            "scenes": scene_names(key),
+            "path": refinement_key_path(key) if key else scene_store_path(),
+            "refinement_key": key,
             "data": data,
             "memory": scene_memory_items(data),
         },
@@ -738,24 +761,26 @@ async def funpack_scenes(_):
 
 
 @PromptServer.instance.routes.get("/funpack/scenes/export")
-async def funpack_scenes_export(_):
-    data = load_scene_db()
+async def funpack_scenes_export(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    data = load_scene_db(key)
     return web.json_response(
         data,
         headers={
             "Cache-Control": "no-store, max-age=0",
-            "Content-Disposition": "attachment; filename=funpack_scenes.json",
+            "Content-Disposition": f"attachment; filename=funpack_scenes_{key or 'global'}.json",
         },
     )
 
 
 @PromptServer.instance.routes.post("/funpack/scenes/import")
 async def funpack_scenes_import(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
     incoming = await request.json()
     if not isinstance(incoming, dict):
         return web.json_response({"error": "Imported file is not a scene database."}, status=400)
 
-    data = load_scene_db()
+    data = load_scene_db(key)
     imported_memory = incoming.get("universal_memory", {})
     if isinstance(imported_memory, dict):
         memory = data.setdefault("universal_memory", {})
@@ -778,8 +803,8 @@ async def funpack_scenes_import(request):
         item["updated_at"] = now_iso()
         scenes[clean_name] = item
         imported += 1
-    save_scene_db(data)
-    return web.json_response({"imported": imported, "scenes": scene_names()})
+    save_scene_db(data, key)
+    return web.json_response({"imported": imported, "scenes": scene_names(key), "refinement_key": key})
 
 
 @PromptServer.instance.routes.get("/funpack/refinement_keys")
@@ -879,7 +904,7 @@ class FunPackSceneBuilder:
                 "scene_name": ("STRING", {"default": "", "multiline": False}),
                 "aliases": ("STRING", {"default": "", "multiline": False}),
                 "action": (["load", "save", "update", "delete"], {"default": "load"}),
-                "output_mode": (["Manual", "Auto"], {"default": "Manual"}),
+                "output_mode": (["Manual", "Auto", "Learning"], {"default": "Manual"}),
                 "refinement_key": ("STRING", {"default": "", "multiline": False}),
                 "scene_payload": ("STRING", {"default": "{}", "multiline": False}),
             },
@@ -931,7 +956,7 @@ class FunPackSceneBuilder:
         scene = {
             "name": target_name,
             "aliases": aliases_from_text(aliases),
-            "output_mode": output_mode if output_mode in {"Manual", "Auto"} else "Manual",
+            "output_mode": output_mode if output_mode in {"Manual", "Auto", "Learning"} else "Manual",
             "refinement_key": normalize_refinement_key(refinement_key),
             "positive_phrases": payload["positive_phrases"],
             "negative_phrases": payload["negative_phrases"],
@@ -965,6 +990,19 @@ class FunPackSceneBuilder:
         )
         return (positive, negative, name or scene.get("name", ""), output_sigmas, lora_stack, refinement_key, status)
 
+    def _learning_outputs(self, positive_prompt, negative_prompt, refinement_key, sigmas=None, lora_stack=None):
+        positive = str(positive_prompt or "")
+        negative = str(negative_prompt or "")
+        output_sigmas = sigmas.detach().clone().cpu() if isinstance(sigmas, torch.Tensor) else self._empty_sigmas()
+        lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
+        status = (
+            "Scene Builder Learning: pass-through active. "
+            f"Collected positive source: {'yes' if positive else 'no'}. "
+            f"Collected negative source: {'yes' if negative else 'no'}. "
+            f"LoRA stack pass-through: {lora_count} LoRA(s)."
+        )
+        return (positive, negative, "", output_sigmas, lora_stack, normalize_refinement_key(refinement_key), status)
+
     def _empty_outputs(self, status):
         return ("", "", "", self._empty_sigmas(), None, "", status)
 
@@ -990,11 +1028,11 @@ class FunPackSceneBuilder:
         if linked_key:
             refinement_key = linked_key
         selected_name = normalize_scene_name(scene)
-        output_mode = output_mode if output_mode in {"Manual", "Auto"} else "Manual"
+        output_mode = output_mode if output_mode in {"Manual", "Auto", "Learning"} else "Manual"
         action = action if action in {"load", "save", "update", "delete"} else "load"
         payload = parse_scene_payload(scene_payload)
 
-        data = load_scene_db()
+        data = load_scene_db(refinement_key)
         memory_changed = remember_scene_phrases(data, positive_prompt, negative_prompt)
         scenes = data.setdefault("scenes", {})
         manual = self._manual_scene(
@@ -1010,10 +1048,10 @@ class FunPackSceneBuilder:
         if action == "delete":
             if not selected_name or selected_name not in scenes:
                 if memory_changed:
-                    save_scene_db(data)
+                    save_scene_db(data, refinement_key)
                 return self._empty_outputs("Delete skipped: no selected scene.")
             deleted = scenes.pop(selected_name)
-            save_scene_db(data)
+            save_scene_db(data, refinement_key)
             return self._empty_outputs(
                 f"Deleted scene '{selected_name}'. Removed fields: {scene_field_summary(deleted)}."
             )
@@ -1022,36 +1060,41 @@ class FunPackSceneBuilder:
             target_name = normalize_scene_name(scene_name) or selected_name
             if not target_name:
                 if memory_changed:
-                    save_scene_db(data)
+                    save_scene_db(data, refinement_key)
                 return self._empty_outputs("Save skipped: enter a scene name.")
             manual["name"] = target_name
             manual["created_at"] = scenes.get(target_name, {}).get("created_at", now_iso())
             manual["updated_at"] = now_iso()
             scenes[target_name] = manual
-            save_scene_db(data)
+            save_scene_db(data, refinement_key)
             return self._outputs_for_scene(target_name, manual, sigmas, lora_stack, "Manual saved")
 
         if action == "update":
             target_name = selected_name or normalize_scene_name(scene_name)
             if not target_name:
                 if memory_changed:
-                    save_scene_db(data)
+                    save_scene_db(data, refinement_key)
                 return self._empty_outputs("Update skipped: select a scene or enter a scene name.")
             previous = scenes.get(target_name, {})
             manual["name"] = target_name
             manual["created_at"] = previous.get("created_at", now_iso()) if isinstance(previous, dict) else now_iso()
             manual["updated_at"] = now_iso()
             scenes[target_name] = manual
-            save_scene_db(data)
+            save_scene_db(data, refinement_key)
             return self._outputs_for_scene(target_name, manual, sigmas, lora_stack, "Manual updated")
+
+        if output_mode == "Learning":
+            if memory_changed:
+                save_scene_db(data, refinement_key)
+            return self._learning_outputs(positive_prompt, negative_prompt, refinement_key, sigmas, lora_stack)
 
         if output_mode == "Auto":
             matched_name, matched_scene, match_type = find_scene_for_intent(intent_prompt, scenes)
             if matched_name and isinstance(matched_scene, dict):
                 if memory_changed:
-                    save_scene_db(data)
+                    save_scene_db(data, refinement_key)
                 return self._outputs_for_scene(matched_name, matched_scene, sigmas, lora_stack, f"Auto {match_type}")
 
         if memory_changed:
-            save_scene_db(data)
+            save_scene_db(data, refinement_key)
         return self._outputs_for_scene(manual.get("name", ""), manual, sigmas, lora_stack, "Manual")

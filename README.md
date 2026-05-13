@@ -6,6 +6,8 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
 
 Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It stores named scenes from manually selected universal prompt phrases, takes prompt/intent text through connection-only inputs, passes the current LoRA stack through unchanged, and can auto-apply a scene when its name or alias appears in an intent prompt.
 
+Added Scene Builder `Learning` mode for changing-prompt generations: it collects phrase memory inside the selected refinement key while passing the connected prompt data through unchanged, and Refiner resets preserve that Scene Builder memory.
+
 Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
 
 Added advisory image/CLIP Vision context and repaired negative conditioning to `FunPack Video Refiner V2`. Vision inputs are stored as metadata and diagnostics only; they are not blended into positive conditioning.

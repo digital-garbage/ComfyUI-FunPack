@@ -5775,7 +5775,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_load_state(self, refinement_key, reset_session=False):
         path = self._v2_state_path(refinement_key)
         if reset_session or not os.path.exists(path):
-            return self._v2_empty_state(refinement_key), "fresh"
+            preserved_scene_builder = None
+            if reset_session and os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as file:
+                        previous = json.load(file)
+                    if isinstance(previous, dict) and isinstance(previous.get("scene_builder"), dict):
+                        preserved_scene_builder = previous["scene_builder"]
+                except (json.JSONDecodeError, OSError, ValueError):
+                    preserved_scene_builder = None
+            state = self._v2_empty_state(refinement_key)
+            if preserved_scene_builder is not None:
+                state["scene_builder"] = preserved_scene_builder
+            return state, "fresh"
         try:
             with open(path, "r", encoding="utf-8") as file:
                 data = json.load(file)

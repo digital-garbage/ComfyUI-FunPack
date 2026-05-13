@@ -104,9 +104,17 @@ function updateSceneCombo(node) {
   }
 }
 
-async function fetchScenes() {
+function currentRefinementKey(node) {
+  return String(getWidgetValue(node, "refinement_key", "") || "").trim();
+}
+
+async function fetchScenes(refinementKey = "") {
   try {
-    const response = await api.fetchApi(`/funpack/scenes?cache_bust=${Date.now()}`, { cache: "no-store" });
+    const params = new URLSearchParams({ cache_bust: String(Date.now()) });
+    if (refinementKey) {
+      params.set("key", refinementKey);
+    }
+    const response = await api.fetchApi(`/funpack/scenes?${params.toString()}`, { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -118,12 +126,12 @@ async function fetchScenes() {
 }
 
 async function refreshTracked() {
-  await fetchScenes();
   for (const node of [...trackedNodes]) {
     if (!node?.graph) {
       trackedNodes.delete(node);
       continue;
     }
+    await fetchScenes(currentRefinementKey(node));
     updateSceneCombo(node);
     node.setDirtyCanvas(true, true);
   }
@@ -157,8 +165,13 @@ async function runSceneAction(node, action) {
   }
 }
 
-async function exportScenes() {
-  const response = await api.fetchApi(`/funpack/scenes/export?cache_bust=${Date.now()}`, { cache: "no-store" });
+async function exportScenes(node) {
+  const params = new URLSearchParams({ cache_bust: String(Date.now()) });
+  const key = currentRefinementKey(node);
+  if (key) {
+    params.set("key", key);
+  }
+  const response = await api.fetchApi(`/funpack/scenes/export?${params.toString()}`, { cache: "no-store" });
   if (!response.ok) {
     throw new Error(`Export failed with HTTP ${response.status}`);
   }
@@ -173,7 +186,7 @@ async function exportScenes() {
   URL.revokeObjectURL(url);
 }
 
-function importScenes() {
+function importScenes(node) {
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".json,application/json";
@@ -184,7 +197,12 @@ function importScenes() {
     }
     try {
       const data = JSON.parse(await file.text());
-      const response = await api.fetchApi("/funpack/scenes/import", {
+      const params = new URLSearchParams();
+      const key = currentRefinementKey(node);
+      if (key) {
+        params.set("key", key);
+      }
+      const response = await api.fetchApi(`/funpack/scenes/import${params.toString() ? `?${params.toString()}` : ""}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -557,11 +575,11 @@ class SceneBuilderWidget {
       return;
     }
     if (key === "import") {
-      importScenes();
+      importScenes(node);
       return;
     }
     if (key === "export") {
-      void exportScenes();
+      void exportScenes(node);
       return;
     }
     if (key.startsWith("positive_phrases:remove:")) {
@@ -618,7 +636,10 @@ function setupSceneBuilderNode(node) {
   removeSceneBuilderWidget(node);
   node.addCustomWidget(new SceneBuilderWidget(node));
   updateSceneCombo(node);
-  void refreshTracked();
+  void fetchScenes(currentRefinementKey(node)).then(() => {
+    updateSceneCombo(node);
+    node.setDirtyCanvas(true, true);
+  });
 }
 
 function wrapRefreshFunction(functionName) {

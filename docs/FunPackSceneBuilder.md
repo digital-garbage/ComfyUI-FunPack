@@ -1,12 +1,14 @@
 # FunPack Scene Builder
 
-`FunPack Scene Builder` stores named scene presets from phrases the user manually selects. Connected positive and negative prompts are memory sources only: every queue run collects their phrases into universal memory, but the node outputs only the selected scene phrases or a saved scene preset.
+`FunPack Scene Builder` stores named scene presets inside the selected refinement key, separate from Refiner's conditioning-delta learning. Connected positive and negative prompts are memory sources only: every queue run collects their phrases into universal memory, but the node outputs only the selected scene phrases, a saved scene preset, or pass-through text in Learning mode.
 
 ## Modes
 
 **Manual** outputs the current Scene Builder GUI selection: selected positive phrases, selected negative phrases, sigmas, refinement key, and the connected LoRA stack passed through unchanged.
 
 **Auto** scans `intent_prompt` for a saved scene name or alias. Exact matches are preferred, then a conservative word-match fallback is used. If nothing matches, the node falls back to Manual output.
+
+**Learning** saves connected positive and negative prompt phrases into Scene Builder universal memory, then passes the connected positive prompt, negative prompt, sigmas, refinement key, and LoRA stack through unchanged.
 
 ## Inputs
 
@@ -16,17 +18,19 @@
 
 **aliases**: Comma-separated trigger names for Auto mode.
 
-**output_mode**: `Manual` or `Auto`.
+**output_mode**: `Manual`, `Auto`, or `Learning`.
 
 **intent_prompt**: Connection-only text used for Auto scene detection. This can be the same intent prompt that feeds Refiner V2.
 
 **positive_prompt** and **negative_prompt**: Connection-only universal memory sources. They do not override scene output and do not appear as editable text fields on the node.
 
-**refinement_key** / **refinement_key_input**: Optional key passed through with the scene.
+**refinement_key** / **refinement_key_input**: Key that owns this Scene Builder memory and saved scenes. The value is also passed through with the scene.
 
 **sigmas**: Optional sigma schedule stored with saved scenes.
 
 **lora_stack**: Optional current LoRA stack. Scene Builder passes it through unchanged so Refiner can use the active LoRAs for suggestions.
+
+Scene Builder memory is stored in the selected refinement key under its own `scene_builder` section. Refiner reset clears conditioning-delta learning and prompt histories, but preserves Scene Builder universal memory and saved scenes.
 
 ## Outputs
 
@@ -51,3 +55,4 @@
 3. Connect the current LoRA stack if Refiner should receive active LoRAs for suggestions.
 4. Enter a scene name and press **Save**.
 5. Switch to **Auto** and write a saved scene name or alias into `intent_prompt` to apply that preset automatically.
+6. Use **Learning** when generating changing prompts and you want Scene Builder to collect memory while leaving the generation prompt untouched.
