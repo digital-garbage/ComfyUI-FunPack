@@ -19,7 +19,7 @@ try:
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
     from .context_transition import FunPackContextTransitionWindows
-    from .templates import FunPackRefinementKeyLoader, FunPackTemplateManager
+    from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 except ImportError:
     from conditioning import (
         FunPackLorebookEnhancer,
@@ -38,7 +38,7 @@ except ImportError:
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
     from context_transition import FunPackContextTransitionWindows
-    from templates import FunPackRefinementKeyLoader, FunPackTemplateManager
+    from templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 
     NODE_CLASS_MAPPINGS = {
         "FunPackPromptCombiner": FunPackPromptCombiner,
@@ -56,7 +56,7 @@ except ImportError:
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
         "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
-        "FunPackTemplateManager": FunPackTemplateManager,
+        "FunPackSceneBuilder": FunPackSceneBuilder,
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
@@ -75,7 +75,7 @@ except ImportError:
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
         "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
-        "FunPackTemplateManager": "FunPack Template Manager",
+        "FunPackSceneBuilder": "FunPack Scene Builder",
     }
 
 __all__ = [
@@ -96,6 +96,6 @@ __all__ = [
     "FunPackApplyLoraWeights",
     "FunPackLoraLoader",
     "FunPackRefinementKeyLoader",
-    "FunPackTemplateManager",
+    "FunPackSceneBuilder",
     "sample_funpack_hybrid_euler_2s",
 ]

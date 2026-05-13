@@ -18,7 +18,7 @@ if __package__:
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler
     from .context_transition import FunPackContextTransitionWindows
-    from .templates import FunPackRefinementKeyLoader, FunPackTemplateManager
+    from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (
@@ -56,10 +56,10 @@ else:
     except Exception:
         FunPackContextTransitionWindows = None
     try:
-        from templates import FunPackRefinementKeyLoader, FunPackTemplateManager
+        from templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
     except Exception:
         FunPackRefinementKeyLoader = None
-        FunPackTemplateManager = None
+        FunPackSceneBuilder = None
 
 WEB_DIRECTORY = "./web"
 
@@ -79,7 +79,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
-    "FunPackTemplateManager": FunPackTemplateManager,
+    "FunPackSceneBuilder": FunPackSceneBuilder,
 }
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
 
@@ -99,7 +99,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
-    "FunPackTemplateManager": "FunPack Template Manager",
+    "FunPackSceneBuilder": "FunPack Scene Builder",
 }
 
 __all__ = [

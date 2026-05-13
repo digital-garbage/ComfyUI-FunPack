@@ -4,6 +4,8 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
 
 ## Updates in 2.3.4
 
+Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It stores named scenes from manually selected universal prompt phrases, outputs scene LoRAs as a FunPack LoRA stack, and can auto-apply a scene when its name or alias appears in an intent prompt.
+
 Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
 
 Added advisory image/CLIP Vision context and repaired negative conditioning to `FunPack Video Refiner V2`. Vision inputs are stored as metadata and diagnostics only; they are not blended into positive conditioning.
@@ -106,6 +108,7 @@ Start with:
 - [`docs/FunPackVideoRefinerV2.md`](docs/FunPackVideoRefinerV2.md) for `FunPack Video Refiner V2`
 - [`docs/FunPackVideoRefinerV2QuickGuide.md`](docs/FunPackVideoRefinerV2QuickGuide.md) for a short Discord-friendly Refiner V2 guide
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
+- [`docs/FunPackSceneBuilder.md`](docs/FunPackSceneBuilder.md) for scene preset workflows
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
 

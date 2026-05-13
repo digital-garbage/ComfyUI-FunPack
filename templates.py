@@ -4,6 +4,7 @@ import os
 import random
 import re
 from datetime import datetime, timezone
+from hashlib import md5
 
 import folder_paths
 import torch
@@ -28,8 +29,22 @@ except ImportError:
 
 TEMPLATE_NONE = "-None-"
 REFINEMENT_KEY_NONE = "-None-"
+SCENE_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
+SCENE_DB_VERSION = 1
 WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
+SCENE_LORA_TYPES = {"general", "action", "style", "quality", "character"}
+SCENE_CATEGORIES = {
+    "negative": {"bad", "blurry", "worst", "low", "noise", "deformed", "artifact", "ugly", "broken"},
+    "action": {"walk", "walking", "run", "running", "turn", "turning", "dance", "dancing", "jump", "jumping", "move", "moving", "motion", "hold", "holding", "look", "looking", "smile", "smiling"},
+    "camera": {"camera", "shot", "closeup", "close-up", "wide", "angle", "zoom", "pan", "dolly", "tracking", "handheld", "focus", "framing", "lens", "viewpoint"},
+    "subject": {"woman", "man", "girl", "boy", "person", "character", "robot", "creature", "dragon", "animal", "vehicle", "object", "monster"},
+    "appearance": {"hair", "eyes", "face", "skin", "dress", "jacket", "armor", "outfit", "clothing", "pose", "expression", "body", "wearing", "shirt", "coat", "robe", "boots", "hat", "mask"},
+    "environment": {"forest", "city", "street", "room", "beach", "mountain", "temple", "sunset", "night", "rain", "snow", "sky", "background", "setting", "landscape", "interior", "exterior"},
+    "style": {"anime", "cinematic", "photorealistic", "painterly", "illustration", "stylized", "realistic", "film", "noir", "dramatic", "soft", "lighting", "moody", "neon", "gothic"},
+    "quality": {"masterpiece", "best", "quality", "detailed", "sharp", "highres", "high-res", "ultra", "perfect", "clean", "realism", "smooth", "crisp", "polished", "4k", "8k"},
+    "details": {"reflection", "reflections", "texture", "textures", "shadow", "shadows", "smoke", "dust", "particles", "prop", "props", "fabric", "glass", "sparkles", "pattern", "grain"},
+}
 
 
 def template_store_dir():
@@ -45,6 +60,10 @@ def template_store_dir():
 
 def template_store_path():
     return os.path.join(template_store_dir(), "templates.json")
+
+
+def scene_store_path():
+    return os.path.join(template_store_dir(), "scenes.json")
 
 
 def refinement_store_dir():
@@ -202,6 +221,321 @@ def template_names():
         if isinstance(name, str) and name.strip()
     )
     return [TEMPLATE_NONE] + names
+
+
+def empty_scene_db():
+    return {
+        "version": SCENE_DB_VERSION,
+        "source": "ComfyUI-FunPack",
+        "universal_memory": {},
+        "scenes": {},
+    }
+
+
+def load_scene_db():
+    path = scene_store_path()
+    if not os.path.exists(path):
+        return empty_scene_db()
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return empty_scene_db()
+
+    if not isinstance(data, dict):
+        return empty_scene_db()
+    data.setdefault("version", SCENE_DB_VERSION)
+    data.setdefault("source", "ComfyUI-FunPack")
+    if not isinstance(data.get("universal_memory"), dict):
+        data["universal_memory"] = {}
+    if not isinstance(data.get("scenes"), dict):
+        data["scenes"] = {}
+    return data
+
+
+def save_scene_db(data):
+    os.makedirs(template_store_dir(), exist_ok=True)
+    with open(scene_store_path(), "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+
+
+def scene_names():
+    data = load_scene_db()
+    names = sorted(
+        name for name in data.get("scenes", {}).keys()
+        if isinstance(name, str) and name.strip()
+    )
+    return [SCENE_NONE] + names
+
+
+def normalize_scene_name(value):
+    value = str(value or "").strip()
+    if not value or value == SCENE_NONE:
+        return ""
+    return value
+
+
+def normalize_scene_key(value):
+    value = re.sub(r"[^\w'’]+", " ", str(value or "").strip().lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def scene_lora_type(value):
+    value = str(value or "general").strip().lower()
+    if value == "concept":
+        value = "action"
+    return value if value in SCENE_LORA_TYPES else "general"
+
+
+def scene_lora_id(lora_name, lora_type):
+    return md5(f"{lora_name}::{lora_type}".encode("utf-8")).hexdigest()[:16]
+
+
+def scene_prompt_key(prompt, mode):
+    del mode
+    return re.sub(r"\s+", " ", str(prompt or "").strip())
+
+
+def scene_token_words(text):
+    return [
+        token.lower()
+        for token in re.findall(r"[\w'’.-]+", str(text or ""), flags=re.UNICODE)
+        if any(char.isalpha() for char in token) and len(token.strip("._-")) >= 2
+    ]
+
+
+def categorize_scene_phrase(text, source="positive"):
+    if source == "negative":
+        return "negative"
+    words = set(scene_token_words(text))
+    best = ("details", 0)
+    for category, keywords in SCENE_CATEGORIES.items():
+        if category == "negative":
+            continue
+        score = len(words & keywords)
+        if score > best[1]:
+            best = (category, score)
+    return best[0]
+
+
+def extract_scene_phrases(text, source="positive"):
+    phrases = []
+    seen = set()
+    for raw in re.split(r"[,;\n]+", str(text or "")):
+        clean = re.sub(r"\s+", " ", raw).strip(" ,;:.").strip()
+        if len(clean) < 2:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        words = scene_token_words(clean)
+        if not words:
+            continue
+        seen.add(key)
+        phrases.append({
+            "text": clean,
+            "key": key,
+            "source": source,
+            "category": categorize_scene_phrase(clean, source),
+            "tokens": words,
+        })
+    return phrases
+
+
+def remember_scene_phrases(data, positive_prompt="", negative_prompt=""):
+    memory = data.setdefault("universal_memory", {})
+    changed = False
+    for source, prompt in (("positive", positive_prompt), ("negative", negative_prompt)):
+        for phrase in extract_scene_phrases(prompt, source):
+            key = phrase["key"]
+            current = memory.setdefault(key, {
+                "text": phrase["text"],
+                "source": source,
+                "category": phrase["category"],
+                "tokens": phrase["tokens"],
+                "count": 0,
+                "created_at": now_iso(),
+            })
+            current["text"] = current.get("text") or phrase["text"]
+            current["source"] = source
+            current["category"] = phrase["category"]
+            current["tokens"] = phrase["tokens"]
+            current["count"] = int(current.get("count", 0) or 0) + 1
+            current["updated_at"] = now_iso()
+            changed = True
+    return changed
+
+
+def scene_memory_items(data):
+    memory = data.get("universal_memory", {}) if isinstance(data, dict) else {}
+    items = []
+    for key, item in memory.items():
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or key).strip()
+        if not text:
+            continue
+        items.append({
+            "text": text,
+            "key": str(key),
+            "source": item.get("source", "positive"),
+            "category": item.get("category", "details"),
+            "tokens": item.get("tokens", scene_token_words(text)),
+            "count": int(item.get("count", 0) or 0),
+        })
+    return sorted(items, key=lambda item: (item["category"], item["text"].lower()))
+
+
+def normalize_scene_phrase_list(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            value = [value]
+    if not isinstance(value, list):
+        return []
+    result = []
+    seen = set()
+    for item in value:
+        text = item.get("text") if isinstance(item, dict) else item
+        clean = re.sub(r"\s+", " ", str(text or "")).strip(" ,;:.").strip()
+        key = clean.lower()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        result.append(clean)
+    return result
+
+
+def normalize_scene_loras(value):
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return []
+    if not isinstance(value, list):
+        return []
+    rows = []
+    for row in value:
+        if not isinstance(row, dict) or row.get("on", True) is False:
+            continue
+        name = str(row.get("lora") or row.get("name") or "None").strip()
+        if not name or name == "None":
+            continue
+        try:
+            strength = float(row.get("strength", row.get("base_model_weight", 1.0)))
+        except (TypeError, ValueError):
+            strength = 1.0
+        rows.append({
+            "on": True,
+            "lora": name,
+            "type": scene_lora_type(row.get("type", row.get("lora_type", "general"))),
+            "strength": strength,
+        })
+    return rows
+
+
+def parse_scene_payload(value):
+    if isinstance(value, dict):
+        payload = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            payload = json.loads(value)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            payload = {}
+    else:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "positive_phrases": normalize_scene_phrase_list(payload.get("positive_phrases", [])),
+        "negative_phrases": normalize_scene_phrase_list(payload.get("negative_phrases", [])),
+        "loras": normalize_scene_loras(payload.get("loras", [])),
+    }
+
+
+def scene_payload_from_scene(scene):
+    if not isinstance(scene, dict):
+        return {"positive_phrases": [], "negative_phrases": [], "loras": []}
+    return {
+        "positive_phrases": normalize_scene_phrase_list(scene.get("positive_phrases", [])),
+        "negative_phrases": normalize_scene_phrase_list(scene.get("negative_phrases", [])),
+        "loras": normalize_scene_loras(scene.get("loras", [])),
+    }
+
+
+def scene_text_from_phrases(phrases):
+    return ", ".join(normalize_scene_phrase_list(phrases))
+
+
+def aliases_from_text(value):
+    aliases = []
+    seen = set()
+    for raw in re.split(r"[,;\n]+", str(value or "")):
+        clean = re.sub(r"\s+", " ", raw).strip()
+        key = normalize_scene_key(clean)
+        if clean and key not in seen:
+            seen.add(key)
+            aliases.append(clean)
+    return aliases
+
+
+def scene_exact_match(intent_prompt, scenes):
+    intent = normalize_scene_key(intent_prompt)
+    if not intent:
+        return "", None
+    padded = f" {intent} "
+    for name, scene in sorted(scenes.items(), key=lambda item: len(item[0]), reverse=True):
+        keys = [name]
+        if isinstance(scene, dict):
+            keys.extend(scene.get("aliases", []) if isinstance(scene.get("aliases"), list) else [])
+        for key in keys:
+            clean = normalize_scene_key(key)
+            if clean and f" {clean} " in padded:
+                return name, scene
+    return "", None
+
+
+def scene_fuzzy_match(intent_prompt, scenes):
+    intent_words = set(scene_token_words(intent_prompt))
+    if not intent_words:
+        return "", None
+    best = ("", None, 0.0)
+    for name, scene in scenes.items():
+        keys = [name]
+        if isinstance(scene, dict):
+            keys.extend(scene.get("aliases", []) if isinstance(scene.get("aliases"), list) else [])
+        for key in keys:
+            key_words = set(scene_token_words(key))
+            if not key_words:
+                continue
+            overlap = len(intent_words & key_words)
+            if overlap < max(1, len(key_words)):
+                continue
+            score = overlap / max(len(key_words), 1)
+            if score > best[2]:
+                best = (name, scene, score)
+    return best[0], best[1]
+
+
+def find_scene_for_intent(intent_prompt, scenes):
+    name, scene = scene_exact_match(intent_prompt, scenes)
+    if name:
+        return name, scene, "exact"
+    name, scene = scene_fuzzy_match(intent_prompt, scenes)
+    if name:
+        return name, scene, "fuzzy"
+    return "", None, "none"
+
+
+def scene_field_summary(scene):
+    if not isinstance(scene, dict):
+        return "none"
+    fields = []
+    for field in ("positive_phrases", "negative_phrases", "loras", "refinement_key", "sigmas"):
+        if scene.get(field):
+            fields.append(field)
+    return ", ".join(fields) if fields else "none"
 
 
 def normalize_template_name(value):
@@ -437,6 +771,65 @@ async def funpack_templates_import(request):
     return web.json_response({"imported": imported, "templates": template_names()})
 
 
+@PromptServer.instance.routes.get("/funpack/scenes")
+async def funpack_scenes(_):
+    data = load_scene_db()
+    return web.json_response(
+        {
+            "scenes": scene_names(),
+            "path": scene_store_path(),
+            "data": data,
+            "memory": scene_memory_items(data),
+        },
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@PromptServer.instance.routes.get("/funpack/scenes/export")
+async def funpack_scenes_export(_):
+    data = load_scene_db()
+    return web.json_response(
+        data,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Content-Disposition": "attachment; filename=funpack_scenes.json",
+        },
+    )
+
+
+@PromptServer.instance.routes.post("/funpack/scenes/import")
+async def funpack_scenes_import(request):
+    incoming = await request.json()
+    if not isinstance(incoming, dict):
+        return web.json_response({"error": "Imported file is not a scene database."}, status=400)
+
+    data = load_scene_db()
+    imported_memory = incoming.get("universal_memory", {})
+    if isinstance(imported_memory, dict):
+        memory = data.setdefault("universal_memory", {})
+        for key, item in imported_memory.items():
+            if isinstance(item, dict):
+                memory[str(key)] = item
+
+    imported_scenes = incoming.get("scenes", {})
+    if not isinstance(imported_scenes, dict):
+        return web.json_response({"error": "Imported file does not contain a scenes object."}, status=400)
+
+    scenes = data.setdefault("scenes", {})
+    imported = 0
+    for name, scene in imported_scenes.items():
+        clean_name = normalize_scene_name(name)
+        if not clean_name or not isinstance(scene, dict):
+            continue
+        item = dict(scene)
+        item["name"] = clean_name
+        item["updated_at"] = now_iso()
+        scenes[clean_name] = item
+        imported += 1
+    save_scene_db(data)
+    return web.json_response({"imported": imported, "scenes": scene_names()})
+
+
 @PromptServer.instance.routes.get("/funpack/refinement_keys")
 async def funpack_refinement_keys(_):
     return web.json_response(
@@ -510,40 +903,48 @@ class FunPackRefinementKeyLoader:
         return (loaded_key if loaded_key else target, status)
 
 
-class FunPackTemplateManager:
-    CATEGORY = "FunPack/Templates"
+class FunPackSceneBuilder:
+    CATEGORY = "FunPack/Scene"
     RETURN_TYPES = ("STRING", "STRING", "STRING", "SIGMAS", "CONDITIONING", "FUNPACK_LORA_STACK", "STRING", "STRING")
     RETURN_NAMES = (
         "positive_prompt",
         "negative_prompt",
-        "activation_word",
+        "scene_name",
         "sigmas",
         "positive_conditioning",
         "lora_stack",
         "refinement_key",
         "status",
     )
-    FUNCTION = "manage_template"
+    FUNCTION = "build_scene"
     OUTPUT_NODE = True
-    DESCRIPTION = "Stores and loads reusable FunPack generation templates."
+    DESCRIPTION = "Builds named scene presets from manually selected universal prompt phrases and scene LoRAs."
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "template": (template_names(), {"default": TEMPLATE_NONE}),
-                "name": ("STRING", {"default": "", "multiline": False}),
+                "scene": (scene_names(), {"default": SCENE_NONE}),
+                "scene_name": ("STRING", {"default": "", "multiline": False}),
+                "aliases": ("STRING", {"default": "", "multiline": False}),
                 "action": (["load", "save", "update", "delete"], {"default": "load"}),
-                "mode": (["ltx2", "wan"], {"default": "ltx2"}),
-                "wildcard_seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
-            },
-            "optional": {
-                "activation_word": ("STRING", {"default": "", "multiline": False}),
-                "refinement_key": ("STRING", {"default": "", "multiline": False}),
+                "output_mode": (["Manual", "Auto"], {"default": "Manual"}),
+                "intent_prompt": ("STRING", {"default": "", "multiline": True}),
                 "positive_prompt": ("STRING", {"default": "", "multiline": True}),
                 "negative_prompt": ("STRING", {"default": "", "multiline": True}),
+                "mode": (["ltx2", "wan"], {"default": "ltx2"}),
+                "per_block": ("BOOLEAN", {"default": False}),
+                "refinement_key": ("STRING", {"default": "", "multiline": False}),
+                "scene_payload": ("STRING", {"default": "{}", "multiline": False}),
+            },
+            "optional": {
+                "refinement_key_input": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "forceInput": True,
+                    "tooltip": "Optional linked refinement key, for example from FunPack Refinement Key Loader.",
+                }),
                 "sigmas": ("SIGMAS",),
-                "lora_stack": ("FUNPACK_LORA_STACK",),
             },
         }
 
@@ -552,124 +953,175 @@ class FunPackTemplateManager:
         return float("nan")
 
     @classmethod
-    def VALIDATE_INPUTS(cls, template=None, **kwargs):
+    def VALIDATE_INPUTS(cls, scene=None, **kwargs):
         return True
 
-    def _empty_outputs(self, status):
-        return ("", "", "", torch.FloatTensor([]), None, None, "", status)
+    def _empty_sigmas(self):
+        return torch.FloatTensor([])
 
-    def _loaded_outputs(self, name, template, wildcard_seed):
-        mode = template.get("mode", "ltx2")
-        positive_raw = template.get("positive_prompt", "")
-        positive_prompt = resolve_wildcards(positive_raw, wildcard_seed)
-        negative_prompt = template.get("negative_prompt", "")
-        activation_word = template.get("activation_word", "")
-        refinement_key = template.get("refinement_key", "")
+    def _manual_scene(self, selected_name, scene_name, aliases, output_mode, mode, per_block, refinement_key, payload, sigmas=None):
+        target_name = normalize_scene_name(scene_name) or selected_name
+        scene = {
+            "name": target_name,
+            "aliases": aliases_from_text(aliases),
+            "output_mode": output_mode if output_mode in {"Manual", "Auto"} else "Manual",
+            "mode": mode if mode in {"ltx2", "wan"} else "ltx2",
+            "per_block": bool(per_block),
+            "refinement_key": normalize_refinement_key(refinement_key),
+            "positive_phrases": payload["positive_phrases"],
+            "negative_phrases": payload["negative_phrases"],
+            "loras": payload["loras"],
+        }
+        if isinstance(sigmas, torch.Tensor) and sigmas.numel() > 0:
+            scene["sigmas"] = tensor_to_serializable(sigmas.detach().cpu())
+        return scene
 
-        sigmas = torch.FloatTensor([])
-        if isinstance(template.get("sigmas"), dict):
+    def _scene_sigmas(self, scene, fallback=None):
+        if isinstance(scene.get("sigmas"), dict):
             try:
-                sigmas = serializable_to_tensor(template["sigmas"]).detach().clone().cpu()
+                return serializable_to_tensor(scene["sigmas"]).detach().clone().cpu()
             except Exception:
-                sigmas = torch.FloatTensor([])
+                pass
+        if isinstance(fallback, torch.Tensor):
+            return fallback.detach().clone().cpu()
+        return self._empty_sigmas()
 
-        positive_conditioning = None
+    def _scene_lora_stack(self, scene, positive_prompt):
+        mode = (scene.get("mode") or "ltx2").lower()
+        refinement_key = normalize_refinement_key(scene.get("refinement_key", ""))
+        loras = []
+        for index, row in enumerate(normalize_scene_loras(scene.get("loras", []))):
+            base_weight = float(row.get("strength", 1.0))
+            lora_type = scene_lora_type(row.get("type", "general"))
+            name = row["lora"]
+            loras.append({
+                "slot": index,
+                "name": name,
+                "type": lora_type,
+                "id": scene_lora_id(name, lora_type),
+                "base_model_weight": base_weight,
+                "model_weight": base_weight,
+                "source": "scene",
+            })
+        return {
+            "version": 2,
+            "refinement_key": refinement_key,
+            "mode": mode,
+            "per_block": bool(scene.get("per_block", False)),
+            "positive_prompt": positive_prompt,
+            "prompt_key": scene_prompt_key(positive_prompt, mode),
+            "loras": loras,
+        }
+
+    def _outputs_for_scene(self, name, scene, sigmas=None, source="Manual"):
+        positive = scene_text_from_phrases(scene.get("positive_phrases", []))
+        negative = scene_text_from_phrases(scene.get("negative_phrases", []))
+        refinement_key = normalize_refinement_key(scene.get("refinement_key", ""))
+        mode = scene.get("mode", "ltx2")
+        output_sigmas = self._scene_sigmas(scene, sigmas)
+        conditioning = None
         conditioning_status = "No refinement key stored; conditioning not loaded."
         if refinement_key:
-            positive_conditioning, conditioning_status = conditioning_from_refiner(
-                refinement_key,
-                mode,
-                positive_raw,
-            )
-
-        lora_stack = json_safe(template["lora_stack"]) if isinstance(template.get("lora_stack"), dict) else None
+            conditioning, conditioning_status = conditioning_from_refiner(refinement_key, mode, positive)
+        lora_stack = self._scene_lora_stack(scene, positive)
         status = (
-            f"Template '{name}' loaded. Stored fields: {template_field_summary(template)}.\n"
-            f"Wildcard seed: {wildcard_seed or 'random'}.\n"
+            f"Scene Builder {source}: '{name or scene.get('name', '') or 'unsaved'}'. "
+            f"Stored fields: {scene_field_summary(scene)}.\n"
+            f"Positive phrases: {len(scene.get('positive_phrases', []) or [])}. "
+            f"Negative phrases: {len(scene.get('negative_phrases', []) or [])}. "
+            f"LoRAs: {len(lora_stack.get('loras', []))}.\n"
             f"{conditioning_status}"
         )
-        return (
-            positive_prompt,
-            negative_prompt,
-            activation_word,
+        return (positive, negative, name or scene.get("name", ""), output_sigmas, conditioning, lora_stack, refinement_key, status)
+
+    def _empty_outputs(self, status):
+        return ("", "", "", self._empty_sigmas(), None, None, "", status)
+
+    def build_scene(
+        self,
+        scene,
+        scene_name,
+        aliases,
+        action,
+        output_mode,
+        intent_prompt,
+        positive_prompt,
+        negative_prompt,
+        mode,
+        per_block,
+        refinement_key,
+        scene_payload,
+        refinement_key_input="",
+        sigmas=None,
+    ):
+        linked_key = normalize_refinement_key(refinement_key_input)
+        if linked_key:
+            refinement_key = linked_key
+        selected_name = normalize_scene_name(scene)
+        output_mode = output_mode if output_mode in {"Manual", "Auto"} else "Manual"
+        action = action if action in {"load", "save", "update", "delete"} else "load"
+        payload = parse_scene_payload(scene_payload)
+
+        data = load_scene_db()
+        memory_changed = remember_scene_phrases(data, positive_prompt, negative_prompt)
+        scenes = data.setdefault("scenes", {})
+        manual = self._manual_scene(
+            selected_name,
+            scene_name,
+            aliases,
+            output_mode,
+            mode,
+            per_block,
+            refinement_key,
+            payload,
             sigmas,
-            positive_conditioning,
-            lora_stack,
-            refinement_key if refinement_key else "",
-            status,
         )
 
-    def manage_template(
-        self,
-        template,
-        name,
-        action,
-        mode,
-        wildcard_seed,
-        activation_word="",
-        refinement_key="",
-        positive_prompt="",
-        negative_prompt="",
-        sigmas=None,
-        lora_stack=None,
-    ):
-        action = action if action in {"load", "save", "update", "delete"} else "load"
-        selected_name = normalize_template_name(template)
-        new_name = normalize_template_name(name)
-        data = load_template_db()
-        templates = data.setdefault("templates", {})
-
         if action == "delete":
-            if not selected_name or selected_name not in templates:
-                return self._empty_outputs("Delete skipped: no selected template.")
-            deleted = templates.pop(selected_name)
-            save_template_db(data)
+            if not selected_name or selected_name not in scenes:
+                if memory_changed:
+                    save_scene_db(data)
+                return self._empty_outputs("Delete skipped: no selected scene.")
+            deleted = scenes.pop(selected_name)
+            save_scene_db(data)
             return self._empty_outputs(
-                f"Deleted template '{selected_name}'. Removed fields: {template_field_summary(deleted)}."
+                f"Deleted scene '{selected_name}'. Removed fields: {scene_field_summary(deleted)}."
             )
 
         if action == "save":
-            target_name = new_name if new_name and new_name not in templates else selected_name
+            target_name = normalize_scene_name(scene_name) or selected_name
             if not target_name:
-                return self._empty_outputs("Save skipped: enter a unique name or select an existing template.")
-            saved = collect_template_payload(
-                mode,
-                activation_word,
-                refinement_key,
-                positive_prompt,
-                negative_prompt,
-                sigmas,
-                lora_stack,
-                update_only=False,
-            )
-            saved["name"] = target_name
-            saved["created_at"] = templates.get(target_name, {}).get("created_at", now_iso())
-            saved["updated_at"] = now_iso()
-            templates[target_name] = saved
-            save_template_db(data)
-            return self._loaded_outputs(target_name, saved, wildcard_seed)
+                if memory_changed:
+                    save_scene_db(data)
+                return self._empty_outputs("Save skipped: enter a scene name.")
+            manual["name"] = target_name
+            manual["created_at"] = scenes.get(target_name, {}).get("created_at", now_iso())
+            manual["updated_at"] = now_iso()
+            scenes[target_name] = manual
+            save_scene_db(data)
+            return self._outputs_for_scene(target_name, manual, sigmas, "Manual saved")
 
         if action == "update":
-            if not selected_name or selected_name not in templates:
-                return self._empty_outputs("Update skipped: select an existing template.")
-            updated = collect_template_payload(
-                mode,
-                activation_word,
-                refinement_key,
-                positive_prompt,
-                negative_prompt,
-                sigmas,
-                lora_stack,
-                update_only=True,
-                existing=templates[selected_name],
-            )
-            updated["name"] = selected_name
-            updated["created_at"] = templates[selected_name].get("created_at", now_iso())
-            updated["updated_at"] = now_iso()
-            templates[selected_name] = updated
-            save_template_db(data)
-            return self._loaded_outputs(selected_name, updated, wildcard_seed)
+            target_name = selected_name or normalize_scene_name(scene_name)
+            if not target_name:
+                if memory_changed:
+                    save_scene_db(data)
+                return self._empty_outputs("Update skipped: select a scene or enter a scene name.")
+            previous = scenes.get(target_name, {})
+            manual["name"] = target_name
+            manual["created_at"] = previous.get("created_at", now_iso()) if isinstance(previous, dict) else now_iso()
+            manual["updated_at"] = now_iso()
+            scenes[target_name] = manual
+            save_scene_db(data)
+            return self._outputs_for_scene(target_name, manual, sigmas, "Manual updated")
 
-        if not selected_name or selected_name not in templates:
-            return self._empty_outputs("No template selected.")
-        return self._loaded_outputs(selected_name, templates[selected_name], wildcard_seed)
+        if output_mode == "Auto":
+            matched_name, matched_scene, match_type = find_scene_for_intent(intent_prompt, scenes)
+            if matched_name and isinstance(matched_scene, dict):
+                if memory_changed:
+                    save_scene_db(data)
+                return self._outputs_for_scene(matched_name, matched_scene, sigmas, f"Auto {match_type}")
+
+        if memory_changed:
+            save_scene_db(data)
+        return self._outputs_for_scene(manual.get("name", ""), manual, sigmas, "Manual")

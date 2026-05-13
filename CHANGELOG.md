@@ -4,6 +4,8 @@
 
 ### Added
 
+Added `FunPack Scene Builder`, a scene preset node that replaces `FunPack Template Manager`. It collects universal prompt phrase memory, lets users manually assign positive/negative scene phrases and LoRAs, and can auto-apply a saved scene from an intent prompt match.
+
 Added searchable LoRA picking to `FunPack Apply LoRA Weights`. The compact row UI remains the primary workflow, and saved workflows still serialize through the existing `lora_list` JSON value.
 
 Added optional `clip_vision_output`, `source_image`, and `negative_prompt` inputs to `FunPack Video Refiner V2`.
@@ -15,6 +17,8 @@ Added advisory V2 vision context storage for source image dimensions, aspect rat
 Added experimental early velocity bias capture/application controls to `FunPack Hybrid Euler 2S Sampler`, defaulting off.
 
 ### Changed
+
+Removed public registration for `FunPack Template Manager`. Use `FunPack Scene Builder` for new scene/preset workflows.
 
 Updated V2 prompt repair so repaired phrases preserve stopwords and phrase text while still using filtered semantic tokens for matching and categorization.
 
