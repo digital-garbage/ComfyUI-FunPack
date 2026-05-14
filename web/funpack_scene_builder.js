@@ -940,6 +940,8 @@ function renderPromptEditor(panel, node, kind) {
   }
 
   const body = shell(panel.root, isNegative ? "Negative prompt" : "Positive prompt", "prompt");
+  const composer = document.createElement("div");
+  composer.className = "funpack-scene-composer";
   const textarea = document.createElement("textarea");
   textarea.className = "funpack-scene-textarea";
   textarea.spellcheck = false;
@@ -960,11 +962,10 @@ function renderPromptEditor(panel, node, kind) {
       textarea.dispatchEvent(new Event("input"));
     }
   });
-  body.append(textarea);
-
   const highlights = document.createElement("div");
-  highlights.className = "funpack-scene-highlights";
-  body.append(highlights);
+  highlights.className = "funpack-scene-inline-highlights";
+  composer.append(textarea, highlights);
+  body.append(composer);
 
   const search = document.createElement("input");
   search.type = "search";
@@ -1479,6 +1480,27 @@ function injectStyles() {
       background: #17191d;
       outline: none;
     }
+    .funpack-scene-composer {
+      min-height: 170px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 7px;
+      border: 1px solid rgba(255,255,255,0.14);
+      border-radius: 6px;
+      background: #101216;
+    }
+    .funpack-scene-composer:focus-within {
+      border-color: rgba(100, 210, 140, 0.55);
+      box-shadow: 0 0 0 1px rgba(100, 210, 140, 0.12);
+    }
+    .funpack-scene-composer .funpack-scene-textarea {
+      min-height: 118px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      resize: vertical;
+    }
     .funpack-scene-search { margin: 8px 0; }
     .funpack-scene-filter-row {
       display: grid;
@@ -1486,13 +1508,14 @@ function injectStyles() {
       gap: 8px;
       align-items: center;
     }
-    .funpack-scene-highlights {
+    .funpack-scene-inline-highlights {
       min-height: 28px;
       display: flex;
       flex-wrap: wrap;
       gap: 5px;
       align-items: center;
-      padding: 7px 0 2px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(255,255,255,0.08);
     }
     .funpack-scene-highlight {
       border-color: rgba(100, 210, 140, 0.75);
