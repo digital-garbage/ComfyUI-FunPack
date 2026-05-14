@@ -5765,6 +5765,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "lora_weight_memory": {},
                 "preferred_context_memory": {},
                 "intent_alignment_memory": {},
+                "intent_family_memory": {},
+                "perfect_anchors": {},
+                "variant_evidence": {},
+                "intent_preference_phrases": {},
+                "conditioning_deltas": {},
                 "vision_memory": {},
                 "loss_history": [],
             },
@@ -5802,6 +5807,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data["global"].setdefault("lora_weight_memory", {})
             data["global"].setdefault("preferred_context_memory", {})
             data["global"].setdefault("intent_alignment_memory", {})
+            data["global"].setdefault("intent_family_memory", {})
+            data["global"].setdefault("perfect_anchors", {})
+            data["global"].setdefault("variant_evidence", {})
+            data["global"].setdefault("intent_preference_phrases", {})
+            data["global"].setdefault("conditioning_deltas", {})
             data["global"].setdefault("vision_memory", {})
             data["global"].setdefault("loss_history", [])
             return data, "loaded"
@@ -6737,6 +6747,315 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         clean = self._v2_prompt_key(intent_prompt).lower()
         return md5(clean.encode("utf-8")).hexdigest()
 
+    def _v2_intent_source_prompt(self, prompt, intent_prompt="", intent_is_vague=False):
+        intent_prompt = self._v2_prompt_key(intent_prompt)
+        if intent_prompt and not intent_is_vague and not self._v2_user_intent_prompt_is_vague(intent_prompt):
+            return intent_prompt
+        return self._v2_prompt_key(prompt)
+
+    def _v2_prompt_body_similarity(self, left, right):
+        left_roots = self._v2_repair_intent_roots(left)
+        right_roots = self._v2_repair_intent_roots(right)
+        if not left_roots or not right_roots:
+            return 0.0
+        overlap = left_roots & right_roots
+        if not overlap:
+            return 0.0
+        jaccard = len(overlap) / float(max(1, len(left_roots | right_roots)))
+        containment = len(overlap) / float(max(1, min(len(left_roots), len(right_roots))))
+        return max(jaccard, containment * 0.88)
+
+    def _v2_intent_family_slot(self, global_state, intent_prompt, create=True):
+        intent_prompt = self._v2_prompt_key(intent_prompt)
+        if not isinstance(global_state, dict) or not intent_prompt:
+            return "", None, 0.0
+        memory = global_state.setdefault("intent_family_memory", {})
+        if not isinstance(memory, dict):
+            memory = {}
+            global_state["intent_family_memory"] = memory
+        best_key = ""
+        best_slot = None
+        best_similarity = 0.0
+        for key, slot in memory.items():
+            if not isinstance(slot, dict):
+                continue
+            candidates = [slot.get("intent_prompt", "")]
+            candidates.extend(slot.get("intent_prompts", []) if isinstance(slot.get("intent_prompts"), list) else [])
+            for candidate in candidates:
+                similarity = self._v2_prompt_body_similarity(intent_prompt, candidate)
+                if similarity > best_similarity:
+                    best_key = key
+                    best_slot = slot
+                    best_similarity = similarity
+        if best_slot is not None and best_similarity >= 0.58:
+            return best_key, best_slot, best_similarity
+        if not create:
+            return "", None, best_similarity
+        family_key = self._v2_intent_alignment_key(intent_prompt)
+        slot = memory.setdefault(family_key, {
+            "family_key": family_key,
+            "intent_prompt": intent_prompt,
+            "intent_prompts": [],
+            "total_seen": 0,
+            "perfect_anchors": {},
+            "loved_variants": {},
+            "variant_evidence": {},
+            "intent_preference_phrases": {},
+            "conditioning_deltas": {},
+            "negative_tags": {},
+            "last_seen_iter": 0,
+        })
+        return family_key, slot, 1.0
+
+    def _v2_sync_intent_family_aliases(self, global_state, family_key, slot):
+        if not family_key or not isinstance(slot, dict) or not isinstance(global_state, dict):
+            return
+        global_state.setdefault("perfect_anchors", {})[family_key] = slot.get("perfect_anchors", {})
+        global_state.setdefault("variant_evidence", {})[family_key] = slot.get("variant_evidence", {})
+        global_state.setdefault("intent_preference_phrases", {})[family_key] = slot.get("intent_preference_phrases", {})
+        global_state.setdefault("conditioning_deltas", {})[family_key] = slot.get("conditioning_deltas", {})
+
+    def _v2_intent_texts_for_family(self, intent_prompt, intent_phrases, family_slot=None):
+        texts = []
+        intent_prompt = self._v2_clean_phrase_text(intent_prompt)
+        if intent_prompt:
+            texts.append(intent_prompt)
+        for phrase in intent_phrases or []:
+            text = self._v2_clean_phrase_text(phrase.get("text", "") if isinstance(phrase, dict) else phrase)
+            if text and text not in texts:
+                texts.append(text)
+        if isinstance(family_slot, dict):
+            for entry in family_slot.get("intent_preference_phrases", {}).values():
+                if not isinstance(entry, dict) or int(entry.get("seen_count", 0)) < 2:
+                    continue
+                text = self._v2_clean_phrase_text(entry.get("text", ""))
+                if text and text not in texts:
+                    texts.append(text)
+        return texts
+
+    def _v2_text_represented_by_intent(self, text, intent_prompt="", intent_phrases=None, family_slot=None):
+        clean = self._v2_clean_phrase_text(text)
+        if not clean:
+            return False
+        for candidate in self._v2_intent_texts_for_family(intent_prompt, intent_phrases or [], family_slot):
+            if self._v2_phrase_texts_match(clean, candidate):
+                return True
+        return False
+
+    def _v2_mark_intent_locks(self, phrases, intent_prompt="", intent_phrases=None, family_slot=None):
+        if not phrases:
+            return phrases
+        for phrase in phrases:
+            if not isinstance(phrase, dict):
+                continue
+            text = phrase.get("text", "")
+            locked = self._v2_text_represented_by_intent(text, intent_prompt, intent_phrases, None)
+            preference_locked = self._v2_text_represented_by_intent(text, "", [], family_slot) and not locked
+            phrase["intent_locked"] = bool(locked)
+            phrase["preference_locked"] = bool(preference_locked)
+        return phrases
+
+    def _v2_serialized_delta(self, target_payload, source_payload):
+        if not isinstance(target_payload, dict) or not isinstance(source_payload, dict):
+            return None
+        try:
+            target = serializable_to_tensor(target_payload).detach().float()
+            source = serializable_to_tensor(source_payload).detach().float()
+            if list(target.shape) != list(source.shape):
+                return None
+            return tensor_to_serializable((target - source).cpu())
+        except Exception:
+            return None
+
+    def _v2_store_conditioning_delta_average(self, slot, delta_payload):
+        if not isinstance(slot, dict) or not isinstance(delta_payload, dict):
+            return False
+        count = int(slot.get("count", 0))
+        existing = slot.get("delta")
+        if count <= 0 or not isinstance(existing, dict):
+            slot["delta"] = delta_payload
+            slot["count"] = 1
+            return True
+        try:
+            previous = serializable_to_tensor(existing)
+            current = serializable_to_tensor(delta_payload).to(previous.device)
+            if list(previous.shape) != list(current.shape):
+                slot["delta"] = delta_payload
+                slot["count"] = 1
+                return True
+            averaged = (previous * count + current) / float(count + 1)
+            slot["delta"] = tensor_to_serializable(averaged.cpu())
+            slot["count"] = count + 1
+            return True
+        except Exception:
+            slot["delta"] = delta_payload
+            slot["count"] = 1
+            return True
+
+    def _v2_update_intent_family_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
+        if not isinstance(global_state, dict) or not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
+            return "Intent family: no learning update.", ""
+        source_intent = self._v2_intent_source_prompt(
+            last_run.get("prompt", ""),
+            last_run.get("intent_prompt", ""),
+            bool(last_run.get("intent_prompt_is_vague")),
+        )
+        if not source_intent:
+            return "Intent family: no prompt body.", ""
+        family_key, slot, similarity = self._v2_intent_family_slot(global_state, source_intent, create=True)
+        if not isinstance(slot, dict):
+            return "Intent family: unavailable.", ""
+
+        slot["family_key"] = family_key
+        slot["intent_prompt"] = slot.get("intent_prompt") or source_intent
+        prompts = list(slot.get("intent_prompts", [])) if isinstance(slot.get("intent_prompts"), list) else []
+        if source_intent not in prompts:
+            prompts.append(source_intent)
+        slot["intent_prompts"] = prompts[-12:]
+        slot["total_seen"] = int(slot.get("total_seen", 0)) + 1
+        slot["last_seen_iter"] = int(iter_num)
+
+        intent_phrases = [phrase for phrase in last_run.get("intent_phrases", []) or [] if isinstance(phrase, dict)]
+        if not intent_phrases:
+            intent_phrases = self._v2_classify_phrases(None, self._ordered_prompt_phrases(source_intent), global_state)
+        positive_phrases = [phrase for phrase in last_run.get("phrases", []) or [] if isinstance(phrase, dict)]
+        self._v2_mark_intent_locks(positive_phrases, source_intent, intent_phrases, slot)
+
+        preferences = slot.setdefault("intent_preference_phrases", {})
+        preference_updates = 0
+        for phrase in intent_phrases:
+            payload = self._v2_intent_alignment_phrase_payload(phrase)
+            if not payload:
+                continue
+            entry = preferences.setdefault(payload["text"], {
+                **payload,
+                "seen_count": 0,
+                "repair_count": 0,
+                "score": 0.0,
+                "last_seen_iter": 0,
+            })
+            entry.update(payload)
+            entry["seen_count"] = int(entry.get("seen_count", 0)) + 1
+            entry["last_seen_iter"] = int(iter_num)
+            if int(entry.get("seen_count", 0)) >= 2:
+                entry["score"] = round(min(4.0, float(entry.get("score", 0.0)) + 0.36), 4)
+                preference_updates += 1
+            else:
+                entry["score"] = round(min(4.0, float(entry.get("score", 0.0)) + 0.12), 4)
+
+        missing_intent = [
+            phrase for phrase in intent_phrases
+            if not self._v2_phrase_represented_by(phrase.get("text", ""), positive_phrases)
+        ]
+        extra_positive = [
+            phrase for phrase in positive_phrases
+            if not self._v2_text_represented_by_intent(phrase.get("text", ""), source_intent, intent_phrases, None)
+        ]
+        repairs = [
+            item for item in last_run.get("repair_candidates", []) or []
+            if isinstance(item, dict) and self._v2_clean_phrase_text(item.get("text", ""))
+        ]
+
+        variant_key = md5(self._v2_prompt_key(last_run.get("prompt", "")).encode("utf-8")).hexdigest()
+        variants = slot.setdefault("variant_evidence", {})
+        variant = variants.setdefault(variant_key, {
+            "positive_prompt": self._v2_prompt_key(last_run.get("prompt", "")),
+            "encoded_prompt": self._v2_prompt_key(last_run.get("encoded_prompt", "")),
+            "rating_count": 0,
+            "avg_reward": 0.0,
+            "accepted_count": 0,
+            "rejected_count": 0,
+            "missing_intent": [],
+            "extra_positive": [],
+            "repair_candidates": [],
+            "last_rating_label": "",
+            "last_seen_iter": 0,
+        })
+        count = int(variant.get("rating_count", 0))
+        reward = float(rating_profile.get("reward", 0.0))
+        variant["avg_reward"] = round((float(variant.get("avg_reward", 0.0)) * count + reward) / float(count + 1), 6)
+        variant["rating_count"] = count + 1
+        variant["last_rating_label"] = rating_profile.get("label", "")
+        variant["last_seen_iter"] = int(iter_num)
+        variant["missing_intent"] = [item.get("text", "") for item in missing_intent]
+        variant["extra_positive"] = [item.get("text", "") for item in extra_positive]
+        variant["repair_candidates"] = [item.get("text", "") for item in repairs]
+        if rating_profile.get("key") == "like":
+            variant["accepted_count"] = int(variant.get("accepted_count", 0)) + 1
+        elif reward < 0.0 or rating_profile.get("wrong_axes") or rating_profile.get("key") == "awful":
+            variant["rejected_count"] = int(variant.get("rejected_count", 0)) + 1
+
+        anchor_count = 0
+        delta_updates = 0
+        if rating_profile.get("key") == "like" and isinstance(last_run.get("conditioning"), dict):
+            anchor_payload = {
+                "intent_prompt": source_intent,
+                "positive_prompt": self._v2_prompt_key(last_run.get("prompt", "")),
+                "encoded_prompt": self._v2_prompt_key(last_run.get("encoded_prompt", "")),
+                "conditioning": last_run.get("conditioning"),
+                "source_conditioning": last_run.get("source_conditioning"),
+                "repair_candidates": [item.get("text", "") for item in repairs],
+                "last_seen_iter": int(iter_num),
+            }
+            anchors = slot.setdefault("perfect_anchors", {})
+            if "base" not in anchors:
+                anchors["base"] = dict(anchor_payload, anchor_role="base")
+            else:
+                loved = slot.setdefault("loved_variants", {})
+                loved[variant_key] = dict(anchor_payload, anchor_role="variant")
+                if len(loved) > 16:
+                    slot["loved_variants"] = dict(sorted(
+                        loved.items(),
+                        key=lambda item: int(item[1].get("last_seen_iter", 0)) if isinstance(item[1], dict) else 0,
+                        reverse=True,
+                    )[:16])
+            anchor_count = 1 + len(slot.get("loved_variants", {}))
+            delta = self._v2_serialized_delta(last_run.get("conditioning"), last_run.get("source_conditioning"))
+            if isinstance(delta, dict):
+                deltas = slot.setdefault("conditioning_deltas", {})
+                positive_delta = deltas.setdefault("positive", {})
+                if self._v2_store_conditioning_delta_average(positive_delta, delta):
+                    positive_delta["last_seen_iter"] = int(iter_num)
+                    delta_updates += 1
+
+        if len(variants) > 40:
+            slot["variant_evidence"] = dict(sorted(
+                variants.items(),
+                key=lambda item: (
+                    float(item[1].get("avg_reward", 0.0)) if isinstance(item[1], dict) else -99.0,
+                    int(item[1].get("rating_count", 0)) if isinstance(item[1], dict) else 0,
+                    int(item[1].get("last_seen_iter", 0)) if isinstance(item[1], dict) else 0,
+                ),
+                reverse=True,
+            )[:40])
+
+        self._v2_sync_intent_family_aliases(global_state, family_key, slot)
+        return (
+            "Intent family learned: "
+            f"family={family_key[:8]} sim={similarity:.2f}, repeated preference(s)={preference_updates}, "
+            f"anchors={anchor_count or len(slot.get('perfect_anchors', {})) + len(slot.get('loved_variants', {}))}, "
+            f"variant reward {variant['avg_reward']:+.2f}, delta update(s)={delta_updates}."
+        ), family_key
+
+    def _v2_apply_intent_family_delta(self, conditioning, family_slot, strength):
+        if not isinstance(conditioning, torch.Tensor) or not isinstance(family_slot, dict):
+            return conditioning, "intent-family idle"
+        positive_delta = family_slot.get("conditioning_deltas", {}).get("positive", {})
+        payload = positive_delta.get("delta") if isinstance(positive_delta, dict) else None
+        if not self._v2_shape_compatible(payload, conditioning):
+            return conditioning, "intent-family idle"
+        try:
+            delta = serializable_to_tensor(payload).to(device=conditioning.device, dtype=conditioning.dtype)
+            if list(delta.shape) != list(conditioning.shape):
+                return conditioning, "intent-family idle"
+            original_norm = conditioning.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            max_delta = original_norm * min(0.030, max(0.006, float(strength) * 0.35))
+            delta_norm = delta.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            scale = torch.minimum(torch.ones_like(delta_norm), max_delta / delta_norm)
+            return conditioning + delta * scale, f"intent-family positive delta x{int(positive_delta.get('count', 0))}"
+        except Exception:
+            return conditioning, "intent-family delta failed"
+
     def _v2_intent_alignment_phrase_payload(self, phrase):
         text = self._v2_clean_phrase_text(phrase.get("text", "") if isinstance(phrase, dict) else phrase)
         if not text:
@@ -6793,6 +7112,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         })
         slot["intent_prompt"] = intent_prompt
         slot["last_seen_iter"] = int(iter_num)
+        _, family_slot, _ = self._v2_intent_family_slot(global_state, intent_prompt, create=False)
+        has_perfect_anchor = bool(
+            isinstance(family_slot, dict) and (
+                family_slot.get("perfect_anchors") or family_slot.get("loved_variants")
+            )
+        )
 
         reward = float(rating_profile.get("reward", 0.0))
         rating_key = rating_profile.get("key", "")
@@ -6945,13 +7270,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 delta = -0.18
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
             elif rating_key == "awful":
-                delta = 0.70
+                delta = 0.70 if has_perfect_anchor else 0.44
                 entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
             elif missing_axes:
                 delta = 0.95 if axes & missing_axes else 0.28
+                if not has_perfect_anchor:
+                    delta = min(delta, 0.58)
                 entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
             elif wrong_axes:
                 delta = 0.42 if axes & wrong_axes else 0.16
+                if not has_perfect_anchor:
+                    delta = min(delta, 0.30)
                 entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
             else:
                 delta = -0.10 if reward > 0.35 else 0.18 if reward < -0.20 else 0.0
@@ -7601,7 +7930,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return mixed
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None):
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
@@ -7618,6 +7947,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 mixed = mixed.lerp(liked, strength)
             except Exception:
                 pass
+        mixed, family_delta_status = self._v2_apply_intent_family_delta(mixed, intent_family_slot, strength)
         axis_memory = global_state.get("axis_conditioning_memory", {})
         axis_actions = []
         missing_axes = set(axis_feedback.get("missing_axes", []))
@@ -7658,7 +7988,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"good streak {int(global_state.get('good_streak', 0))} | "
             f"bad streak {int(global_state.get('bad_streak', 0))} | "
             f"reward ema {float(global_state.get('avg_reward_ema', 0.0)):+.3f} | "
-            f"axis memory {', '.join(axis_actions) if axis_actions else 'idle'}"
+            f"axis memory {', '.join(axis_actions) if axis_actions else 'idle'} | "
+            f"{family_delta_status}"
         )
 
     def _v2_emphasized_prompt(self, prompt, phrases, global_state, rating_profile):
@@ -7786,6 +8117,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         previous_run,
         axis_feedback,
         intent_phrases=None,
+        intent_family_slot=None,
     ):
         missing_axes = set(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else set()
         missing_axes = set(self._v2_order_axes(missing_axes))
@@ -7856,6 +8188,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if axes & missing_axes:
                 add_candidate(item.get("text", ""), axes, 3.0, "intent")
 
+        if isinstance(intent_family_slot, dict):
+            for entry in intent_family_slot.get("intent_preference_phrases", {}).values():
+                if not isinstance(entry, dict):
+                    continue
+                if int(entry.get("seen_count", 0)) < 2:
+                    continue
+                axes = candidate_axes(entry)
+                if not (axes & missing_axes):
+                    continue
+                score = (
+                    1.35 +
+                    min(0.75, int(entry.get("seen_count", 0)) * 0.14) +
+                    min(0.60, float(entry.get("score", 0.0)) * 0.16)
+                )
+                add_candidate(
+                    entry.get("text", ""),
+                    axes,
+                    score,
+                    "intent_preference",
+                    memory_entry=entry,
+                )
+
         if isinstance(previous_run, dict):
             for item in self._v2_concept_units_for_run(previous_run):
                 if item.get("kind") == "token":
@@ -7918,6 +8272,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         source_priority = {
             "intent": 4,
+            "intent_preference": 3,
             "previous": 3,
             "preferred_context": 2,
             "memory": 1,
@@ -8170,26 +8525,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not should_store:
             return "Negative repair memory: no poor-rated tags added."
 
+        raw_intent_prompt = self._v2_prompt_key(previous_run.get("intent_prompt", ""))
+        has_explicit_intent = bool(
+            raw_intent_prompt and
+            not previous_run.get("intent_prompt_is_vague") and
+            not self._v2_user_intent_prompt_is_vague(raw_intent_prompt)
+        )
+        intent_prompt = raw_intent_prompt if has_explicit_intent else ""
+        intent_phrases = (
+            [phrase for phrase in previous_run.get("intent_phrases", []) or [] if isinstance(phrase, dict)]
+            if has_explicit_intent else
+            []
+        )
+        family_key, family_slot, _ = self._v2_intent_family_slot(global_state, intent_prompt, create=False)
         added = []
-        for phrase in previous_run.get("phrases", []) or []:
-            if not isinstance(phrase, dict):
-                continue
-            phrase_axes = self._v2_phrase_axes(phrase)
-            if wrong_axes and not (phrase_axes & wrong_axes):
-                continue
-            if not wrong_axes and missing_axes and not (phrase_axes & missing_axes):
-                continue
-            text = self._v2_clean_phrase_text(phrase.get("text", ""))
+        skipped_intent = 0
+
+        def remember_tag(text, phrase_axes, source, intent_locked=False):
+            nonlocal skipped_intent
+            text = self._v2_clean_phrase_text(text)
             if not text:
-                continue
+                return
+            if intent_locked or self._v2_text_represented_by_intent(text, intent_prompt, intent_phrases, family_slot):
+                skipped_intent += 1
+                return
+            if wrong_axes and not (phrase_axes & wrong_axes):
+                return
+            if not wrong_axes and missing_axes and not (phrase_axes & missing_axes):
+                return
             entry = tags.setdefault(text, {
                 "text": text,
                 "count": 0,
                 "axes": {},
+                "family_key": family_key,
+                "source": source,
+                "probe_count": 0,
                 "last_rating": "",
                 "last_seen_iter": 0,
             })
             entry["count"] = int(entry.get("count", 0)) + (2 if wrong_axes else 1)
+            entry["family_key"] = family_key or entry.get("family_key", "")
+            entry["source"] = source
             entry["last_rating"] = rating_profile.get("label", "")
             entry["last_seen_iter"] = int(global_state.get("total_iterations", 0)) + 1
             axes = entry.setdefault("axes", {})
@@ -8197,16 +8573,56 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axes[axis] = int(axes.get(axis, 0)) + 1
             added.append(text)
 
+        for phrase in previous_run.get("phrases", []) or []:
+            if not isinstance(phrase, dict):
+                continue
+            remember_tag(
+                phrase.get("text", ""),
+                self._v2_phrase_axes(phrase),
+                "enhancer_or_prompt",
+                intent_locked=has_explicit_intent and bool(phrase.get("intent_locked")),
+            )
+
+        for candidate in previous_run.get("repair_candidates", []) or []:
+            if not isinstance(candidate, dict):
+                continue
+            remember_tag(
+                candidate.get("text", ""),
+                set(candidate.get("axes", [])),
+                "repair_candidate",
+                intent_locked=False,
+            )
+
         if not added:
-            return "Negative repair memory: no matching poor-rated tags."
+            suffix = f" Skipped {skipped_intent} intent-locked tag(s)." if skipped_intent else ""
+            return f"Negative repair memory: no matching poor-rated tags.{suffix}"
         memory["tags"] = dict(sorted(
             tags.items(),
             key=lambda item: (int(item[1].get("count", 0)), int(item[1].get("last_seen_iter", 0))),
             reverse=True,
         )[:80])
-        return f"Negative repair memory: added {len(added)} poor-rated tag(s): {', '.join(added[:8])}."
+        suffix = f" Skipped {skipped_intent} intent-locked tag(s)." if skipped_intent else ""
+        return f"Negative repair memory: added {len(added)} poor-rated tag(s): {', '.join(added[:8])}.{suffix}"
 
-    def _v2_repair_negative_prompt(self, negative_prompt, global_state, axis_feedback=None):
+    def _v2_negative_probe_due(self, text, entry, iter_num):
+        if not isinstance(entry, dict):
+            return False
+        count = int(entry.get("count", 0))
+        if count <= 1:
+            return False
+        digest = int(md5(str(text or "").encode("utf-8")).hexdigest()[:6], 16)
+        return (int(iter_num or 0) + digest) % 11 == 0
+
+    def _v2_repair_negative_prompt(
+        self,
+        negative_prompt,
+        global_state,
+        axis_feedback=None,
+        current_prompt="",
+        intent_prompt="",
+        intent_phrases=None,
+        intent_family_slot=None,
+    ):
         prompt = self._v2_prompt_key(negative_prompt)
         memory = global_state.get("negative_prompt_memory", {})
         tags = memory.get("tags", {}) if isinstance(memory, dict) else {}
@@ -8214,11 +8630,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return prompt, "Negative repair: no stored poor-rated tags."
         wanted_axes = set(axis_feedback.get("missing_axes", [])) | set(axis_feedback.get("wrong_axes", [])) if isinstance(axis_feedback, dict) else set()
         ranked = []
+        withheld_intent = 0
+        withheld_family = 0
+        withheld_probe = 0
+        current_family_key = intent_family_slot.get("family_key", "") if isinstance(intent_family_slot, dict) else ""
         for text, entry in tags.items():
             if not isinstance(entry, dict):
                 continue
             clean = self._v2_clean_phrase_text(entry.get("text", text))
             if not clean or self._v2_prompt_contains_text(prompt, clean):
+                continue
+            if self._v2_prompt_contains_text(current_prompt, clean) or self._v2_text_represented_by_intent(
+                clean,
+                intent_prompt,
+                intent_phrases or [],
+                intent_family_slot,
+            ):
+                withheld_intent += 1
+                continue
+            entry_family = str(entry.get("family_key", ""))
+            if entry_family and current_family_key and entry_family != current_family_key:
+                withheld_family += 1
+                continue
+            if self._v2_negative_probe_due(clean, entry, int(global_state.get("total_iterations", 0)) + 1):
+                entry["probe_count"] = int(entry.get("probe_count", 0)) + 1
+                withheld_probe += 1
                 continue
             axes = set(entry.get("axes", {}).keys()) if isinstance(entry.get("axes"), dict) else set()
             axis_bonus = 1.0 if wanted_axes and axes & wanted_axes else 0.0
@@ -8227,9 +8663,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         ranked.sort(reverse=True)
         additions = [text for _, text in ranked[:8]]
         if not additions:
-            return prompt, "Negative repair: stored poor-rated tags already present."
+            withheld = []
+            if withheld_intent:
+                withheld.append(f"intent/current {withheld_intent}")
+            if withheld_family:
+                withheld.append(f"other-family {withheld_family}")
+            if withheld_probe:
+                withheld.append(f"probe {withheld_probe}")
+            detail = f" Withheld: {', '.join(withheld)}." if withheld else ""
+            return prompt, f"Negative repair: stored poor-rated tags already present.{detail}"
         repaired = f"{prompt}, {', '.join(additions)}" if prompt else ", ".join(additions)
-        return repaired, f"Negative repair: added {len(additions)} persistent poor-rated tag(s): {', '.join(additions)}."
+        withheld = []
+        if withheld_intent:
+            withheld.append(f"intent/current {withheld_intent}")
+        if withheld_family:
+            withheld.append(f"other-family {withheld_family}")
+        if withheld_probe:
+            withheld.append(f"probe {withheld_probe}")
+        detail = f" Withheld: {', '.join(withheld)}." if withheld else ""
+        return repaired, f"Negative repair: added {len(additions)} persistent poor-rated tag(s): {', '.join(additions)}.{detail}"
 
     def _v2_lora_type(self, lora_type):
         lora_type = str(lora_type or "general").strip().lower()
@@ -8375,6 +8827,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("lora_weight_memory", {})
         global_state.setdefault("preferred_context_memory", {})
         global_state.setdefault("intent_alignment_memory", {})
+        global_state.setdefault("intent_family_memory", {})
+        global_state.setdefault("perfect_anchors", {})
+        global_state.setdefault("variant_evidence", {})
+        global_state.setdefault("intent_preference_phrases", {})
+        global_state.setdefault("conditioning_deltas", {})
         global_state.setdefault("vision_memory", {})
         global_state.setdefault("loss_history", [])
         previous_run = state.get("last_run")
@@ -8401,6 +8858,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
+        intent_family_status, _ = self._v2_update_intent_family_memory(
+            global_state,
+            previous_run,
+            learning_profile,
+            int(global_state.get("total_iterations", 0)) + 1,
+            axis_feedback,
+        )
         negative_memory_status = self._v2_update_negative_prompt_memory(
             global_state,
             previous_run,
@@ -8414,7 +8878,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
-        memory_status = f"{memory_status}\n{intent_learning_status}"
+        memory_status = f"{memory_status}\n{intent_family_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
@@ -8442,6 +8906,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 global_state,
                 encode_cache=encode_cache,
             )
+        intent_source_prompt = self._v2_intent_source_prompt(analysis_prompt, intent_prompt, intent_prompt_is_vague)
+        current_family_key, current_family_slot, current_family_similarity = self._v2_intent_family_slot(
+            global_state,
+            intent_source_prompt,
+            create=bool(intent_source_prompt and not current_prompt_refusal),
+        )
+        self._v2_mark_intent_locks(phrases, intent_source_prompt, intent_phrases, current_family_slot)
+        self._v2_mark_intent_locks(intent_phrases, intent_source_prompt, intent_phrases, current_family_slot)
         refusal_status = ""
         repair_status = "Prompt repair: none."
         repair_candidates = []
@@ -8471,6 +8943,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 previous_run,
                 axis_feedback,
                 intent_phrases=intent_phrases,
+                intent_family_slot=current_family_slot,
             )
             if im_feeling_lucky and clip is None:
                 lucky_status = f"Lucky: unavailable without CLIP | connected CONDITIONING accepted. {emphasis_status}"
@@ -8490,11 +8963,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
             return ([], status, training_info, fallback_graph, [])
 
-        refined, adaptation_status = self._v2_apply_conditioning_memory(cond, global_state, learning_profile, axis_feedback)
+        refined, adaptation_status = self._v2_apply_conditioning_memory(
+            cond,
+            global_state,
+            learning_profile,
+            axis_feedback,
+            intent_family_slot=current_family_slot,
+        )
         repaired_negative_prompt, negative_repair_status = self._v2_repair_negative_prompt(
             negative_prompt,
             global_state,
             axis_feedback,
+            current_prompt=prompt_to_encode,
+            intent_prompt=intent_source_prompt,
+            intent_phrases=intent_phrases,
+            intent_family_slot=current_family_slot,
         )
         negative_conditioning = []
         negative_encode_status = "negative prompt empty"
@@ -8601,10 +9084,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "prompt": analysis_prompt,
                 "encoded_prompt": prompt_to_encode,
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
+                "source_conditioning": tensor_to_serializable(cond.detach().cpu()),
                 "phrases": phrases,
                 "intent_prompt": intent_prompt,
                 "intent_phrases": intent_phrases,
                 "intent_prompt_is_vague": bool(intent_prompt_is_vague),
+                "intent_source_prompt": intent_source_prompt,
+                "intent_family_key": current_family_key,
+                "intent_family_similarity": round(float(current_family_similarity), 6),
                 "intent_alignment_adjustments": state_intent_alignment_adjustments,
                 "repair_candidates": state_repair_candidates,
                 "negative_prompt": repaired_negative_prompt,
@@ -8636,6 +9123,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
             f"{lucky_status}"
+            f"\nIntent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}"
             f"\n{intent_alignment_status}"
             f"\n{repair_status}"
             f"\n{negative_repair_status}"
@@ -8676,6 +9164,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "Adaptation\n"
                 f"{adaptation_status}\n"
                 f"{lucky_status}\n"
+                f"Intent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}\n"
                 f"{intent_alignment_status}\n"
                 f"{repair_status}\n"
                 f"{negative_repair_status}\n"

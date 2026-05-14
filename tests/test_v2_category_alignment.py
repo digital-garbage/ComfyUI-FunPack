@@ -464,6 +464,282 @@ def test_intent_alignment_omits_bad_token_in_new_enhancer_phrase():
     ]
 
 
+def test_repeated_intent_family_phrase_becomes_conservative_repair_candidate():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {},
+        "intent_family_memory": {},
+        "perfect_anchors": {},
+        "variant_evidence": {},
+        "intent_preference_phrases": {},
+        "conditioning_deltas": {},
+    }
+    intent_prompt = "yellow car riding down the road"
+    enhanced_prompt = "yellow car in a desert"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    for iteration in range(2):
+        refiner._v2_update_intent_family_memory(
+            global_state,
+            {
+                "prompt": enhanced_prompt,
+                "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+                "intent_prompt": intent_prompt,
+                "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+            },
+            profile,
+            iteration + 1,
+            feedback,
+        )
+
+    current_intent = "yellow car down the road"
+    _, family_slot, _ = refiner._v2_intent_family_slot(global_state, current_intent, create=False)
+    repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        enhanced_prompt,
+        prompt_phrases(refiner, enhanced_prompt, global_state),
+        global_state,
+        None,
+        feedback,
+        intent_phrases=prompt_phrases(refiner, current_intent, global_state),
+        intent_family_slot=family_slot,
+    )
+
+    assert "yellow car riding down the road" in repaired
+    assert "intent_preference" in status
+    assert any(candidate["source"] == "intent_preference" for candidate in candidates)
+
+
+def test_repeated_intent_preference_does_not_repair_unrelated_family():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {},
+        "intent_family_memory": {},
+        "perfect_anchors": {},
+        "variant_evidence": {},
+        "intent_preference_phrases": {},
+        "conditioning_deltas": {},
+    }
+    yellow_intent = "yellow car riding down the road"
+    dragon_intent = "dragon sleeping in a cave"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    for iteration in range(2):
+        refiner._v2_update_intent_family_memory(
+            global_state,
+            {
+                "prompt": "yellow car in a desert",
+                "phrases": prompt_phrases(refiner, "yellow car in a desert", global_state),
+                "intent_prompt": yellow_intent,
+                "intent_phrases": prompt_phrases(refiner, yellow_intent, global_state),
+            },
+            profile,
+            iteration + 1,
+            feedback,
+        )
+
+    _, dragon_slot, _ = refiner._v2_intent_family_slot(global_state, dragon_intent, create=True)
+    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "dragon in a cave",
+        prompt_phrases(refiner, "dragon in a cave", global_state),
+        global_state,
+        None,
+        feedback,
+        intent_phrases=prompt_phrases(refiner, dragon_intent, global_state),
+        intent_family_slot=dragon_slot,
+    )
+
+    assert "yellow car riding down the road" not in repaired
+    assert all(candidate["text"] != "yellow car riding down the road" for candidate in candidates)
+
+
+def test_intent_family_perfect_anchor_keeps_loved_variant():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {},
+        "intent_family_memory": {},
+        "perfect_anchors": {},
+        "variant_evidence": {},
+        "intent_preference_phrases": {},
+        "conditioning_deltas": {},
+    }
+    intent_prompt = "yellow car riding down the road"
+    profile = normalize_refiner_v2_rating("Perfect")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    source = tensor_to_serializable(torch.zeros(1, 3, 2))
+    first = tensor_to_serializable(torch.ones(1, 3, 2))
+    second = tensor_to_serializable(torch.ones(1, 3, 2) * 2.0)
+
+    refiner._v2_update_intent_family_memory(
+        global_state,
+        {
+            "prompt": "yellow car riding down the road",
+            "encoded_prompt": "yellow car riding down the road",
+            "phrases": prompt_phrases(refiner, "yellow car riding down the road", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+            "source_conditioning": source,
+            "conditioning": first,
+        },
+        profile,
+        1,
+        feedback,
+    )
+    refiner._v2_update_intent_family_memory(
+        global_state,
+        {
+            "prompt": "yellow car riding down the road, camera focused on wheels",
+            "encoded_prompt": "yellow car riding down the road, camera focused on wheels",
+            "phrases": prompt_phrases(refiner, "yellow car riding down the road, camera focused on wheels", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+            "source_conditioning": source,
+            "conditioning": second,
+        },
+        profile,
+        2,
+        feedback,
+    )
+
+    _, slot, _ = refiner._v2_intent_family_slot(global_state, intent_prompt, create=False)
+    assert slot["perfect_anchors"]["base"]["positive_prompt"] == "yellow car riding down the road"
+    assert len(slot["loved_variants"]) == 1
+    assert global_state["perfect_anchors"][slot["family_key"]]["base"]["positive_prompt"] == "yellow car riding down the road"
+    assert slot["conditioning_deltas"]["positive"]["count"] == 2
+
+
+def test_pre_perfect_missing_intent_learning_is_conservative():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}, "intent_family_memory": {}}
+    intent_prompt = "woman walking through neon rain"
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_intent_family_memory(
+        global_state,
+        {
+            "prompt": "cinematic studio portrait",
+            "phrases": prompt_phrases(refiner, "cinematic studio portrait", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": "cinematic studio portrait",
+            "phrases": prompt_phrases(refiner, "cinematic studio portrait", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    missing = slot["missing_intent_phrases"]["woman walking through neon rain"]
+    assert 0.5 <= missing["score"] < 0.8
+
+
+def test_negative_repair_never_adds_current_intent_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}
+    intent_prompt = "Nicole is shooting"
+    enhanced_prompt = "Nicole from Zenless Zone Zero holding a gun and shooting"
+    profile = normalize_refiner_v2_rating("Wrong action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    intent_phrases = prompt_phrases(refiner, intent_prompt, global_state)
+    phrases = prompt_phrases(refiner, enhanced_prompt, global_state)
+
+    refiner._v2_update_intent_family_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": phrases,
+            "intent_prompt": intent_prompt,
+            "intent_phrases": intent_phrases,
+        },
+        profile,
+        1,
+        feedback,
+    )
+    status = refiner._v2_update_negative_prompt_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": phrases,
+            "intent_prompt": intent_prompt,
+            "intent_phrases": intent_phrases,
+        },
+        profile,
+        feedback,
+    )
+    _, family_slot, _ = refiner._v2_intent_family_slot(global_state, intent_prompt, create=False)
+    repaired, repair_status = refiner._v2_repair_negative_prompt(
+        "",
+        global_state,
+        feedback,
+        current_prompt=enhanced_prompt,
+        intent_prompt=intent_prompt,
+        intent_phrases=intent_phrases,
+        intent_family_slot=family_slot,
+    )
+
+    assert repaired == ""
+    assert "Skipped 1 intent-locked" in status
+    assert "intent/current" in repair_status or "no stored poor-rated tags" in repair_status
+
+
+def test_rejected_repair_candidate_can_be_penalized_as_negative_memory():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}
+    profile = normalize_refiner_v2_rating("Wrong details")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_negative_prompt_memory(
+        global_state,
+        {
+            "prompt": "person smoking",
+            "phrases": prompt_phrases(refiner, "person smoking", global_state),
+            "intent_prompt": "person smoking",
+            "intent_phrases": prompt_phrases(refiner, "person smoking", global_state),
+            "repair_candidates": [{"text": "tiny smoke curls", "axes": ["details"], "score": 2.0, "source": "memory"}],
+        },
+        profile,
+        feedback,
+    )
+
+    assert "tiny smoke curls" in global_state["negative_prompt_memory"]["tags"]
+    assert global_state["negative_prompt_memory"]["tags"]["tiny smoke curls"]["source"] == "repair_candidate"
+
+
+def test_intent_family_delta_ignores_incompatible_shapes_and_caps_strength():
+    refiner = FunPackVideoRefinerV2()
+    conditioning = torch.ones(1, 3, 2)
+    slot = {
+        "conditioning_deltas": {
+            "positive": {
+                "count": 1,
+                "delta": tensor_to_serializable(torch.ones(1, 4, 2)),
+            }
+        }
+    }
+
+    unchanged, status = refiner._v2_apply_intent_family_delta(conditioning, slot, 0.05)
+    assert torch.equal(unchanged, conditioning)
+    assert status == "intent-family idle"
+
+    slot["conditioning_deltas"]["positive"]["delta"] = tensor_to_serializable(torch.ones(1, 3, 2) * 100.0)
+    changed, status = refiner._v2_apply_intent_family_delta(conditioning, slot, 0.05)
+    assert status.startswith("intent-family positive delta")
+    assert torch.max(torch.abs(changed - conditioning)).item() < 1.0
+
+
 def test_lucky_skips_appearance_memory_unless_prompt_mentions_it():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
