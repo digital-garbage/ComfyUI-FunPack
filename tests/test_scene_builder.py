@@ -149,6 +149,84 @@ def test_scene_builder_manual_outputs_exact_composed_text(monkeypatch, tmp_path)
     assert "source memory only" in data["universal_memory"]
 
 
+def test_scene_builder_save_load_preserves_raw_prompt_order(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    builder = FunPackSceneBuilder()
+    positive = "middle detail, first action. close-up camera, last environment, subject returns"
+    negative = "blur, bad hands, wrong action"
+
+    saved = builder.build_scene(
+        scene="-None-",
+        scene_name="Order Scene",
+        aliases="",
+        action="save",
+        mode="Manual",
+        scene_positive=positive,
+        scene_negative=negative,
+        positive_prompt="memory source only",
+        negative_prompt="negative memory source only",
+        refinement_key="order_key",
+    )
+
+    assert saved[0] == positive
+    assert saved[1] == negative
+    data = load_scene_db("order_key")
+    scene = data["scenes"]["Order Scene"]
+    assert scene["positive_text"] == positive
+    assert scene["negative_text"] == negative
+    assert scene["positive_phrases"] == [
+        "middle detail",
+        "first action",
+        "close-up camera",
+        "last environment",
+        "subject returns",
+    ]
+
+    loaded = builder.build_scene(
+        scene="Order Scene",
+        scene_name="",
+        aliases="",
+        action="load",
+        mode="Manual",
+        scene_positive="",
+        scene_negative="",
+        refinement_key="order_key",
+    )
+
+    assert loaded[0] == positive
+    assert loaded[1] == negative
+    assert "Manual loaded" in loaded[3]
+
+
+def test_scene_builder_empty_saved_text_does_not_rebuild_from_phrase_arrays(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    data = load_scene_db("empty_text_key")
+    data["scenes"]["Empty Positive"] = {
+        "name": "Empty Positive",
+        "aliases": [],
+        "output_mode": "Manual",
+        "positive_text": "",
+        "negative_text": "",
+        "positive_phrases": ["should not appear"],
+        "negative_phrases": ["also should not appear"],
+    }
+    save_scene_db(data, "empty_text_key")
+
+    outputs = FunPackSceneBuilder().build_scene(
+        scene="Empty Positive",
+        scene_name="",
+        aliases="",
+        action="load",
+        mode="Manual",
+        scene_positive="",
+        scene_negative="",
+        refinement_key="empty_text_key",
+    )
+
+    assert outputs[0] == ""
+    assert outputs[1] == ""
+
+
 def test_scene_builder_auto_exact_and_fuzzy_match_saved_scene(monkeypatch, tmp_path):
     use_tmp_scene_store(monkeypatch, tmp_path)
     builder = FunPackSceneBuilder()

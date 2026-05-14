@@ -267,8 +267,8 @@ function loadSceneIntoNode(node, name) {
   setWidgetValue(node, "aliases", Array.isArray(scene.aliases) ? scene.aliases.join(", ") : "");
   setWidgetValue(node, "mode", scene.output_mode || "Manual");
   setWidgetValue(node, "refinement_key", scene.refinement_key || "");
-  setWidgetValue(node, "scene_positive", scene.positive_text || (scene.positive_phrases || []).join(", "));
-  setWidgetValue(node, "scene_negative", scene.negative_text || (scene.negative_phrases || []).join(", "));
+  setWidgetValue(node, "scene_positive", Object.prototype.hasOwnProperty.call(scene, "positive_text") ? (scene.positive_text || "") : (scene.positive_phrases || []).join(", "));
+  setWidgetValue(node, "scene_negative", Object.prototype.hasOwnProperty.call(scene, "negative_text") ? (scene.negative_text || "") : (scene.negative_phrases || []).join(", "));
   setDirty(node);
 }
 

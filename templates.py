@@ -552,6 +552,14 @@ def scene_text_from_phrases(phrases):
     return ", ".join(normalize_scene_phrase_list(phrases))
 
 
+def scene_prompt_text(scene, text_field, phrases_field):
+    if not isinstance(scene, dict):
+        return ""
+    if text_field in scene:
+        return str(scene.get(text_field) or "")
+    return scene_text_from_phrases(scene.get(phrases_field, []))
+
+
 def scene_from_texts(name, aliases, output_mode, positive_text, negative_text, refinement_key=""):
     positive_text = normalize_scene_text_spacing(positive_text)
     negative_text = normalize_scene_text_spacing(negative_text)
@@ -1197,8 +1205,8 @@ class FunPackSceneBuilder:
         return scene_from_texts(target_name, aliases, mode, positive_text, negative_text, refinement_key)
 
     def _outputs_for_scene(self, name, scene, scene_db=None, lora_stack=None, source="Manual"):
-        positive = str(scene.get("positive_text") or scene_text_from_phrases(scene.get("positive_phrases", [])))
-        negative = str(scene.get("negative_text") or scene_text_from_phrases(scene.get("negative_phrases", [])))
+        positive = scene_prompt_text(scene, "positive_text", "positive_phrases")
+        negative = scene_prompt_text(scene, "negative_text", "negative_phrases")
         positive = resolve_scene_database_wildcards(positive, scene_db)
         negative = resolve_scene_database_wildcards(negative, scene_db)
         lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
@@ -1321,6 +1329,12 @@ class FunPackSceneBuilder:
             scenes[target_name] = manual
             save_scene_db(data, refinement_key)
             return self._outputs_for_scene(target_name, manual, data, lora_stack, "Manual updated")
+
+        if action == "load" and selected_name and selected_name in scenes and not scene_positive and not scene_negative:
+            selected_scene = scenes.get(selected_name, {})
+            if memory_changed:
+                save_scene_db(data, refinement_key)
+            return self._outputs_for_scene(selected_name, selected_scene, data, lora_stack, "Manual loaded")
 
         if mode == "Learning":
             if memory_changed:
