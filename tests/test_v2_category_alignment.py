@@ -803,6 +803,76 @@ def test_one_word_intent_blocks_expanded_action_negative_repair():
     assert "intent/current 1" in status
 
 
+def test_short_semantic_intent_locks_enhancer_expansion_without_shared_word():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}, "intent_family_memory": {}}
+    intent_prompt = "defenstration"
+    enhanced_prompt = "a human is thrown out of window"
+    intent_phrases = prompt_phrases(refiner, intent_prompt, global_state)
+    phrases = prompt_phrases(refiner, enhanced_prompt, global_state)
+    refiner._v2_mark_semantic_intent_locks(
+        FakeClip(),
+        phrases,
+        intent_prompt,
+        intent_phrases,
+        encode_cache={},
+    )
+    profile = normalize_refiner_v2_rating("Wrong action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": phrases,
+            "intent_prompt": intent_prompt,
+            "intent_phrases": intent_phrases,
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    assert phrases[0]["semantic_intent_locked"] is True
+    assert slot["missing_intent_phrases"] == {}
+    assert slot["extra_positive_phrases"] == {}
+    assert slot["bad_tokens"] == {}
+
+
+def test_short_semantic_intent_blocks_expansion_from_negative_memory():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}
+    intent_prompt = "defenstration"
+    enhanced_prompt = "a human is thrown out of window"
+    intent_phrases = prompt_phrases(refiner, intent_prompt, global_state)
+    phrases = prompt_phrases(refiner, enhanced_prompt, global_state)
+    refiner._v2_mark_semantic_intent_locks(
+        FakeClip(),
+        phrases,
+        intent_prompt,
+        intent_phrases,
+        encode_cache={},
+    )
+    profile = normalize_refiner_v2_rating("Wrong action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    status = refiner._v2_update_negative_prompt_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": phrases,
+            "intent_prompt": intent_prompt,
+            "intent_phrases": intent_phrases,
+        },
+        profile,
+        feedback,
+    )
+
+    assert global_state["negative_prompt_memory"]["tags"] == {}
+    assert "Skipped 1 intent-locked" in status
+
+
 def test_rejected_repair_candidate_can_be_penalized_as_negative_memory():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}

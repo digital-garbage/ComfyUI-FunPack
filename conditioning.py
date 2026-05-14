@@ -6852,6 +6852,83 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             axes |= self._v2_axes_for_category(primary)
         return axes
 
+    def _v2_text_semantic_similarity(self, clip, left, right, encode_cache=None):
+        if clip is None:
+            return 0.0
+        left = self._v2_clean_phrase_text(left)
+        right = self._v2_clean_phrase_text(right)
+        if not left or not right:
+            return 0.0
+        left_cond, _, _ = self._v2_encode_prompt(clip, left, encode_cache=encode_cache)
+        right_cond, _, _ = self._v2_encode_prompt(clip, right, encode_cache=encode_cache)
+        left_vector = self._v2_conditioning_vector(left_cond)
+        right_vector = self._v2_conditioning_vector(right_cond)
+        if left_vector is None or right_vector is None or left_vector.shape != right_vector.shape:
+            return 0.0
+        try:
+            sim = F.cosine_similarity(left_vector.unsqueeze(0), right_vector.unsqueeze(0), dim=-1)
+            return float((sim.item() + 1.0) * 0.5)
+        except Exception:
+            return 0.0
+
+    def _v2_short_intent_expansions(self, intent_prompt):
+        key = self._v2_clean_phrase_text(intent_prompt)
+        expansions = {
+            "defenestration": [
+                "thrown out of window",
+                "throwing a person out of a window",
+                "human thrown through a window",
+            ],
+            "defenstration": [
+                "defenestration",
+                "thrown out of window",
+                "throwing a person out of a window",
+                "human thrown through a window",
+            ],
+        }
+        return expansions.get(key, [])
+
+    def _v2_mark_semantic_intent_locks(self, clip, phrases, intent_prompt="", intent_phrases=None, encode_cache=None):
+        intent_prompt = self._v2_clean_phrase_text(intent_prompt)
+        if not phrases or not intent_prompt:
+            return phrases
+        intent_words = self._v2_phrase_words(intent_prompt)
+        if len(intent_words) > 3:
+            return phrases
+        semantic_sources = [intent_prompt]
+        for expansion in self._v2_short_intent_expansions(intent_prompt):
+            clean_expansion = self._v2_clean_phrase_text(expansion)
+            if clean_expansion and clean_expansion not in semantic_sources:
+                semantic_sources.append(clean_expansion)
+        for phrase in intent_phrases or []:
+            text = self._v2_clean_phrase_text(phrase.get("text", "") if isinstance(phrase, dict) else phrase)
+            if text and text not in semantic_sources:
+                semantic_sources.append(text)
+        for phrase in phrases:
+            if not isinstance(phrase, dict) or phrase.get("intent_locked"):
+                continue
+            text = self._v2_clean_phrase_text(phrase.get("text", ""))
+            if not text:
+                continue
+            lexical_match = any(self._v2_phrase_texts_match(text, source) for source in semantic_sources)
+            if lexical_match:
+                phrase["intent_locked"] = True
+                phrase["semantic_intent_locked"] = True
+                phrase["intent_similarity"] = 1.0
+                continue
+            best = max(
+                (
+                    self._v2_text_semantic_similarity(clip, source, text, encode_cache=encode_cache)
+                    for source in semantic_sources
+                ),
+                default=0.0,
+            )
+            if best >= 0.62:
+                phrase["intent_locked"] = True
+                phrase["semantic_intent_locked"] = True
+                phrase["intent_similarity"] = round(float(best), 4)
+        return phrases
+
     def _v2_requested_negative_block_texts(self, current_prompt="", intent_prompt="", intent_phrases=None, family_slot=None):
         texts = []
         for source in (current_prompt, intent_prompt):
@@ -6995,13 +7072,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             else:
                 entry["score"] = round(min(4.0, float(entry.get("score", 0.0)) + 0.12), 4)
 
+        has_semantic_intent_lock = any(
+            bool(phrase.get("semantic_intent_locked"))
+            for phrase in positive_phrases
+            if isinstance(phrase, dict)
+        )
         missing_intent = [
             phrase for phrase in intent_phrases
-            if not self._v2_phrase_represented_by(phrase.get("text", ""), positive_phrases)
+            if (
+                not has_semantic_intent_lock and
+                not self._v2_phrase_represented_by(phrase.get("text", ""), positive_phrases)
+            )
         ]
         extra_positive = [
             phrase for phrase in positive_phrases
-            if not self._v2_text_represented_by_intent(phrase.get("text", ""), source_intent, intent_phrases, None)
+            if (
+                not phrase.get("intent_locked") and
+                not phrase.get("semantic_intent_locked") and
+                not self._v2_text_represented_by_intent(phrase.get("text", ""), source_intent, intent_phrases, None)
+            )
         ]
         repairs = [
             item for item in last_run.get("repair_candidates", []) or []
@@ -7137,13 +7226,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not positive_phrases or not intent_phrases:
             return "Intent alignment: no comparable prompt phrases."
 
+        has_semantic_intent_lock = any(
+            bool(phrase.get("semantic_intent_locked"))
+            for phrase in positive_phrases
+            if isinstance(phrase, dict)
+        )
         missing_intent = [
             phrase for phrase in intent_phrases
-            if not self._v2_phrase_represented_by(phrase.get("text", ""), positive_phrases)
+            if (
+                not has_semantic_intent_lock and
+                not self._v2_phrase_represented_by(phrase.get("text", ""), positive_phrases)
+            )
         ]
         extra_positive = [
             phrase for phrase in positive_phrases
             if (
+                not phrase.get("intent_locked") and
+                not phrase.get("semantic_intent_locked") and
                 not self._v2_phrase_represented_by(phrase.get("text", ""), intent_phrases) and
                 not self._v2_prompt_contains_text(intent_prompt, phrase.get("text", ""))
             )
@@ -7236,6 +7335,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 continue
             phrase_axes = self._v2_phrase_axes(phrase)
             phrase_is_blocked_extra = (
+                not phrase.get("intent_locked") and
+                not phrase.get("semantic_intent_locked") and
                 not self._v2_phrase_represented_by(text, intent_phrases) and
                 not self._v2_prompt_contains_text(intent_prompt, text)
             )
@@ -8973,6 +9074,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         self._v2_mark_intent_locks(phrases, intent_source_prompt, intent_phrases, current_family_slot)
         self._v2_mark_intent_locks(intent_phrases, intent_source_prompt, intent_phrases, current_family_slot)
+        self._v2_mark_semantic_intent_locks(
+            clip,
+            phrases,
+            intent_source_prompt,
+            intent_phrases,
+            encode_cache=encode_cache,
+        )
         refusal_status = ""
         repair_status = "Prompt repair: none."
         repair_candidates = []
