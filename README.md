@@ -2,7 +2,7 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-## Updates in 2.3.4
+## Updates in 2.4.0
 
 Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It stores named scenes from editable positive/negative prompt text, takes prompt/intent text through connection-only inputs, passes the current LoRA stack through unchanged, and can auto-apply a scene when its name or alias appears in an intent prompt.
 
