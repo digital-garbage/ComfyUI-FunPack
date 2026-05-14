@@ -443,45 +443,69 @@ function panelCheckbox(checked, label) {
   return { wrapper, input };
 }
 
-function editableTextLabel(value, onCommit) {
+function editableTextLabel(value, onCommit, options = {}) {
   const wrapper = document.createElement("div");
   wrapper.className = "funpack-scene-editable";
   const label = document.createElement("button");
   label.type = "button";
-  label.textContent = value || "Unnamed";
-  label.title = "Double-click to edit";
+  let currentValue = String(value || "").trim();
+  const updateLabel = () => {
+    label.textContent = currentValue || "Unnamed";
+    label.title = currentValue ? `${currentValue}\n\nDouble-click to edit.` : "Double-click to edit.";
+    label.setAttribute("aria-label", currentValue ? `${currentValue}. Double-click to edit.` : "Double-click to edit.");
+  };
+  updateLabel();
   wrapper.append(label);
 
   const beginEdit = () => {
     const editor = document.createElement("div");
     editor.className = "funpack-scene-inline-editor";
-    const input = document.createElement("input");
-    const original = label.textContent || "";
-    input.type = "text";
+    const multiline = Boolean(options.multiline);
+    if (multiline) {
+      editor.classList.add("multiline");
+      wrapper.classList.add("editing");
+    }
+    const input = document.createElement(multiline ? "textarea" : "input");
+    const original = currentValue || label.textContent || "";
+    if (!multiline) {
+      input.type = "text";
+    } else {
+      input.rows = 4;
+      input.className = "funpack-scene-edit-textarea";
+    }
     input.value = original;
     const ok = panelButton("OK", "compact primary");
     const cancel = panelButton("Cancel", "compact");
+    const actions = document.createElement("div");
+    actions.className = "funpack-scene-inline-actions";
     let committed = false;
+    const restore = () => {
+      wrapper.classList.remove("editing");
+      editor.replaceWith(label);
+    };
     const commit = () => {
       if (committed) {
         return;
       }
       committed = true;
       const next = input.value.trim();
-      const value = next || original;
-      onCommit(value);
-      label.textContent = value;
-      editor.replaceWith(label);
+      currentValue = next || original;
+      onCommit(currentValue);
+      updateLabel();
+      restore();
     };
     const cancelEdit = () => {
       if (committed) {
         return;
       }
       committed = true;
-      editor.replaceWith(label);
+      restore();
     };
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
+      if (!multiline && event.key === "Enter") {
+        event.preventDefault();
+        commit();
+      } else if (multiline && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         commit();
       } else if (event.key === "Escape") {
@@ -491,7 +515,8 @@ function editableTextLabel(value, onCommit) {
     });
     ok.addEventListener("click", commit);
     cancel.addEventListener("click", cancelEdit);
-    editor.append(input, ok, cancel);
+    actions.append(ok, cancel);
+    editor.append(input, actions);
     label.replaceWith(editor);
     input.focus();
     input.select();
@@ -972,7 +997,7 @@ function renderDatabaseEditor(panel, node) {
       const text = editableTextLabel(item.text || "", (value) => {
         item.text = value;
         item.key = value.toLowerCase();
-      });
+      }, { multiline: true });
       const category = document.createElement("select");
       for (const categoryName of GROUP_ORDER) {
         const option = document.createElement("option");
@@ -1233,11 +1258,35 @@ function injectStyles() {
     .funpack-scene-editable {
       min-width: 0;
     }
+    .funpack-scene-editable.editing {
+      grid-column: 1 / -1;
+    }
     .funpack-scene-inline-editor {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto auto;
       gap: 5px;
       align-items: center;
+    }
+    .funpack-scene-inline-editor.multiline {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: stretch;
+    }
+    .funpack-scene-inline-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .funpack-scene-edit-textarea {
+      width: 100%;
+      min-height: 92px;
+      padding: 7px 8px;
+      border: 1px solid rgba(180, 190, 200, 0.32);
+      border-radius: 5px;
+      background: #17191d;
+      color: #f2f2f2;
+      line-height: 1.35;
+      resize: vertical;
+      outline: none;
     }
     .funpack-scene-editable button {
       width: 100%;

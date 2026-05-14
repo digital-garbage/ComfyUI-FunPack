@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.4.1] - 2026-05-14
+
+### Fixed
+
+Improved `FunPack Scene Builder` database rows so long words and phrases show their full text as a hover hint, and double-click editing opens a wider multiline field with explicit OK/Cancel buttons.
+
 ## [2.4.0] - 2026-05-14
 
 ### Added
