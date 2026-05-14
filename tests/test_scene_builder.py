@@ -28,7 +28,9 @@ from conditioning import FunPackVideoRefinerV2
 from templates import (
     FunPackSceneBuilder,
     apply_scene_database_authority,
+    extract_scene_phrases,
     load_scene_db,
+    normalize_scene_text_spacing,
     normalize_scene_memory_items,
     remember_scene_phrases,
     save_scene_db,
@@ -231,6 +233,30 @@ def test_scene_builder_auto_no_match_falls_back_to_manual(monkeypatch, tmp_path)
     assert "Manual" in outputs[3]
 
 
+def test_scene_builder_auto_still_collects_provided_scene_knowledge(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    builder = FunPackSceneBuilder()
+
+    builder.build_scene(
+        scene="-None-",
+        scene_name="",
+        aliases="",
+        action="load",
+        mode="Auto",
+        intent_prompt="no matching saved scene",
+        scene_positive="glass rain, neon reflection",
+        scene_negative="bad fingers",
+        positive_prompt="",
+        negative_prompt="",
+        refinement_key="auto_memory_key",
+    )
+
+    data = load_scene_db("auto_memory_key")
+    assert "glass rain" in data["universal_memory"]
+    assert "neon reflection" in data["universal_memory"]
+    assert "bad fingers" in data["universal_memory"]
+
+
 def test_scene_builder_learning_mode_collects_memory_and_passes_inputs_through(monkeypatch, tmp_path):
     use_tmp_scene_store(monkeypatch, tmp_path)
     builder = FunPackSceneBuilder()
@@ -287,6 +313,12 @@ def test_scene_builder_collects_prompt_words_from_sentence_chunks(monkeypatch, t
     assert "person" in data["universal_memory"]
     assert "smoking" in data["universal_memory"]
     assert "the" not in data["universal_memory"]
+
+
+def test_scene_builder_treats_space_before_punctuation_as_normal_punctuation():
+    assert normalize_scene_text_spacing("red dress . walking pose , smoke") == "red dress. walking pose, smoke"
+    phrases = extract_scene_phrases("red dress . walking pose , smoke")
+    assert [item["text"] for item in phrases] == ["red dress", "walking pose", "smoke"]
 
 
 def test_refiner_reset_preserves_scene_builder_memory_in_refinement_key(monkeypatch, tmp_path):

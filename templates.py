@@ -305,6 +305,13 @@ def normalize_scene_key(value):
     return re.sub(r"\s+", " ", value).strip()
 
 
+def normalize_scene_text_spacing(value):
+    text = re.sub(r"[ \t\r\f\v]+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+([,.])", r"\1", text)
+    text = re.sub(r"([,.])([^\s,.])", r"\1 \2", text)
+    return text.strip()
+
+
 def scene_token_words(text):
     return [
         token.lower()
@@ -330,7 +337,7 @@ def categorize_scene_phrase(text, source="positive"):
 def extract_scene_phrases(text, source="positive", include_words=False):
     phrases = []
     seen = set()
-    for raw in re.split(r"[,;.\n]+", str(text or "")):
+    for raw in re.split(r"[,;.\n]+", normalize_scene_text_spacing(text)):
         clean = re.sub(r"\s+", " ", raw).strip(" ,;:.").strip()
         if len(clean) < 2:
             continue
@@ -498,7 +505,7 @@ def normalize_scene_phrase_list(value):
     seen = set()
     for item in value:
         text = item.get("text") if isinstance(item, dict) else item
-        clean = re.sub(r"\s+", " ", str(text or "")).strip(" ,;:.").strip()
+        clean = normalize_scene_text_spacing(text).strip(" ,;:.").strip()
         key = clean.lower()
         if not clean or key in seen:
             continue
@@ -546,8 +553,8 @@ def scene_text_from_phrases(phrases):
 
 
 def scene_from_texts(name, aliases, output_mode, positive_text, negative_text, refinement_key=""):
-    positive_text = str(positive_text or "").strip()
-    negative_text = str(negative_text or "").strip()
+    positive_text = normalize_scene_text_spacing(positive_text)
+    negative_text = normalize_scene_text_spacing(negative_text)
     return {
         "name": normalize_scene_name(name),
         "aliases": aliases_from_text(aliases),
@@ -1248,7 +1255,23 @@ class FunPackSceneBuilder:
         payload = parse_scene_payload(scene_payload)
 
         data = load_scene_db(refinement_key)
-        memory_changed = remember_scene_phrases(data, positive_prompt, negative_prompt)
+        memory_positive = "\n".join(
+            item for item in (
+                positive_prompt,
+                scene_positive,
+                scene_text_from_phrases(payload.get("positive_phrases", [])),
+            )
+            if str(item or "").strip()
+        )
+        memory_negative = "\n".join(
+            item for item in (
+                negative_prompt,
+                scene_negative,
+                scene_text_from_phrases(payload.get("negative_phrases", [])),
+            )
+            if str(item or "").strip()
+        )
+        memory_changed = remember_scene_phrases(data, memory_positive, memory_negative)
         scenes = data.setdefault("scenes", {})
         manual = self._manual_scene(
             selected_name,

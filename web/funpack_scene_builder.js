@@ -140,6 +140,20 @@ function linkedRefinementKey(node) {
   return selected || typed;
 }
 
+function linkedTextValue(node, inputName) {
+  const source = linkedInputNode(node, inputName);
+  if (!source) {
+    return "";
+  }
+  for (const name of ["text", "prompt", "positive_prompt", "negative_prompt", "string", "value"]) {
+    const value = getWidgetValue(source, name, "");
+    if (String(value || "").trim()) {
+      return String(value);
+    }
+  }
+  return "";
+}
+
 function sceneNames() {
   const names = sceneData?.scenes;
   return Array.isArray(names) && names.length ? names : [NONE_SCENE];
@@ -553,16 +567,24 @@ function insertAtCursor(textarea, text) {
   const suffix = textarea.value.slice(end);
   const needsComma = prefix.trim() && !/[,\s.;\n]$/.test(prefix);
   const insertion = `${needsComma ? ", " : ""}${text}`;
-  textarea.value = `${prefix}${insertion}${suffix}`;
+  textarea.value = normalizePromptSpacing(`${prefix}${insertion}${suffix}`);
   const cursor = prefix.length + insertion.length;
   textarea.focus();
   textarea.setSelectionRange(cursor, cursor);
 }
 
+function normalizePromptSpacing(value) {
+  return String(value || "")
+    .replace(/\s+([,.])/g, "$1")
+    .replace(/([,.])([^\s,.])/g, "$1 $2")
+    .replace(/[ \t\r\f\v]+/g, " ")
+    .trim();
+}
+
 function promptLookupKey(value) {
   return String(value || "")
     .toLowerCase()
-    .replace(/[^\w'’.-]+/g, " ")
+    .replace(/[^\w'’]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -574,6 +596,98 @@ function promptContainsPhrase(prompt, phrase) {
     return false;
   }
   return ` ${promptKey} `.includes(` ${phraseKey} `);
+}
+
+function promptWords(value) {
+  const key = promptLookupKey(value);
+  return key ? key.split(" ").filter((word) => word.length >= 2) : [];
+}
+
+function removePhraseFromPrompt(prompt, phrase) {
+  const phraseKey = promptLookupKey(phrase);
+  if (!phraseKey) {
+    return prompt;
+  }
+  const parts = String(prompt || "").split(/([,;.\n]+)/);
+  let changed = false;
+  for (let index = 0; index < parts.length; index += 2) {
+    const segment = parts[index];
+    const segmentKey = promptLookupKey(segment);
+    if (!segmentKey) {
+      continue;
+    }
+    if (segmentKey === phraseKey) {
+      parts[index] = "";
+      changed = true;
+      continue;
+    }
+    const padded = ` ${segmentKey} `;
+    if (padded.includes(` ${phraseKey} `)) {
+      const pattern = new RegExp(`(^|\\s)${phraseKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$)`, "i");
+      parts[index] = segmentKey.replace(pattern, " ").replace(/\s+/g, " ").trim();
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return prompt;
+  }
+  const output = parts.join("");
+  return normalizePromptSpacing(output.replace(/\s*([,;.])\s*([,;.]\s*)+/g, "$1 "));
+}
+
+function preconstructPrompt(currentPrompt, intentText, isNegative = false) {
+  if (isNegative) {
+    return { prompt: currentPrompt, added: [] };
+  }
+  const intentWords = new Set(promptWords(intentText));
+  if (!intentWords.size) {
+    return { prompt: currentPrompt, added: [] };
+  }
+  const prompt = normalizePromptSpacing(currentPrompt);
+  const intentKey = promptLookupKey(intentText);
+  const candidates = [];
+  for (const item of memoryItems()) {
+    if (item.source === "negative" || item.category === "negative") {
+      continue;
+    }
+    const text = normalizePromptSpacing(item.text || item.key || "");
+    const key = promptLookupKey(text);
+    if (!key || promptContainsPhrase(prompt, text)) {
+      continue;
+    }
+    const words = promptWords(text);
+    const overlap = words.filter((word) => intentWords.has(word)).length;
+    const exact = intentKey && ` ${intentKey} `.includes(` ${key} `);
+    if (!exact && !overlap) {
+      continue;
+    }
+    const count = Number.isFinite(Number(item.count)) ? Number(item.count) : 0;
+    const score = (exact ? 4 : 0) + overlap / Math.max(1, words.length) + Math.min(1.5, count * 0.04) + Math.min(0.5, words.length * 0.04);
+    candidates.push({ text, score, words: words.length, count });
+  }
+  candidates.sort((left, right) => right.score - left.score || right.words - left.words || right.count - left.count || left.text.localeCompare(right.text));
+  const added = [];
+  const seen = new Set(promptWords(prompt));
+  for (const candidate of candidates) {
+    const key = promptLookupKey(candidate.text);
+    if (!key || added.some((text) => promptLookupKey(text) === key)) {
+      continue;
+    }
+    added.push(candidate.text);
+    for (const word of promptWords(candidate.text)) {
+      seen.add(word);
+    }
+    if (added.length >= 16) {
+      break;
+    }
+  }
+  if (!added.length) {
+    return { prompt, added };
+  }
+  return {
+    prompt: normalizePromptSpacing(`${prompt}${prompt ? ", " : ""}${added.join(", ")}`),
+    added,
+  };
 }
 
 function shell(root, title, view) {
@@ -832,6 +946,7 @@ function renderPromptEditor(panel, node, kind) {
   textarea.value = String(getWidgetValue(node, widgetName, "") || "");
   textarea.placeholder = isNegative ? "Write negative prompt words and phrases here." : "Write positive prompt words and phrases here.";
   textarea.addEventListener("input", () => {
+    textarea.value = textarea.value.replace(/\s+([,.])/g, "$1");
     setWidgetValue(node, widgetName, textarea.value);
     setDirty(node);
     updateUsedChips();
@@ -847,29 +962,62 @@ function renderPromptEditor(panel, node, kind) {
   });
   body.append(textarea);
 
+  const highlights = document.createElement("div");
+  highlights.className = "funpack-scene-highlights";
+  body.append(highlights);
+
   const search = document.createElement("input");
   search.type = "search";
   search.placeholder = "Search phrase bank";
   search.className = "funpack-scene-search";
-  body.append(search);
+  const categoryFilter = panelSelect(["All", ...GROUP_ORDER], "All");
+  categoryFilter.title = "Show one category or all categories.";
+  const filterRow = document.createElement("div");
+  filterRow.className = "funpack-scene-filter-row";
+  filterRow.append(search, categoryFilter);
+  body.append(filterRow);
 
   const bank = document.createElement("div");
   bank.className = "funpack-scene-bank";
   body.append(bank);
 
   const updateUsedChips = () => {
+    highlights.replaceChildren();
+    const usedPhrases = [];
     for (const chip of bank.querySelectorAll(".funpack-scene-chip[data-phrase]")) {
       const used = promptContainsPhrase(textarea.value, chip.dataset.phrase || "");
       chip.classList.toggle("used", used);
-      chip.title = used ? `Already used: ${chip.dataset.phrase}` : (chip.dataset.phrase || chip.textContent || "");
+      chip.title = used ? `Click to remove: ${chip.dataset.phrase}` : (chip.dataset.phrase || chip.textContent || "");
+      if (used && !usedPhrases.includes(chip.dataset.phrase || "")) {
+        usedPhrases.push(chip.dataset.phrase || "");
+      }
+    }
+    if (!usedPhrases.length) {
+      const empty = document.createElement("span");
+      empty.className = "funpack-scene-muted";
+      empty.textContent = "No database phrases in this prompt.";
+      highlights.append(empty);
+      return;
+    }
+    for (const phrase of usedPhrases) {
+      const item = panelButton(phrase, "compact");
+      item.classList.add("funpack-scene-highlight");
+      item.title = `Remove ${phrase}`;
+      item.addEventListener("click", () => {
+        textarea.value = removePhraseFromPrompt(textarea.value, phrase);
+        textarea.dispatchEvent(new Event("input"));
+      });
+      highlights.append(item);
     }
   };
 
   const renderBank = () => {
     const query = search.value.toLowerCase().trim();
+    const selectedCategory = categoryFilter.value;
     bank.replaceChildren();
     const items = memoryItems()
       .filter((item) => isNegative ? item.source === "negative" || item.category === "negative" : item.source !== "negative" && item.category !== "negative")
+      .filter((item) => selectedCategory === "All" || (item.category || (item.source === "negative" ? "negative" : "details")) === selectedCategory)
       .filter((item) => !query || String(item.text || "").toLowerCase().includes(query));
     const byGroup = new Map();
     for (const item of items) {
@@ -893,7 +1041,11 @@ function renderPromptEditor(panel, node, kind) {
       for (const item of groupItems) {
         const phrase = item.text || item.key;
         const chip = phraseButton(phrase, (text) => {
-          insertAtCursor(textarea, text);
+          if (promptContainsPhrase(textarea.value, text)) {
+            textarea.value = removePhraseFromPrompt(textarea.value, text);
+          } else {
+            insertAtCursor(textarea, text);
+          }
           textarea.dispatchEvent(new Event("input"));
         });
         chip.dataset.phrase = phrase;
@@ -904,12 +1056,31 @@ function renderPromptEditor(panel, node, kind) {
     updateUsedChips();
   };
   search.addEventListener("input", renderBank);
+  categoryFilter.addEventListener("change", renderBank);
   renderBank();
 
   const footer = document.createElement("div");
   footer.className = "funpack-scene-footer";
   const back = panelButton("Back");
   back.addEventListener("click", () => renderPanel(panel, node, "menu"));
+  const preconstruct = panelButton("Preconstruct", "primary");
+  preconstruct.disabled = isNegative;
+  preconstruct.title = isNegative ? "Preconstruct is available for the positive prompt." : "Add database phrases that match the current intent.";
+  preconstruct.addEventListener("click", () => {
+    const intent = String(
+      getWidgetValue(node, "intent_prompt", "") ||
+      linkedTextValue(node, "intent_prompt") ||
+      textarea.value ||
+      ""
+    );
+    const result = preconstructPrompt(textarea.value, intent, isNegative);
+    if (!result.added.length) {
+      showPanelError(new Error("No matching database phrases found for the current intent."));
+      return;
+    }
+    textarea.value = result.prompt;
+    textarea.dispatchEvent(new Event("input"));
+  });
   const cancel = panelButton("Cancel");
   cancel.addEventListener("click", () => {
     setWidgetValue(node, widgetName, panel.snapshots[snapshotKey]);
@@ -932,7 +1103,7 @@ function renderPromptEditor(panel, node, kind) {
       showPanelError(error);
     }
   });
-  footer.append(back, cancel, confirm);
+  footer.append(back, preconstruct, cancel, confirm);
   body.append(footer);
   textarea.focus();
 }
@@ -1309,6 +1480,25 @@ function injectStyles() {
       outline: none;
     }
     .funpack-scene-search { margin: 8px 0; }
+    .funpack-scene-filter-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 135px;
+      gap: 8px;
+      align-items: center;
+    }
+    .funpack-scene-highlights {
+      min-height: 28px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      padding: 7px 0 2px;
+    }
+    .funpack-scene-highlight {
+      border-color: rgba(100, 210, 140, 0.75);
+      background: rgba(58, 132, 86, 0.42);
+      color: #eaffef;
+    }
     .funpack-scene-bank,
     .funpack-scene-db-list {
       max-height: 270px;

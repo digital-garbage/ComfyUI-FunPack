@@ -10,7 +10,9 @@ If no scene exists yet, opening the editor, prompt editor, or database first ask
 
 ## Editor Menus
 
-**Positive prompt**: Opens a multiline text composer. Typed text, commas, periods, and manual ordering are preserved exactly. Database chips can be clicked or dragged into the text field, and chips already present in the prompt are highlighted.
+**Positive prompt**: Opens a multiline text composer. Typed text, commas, periods, and manual ordering are preserved exactly. Database chips can be clicked or dragged into the text field, filtered by category, and chips already present in the prompt are highlighted. Click a highlighted phrase to remove it from the prompt.
+
+**Preconstruct**: In the positive prompt editor, this button adds matching database phrases for the current intent into the editor text. It only runs when you press the button; queueing the node never preconstructs automatically.
 
 **Negative prompt**: Same composer behavior for the negative prompt.
 
