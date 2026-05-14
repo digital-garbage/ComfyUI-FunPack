@@ -554,6 +554,63 @@ def test_repeated_intent_preference_does_not_repair_unrelated_family():
     assert all(candidate["text"] != "yellow car riding down the road" for candidate in candidates)
 
 
+def test_active_repair_axes_persist_until_perfect():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"active_repair_axes": []}
+
+    missing_action = normalize_refiner_v2_rating("Missing action")
+    action_feedback = refiner._v2_axis_feedback(missing_action, None)
+    repair_feedback, status = refiner._v2_active_repair_feedback(global_state, action_feedback, missing_action)
+    assert repair_feedback["missing_axes"] == ["action"]
+    assert global_state["active_repair_axes"] == ["action"]
+    assert "active until Perfect" in status
+
+    missing_quality = normalize_refiner_v2_rating("Missing quality")
+    quality_feedback = refiner._v2_axis_feedback(missing_quality, ["action"])
+    repair_feedback, _ = refiner._v2_active_repair_feedback(global_state, quality_feedback, missing_quality)
+    assert repair_feedback["missing_axes"] == ["action", "quality"]
+    assert global_state["active_repair_axes"] == ["action", "quality"]
+
+    perfect = normalize_refiner_v2_rating("Perfect")
+    perfect_feedback = refiner._v2_axis_feedback(perfect, ["action", "quality"])
+    repair_feedback, status = refiner._v2_active_repair_feedback(global_state, perfect_feedback, perfect)
+    assert repair_feedback["missing_axes"] == []
+    assert global_state["active_repair_axes"] == []
+    assert "cleared by Perfect" in status
+
+
+def test_prompt_repair_falls_back_to_any_axis_candidates_when_requested_axis_is_empty():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "portrait quality": {
+                "text": "portrait quality",
+                "primary": "quality",
+                "effective_category_scores": refiner._v2_heuristic_scores("portrait quality"),
+                "wanted_axes": {"quality": 3},
+                "score": 4.0,
+                "liked_count": 2,
+                "category_evidence_count": 2,
+            }
+        }
+    }
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
+        "static portrait",
+        prompt_phrases(refiner, "static portrait", global_state),
+        global_state,
+        None,
+        feedback,
+    )
+
+    assert "portrait quality" in repaired
+    assert "showing other-axis repair candidates" in status
+    assert candidates[0]["text"] == "portrait quality"
+    assert candidates[0]["source"] == "memory"
+
+
 def test_intent_family_perfect_anchor_keeps_loved_variant():
     refiner = FunPackVideoRefinerV2()
     global_state = {

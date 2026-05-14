@@ -5770,6 +5770,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "variant_evidence": {},
                 "intent_preference_phrases": {},
                 "conditioning_deltas": {},
+                "active_repair_axes": [],
                 "vision_memory": {},
                 "loss_history": [],
             },
@@ -5812,6 +5813,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data["global"].setdefault("variant_evidence", {})
             data["global"].setdefault("intent_preference_phrases", {})
             data["global"].setdefault("conditioning_deltas", {})
+            data["global"].setdefault("active_repair_axes", [])
             data["global"].setdefault("vision_memory", {})
             data["global"].setdefault("loss_history", [])
             return data, "loaded"
@@ -6604,6 +6606,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"regressed {fmt('regressed_axes')} | "
             f"wrong {fmt('wrong_axes')}."
         )
+
+    def _v2_active_repair_feedback(self, global_state, axis_feedback, learning_profile):
+        if not isinstance(global_state, dict):
+            return axis_feedback, "Repair persistence: unavailable."
+        active = set(global_state.get("active_repair_axes", []) or []) & set(V2_FEEDBACK_AXES)
+        key = learning_profile.get("key", "") if isinstance(learning_profile, dict) else ""
+        if key == "like":
+            active = set()
+            global_state["active_repair_axes"] = []
+            feedback = dict(axis_feedback or {})
+            feedback["missing_axes"] = []
+            return feedback, "Repair persistence: cleared by Perfect."
+        if not learning_profile.get("skip_learning") and key != "discover":
+            active |= set(axis_feedback.get("missing_axes", [])) & set(V2_FEEDBACK_AXES)
+            active |= set(axis_feedback.get("wrong_axes", [])) & set(V2_FEEDBACK_AXES)
+        ordered = self._v2_order_axes(active)
+        global_state["active_repair_axes"] = ordered
+        feedback = dict(axis_feedback or {})
+        feedback["missing_axes"] = ordered
+        if ordered:
+            return feedback, f"Repair persistence: active until Perfect ({', '.join(ordered)})."
+        return feedback, "Repair persistence: no active repairs."
 
     def _v2_top_category_summary(self, scores, limit=3):
         cleaned = self._v2_clean_category_scores(scores)
@@ -8271,6 +8295,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         axis_feedback,
         intent_phrases=None,
         intent_family_slot=None,
+        allow_axis_fallback=True,
     ):
         missing_axes = set(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else set()
         missing_axes = set(self._v2_order_axes(missing_axes))
@@ -8470,6 +8495,35 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 break
 
         if not selected:
+            fallback_axes = set(V2_FEEDBACK_AXES) - missing_axes
+            if allow_axis_fallback and fallback_axes:
+                fallback_feedback = dict(axis_feedback or {})
+                fallback_feedback["missing_axes"] = self._v2_order_axes(fallback_axes)
+                fallback_prompt, fallback_status, fallback_candidates = self._v2_repair_prompt_for_missing_axes(
+                    prompt,
+                    current_phrases,
+                    global_state,
+                    previous_run,
+                    fallback_feedback,
+                    intent_phrases=intent_phrases,
+                    intent_family_slot=intent_family_slot,
+                    allow_axis_fallback=False,
+                )
+                if fallback_candidates:
+                    return (
+                        fallback_prompt,
+                        "Prompt repair: no candidates for requested axes "
+                        f"({', '.join(self._v2_order_axes(missing_axes))}); "
+                        f"showing other-axis repair candidates. {fallback_status}",
+                        fallback_candidates,
+                    )
+                return (
+                    prompt,
+                    "Prompt repair: no stored candidates for requested axes "
+                    f"({', '.join(self._v2_order_axes(missing_axes))}); "
+                    "no other-axis repair candidates either.",
+                    [],
+                )
             return prompt, f"Prompt repair: no stored candidates for missing {', '.join(self._v2_order_axes(missing_axes))}.", []
 
         additions = [item["text"] for item in selected]
@@ -8992,6 +9046,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("variant_evidence", {})
         global_state.setdefault("intent_preference_phrases", {})
         global_state.setdefault("conditioning_deltas", {})
+        global_state.setdefault("active_repair_axes", [])
         global_state.setdefault("vision_memory", {})
         global_state.setdefault("loss_history", [])
         previous_run = state.get("last_run")
@@ -9042,6 +9097,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
+        repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
+            global_state,
+            axis_feedback,
+            learning_profile,
+        )
 
         vision_context, vision_status = self._v2_update_vision_memory(
             global_state,
@@ -9102,13 +9162,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_phrases,
                 global_state,
             )
-            prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(aligned_prompt, phrases, global_state, learning_profile)
+            prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(
+                aligned_prompt,
+                phrases,
+                global_state,
+                {**learning_profile, "missing_axes": repair_feedback.get("missing_axes", [])},
+            )
             prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
                 prompt_to_encode,
                 phrases,
                 global_state,
                 previous_run,
-                axis_feedback,
+                repair_feedback,
                 intent_phrases=intent_phrases,
                 intent_family_slot=current_family_slot,
             )
@@ -9134,13 +9199,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             cond,
             global_state,
             learning_profile,
-            axis_feedback,
+            repair_feedback,
             intent_family_slot=current_family_slot,
         )
         repaired_negative_prompt, negative_repair_status = self._v2_repair_negative_prompt(
             negative_prompt,
             global_state,
-            axis_feedback,
+            repair_feedback,
             current_prompt=prompt_to_encode,
             intent_prompt=intent_source_prompt,
             intent_phrases=intent_phrases,
@@ -9289,6 +9354,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
+            f"{repair_persistence_status}\n"
             f"{lucky_status}"
             f"\nIntent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}"
             f"\n{intent_alignment_status}"
@@ -9319,6 +9385,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
                 f"Reason: {learning_reason}\n"
                 f"{self._v2_axis_feedback_status(axis_feedback)}\n"
+                f"{repair_persistence_status}\n"
                 f"{memory_status}\n"
                 f"{negative_memory_status}"
             ),
@@ -9330,6 +9397,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             (
                 "Adaptation\n"
                 f"{adaptation_status}\n"
+                f"{repair_persistence_status}\n"
                 f"{lucky_status}\n"
                 f"Intent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}\n"
                 f"{intent_alignment_status}\n"
