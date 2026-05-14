@@ -309,25 +309,28 @@ def test_refiner_reset_preserves_scene_builder_memory_in_refinement_key(monkeypa
     assert "silver hair" in reset_state["scene_builder"]["universal_memory"]
 
 
-def test_scene_builder_database_items_keep_categories_and_wildcard_groups():
+def test_scene_builder_database_items_keep_categories_and_wildcards():
     memory = normalize_scene_memory_items([
-        {"text": "red dress", "category": "appearance", "wildcard_group": "outfit"},
-        {"text": "blue dress", "category": "appearance", "wildcard_group": "outfit"},
+        {"text": "red dress", "category": "appearance", "wildcard": True},
+        {"text": "blue dress", "category": "appearance", "wildcard": True},
         {"text": "bad hands", "category": "negative"},
     ])
 
     assert memory["red dress"]["category"] == "appearance"
-    assert memory["red dress"]["wildcard_group"] == "outfit"
+    assert memory["red dress"]["wildcard"] is True
+    assert memory["blue dress"]["wildcard"] is True
+    assert memory["bad hands"]["wildcard"] is False
     assert memory["bad hands"]["source"] == "negative"
 
 
-def test_scene_builder_wildcard_group_outputs_one_matching_phrase(monkeypatch, tmp_path):
+def test_scene_builder_wildcard_outputs_one_adjacent_matching_phrase(monkeypatch, tmp_path):
     use_tmp_scene_store(monkeypatch, tmp_path)
     builder = FunPackSceneBuilder()
     data = load_scene_db("wild_key")
     data["universal_memory"] = normalize_scene_memory_items([
-        {"text": "red dress", "category": "appearance", "wildcard_group": "outfit"},
-        {"text": "blue dress", "category": "appearance", "wildcard_group": "outfit"},
+        {"text": "red dress", "category": "appearance", "wildcard": True},
+        {"text": "blue dress", "category": "appearance", "wildcard": True},
+        {"text": "green dress", "category": "appearance", "wildcard": True},
     ])
     save_scene_db(data, "wild_key")
     monkeypatch.setattr(templates.random, "choice", lambda choices: "blue dress")
@@ -338,10 +341,18 @@ def test_scene_builder_wildcard_group_outputs_one_matching_phrase(monkeypatch, t
         aliases="",
         action="load",
         mode="Manual",
-        scene_positive="red dress, blue dress, walking pose",
+        scene_positive="red dress, blue dress, walking pose, green dress",
         scene_negative="",
         refinement_key="wild_key",
     )
 
-    assert outputs[0] == "blue dress, walking pose"
+    assert outputs[0] == "blue dress, walking pose, green dress"
     assert "red dress" not in outputs[0]
+
+
+def test_scene_builder_legacy_wildcard_group_migrates_to_checkbox():
+    memory = normalize_scene_memory_items([
+        {"text": "red dress", "category": "appearance", "wildcard_group": "outfit"},
+    ])
+
+    assert memory["red dress"]["wildcard"] is True

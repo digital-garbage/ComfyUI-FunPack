@@ -403,7 +403,7 @@ def scene_memory_items(data):
             "category": item.get("category", "details"),
             "tokens": item.get("tokens", scene_token_words(text)),
             "count": int(item.get("count", 0) or 0),
-            "wildcard_group": str(item.get("wildcard_group") or "").strip(),
+            "wildcard": bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip()),
         })
     return sorted(items, key=lambda item: (item["category"], item["text"].lower()))
 
@@ -431,6 +431,7 @@ def normalize_scene_memory_items(value):
         if category not in SCENE_CATEGORIES:
             category = "negative" if source == "negative" else "details"
         tokens = scene_token_words(text)
+        wildcard = bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip())
         memory[key] = {
             "text": text,
             "source": source,
@@ -439,7 +440,7 @@ def normalize_scene_memory_items(value):
             "count": max(0, int(item.get("count", 0) or 0)),
             "created_at": str(item.get("created_at") or now_iso()),
             "updated_at": now_iso(),
-            "wildcard_group": str(item.get("wildcard_group") or "").strip(),
+            "wildcard": wildcard,
         }
     return memory
 
@@ -679,40 +680,41 @@ def resolve_scene_database_wildcards(text, scene_db):
     if not text or not isinstance(scene_db, dict):
         return text
 
-    groups = {}
+    wildcard_phrases = {}
     for item in scene_db.get("universal_memory", {}).values():
         if not isinstance(item, dict):
             continue
-        group = str(item.get("wildcard_group") or "").strip()
+        wildcard = bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip())
         phrase = str(item.get("text") or "").strip()
-        if not group or not phrase:
+        if not wildcard or not phrase:
             continue
-        groups.setdefault(group, {})[normalize_scene_key(phrase)] = phrase
+        wildcard_phrases[normalize_scene_key(phrase)] = phrase
 
-    if not groups:
+    if not wildcard_phrases:
         return text
 
     parts = re.split(r"([,;.\n]+)", text)
-    matches_by_group = {}
+    changed = False
+    run = []
+
+    def flush_run():
+        nonlocal changed, run
+        unique_keys = sorted({phrase_key for _, phrase_key in run})
+        if len(unique_keys) >= 2:
+            keep = random.choice(unique_keys)
+            for index, phrase_key in run:
+                if phrase_key != keep:
+                    parts[index] = ""
+                    changed = True
+        run = []
+
     for index in range(0, len(parts), 2):
         phrase_key = normalize_scene_key(parts[index])
-        if not phrase_key:
-            continue
-        for group, phrases in groups.items():
-            if phrase_key in phrases:
-                matches_by_group.setdefault(group, []).append((index, phrase_key))
-                break
-
-    changed = False
-    for matches in matches_by_group.values():
-        unique_keys = sorted({phrase_key for _, phrase_key in matches})
-        if len(unique_keys) < 2:
-            continue
-        keep = random.choice(unique_keys)
-        for index, phrase_key in matches:
-            if phrase_key != keep:
-                parts[index] = ""
-                changed = True
+        if phrase_key and phrase_key in wildcard_phrases:
+            run.append((index, phrase_key))
+        else:
+            flush_run()
+    flush_run()
 
     if not changed:
         return text

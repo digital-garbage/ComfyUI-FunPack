@@ -12,7 +12,7 @@ The node surface is a compact launcher. Scene name, mode, aliases, prompt editor
 
 **Negative prompt**: Same composer behavior for the negative prompt.
 
-**Database**: Add, edit, delete, search, categorize, and wildcard-group universal words and phrases.
+**Database**: Add, edit, delete, search, categorize, and mark universal words and phrases as wildcards.
 
 The editor refreshes the selected scene database before opening. When `refinement_key_input` is connected to a Refinement Key Loader, the editor reads that linked key so prompt memory appears in the same database where queue runs stored it.
 
@@ -50,12 +50,12 @@ Scene Builder memory is stored in the selected refinement key under its own `sce
 
 ## Wildcards
 
-Database phrases can share a wildcard group. If multiple phrases from the same wildcard group appear in the runtime composed prompt, Scene Builder outputs one randomly selected phrase from that group and omits the others. The saved prompt text is not rewritten.
+Wildcard is a checkbox on each database word or phrase. If two or more wildcard-enabled entries appear next to each other in the runtime composed prompt, Scene Builder outputs one randomly selected entry from that adjacent run and omits the others. The saved prompt text is not rewritten.
 
 ## Workflow
 
 1. Connect positive and negative prompt text, then queue once to collect phrase and word memory.
-2. Open **Database** to clean up phrases, assign categories, or set wildcard groups.
+2. Open **Database** to clean up phrases, assign categories, or enable wildcard random choice.
 3. Open **Positive prompt** or **Negative prompt** to type freely and insert chips from the database.
 4. Enter a scene name and confirm or save the scene.
 5. Use **Auto** with a scene name or alias in `intent_prompt` to apply a saved scene automatically.

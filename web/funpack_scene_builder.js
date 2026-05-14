@@ -150,7 +150,7 @@ function normalizeMemoryMap(items) {
       count: Number.isFinite(Number(item.count)) ? Number(item.count) : 0,
       created_at: item.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      wildcard_group: String(item.wildcard_group || "").trim(),
+      wildcard: Boolean(item.wildcard || String(item.wildcard_group || "").trim()),
     };
   }
   return output;
@@ -392,6 +392,18 @@ function panelSelect(values, selected) {
     element.append(option);
   }
   return element;
+}
+
+function panelCheckbox(checked, label) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "funpack-scene-checkbox";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = Boolean(checked);
+  const span = document.createElement("span");
+  span.textContent = label;
+  wrapper.append(input, span);
+  return { wrapper, input };
 }
 
 function phraseButton(text, onInsert) {
@@ -715,8 +727,7 @@ function renderDatabaseEditor(panel, node) {
     option.textContent = category;
     addCategory.append(option);
   }
-  const addWildcard = document.createElement("input");
-  addWildcard.placeholder = "Wildcard group";
+  const addWildcard = panelCheckbox(false, "Wildcard");
   const add = panelButton("Add", "primary");
   add.addEventListener("click", () => {
     const text = addText.value.trim();
@@ -729,12 +740,13 @@ function renderDatabaseEditor(panel, node) {
       source: addCategory.value === "negative" ? "negative" : "positive",
       category: addCategory.value,
       count: 0,
-      wildcard_group: addWildcard.value.trim(),
+      wildcard: addWildcard.input.checked,
     });
     addText.value = "";
+    addWildcard.input.checked = false;
     renderPanel(panel, node, "database");
   });
-  tools.append(addText, addCategory, addWildcard, add);
+  tools.append(addText, addCategory, addWildcard.wrapper, add);
   body.append(tools);
 
   const search = document.createElement("input");
@@ -772,18 +784,16 @@ function renderDatabaseEditor(panel, node) {
         item.category = category.value;
         item.source = category.value === "negative" ? "negative" : "positive";
       });
-      const wildcard = document.createElement("input");
-      wildcard.value = item.wildcard_group || "";
-      wildcard.placeholder = "Wildcard";
-      wildcard.addEventListener("input", () => {
-        item.wildcard_group = wildcard.value.trim();
+      const wildcard = panelCheckbox(Boolean(item.wildcard || item.wildcard_group), "Wildcard");
+      wildcard.input.addEventListener("change", () => {
+        item.wildcard = wildcard.input.checked;
       });
       const del = panelButton("Delete", "danger");
       del.addEventListener("click", () => {
         panel.databaseItems = panel.databaseItems.filter((candidate) => candidate !== item);
         renderList();
       });
-      row.append(text, category, wildcard, del);
+      row.append(text, category, wildcard.wrapper, del);
       list.append(row);
     });
   };
@@ -986,6 +996,21 @@ function injectStyles() {
       color: #f2f2f2;
       outline: none;
     }
+    .funpack-scene-db-tools .funpack-scene-checkbox input,
+    .funpack-scene-db-row .funpack-scene-checkbox input {
+      width: auto;
+      min-height: 0;
+      padding: 0;
+    }
+    .funpack-scene-checkbox {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-height: 28px;
+      color: #d9dee5;
+      white-space: nowrap;
+    }
     .funpack-scene-search { margin: 8px 0; }
     .funpack-scene-bank,
     .funpack-scene-db-list {
@@ -1012,13 +1037,13 @@ function injectStyles() {
     }
     .funpack-scene-db-tools {
       display: grid;
-      grid-template-columns: minmax(0, 1.6fr) 110px minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1.6fr) 110px auto auto;
       gap: 6px;
       align-items: center;
     }
     .funpack-scene-db-row {
       display: grid;
-      grid-template-columns: minmax(0, 1.7fr) 110px minmax(0, 0.9fr) auto;
+      grid-template-columns: minmax(0, 1.7fr) 110px auto auto;
       gap: 6px;
       align-items: center;
       padding: 5px 0;
