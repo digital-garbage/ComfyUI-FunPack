@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+from datetime import datetime, timezone
 from hashlib import md5
 from typing import Optional
 
@@ -6021,6 +6022,68 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return bool(categories & self.AUTO_INJECT_BLOCKED_CATEGORIES)
         return self._v2_primary_category_for_text(item) in self.AUTO_INJECT_BLOCKED_CATEGORIES
 
+    def _v2_scene_key(self, text):
+        text = re.sub(r"[^\w'’]+", " ", str(text or "").strip().lower(), flags=re.UNICODE)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _v2_now_iso(self):
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    def _v2_scene_builder_db(self, state):
+        if not isinstance(state, dict):
+            return {}, "Scene Builder: unavailable."
+        scene_db = state.get("scene_builder")
+        if not isinstance(scene_db, dict):
+            return {}, "Scene Builder: unavailable."
+        memory = scene_db.get("universal_memory", {})
+        scenes = scene_db.get("scenes", {})
+        memory_count = len(memory) if isinstance(memory, dict) else 0
+        scene_count = len(scenes) if isinstance(scenes, dict) else 0
+        return scene_db, f"Scene Builder: available ({memory_count} database phrase(s), {scene_count} saved scene(s))."
+
+    def _v2_scene_memory_item(self, scene_db, text):
+        if not isinstance(scene_db, dict):
+            return None
+        memory = scene_db.get("universal_memory", {})
+        if not isinstance(memory, dict):
+            return None
+        key = self._v2_scene_key(text)
+        if key and isinstance(memory.get(key), dict):
+            return memory[key]
+        clean = self._v2_clean_phrase_text(text)
+        for item in memory.values():
+            if not isinstance(item, dict):
+                continue
+            item_text = self._v2_clean_phrase_text(item.get("text", ""))
+            if item_text and clean and self._v2_phrase_texts_match(clean, item_text):
+                return item
+        return None
+
+    def _v2_apply_scene_builder_authority(self, item, scene_db):
+        scene_item = self._v2_scene_memory_item(scene_db, item.get("text", "") if isinstance(item, dict) else item)
+        if not isinstance(item, dict) or not isinstance(scene_item, dict) or not bool(scene_item.get("category_locked")):
+            return False
+        category = str(scene_item.get("category") or "").strip().lower()
+        item["scene_category_locked"] = True
+        item["scene_category_source"] = "user"
+        item["scene_category"] = category
+        if category not in self.CATEGORY_DESCRIPTIONS:
+            item["source"] = "scene_builder_user"
+            return True
+        scores = self._v2_category_template(0.0)
+        scores[category] = 1.0
+        item["category_scores"] = dict(scores)
+        item["clip_heuristic_scores"] = dict(scores)
+        item["machine_primary"] = category
+        item["machine_confidence"] = 1.0
+        item["category_weights"] = self._v2_category_template(0.0)
+        item["category_evidence_count"] = 0
+        item["effective_category_scores"] = dict(scores)
+        item["primary"] = category
+        item["confidence"] = 1.0
+        item["source"] = "scene_builder_user"
+        return True
+
     def _v2_prompt_repair_text_allowed(self, text):
         if not self._v2_clean_phrase_text(text):
             return False
@@ -6435,6 +6498,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "primary": source.get("primary", primary),
                 "machine_primary": source.get("machine_primary", primary),
                 "confidence": source.get("confidence", round(float(confidence), 4)),
+                "scene_category_locked": bool(source.get("scene_category_locked")),
+                "scene_category_source": source.get("scene_category_source", ""),
+                "scene_category": source.get("scene_category", ""),
             })
 
         for index, phrase in enumerate(last_run.get("phrases", []) or []):
@@ -6479,7 +6545,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             add(candidate.get("text", ""), "repair_candidate", candidate, 256 + position, {})
         return units[:96]
 
-    def _v2_classify_phrases(self, clip, phrases, global_state=None, encode_cache=None):
+    def _v2_classify_phrases(self, clip, phrases, global_state=None, encode_cache=None, scene_db=None):
         phrase_items = []
         uncertain = []
         phrase_memory = (global_state or {}).get("phrase_memory", {}) if isinstance(global_state, dict) else {}
@@ -6530,6 +6596,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 item["source"] = "clip_similarity"
 
         for item in phrase_items:
+            if self._v2_apply_scene_builder_authority(item, scene_db):
+                continue
             self._v2_apply_learned_category_scores(item, phrase_memory)
 
         return phrase_items
@@ -7152,6 +7220,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         anchor_count = 0
         delta_updates = 0
+        if axis_feedback and set(axis_feedback.get("wrong_axes", [])):
+            rejected_repairs = slot.setdefault("rejected_repairs", {})
+            for repair in repairs:
+                text = self._v2_clean_phrase_text(repair.get("text", ""))
+                if not text or self._v2_phrase_represented_by(text, intent_phrases):
+                    continue
+                entry = rejected_repairs.setdefault(text, {"text": text, "count": 0, "last_seen_iter": 0})
+                entry["count"] = int(entry.get("count", 0)) + 1
+                entry["last_seen_iter"] = int(iter_num)
         if rating_profile.get("key") == "like" and isinstance(last_run.get("conditioning"), dict):
             anchor_payload = {
                 "intent_prompt": source_intent,
@@ -7793,6 +7870,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             entry.setdefault("positions", {})[str(int(phrase.get("position", 0)))] = (
                 int(entry.setdefault("positions", {}).get(str(int(phrase.get("position", 0))), 0)) + 1
             )
+            if phrase.get("scene_category_locked"):
+                locked_category = str(phrase.get("scene_category") or phrase.get("primary") or "details").lower()
+                if locked_category in self.CATEGORY_DESCRIPTIONS:
+                    locked_scores = self._v2_category_template(0.0)
+                    locked_scores[locked_category] = 1.0
+                    entry["primary"] = locked_category
+                    entry["machine_primary"] = locked_category
+                    entry["category_scores"] = dict(locked_scores)
+                    entry["clip_heuristic_scores"] = dict(locked_scores)
+                    entry["effective_category_scores"] = dict(locked_scores)
+                    entry["confidence"] = 1.0
+                entry["category_source"] = "user"
+                entry["category_locked"] = True
+                entry["last_seen_iter"] = int(iter_num)
+                memory[text] = entry
+                touched.append(text)
+                if len(trained) < 8:
+                    trained.append(f"{text}[scene_builder:user locked]")
+                continue
             kind_scale = self._v2_memory_kind_scale(entry.get("kind", "phrase"))
 
             machine_scores = self._v2_clean_category_scores(entry.get("clip_heuristic_scores", {}))
@@ -8554,12 +8650,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             selected,
         )
 
-    def _v2_apply_perfect_repair_phrases(self, prompt, intent_family_slot):
+    def _v2_apply_perfect_repair_phrases(
+        self,
+        prompt,
+        intent_family_slot,
+        intent_prompt="",
+        intent_phrases=None,
+        clip=None,
+        encode_cache=None,
+    ):
         if not isinstance(intent_family_slot, dict):
             return prompt, "Perfect repairs: none.", []
         repairs = intent_family_slot.get("perfect_repairs", {})
         if not isinstance(repairs, dict) or not repairs:
             return prompt, "Perfect repairs: none.", []
+        rejected = intent_family_slot.get("rejected_repairs", {})
+        rejected = rejected if isinstance(rejected, dict) else {}
         additions = []
         for entry in sorted(
             repairs.values(),
@@ -8575,7 +8681,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if (
                 not text or
                 self._v2_prompt_contains_text(prompt, text) or
-                not self._v2_prompt_repair_text_allowed(text)
+                not self._v2_prompt_repair_text_allowed(text) or
+                not self._v2_memory_entry_matches_current_scene(
+                    text,
+                    intent_prompt or prompt,
+                    intent_phrases or [],
+                    clip=clip,
+                    encode_cache=encode_cache,
+                )
+            ):
+                continue
+            rejection = rejected.get(text)
+            if (
+                isinstance(rejection, dict) and
+                int(rejection.get("count", 0) or 0) >= int(entry.get("count", 0) or 0) and
+                not self._v2_phrase_represented_by(text, intent_phrases or [])
             ):
                 continue
             additions.append(text)
@@ -8609,13 +8729,170 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             })
         return serializable
 
-    def _v2_compose_lucky_prompt(self, prompt, phrases, global_state):
+    def _v2_scene_builder_category_for_entry(self, entry):
+        category = str(entry.get("primary", "") if isinstance(entry, dict) else "").lower()
+        if category in self.CATEGORY_DESCRIPTIONS:
+            return category
+        scores = entry.get("effective_category_scores", entry.get("category_scores", {})) if isinstance(entry, dict) else {}
+        if isinstance(scores, dict):
+            primary, _ = self._v2_scores_primary(scores)
+            return primary
+        return self._v2_primary_category_for_text(entry.get("text", "") if isinstance(entry, dict) else entry)
+
+    def _v2_scene_entry_locked(self, item):
+        return isinstance(item, dict) and bool(item.get("category_locked"))
+
+    def _v2_sync_scene_builder_memory(self, state, global_state, previous_run, iter_num):
+        if not isinstance(state, dict) or not isinstance(previous_run, dict):
+            return "Scene Builder sync: no previous run."
+        scene_db = state.get("scene_builder")
+        if not isinstance(scene_db, dict):
+            return "Scene Builder sync: unavailable."
+        memory = scene_db.setdefault("universal_memory", {})
+        if not isinstance(memory, dict):
+            memory = {}
+            scene_db["universal_memory"] = memory
+        phrase_memory = global_state.get("phrase_memory", {}) if isinstance(global_state, dict) else {}
+        timestamp = self._v2_now_iso()
+        touched = []
+        skipped_locked = 0
+        for phrase in self._v2_concept_units_for_run(previous_run):
+            text = self._v2_clean_phrase_text(phrase.get("text", ""))
+            if not text:
+                continue
+            key = self._v2_scene_key(text)
+            entry = phrase_memory.get(text, phrase)
+            category = self._v2_scene_builder_category_for_entry(entry)
+            if category not in self.CATEGORY_DESCRIPTIONS:
+                category = "details"
+            existing = memory.get(key)
+            if isinstance(existing, dict) and self._v2_scene_entry_locked(existing):
+                existing["count"] = int(existing.get("count", 0) or 0) + 1
+                existing["updated_at"] = timestamp
+                skipped_locked += 1
+                continue
+            row = dict(existing or {})
+            row["text"] = row.get("text") or text
+            row["source"] = "positive"
+            row["category"] = category
+            row["category_source"] = "refiner"
+            row["category_locked"] = False
+            row["tokens"] = self._v2_phrase_words(text)
+            row["count"] = int(row.get("count", 0) or 0) + 1
+            row.setdefault("created_at", timestamp)
+            row["updated_at"] = timestamp
+            row["wildcard"] = bool(row.get("wildcard"))
+            memory[key] = row
+            touched.append(text)
+            if len(touched) >= 24:
+                break
+        if not touched and not skipped_locked:
+            return "Scene Builder sync: no phrase updates."
+        return (
+            f"Scene Builder sync: updated {len(touched)} unlocked phrase(s)"
+            f"{', skipped ' + str(skipped_locked) + ' locked' if skipped_locked else ''}."
+        )
+
+    def _v2_memory_entry_matches_current_scene(self, text, prompt, intent_phrases=None, clip=None, encode_cache=None):
+        clean = self._v2_clean_phrase_text(text)
+        prompt_clean = self._v2_clean_phrase_text(prompt)
+        if not clean:
+            return False
+        if self._v2_user_intent_prompt_is_vague(prompt_clean):
+            return True
+        if self._v2_repair_candidate_matches_intent(clean, self._v2_repair_intent_roots(prompt_clean)):
+            return True
+        if self._v2_phrase_represented_by(clean, intent_phrases or []):
+            return True
+        if clip is not None and prompt_clean:
+            return self._v2_text_semantic_similarity(clip, clean, prompt_clean, encode_cache=encode_cache) >= 0.62
+        return False
+
+    def _v2_wildcard_phrase_for_segment(self, segment, wildcard_items):
+        segment_clean = self._v2_clean_phrase_text(segment)
+        if not segment_clean:
+            return ""
+        for phrase in wildcard_items:
+            if self._v2_phrase_texts_match(segment_clean, phrase):
+                return phrase
+            if self._v2_prompt_contains_text(segment_clean, phrase) or self._v2_prompt_contains_text(phrase, segment_clean):
+                return phrase
+        return ""
+
+    def _v2_wildcard_phrases_similar(self, left, right, clip=None, encode_cache=None):
+        if self._v2_phrase_texts_match(left, right):
+            return True
+        left_roots = self._v2_repair_intent_roots(left)
+        right_roots = self._v2_repair_intent_roots(right)
+        if left_roots and right_roots:
+            overlap = left_roots & right_roots
+            if overlap and (len(overlap) / float(max(1, min(len(left_roots), len(right_roots))))) >= 0.50:
+                return True
+        if clip is None:
+            return False
+        return self._v2_text_semantic_similarity(clip, left, right, encode_cache=encode_cache) >= 0.82
+
+    def _v2_resolve_scene_builder_wildcards(self, prompt, scene_db, clip=None, encode_cache=None):
+        if not isinstance(scene_db, dict) or not str(prompt or "").strip():
+            return prompt, "Scene Builder wildcard cleanup: unavailable."
+        memory = scene_db.get("universal_memory", {})
+        if not isinstance(memory, dict):
+            return prompt, "Scene Builder wildcard cleanup: unavailable."
+        wildcard_items = [
+            self._v2_clean_phrase_text(item.get("text", ""))
+            for item in memory.values()
+            if isinstance(item, dict) and bool(item.get("wildcard"))
+        ]
+        wildcard_items = [item for item in wildcard_items if item]
+        if not wildcard_items:
+            return prompt, "Scene Builder wildcard cleanup: none."
+
+        parts = re.split(r"([,;.\n]+)", str(prompt or ""))
+        kept_wildcards = []
+        removed = []
+        for index in range(0, len(parts), 2):
+            segment = parts[index].strip()
+            phrase = self._v2_wildcard_phrase_for_segment(segment, wildcard_items)
+            if not phrase:
+                continue
+            if any(self._v2_wildcard_phrases_similar(phrase, kept, clip, encode_cache) for kept in kept_wildcards):
+                removed.append(segment)
+                parts[index] = ""
+                continue
+            kept_wildcards.append(phrase)
+        if not removed:
+            return prompt, "Scene Builder wildcard cleanup: no duplicates."
+        output = "".join(parts)
+        output = re.sub(r"\s*([,;.])\s*([,;.]\s*)+", r"\1 ", output)
+        output = re.sub(r"(?:^|[\s,;.])+\n", "\n", output)
+        output = re.sub(r"\s+", " ", output.replace("\n", ", ")).strip(" ,;.")
+        return output, f"Scene Builder wildcard cleanup: removed {len(removed)} duplicate wildcard phrase(s)."
+
+    def _v2_compose_lucky_prompt(
+        self,
+        prompt,
+        phrases,
+        global_state,
+        intent_prompt="",
+        intent_phrases=None,
+        clip=None,
+        encode_cache=None,
+    ):
         memory = global_state.get("phrase_memory", {})
         scored = []
         for text, entry in memory.items():
             if not isinstance(entry, dict):
                 continue
             if not self._v2_auto_inject_entry_allowed(entry, prompt):
+                continue
+            primary = str(entry.get("primary", "details")).lower()
+            if primary in {"action", "camera", "details"} and not self._v2_memory_entry_matches_current_scene(
+                entry.get("text", text),
+                intent_prompt or prompt,
+                intent_phrases,
+                clip=clip,
+                encode_cache=encode_cache,
+            ):
                 continue
             score = float(entry.get("score", 0.0))
             score += min(1.0, int(entry.get("liked_count", 0)) * 0.14)
@@ -9086,6 +9363,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         rating_profile = normalize_refiner_v2_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
+        scene_db, scene_builder_status = self._v2_scene_builder_db(state)
         global_state = state.setdefault("global", {})
         global_state.setdefault("phrase_memory", {})
         global_state.setdefault("axis_conditioning_memory", {})
@@ -9125,6 +9403,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
+        scene_sync_status = self._v2_sync_scene_builder_memory(
+            state,
+            global_state,
+            previous_run,
+            int(global_state.get("total_iterations", 0)) + 1,
+        )
         intent_family_status, _ = self._v2_update_intent_family_memory(
             global_state,
             previous_run,
@@ -9145,7 +9429,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
-        memory_status = f"{memory_status}\n{intent_family_status}\n{intent_learning_status}"
+        memory_status = f"{memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile)
@@ -9169,6 +9453,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._ordered_prompt_phrases(analysis_prompt),
             global_state,
             encode_cache=encode_cache,
+            scene_db=scene_db,
         )
         intent_phrases = []
         if intent_prompt and not intent_prompt_is_vague and not current_prompt_refusal:
@@ -9177,6 +9462,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._ordered_prompt_phrases(intent_prompt),
                 global_state,
                 encode_cache=encode_cache,
+                scene_db=scene_db,
             )
         intent_source_prompt = self._v2_intent_source_prompt(analysis_prompt, intent_prompt, intent_prompt_is_vague)
         current_family_key, current_family_slot, current_family_similarity = self._v2_intent_family_slot(
@@ -9200,13 +9486,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         intent_alignment_adjustments = []
         perfect_repair_status = "Perfect repairs: none."
         perfect_repair_adjustments = []
+        wildcard_status = "Scene Builder wildcard cleanup: none."
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
             encoded_role = "refusal passthrough"
             refusal_status = "Current prompt refused by enhancer; storage skipped."
         elif im_feeling_lucky and clip is not None:
-            prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(analysis_prompt, phrases, global_state)
+            prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(
+                analysis_prompt,
+                phrases,
+                global_state,
+                intent_prompt=intent_source_prompt,
+                intent_phrases=intent_phrases,
+                clip=clip,
+                encode_cache=encode_cache,
+            )
+            prompt_to_encode, wildcard_status = self._v2_resolve_scene_builder_wildcards(
+                prompt_to_encode,
+                scene_db,
+                clip=clip,
+                encode_cache=encode_cache,
+            )
             encoded_role = "lucky prompt"
         else:
             aligned_prompt, intent_alignment_status, intent_alignment_adjustments = self._v2_apply_intent_alignment_memory(
@@ -9219,6 +9520,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             aligned_prompt, perfect_repair_status, perfect_repair_adjustments = self._v2_apply_perfect_repair_phrases(
                 aligned_prompt,
                 current_family_slot,
+                intent_prompt=intent_source_prompt,
+                intent_phrases=intent_phrases,
+                clip=clip,
+                encode_cache=encode_cache,
             )
             prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(
                 aligned_prompt,
@@ -9234,6 +9539,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback,
                 intent_phrases=intent_phrases,
                 intent_family_slot=current_family_slot,
+            )
+            prompt_to_encode, wildcard_status = self._v2_resolve_scene_builder_wildcards(
+                prompt_to_encode,
+                scene_db,
+                clip=clip,
+                encode_cache=encode_cache,
             )
             if im_feeling_lucky and clip is None:
                 lucky_status = f"Lucky: unavailable without CLIP | connected CONDITIONING accepted. {emphasis_status}"
@@ -9412,12 +9723,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
+            f"{scene_builder_status}\n"
             f"{repair_persistence_status}\n"
             f"{lucky_status}"
             f"\nIntent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}"
             f"\n{intent_alignment_status}"
             f"\n{perfect_repair_status}"
             f"\n{repair_status}"
+            f"\n{wildcard_status}"
             f"\n{negative_repair_status}"
             f"\n{vision_status}"
             f"{refusal_status_line}"
@@ -9444,6 +9757,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
                 f"Reason: {learning_reason}\n"
                 f"{self._v2_axis_feedback_status(axis_feedback)}\n"
+                f"{scene_builder_status}\n"
                 f"{repair_persistence_status}\n"
                 f"{memory_status}\n"
                 f"{negative_memory_status}"
@@ -9462,6 +9776,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{intent_alignment_status}\n"
                 f"{perfect_repair_status}\n"
                 f"{repair_status}\n"
+                f"{wildcard_status}\n"
                 f"{negative_repair_status}\n"
                 f"Negative encode: {negative_encode_status}\n"
                 f"{vision_status}"

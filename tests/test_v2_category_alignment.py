@@ -296,6 +296,139 @@ def test_prompt_repair_blocks_appearance_subject_and_environment():
     assert all(candidate["text"] != "white tights" for candidate in candidates)
 
 
+def test_scene_builder_user_category_overrides_refiner_classification():
+    refiner = FunPackVideoRefinerV2()
+    scene_db = {
+        "universal_memory": {
+            "running pose": {
+                "text": "running pose",
+                "category": "appearance",
+                "category_source": "user",
+                "category_locked": True,
+            }
+        }
+    }
+
+    phrase = refiner._v2_classify_phrases(
+        None,
+        [{"text": "running pose", "tokens": refiner._v2_phrase_words("running pose")}],
+        {"phrase_memory": {}},
+        scene_db=scene_db,
+    )[0]
+
+    assert phrase["primary"] == "appearance"
+    assert phrase["source"] == "scene_builder_user"
+    assert phrase["scene_category_locked"] is True
+
+
+def test_scene_builder_locked_category_is_not_trained_by_refiner():
+    refiner = FunPackVideoRefinerV2()
+    scene_db = {
+        "universal_memory": {
+            "running pose": {
+                "text": "running pose",
+                "category": "appearance",
+                "category_source": "user",
+                "category_locked": True,
+            }
+        }
+    }
+    global_state = {"phrase_memory": {}}
+    phrase = refiner._v2_classify_phrases(
+        None,
+        [{"text": "running pose", "tokens": refiner._v2_phrase_words("running pose")}],
+        global_state,
+        scene_db=scene_db,
+    )[0]
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        {"prompt": "running pose", "phrases": [phrase]},
+        normalize_refiner_v2_rating("Perfect"),
+        1,
+        refiner._v2_axis_feedback(normalize_refiner_v2_rating("Perfect"), None),
+    )
+
+    entry = global_state["phrase_memory"]["running pose"]
+    assert entry["primary"] == "appearance"
+    assert entry["category_locked"] is True
+    assert entry["category_evidence_count"] == 0
+    assert entry["liked_count"] == 0
+
+
+def test_scene_builder_wildcard_cleanup_runs_after_refiner_processing():
+    refiner = FunPackVideoRefinerV2()
+    scene_db = {
+        "universal_memory": {
+            "red dress": {"text": "red dress", "category": "appearance", "wildcard": True},
+            "blue dress": {"text": "blue dress", "category": "appearance", "wildcard": True},
+        }
+    }
+
+    prompt, status = refiner._v2_resolve_scene_builder_wildcards(
+        "person walking, red dress, blue dress",
+        scene_db,
+    )
+
+    assert prompt == "person walking, red dress"
+    assert "removed 1 duplicate" in status
+
+
+def test_lucky_composition_gates_unrelated_old_action_by_current_intent():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {
+            "dancing in rain": {
+                "text": "dancing in rain",
+                "primary": "action",
+                "effective_category_scores": refiner._v2_heuristic_scores("dancing in rain"),
+                "score": 6.0,
+                "liked_count": 6,
+                "wanted_axes": {"action": 4},
+            },
+            "walking on beach": {
+                "text": "walking on beach",
+                "primary": "action",
+                "effective_category_scores": refiner._v2_heuristic_scores("walking on beach"),
+                "score": 2.0,
+                "liked_count": 1,
+                "wanted_axes": {"action": 1},
+            },
+        }
+    }
+
+    lucky, status = refiner._v2_compose_lucky_prompt(
+        "walking on beach",
+        prompt_phrases(refiner, "walking on beach", global_state),
+        global_state,
+        intent_prompt="walking on beach",
+    )
+
+    assert "walking on beach" in lucky
+    assert "dancing in rain" not in lucky
+    assert "Lucky: on" in status
+
+
+def test_perfect_repair_does_not_inject_after_scene_change():
+    refiner = FunPackVideoRefinerV2()
+    slot = {
+        "perfect_repairs": {
+            "dancing in rain": {"text": "dancing in rain", "axes": {"action": 1}, "count": 3}
+        }
+    }
+
+    repaired, status, adjustments = refiner._v2_apply_perfect_repair_phrases(
+        "walking on beach",
+        slot,
+        intent_prompt="walking on beach",
+        intent_phrases=prompt_phrases(refiner, "walking on beach"),
+    )
+
+    assert repaired == "walking on beach"
+    assert adjustments == []
+    assert "already represented" in status
+
+
 def test_intent_alignment_learns_missing_original_intent_from_enhancer_variant():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}

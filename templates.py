@@ -32,6 +32,7 @@ SCENE_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
 SCENE_DB_VERSION = 1
 SCENE_STATE_FIELD = "scene_builder"
+SCENE_CATEGORY_SOURCES = {"auto", "refiner", "user"}
 WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
 SCENE_CATEGORIES = {
     "negative": {"bad", "blurry", "worst", "low", "noise", "deformed", "artifact", "ugly", "broken"},
@@ -376,11 +377,15 @@ def remember_scene_phrases(data, positive_prompt="", negative_prompt=""):
                 "tokens": phrase["tokens"],
                 "count": 0,
                 "created_at": now_iso(),
+                "category_source": "auto",
+                "category_locked": False,
             })
-            current["text"] = current.get("text") or phrase["text"]
-            current["source"] = source
-            current["category"] = phrase["category"]
-            current["tokens"] = phrase["tokens"]
+            if not bool(current.get("category_locked")):
+                current["text"] = current.get("text") or phrase["text"]
+                current["source"] = source
+                current["category"] = phrase["category"]
+                current["tokens"] = phrase["tokens"]
+                current["category_source"] = str(current.get("category_source") or "auto")
             current["count"] = int(current.get("count", 0) or 0) + 1
             current["updated_at"] = now_iso()
             changed = True
@@ -401,6 +406,8 @@ def scene_memory_items(data):
             "key": str(key),
             "source": item.get("source", "positive"),
             "category": item.get("category", "details"),
+            "category_source": item.get("category_source", "auto"),
+            "category_locked": bool(item.get("category_locked")),
             "tokens": item.get("tokens", scene_token_words(text)),
             "count": int(item.get("count", 0) or 0),
             "wildcard": bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip()),
@@ -432,10 +439,16 @@ def normalize_scene_memory_items(value):
             category = "negative" if source == "negative" else "details"
         tokens = scene_token_words(text)
         wildcard = bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip())
+        category_source = str(item.get("category_source") or "auto").strip().lower()
+        if category_source not in SCENE_CATEGORY_SOURCES:
+            category_source = "user" if bool(item.get("category_locked")) else "auto"
+        category_locked = bool(item.get("category_locked")) or category_source == "user"
         memory[key] = {
             "text": text,
             "source": source,
             "category": category,
+            "category_source": category_source,
+            "category_locked": category_locked,
             "tokens": tokens,
             "count": max(0, int(item.get("count", 0) or 0)),
             "created_at": str(item.get("created_at") or now_iso()),
@@ -443,6 +456,34 @@ def normalize_scene_memory_items(value):
             "wildcard": wildcard,
         }
     return memory
+
+
+def scene_memory_authority_changed(previous, current):
+    if not isinstance(previous, dict) or not isinstance(current, dict):
+        return True
+    return any(
+        str(previous.get(field, "")).strip().lower() != str(current.get(field, "")).strip().lower()
+        for field in ("text", "source", "category")
+    )
+
+
+def apply_scene_database_authority(previous_memory, incoming_memory):
+    previous_memory = previous_memory if isinstance(previous_memory, dict) else {}
+    incoming_memory = incoming_memory if isinstance(incoming_memory, dict) else {}
+    resolved = {}
+    for key, item in incoming_memory.items():
+        if not isinstance(item, dict):
+            continue
+        current = dict(item)
+        previous = previous_memory.get(key)
+        if isinstance(previous, dict) and not scene_memory_authority_changed(previous, current):
+            current["category_source"] = str(previous.get("category_source") or "auto")
+            current["category_locked"] = bool(previous.get("category_locked"))
+        else:
+            current["category_source"] = "user"
+            current["category_locked"] = True
+        resolved[key] = current
+    return resolved
 
 
 def normalize_scene_phrase_list(value):
@@ -955,6 +996,7 @@ async def funpack_scene_database_save(request):
     incoming = body.get("universal_memory", body.get("memory", {}))
     memory = normalize_scene_memory_items(incoming)
     data = load_scene_db(key)
+    memory = apply_scene_database_authority(data.get("universal_memory", {}), memory)
     data["universal_memory"] = memory
     save_scene_db(data, key)
     return web.json_response({"saved": len(memory), "data": data, "memory": scene_memory_items(data)})

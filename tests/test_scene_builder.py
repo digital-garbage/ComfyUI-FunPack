@@ -25,7 +25,14 @@ sys.modules.setdefault(
 
 import templates
 from conditioning import FunPackVideoRefinerV2
-from templates import FunPackSceneBuilder, load_scene_db, normalize_scene_memory_items, save_scene_db
+from templates import (
+    FunPackSceneBuilder,
+    apply_scene_database_authority,
+    load_scene_db,
+    normalize_scene_memory_items,
+    remember_scene_phrases,
+    save_scene_db,
+)
 
 
 def use_tmp_scene_store(monkeypatch, tmp_path):
@@ -358,3 +365,81 @@ def test_scene_builder_legacy_wildcard_group_migrates_to_checkbox():
     ])
 
     assert memory["red dress"]["wildcard"] is True
+
+
+def test_scene_builder_database_authority_preserves_unchanged_rows():
+    previous = normalize_scene_memory_items([
+        {"text": "red dress", "category": "appearance", "category_source": "auto", "category_locked": False},
+    ])
+    incoming = normalize_scene_memory_items([
+        {"text": "red dress", "category": "appearance"},
+    ])
+
+    resolved = apply_scene_database_authority(previous, incoming)
+
+    assert resolved["red dress"]["category_source"] == "auto"
+    assert resolved["red dress"]["category_locked"] is False
+
+
+def test_scene_builder_database_authority_locks_new_and_changed_rows():
+    previous = normalize_scene_memory_items([
+        {"text": "red dress", "category": "appearance"},
+        {"text": "walking pose", "category": "action"},
+    ])
+    incoming = normalize_scene_memory_items([
+        {"text": "red dress", "category": "style"},
+        {"text": "blue dress", "category": "appearance"},
+    ])
+
+    resolved = apply_scene_database_authority(previous, incoming)
+
+    assert resolved["red dress"]["category_source"] == "user"
+    assert resolved["red dress"]["category_locked"] is True
+    assert resolved["blue dress"]["category_source"] == "user"
+    assert resolved["blue dress"]["category_locked"] is True
+
+
+def test_scene_builder_prompt_learning_keeps_locked_user_category():
+    data = {
+        "universal_memory": normalize_scene_memory_items([
+            {"text": "running pose", "category": "appearance", "category_source": "user", "category_locked": True},
+        ]),
+        "scenes": {},
+    }
+
+    remember_scene_phrases(data, positive_prompt="running pose")
+
+    item = data["universal_memory"]["running pose"]
+    assert item["category"] == "appearance"
+    assert item["category_source"] == "user"
+    assert item["category_locked"] is True
+    assert item["count"] == 1
+
+
+def test_refiner_scene_builder_sync_skips_locked_rows():
+    refiner = FunPackVideoRefinerV2()
+    state = {
+        "scene_builder": {
+            "universal_memory": normalize_scene_memory_items([
+                {"text": "running pose", "category": "appearance", "category_source": "user", "category_locked": True},
+            ]),
+            "scenes": {},
+        }
+    }
+    global_state = {"phrase_memory": {}}
+    phrase = refiner._v2_classify_phrases(None, [{"text": "running pose", "tokens": ["running", "pose"]}])[0]
+    last_run = {"prompt": "running pose", "phrases": [phrase]}
+
+    refiner._v2_update_phrase_memory(
+        global_state,
+        last_run,
+        {"key": "like", "reward": 1.0, "label": "Perfect"},
+        1,
+        {"missing_axes": [], "satisfied_axes": ["action"], "resolved_axes": [], "regressed_axes": [], "wrong_axes": []},
+    )
+    refiner._v2_sync_scene_builder_memory(state, global_state, last_run, 1)
+
+    item = state["scene_builder"]["universal_memory"]["running pose"]
+    assert item["category"] == "appearance"
+    assert item["category_source"] == "user"
+    assert item["category_locked"] is True
