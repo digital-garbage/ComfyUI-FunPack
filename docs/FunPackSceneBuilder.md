@@ -1,14 +1,10 @@
 # FunPack Scene Builder
 
-`FunPack Scene Builder` stores named scene presets inside the selected refinement key, separate from Refiner's conditioning-delta learning. Connected positive and negative prompts are memory sources only: every queue run collects their phrases into universal memory, but the node outputs composed scene text or pass-through text in Learning mode.
+`FunPack Scene Builder` stores named scene presets inside the selected refinement key, separate from Refiner's conditioning-delta learning. Connected positive and negative prompts are memory sources only: every queue run collects their phrases and useful words into universal memory, but the node outputs composed scene text or pass-through text in Learning mode.
 
 ## Visible Controls
 
-**scene_name**: The scene being edited or saved.
-
-**mode**: `Manual`, `Auto`, or `Learning`.
-
-All other Scene Builder controls live in the custom editor UI.
+The node surface is a compact launcher. Scene name, mode, aliases, prompt editors, saved scenes, and database controls live in the centered custom editor UI.
 
 ## Editor Menus
 
@@ -18,6 +14,8 @@ All other Scene Builder controls live in the custom editor UI.
 
 **Database**: Add, edit, delete, search, categorize, and wildcard-group universal words and phrases.
 
+The editor refreshes the selected scene database before opening. When `refinement_key_input` is connected to a Refinement Key Loader, the editor reads that linked key so prompt memory appears in the same database where queue runs stored it.
+
 Each menu has **Back**, **Cancel**, and **Confirm** controls. Cancel restores the menu snapshot from before editing. Confirm saves prompt/database edits.
 
 ## Modes
@@ -26,7 +24,7 @@ Each menu has **Back**, **Cancel**, and **Confirm** controls. Cancel restores th
 
 **Auto** scans `intent_prompt` for a saved scene name or alias. Exact matches are preferred, then a conservative word-match fallback is used. If nothing matches, the node falls back to Manual output.
 
-**Learning** saves connected positive and negative prompt phrases into Scene Builder universal memory, then passes the connected positive prompt, negative prompt, and LoRA stack through unchanged.
+**Learning** saves connected positive and negative prompt phrases and useful words into Scene Builder universal memory, then passes the connected positive prompt, negative prompt, and LoRA stack through unchanged.
 
 ## Connection-Only Inputs
 
@@ -56,7 +54,7 @@ Database phrases can share a wildcard group. If multiple phrases from the same w
 
 ## Workflow
 
-1. Connect positive and negative prompt text, then queue once to collect phrase memory.
+1. Connect positive and negative prompt text, then queue once to collect phrase and word memory.
 2. Open **Database** to clean up phrases, assign categories, or set wildcard groups.
 3. Open **Positive prompt** or **Negative prompt** to type freely and insert chips from the database.
 4. Enter a scene name and confirm or save the scene.

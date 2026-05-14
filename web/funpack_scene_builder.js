@@ -4,6 +4,8 @@ import { api } from "../../scripts/api.js";
 const NODE_NAME = "FunPackSceneBuilder";
 const NONE_SCENE = "-None-";
 const HIDDEN_WIDGETS = new Set([
+  "scene_name",
+  "mode",
   "scene",
   "aliases",
   "action",
@@ -48,6 +50,11 @@ function setDirty(node) {
   app.graph?.setDirtyCanvas?.(true, true);
 }
 
+function normalizeRefinementKey(value) {
+  const clean = String(value || "").trim();
+  return clean && clean !== NONE_SCENE ? clean : "";
+}
+
 function fitString(ctx, text, maxWidth) {
   text = String(text ?? "");
   if (ctx.measureText(text).width <= maxWidth) {
@@ -86,7 +93,31 @@ function button(ctx, widget, key, label, x, y, width, height) {
 }
 
 function currentRefinementKey(node) {
-  return String(getWidgetValue(node, "refinement_key", "") || "").trim();
+  const linked = linkedRefinementKey(node);
+  if (linked) {
+    return linked;
+  }
+  return normalizeRefinementKey(getWidgetValue(node, "refinement_key", ""));
+}
+
+function linkedInputNode(node, inputName) {
+  const input = (node.inputs || []).find((item) => item.name === inputName);
+  const linkId = Array.isArray(input?.link) ? input.link[0] : input?.link;
+  if (linkId == null) {
+    return null;
+  }
+  const link = app.graph?.links?.[linkId];
+  return link ? app.graph?.getNodeById?.(link.origin_id) : null;
+}
+
+function linkedRefinementKey(node) {
+  const source = linkedInputNode(node, "refinement_key_input");
+  if (!source) {
+    return "";
+  }
+  const selected = normalizeRefinementKey(getWidgetValue(source, "refinement_key", ""));
+  const typed = normalizeRefinementKey(getWidgetValue(source, "key_name", ""));
+  return selected || typed;
 }
 
 function sceneNames() {
@@ -343,6 +374,26 @@ function panelButton(label, className = "") {
   return element;
 }
 
+function panelTextInput(value, placeholder) {
+  const element = document.createElement("input");
+  element.type = "text";
+  element.value = String(value || "");
+  element.placeholder = placeholder;
+  return element;
+}
+
+function panelSelect(values, selected) {
+  const element = document.createElement("select");
+  for (const value of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    option.selected = value === selected;
+    element.append(option);
+  }
+  return element;
+}
+
 function phraseButton(text, onInsert) {
   const element = document.createElement("button");
   element.type = "button";
@@ -406,13 +457,58 @@ function renderPanel(panel, node, view) {
 function renderMenu(panel, node) {
   const body = shell(panel.root, "FunPack Scene Builder", "menu");
 
+  const controls = document.createElement("div");
+  controls.className = "funpack-scene-controls";
+  const sceneSelect = panelSelect(sceneNames(), String(getWidgetValue(node, "scene", NONE_SCENE) || NONE_SCENE));
+  sceneSelect.addEventListener("change", () => {
+    const name = sceneSelect.value;
+    if (name === NONE_SCENE) {
+      setWidgetValue(node, "scene", NONE_SCENE);
+      setWidgetValue(node, "scene_name", "");
+      setWidgetValue(node, "aliases", "");
+      setWidgetValue(node, "scene_positive", "");
+      setWidgetValue(node, "scene_negative", "");
+      setDirty(node);
+      renderPanel(panel, node, "menu");
+      return;
+    }
+    loadSceneIntoNode(node, name);
+    renderPanel(panel, node, "menu");
+  });
+  const sceneName = panelTextInput(getWidgetValue(node, "scene_name", ""), "Scene name");
+  sceneName.addEventListener("input", () => {
+    setWidgetValue(node, "scene_name", sceneName.value);
+    setDirty(node);
+  });
+  const mode = panelSelect(["Manual", "Auto", "Learning"], String(getWidgetValue(node, "mode", "Manual") || "Manual"));
+  mode.addEventListener("change", () => {
+    setWidgetValue(node, "mode", mode.value);
+    setDirty(node);
+  });
+  const aliases = panelTextInput(getWidgetValue(node, "aliases", ""), "Aliases, comma separated");
+  aliases.addEventListener("input", () => {
+    setWidgetValue(node, "aliases", aliases.value);
+    setDirty(node);
+  });
+  for (const [label, element] of [
+    ["Saved scene", sceneSelect],
+    ["Scene name", sceneName],
+    ["Mode", mode],
+    ["Aliases", aliases],
+  ]) {
+    const row = document.createElement("label");
+    const span = document.createElement("span");
+    span.textContent = label;
+    row.append(span, element);
+    controls.append(row);
+  }
+  body.append(controls);
+
   const current = document.createElement("div");
   current.className = "funpack-scene-current";
   const positive = String(getWidgetValue(node, "scene_positive", "") || "").trim();
   const negative = String(getWidgetValue(node, "scene_negative", "") || "").trim();
   for (const [label, value] of [
-    ["Scene", String(getWidgetValue(node, "scene_name", "") || "Unnamed")],
-    ["Mode", String(getWidgetValue(node, "mode", "Manual"))],
     ["Positive", positive || "empty"],
     ["Negative", negative || "empty"],
   ]) {
@@ -725,16 +821,31 @@ function openPanel(node, view = "menu") {
   root.className = "funpack-scene-panel";
   document.body.append(root);
   activePanel = { root, snapshots: {}, databaseItems: [] };
-  const canvasRect = app.canvas?.canvas?.getBoundingClientRect?.();
-  const scale = app.canvas?.ds?.scale || 1;
-  const offset = app.canvas?.ds?.offset || [0, 0];
-  const screenX = (canvasRect?.left || 0) + (node.pos[0] + node.size[0]) * scale + offset[0];
-  const screenY = (canvasRect?.top || 0) + node.pos[1] * scale + offset[1];
-  const left = Math.min(Math.max(12, window.innerWidth - 460), Math.max(12, screenX + 16));
-  const top = Math.min(Math.max(12, window.innerHeight - 620), Math.max(12, screenY));
-  root.style.left = `${left}px`;
-  root.style.top = `${top}px`;
-  renderPanel(activePanel, node, view);
+  const viewportWidth = Number(window.innerWidth);
+  const viewportHeight = Number(window.innerHeight);
+  if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && viewportWidth > 0 && viewportHeight > 0) {
+    root.style.left = "50%";
+    root.style.top = "50%";
+    root.style.transform = "translate(-50%, -50%)";
+  } else {
+    const canvasRect = app.canvas?.canvas?.getBoundingClientRect?.();
+    const scale = app.canvas?.ds?.scale || 1;
+    const offset = app.canvas?.ds?.offset || [0, 0];
+    const screenX = (canvasRect?.left || 0) + (node.pos[0] + node.size[0]) * scale + offset[0];
+    const screenY = (canvasRect?.top || 0) + node.pos[1] * scale + offset[1];
+    const left = Math.min(Math.max(12, window.innerWidth - 460), Math.max(12, screenX + 16));
+    const top = Math.min(Math.max(12, window.innerHeight - 620), Math.max(12, screenY));
+    root.style.left = `${left}px`;
+    root.style.top = `${top}px`;
+    root.style.transform = "";
+  }
+  void refreshNode(node).catch((error) => {
+    console.warn("FunPack: failed to refresh scenes before opening Scene Builder", error);
+  }).finally(() => {
+    if (activePanel?.root === root) {
+      renderPanel(activePanel, node, view);
+    }
+  });
 }
 
 let stylesInjected = false;
@@ -810,6 +921,20 @@ function injectStyles() {
       gap: 5px;
       margin-bottom: 10px;
     }
+    .funpack-scene-controls {
+      display: grid;
+      gap: 7px;
+      margin-bottom: 10px;
+    }
+    .funpack-scene-controls label {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+    .funpack-scene-controls span {
+      color: #b8c0ca;
+    }
     .funpack-scene-current div {
       display: grid;
       grid-template-columns: 78px minmax(0, 1fr);
@@ -846,6 +971,8 @@ function injectStyles() {
       outline: none;
     }
     .funpack-scene-search,
+    .funpack-scene-controls input,
+    .funpack-scene-controls select,
     .funpack-scene-db-tools input,
     .funpack-scene-db-tools select,
     .funpack-scene-db-row input,
@@ -919,7 +1046,7 @@ class SceneBuilderWidget {
   }
 
   computeSize(width) {
-    return [width, 142];
+    return [width, 82];
   }
 
   draw(ctx, node, width, y) {
@@ -928,8 +1055,7 @@ class SceneBuilderWidget {
     let cy = y + 4;
     const innerWidth = width - margin * 2;
     const mode = getWidgetValue(node, "mode", "Manual");
-    const positive = String(getWidgetValue(node, "scene_positive", "") || "").trim();
-    const negative = String(getWidgetValue(node, "scene_negative", "") || "").trim();
+    const scene = String(getWidgetValue(node, "scene_name", "") || "Unnamed scene").trim();
 
     ctx.save();
     ctx.beginPath();
@@ -939,7 +1065,7 @@ class SceneBuilderWidget {
     ctx.textBaseline = "middle";
     ctx.textAlign = "left";
     ctx.font = "12px sans-serif";
-    ctx.fillText(`Scene Builder: ${mode}`, margin, cy + 9);
+    ctx.fillText(fitString(ctx, `Scene Builder: ${scene}`, width - 134), margin, cy + 9);
     button(ctx, this, "open:menu", "Open Editor", width - 112, cy, 92, 20);
     cy += 28;
 
@@ -947,17 +1073,9 @@ class SceneBuilderWidget {
     button(ctx, this, "open:positive", "Positive", margin, cy, third, 28);
     button(ctx, this, "open:negative", "Negative", margin + third + 6, cy, third, 28);
     button(ctx, this, "open:database", "Database", margin + (third + 6) * 2, cy, innerWidth - (third + 6) * 2, 28);
-    cy += 42;
-
-    ctx.fillStyle = "#58a6d6";
-    ctx.fillText(`+ ${fitString(ctx, positive || "empty positive prompt", innerWidth - 12)}`, margin, cy);
-    cy += 20;
-    ctx.fillStyle = "#d67b7b";
-    ctx.fillText(`- ${fitString(ctx, negative || "empty negative prompt", innerWidth - 12)}`, margin, cy);
-    cy += 20;
     ctx.globalAlpha = app.canvas.editor_alpha * 0.62;
     ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
-    ctx.fillText(`${memoryItems().length} database phrase(s). Connected prompts learn on queue.`, margin, cy);
+    ctx.fillText(`${mode}. ${memoryItems().length} database phrase(s). Connected prompts learn on queue.`, margin, cy + 42);
     ctx.globalAlpha = app.canvas.editor_alpha;
     ctx.restore();
   }

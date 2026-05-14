@@ -8,7 +8,7 @@ Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It 
 
 Added Scene Builder `Learning` mode for changing-prompt generations: it collects phrase memory inside the selected refinement key while passing the connected prompt data through unchanged, and Refiner resets preserve that Scene Builder memory.
 
-Redesigned Scene Builder as a compact editor with visible scene name/mode controls plus Positive Prompt, Negative Prompt, and Database menus. Prompt editors preserve freely typed text while phrase chips can be clicked or dragged in from the database.
+Redesigned Scene Builder as a compact button-driven node with centered editor menus for scene name, mode, aliases, Positive Prompt, Negative Prompt, and Database controls. Prompt editors preserve freely typed text while phrase chips can be clicked or dragged in from the database, and connected prompts now teach useful words as well as phrase chunks.
 
 Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
 

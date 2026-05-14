@@ -258,6 +258,28 @@ def test_scene_builder_learning_mode_collects_memory_and_passes_inputs_through(m
     assert data["scenes"] == {}
 
 
+def test_scene_builder_collects_prompt_words_from_sentence_chunks(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    builder = FunPackSceneBuilder()
+
+    builder.build_scene(
+        scene="-None-",
+        scene_name="",
+        aliases="",
+        action="load",
+        mode="Learning",
+        positive_prompt="person smoking in the rain",
+        negative_prompt="",
+        refinement_key="word_key",
+    )
+
+    data = load_scene_db("word_key")
+    assert "person smoking in the rain" in data["universal_memory"]
+    assert "person" in data["universal_memory"]
+    assert "smoking" in data["universal_memory"]
+    assert "the" not in data["universal_memory"]
+
+
 def test_refiner_reset_preserves_scene_builder_memory_in_refinement_key(monkeypatch, tmp_path):
     use_tmp_scene_store(monkeypatch, tmp_path)
     builder = FunPackSceneBuilder()

@@ -44,6 +44,11 @@ SCENE_CATEGORIES = {
     "quality": {"masterpiece", "best", "quality", "detailed", "sharp", "highres", "high-res", "ultra", "perfect", "clean", "realism", "smooth", "crisp", "polished", "4k", "8k"},
     "details": {"reflection", "reflections", "texture", "textures", "shadow", "shadows", "smoke", "dust", "particles", "prop", "props", "fabric", "glass", "sparkles", "pattern", "grain"},
 }
+SCENE_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in",
+    "into", "is", "it", "its", "of", "on", "or", "the", "their", "then",
+    "there", "through", "to", "with", "without",
+}
 
 
 def template_store_dir():
@@ -321,7 +326,7 @@ def categorize_scene_phrase(text, source="positive"):
     return best[0]
 
 
-def extract_scene_phrases(text, source="positive"):
+def extract_scene_phrases(text, source="positive", include_words=False):
     phrases = []
     seen = set()
     for raw in re.split(r"[,;.\n]+", str(text or "")):
@@ -342,6 +347,19 @@ def extract_scene_phrases(text, source="positive"):
             "category": categorize_scene_phrase(clean, source),
             "tokens": words,
         })
+        if include_words:
+            for word in words:
+                word_key = word.lower().strip("._-")
+                if len(word_key) < 3 or word_key in SCENE_STOP_WORDS or word_key in seen:
+                    continue
+                seen.add(word_key)
+                phrases.append({
+                    "text": word_key,
+                    "key": word_key,
+                    "source": source,
+                    "category": categorize_scene_phrase(word_key, source),
+                    "tokens": [word_key],
+                })
     return phrases
 
 
@@ -349,7 +367,7 @@ def remember_scene_phrases(data, positive_prompt="", negative_prompt=""):
     memory = data.setdefault("universal_memory", {})
     changed = False
     for source, prompt in (("positive", positive_prompt), ("negative", negative_prompt)):
-        for phrase in extract_scene_phrases(prompt, source):
+        for phrase in extract_scene_phrases(prompt, source, include_words=True):
             key = phrase["key"]
             current = memory.setdefault(key, {
                 "text": phrase["text"],
