@@ -560,25 +560,18 @@ function phraseButton(text, onInsert) {
   return element;
 }
 
-function insertAtCursor(textarea, text) {
-  const start = textarea.selectionStart ?? textarea.value.length;
-  const end = textarea.selectionEnd ?? textarea.value.length;
-  const prefix = textarea.value.slice(0, start);
-  const suffix = textarea.value.slice(end);
-  const needsComma = prefix.trim() && !/[,\s.;\n]$/.test(prefix);
-  const insertion = `${needsComma ? ", " : ""}${text}`;
-  textarea.value = normalizePromptSpacing(`${prefix}${insertion}${suffix}`);
-  const cursor = prefix.length + insertion.length;
-  textarea.focus();
-  textarea.setSelectionRange(cursor, cursor);
-}
-
 function normalizePromptSpacing(value) {
   return String(value || "")
     .replace(/\s+([,.])/g, "$1")
     .replace(/([,.])([^\s,.])/g, "$1 $2")
     .replace(/[ \t\r\f\v]+/g, " ")
     .trim();
+}
+
+function normalizePromptEditorValue(value) {
+  return String(value || "")
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t\r\f\v]+([,.])/g, "$1");
 }
 
 function promptLookupKey(value) {
@@ -596,6 +589,195 @@ function promptContainsPhrase(prompt, phrase) {
     return false;
   }
   return ` ${promptKey} `.includes(` ${phraseKey} `);
+}
+
+function promptBoundary(value, index) {
+  if (index < 0 || index >= value.length) {
+    return true;
+  }
+  return !/[\w'’]/.test(value[index]);
+}
+
+function promptPhraseRanges(prompt, phrases) {
+  const source = String(prompt || "");
+  const ranges = [];
+  const occupied = new Array(source.length).fill(false);
+  const candidates = [...new Set((phrases || []).map((phrase) => normalizePromptSpacing(phrase)).filter(Boolean))]
+    .sort((left, right) => right.length - left.length || left.localeCompare(right));
+
+  for (const phrase of candidates) {
+    const pattern = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+    const regex = new RegExp(pattern, "gi");
+    let match = regex.exec(source);
+    while (match) {
+      const index = match.index;
+      const end = index + match[0].length;
+      const overlaps = occupied.slice(index, end).some(Boolean);
+      if (!overlaps && promptBoundary(source, index - 1) && promptBoundary(source, end)) {
+        ranges.push({ start: index, end, phrase, label: source.slice(index, end) });
+        for (let cursor = index; cursor < end; cursor += 1) {
+          occupied[cursor] = true;
+        }
+      }
+      match = regex.exec(source);
+    }
+  }
+
+  return ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+}
+
+function promptMemoryPhrases(isNegative = false) {
+  return memoryItems()
+    .filter((item) => isNegative ? item.source === "negative" || item.category === "negative" : item.source !== "negative" && item.category !== "negative")
+    .map((item) => item.text || item.key || "")
+    .filter(Boolean);
+}
+
+function richPromptText(root) {
+  let output = "";
+  const append = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      output += node.nodeValue || "";
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+    if (node.matches?.(".funpack-scene-inline-token")) {
+      output += node.textContent || "";
+      return;
+    }
+    if (node.tagName === "BR") {
+      output += "\n";
+      return;
+    }
+    for (const child of node.childNodes) {
+      append(child);
+    }
+  };
+  for (const child of root.childNodes) {
+    append(child);
+  }
+  return normalizePromptEditorValue(output);
+}
+
+function setCaretToEnd(element) {
+  element.focus();
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function setCaretInTextNode(node, offset) {
+  const range = document.createRange();
+  range.setStart(node, Math.max(0, Math.min(offset, (node.nodeValue || "").length)));
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function insertIntoRichPrompt(editor, text) {
+  editor.focus();
+  const current = richPromptText(editor);
+  const selection = window.getSelection();
+  const insertion = `${current.trim() && !/[,\s.;\n]$/.test(current) ? ", " : ""}${text}`;
+  if (!selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
+    editor.append(document.createTextNode(insertion));
+    setCaretToEnd(editor);
+  } else {
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(insertion);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+}
+
+function inlineTokenFromNode(node, root) {
+  if (!node || !root) {
+    return null;
+  }
+  const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  const token = element?.closest?.(".funpack-scene-inline-token");
+  return token && root.contains(token) ? token : null;
+}
+
+function nearestEditableChild(node, root) {
+  if (!node || node === root) {
+    return null;
+  }
+  let child = node;
+  while (child?.parentNode && child.parentNode !== root) {
+    child = child.parentNode;
+  }
+  return child?.parentNode === root ? child : null;
+}
+
+function adjacentInlineToken(editor, direction) {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.commonAncestorContainer)) {
+    return null;
+  }
+  if (!range.collapsed) {
+    for (const token of editor.querySelectorAll(".funpack-scene-inline-token")) {
+      if (range.intersectsNode(token)) {
+        return token;
+      }
+    }
+    return null;
+  }
+
+  const node = range.startContainer;
+  const offset = range.startOffset;
+  const token = inlineTokenFromNode(node, editor);
+  if (token) {
+    return token;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const atEdge = direction === "backward" ? offset === 0 : offset === (node.nodeValue || "").length;
+    if (!atEdge) {
+      return null;
+    }
+    const sibling = direction === "backward" ? node.previousSibling : node.nextSibling;
+    return inlineTokenFromNode(sibling, editor);
+  }
+
+  if (node.nodeType === Node.ELEMENT_NODE) {
+    const children = node.childNodes || [];
+    const child = node === editor ? children[direction === "backward" ? offset - 1 : offset] : nearestEditableChild(node, editor);
+    if (child) {
+      const sibling = node === editor ? child : (direction === "backward" ? child.previousSibling : child.nextSibling);
+      return inlineTokenFromNode(sibling || child, editor);
+    }
+  }
+
+  return null;
+}
+
+function editInlineTokenAsText(editor, token, direction) {
+  if (!token) {
+    return false;
+  }
+  const text = token.textContent || "";
+  const next = direction === "backward" ? text.slice(0, -1) : text.slice(1);
+  const caretOffset = direction === "backward" ? next.length : 0;
+  const replacement = document.createTextNode(next);
+  token.replaceWith(replacement);
+  editor.focus();
+  setCaretInTextNode(replacement, caretOffset);
+  return true;
 }
 
 function promptWords(value) {
@@ -623,8 +805,9 @@ function removePhraseFromPrompt(prompt, phrase) {
     }
     const padded = ` ${segmentKey} `;
     if (padded.includes(` ${phraseKey} `)) {
-      const pattern = new RegExp(`(^|\\s)${phraseKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=\\s|$)`, "i");
-      parts[index] = segmentKey.replace(pattern, " ").replace(/\s+/g, " ").trim();
+      const words = phraseKey.split(" ").map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const pattern = new RegExp(`(^|[^\\w'’])(${words.join("[^\\w'’]+")})(?=$|[^\\w'’])`, "i");
+      parts[index] = segment.replace(pattern, "$1").replace(/\s+/g, " ").trim();
       changed = true;
     }
   }
@@ -942,29 +1125,90 @@ function renderPromptEditor(panel, node, kind) {
   const body = shell(panel.root, isNegative ? "Negative prompt" : "Positive prompt", "prompt");
   const composer = document.createElement("div");
   composer.className = "funpack-scene-composer";
-  const textarea = document.createElement("textarea");
-  textarea.className = "funpack-scene-textarea";
-  textarea.spellcheck = false;
-  textarea.value = String(getWidgetValue(node, widgetName, "") || "");
-  textarea.placeholder = isNegative ? "Write negative prompt words and phrases here." : "Write positive prompt words and phrases here.";
-  textarea.addEventListener("input", () => {
-    textarea.value = textarea.value.replace(/\s+([,.])/g, "$1");
-    setWidgetValue(node, widgetName, textarea.value);
+  const editor = document.createElement("div");
+  editor.className = "funpack-scene-rich-prompt";
+  editor.contentEditable = "true";
+  editor.spellcheck = false;
+  editor.role = "textbox";
+  editor.ariaMultiline = "true";
+  editor.dataset.placeholder = isNegative ? "Write negative prompt words and phrases here." : "Write positive prompt words and phrases here.";
+  let promptValue = normalizePromptSpacing(getWidgetValue(node, widgetName, "") || "");
+  let renderingPrompt = false;
+
+  const setPromptValue = (value, options = {}) => {
+    promptValue = normalizePromptSpacing(value);
+    setWidgetValue(node, widgetName, promptValue);
     setDirty(node);
     updateUsedChips();
+    if (options.render) {
+      renderRichPrompt(Boolean(options.keepFocus));
+    }
+  };
+
+  const renderRichPrompt = (keepFocus = false) => {
+    renderingPrompt = true;
+    editor.replaceChildren();
+    const ranges = promptPhraseRanges(promptValue, promptMemoryPhrases(isNegative));
+    let cursor = 0;
+    for (const range of ranges) {
+      if (range.start > cursor) {
+        editor.append(document.createTextNode(promptValue.slice(cursor, range.start)));
+      }
+      const token = document.createElement("button");
+      token.type = "button";
+      token.className = "funpack-scene-inline-token";
+      token.contentEditable = "false";
+      token.dataset.phrase = range.phrase;
+      token.textContent = range.label;
+      token.title = `Remove ${range.phrase}`;
+      token.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setPromptValue(removePhraseFromPrompt(promptValue, range.phrase), { render: true, keepFocus: true });
+      });
+      editor.append(token);
+      cursor = range.end;
+    }
+    if (cursor < promptValue.length) {
+      editor.append(document.createTextNode(promptValue.slice(cursor)));
+    }
+    renderingPrompt = false;
+    if (keepFocus) {
+      setCaretToEnd(editor);
+    }
+  };
+
+  editor.addEventListener("input", () => {
+    if (renderingPrompt) {
+      return;
+    }
+    setPromptValue(richPromptText(editor), { render: false });
   });
-  textarea.addEventListener("dragover", (event) => event.preventDefault());
-  textarea.addEventListener("drop", (event) => {
+  editor.addEventListener("keydown", (event) => {
+    if (event.key !== "Backspace" && event.key !== "Delete") {
+      return;
+    }
+    const token = adjacentInlineToken(editor, event.key === "Backspace" ? "backward" : "forward");
+    if (!token?.dataset?.phrase) {
+      return;
+    }
+    event.preventDefault();
+    if (editInlineTokenAsText(editor, token, event.key === "Backspace" ? "backward" : "forward")) {
+      setPromptValue(richPromptText(editor), { render: false });
+    }
+  });
+  editor.addEventListener("blur", () => renderRichPrompt(false));
+  editor.addEventListener("dragover", (event) => event.preventDefault());
+  editor.addEventListener("drop", (event) => {
     event.preventDefault();
     const text = event.dataTransfer?.getData("text/plain");
     if (text) {
-      insertAtCursor(textarea, text);
-      textarea.dispatchEvent(new Event("input"));
+      insertIntoRichPrompt(editor, text);
+      setPromptValue(richPromptText(editor), { render: true, keepFocus: true });
     }
   });
-  const highlights = document.createElement("div");
-  highlights.className = "funpack-scene-inline-highlights";
-  composer.append(textarea, highlights);
+  renderRichPrompt(false);
+  composer.append(editor);
   body.append(composer);
 
   const search = document.createElement("input");
@@ -983,32 +1227,10 @@ function renderPromptEditor(panel, node, kind) {
   body.append(bank);
 
   const updateUsedChips = () => {
-    highlights.replaceChildren();
-    const usedPhrases = [];
     for (const chip of bank.querySelectorAll(".funpack-scene-chip[data-phrase]")) {
-      const used = promptContainsPhrase(textarea.value, chip.dataset.phrase || "");
+      const used = promptContainsPhrase(promptValue, chip.dataset.phrase || "");
       chip.classList.toggle("used", used);
       chip.title = used ? `Click to remove: ${chip.dataset.phrase}` : (chip.dataset.phrase || chip.textContent || "");
-      if (used && !usedPhrases.includes(chip.dataset.phrase || "")) {
-        usedPhrases.push(chip.dataset.phrase || "");
-      }
-    }
-    if (!usedPhrases.length) {
-      const empty = document.createElement("span");
-      empty.className = "funpack-scene-muted";
-      empty.textContent = "No database phrases in this prompt.";
-      highlights.append(empty);
-      return;
-    }
-    for (const phrase of usedPhrases) {
-      const item = panelButton(phrase, "compact");
-      item.classList.add("funpack-scene-highlight");
-      item.title = `Remove ${phrase}`;
-      item.addEventListener("click", () => {
-        textarea.value = removePhraseFromPrompt(textarea.value, phrase);
-        textarea.dispatchEvent(new Event("input"));
-      });
-      highlights.append(item);
     }
   };
 
@@ -1042,12 +1264,12 @@ function renderPromptEditor(panel, node, kind) {
       for (const item of groupItems) {
         const phrase = item.text || item.key;
         const chip = phraseButton(phrase, (text) => {
-          if (promptContainsPhrase(textarea.value, text)) {
-            textarea.value = removePhraseFromPrompt(textarea.value, text);
+          if (promptContainsPhrase(promptValue, text)) {
+            setPromptValue(removePhraseFromPrompt(promptValue, text), { render: true, keepFocus: true });
           } else {
-            insertAtCursor(textarea, text);
+            insertIntoRichPrompt(editor, text);
+            setPromptValue(richPromptText(editor), { render: true, keepFocus: true });
           }
-          textarea.dispatchEvent(new Event("input"));
         });
         chip.dataset.phrase = phrase;
         chips.append(chip);
@@ -1071,16 +1293,15 @@ function renderPromptEditor(panel, node, kind) {
     const intent = String(
       getWidgetValue(node, "intent_prompt", "") ||
       linkedTextValue(node, "intent_prompt") ||
-      textarea.value ||
+      promptValue ||
       ""
     );
-    const result = preconstructPrompt(textarea.value, intent, isNegative);
+    const result = preconstructPrompt(promptValue, intent, isNegative);
     if (!result.added.length) {
       showPanelError(new Error("No matching database phrases found for the current intent."));
       return;
     }
-    textarea.value = result.prompt;
-    textarea.dispatchEvent(new Event("input"));
+    setPromptValue(result.prompt, { render: true, keepFocus: true });
   });
   const cancel = panelButton("Cancel");
   cancel.addEventListener("click", () => {
@@ -1096,7 +1317,7 @@ function renderPromptEditor(panel, node, kind) {
         renderPanel(panel, node, "create", { nextView: kind, cancelTarget: panel.cancelTarget });
         return;
       }
-      setWidgetValue(node, widgetName, textarea.value);
+      setWidgetValue(node, widgetName, promptValue);
       await saveSceneFromNode(node);
       delete panel.snapshots[snapshotKey];
       renderPanel(panel, node, "menu");
@@ -1106,7 +1327,8 @@ function renderPromptEditor(panel, node, kind) {
   });
   footer.append(back, preconstruct, cancel, confirm);
   body.append(footer);
-  textarea.focus();
+  editor.focus();
+  setCaretToEnd(editor);
 }
 
 function renderDatabaseEditor(panel, node) {
@@ -1482,9 +1704,6 @@ function injectStyles() {
     }
     .funpack-scene-composer {
       min-height: 170px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
       padding: 7px;
       border: 1px solid rgba(255,255,255,0.14);
       border-radius: 6px;
@@ -1494,12 +1713,51 @@ function injectStyles() {
       border-color: rgba(100, 210, 140, 0.55);
       box-shadow: 0 0 0 1px rgba(100, 210, 140, 0.12);
     }
-    .funpack-scene-composer .funpack-scene-textarea {
-      min-height: 118px;
+    .funpack-scene-rich-prompt {
+      width: 100%;
+      min-height: 154px;
       padding: 0;
       border: 0;
       background: transparent;
-      resize: vertical;
+      color: #f4f4f4;
+      line-height: 1.45;
+      outline: none;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      cursor: text;
+    }
+    .funpack-scene-rich-prompt:empty::before {
+      content: attr(data-placeholder);
+      color: #7f8792;
+      pointer-events: none;
+    }
+    .funpack-scene-inline-token {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      margin: 0 2px 3px;
+      padding: 1px 6px;
+      border: 1px solid rgba(100, 210, 140, 0.75);
+      border-radius: 5px;
+      background: rgba(58, 132, 86, 0.42);
+      color: #eaffef;
+      font: inherit;
+      line-height: 1.25;
+      vertical-align: baseline;
+      cursor: pointer;
+      white-space: normal;
+      text-align: left;
+    }
+    .funpack-scene-inline-token:hover,
+    .funpack-scene-inline-token:focus {
+      background: rgba(73, 158, 102, 0.56);
+      outline: none;
+    }
+    .funpack-scene-inline-token::after {
+      content: " ×";
+      padding-left: 4px;
+      color: #bff4cd;
+      font-weight: 700;
     }
     .funpack-scene-search { margin: 8px 0; }
     .funpack-scene-filter-row {
@@ -1507,20 +1765,6 @@ function injectStyles() {
       grid-template-columns: minmax(0, 1fr) 135px;
       gap: 8px;
       align-items: center;
-    }
-    .funpack-scene-inline-highlights {
-      min-height: 28px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-      align-items: center;
-      padding-top: 6px;
-      border-top: 1px solid rgba(255,255,255,0.08);
-    }
-    .funpack-scene-highlight {
-      border-color: rgba(100, 210, 140, 0.75);
-      background: rgba(58, 132, 86, 0.42);
-      color: #eaffef;
     }
     .funpack-scene-bank,
     .funpack-scene-db-list {
