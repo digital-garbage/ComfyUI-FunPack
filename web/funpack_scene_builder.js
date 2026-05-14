@@ -25,12 +25,32 @@ function widgetByName(node, name) {
 }
 
 function hideWidget(widget) {
-  if (!widget || widget.__funpackHidden) {
+  if (!widget) {
     return;
   }
+  if (widget.linkedWidgets) {
+    for (const linked of widget.linkedWidgets) {
+      hideWidget(linked);
+    }
+  }
   widget.__funpackHidden = true;
+  widget.hidden = true;
+  widget.options = widget.options || {};
+  widget.options.hidden = true;
   widget.computeSize = () => [0, -4];
+  widget.computedHeight = 0;
   widget.type = "hidden";
+  for (const key of ["element", "inputEl", "textElement", "parentEl"]) {
+    const element = widget[key];
+    if (element?.style) {
+      element.style.display = "none";
+      element.style.visibility = "hidden";
+      element.style.pointerEvents = "none";
+    }
+    if (element) {
+      element.hidden = true;
+    }
+  }
 }
 
 function getWidgetValue(node, name, fallback = "") {
@@ -406,6 +426,70 @@ function panelCheckbox(checked, label) {
   return { wrapper, input };
 }
 
+function editableTextLabel(value, onCommit) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "funpack-scene-editable";
+  const label = document.createElement("button");
+  label.type = "button";
+  label.textContent = value || "Unnamed";
+  label.title = "Double-click to edit";
+  wrapper.append(label);
+
+  const beginEdit = () => {
+    const editor = document.createElement("div");
+    editor.className = "funpack-scene-inline-editor";
+    const input = document.createElement("input");
+    const original = label.textContent || "";
+    input.type = "text";
+    input.value = original;
+    const ok = panelButton("OK", "compact primary");
+    const cancel = panelButton("Cancel", "compact");
+    let committed = false;
+    const commit = () => {
+      if (committed) {
+        return;
+      }
+      committed = true;
+      const next = input.value.trim();
+      const value = next || original;
+      onCommit(value);
+      label.textContent = value;
+      editor.replaceWith(label);
+    };
+    const cancelEdit = () => {
+      if (committed) {
+        return;
+      }
+      committed = true;
+      editor.replaceWith(label);
+    };
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        cancelEdit();
+      }
+    });
+    ok.addEventListener("click", commit);
+    cancel.addEventListener("click", cancelEdit);
+    editor.append(input, ok, cancel);
+    label.replaceWith(editor);
+    input.focus();
+    input.select();
+  };
+
+  label.addEventListener("dblclick", beginEdit);
+  label.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === "F2") {
+      event.preventDefault();
+      beginEdit();
+    }
+  });
+  return wrapper;
+}
+
 function phraseButton(text, onInsert) {
   const element = document.createElement("button");
   element.type = "button";
@@ -766,11 +850,9 @@ function renderDatabaseEditor(panel, node) {
     items.forEach((item) => {
       const row = document.createElement("div");
       row.className = "funpack-scene-db-row";
-      const text = document.createElement("input");
-      text.value = item.text || "";
-      text.addEventListener("input", () => {
-        item.text = text.value;
-        item.key = text.value.toLowerCase();
+      const text = editableTextLabel(item.text || "", (value) => {
+        item.text = value;
+        item.key = value.toLowerCase();
       });
       const category = document.createElement("select");
       for (const categoryName of GROUP_ORDER) {
@@ -920,6 +1002,10 @@ function injectStyles() {
     .funpack-scene-button:hover { background: #2b3037; }
     .funpack-scene-button.primary { border-color: rgba(100, 210, 140, 0.6); background: #244832; }
     .funpack-scene-button.danger { border-color: rgba(255, 130, 130, 0.45); background: #472626; }
+    .funpack-scene-button.compact {
+      min-height: 28px;
+      padding: 4px 7px;
+    }
     .funpack-scene-button.large {
       width: 100%;
       height: 42px;
@@ -985,6 +1071,7 @@ function injectStyles() {
     .funpack-scene-controls select,
     .funpack-scene-db-tools input,
     .funpack-scene-db-tools select,
+    .funpack-scene-editable input,
     .funpack-scene-db-row input,
     .funpack-scene-db-row select {
       width: 100%;
@@ -1010,6 +1097,35 @@ function injectStyles() {
       min-height: 28px;
       color: #d9dee5;
       white-space: nowrap;
+    }
+    .funpack-scene-editable {
+      min-width: 0;
+    }
+    .funpack-scene-inline-editor {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 5px;
+      align-items: center;
+    }
+    .funpack-scene-editable button {
+      width: 100%;
+      min-height: 28px;
+      padding: 5px 7px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: #f2f2f2;
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: default;
+    }
+    .funpack-scene-editable button:hover,
+    .funpack-scene-editable button:focus {
+      border-color: rgba(180, 190, 200, 0.28);
+      background: #17191d;
+      outline: none;
     }
     .funpack-scene-search { margin: 8px 0; }
     .funpack-scene-bank,
@@ -1135,11 +1251,18 @@ function removeSceneBuilderWidget(node) {
 
 function setupSceneBuilderNode(node) {
   trackedNodes.add(node);
-  for (const widget of node.widgets || []) {
-    if (HIDDEN_WIDGETS.has(widget.name)) {
-      hideWidget(widget);
+  const hideInternalWidgets = () => {
+    for (const widget of node.widgets || []) {
+      if (HIDDEN_WIDGETS.has(widget.name)) {
+        hideWidget(widget);
+      }
     }
-  }
+    setDirty(node);
+  };
+  hideInternalWidgets();
+  window.requestAnimationFrame?.(hideInternalWidgets);
+  window.setTimeout(hideInternalWidgets, 0);
+  window.setTimeout(hideInternalWidgets, 250);
   removeSceneBuilderWidget(node);
   node.addCustomWidget(new SceneBuilderWidget(node));
   updateSceneCombo(node);

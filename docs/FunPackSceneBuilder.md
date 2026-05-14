@@ -12,7 +12,7 @@ The node surface is a compact launcher. Scene name, mode, aliases, prompt editor
 
 **Negative prompt**: Same composer behavior for the negative prompt.
 
-**Database**: Add, edit, delete, search, categorize, and mark universal words and phrases as wildcards.
+**Database**: Add, edit, delete, search, categorize, and mark universal words and phrases as wildcards. Double-click a word or phrase to edit it inline, then use **OK** or **Cancel**.
 
 The editor refreshes the selected scene database before opening. When `refinement_key_input` is connected to a Refinement Key Loader, the editor reads that linked key so prompt memory appears in the same database where queue runs stored it.
 

@@ -105,6 +105,8 @@ def test_scene_builder_public_interface_is_prompt_stack_status_only():
     assert "positive_conditioning" not in optional
     assert "refinement_key" not in FunPackSceneBuilder.RETURN_NAMES
     assert "scene_name" not in FunPackSceneBuilder.RETURN_NAMES
+    assert required["scene_positive"][1]["multiline"] is False
+    assert required["scene_negative"][1]["multiline"] is False
 
 
 def test_scene_builder_manual_outputs_exact_composed_text(monkeypatch, tmp_path):

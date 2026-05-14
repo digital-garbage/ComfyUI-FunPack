@@ -1091,12 +1091,12 @@ class FunPackSceneBuilder:
                 "action": (["load", "save", "update", "delete"], {"default": "load"}),
                 "scene_positive": ("STRING", {
                     "default": "",
-                    "multiline": True,
+                    "multiline": False,
                     "placeholder": "Write or arrange positive scene words and phrases here.",
                 }),
                 "scene_negative": ("STRING", {
                     "default": "",
-                    "multiline": True,
+                    "multiline": False,
                     "placeholder": "Write or arrange negative scene words and phrases here.",
                 }),
                 "refinement_key": ("STRING", {"default": "", "multiline": False}),
