@@ -149,6 +149,23 @@ function sceneByName(name) {
   return sceneData?.data?.scenes?.[name] || null;
 }
 
+function savedSceneNames() {
+  return sceneNames().filter((item) => item !== NONE_SCENE);
+}
+
+function activeSceneName(node) {
+  const typed = String(getWidgetValue(node, "scene_name", "") || "").trim();
+  const selected = String(getWidgetValue(node, "scene", "") || "").trim();
+  if (typed) {
+    return typed;
+  }
+  return selected && selected !== NONE_SCENE ? selected : "";
+}
+
+function needsSceneCreation(node) {
+  return !activeSceneName(node) && !savedSceneNames().length;
+}
+
 function memoryItems() {
   return Array.isArray(sceneData?.memory) ? sceneData.memory : [];
 }
@@ -537,17 +554,85 @@ function shell(root, title, view) {
   return body;
 }
 
-function renderPanel(panel, node, view) {
+function renderPanel(panel, node, view, options = {}) {
   if (!panel?.root) {
     return;
   }
+  if (options.cancelTarget) {
+    panel.cancelTarget = options.cancelTarget;
+  }
+  panel.currentView = view;
   if (view === "positive" || view === "negative") {
     renderPromptEditor(panel, node, view);
   } else if (view === "database") {
     renderDatabaseEditor(panel, node);
+  } else if (view === "create") {
+    renderCreateScene(panel, node, options.nextView || "menu");
   } else {
     renderMenu(panel, node);
   }
+}
+
+function navigatePanel(panel, node, view, options = {}) {
+  if (["menu", "positive", "negative", "database"].includes(view) && needsSceneCreation(node)) {
+    renderPanel(panel, node, "create", { ...options, nextView: view });
+    return;
+  }
+  renderPanel(panel, node, view, options);
+}
+
+function cancelEditor(panel, node) {
+  if (panel?.cancelTarget === "close") {
+    closePanel();
+    return;
+  }
+  renderPanel(panel, node, "menu");
+}
+
+function renderCreateScene(panel, node, nextView = "menu") {
+  const body = shell(panel.root, "Create scene", "create");
+  const message = document.createElement("div");
+  message.className = "funpack-scene-muted";
+  message.textContent = "Create a scene before editing prompts or database choices.";
+  body.append(message);
+
+  const row = document.createElement("label");
+  row.className = "funpack-scene-create-row";
+  const label = document.createElement("span");
+  label.textContent = "Scene name";
+  const input = panelTextInput(getWidgetValue(node, "scene_name", ""), "Scene name");
+  row.append(label, input);
+  body.append(row);
+
+  const footer = document.createElement("div");
+  footer.className = "funpack-scene-footer";
+  const cancel = panelButton("Cancel");
+  cancel.addEventListener("click", closePanel);
+  const create = panelButton("Create scene", "primary");
+  create.addEventListener("click", () => {
+    const name = input.value.trim();
+    if (!name) {
+      showPanelError(new Error("Scene name is required."));
+      input.focus();
+      return;
+    }
+    setWidgetValue(node, "scene_name", name);
+    setWidgetValue(node, "scene", NONE_SCENE);
+    setWidgetValue(node, "mode", getWidgetValue(node, "mode", "Manual") || "Manual");
+    setDirty(node);
+    renderPanel(panel, node, nextView, {
+      cancelTarget: nextView === "menu" ? "menu" : panel.cancelTarget,
+    });
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      create.click();
+    }
+  });
+  footer.append(cancel, create);
+  body.append(footer);
+  input.focus();
 }
 
 function renderMenu(panel, node) {
@@ -622,7 +707,7 @@ function renderMenu(panel, node) {
   menu.className = "funpack-scene-menu-buttons";
   for (const [label, target] of [["Positive prompt", "positive"], ["Negative prompt", "negative"], ["Database", "database"]]) {
     const item = panelButton(label, "large");
-    item.addEventListener("click", () => renderPanel(panel, node, target));
+    item.addEventListener("click", () => navigatePanel(panel, node, target, { cancelTarget: "menu" }));
     menu.append(item);
   }
   body.append(menu);
@@ -634,7 +719,7 @@ function renderMenu(panel, node) {
 
   const saved = document.createElement("div");
   saved.className = "funpack-scene-saved";
-  for (const name of sceneNames().filter((item) => item !== NONE_SCENE)) {
+  for (const name of savedSceneNames()) {
     const item = panelButton(name);
     item.title = name;
     item.addEventListener("click", () => {
@@ -775,11 +860,15 @@ function renderPromptEditor(panel, node, kind) {
     setWidgetValue(node, widgetName, panel.snapshots[snapshotKey]);
     setDirty(node);
     delete panel.snapshots[snapshotKey];
-    renderPanel(panel, node, "menu");
+    cancelEditor(panel, node);
   });
   const confirm = panelButton("Confirm", "primary");
   confirm.addEventListener("click", async () => {
     try {
+      if (!activeSceneName(node)) {
+        renderPanel(panel, node, "create", { nextView: kind, cancelTarget: panel.cancelTarget });
+        return;
+      }
       setWidgetValue(node, widgetName, textarea.value);
       await saveSceneFromNode(node);
       delete panel.snapshots[snapshotKey];
@@ -890,7 +979,7 @@ function renderDatabaseEditor(panel, node) {
   cancel.addEventListener("click", () => {
     panel.databaseItems = JSON.parse(JSON.stringify(panel.snapshots.database_snapshot));
     delete panel.snapshots.database_snapshot;
-    renderPanel(panel, node, "menu");
+    cancelEditor(panel, node);
   });
   const confirm = panelButton("Confirm", "primary");
   confirm.addEventListener("click", async () => {
@@ -912,7 +1001,12 @@ function openPanel(node, view = "menu") {
   const root = document.createElement("div");
   root.className = "funpack-scene-panel";
   document.body.append(root);
-  activePanel = { root, snapshots: {}, databaseItems: [] };
+  activePanel = {
+    root,
+    snapshots: {},
+    databaseItems: [],
+    cancelTarget: view === "menu" ? "menu" : "close",
+  };
   const viewportWidth = Number(window.innerWidth);
   const viewportHeight = Number(window.innerHeight);
   if (Number.isFinite(viewportWidth) && Number.isFinite(viewportHeight) && viewportWidth > 0 && viewportHeight > 0) {
@@ -935,7 +1029,7 @@ function openPanel(node, view = "menu") {
     console.warn("FunPack: failed to refresh scenes before opening Scene Builder", error);
   }).finally(() => {
     if (activePanel?.root === root) {
-      renderPanel(activePanel, node, view);
+      navigatePanel(activePanel, node, view, { cancelTarget: activePanel.cancelTarget });
     }
   });
 }
@@ -1028,6 +1122,13 @@ function injectStyles() {
       gap: 8px;
       align-items: center;
     }
+    .funpack-scene-create-row {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      margin-top: 8px;
+    }
     .funpack-scene-controls span {
       color: #b8c0ca;
     }
@@ -1069,6 +1170,7 @@ function injectStyles() {
     .funpack-scene-search,
     .funpack-scene-controls input,
     .funpack-scene-controls select,
+    .funpack-scene-create-row input,
     .funpack-scene-db-tools input,
     .funpack-scene-db-tools select,
     .funpack-scene-editable input,

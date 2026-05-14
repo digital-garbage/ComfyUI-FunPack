@@ -6,6 +6,8 @@
 
 The node surface is a compact launcher. Scene name, mode, aliases, prompt editors, saved scenes, and database controls live in the centered custom editor UI.
 
+If no scene exists yet, opening the editor, prompt editor, or database first asks for a new scene name.
+
 ## Editor Menus
 
 **Positive prompt**: Opens a multiline text composer. Typed text, commas, periods, and manual ordering are preserved exactly. Database chips can be clicked or dragged into the text field.
@@ -16,7 +18,7 @@ The node surface is a compact launcher. Scene name, mode, aliases, prompt editor
 
 The editor refreshes the selected scene database before opening. When `refinement_key_input` is connected to a Refinement Key Loader, the editor reads that linked key so prompt memory appears in the same database where queue runs stored it.
 
-Each menu has **Back**, **Cancel**, and **Confirm** controls. Cancel restores the menu snapshot from before editing. Confirm saves prompt/database edits.
+Each editor menu has **Back**, **Cancel**, and **Confirm** controls. Back always returns to the main editor. Cancel restores the menu snapshot; if the prompt/database editor was opened directly from the node, Cancel closes the dialog instead.
 
 ## Modes
 
