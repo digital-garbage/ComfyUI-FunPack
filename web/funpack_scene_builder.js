@@ -661,6 +661,66 @@ function richPromptText(root) {
   return normalizePromptEditorValue(output);
 }
 
+function richNodeTextLength(node) {
+  if (!node) {
+    return 0;
+  }
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.nodeValue || "").length;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return 0;
+  }
+  if (node.matches?.(".funpack-scene-inline-token")) {
+    return (node.textContent || "").length;
+  }
+  if (node.tagName === "BR") {
+    return 1;
+  }
+  let length = 0;
+  for (const child of node.childNodes) {
+    length += richNodeTextLength(child);
+  }
+  return length;
+}
+
+function richRangeTextOffset(root, range) {
+  if (!root || !range || !root.contains(range.startContainer)) {
+    return null;
+  }
+  let offset = 0;
+  let found = false;
+  const visit = (node) => {
+    if (found) {
+      return;
+    }
+    if (node === range.startContainer) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += Math.min(range.startOffset, (node.nodeValue || "").length);
+      } else {
+        const children = [...node.childNodes];
+        for (let index = 0; index < Math.min(range.startOffset, children.length); index += 1) {
+          offset += richNodeTextLength(children[index]);
+        }
+      }
+      found = true;
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE || node.matches?.(".funpack-scene-inline-token") || node.tagName === "BR") {
+      offset += richNodeTextLength(node);
+      return;
+    }
+    for (const child of node.childNodes || []) {
+      visit(child);
+      if (found) {
+        return;
+      }
+    }
+  };
+  visit(root);
+  return found ? offset : null;
+}
+
 function setCaretToEnd(element) {
   element.focus();
   const range = document.createRange();
@@ -669,6 +729,70 @@ function setCaretToEnd(element) {
   const selection = window.getSelection();
   selection?.removeAllRanges();
   selection?.addRange(range);
+}
+
+function setCaretAtElementEdge(node, after = false) {
+  const range = document.createRange();
+  if (after) {
+    range.setStartAfter(node);
+  } else {
+    range.setStartBefore(node);
+  }
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function setCaretByTextOffset(root, targetOffset) {
+  const target = Math.max(0, Number(targetOffset) || 0);
+  let offset = 0;
+  let placed = false;
+  const place = (node) => {
+    if (placed) {
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      const textLength = (node.nodeValue || "").length;
+      if (target <= offset + textLength) {
+        setCaretInTextNode(node, target - offset);
+        placed = true;
+      } else {
+        offset += textLength;
+      }
+      return;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE && node.matches?.(".funpack-scene-inline-token")) {
+      const tokenLength = (node.textContent || "").length;
+      if (target <= offset + tokenLength) {
+        setCaretAtElementEdge(node, target > offset);
+        placed = true;
+      } else {
+        offset += tokenLength;
+      }
+      return;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE && node.tagName === "BR") {
+      if (target <= offset + 1) {
+        setCaretAtElementEdge(node, true);
+        placed = true;
+      } else {
+        offset += 1;
+      }
+      return;
+    }
+    for (const child of node.childNodes || []) {
+      place(child);
+      if (placed) {
+        return;
+      }
+    }
+  };
+  root.focus();
+  place(root);
+  if (!placed) {
+    setCaretToEnd(root);
+  }
 }
 
 function setCaretInTextNode(node, offset) {
@@ -680,24 +804,37 @@ function setCaretInTextNode(node, offset) {
   selection?.addRange(range);
 }
 
-function insertIntoRichPrompt(editor, text) {
+function insertIntoRichPrompt(editor, text, fallbackRange = null) {
   editor.focus();
-  const current = richPromptText(editor);
   const selection = window.getSelection();
-  const insertion = `${current.trim() && !/[,\s.;\n]$/.test(current) ? ", " : ""}${text}`;
-  if (!selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
-    editor.append(document.createTextNode(insertion));
-    setCaretToEnd(editor);
-  } else {
-    const range = selection.getRangeAt(0);
-    range.deleteContents();
+  const activeRange = selection?.rangeCount && editor.contains(selection.anchorNode)
+    ? selection.getRangeAt(0)
+    : fallbackRange;
+  if (activeRange && editor.contains(activeRange.commonAncestorContainer)) {
+    const promptBeforeEdit = richPromptText(editor);
+    const beforeOffset = richRangeTextOffset(editor, activeRange) ?? richNodeTextLength(editor);
+    const endRange = activeRange.cloneRange();
+    endRange.collapse(false);
+    const afterOffset = richRangeTextOffset(editor, endRange) ?? beforeOffset;
+    const beforeText = promptBeforeEdit.slice(0, beforeOffset);
+    const afterText = promptBeforeEdit.slice(afterOffset);
+    const prefix = beforeText.trim() && !/[,\s.;\n]$/.test(beforeText) ? ", " : "";
+    const suffix = afterText.trim() && !/^[,\s.;\n]/.test(afterText) ? ", " : "";
+    activeRange.deleteContents();
+    const insertion = `${prefix}${text}${suffix}`;
     const node = document.createTextNode(insertion);
-    range.insertNode(node);
-    range.setStartAfter(node);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
+    activeRange.insertNode(node);
+    activeRange.setStartAfter(node);
+    activeRange.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(activeRange);
+    return beforeOffset + insertion.length;
   }
+  const current = richPromptText(editor);
+  const insertion = `${current.trim() && !/[,\s.;\n]$/.test(current) ? ", " : ""}${text}`;
+  editor.append(document.createTextNode(insertion));
+  setCaretToEnd(editor);
+  return richNodeTextLength(editor);
 }
 
 function inlineTokenFromNode(node, root) {
@@ -1134,6 +1271,15 @@ function renderPromptEditor(panel, node, kind) {
   editor.dataset.placeholder = isNegative ? "Write negative prompt words and phrases here." : "Write positive prompt words and phrases here.";
   let promptValue = normalizePromptSpacing(getWidgetValue(node, widgetName, "") || "");
   let renderingPrompt = false;
+  let savedEditorRange = null;
+
+  const saveEditorRange = () => {
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount || !editor.contains(selection.anchorNode)) {
+      return;
+    }
+    savedEditorRange = selection.getRangeAt(0).cloneRange();
+  };
 
   const setPromptValue = (value, options = {}) => {
     promptValue = normalizePromptSpacing(value);
@@ -1141,11 +1287,11 @@ function renderPromptEditor(panel, node, kind) {
     setDirty(node);
     updateUsedChips();
     if (options.render) {
-      renderRichPrompt(Boolean(options.keepFocus));
+      renderRichPrompt(Boolean(options.keepFocus), options.caretOffset);
     }
   };
 
-  const renderRichPrompt = (keepFocus = false) => {
+  const renderRichPrompt = (keepFocus = false, caretOffset = null) => {
     renderingPrompt = true;
     editor.replaceChildren();
     const ranges = promptPhraseRanges(promptValue, promptMemoryPhrases(isNegative));
@@ -1174,7 +1320,12 @@ function renderPromptEditor(panel, node, kind) {
     }
     renderingPrompt = false;
     if (keepFocus) {
-      setCaretToEnd(editor);
+      if (Number.isFinite(Number(caretOffset))) {
+        setCaretByTextOffset(editor, Number(caretOffset));
+      } else {
+        setCaretToEnd(editor);
+      }
+      saveEditorRange();
     }
   };
 
@@ -1183,7 +1334,11 @@ function renderPromptEditor(panel, node, kind) {
       return;
     }
     setPromptValue(richPromptText(editor), { render: false });
+    saveEditorRange();
   });
+  editor.addEventListener("keyup", saveEditorRange);
+  editor.addEventListener("mouseup", saveEditorRange);
+  editor.addEventListener("focus", saveEditorRange);
   editor.addEventListener("keydown", (event) => {
     if (event.key !== "Backspace" && event.key !== "Delete") {
       return;
@@ -1195,16 +1350,23 @@ function renderPromptEditor(panel, node, kind) {
     event.preventDefault();
     if (editInlineTokenAsText(editor, token, event.key === "Backspace" ? "backward" : "forward")) {
       setPromptValue(richPromptText(editor), { render: false });
+      saveEditorRange();
     }
   });
-  editor.addEventListener("blur", () => renderRichPrompt(false));
+  editor.addEventListener("blur", (event) => {
+    saveEditorRange();
+    if (panel.root.contains(event.relatedTarget)) {
+      return;
+    }
+    renderRichPrompt(false);
+  });
   editor.addEventListener("dragover", (event) => event.preventDefault());
   editor.addEventListener("drop", (event) => {
     event.preventDefault();
     const text = event.dataTransfer?.getData("text/plain");
     if (text) {
-      insertIntoRichPrompt(editor, text);
-      setPromptValue(richPromptText(editor), { render: true, keepFocus: true });
+      const caretOffset = insertIntoRichPrompt(editor, text, savedEditorRange);
+      setPromptValue(richPromptText(editor), { render: true, keepFocus: true, caretOffset });
     }
   });
   renderRichPrompt(false);
@@ -1267,8 +1429,8 @@ function renderPromptEditor(panel, node, kind) {
           if (promptContainsPhrase(promptValue, text)) {
             setPromptValue(removePhraseFromPrompt(promptValue, text), { render: true, keepFocus: true });
           } else {
-            insertIntoRichPrompt(editor, text);
-            setPromptValue(richPromptText(editor), { render: true, keepFocus: true });
+            const caretOffset = insertIntoRichPrompt(editor, text, savedEditorRange);
+            setPromptValue(richPromptText(editor), { render: true, keepFocus: true, caretOffset });
           }
         });
         chip.dataset.phrase = phrase;
@@ -1301,7 +1463,8 @@ function renderPromptEditor(panel, node, kind) {
       showPanelError(new Error("No matching database phrases found for the current intent."));
       return;
     }
-    setPromptValue(result.prompt, { render: true, keepFocus: true });
+    const caretOffset = insertIntoRichPrompt(editor, result.added.join(", "), savedEditorRange);
+    setPromptValue(richPromptText(editor), { render: true, keepFocus: true, caretOffset });
   });
   const cancel = panelButton("Cancel");
   cancel.addEventListener("click", () => {
