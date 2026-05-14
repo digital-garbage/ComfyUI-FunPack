@@ -10,7 +10,7 @@ If no scene exists yet, opening the editor, prompt editor, or database first ask
 
 ## Editor Menus
 
-**Positive prompt**: Opens a multiline text composer. Typed text, commas, periods, and manual ordering are preserved exactly. Database chips can be clicked or dragged into the text field.
+**Positive prompt**: Opens a multiline text composer. Typed text, commas, periods, and manual ordering are preserved exactly. Database chips can be clicked or dragged into the text field, and chips already present in the prompt are highlighted.
 
 **Negative prompt**: Same composer behavior for the negative prompt.
 

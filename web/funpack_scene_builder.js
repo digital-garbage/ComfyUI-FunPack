@@ -534,6 +534,23 @@ function insertAtCursor(textarea, text) {
   textarea.setSelectionRange(cursor, cursor);
 }
 
+function promptLookupKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\w'’.-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function promptContainsPhrase(prompt, phrase) {
+  const promptKey = promptLookupKey(prompt);
+  const phraseKey = promptLookupKey(phrase);
+  if (!promptKey || !phraseKey) {
+    return false;
+  }
+  return ` ${promptKey} `.includes(` ${phraseKey} `);
+}
+
 function shell(root, title, view) {
   root.replaceChildren();
   const header = document.createElement("div");
@@ -792,6 +809,7 @@ function renderPromptEditor(panel, node, kind) {
   textarea.addEventListener("input", () => {
     setWidgetValue(node, widgetName, textarea.value);
     setDirty(node);
+    updateUsedChips();
   });
   textarea.addEventListener("dragover", (event) => event.preventDefault());
   textarea.addEventListener("drop", (event) => {
@@ -813,6 +831,14 @@ function renderPromptEditor(panel, node, kind) {
   const bank = document.createElement("div");
   bank.className = "funpack-scene-bank";
   body.append(bank);
+
+  const updateUsedChips = () => {
+    for (const chip of bank.querySelectorAll(".funpack-scene-chip[data-phrase]")) {
+      const used = promptContainsPhrase(textarea.value, chip.dataset.phrase || "");
+      chip.classList.toggle("used", used);
+      chip.title = used ? `Already used: ${chip.dataset.phrase}` : (chip.dataset.phrase || chip.textContent || "");
+    }
+  };
 
   const renderBank = () => {
     const query = search.value.toLowerCase().trim();
@@ -840,13 +866,17 @@ function renderPromptEditor(panel, node, kind) {
       const chips = document.createElement("div");
       chips.className = "funpack-scene-chip-row";
       for (const item of groupItems) {
-        chips.append(phraseButton(item.text || item.key, (text) => {
+        const phrase = item.text || item.key;
+        const chip = phraseButton(phrase, (text) => {
           insertAtCursor(textarea, text);
           textarea.dispatchEvent(new Event("input"));
-        }));
+        });
+        chip.dataset.phrase = phrase;
+        chips.append(chip);
       }
       bank.append(chips);
     }
+    updateUsedChips();
   };
   search.addEventListener("input", renderBank);
   renderBank();
@@ -1252,6 +1282,18 @@ function injectStyles() {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .funpack-scene-chip.used {
+      border-color: rgba(100, 210, 140, 0.75);
+      background: rgba(58, 132, 86, 0.42);
+      color: #eaffef;
+    }
+    .funpack-scene-chip.used::after {
+      content: " used";
+      color: #a8efbf;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
     }
     .funpack-scene-db-tools {
       display: grid;
