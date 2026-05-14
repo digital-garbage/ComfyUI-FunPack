@@ -6842,6 +6842,56 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return True
         return False
 
+    def _v2_text_axes(self, text):
+        scores = self._v2_heuristic_scores(text)
+        axes = self._v2_axes_for_scores(scores)
+        primary = self._v2_primary_category_for_text(text)
+        if primary:
+            axes |= self._v2_axes_for_category(primary)
+        return axes
+
+    def _v2_requested_negative_block_texts(self, current_prompt="", intent_prompt="", intent_phrases=None, family_slot=None):
+        texts = []
+        for source in (current_prompt, intent_prompt):
+            clean = self._v2_clean_phrase_text(source)
+            if clean and clean not in texts:
+                texts.append(clean)
+            for phrase in self._ordered_prompt_phrases(source):
+                text = self._v2_clean_phrase_text(phrase.get("text", ""))
+                if text and text not in texts:
+                    texts.append(text)
+        for text in self._v2_intent_texts_for_family(intent_prompt, intent_phrases or [], family_slot):
+            if text and text not in texts:
+                texts.append(text)
+        return texts
+
+    def _v2_negative_text_conflicts_with_request(self, text, current_prompt="", intent_prompt="", intent_phrases=None, family_slot=None):
+        clean = self._v2_clean_phrase_text(text)
+        if not clean:
+            return False
+        clean_roots = self._v2_repair_intent_roots(clean)
+        clean_axes = self._v2_text_axes(clean)
+        for requested in self._v2_requested_negative_block_texts(current_prompt, intent_prompt, intent_phrases, family_slot):
+            if (
+                self._v2_prompt_contains_text(current_prompt, clean) or
+                self._v2_prompt_contains_text(requested, clean) or
+                self._v2_prompt_contains_text(clean, requested) or
+                self._v2_phrase_texts_match(clean, requested)
+            ):
+                return True
+            requested_roots = self._v2_repair_intent_roots(requested)
+            overlap = clean_roots & requested_roots
+            if not overlap:
+                continue
+            requested_axes = self._v2_text_axes(requested)
+            if "action" in clean_axes and "action" in requested_axes:
+                return True
+            if len(overlap) >= 2 and (
+                len(overlap) / float(max(1, min(len(clean_roots), len(requested_roots)))) >= 0.45
+            ):
+                return True
+        return False
+
     def _v2_mark_intent_locks(self, phrases, intent_prompt="", intent_phrases=None, family_slot=None):
         if not phrases:
             return phrases
@@ -8546,7 +8596,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             text = self._v2_clean_phrase_text(text)
             if not text:
                 return
-            if intent_locked or self._v2_text_represented_by_intent(text, intent_prompt, intent_phrases, family_slot):
+            if intent_locked or self._v2_negative_text_conflicts_with_request(
+                text,
+                current_prompt=previous_run.get("prompt", "") if has_explicit_intent else "",
+                intent_prompt=intent_prompt,
+                intent_phrases=intent_phrases,
+                family_slot=family_slot,
+            ):
                 skipped_intent += 1
                 return
             if wrong_axes and not (phrase_axes & wrong_axes):
@@ -8640,11 +8696,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             clean = self._v2_clean_phrase_text(entry.get("text", text))
             if not clean or self._v2_prompt_contains_text(prompt, clean):
                 continue
-            if self._v2_prompt_contains_text(current_prompt, clean) or self._v2_text_represented_by_intent(
+            if self._v2_negative_text_conflicts_with_request(
                 clean,
-                intent_prompt,
-                intent_phrases or [],
-                intent_family_slot,
+                current_prompt=current_prompt,
+                intent_prompt=intent_prompt,
+                intent_phrases=intent_phrases or [],
+                family_slot=intent_family_slot,
             ):
                 withheld_intent += 1
                 continue

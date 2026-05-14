@@ -695,6 +695,57 @@ def test_negative_repair_never_adds_current_intent_phrase():
     assert "intent/current" in repair_status or "no stored poor-rated tags" in repair_status
 
 
+def test_negative_repair_blocks_requested_action_overlap_without_exact_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "negative_prompt_memory": {
+            "tags": {
+                "holding a gun and shooting": {
+                    "text": "holding a gun and shooting",
+                    "count": 4,
+                    "axes": {"action": 2},
+                    "last_seen_iter": 1,
+                }
+            }
+        }
+    }
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    repaired, status = refiner._v2_repair_negative_prompt(
+        "",
+        global_state,
+        feedback,
+        current_prompt="Nicole is shooting",
+    )
+
+    assert repaired == ""
+    assert "intent/current 1" in status
+
+
+def test_negative_memory_skips_partial_requested_action_with_explicit_intent():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}
+    profile = normalize_refiner_v2_rating("Wrong action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    intent_prompt = "Nicole is shooting"
+
+    status = refiner._v2_update_negative_prompt_memory(
+        global_state,
+        {
+            "prompt": "Nicole from Zenless Zone Zero holding a gun and shooting",
+            "phrases": prompt_phrases(refiner, "holding a gun and shooting", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        feedback,
+    )
+
+    assert global_state["negative_prompt_memory"]["tags"] == {}
+    assert "Skipped 1 intent-locked" in status
+
+
 def test_rejected_repair_candidate_can_be_penalized_as_negative_memory():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}
