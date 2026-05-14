@@ -7182,6 +7182,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if self._v2_store_conditioning_delta_average(positive_delta, delta):
                     positive_delta["last_seen_iter"] = int(iter_num)
                     delta_updates += 1
+            perfect_repairs = slot.setdefault("perfect_repairs", {})
+            for repair in repairs:
+                text = self._v2_clean_phrase_text(repair.get("text", ""))
+                if not text:
+                    continue
+                entry = perfect_repairs.setdefault(text, {
+                    "text": text,
+                    "axes": {},
+                    "count": 0,
+                    "last_seen_iter": 0,
+                })
+                entry["count"] = int(entry.get("count", 0)) + 1
+                entry["last_seen_iter"] = int(iter_num)
+                axes = entry.setdefault("axes", {})
+                for axis in self._v2_order_axes(set(repair.get("axes", []))):
+                    axes[axis] = int(axes.get(axis, 0)) + 1
 
         if len(variants) > 40:
             slot["variant_evidence"] = dict(sorted(
@@ -8538,6 +8554,42 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             selected,
         )
 
+    def _v2_apply_perfect_repair_phrases(self, prompt, intent_family_slot):
+        if not isinstance(intent_family_slot, dict):
+            return prompt, "Perfect repairs: none.", []
+        repairs = intent_family_slot.get("perfect_repairs", {})
+        if not isinstance(repairs, dict) or not repairs:
+            return prompt, "Perfect repairs: none.", []
+        additions = []
+        for entry in sorted(
+            repairs.values(),
+            key=lambda item: (
+                int(item.get("count", 0)) if isinstance(item, dict) else 0,
+                int(item.get("last_seen_iter", 0)) if isinstance(item, dict) else 0,
+            ),
+            reverse=True,
+        ):
+            if not isinstance(entry, dict):
+                continue
+            text = self._v2_clean_phrase_text(entry.get("text", ""))
+            if (
+                not text or
+                self._v2_prompt_contains_text(prompt, text) or
+                not self._v2_prompt_repair_text_allowed(text)
+            ):
+                continue
+            additions.append(text)
+            if len(additions) >= 6:
+                break
+        if not additions:
+            return prompt, "Perfect repairs: already represented.", []
+        repaired = f"{prompt}, {', '.join(additions)}" if str(prompt or "").strip() else ", ".join(additions)
+        return (
+            repaired,
+            f"Perfect repairs: preserved {len(additions)} Perfect-proven phrase(s): {', '.join(additions)}.",
+            [{"text": text, "source": "perfect_repair", "action": "added"} for text in additions],
+        )
+
     def _v2_serializable_repair_candidates(self, candidates):
         serializable = []
         for item in candidates or []:
@@ -9146,6 +9198,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         repair_candidates = []
         intent_alignment_status = "Intent alignment: no explicit original intent."
         intent_alignment_adjustments = []
+        perfect_repair_status = "Perfect repairs: none."
+        perfect_repair_adjustments = []
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
@@ -9161,6 +9215,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_prompt,
                 intent_phrases,
                 global_state,
+            )
+            aligned_prompt, perfect_repair_status, perfect_repair_adjustments = self._v2_apply_perfect_repair_phrases(
+                aligned_prompt,
+                current_family_slot,
             )
             prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(
                 aligned_prompt,
@@ -9289,7 +9347,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "source": str(item.get("source", "")),
                 "action": str(item.get("action", "")),
             }
-            for item in intent_alignment_adjustments
+            for item in list(intent_alignment_adjustments) + list(perfect_repair_adjustments)
             if isinstance(item, dict) and str(item.get("text", "")).strip()
         ]
 
@@ -9358,6 +9416,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"{lucky_status}"
             f"\nIntent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}"
             f"\n{intent_alignment_status}"
+            f"\n{perfect_repair_status}"
             f"\n{repair_status}"
             f"\n{negative_repair_status}"
             f"\n{vision_status}"
@@ -9401,6 +9460,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{lucky_status}\n"
                 f"Intent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}\n"
                 f"{intent_alignment_status}\n"
+                f"{perfect_repair_status}\n"
                 f"{repair_status}\n"
                 f"{negative_repair_status}\n"
                 f"Negative encode: {negative_encode_status}\n"

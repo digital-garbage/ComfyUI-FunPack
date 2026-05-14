@@ -579,6 +579,46 @@ def test_active_repair_axes_persist_until_perfect():
     assert "cleared by Perfect" in status
 
 
+def test_perfect_rating_preserves_successful_repair_phrases():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "phrase_memory": {},
+        "intent_family_memory": {},
+        "perfect_anchors": {},
+        "variant_evidence": {},
+        "intent_preference_phrases": {},
+        "conditioning_deltas": {},
+    }
+    intent_prompt = "person smoking"
+    profile = normalize_refiner_v2_rating("Perfect")
+    feedback = refiner._v2_axis_feedback(profile, None)
+    source = tensor_to_serializable(torch.zeros(1, 3, 2))
+    refined = tensor_to_serializable(torch.ones(1, 3, 2))
+
+    refiner._v2_update_intent_family_memory(
+        global_state,
+        {
+            "prompt": "person smoking",
+            "encoded_prompt": "person smoking, tiny smoke curls",
+            "phrases": prompt_phrases(refiner, "person smoking", global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+            "source_conditioning": source,
+            "conditioning": refined,
+            "repair_candidates": [{"text": "tiny smoke curls", "axes": ["details"], "score": 2.0, "source": "memory"}],
+        },
+        profile,
+        1,
+        feedback,
+    )
+    _, slot, _ = refiner._v2_intent_family_slot(global_state, intent_prompt, create=False)
+    repaired, status, adjustments = refiner._v2_apply_perfect_repair_phrases("person smoking", slot)
+
+    assert "tiny smoke curls" in repaired
+    assert "Perfect-proven" in status
+    assert adjustments == [{"text": "tiny smoke curls", "source": "perfect_repair", "action": "added"}]
+
+
 def test_prompt_repair_falls_back_to_any_axis_candidates_when_requested_axis_is_empty():
     refiner = FunPackVideoRefinerV2()
     global_state = {
