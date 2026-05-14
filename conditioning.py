@@ -6726,6 +6726,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         overlap = left_roots & right_roots
         if not overlap:
             return False
+        if min(len(left_roots), len(right_roots)) == 1:
+            return True
         needed = min(2, len(left_roots))
         return len(overlap) >= needed or (len(overlap) / max(1, len(left_roots))) >= 0.58
 

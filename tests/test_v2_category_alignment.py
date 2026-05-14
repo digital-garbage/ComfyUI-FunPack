@@ -746,6 +746,63 @@ def test_negative_memory_skips_partial_requested_action_with_explicit_intent():
     assert "Skipped 1 intent-locked" in status
 
 
+def test_one_word_intent_matches_expanded_enhancer_phrase():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "intent_alignment_memory": {}, "intent_family_memory": {}}
+    intent_prompt = "shooting"
+    enhanced_prompt = "Nicole from Zenless Zone Zero holding a gun and shooting"
+    profile = normalize_refiner_v2_rating("Wrong action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    refiner._v2_update_intent_alignment_memory(
+        global_state,
+        {
+            "prompt": enhanced_prompt,
+            "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
+            "intent_prompt": intent_prompt,
+            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
+        },
+        profile,
+        1,
+        feedback,
+    )
+
+    slot = next(iter(global_state["intent_alignment_memory"].values()))
+    assert slot["extra_positive_phrases"] == {}
+    assert slot["bad_tokens"] == {}
+    assert refiner._v2_phrase_texts_match(enhanced_prompt, intent_prompt)
+
+
+def test_one_word_intent_blocks_expanded_action_negative_repair():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {
+        "negative_prompt_memory": {
+            "tags": {
+                "holding a gun and shooting": {
+                    "text": "holding a gun and shooting",
+                    "count": 4,
+                    "axes": {"action": 2},
+                    "last_seen_iter": 1,
+                }
+            }
+        }
+    }
+    profile = normalize_refiner_v2_rating("Missing action")
+    feedback = refiner._v2_axis_feedback(profile, None)
+
+    repaired, status = refiner._v2_repair_negative_prompt(
+        "",
+        global_state,
+        feedback,
+        current_prompt="Nicole holding a gun and shooting",
+        intent_prompt="shooting",
+        intent_phrases=prompt_phrases(refiner, "shooting", global_state),
+    )
+
+    assert repaired == ""
+    assert "intent/current 1" in status
+
+
 def test_rejected_repair_candidate_can_be_penalized_as_negative_memory():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "negative_prompt_memory": {}, "intent_family_memory": {}}
