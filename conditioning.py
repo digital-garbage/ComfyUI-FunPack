@@ -8974,8 +8974,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return False, "refusal text"
         if advised == current:
             return True, "unchanged"
-        if len(advised) > max(180, len(current) * 3 + 320):
-            return False, "too long"
         body_similarity = self._v2_prompt_body_similarity(advised, intent)
         semantic_similarity = self._v2_text_semantic_similarity(clip, advised, intent, encode_cache=encode_cache) if clip is not None else 0.0
         if body_similarity < 0.30 and semantic_similarity < 0.58:
