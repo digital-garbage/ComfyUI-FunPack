@@ -5746,7 +5746,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "positive_conditioning": ("CONDITIONING", {
                     "tooltip": "Optional pre-encoded Gemma3/LTX2 conditioning. Used only when CLIP is not connected.",
                 }),
-                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "label": "Exploration Seed"}),
                 "reset_session": ("BOOLEAN", {"default": False, "label": "Reset V2 Session"}),
                 "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional stack from FunPack LoRA Loader. V2 writes prompt-specific suggested weights."}),
                 "clip_vision_output": ("CLIP_VISION_OUTPUT", {
@@ -10194,14 +10193,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     _V2_ADVISOR_MAX_TOKENS = 1600
 
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
-                  seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
+                  reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True):
-        if seed != 0:
-            torch.manual_seed(seed)
-            random.seed(seed)
-
+        seed = random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
         if linked_refinement_key:
