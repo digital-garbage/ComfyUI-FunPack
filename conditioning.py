@@ -8858,9 +8858,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         previous_prompt = self._v2_prompt_key(previous_run.get("encoded_prompt", "") or previous_run.get("prompt", ""))
         analysis_system = (
             "You are analyzing a video generation prompt to identify specific improvements needed.\n\n"
-            "Output exactly one line:\n"
-            "DIAGNOSTIC: a concise list of specific changes — what to add, what to remove, what to fix. "
-            "Be concrete. Reference actual words from the prompt."
+            "Output exactly one line in this format:\n"
+            "DIAGNOSTIC: <your specific analysis — what is missing, wrong, or needs to change, referencing actual words from the prompt>"
         )
         if has_feedback:
             analysis_system += "\n\n" + V2_PROMPT_ADVISOR_FEEDBACK_OVERRIDE.strip()
@@ -9052,10 +9051,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
             return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False, ""
 
-        # Pass 1: analysis — always runs for Full and Only diagnostics.
-        # Only prompt skips this and goes straight to repair.
+        # Pass 1: analysis — runs for Full and Only diagnostics, but skipped when the user
+        # already provided explicit feedback (they told us what's wrong; no need to analyse).
         analysis = ""
-        if mode in {"Full", "Only diagnostics"}:
+        if mode in {"Full", "Only diagnostics"} and not has_feedback:
             analysis_prompt_text = self._v2_advisor_analysis_prompt(
                 current_prompt,
                 intent_prompt,
