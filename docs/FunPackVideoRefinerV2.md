@@ -10,6 +10,8 @@ V2 replaces the old `FunPack Video Refiner` public node in version `2.2.0`. It u
 
 **clip**: Connected text encoder. V2 uses this CLIP for prompt encoding, phrase/category similarity checks, and optional advisor text generation when the connected CLIP supports `generate`/`decode`.
 
+**advisor_clip**: Optional separate CLIP/Gemma text generator for the Advisor. When connected, Advisor uses this model for text generation while the main `clip` still owns prompt encoding and similarity checks. When disconnected, Advisor falls back to `clip`. If neither selected CLIP exposes text generation, Advisor skips and V2 continues with the usual workflow.
+
 **rating**: Feedback for the previous V2 generation:
 
 - `Perfect`

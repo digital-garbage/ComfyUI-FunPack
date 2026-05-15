@@ -6,6 +6,8 @@
 
 Added an optional CLIP text-generation advisor to `FunPack Video Refiner V2`. The advisor uses an explicit Refiner system prompt, can run Gemma thinking mode, passes source images to compatible CLIP tokenizers, sees the prompt that caused the current rating, and can either report diagnostics or apply a validated prompt repair before encoding.
 
+Added an optional `advisor_clip` input to `FunPack Video Refiner V2` so the advisor can use a separate generative CLIP/Gemma model while the main `clip` continues handling normal prompt encoding.
+
 ## [2.4.2] - 2026-05-15
 
 ### Added

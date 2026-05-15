@@ -5731,6 +5731,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             },
             "optional": {
                 "clip": ("CLIP", {"tooltip": "Optional text encoder. When connected, V2 encodes the prompt itself."}),
+                "advisor_clip": ("CLIP", {
+                    "tooltip": "Optional separate CLIP/Gemma text generator for Advisor. If disconnected, Advisor falls back to the main CLIP.",
+                }),
                 "positive_conditioning": ("CONDITIONING", {
                     "tooltip": "Optional pre-encoded Gemma3/LTX2 conditioning. Used only when CLIP is not connected.",
                 }),
@@ -9562,7 +9565,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
-                  source_image=None, negative_prompt="", mode="Refine", advisor_mode="Off", advisor_thinking=True):
+                  source_image=None, negative_prompt="", mode="Refine", advisor_mode="Off", advisor_thinking=True,
+                  advisor_clip=None):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -9577,6 +9581,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         execution_mode = self._v2_execution_mode(mode)
         learning_mode = execution_mode == "Learning"
         advisor_mode = self._v2_advisor_mode(advisor_mode)
+        advisor_clip = advisor_clip if advisor_clip is not None else clip
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
         scene_db, scene_builder_status = self._v2_scene_builder_db(state)
         global_state = state.setdefault("global", {})
@@ -9780,7 +9785,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         if not current_prompt_refusal:
             prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied = self._v2_prompt_advisor(
-                clip,
+                advisor_clip,
                 advisor_mode,
                 prompt_to_encode,
                 intent_source_prompt,

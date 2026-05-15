@@ -1456,6 +1456,7 @@ def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
     assert inputs["required"]["mode"][0] == ["Refine", "Learning"]
     assert inputs["required"]["advisor_mode"][0] == ["Off", "Diagnostics", "Repair prompt"]
     assert "clip" in inputs["optional"]
+    assert "advisor_clip" in inputs["optional"]
     assert "positive_conditioning" in inputs["optional"]
     assert inputs["optional"]["advisor_thinking"][1]["default"] is True
 
@@ -1558,6 +1559,126 @@ def test_refiner_v2_advisor_repair_applies_validated_generated_prompt(tmp_path):
     assert "Encoded: advisor repaired prompt" in training_info
     assert state["last_run"]["encoded_prompt"] == "person smoking, smoke trails drifting upward"
     assert state["last_run"]["advisor"]["applied"] is True
+
+
+def test_refiner_v2_advisor_uses_separate_advisor_clip_when_connected(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "refinement_key": "advisor-clip-test",
+        "state_namespace": "clip",
+        "global": {
+            "total_iterations": 1,
+            "avg_reward_ema": 0.0,
+            "good_streak": 0,
+            "bad_streak": 1,
+            "last_rating_label": "Missing action",
+            "last_missing_axes": ["action"],
+            "phrase_memory": {},
+            "axis_conditioning_memory": {},
+            "lora_weight_memory": {},
+            "preferred_context_memory": {},
+            "intent_alignment_memory": {},
+            "intent_family_memory": {},
+            "perfect_anchors": {},
+            "variant_evidence": {},
+            "intent_preference_phrases": {},
+            "conditioning_deltas": {},
+            "active_repair_axes": [],
+            "negative_prompt_memory": {},
+            "vision_memory": {},
+            "loss_history": [],
+        },
+        "prompt_histories": {},
+        "last_run": {
+            "prompt": "person smoking",
+            "encoded_prompt": "person smoking",
+            "source_conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "phrases": prompt_phrases(refiner, "person smoking"),
+            "rating_label": "Unrated",
+            "iteration": 1,
+        },
+    }), encoding="utf-8")
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    main_clip = CountingClip()
+    advisor_clip = GeneratingClip(
+        "DIAGNOSTIC: add visible smoke motion.\n"
+        "REPAIRED_PROMPT: person smoking, smoke trails drifting upward"
+    )
+
+    refiner.refine_v2(
+        "person smoking",
+        main_clip,
+        "Missing details",
+        "advisor-clip-test",
+        user_intent_prompt="person smoking",
+        advisor_mode="Repair prompt",
+        advisor_clip=advisor_clip,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert advisor_clip.tokenize_calls
+    assert state["last_run"]["encoded_prompt"] == "person smoking, smoke trails drifting upward"
+    assert state["last_run"]["advisor"]["applied"] is True
+
+
+def test_refiner_v2_advisor_skips_when_no_generation_clip_is_available(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "refinement_key": "advisor-no-generation-test",
+        "state_namespace": "clip",
+        "global": {
+            "total_iterations": 1,
+            "avg_reward_ema": 0.0,
+            "good_streak": 0,
+            "bad_streak": 1,
+            "last_rating_label": "Missing action",
+            "last_missing_axes": ["action"],
+            "phrase_memory": {},
+            "axis_conditioning_memory": {},
+            "lora_weight_memory": {},
+            "preferred_context_memory": {},
+            "intent_alignment_memory": {},
+            "intent_family_memory": {},
+            "perfect_anchors": {},
+            "variant_evidence": {},
+            "intent_preference_phrases": {},
+            "conditioning_deltas": {},
+            "active_repair_axes": [],
+            "negative_prompt_memory": {},
+            "vision_memory": {},
+            "loss_history": [],
+        },
+        "prompt_histories": {},
+        "last_run": {
+            "prompt": "person smoking",
+            "encoded_prompt": "person smoking",
+            "source_conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "phrases": prompt_phrases(refiner, "person smoking"),
+            "rating_label": "Unrated",
+            "iteration": 1,
+        },
+    }), encoding="utf-8")
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    _, status, training_info, _, _ = refiner.refine_v2(
+        "person smoking",
+        FakeClip(),
+        "Missing details",
+        "advisor-no-generation-test",
+        advisor_mode="Repair prompt",
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "Advisor: unavailable; connected CLIP does not expose text generation" in status
+    assert "Advisor: unavailable; connected CLIP does not expose text generation" in training_info
+    assert state["last_run"]["encoded_prompt"] == "person smoking"
+    assert state["last_run"]["advisor"]["applied"] is False
 
 
 def test_refiner_v2_learning_mode_passes_prompt_and_conditioning_through(tmp_path):
