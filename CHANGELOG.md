@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+Added an optional CLIP text-generation advisor to `FunPack Video Refiner V2`. The advisor uses an explicit Refiner system prompt, can run Gemma thinking mode, passes source images to compatible CLIP tokenizers, sees the prompt that caused the current rating, and can either report diagnostics or apply a validated prompt repair before encoding.
+
 ## [2.4.2] - 2026-05-15
 
 ### Added

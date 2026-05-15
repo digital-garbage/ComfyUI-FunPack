@@ -5524,6 +5524,22 @@ V2_RATING_PROFILES = {
 }
 
 V2_FEEDBACK_AXES = ("details", "action", "quality")
+V2_ADVISOR_MODES = ["Off", "Diagnostics", "Repair prompt"]
+
+V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are FunPack Refiner V2 Prompt Advisor. You help a video prompt refiner decide whether a prompt needs a small, safe repair before it is encoded.
+
+Rules:
+- Preserve the user's current request and original intent.
+- Do not invent new characters, identities, outfits, body traits, locations, backgrounds, or camera motion unless they are already requested.
+- Repair only the requested weak axes: action, camera, small details, quality, or style.
+- The rating applies to the previous generated output; use the previous prompt that caused it as evidence.
+- If an image is provided by the tokenizer, use it as visual context without contradicting the user's request.
+- Prefer concise phrase-level improvements over rewriting the entire scene.
+- If no safe repair is needed, return the current prompt unchanged.
+- Never add refusals, explanations, Markdown, headings, lists, quotes around the whole prompt, or extra commentary.
+- Output exactly two lines:
+DIAGNOSTIC: one short sentence explaining the useful repair or why no repair is safe.
+REPAIRED_PROMPT: one continuous positive prompt paragraph."""
 
 V2_RATING_ALIASES = {
     "I like it": "Perfect",
@@ -5707,6 +5723,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "Mode",
                     "tooltip": "Refine applies learned prompt and conditioning changes. Learning records observations and ratings while passing prompts and conditioning through unchanged.",
                 }),
+                "advisor_mode": (V2_ADVISOR_MODES, {
+                    "default": "Off",
+                    "label": "Advisor",
+                    "tooltip": "Optional CLIP text-generation advisor. Diagnostics only reports advice; Repair prompt can apply a validated generated prompt repair before encoding.",
+                }),
             },
             "optional": {
                 "clip": ("CLIP", {"tooltip": "Optional text encoder. When connected, V2 encodes the prompt itself."}),
@@ -5743,6 +5764,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "I'm Feeling Lucky",
                     "tooltip": "Compose a learned prompt from V2 phrase memory, then encode it through the connected CLIP.",
                 }),
+                "advisor_thinking": ("BOOLEAN", {
+                    "default": True,
+                    "label": "Advisor Thinking",
+                    "tooltip": "Let compatible Gemma CLIP text generators use thinking mode for advisor diagnostics and prompt repair.",
+                }),
             },
         }
 
@@ -5758,6 +5784,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if clean in {"learning", "learn", "observe", "observer", "observation"}:
             return "Learning"
         return "Refine"
+
+    def _v2_advisor_mode(self, mode):
+        clean = str(mode or "Off").strip().lower().replace("_", " ").replace("-", " ")
+        if clean in {"diagnostic", "diagnostics", "observe", "analysis"}:
+            return "Diagnostics"
+        if clean in {"repair", "repair prompt", "prompt repair", "advisor repair"}:
+            return "Repair prompt"
+        return "Off"
 
     def _v2_empty_state(self, refinement_key):
         return {
@@ -8740,6 +8774,173 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             })
         return serializable
 
+    def _v2_advisor_prompt(self, prompt, intent_prompt, rating_label, axis_feedback, phrases, repair_candidates, previous_run=None, has_image=False):
+        axes = ", ".join(self._v2_order_axes(set(axis_feedback.get("missing_axes", [])))) or "none"
+        wrong = ", ".join(self._v2_order_axes(set(axis_feedback.get("wrong_axes", [])))) or "none"
+        previous_run = previous_run if isinstance(previous_run, dict) else {}
+        previous_prompt = self._v2_prompt_key(previous_run.get("prompt", ""))
+        previous_encoded = self._v2_prompt_key(previous_run.get("encoded_prompt", ""))
+        phrase_summary = "; ".join(
+            f"{item.get('text', '')} [{item.get('primary', 'details')}]"
+            for item in (phrases or [])[:10]
+            if str(item.get("text", "")).strip()
+        ) or "none"
+        candidate_summary = "; ".join(
+            str(item.get("text", ""))
+            for item in (repair_candidates or [])[:8]
+            if isinstance(item, dict) and str(item.get("text", "")).strip()
+        ) or "none"
+        return (
+            f"<start_of_turn>system\n{V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip()}<end_of_turn>\n"
+            "<start_of_turn>user\n"
+            f"Current positive prompt: {self._v2_prompt_key(prompt)}\n"
+            f"Original user intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}\n"
+            f"Prompt that caused the rating: {previous_prompt or 'none recorded'}\n"
+            f"Encoded prompt that caused the rating: {previous_encoded or previous_prompt or 'none recorded'}\n"
+            f"Rating for previous output: {rating_label}\n"
+            f"Missing axes to repair: {axes}\n"
+            f"Wrong axes to avoid repeating: {wrong}\n"
+            f"Source image available to advisor: {'yes' if has_image else 'no'}\n"
+            f"Current prompt phrase analysis: {phrase_summary}\n"
+            f"Rule-based repair candidates already found: {candidate_summary}\n"
+            "Task: produce the safest next positive prompt for the current generation. "
+            "Keep the prompt unchanged if the rating does not justify a safe repair."
+            "<end_of_turn>\n<start_of_turn>model\n"
+        )
+
+    def _v2_generate_advisor_text(self, clip, advisor_prompt, seed=None, image=None, thinking=True):
+        if clip is None or not hasattr(clip, "generate") or not hasattr(clip, "decode"):
+            return "", "Advisor: unavailable; connected CLIP does not expose text generation."
+        try:
+            try:
+                tokens = clip.tokenize(advisor_prompt, image=image, min_length=1, thinking=bool(thinking))
+            except TypeError:
+                try:
+                    tokens = clip.tokenize(advisor_prompt, image=image)
+                except TypeError:
+                    tokens = clip.tokenize(advisor_prompt)
+            generated_ids = clip.generate(
+                tokens,
+                do_sample=False,
+                max_length=384,
+                temperature=0.7,
+                top_k=64,
+                top_p=0.95,
+                min_p=0.05,
+                repetition_penalty=1.05,
+                presence_penalty=0.0,
+                seed=seed if seed else None,
+            )
+            text = clip.decode(generated_ids, skip_special_tokens=True)
+            return str(text or "").strip(), "Advisor: generated."
+        except Exception as error:
+            return "", f"Advisor: generation failed: {error}"
+
+    def _v2_parse_advisor_response(self, text):
+        text = re.sub(r"```.*?```", "", str(text or ""), flags=re.DOTALL).strip()
+        text = re.sub(r"</?start_of_turn>|<end_of_turn>", "", text).strip()
+        diagnostic = ""
+        repaired = ""
+        diagnostic_match = re.search(r"(?im)^\s*DIAGNOSTIC\s*:\s*(.+)$", text)
+        repaired_match = re.search(r"(?ims)^\s*REPAIRED_PROMPT\s*:\s*(.+)$", text)
+        if diagnostic_match:
+            diagnostic = re.sub(r"\s+", " ", diagnostic_match.group(1)).strip()
+        if repaired_match:
+            repaired = repaired_match.group(1).strip()
+            repaired = re.split(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT)\s*:", repaired)[0].strip()
+        elif text and not diagnostic_match:
+            repaired = text.strip()
+        repaired = re.sub(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT)\s*:\s*", "", repaired).strip()
+        repaired = re.sub(r"\s+", " ", repaired).strip(" \t\r\n\"'")
+        if len(repaired) > 1600:
+            repaired = repaired[:1600].rsplit(" ", 1)[0].strip()
+        return diagnostic, repaired
+
+    def _v2_validate_advisor_prompt(self, current_prompt, advised_prompt, intent_prompt, intent_phrases, clip=None, encode_cache=None):
+        current = self._v2_prompt_key(current_prompt)
+        advised = self._v2_prompt_key(advised_prompt)
+        intent = self._v2_prompt_key(intent_prompt) or current
+        if not advised:
+            return False, "empty prompt"
+        if self._prompt_looks_like_refusal(advised):
+            return False, "refusal text"
+        if advised == current:
+            return True, "unchanged"
+        if len(advised) > max(180, len(current) * 3 + 320):
+            return False, "too long"
+        body_similarity = self._v2_prompt_body_similarity(advised, intent)
+        semantic_similarity = self._v2_text_semantic_similarity(clip, advised, intent, encode_cache=encode_cache) if clip is not None else 0.0
+        if body_similarity < 0.30 and semantic_similarity < 0.58:
+            return False, "too far from intent"
+        generated_phrases = self._ordered_prompt_phrases(advised)
+        current_phrases = self._ordered_prompt_phrases(current)
+        protected_categories = {"appearance", "subject", "environment"}
+        for phrase in generated_phrases[:24]:
+            text = phrase.get("text", "")
+            if self._v2_phrase_represented_by(text, current_phrases) or self._v2_phrase_represented_by(text, intent_phrases or []):
+                continue
+            category = self._v2_primary_category_for_text(text)
+            if category in protected_categories:
+                return False, f"new protected {category} phrase"
+        return True, "validated"
+
+    def _v2_prompt_advisor(
+        self,
+        clip,
+        mode,
+        current_prompt,
+        intent_prompt,
+        rating_label,
+        axis_feedback,
+        phrases,
+        repair_candidates,
+        previous_run=None,
+        intent_phrases=None,
+        allow_prompt_change=False,
+        seed=0,
+        image=None,
+        thinking=True,
+        encode_cache=None,
+    ):
+        mode = self._v2_advisor_mode(mode)
+        if mode == "Off":
+            return current_prompt, "Advisor: off.", "", False
+        if not self._v2_prompt_key(current_prompt):
+            return current_prompt, "Advisor: skipped; prompt empty.", "", False
+        repair_signal = bool(axis_feedback.get("missing_axes") or axis_feedback.get("wrong_axes"))
+        if mode == "Repair prompt" and not repair_signal:
+            return current_prompt, "Advisor: skipped; no missing/wrong repair signal.", "", False
+        advisor_prompt = self._v2_advisor_prompt(
+            current_prompt,
+            intent_prompt,
+            rating_label,
+            axis_feedback,
+            phrases,
+            repair_candidates,
+            previous_run=previous_run,
+            has_image=image is not None,
+        )
+        raw, status = self._v2_generate_advisor_text(clip, advisor_prompt, seed=seed, image=image, thinking=thinking)
+        if not raw:
+            return current_prompt, status, "", False
+        diagnostic, advised = self._v2_parse_advisor_response(raw)
+        if mode == "Diagnostics" or not allow_prompt_change:
+            reason = "diagnostics only" if mode == "Diagnostics" else "prompt changes disabled"
+            return current_prompt, f"Advisor: {reason}. {diagnostic or advised or 'No diagnostic returned.'}", diagnostic or advised, False
+        valid, reason = self._v2_validate_advisor_prompt(
+            current_prompt,
+            advised,
+            intent_prompt,
+            intent_phrases or [],
+            clip=clip,
+            encode_cache=encode_cache,
+        )
+        if not valid:
+            return current_prompt, f"Advisor: rejected generated repair ({reason}). {diagnostic}".strip(), diagnostic, False
+        if self._v2_prompt_key(advised) == self._v2_prompt_key(current_prompt):
+            return current_prompt, f"Advisor: generated prompt unchanged. {diagnostic}".strip(), diagnostic, False
+        return advised, f"Advisor: applied generated repair. {diagnostic}".strip(), diagnostic, True
+
     def _v2_scene_builder_category_for_entry(self, entry):
         category = str(entry.get("primary", "") if isinstance(entry, dict) else "").lower()
         if category in self.CATEGORY_DESCRIPTIONS:
@@ -9361,7 +9562,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
-                  source_image=None, negative_prompt="", mode="Refine"):
+                  source_image=None, negative_prompt="", mode="Refine", advisor_mode="Off", advisor_thinking=True):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -9375,6 +9576,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         rating_label = rating_profile.get("label", str(rating))
         execution_mode = self._v2_execution_mode(mode)
         learning_mode = execution_mode == "Learning"
+        advisor_mode = self._v2_advisor_mode(advisor_mode)
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
         scene_db, scene_builder_status = self._v2_scene_builder_db(state)
         global_state = state.setdefault("global", {})
@@ -9500,6 +9702,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         perfect_repair_status = "Perfect repairs: none."
         perfect_repair_adjustments = []
         wildcard_status = "Scene Builder wildcard cleanup: none."
+        advisor_status = "Advisor: off."
+        advisor_diagnostic = ""
+        advisor_applied = False
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
@@ -9572,6 +9777,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             else:
                 lucky_status = f"Lucky: off | trained memory only. {emphasis_status}"
             encoded_role = "current prompt"
+
+        if not current_prompt_refusal:
+            prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied = self._v2_prompt_advisor(
+                clip,
+                advisor_mode,
+                prompt_to_encode,
+                intent_source_prompt,
+                rating_label,
+                repair_feedback,
+                phrases,
+                repair_candidates,
+                previous_run=previous_run,
+                intent_phrases=intent_phrases,
+                allow_prompt_change=not learning_mode and advisor_mode == "Repair prompt",
+                seed=seed,
+                image=source_image,
+                thinking=advisor_thinking,
+                encode_cache=encode_cache,
+            )
+            if advisor_applied:
+                encoded_role = "advisor repaired prompt"
 
         cond, meta, encode_status, conditioning_owner = self._v2_conditioning_source(
             clip,
@@ -9703,6 +9929,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "repair_candidates": state_repair_candidates,
                 "vision_context": vision_context,
                 "intent_alignment_adjustments": state_intent_alignment_adjustments,
+                "advisor": {
+                    "mode": advisor_mode,
+                    "status": advisor_status,
+                    "diagnostic": advisor_diagnostic,
+                    "applied": bool(advisor_applied),
+                },
             })
 
         if current_prompt_refusal:
@@ -9721,6 +9953,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "intent_family_key": current_family_key,
                 "intent_family_similarity": round(float(current_family_similarity), 6),
                 "intent_alignment_adjustments": state_intent_alignment_adjustments,
+                "advisor": {
+                    "mode": advisor_mode,
+                    "status": advisor_status,
+                    "diagnostic": advisor_diagnostic,
+                    "applied": bool(advisor_applied),
+                },
                 "repair_candidates": state_repair_candidates,
                 "negative_prompt": repaired_negative_prompt,
                 "vision_context": vision_context,
@@ -9757,6 +9995,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"\n{intent_alignment_status}"
             f"\n{perfect_repair_status}"
             f"\n{repair_status}"
+            f"\n{advisor_status}"
             f"\n{wildcard_status}"
             f"\n{negative_repair_status}"
             f"\n{vision_status}"
@@ -9804,6 +10043,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{intent_alignment_status}\n"
                 f"{perfect_repair_status}\n"
                 f"{repair_status}\n"
+                f"{advisor_status}\n"
                 f"{wildcard_status}\n"
                 f"{negative_repair_status}\n"
                 f"Negative encode: {negative_encode_status}\n"

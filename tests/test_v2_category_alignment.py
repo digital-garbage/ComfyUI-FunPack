@@ -33,6 +33,24 @@ class CountingClip(FakeClip):
         return super().encode_from_tokens_scheduled(tokens)
 
 
+class GeneratingClip(FakeClip):
+    def __init__(self, generated_text):
+        self.generated_text = generated_text
+        self.tokenize_calls = []
+        self.generate_kwargs = {}
+
+    def tokenize(self, text, **kwargs):
+        self.tokenize_calls.append((text, kwargs))
+        return text
+
+    def generate(self, tokens, **kwargs):
+        self.generate_kwargs = kwargs
+        return [1, 2, 3]
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        return self.generated_text
+
+
 def primary_category(phrase):
     refiner = FunPackVideoRefinerV2()
     scores = refiner._v2_heuristic_scores(phrase)
@@ -1436,8 +1454,110 @@ def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
     assert "clip" not in inputs["required"]
     assert "positive_conditioning" not in inputs["required"]
     assert inputs["required"]["mode"][0] == ["Refine", "Learning"]
+    assert inputs["required"]["advisor_mode"][0] == ["Off", "Diagnostics", "Repair prompt"]
     assert "clip" in inputs["optional"]
     assert "positive_conditioning" in inputs["optional"]
+    assert inputs["optional"]["advisor_thinking"][1]["default"] is True
+
+
+def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking_and_image():
+    refiner = FunPackVideoRefinerV2()
+    image = torch.zeros(1, 8, 8, 3)
+    clip = GeneratingClip(
+        "DIAGNOSTIC: add clearer smoke motion.\n"
+        "REPAIRED_PROMPT: person smoking, smoke trails drifting upward"
+    )
+
+    prompt, status, diagnostic, applied = refiner._v2_prompt_advisor(
+        clip,
+        "Diagnostics",
+        "person smoking",
+        "person smoking",
+        "Missing details",
+        {"missing_axes": ["details"], "wrong_axes": []},
+        prompt_phrases(refiner, "person smoking"),
+        [],
+        previous_run={"prompt": "old prompt", "encoded_prompt": "old encoded prompt"},
+        image=image,
+        thinking=True,
+        seed=123,
+    )
+
+    advisor_prompt, kwargs = clip.tokenize_calls[0]
+    assert prompt == "person smoking"
+    assert applied is False
+    assert "diagnostics only" in status
+    assert diagnostic == "add clearer smoke motion."
+    assert "FunPack Refiner V2 Prompt Advisor" in advisor_prompt
+    assert "Prompt that caused the rating: old prompt" in advisor_prompt
+    assert "Encoded prompt that caused the rating: old encoded prompt" in advisor_prompt
+    assert "Source image available to advisor: yes" in advisor_prompt
+    assert kwargs["image"] is image
+    assert kwargs["thinking"] is True
+    assert clip.generate_kwargs["seed"] == 123
+
+
+def test_refiner_v2_advisor_repair_applies_validated_generated_prompt(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "refinement_key": "advisor-repair-test",
+        "state_namespace": "clip",
+        "global": {
+            "total_iterations": 1,
+            "avg_reward_ema": 0.0,
+            "good_streak": 0,
+            "bad_streak": 1,
+            "last_rating_label": "Missing action",
+            "last_missing_axes": ["action"],
+            "phrase_memory": {},
+            "axis_conditioning_memory": {},
+            "lora_weight_memory": {},
+            "preferred_context_memory": {},
+            "intent_alignment_memory": {},
+            "intent_family_memory": {},
+            "perfect_anchors": {},
+            "variant_evidence": {},
+            "intent_preference_phrases": {},
+            "conditioning_deltas": {},
+            "active_repair_axes": [],
+            "negative_prompt_memory": {},
+            "vision_memory": {},
+            "loss_history": [],
+        },
+        "prompt_histories": {},
+        "last_run": {
+            "prompt": "person smoking",
+            "encoded_prompt": "person smoking",
+            "source_conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "phrases": prompt_phrases(refiner, "person smoking"),
+            "rating_label": "Unrated",
+            "iteration": 1,
+        },
+    }), encoding="utf-8")
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    clip = GeneratingClip(
+        "DIAGNOSTIC: add visible smoke motion.\n"
+        "REPAIRED_PROMPT: person smoking, smoke trails drifting upward"
+    )
+
+    _, status, training_info, _, _ = refiner.refine_v2(
+        "person smoking",
+        clip,
+        "Missing details",
+        "advisor-repair-test",
+        user_intent_prompt="person smoking",
+        advisor_mode="Repair prompt",
+        advisor_thinking=True,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "Advisor: applied generated repair" in status
+    assert "Encoded: advisor repaired prompt" in training_info
+    assert state["last_run"]["encoded_prompt"] == "person smoking, smoke trails drifting upward"
+    assert state["last_run"]["advisor"]["applied"] is True
 
 
 def test_refiner_v2_learning_mode_passes_prompt_and_conditioning_through(tmp_path):

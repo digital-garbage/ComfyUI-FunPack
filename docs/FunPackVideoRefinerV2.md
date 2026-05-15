@@ -8,7 +8,7 @@ V2 replaces the old `FunPack Video Refiner` public node in version `2.2.0`. It u
 
 **positive_prompt**: Prompt text to encode and refine.
 
-**clip**: Connected text encoder. V2 uses this CLIP for prompt encoding and phrase/category similarity checks. It does not load an external tokenizer.
+**clip**: Connected text encoder. V2 uses this CLIP for prompt encoding, phrase/category similarity checks, and optional advisor text generation when the connected CLIP supports `generate`/`decode`.
 
 **rating**: Feedback for the previous V2 generation:
 
@@ -50,6 +50,16 @@ Use `Wrong appearance` when the video is polluted by remembered clothing, charac
 
 **im_feeling_lucky**: When enabled, V2 composes a learned prompt from rated phrase memory and encodes it through the connected CLIP. When disabled, V2 may still store Lucky memory from rated runs, but it does not compose or apply a Lucky prompt.
 
+**advisor_mode**: Optional CLIP text-generation advisor:
+
+- `Off`: no advisor call.
+- `Diagnostics`: asks the connected generative CLIP for a short diagnosis, but never changes the encoded prompt.
+- `Repair prompt`: asks for a repaired positive prompt and applies it only after validation against the current request, original intent, refusal filter, and protected appearance/subject/environment rules.
+
+The advisor uses an explicit Refiner system prompt and receives the current prompt, the prompt that caused the rating, the original user intent, rating label, missing/wrong axes, phrase analysis, and rule-based repair candidates.
+
+**advisor_thinking**: Enables thinking mode for compatible Gemma CLIP text generators when the advisor is active.
+
 ## Appearance Safety
 
 Refiner V2 treats image-to-video appearance as image-owned by default. Learned appearance, subject/character, and environment/background phrases are not auto-added by Prompt Repair or Lucky unless they are already present in the current prompt.
@@ -79,6 +89,8 @@ Connect its `refinement_key` output to Refiner V2's `refinement_key_input` and t
 ## Vision Context
 
 Vision inputs are intentionally advisory in this version. The refiner stores source-image size, aspect bucket, image fingerprint, changed-image status, and CLIP Vision tensor summaries in the V2 state so ratings can be interpreted with image context. It does not directly mix CLIP Vision tensors into positive conditioning.
+
+When `advisor_mode` is active and `source_image` is connected, V2 also passes that image to compatible CLIP text generators so the advisor can use visual context while still preserving the user's prompt and intent.
 
 ## Negative Repair
 
