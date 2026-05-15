@@ -5530,7 +5530,13 @@ V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are an exacting prompt repair system. Y
 - ORIGINAL_USER_INTENT: the user's short request.
 - INTENT_NOTES: accumulated feedback that expands what this intent means (may be absent).
 - LAST_PROMPT: the positive prompt that was just used.
-- RATING: one of [Missing action, Missing details, Missing quality, Wrong action/details, Wrong appearance, Just forget it].
+- RATING: one of:
+    Missing action - main action or large motion is absent from the output
+    Missing details - small actions, micro-interactions, hand/object contact, fluid micro-movements are absent
+    Missing quality - visual quality issues: blur, sharpness, rendering artifacts
+    Wrong action/details - action or small detail is present but incorrect
+    Wrong appearance - wrong character, clothing, or background bled in from memory
+    Just forget it - generation failed for unrelated reasons, do not learn
 - OPTIONAL_NOTE: user's optional clarification.
 
 Based on the RATING, rewrite LAST_PROMPT to fix the specific failure.
@@ -8152,6 +8158,110 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_shape_compatible(self, payload, conditioning):
         return self._serialized_conditioning_compatible(payload, conditioning)
 
+    def _v2_pool_conditioning(self, payload):
+        """Deserialize and mean-pool [batch?, seq, dim] → [dim]. Shape-invariant across prompt lengths."""
+        if not isinstance(payload, dict):
+            return None
+        try:
+            t = serializable_to_tensor(payload).float()
+            while t.dim() > 1:
+                t = t.mean(dim=0)
+            return t
+        except Exception:
+            return None
+
+    def _v2_update_session_mean(self, global_state, source_payload):
+        """Running mean of raw source conditioning (pre-memory), pooled to [dim] for shape invariance."""
+        pooled = self._v2_pool_conditioning(source_payload)
+        if pooled is None:
+            return
+        count = int(global_state.get("session_source_mean_count", 0))
+        existing = global_state.get("session_source_mean")
+        if count <= 0 or not isinstance(existing, dict):
+            global_state["session_source_mean"] = tensor_to_serializable(pooled.cpu())
+            global_state["session_source_mean_count"] = 1
+            return
+        try:
+            prev = serializable_to_tensor(existing).float().to(pooled.device)
+            if list(prev.shape) != list(pooled.shape):
+                global_state["session_source_mean"] = tensor_to_serializable(pooled.cpu())
+                global_state["session_source_mean_count"] = 1
+                return
+            averaged = (prev * count + pooled) / float(count + 1)
+            global_state["session_source_mean"] = tensor_to_serializable(averaged.cpu())
+            global_state["session_source_mean_count"] = count + 1
+        except Exception:
+            pass
+
+    def _v2_store_direction(self, slot, payload, session_mean_payload):
+        """Store running-averaged unit-norm direction (delta from session mean) in slot.
+        Shape-invariant: works across any sequence length because both are pooled to [dim]."""
+        pooled = self._v2_pool_conditioning(payload)
+        session_mean = self._v2_pool_conditioning(session_mean_payload)
+        if pooled is None or session_mean is None:
+            return
+        try:
+            mean = session_mean.to(pooled.device)
+            if list(mean.shape) != list(pooled.shape):
+                return
+            delta = pooled - mean
+            magnitude = float(delta.norm().item())
+            if magnitude < 1e-6:
+                return
+            unit = delta / magnitude
+            count = int(slot.get("direction_count", 0))
+            existing = slot.get("direction")
+            if count <= 0 or not isinstance(existing, dict):
+                slot["direction"] = tensor_to_serializable(unit.cpu())
+                slot["direction_magnitude"] = magnitude
+                slot["direction_count"] = 1
+                return
+            prev = serializable_to_tensor(existing).float().to(unit.device)
+            if list(prev.shape) != list(unit.shape):
+                slot["direction"] = tensor_to_serializable(unit.cpu())
+                slot["direction_magnitude"] = magnitude
+                slot["direction_count"] = 1
+                return
+            avg_dir = (prev * count + unit) / float(count + 1)
+            avg_dir = avg_dir / avg_dir.norm().clamp_min(1e-8)
+            avg_mag = (float(slot.get("direction_magnitude", 0.0)) * count + magnitude) / float(count + 1)
+            slot["direction"] = tensor_to_serializable(avg_dir.cpu())
+            slot["direction_magnitude"] = float(avg_mag)
+            slot["direction_count"] = count + 1
+        except Exception:
+            pass
+
+    def _v2_apply_direction(self, mixed, slot, strength, negate=False):
+        """Apply stored unit direction to active tokens using NORM_SCALE calibration.
+        Requires direction_count >= 3. Falls back silently if not ready."""
+        if not isinstance(slot, dict):
+            return mixed
+        count = int(slot.get("direction_count", 0))
+        if count < 3:
+            return mixed
+        direction_payload = slot.get("direction")
+        magnitude = float(slot.get("direction_magnitude", 0.0))
+        if not isinstance(direction_payload, dict) or magnitude < 1e-6:
+            return mixed
+        try:
+            direction = serializable_to_tensor(direction_payload).to(device=mixed.device, dtype=mixed.dtype)
+            while direction.dim() < mixed.dim():
+                direction = direction.unsqueeze(0)
+            direction = direction.expand_as(mixed)
+            if negate:
+                direction = -direction
+            token_norms = mixed.norm(dim=-1, keepdim=True)
+            max_norm = token_norms.amax().clamp_min(1e-8)
+            active_mask = token_norms > max_norm * 0.01
+            avg_active_norm = float(
+                token_norms[active_mask].mean().item() if active_mask.any() else max_norm.item()
+            )
+            # NORM_SCALE=0.3 calibration: strength=1.0 is visible but non-destructive
+            delta = direction * (strength * 0.3 * avg_active_norm)
+            return torch.where(active_mask, mixed + delta, mixed)
+        except Exception:
+            return mixed
+
     def _v2_store_conditioning_average(self, slot, payload):
         count = int(slot.get("count", 0))
         existing = slot.get("conditioning")
@@ -8173,7 +8283,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             slot["conditioning"] = payload
             slot["count"] = 1
 
-    def _v2_update_axis_conditioning_memory(self, global_state, payload, axis_feedback):
+    def _v2_update_axis_conditioning_memory(self, global_state, payload, axis_feedback, session_mean_payload=None):
         if not isinstance(payload, dict):
             return
         memory = global_state.setdefault("axis_conditioning_memory", {})
@@ -8181,15 +8291,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             axis_slot = memory.setdefault(axis, {})
             positive = axis_slot.setdefault("positive", {})
             self._v2_store_conditioning_average(positive, payload)
+            self._v2_store_direction(positive, payload, session_mean_payload)
         for axis in self._v2_order_axes(axis_feedback.get("resolved_axes", [])):
             axis_slot = memory.setdefault(axis, {})
             positive = axis_slot.setdefault("positive", {})
             self._v2_store_conditioning_average(positive, payload)
+            self._v2_store_direction(positive, payload, session_mean_payload)
             axis_slot["resolved_count"] = int(axis_slot.get("resolved_count", 0)) + 1
         for axis in self._v2_order_axes(axis_feedback.get("missing_axes", [])):
             axis_slot = memory.setdefault(axis, {})
             negative = axis_slot.setdefault("negative", {})
             self._v2_store_conditioning_average(negative, payload)
+            self._v2_store_direction(negative, payload, session_mean_payload)
         for axis in self._v2_order_axes(axis_feedback.get("regressed_axes", [])):
             axis_slot = memory.setdefault(axis, {})
             axis_slot["regressed_count"] = int(axis_slot.get("regressed_count", 0)) + 1
@@ -8202,13 +8315,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         payload = last_run.get("conditioning")
         if not isinstance(payload, dict):
             return
+        source_payload = last_run.get("source_conditioning")
+        self._v2_update_session_mean(global_state, source_payload)
+        session_mean = global_state.get("session_source_mean")
         key = rating_profile.get("key", "")
         axis_feedback = axis_feedback or self._v2_axis_feedback(
             rating_profile,
             global_state.get("last_missing_axes", []),
         )
-        self._v2_update_axis_conditioning_memory(global_state, payload, axis_feedback)
+        self._v2_update_axis_conditioning_memory(global_state, payload, axis_feedback,
+                                                  session_mean_payload=session_mean)
         if key == "like":
+            liked_dir_slot = global_state.setdefault("liked_dir", {})
+            self._v2_store_direction(liked_dir_slot, payload, session_mean)
             count = int(global_state.get("liked_conditioning_count", 0))
             if count <= 0 or not isinstance(global_state.get("liked_conditioning"), dict):
                 global_state["liked_conditioning"] = payload
@@ -8228,6 +8347,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 global_state["liked_conditioning"] = payload
                 global_state["liked_conditioning_count"] = 1
         elif key == "awful" or float(rating_profile.get("reward", 0.0)) < -0.35:
+            bad_dir_slot = global_state.setdefault("bad_dir", {})
+            self._v2_store_direction(bad_dir_slot, payload, session_mean)
             global_state["bad_conditioning"] = payload
             global_state["bad_conditioning_count"] = int(global_state.get("bad_conditioning_count", 0)) + 1
 
@@ -8292,41 +8413,71 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             rating_profile,
             global_state.get("last_missing_axes", []),
         )
+
+        # Liked conditioning: direction-based when enough data (cross-prompt compatible),
+        # otherwise legacy lerp toward averaged full tensor.
+        liked_dir_slot = global_state.get("liked_dir", {})
         liked_payload = global_state.get("liked_conditioning")
-        if self._v2_shape_compatible(liked_payload, mixed):
+        if int(liked_dir_slot.get("direction_count", 0)) >= 3:
+            mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength)
+        elif self._v2_shape_compatible(liked_payload, mixed):
             try:
                 liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
                 mixed = mixed.lerp(liked, strength)
             except Exception:
                 pass
+
         mixed, family_delta_status = self._v2_apply_intent_family_delta(mixed, intent_family_slot, strength)
+
         axis_memory = global_state.get("axis_conditioning_memory", {})
         axis_actions = []
         missing_axes = set(axis_feedback.get("missing_axes", []))
         satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
         for axis in V2_FEEDBACK_AXES:
             axis_slot = axis_memory.get(axis, {}) if isinstance(axis_memory, dict) else {}
-            positive = axis_slot.get("positive", {}).get("conditioning") if isinstance(axis_slot, dict) else None
-            negative = axis_slot.get("negative", {}).get("conditioning") if isinstance(axis_slot, dict) else None
+            if not isinstance(axis_slot, dict):
+                continue
+            positive_slot = axis_slot.get("positive", {})
+            negative_slot = axis_slot.get("negative", {})
+            pos_dir_ready = int(positive_slot.get("direction_count", 0)) >= 3
+            neg_dir_ready = int(negative_slot.get("direction_count", 0)) >= 3
             if axis in missing_axes:
                 before = mixed
-                mixed = self._v2_apply_conditioning_payload(mixed, positive, min(0.070, strength * 1.10))
-                mixed = self._v2_repel_conditioning_payload(mixed, negative, min(0.055, strength * 0.82))
-                if mixed is not before:
-                    axis_actions.append(f"{axis}:repair")
+                if pos_dir_ready:
+                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.070, strength * 1.10))
+                else:
+                    mixed = self._v2_apply_conditioning_payload(
+                        mixed, positive_slot.get("conditioning"), min(0.070, strength * 1.10))
+                if neg_dir_ready:
+                    mixed = self._v2_apply_direction(mixed, negative_slot, min(0.055, strength * 0.82), negate=True)
+                else:
+                    mixed = self._v2_repel_conditioning_payload(
+                        mixed, negative_slot.get("conditioning"), min(0.055, strength * 0.82))
+                if not torch.equal(mixed, before):
+                    axis_actions.append(f"{axis}:repair({'dir' if pos_dir_ready else 'lerp'})")
             elif axis in satisfied_axes:
                 before = mixed
-                mixed = self._v2_apply_conditioning_payload(mixed, positive, min(0.026, strength * 0.34))
-                if mixed is not before:
-                    axis_actions.append(f"{axis}:preserve")
+                if pos_dir_ready:
+                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.026, strength * 0.34))
+                else:
+                    mixed = self._v2_apply_conditioning_payload(
+                        mixed, positive_slot.get("conditioning"), min(0.026, strength * 0.34))
+                if not torch.equal(mixed, before):
+                    axis_actions.append(f"{axis}:preserve({'dir' if pos_dir_ready else 'lerp'})")
+
+        # Bad conditioning repulsion: direction-based or legacy.
+        bad_dir_slot = global_state.get("bad_dir", {})
         bad_payload = global_state.get("bad_conditioning")
-        if self._v2_shape_compatible(bad_payload, mixed) and float(rating_profile.get("reward", 0.0)) < 0.0:
-            try:
-                bad = serializable_to_tensor(bad_payload).to(device=mixed.device, dtype=mixed.dtype)
-                repel = (mixed - bad) * min(0.055, strength * 0.72)
-                mixed = mixed + repel
-            except Exception:
-                pass
+        if float(rating_profile.get("reward", 0.0)) < 0.0:
+            if int(bad_dir_slot.get("direction_count", 0)) >= 3:
+                mixed = self._v2_apply_direction(mixed, bad_dir_slot, min(0.055, strength * 0.72), negate=True)
+            elif self._v2_shape_compatible(bad_payload, mixed):
+                try:
+                    bad = serializable_to_tensor(bad_payload).to(device=mixed.device, dtype=mixed.dtype)
+                    mixed = mixed + (mixed - bad) * min(0.055, strength * 0.72)
+                except Exception:
+                    pass
+
         delta = mixed - original
         original_norm = original.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         max_delta = original_norm * 0.075
@@ -8335,8 +8486,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mixed = original + delta * scale
         mixed = torch.clamp(mixed, min=-60.0, max=60.0)
         mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * original_norm
+
+        liked_mode = "dir" if int(liked_dir_slot.get("direction_count", 0)) >= 3 else "lerp"
         return mixed, (
-            f"Adaptation: automatic strength {strength:.3f} | "
+            f"Adaptation: strength {strength:.3f} liked={liked_mode} | "
             f"good streak {int(global_state.get('good_streak', 0))} | "
             f"bad streak {int(global_state.get('bad_streak', 0))} | "
             f"reward ema {float(global_state.get('avg_reward_ema', 0.0)):+.3f} | "
@@ -9949,6 +10102,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("vision_memory", {})
         global_state.setdefault("loss_history", [])
         global_state.setdefault("intent_expansion_memory", {})
+        global_state.setdefault("session_source_mean_count", 0)
+        global_state.setdefault("liked_dir", {})
+        global_state.setdefault("bad_dir", {})
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
         has_previous_run = isinstance(previous_run, dict) and not previous_run_refusal
