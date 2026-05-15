@@ -9116,7 +9116,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return current_prompt, f"Advisor: rejected ({reason}). {analysis}".strip(), analysis, False, advised
         if self._v2_prompt_key(advised) == self._v2_prompt_key(current_prompt):
             return current_prompt, f"Advisor: no change. {analysis}".strip(), analysis, False, ""
-        return advised, f"Advisor: applied repair. {analysis}".strip(), analysis, True, ""
+        return advised, f"Advisor: applied repair. {analysis}".strip(), analysis, True, advised
 
     def _v2_negative_advisor_prompt(
         self,
@@ -9253,12 +9253,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_encoded_prompts_output(self, positive_prompt, advisor_diagnostic="", pre_advisor_prompt="", advisor_suggested=""):
         parts = [f"Positive prompt: {str(positive_prompt or '').strip()}"]
         positive_key = self._v2_prompt_key(positive_prompt)
+        suggested_key = self._v2_prompt_key(advisor_suggested) if advisor_suggested else ""
+        if advisor_suggested:
+            label = "Advisor suggestion (applied)" if suggested_key == positive_key else "Advisor suggestion (rejected)"
+            parts.append(f"{label}: {str(advisor_suggested).strip()}")
         if advisor_diagnostic:
-            parts.append(f"Advisor: {str(advisor_diagnostic).strip()}")
+            parts.append(f"Advisor analysis: {str(advisor_diagnostic).strip()}")
         if pre_advisor_prompt and self._v2_prompt_key(pre_advisor_prompt) != positive_key:
             parts.append(f"Pre-advisor prompt: {str(pre_advisor_prompt).strip()}")
-        if advisor_suggested and self._v2_prompt_key(advisor_suggested) != positive_key:
-            parts.append(f"Advisor suggested (rejected): {str(advisor_suggested).strip()}")
         return "\n\n".join(parts)
 
     def _v2_scene_builder_category_for_entry(self, entry):
