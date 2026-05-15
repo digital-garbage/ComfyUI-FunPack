@@ -8870,8 +8870,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         user_lines = []
         if has_feedback:
             user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
-        user_lines.append(f"Current prompt: {self._v2_prompt_key(prompt)}")
-        user_lines.append(f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}")
+        user_lines.append(f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as suggested prompt'}")
+        user_lines.append(f"Suggested prompt: {self._v2_prompt_key(prompt)}")
         if previous_prompt:
             user_lines.append(f"Previous prompt (what caused the feedback): {previous_prompt}")
         candidates = [
@@ -8882,7 +8882,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             user_lines.append(f"Memory suggestions: {', '.join(candidates)}.")
         if feedback_history:
             user_lines.append(f"Past feedback (most recent first):\n{feedback_history}")
-        user_lines.append("Task: identify exactly what needs to change in the current prompt.")
+        user_lines.append("Task: identify exactly what needs to change in the suggested prompt.")
         return analysis_system + "\n\n" + "\n".join(user_lines)
 
     def _v2_advisor_prompt(
@@ -8922,8 +8922,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if has_feedback:
             user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
 
-        user_lines.append(f"Current prompt: {self._v2_prompt_key(prompt)}")
-        user_lines.append(f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}")
+        user_lines.append(f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as suggested prompt'}")
+        user_lines.append(f"Suggested prompt: {self._v2_prompt_key(prompt)}")
 
         if previous_prompt:
             user_lines.append(f"Previous prompt (what caused the feedback): {previous_prompt}")
@@ -8967,11 +8967,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     tokens = clip.tokenize(advisor_prompt)
             generated_ids = clip.generate(
                 tokens,
-                do_sample=False,
+                do_sample=True,
                 max_length=max_length,
-                temperature=0.7,
-                top_k=64,
-                top_p=0.95,
+                temperature=0.5,
+                top_k=50,
+                top_p=0.92,
                 min_p=0.05,
                 repetition_penalty=1.05,
                 presence_penalty=0.0,
@@ -9163,9 +9163,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if has_feedback:
             user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
         user_lines += [
-            f"Current prompt: {self._v2_prompt_key(positive_prompt)}",
+            f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as suggested prompt'}",
+            f"Suggested prompt: {self._v2_prompt_key(positive_prompt)}",
             f"Current negative: {self._v2_prompt_key(negative_prompt) or 'empty'}",
-            f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}",
         ]
         if previous_prompt:
             user_lines.append(f"Previous prompt (what caused the feedback): {previous_prompt}")
