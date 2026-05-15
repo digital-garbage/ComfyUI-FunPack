@@ -5606,8 +5606,8 @@ def normalize_refiner_v2_rating(value):
 
 class FunPackVideoRefinerV2(FunPackVideoRefiner):
     CATEGORY = "FunPack/Refinement"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "CONDITIONING", "STRING")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "modified_negative", "encoded_prompts")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts")
     FUNCTION = "refine_v2"
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
@@ -5746,11 +5746,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 }),
                 "source_image": ("IMAGE", {
                     "tooltip": "Optional original/source image or frame batch. V2 stores size, aspect ratio, and a simple fingerprint to notice changed inputs.",
-                }),
-                "negative_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Optional negative prompt. V2 can persistently add poorly rated tags and return repaired negative conditioning.",
                 }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
@@ -9255,11 +9250,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return negative_prompt, f"Negative advisor: no change. {diagnostic}".strip(), diagnostic, False
         return advised, f"Negative advisor: applied. {diagnostic}".strip(), diagnostic, True
 
-    def _v2_encoded_prompts_output(self, positive_prompt, negative_prompt):
-        return (
-            f"Positive prompt: {str(positive_prompt or '').strip()}\n\n"
-            f"Negative prompt: {str(negative_prompt or '').strip()}"
-        )
+    def _v2_encoded_prompts_output(self, positive_prompt):
+        return f"Positive prompt: {str(positive_prompt or '').strip()}"
 
     def _v2_scene_builder_category_for_entry(self, entry):
         category = str(entry.get("primary", "") if isinstance(entry, dict) else "").lower()
@@ -9884,7 +9876,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
-                  source_image=None, negative_prompt="", mode="Refine", advisor_mode="Off", advisor_thinking=True,
+                  source_image=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True):
         if seed != 0:
             torch.manual_seed(seed)
@@ -10030,9 +10022,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_status = "Advisor: off."
         advisor_diagnostic = ""
         advisor_applied = False
-        negative_advisor_status = "Negative advisor: off."
-        negative_advisor_diagnostic = ""
-        negative_advisor_applied = False
         feedback_history = ""
         advisor_rating_label = rating_label
         if current_prompt_refusal:
@@ -10162,20 +10151,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 status,
                 training_info,
                 fallback_graph,
-                [],
-                self._v2_encoded_prompts_output(prompt_to_encode, negative_prompt),
+                self._v2_encoded_prompts_output(prompt_to_encode),
             )
 
         if learning_mode:
             refined = cond
             adaptation_status = "Adaptation: Learning mode; conditioning vectors passed through unchanged."
-            repaired_negative_prompt = str(negative_prompt or "")
-            negative_repair_status = "Negative repair: skipped in Learning mode."
         elif prompt_only_mode:
             refined = cond
             adaptation_status = "Adaptation: Prompt only mode; conditioning vectors passed through unchanged."
-            repaired_negative_prompt = str(negative_prompt or "")
-            negative_repair_status = "Negative repair: skipped."
         else:
             refined, adaptation_status = self._v2_apply_conditioning_memory(
                 cond,
@@ -10184,20 +10168,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback,
                 intent_family_slot=current_family_slot,
             )
-            repaired_negative_prompt = str(negative_prompt or "")
-            negative_repair_status = "Negative repair: skipped."
-        negative_conditioning = []
-        negative_encode_status = "negative prompt empty"
-        if repaired_negative_prompt and clip is not None:
-            negative_cond, negative_meta, negative_encode_status = self._v2_encode_prompt(
-                clip,
-                repaired_negative_prompt,
-                encode_cache=encode_cache,
-            )
-            if isinstance(negative_cond, torch.Tensor):
-                negative_conditioning = [(negative_cond, negative_meta)]
-        elif repaired_negative_prompt:
-            negative_encode_status = "negative prompt available but CLIP missing"
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = None
         if current_prompt_refusal:
@@ -10277,7 +10247,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "rating_label": rating_label if has_previous_run else "Unrated",
                 "encoded_role": encoded_role,
                 "prompt": prompt_to_encode,
-                "negative_prompt": repaired_negative_prompt,
                 "phrases": phrases,
                 "repair_candidates": state_repair_candidates,
                 "vision_context": vision_context,
@@ -10287,9 +10256,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "status": advisor_status,
                     "diagnostic": advisor_diagnostic,
                     "applied": bool(advisor_applied),
-                    "negative_status": negative_advisor_status,
-                    "negative_diagnostic": negative_advisor_diagnostic,
-                    "negative_applied": bool(negative_advisor_applied),
                 },
             })
 
@@ -10314,12 +10280,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "status": advisor_status,
                     "diagnostic": advisor_diagnostic,
                     "applied": bool(advisor_applied),
-                    "negative_status": negative_advisor_status,
-                    "negative_diagnostic": negative_advisor_diagnostic,
-                    "negative_applied": bool(negative_advisor_applied),
                 },
                 "repair_candidates": state_repair_candidates,
-                "negative_prompt": repaired_negative_prompt,
                 "vision_context": vision_context,
                 "encoded_role": encoded_role,
                 "auto_injected_prompt_additions": [
@@ -10357,8 +10319,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"\n{repair_status}"
             f"\n{advisor_status}"
             f"\n{wildcard_status}"
-            f"\n{negative_repair_status}"
-            f"\n{negative_advisor_status}"
             f"\n{vision_status}"
             f"{refusal_status_line}"
         )
@@ -10406,9 +10366,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{repair_status}\n"
                 f"{advisor_status}\n"
                 f"{wildcard_status}\n"
-                f"{negative_repair_status}\n"
-                f"{negative_advisor_status}\n"
-                f"Negative encode: {negative_encode_status}\n"
                 f"{vision_status}"
                 f"{refusal_status_line}"
             ),
@@ -10426,8 +10383,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             status,
             training_info,
             loss_graph,
-            negative_conditioning,
-            self._v2_encoded_prompts_output(prompt_to_encode, repaired_negative_prompt),
+            self._v2_encoded_prompts_output(prompt_to_encode),
         )
 
 
