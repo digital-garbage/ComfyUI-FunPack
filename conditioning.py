@@ -9282,25 +9282,33 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if clip is None or not hasattr(clip, "generate") or not hasattr(clip, "decode"):
             return "", "Advisor: unavailable; connected CLIP does not expose text generation."
         max_length = max(128, int(max_length or 800))
-        # Try to apply the model's native chat template for proper role separation.
-        # This prevents system prompt content from bleeding into the generated output.
-        chat_tokenizer = self._v2_find_chat_tokenizer(clip)
-        if chat_tokenizer is not None:
-            try:
-                messages = [
-                    {"role": "system", "content": str(system_prompt)},
-                    {"role": "user", "content": str(user_prompt)},
-                ]
-                advisor_prompt = chat_tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-            except Exception:
-                advisor_prompt = str(system_prompt) + "\n\n" + str(user_prompt)
-        else:
-            # Fallback: flat string with a completion anchor so the model generates
-            # output rather than echoing the instructions back.
-            advisor_prompt = str(system_prompt) + "\n\n" + str(user_prompt) + "\n\nOutput:"
         try:
+            # Layer 1: wrapper natively accepts system_prompt kwarg (e.g. Sulphur/Qwen).
+            try:
+                tokens = clip.tokenize(str(user_prompt), image=image, min_length=1, thinking=bool(thinking), system_prompt=str(system_prompt))
+            except TypeError:
+                try:
+                    tokens = clip.tokenize(str(user_prompt), image=image, system_prompt=str(system_prompt))
+                except TypeError:
+                    raise  # fall through to layer 2
+        except TypeError:
+            # Layer 2: apply chat template manually via underlying HuggingFace tokenizer.
+            chat_tokenizer = self._v2_find_chat_tokenizer(clip)
+            advisor_prompt = None
+            if chat_tokenizer is not None:
+                try:
+                    messages = [
+                        {"role": "system", "content": str(system_prompt)},
+                        {"role": "user", "content": str(user_prompt)},
+                    ]
+                    advisor_prompt = chat_tokenizer.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
+                    )
+                except Exception:
+                    pass
+            if advisor_prompt is None:
+                # Layer 3: flat string with completion anchor.
+                advisor_prompt = str(system_prompt) + "\n\n" + str(user_prompt) + "\n\nOutput:"
             try:
                 tokens = clip.tokenize(advisor_prompt, image=image, min_length=1, thinking=bool(thinking))
             except TypeError:
