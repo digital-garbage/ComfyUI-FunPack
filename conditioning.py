@@ -10395,7 +10395,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             status,
             training_info,
             loss_graph,
-            self._v2_encoded_prompts_output(prompt_to_encode),
+            self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
         )
 
 
