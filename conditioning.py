@@ -5605,8 +5605,8 @@ def normalize_refiner_v2_rating(value):
 
 class FunPackVideoRefinerV2(FunPackVideoRefiner):
     CATEGORY = "FunPack/Refinement"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "CONDITIONING")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "modified_negative")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "CONDITIONING", "STRING")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "modified_negative", "encoded_prompts")
     FUNCTION = "refine_v2"
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
@@ -8839,21 +8839,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as error:
             return "", f"Advisor: generation failed: {error}"
 
-    def _v2_parse_advisor_response(self, text):
+    def _v2_parse_advisor_response(self, text, prompt_labels=("REPAIRED_PROMPT", "PROMPT")):
         text = re.sub(r"```.*?```", "", str(text or ""), flags=re.DOTALL).strip()
         text = re.sub(r"</?start_of_turn>|<end_of_turn>", "", text).strip()
         diagnostic = ""
         repaired = ""
+        label_pattern = "|".join(re.escape(str(label)) for label in (prompt_labels or ("PROMPT",)))
         diagnostic_match = re.search(r"(?im)^\s*DIAGNOSTIC\s*:\s*(.+)$", text)
-        repaired_match = re.search(r"(?ims)^\s*REPAIRED_PROMPT\s*:\s*(.+)$", text)
+        repaired_match = re.search(rf"(?ims)^\s*(?:{label_pattern})\s*:\s*(.+)$", text)
+        known_label_match = re.search(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT|NEGATIVE_PROMPT|PROMPT)\s*:", text)
         if diagnostic_match:
             diagnostic = re.sub(r"\s+", " ", diagnostic_match.group(1)).strip()
         if repaired_match:
             repaired = repaired_match.group(1).strip()
-            repaired = re.split(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT)\s*:", repaired)[0].strip()
-        elif text and not diagnostic_match:
+            repaired = re.split(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT|NEGATIVE_PROMPT|PROMPT)\s*:", repaired)[0].strip()
+        elif text and not diagnostic_match and not known_label_match:
             repaired = text.strip()
-        repaired = re.sub(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT)\s*:\s*", "", repaired).strip()
+        repaired = re.sub(r"(?im)^\s*(?:DIAGNOSTIC|REPAIRED_PROMPT|NEGATIVE_PROMPT|PROMPT)\s*:\s*", "", repaired).strip()
         repaired = re.sub(r"\s+", " ", repaired).strip(" \t\r\n\"'")
         if len(repaired) > 1600:
             repaired = repaired[:1600].rsplit(" ", 1)[0].strip()
@@ -8926,7 +8928,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         raw, status = self._v2_generate_advisor_text(clip, advisor_prompt, seed=seed, image=image, thinking=thinking)
         if not raw:
             return current_prompt, status, "", False
-        diagnostic, advised = self._v2_parse_advisor_response(raw)
+        diagnostic, advised = self._v2_parse_advisor_response(raw, prompt_labels=("REPAIRED_PROMPT", "PROMPT"))
         if mode == "Diagnostics" or not allow_prompt_change:
             reason = "diagnostics only" if mode == "Diagnostics" else "prompt changes disabled"
             return current_prompt, f"Advisor: {reason}. {diagnostic or advised or 'No diagnostic returned.'}", diagnostic or advised, False
@@ -8943,6 +8945,136 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if self._v2_prompt_key(advised) == self._v2_prompt_key(current_prompt):
             return current_prompt, f"Advisor: generated prompt unchanged. {diagnostic}".strip(), diagnostic, False
         return advised, f"Advisor: applied generated repair. {diagnostic}".strip(), diagnostic, True
+
+    def _v2_negative_advisor_prompt(
+        self,
+        positive_prompt,
+        negative_prompt,
+        intent_prompt,
+        rating_label,
+        axis_feedback,
+        previous_run=None,
+        has_image=False,
+    ):
+        axes = ", ".join(self._v2_order_axes(set(axis_feedback.get("missing_axes", [])))) or "none"
+        wrong = ", ".join(self._v2_order_axes(set(axis_feedback.get("wrong_axes", [])))) or "none"
+        previous_run = previous_run if isinstance(previous_run, dict) else {}
+        previous_prompt = self._v2_prompt_key(previous_run.get("prompt", ""))
+        previous_encoded = self._v2_prompt_key(previous_run.get("encoded_prompt", ""))
+        return (
+            f"<start_of_turn>system\n{V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip()}\n"
+            "Additional negative prompt task rules:\n"
+            "- You are repairing only the negative prompt.\n"
+            "- Add concise tags for things that should be suppressed because they were wrong or harmful.\n"
+            "- Never add requested subjects, actions, dialogue, locations, or visual intent to the negative prompt.\n"
+            "- Preserve useful existing negative tags.\n"
+            "- Output exactly two lines:\n"
+            "DIAGNOSTIC: one short sentence explaining the negative prompt change or why none is safe.\n"
+            "NEGATIVE_PROMPT: comma-separated negative prompt text, or the current negative prompt unchanged.<end_of_turn>\n"
+            "<start_of_turn>user\n"
+            f"Current positive prompt being encoded: {self._v2_prompt_key(positive_prompt)}\n"
+            f"Current negative prompt: {self._v2_prompt_key(negative_prompt) or 'empty'}\n"
+            f"Original user intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}\n"
+            f"Prompt that caused the rating: {previous_prompt or 'none recorded'}\n"
+            f"Encoded prompt that caused the rating: {previous_encoded or previous_prompt or 'none recorded'}\n"
+            f"Rating for previous output: {rating_label}\n"
+            f"Missing axes: {axes}\n"
+            f"Wrong axes: {wrong}\n"
+            f"Source image available to advisor: {'yes' if has_image else 'no'}\n"
+            "Task: produce the safest negative prompt for the current generation."
+            "<end_of_turn>\n<start_of_turn>model\n"
+        )
+
+    def _v2_validate_advisor_negative_prompt(
+        self,
+        advised_negative,
+        current_positive,
+        intent_prompt,
+        intent_phrases=None,
+        intent_family_slot=None,
+    ):
+        advised = self._v2_prompt_key(advised_negative)
+        if not advised:
+            return True, "empty"
+        if self._prompt_looks_like_refusal(advised):
+            return False, "refusal text"
+        if len(advised) > 900:
+            return False, "too long"
+        for phrase in self._ordered_prompt_phrases(advised)[:32]:
+            text = phrase.get("text", "")
+            if not text:
+                continue
+            if self._v2_negative_text_conflicts_with_request(
+                text,
+                current_prompt=current_positive,
+                intent_prompt=intent_prompt,
+                intent_phrases=intent_phrases or [],
+                family_slot=intent_family_slot,
+            ):
+                return False, f"conflicts with requested text: {text}"
+        return True, "validated"
+
+    def _v2_negative_prompt_advisor(
+        self,
+        clip,
+        mode,
+        positive_prompt,
+        negative_prompt,
+        intent_prompt,
+        rating_label,
+        rating_profile,
+        axis_feedback,
+        previous_run=None,
+        intent_phrases=None,
+        intent_family_slot=None,
+        allow_prompt_change=False,
+        seed=0,
+        image=None,
+        thinking=True,
+    ):
+        mode = self._v2_advisor_mode(mode)
+        rating_profile = rating_profile if isinstance(rating_profile, dict) else {}
+        if mode == "Off":
+            return negative_prompt, "Negative advisor: off.", "", False
+        reward = float(rating_profile.get("reward", 0.0))
+        repair_signal = bool(axis_feedback.get("wrong_axes")) or rating_profile.get("key") == "awful" or reward < -0.30
+        if mode == "Repair prompt" and not repair_signal:
+            return negative_prompt, "Negative advisor: skipped; no wrong/awful negative signal.", "", False
+        advisor_prompt = self._v2_negative_advisor_prompt(
+            positive_prompt,
+            negative_prompt,
+            intent_prompt,
+            rating_label,
+            axis_feedback,
+            previous_run=previous_run,
+            has_image=image is not None,
+        )
+        raw, status = self._v2_generate_advisor_text(clip, advisor_prompt, seed=seed, image=image, thinking=thinking)
+        if not raw:
+            return negative_prompt, status.replace("Advisor:", "Negative advisor:", 1), "", False
+        diagnostic, advised = self._v2_parse_advisor_response(raw, prompt_labels=("NEGATIVE_PROMPT", "PROMPT"))
+        if mode == "Diagnostics" or not allow_prompt_change:
+            reason = "diagnostics only" if mode == "Diagnostics" else "prompt changes disabled"
+            return negative_prompt, f"Negative advisor: {reason}. {diagnostic or advised or 'No diagnostic returned.'}", diagnostic or advised, False
+        valid, reason = self._v2_validate_advisor_negative_prompt(
+            advised,
+            positive_prompt,
+            intent_prompt,
+            intent_phrases=intent_phrases or [],
+            intent_family_slot=intent_family_slot,
+        )
+        if not valid:
+            return negative_prompt, f"Negative advisor: rejected generated negative prompt ({reason}). {diagnostic}".strip(), diagnostic, False
+        advised = self._v2_prompt_key(advised)
+        if advised == self._v2_prompt_key(negative_prompt):
+            return negative_prompt, f"Negative advisor: generated negative prompt unchanged. {diagnostic}".strip(), diagnostic, False
+        return advised, f"Negative advisor: applied generated negative prompt. {diagnostic}".strip(), diagnostic, True
+
+    def _v2_encoded_prompts_output(self, positive_prompt, negative_prompt):
+        return (
+            f"Positive prompt: {str(positive_prompt or '').strip()}\n\n"
+            f"Negative prompt: {str(negative_prompt or '').strip()}"
+        )
 
     def _v2_scene_builder_category_for_entry(self, entry):
         category = str(entry.get("primary", "") if isinstance(entry, dict) else "").lower()
@@ -9710,6 +9842,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_status = "Advisor: off."
         advisor_diagnostic = ""
         advisor_applied = False
+        negative_advisor_status = "Negative advisor: off."
+        negative_advisor_diagnostic = ""
+        negative_advisor_applied = False
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
@@ -9814,7 +9949,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not isinstance(cond, torch.Tensor):
             status = f"ERROR: V2 could not prepare conditioning | {encode_status}"
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
-            return ([], status, training_info, fallback_graph, [])
+            return (
+                [],
+                status,
+                training_info,
+                fallback_graph,
+                [],
+                self._v2_encoded_prompts_output(prompt_to_encode, negative_prompt),
+            )
 
         if learning_mode:
             refined = cond
@@ -9837,6 +9979,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_prompt=intent_source_prompt,
                 intent_phrases=intent_phrases,
                 intent_family_slot=current_family_slot,
+            )
+        if not current_prompt_refusal:
+            repaired_negative_prompt, negative_advisor_status, negative_advisor_diagnostic, negative_advisor_applied = self._v2_negative_prompt_advisor(
+                advisor_clip,
+                advisor_mode,
+                prompt_to_encode,
+                repaired_negative_prompt,
+                intent_source_prompt,
+                rating_label,
+                learning_profile,
+                repair_feedback,
+                previous_run=previous_run,
+                intent_phrases=intent_phrases,
+                intent_family_slot=current_family_slot,
+                allow_prompt_change=not learning_mode and advisor_mode == "Repair prompt",
+                seed=seed,
+                image=source_image,
+                thinking=advisor_thinking,
             )
         negative_conditioning = []
         negative_encode_status = "negative prompt empty"
@@ -9939,6 +10099,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "status": advisor_status,
                     "diagnostic": advisor_diagnostic,
                     "applied": bool(advisor_applied),
+                    "negative_status": negative_advisor_status,
+                    "negative_diagnostic": negative_advisor_diagnostic,
+                    "negative_applied": bool(negative_advisor_applied),
                 },
             })
 
@@ -9963,6 +10126,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "status": advisor_status,
                     "diagnostic": advisor_diagnostic,
                     "applied": bool(advisor_applied),
+                    "negative_status": negative_advisor_status,
+                    "negative_diagnostic": negative_advisor_diagnostic,
+                    "negative_applied": bool(negative_advisor_applied),
                 },
                 "repair_candidates": state_repair_candidates,
                 "negative_prompt": repaired_negative_prompt,
@@ -10003,6 +10169,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"\n{advisor_status}"
             f"\n{wildcard_status}"
             f"\n{negative_repair_status}"
+            f"\n{negative_advisor_status}"
             f"\n{vision_status}"
             f"{refusal_status_line}"
         )
@@ -10051,6 +10218,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{advisor_status}\n"
                 f"{wildcard_status}\n"
                 f"{negative_repair_status}\n"
+                f"{negative_advisor_status}\n"
                 f"Negative encode: {negative_encode_status}\n"
                 f"{vision_status}"
                 f"{refusal_status_line}"
@@ -10064,7 +10232,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"{lora_status}"
             ),
         ])
-        return ([(refined, meta)], status, training_info, loss_graph, negative_conditioning)
+        return (
+            [(refined, meta)],
+            status,
+            training_info,
+            loss_graph,
+            negative_conditioning,
+            self._v2_encoded_prompts_output(prompt_to_encode, repaired_negative_prompt),
+        )
 
 
 class FunPackSaveRefinementLatent:

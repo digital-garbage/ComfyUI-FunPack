@@ -8,6 +8,10 @@ Added an optional CLIP text-generation advisor to `FunPack Video Refiner V2`. Th
 
 Added an optional `advisor_clip` input to `FunPack Video Refiner V2` so the advisor can use a separate generative CLIP/Gemma model while the main `clip` continues handling normal prompt encoding.
 
+Added a single `encoded_prompts` string output to `FunPack Video Refiner V2` with `Positive prompt:` and `Negative prompt:` sections, so workflows can inspect the exact prompt text used for conditioning.
+
+Updated the Refiner V2 advisor so `Repair prompt` can advise the negative prompt as well as the positive prompt when a rating indicates wrong or strongly bad content.
+
 ## [2.4.2] - 2026-05-15
 
 ### Added

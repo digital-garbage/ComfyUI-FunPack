@@ -60,6 +60,8 @@ Use `Wrong appearance` when the video is polluted by remembered clothing, charac
 
 The advisor uses an explicit Refiner system prompt and receives the current prompt, the prompt that caused the rating, the original user intent, rating label, missing/wrong axes, phrase analysis, and rule-based repair candidates.
 
+In `Repair prompt`, the advisor can also suggest a repaired negative prompt when the previous rating indicates wrong content, an awful result, or strong negative reward. Negative prompt advice is validated so requested subjects, actions, locations, and visual intent are not moved into the negative prompt.
+
 **advisor_thinking**: Enables thinking mode for compatible Gemma CLIP text generators when the advisor is active.
 
 ## Appearance Safety
@@ -87,6 +89,12 @@ Connect its `refinement_key` output to Refiner V2's `refinement_key_input` and t
 **loss_graph**: V2 learning loss graph.
 
 **modified_negative**: Repaired negative conditioning. If the negative prompt is empty, no stored poor-rated tags are available, or `CLIP` is not connected, this output is empty.
+
+**encoded_prompts**: One string showing the exact prompt text used for positive and negative encoding:
+
+`Positive prompt: ...`
+
+`Negative prompt: ...`
 
 ## Vision Context
 
