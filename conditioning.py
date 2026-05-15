@@ -9066,7 +9066,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             analysis_raw, analysis_status = self._v2_generate_advisor_text(
                 clip, analysis_prompt_text, seed=seed, image=image, thinking=thinking,
-                max_length=max(128, max_length // 2),
+                max_length=600,
             )
             analysis, _ = self._v2_parse_advisor_response(analysis_raw, prompt_labels=("ANALYSIS",))
             if not analysis and analysis_raw:
@@ -9881,7 +9881,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_history["lora_weight_suggestions"] = suggestions
         return "LoRA suggestions: " + " | ".join(parts)
 
-    _V2_ADVISOR_MAX_TOKENS = 800
+    _V2_ADVISOR_MAX_TOKENS = 1600
 
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
