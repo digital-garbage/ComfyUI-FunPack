@@ -5614,8 +5614,8 @@ def normalize_refiner_v2_rating(value):
 
 class FunPackVideoRefinerV2(FunPackVideoRefiner):
     CATEGORY = "FunPack/Refinement"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model")
     FUNCTION = "refine_v2"
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
@@ -5754,6 +5754,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 }),
                 "source_image": ("IMAGE", {
                     "tooltip": "Optional original/source image or frame batch. V2 stores size, aspect ratio, and a simple fingerprint to notice changed inputs.",
+                }),
+                "model": ("MODEL", {
+                    "tooltip": "Optional model. When connected, Refiner applies per-layer direction injection and phrase emphasis to cross-attention K/V via attn2_patch. Connect the model output to your sampler.",
                 }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
@@ -8158,6 +8161,133 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_shape_compatible(self, payload, conditioning):
         return self._serialized_conditioning_compatible(payload, conditioning)
 
+    def _v2_find_phrase_token_ranges(self, clip, full_cond, phrase_texts, encode_cache=None):
+        """Find token positions of phrases in full_cond via cosine similarity.
+        Model-agnostic: works with any text encoder by comparing mean-pooled phrase
+        encodings against each position in the full conditioning sequence."""
+        if not isinstance(full_cond, torch.Tensor) or not phrase_texts:
+            return []
+        seq_len = full_cond.shape[1] if full_cond.dim() >= 2 else 0
+        if seq_len < 2:
+            return []
+        ranges = []
+        try:
+            full_norm = full_cond[0].float()
+            full_norm = full_norm / full_norm.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+            for text in phrase_texts[:8]:
+                phrase_cond, _, _ = self._v2_encode_prompt(clip, str(text), encode_cache=encode_cache)
+                if not isinstance(phrase_cond, torch.Tensor):
+                    continue
+                phrase_mean = phrase_cond[0].float().mean(dim=0)
+                phrase_norm = phrase_mean / phrase_mean.norm().clamp_min(1e-8)
+                sims = (full_norm * phrase_norm).sum(dim=-1)
+                mean_s = float(sims.mean().item())
+                std_s = float(sims.std().item())
+                threshold = mean_s + std_s * 0.6
+                above = (sims > threshold).cpu().tolist()
+                start = None
+                for i, v in enumerate(above):
+                    if v and start is None:
+                        start = i
+                    elif not v and start is not None:
+                        if i - start >= 1:
+                            ranges.append((start, i))
+                        start = None
+                if start is not None and seq_len - start >= 1:
+                    ranges.append((start, seq_len))
+        except Exception:
+            pass
+        return ranges[:16]
+
+    def _v2_build_attn2_patch(self, direction_slots, emphasis_ranges):
+        """Build attn2_patch for layer-level direction injection and phrase K/V emphasis.
+        Operates in text encoder space (pre-projection) so directions are directly compatible.
+        Per-layer scale is small (0.02) so effect accumulates gradually across all layers."""
+        loaded = []
+        for dir_payload, scale, negate in direction_slots:
+            try:
+                t = serializable_to_tensor(dir_payload).float().cpu()
+                loaded.append((t, float(scale), bool(negate)))
+            except Exception:
+                continue
+        if not loaded and not emphasis_ranges:
+            return None
+
+        def patch(q, k, v, extra_options):
+            k_out, v_out = k, v
+            try:
+                for direction_cpu, scale, negate in loaded:
+                    d = direction_cpu.to(device=k.device, dtype=k.dtype)
+                    if d.shape[-1] != k.shape[-1]:
+                        continue
+                    while d.dim() < k.dim():
+                        d = d.unsqueeze(0)
+                    d = d.expand_as(k)
+                    if negate:
+                        d = -d
+                    norms = k.norm(dim=-1, keepdim=True)
+                    mx = norms.amax().clamp_min(1e-8)
+                    active = norms > mx * 0.01
+                    avg_n = float(norms[active].mean().item() if active.any() else mx.item())
+                    delta = d * (scale * 0.02 * 0.3 * avg_n)
+                    k_out = torch.where(active, k_out + delta, k_out)
+                    v_out = torch.where(active, v_out + delta, v_out)
+            except Exception:
+                pass
+            if emphasis_ranges:
+                try:
+                    k_out = k_out.clone()
+                    v_out = v_out.clone()
+                    for start, end in emphasis_ranges:
+                        end = min(end, k_out.shape[1])
+                        if start < end:
+                            k_out[:, start:end] = k_out[:, start:end] * 1.25
+                            v_out[:, start:end] = v_out[:, start:end] * 1.25
+                except Exception:
+                    pass
+            return q, k_out, v_out
+
+        return patch
+
+    def _v2_apply_model_patches(self, model, global_state, axis_feedback, rating_profile, emphasis_ranges, strength):
+        """Clone model and apply attn2 patch for layer-level direction injection + phrase emphasis."""
+        if model is None:
+            return None
+        axis_memory = global_state.get("axis_conditioning_memory", {})
+        missing_axes = set(axis_feedback.get("missing_axes", []))
+        satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
+        liked_dir_slot = global_state.get("liked_dir", {})
+        bad_dir_slot = global_state.get("bad_dir", {})
+        reward = float(rating_profile.get("reward", 0.0)) if isinstance(rating_profile, dict) else 0.0
+
+        slots = []
+        if int(liked_dir_slot.get("direction_count", 0)) >= 3:
+            slots.append((liked_dir_slot.get("direction"), strength, False))
+        for axis in V2_FEEDBACK_AXES:
+            axis_slot = axis_memory.get(axis, {}) if isinstance(axis_memory, dict) else {}
+            if not isinstance(axis_slot, dict):
+                continue
+            pos_slot = axis_slot.get("positive", {})
+            neg_slot = axis_slot.get("negative", {})
+            if axis in missing_axes:
+                if int(pos_slot.get("direction_count", 0)) >= 3:
+                    slots.append((pos_slot.get("direction"), strength * 1.1, False))
+                if int(neg_slot.get("direction_count", 0)) >= 3:
+                    slots.append((neg_slot.get("direction"), strength * 0.82, True))
+            elif axis in satisfied_axes:
+                if int(pos_slot.get("direction_count", 0)) >= 3:
+                    slots.append((pos_slot.get("direction"), strength * 0.34, False))
+        if reward < 0.0 and int(bad_dir_slot.get("direction_count", 0)) >= 3:
+            slots.append((bad_dir_slot.get("direction"), strength * 0.72, True))
+
+        valid_slots = [(p, s, n) for p, s, n in slots if isinstance(p, dict)]
+        patch_fn = self._v2_build_attn2_patch(valid_slots, emphasis_ranges)
+        if patch_fn is None:
+            return None
+        patched = model.clone()
+        patched.set_model_attn2_patch(patch_fn)
+        return patched
+
     def _v2_pool_conditioning(self, payload):
         """Deserialize and mean-pool [batch?, seq, dim] → [dim]. Shape-invariant across prompt lengths."""
         if not isinstance(payload, dict):
@@ -10066,7 +10196,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
-                  source_image=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
+                  source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True):
         if seed != 0:
             torch.manual_seed(seed)
@@ -10377,6 +10507,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 training_info,
                 fallback_graph,
                 self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
+                model,
             )
 
         if learning_mode:
@@ -10531,86 +10662,117 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             latest_learning_loss=float(learning_loss),
             points=loss_history[-256:],
         )
-        refusal_status_line = f"\n{refusal_status}" if refusal_status else ""
-        status = (
-            f"V2 {state_status} | {conditioning_owner} | Mode {execution_mode} | Rating {rating_label} | Iter {global_state['total_iterations']} | "
-            f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
-            f"{adaptation_status}\n"
-            f"{training_guidance}\n"
-            f"{scene_builder_status}\n"
-            f"{repair_persistence_status}\n"
-            f"{lucky_status}"
-            f"\nIntent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}"
-            f"\n{intent_alignment_status}"
-            f"\n{perfect_repair_status}"
-            f"\n{repair_status}"
-            f"\n{advisor_status}"
-            f"\n{wildcard_status}"
-            f"\n{vision_status}"
-            f"{refusal_status_line}"
-        )
+        def _active(line):
+            """Return line only if it contains meaningful content, not just 'none/off/skipped/idle'."""
+            if not str(line or "").strip():
+                return ""
+            low = line.lower()
+            if any(p in low for p in (": none.", ": none\n", " none.", "skipped.", ": off.", ": idle.", "skipped in", "disabled.")):
+                return ""
+            return line
+
         if previous_run_refusal:
             learning_reason = "previous prompt was an enhancer refusal"
         elif learning_profile.get("skip_learning"):
             learning_reason = "rating skipped learning"
         elif not has_previous_run:
-            learning_reason = "waiting for a rated previous run"
+            learning_reason = "no previous run yet"
         else:
-            learning_reason = "rating trained memory"
+            learning_reason = "trained on previous run"
 
-        training_info = "\n\n".join([
+        intent_family_line = (
+            f"Intent family: {current_family_key[:12] if current_family_key else 'none'} "
+            f"(sim={current_family_similarity:.2f})"
+        )
+        learning_flag = "trained" if has_previous_run and not learning_profile.get("skip_learning") else "not applied"
+        refusal_flag = f" | REFUSAL DETECTED" if refusal_status else ""
+
+        status_lines = [
+            f"V2 {state_status} | {execution_mode} | {rating_label} | iter {global_state['total_iterations']} | learning {learning_flag}{refusal_flag}",
+            adaptation_status,
+        ]
+        for line in (repair_status, advisor_status, intent_alignment_status, vision_status, lucky_status):
+            if _active(line):
+                status_lines.append(line)
+        if perfect_freeze:
+            status_lines.append("Perfect freeze active.")
+        status = "\n".join(status_lines)
+
+        training_info = "\n\n".join(filter(None, [
             (
                 "Run\n"
-                f"Mode: {execution_mode}\n"
-                f"Encoded: {encoded_role} | {encode_status}\n"
-                f"Rating: {rating_label}\n"
+                f"Mode: {execution_mode} | Encoded as: {encoded_role}\n"
+                f"Rating: {rating_label} | Learning: {learning_reason}\n"
                 f"Prompt: {prompt_preview}"
             ),
             (
-                "Learning\n"
-                f"Target: {'previous run' if has_previous_run else 'none yet'}\n"
-                f"Applied: {'yes' if has_previous_run and not learning_profile.get('skip_learning') else 'no'}\n"
-                f"Reason: {learning_reason}\n"
+                "Memory\n"
                 f"{self._v2_axis_feedback_status(axis_feedback)}\n"
-                f"{scene_builder_status}\n"
-                f"{repair_persistence_status}\n"
-                f"{memory_status}\n"
-                f"{negative_memory_status}"
+                f"{memory_status}"
+                + (f"\n{_active(scene_builder_status)}" if _active(scene_builder_status) else "")
+                + (f"\n{_active(repair_persistence_status)}" if _active(repair_persistence_status) else "")
             ),
             (
                 "Prompt Analysis\n"
+                f"{intent_family_line}\n"
                 f"{category_diagnostics}\n"
-                f"Category compact view:\n{phrase_preview}"
+                f"Phrases:\n{phrase_preview}"
             ),
             (
                 "Adaptation\n"
                 f"{adaptation_status}\n"
-                f"{repair_persistence_status}\n"
-                f"{lucky_status}\n"
-                f"Intent family: {current_family_key[:8] if current_family_key else 'none'} sim={current_family_similarity:.2f}\n"
-                f"{intent_alignment_status}\n"
-                f"{perfect_repair_status}\n"
-                f"{repair_status}\n"
-                f"{advisor_status}\n"
-                f"{wildcard_status}\n"
-                f"{vision_status}"
-                f"{refusal_status_line}"
+                + "\n".join(filter(None, [
+                    _active(intent_alignment_status),
+                    _active(perfect_repair_status),
+                    _active(repair_status),
+                    _active(advisor_status),
+                    _active(lucky_status),
+                    _active(wildcard_status),
+                    _active(vision_status),
+                    model_patch_status if model is not None else "",
+                    refusal_status if refusal_status else "",
+                ]))
             ),
             (
                 "Guidance\n"
                 f"{training_guidance}"
-            ),
+            ) if training_guidance and _active(training_guidance) else "",
             (
                 "LoRA\n"
                 f"{lora_status}"
-            ),
-        ])
+            ) if _active(lora_status) else "",
+        ]))
+        patched_model = model
+        model_patch_status = "Model patch: no model connected."
+        if model is not None:
+            model_strength = self._v2_auto_strength(global_state)
+            emphasis_phrases = [
+                c["text"] for c in repair_candidates
+                if isinstance(c, dict) and str(c.get("text", "")).strip()
+            ]
+            emphasis_ranges = (
+                self._v2_find_phrase_token_ranges(clip, cond, emphasis_phrases, encode_cache=encode_cache)
+                if clip is not None and emphasis_phrases else []
+            )
+            patched = self._v2_apply_model_patches(
+                model, global_state, repair_feedback, learning_profile, emphasis_ranges, model_strength
+            )
+            if patched is not None:
+                patched_model = patched
+                model_patch_status = (
+                    f"Model patch: applied | strength {model_strength:.3f} | "
+                    f"emphasis ranges {len(emphasis_ranges)}"
+                )
+            else:
+                model_patch_status = "Model patch: connected but no directions ready yet (need 3+ rated runs)."
+
         return (
             [(refined, meta)],
             status,
             training_info,
             loss_graph,
             self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
+            patched_model,
         )
 
 
