@@ -9077,10 +9077,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
             return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False, ""
 
-        # Pass 1: analysis — runs for Full and Only diagnostics, but skipped when the user
-        # already provided explicit feedback (they told us what's wrong; no need to analyse).
+        # Pass 1: analysis — runs for Full and Only diagnostics, but skipped when:
+        # - user provided explicit feedback (they already said what's wrong), or
+        # - rating is Perfect with no feedback (nothing to analyse; repair will be blocked anyway).
         analysis = ""
-        if mode in {"Full", "Only diagnostics"} and not has_feedback:
+        if mode in {"Full", "Only diagnostics"} and not has_feedback and not is_perfect:
             analysis_prompt_text = self._v2_advisor_analysis_prompt(
                 current_prompt,
                 intent_prompt,
@@ -10063,6 +10064,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         pre_advisor_prompt = ""
         feedback_history = ""
         advisor_rating_label = rating_label
+        is_perfect_rating = has_previous_run and learning_profile.get("key") == "like"
+        prev_intent_key = self._v2_prompt_key(
+            (previous_run or {}).get("intent_source_prompt", "") or (previous_run or {}).get("intent_prompt", "")
+        )
+        intent_drifted = bool(
+            prev_intent_key and intent_source_prompt and
+            self._v2_prompt_body_similarity(prev_intent_key, intent_source_prompt) < 0.50
+        )
+        image_changed = bool(isinstance(vision_context, dict) and vision_context.get("changed_from_previous", False))
+        perfect_freeze = (
+            is_perfect_rating
+            and not str(feedback_prompt or "").strip()
+            and not intent_drifted
+            and not image_changed
+            and not learning_mode
+            and not current_prompt_refusal
+        )
+
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
@@ -10076,6 +10095,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             repair_status = "Prompt repair: skipped in Learning mode."
             wildcard_status = "Scene Builder wildcard cleanup: skipped in Learning mode."
             encoded_role = "learning passthrough"
+        elif perfect_freeze:
+            frozen = self._v2_prompt_key(previous_run.get("encoded_prompt", "")) or analysis_prompt
+            prompt_to_encode = frozen
+            lucky_status = "Perfect freeze: prompt locked to previous perfect output."
+            intent_alignment_status = "Intent alignment: skipped (perfect freeze)."
+            perfect_repair_status = "Perfect repairs: skipped (perfect freeze)."
+            repair_status = "Prompt repair: skipped (perfect freeze)."
+            wildcard_status = "Scene Builder wildcard cleanup: skipped (perfect freeze)."
+            encoded_role = "perfect frozen prompt"
         elif im_feeling_lucky and clip is not None:
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(
                 analysis_prompt,
