@@ -614,3 +614,148 @@ class FunPackHybridEuler2SSampler:
             }
         )
         return (sampler, prepared_sigmas)
+
+
+def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
+                                   disable=None, order=2, s_noise=0.0,
+                                   final_correction_steps=1):
+    """
+    ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
+
+    - Adams-Bashforth 2-step multistep (order=2): extrapolates the denoised
+      direction from two consecutive steps for second-order accuracy at zero
+      extra model-call cost. Reduces discretisation error across the large
+      sigma jumps typical of 4–8 step distilled schedules.
+    - Heun predictor-corrector on final steps: calls the model a second time
+      at sigma_next to correct the update direction. Significantly improves
+      sharpness and detail in the steps that define the final output.
+    - Optional s_noise: tiny ancestral-style noise injection for diversity.
+      Default 0 = fully deterministic ODE (recommended for distilled models).
+    """
+    extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+    noise_sampler = k_diffusion_sampling.default_noise_sampler(x, seed=seed)
+
+    total_steps = max(0, len(sigmas) - 1)
+    if total_steps <= 0:
+        return x
+
+    order = max(1, min(2, int(order)))
+    s_noise = max(0.0, min(0.5, float(s_noise)))
+    final_correction_steps = max(0, min(total_steps // 2, int(final_correction_steps)))
+    correction_start_idx = total_steps - final_correction_steps
+
+    s_in = x.new_ones([x.shape[0]])
+    prev_denoised = None
+    prev_h = None
+
+    for i in comfy.utils.model_trange(total_steps, disable=disable):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+
+        denoised = model(x, sigma * s_in, **extra_args)
+
+        if callback is not None:
+            callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+
+        h = float((sigma - sigma_next).abs().item())
+
+        # Adams-Bashforth 2-step multistep correction.
+        # Coefficients for variable step sizes: r = h_current / h_previous.
+        # denoised_eff = (1 + r/2) * denoised - (r/2) * prev_denoised
+        if order >= 2 and prev_denoised is not None and prev_h is not None and prev_h > 1e-7 and h > 1e-7:
+            r = max(0.1, min(5.0, h / prev_h))
+            try:
+                denoised_eff = (1.0 + r / 2.0) * denoised - (r / 2.0) * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
+            except Exception:
+                denoised_eff = denoised
+        else:
+            denoised_eff = denoised
+
+        # Store current denoised for the next step's multistep correction.
+        # Reset after a Heun step since x was updated with a corrected direction.
+        prev_denoised = denoised.detach()
+        prev_h = h
+
+        if sigma_next == 0:
+            x = denoised_eff
+            continue
+
+        dt = sigma_next - sigma  # negative: sigmas decrease
+
+        if i >= correction_start_idx:
+            # Heun predictor-corrector.
+            # Predictor: Euler step using the (multistep-corrected) denoised.
+            d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+            x_pred = x + d1 * dt
+            # Corrector: evaluate model at the predicted x and sigma_next.
+            denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
+            d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
+            x = x + (d1 + d2) / 2.0 * dt
+            # Heun updates x differently; invalidate multistep history.
+            prev_denoised = None
+            prev_h = None
+        else:
+            d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+            x = x + d * dt
+            if s_noise > 0.0:
+                sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
+                if sigma_up > 0.0:
+                    x = x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up
+
+    return x
+
+
+class FunPackDistilledFlowSampler:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "order": ("INT", {
+                    "default": 2,
+                    "min": 1,
+                    "max": 2,
+                    "step": 1,
+                    "tooltip": "Multistep order. 1 = standard Euler ODE. 2 = Adams-Bashforth 2-step: extrapolates the denoised direction from two consecutive steps for better accuracy at no extra model-call cost.",
+                }),
+                "final_correction_steps": ("INT", {
+                    "default": 1,
+                    "min": 0,
+                    "max": 3,
+                    "step": 1,
+                    "tooltip": "Number of final steps that use a Heun predictor-corrector pass. Each costs one extra model call but significantly improves final-step detail. 1 is usually enough for 8-step runs.",
+                }),
+                "s_noise": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 0.50,
+                    "step": 0.01,
+                    "tooltip": "Optional stochastic noise for diversity. 0 = fully deterministic ODE (recommended). Small values (0.05–0.15) add variation without strongly disrupting the distilled trajectory.",
+                }),
+            },
+            "optional": {
+                "sigmas": ("SIGMAS",),
+            }
+        }
+
+    RETURN_TYPES = ("SAMPLER", "SIGMAS")
+    RETURN_NAMES = ("sampler", "sigmas")
+    FUNCTION = "get_sampler"
+    CATEGORY = "FunPack/Sampling"
+    DESCRIPTION = (
+        "ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA). "
+        "Adams-Bashforth 2-step multistep for better trajectory accuracy across large sigma jumps, "
+        "Heun predictor-corrector on final steps for quality, and optional controlled noise for diversity."
+    )
+
+    def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0, sigmas=None):
+        prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
+        sampler = comfy.samplers.KSAMPLER(
+            sample_funpack_distilled_flow,
+            extra_options={
+                "order": order,
+                "final_correction_steps": final_correction_steps,
+                "s_noise": s_noise,
+            }
+        )
+        return (sampler, prepared_sigmas)

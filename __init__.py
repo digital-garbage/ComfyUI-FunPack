@@ -16,7 +16,7 @@ if __package__:
         FunPackVideoStitch,
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
-    from .samplers import FunPackHybridEuler2SSampler
+    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler
     from .context_transition import FunPackContextTransitionWindows
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 else:
@@ -48,9 +48,10 @@ else:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
     try:
-        from samplers import FunPackHybridEuler2SSampler
+        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler
     except Exception:
         FunPackHybridEuler2SSampler = None
+        FunPackDistilledFlowSampler = None
     try:
         from context_transition import FunPackContextTransitionWindows
     except Exception:
@@ -75,6 +76,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
     "FunPackVideoRefinerV2": FunPackVideoRefinerV2,
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
+    "FunPackDistilledFlowSampler": FunPackDistilledFlowSampler,
     "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
@@ -95,6 +97,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
     "FunPackVideoRefinerV2": "FunPack Video Refiner V2",
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
+    "FunPackDistilledFlowSampler": "FunPack Distilled Flow Sampler",
     "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
