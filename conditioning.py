@@ -9250,8 +9250,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return negative_prompt, f"Negative advisor: no change. {diagnostic}".strip(), diagnostic, False
         return advised, f"Negative advisor: applied. {diagnostic}".strip(), diagnostic, True
 
-    def _v2_encoded_prompts_output(self, positive_prompt):
-        return f"Positive prompt: {str(positive_prompt or '').strip()}"
+    def _v2_encoded_prompts_output(self, positive_prompt, advisor_diagnostic="", pre_advisor_prompt=""):
+        parts = [f"Positive prompt: {str(positive_prompt or '').strip()}"]
+        positive_key = self._v2_prompt_key(positive_prompt)
+        if advisor_diagnostic:
+            parts.append(f"Advisor: {str(advisor_diagnostic).strip()}")
+        if pre_advisor_prompt and self._v2_prompt_key(pre_advisor_prompt) != positive_key:
+            parts.append(f"Pre-advisor prompt: {str(pre_advisor_prompt).strip()}")
+        return "\n\n".join(parts)
 
     def _v2_scene_builder_category_for_entry(self, entry):
         category = str(entry.get("primary", "") if isinstance(entry, dict) else "").lower()
@@ -10022,6 +10028,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_status = "Advisor: off."
         advisor_diagnostic = ""
         advisor_applied = False
+        pre_advisor_prompt = ""
         feedback_history = ""
         advisor_rating_label = rating_label
         if current_prompt_refusal:
@@ -10151,7 +10158,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 status,
                 training_info,
                 fallback_graph,
-                self._v2_encoded_prompts_output(prompt_to_encode),
+                self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt),
             )
 
         if learning_mode:
