@@ -5702,6 +5702,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "required": {
                 "positive_prompt": ("STRING", {"multiline": True, "default": "", "placeholder": "Positive prompt"}),
                 "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
+                "mode": (["Refine", "Learning"], {
+                    "default": "Refine",
+                    "label": "Mode",
+                    "tooltip": "Refine applies learned prompt and conditioning changes. Learning records observations and ratings while passing prompts and conditioning through unchanged.",
+                }),
             },
             "optional": {
                 "clip": ("CLIP", {"tooltip": "Optional text encoder. When connected, V2 encodes the prompt itself."}),
@@ -5747,6 +5752,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_state_path(self, refinement_key):
         return refinement_state_path(refinement_key, "clip", prefix=self.V2_STATE_PREFIX)
+
+    def _v2_execution_mode(self, mode):
+        clean = str(mode or "Refine").strip().lower()
+        if clean in {"learning", "learn", "observe", "observer", "observation"}:
+            return "Learning"
+        return "Refine"
 
     def _v2_empty_state(self, refinement_key):
         return {
@@ -9350,7 +9361,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def refine_v2(self, positive_prompt, clip=None, rating="Missing action", refinement_key="",
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
-                  source_image=None, negative_prompt=""):
+                  source_image=None, negative_prompt="", mode="Refine"):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -9362,6 +9373,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         rating_profile = normalize_refiner_v2_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
+        execution_mode = self._v2_execution_mode(mode)
+        learning_mode = execution_mode == "Learning"
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
         scene_db, scene_builder_status = self._v2_scene_builder_db(state)
         global_state = state.setdefault("global", {})
@@ -9492,6 +9505,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lucky_status = "Prompt refusal filter: enhancer refusal detected; current prompt will not be stored or learned."
             encoded_role = "refusal passthrough"
             refusal_status = "Current prompt refused by enhancer; storage skipped."
+        elif learning_mode:
+            prompt_to_encode = analysis_prompt
+            lucky_status = "Learning mode: observing only; Lucky, intent alignment, prompt repair, and prompt wildcard cleanup skipped."
+            intent_alignment_status = "Intent alignment: skipped in Learning mode."
+            perfect_repair_status = "Perfect repairs: skipped in Learning mode."
+            repair_status = "Prompt repair: skipped in Learning mode."
+            wildcard_status = "Scene Builder wildcard cleanup: skipped in Learning mode."
+            encoded_role = "learning passthrough"
         elif im_feeling_lucky and clip is not None:
             prompt_to_encode, lucky_status = self._v2_compose_lucky_prompt(
                 analysis_prompt,
@@ -9564,22 +9585,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             training_info = f"Rating: {rating_label}\n{memory_status}\n{lucky_status}\n{encode_status}"
             return ([], status, training_info, fallback_graph, [])
 
-        refined, adaptation_status = self._v2_apply_conditioning_memory(
-            cond,
-            global_state,
-            learning_profile,
-            repair_feedback,
-            intent_family_slot=current_family_slot,
-        )
-        repaired_negative_prompt, negative_repair_status = self._v2_repair_negative_prompt(
-            negative_prompt,
-            global_state,
-            repair_feedback,
-            current_prompt=prompt_to_encode,
-            intent_prompt=intent_source_prompt,
-            intent_phrases=intent_phrases,
-            intent_family_slot=current_family_slot,
-        )
+        if learning_mode:
+            refined = cond
+            adaptation_status = "Adaptation: Learning mode observation only; conditioning vectors passed through unchanged."
+            repaired_negative_prompt = str(negative_prompt or "")
+            negative_repair_status = "Negative repair: skipped in Learning mode."
+        else:
+            refined, adaptation_status = self._v2_apply_conditioning_memory(
+                cond,
+                global_state,
+                learning_profile,
+                repair_feedback,
+                intent_family_slot=current_family_slot,
+            )
+            repaired_negative_prompt, negative_repair_status = self._v2_repair_negative_prompt(
+                negative_prompt,
+                global_state,
+                repair_feedback,
+                current_prompt=prompt_to_encode,
+                intent_prompt=intent_source_prompt,
+                intent_phrases=intent_phrases,
+                intent_family_slot=current_family_slot,
+            )
         negative_conditioning = []
         negative_encode_status = "negative prompt empty"
         if repaired_negative_prompt and clip is not None:
@@ -9719,7 +9746,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         refusal_status_line = f"\n{refusal_status}" if refusal_status else ""
         status = (
-            f"V2 {state_status} | {conditioning_owner} | Rating {rating_label} | Iter {global_state['total_iterations']} | "
+            f"V2 {state_status} | {conditioning_owner} | Mode {execution_mode} | Rating {rating_label} | Iter {global_state['total_iterations']} | "
             f"Learning {'trained previous run' if has_previous_run and not learning_profile.get('skip_learning') else 'not applied'}\n"
             f"{adaptation_status}\n"
             f"{training_guidance}\n"
@@ -9747,6 +9774,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         training_info = "\n\n".join([
             (
                 "Run\n"
+                f"Mode: {execution_mode}\n"
                 f"Encoded: {encoded_role} | {encode_status}\n"
                 f"Rating: {rating_label}\n"
                 f"Prompt: {prompt_preview}"

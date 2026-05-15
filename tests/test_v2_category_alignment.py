@@ -1435,8 +1435,92 @@ def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
 
     assert "clip" not in inputs["required"]
     assert "positive_conditioning" not in inputs["required"]
+    assert inputs["required"]["mode"][0] == ["Refine", "Learning"]
     assert "clip" in inputs["optional"]
     assert "positive_conditioning" in inputs["optional"]
+
+
+def test_refiner_v2_learning_mode_passes_prompt_and_conditioning_through(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "refinement_key": "learning-mode-test",
+        "state_namespace": "clip",
+        "global": {
+            "total_iterations": 1,
+            "avg_reward_ema": 0.0,
+            "good_streak": 0,
+            "bad_streak": 1,
+            "last_rating_label": "Missing action",
+            "last_missing_axes": ["action"],
+            "phrase_memory": {
+                "tiny smoke curls": {
+                    "text": "tiny smoke curls",
+                    "primary": "details",
+                    "effective_category_scores": refiner._v2_heuristic_scores("tiny smoke curls"),
+                    "wanted_axes": {"details": 4},
+                    "score": 8.0,
+                    "liked_count": 6,
+                }
+            },
+            "axis_conditioning_memory": {},
+            "lora_weight_memory": {},
+            "preferred_context_memory": {},
+            "intent_alignment_memory": {},
+            "intent_family_memory": {},
+            "perfect_anchors": {},
+            "variant_evidence": {},
+            "intent_preference_phrases": {},
+            "conditioning_deltas": {},
+            "active_repair_axes": ["details"],
+            "negative_prompt_memory": {
+                "tags": {
+                    "bad repaired detail": {
+                        "text": "bad repaired detail",
+                        "count": 3,
+                        "axes": {"details": 2},
+                        "last_seen_iter": 1,
+                    }
+                }
+            },
+            "vision_memory": {},
+            "loss_history": [],
+            "liked_conditioning": tensor_to_serializable(torch.flip(torch.arange(12, dtype=torch.float32).reshape(1, 4, 3), dims=[-1])),
+        },
+        "prompt_histories": {},
+        "last_run": {
+            "prompt": "person smoking",
+            "encoded_prompt": "person smoking, tiny smoke curls",
+            "source_conditioning": tensor_to_serializable(torch.zeros(1, 4, 3)),
+            "conditioning": tensor_to_serializable(torch.ones(1, 4, 3)),
+            "phrases": [],
+            "rating_label": "Unrated",
+            "iteration": 1,
+        },
+    }), encoding="utf-8")
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    positive_conditioning = [(torch.arange(12, dtype=torch.float32).reshape(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
+
+    modified, status, training_info, _, negative = refiner.refine_v2(
+        "person smoking",
+        None,
+        "Missing details",
+        "learning-mode-test",
+        positive_conditioning=positive_conditioning,
+        negative_prompt="blur",
+        mode="Learning",
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "Mode Learning" in status
+    assert "Learning mode observation only" in status
+    assert "Mode: Learning" in training_info
+    assert torch.equal(modified[0][0], positive_conditioning[0][0])
+    assert state["last_run"]["encoded_prompt"] == "person smoking"
+    assert state["last_run"]["negative_prompt"] == "blur"
+    assert "tiny smoke curls" not in state["last_run"]["encoded_prompt"]
+    assert negative == []
 
 
 def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer(tmp_path, monkeypatch):

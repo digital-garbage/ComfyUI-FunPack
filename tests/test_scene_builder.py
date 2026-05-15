@@ -371,6 +371,79 @@ def test_scene_builder_learning_mode_collects_memory_and_passes_inputs_through(m
     assert data["scenes"] == {}
 
 
+def test_scene_builder_learning_mode_ignores_selected_scene_output(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    builder = FunPackSceneBuilder()
+
+    builder.build_scene(
+        scene="-None-",
+        scene_name="Saved Scene",
+        aliases="",
+        action="save",
+        mode="Manual",
+        scene_positive="saved positive",
+        scene_negative="saved negative",
+        positive_prompt="memory source",
+        negative_prompt="",
+        refinement_key="learn_selected_key",
+    )
+
+    outputs = builder.build_scene(
+        scene="Saved Scene",
+        scene_name="",
+        aliases="",
+        action="load",
+        mode="Learning",
+        positive_prompt="live positive",
+        negative_prompt="live negative",
+        refinement_key="learn_selected_key",
+    )
+
+    assert outputs[0] == "live positive"
+    assert outputs[1] == "live negative"
+    assert "saved positive" not in outputs[0]
+    assert "Learning" in outputs[3]
+
+
+def test_scene_builder_auto_mode_ignores_selected_scene_when_intent_matches_other(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    builder = FunPackSceneBuilder()
+
+    builder.build_scene(
+        scene="-None-",
+        scene_name="Manual Scene",
+        aliases="manual scene",
+        action="save",
+        mode="Manual",
+        scene_positive="manual selected",
+        scene_negative="",
+        refinement_key="auto_selected_key",
+    )
+    builder.build_scene(
+        scene="-None-",
+        scene_name="Auto Target",
+        aliases="dragon alley",
+        action="save",
+        mode="Manual",
+        scene_positive="auto matched",
+        scene_negative="",
+        refinement_key="auto_selected_key",
+    )
+
+    outputs = builder.build_scene(
+        scene="Manual Scene",
+        scene_name="",
+        aliases="",
+        action="load",
+        mode="Auto",
+        intent_prompt="show dragon alley",
+        refinement_key="auto_selected_key",
+    )
+
+    assert outputs[0] == "auto matched"
+    assert "Auto" in outputs[3]
+
+
 def test_scene_builder_collects_prompt_words_from_sentence_chunks(monkeypatch, tmp_path):
     use_tmp_scene_store(monkeypatch, tmp_path)
     builder = FunPackSceneBuilder()

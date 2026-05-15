@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+Added `Learning` mode to `FunPack Video Refiner V2`. It still observes prompts, conditioning, ratings, phrase memory, and diagnostics, but passes positive and negative prompt conditioning through without prompt repair, Lucky composition, wildcard cleanup, or conditioning-vector adaptation.
+
+### Fixed
+
+Fixed `FunPack Scene Builder` mode handling so the live Mode widget stays independent from the selected saved scene, including queue-time `Learning` and `Auto` behavior.
+
+Fixed `FunPack Scene Builder` rich prompt editing so the caret can move past a final inline phrase chip with the mouse or right arrow key.
+
 ## [2.4.1] - 2026-05-14
 
 ### Fixed

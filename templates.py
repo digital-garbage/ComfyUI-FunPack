@@ -1330,12 +1330,6 @@ class FunPackSceneBuilder:
             save_scene_db(data, refinement_key)
             return self._outputs_for_scene(target_name, manual, data, lora_stack, "Manual updated")
 
-        if action == "load" and selected_name and selected_name in scenes and not scene_positive and not scene_negative:
-            selected_scene = scenes.get(selected_name, {})
-            if memory_changed:
-                save_scene_db(data, refinement_key)
-            return self._outputs_for_scene(selected_name, selected_scene, data, lora_stack, "Manual loaded")
-
         if mode == "Learning":
             if memory_changed:
                 save_scene_db(data, refinement_key)
@@ -1347,6 +1341,12 @@ class FunPackSceneBuilder:
                 if memory_changed:
                     save_scene_db(data, refinement_key)
                 return self._outputs_for_scene(matched_name, matched_scene, data, lora_stack, f"Auto {match_type}")
+
+        if action == "load" and selected_name and selected_name in scenes and not scene_positive and not scene_negative:
+            selected_scene = scenes.get(selected_name, {})
+            if memory_changed:
+                save_scene_db(data, refinement_key)
+            return self._outputs_for_scene(selected_name, selected_scene, data, lora_stack, "Manual loaded")
 
         if memory_changed:
             save_scene_db(data, refinement_key)

@@ -3,6 +3,7 @@ import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "FunPackSceneBuilder";
 const NONE_SCENE = "-None-";
+const CARET_SENTINEL = "\u200b";
 const HIDDEN_WIDGETS = new Set([
   "scene_name",
   "mode",
@@ -265,7 +266,6 @@ function loadSceneIntoNode(node, name) {
   setWidgetValue(node, "scene", name);
   setWidgetValue(node, "scene_name", scene.name || name);
   setWidgetValue(node, "aliases", Array.isArray(scene.aliases) ? scene.aliases.join(", ") : "");
-  setWidgetValue(node, "mode", scene.output_mode || "Manual");
   setWidgetValue(node, "refinement_key", scene.refinement_key || "");
   setWidgetValue(node, "scene_positive", Object.prototype.hasOwnProperty.call(scene, "positive_text") ? (scene.positive_text || "") : (scene.positive_phrases || []).join(", "));
   setWidgetValue(node, "scene_negative", Object.prototype.hasOwnProperty.call(scene, "negative_text") ? (scene.negative_text || "") : (scene.negative_phrases || []).join(", "));
@@ -570,6 +570,7 @@ function normalizePromptSpacing(value) {
 
 function normalizePromptEditorValue(value) {
   return String(value || "")
+    .replaceAll(CARET_SENTINEL, "")
     .replace(/\u00a0/g, " ")
     .replace(/[ \t\r\f\v]+([,.])/g, "$1");
 }
@@ -666,7 +667,7 @@ function richNodeTextLength(node) {
     return 0;
   }
   if (node.nodeType === Node.TEXT_NODE) {
-    return (node.nodeValue || "").length;
+    return normalizePromptEditorValue(node.nodeValue || "").length;
   }
   if (node.nodeType !== Node.ELEMENT_NODE) {
     return 0;
@@ -696,7 +697,7 @@ function richRangeTextOffset(root, range) {
     }
     if (node === range.startContainer) {
       if (node.nodeType === Node.TEXT_NODE) {
-        offset += Math.min(range.startOffset, (node.nodeValue || "").length);
+        offset += normalizePromptEditorValue((node.nodeValue || "").slice(0, range.startOffset)).length;
       } else {
         const children = [...node.childNodes];
         for (let index = 0; index < Math.min(range.startOffset, children.length); index += 1) {
@@ -719,6 +720,36 @@ function richRangeTextOffset(root, range) {
   };
   visit(root);
   return found ? offset : null;
+}
+
+function isCaretSentinelNode(node) {
+  return node?.nodeType === Node.TEXT_NODE && node.nodeValue === CARET_SENTINEL;
+}
+
+function lastPromptContentChild(root) {
+  const children = [...(root?.childNodes || [])];
+  for (let index = children.length - 1; index >= 0; index -= 1) {
+    const child = children[index];
+    if (isCaretSentinelNode(child)) {
+      continue;
+    }
+    if (child.nodeType === Node.TEXT_NODE && !normalizePromptEditorValue(child.nodeValue || "").length) {
+      continue;
+    }
+    return child;
+  }
+  return null;
+}
+
+function ensureTrailingCaretTarget(root) {
+  for (const child of [...(root?.childNodes || [])]) {
+    if (isCaretSentinelNode(child)) {
+      child.remove();
+    }
+  }
+  if (lastPromptContentChild(root)?.matches?.(".funpack-scene-inline-token")) {
+    root.append(document.createTextNode(CARET_SENTINEL));
+  }
 }
 
 function setCaretToEnd(element) {
@@ -802,6 +833,37 @@ function setCaretInTextNode(node, offset) {
   const selection = window.getSelection();
   selection?.removeAllRanges();
   selection?.addRange(range);
+}
+
+function setCaretAfterInlineToken(token) {
+  if (!token) {
+    return;
+  }
+  const range = document.createRange();
+  range.setStartAfter(token);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+function placeCaretAfterLastTokenFromMouse(editor, event) {
+  if (event.target !== editor) {
+    return false;
+  }
+  const last = lastPromptContentChild(editor);
+  if (!last?.matches?.(".funpack-scene-inline-token")) {
+    return false;
+  }
+  const rect = last.getBoundingClientRect();
+  const sameLineAfterToken = event.clientY >= rect.top - 4 && event.clientY <= rect.bottom + 8 && event.clientX >= rect.right - 4;
+  const belowToken = event.clientY > rect.bottom + 8;
+  if (!sameLineAfterToken && !belowToken) {
+    return false;
+  }
+  editor.focus();
+  setCaretAfterInlineToken(last);
+  return true;
 }
 
 function insertIntoRichPrompt(editor, text, fallbackRange = null) {
@@ -1318,6 +1380,7 @@ function renderPromptEditor(panel, node, kind) {
     if (cursor < promptValue.length) {
       editor.append(document.createTextNode(promptValue.slice(cursor)));
     }
+    ensureTrailingCaretTarget(editor);
     renderingPrompt = false;
     if (keepFocus) {
       if (Number.isFinite(Number(caretOffset))) {
@@ -1337,9 +1400,21 @@ function renderPromptEditor(panel, node, kind) {
     saveEditorRange();
   });
   editor.addEventListener("keyup", saveEditorRange);
-  editor.addEventListener("mouseup", saveEditorRange);
+  editor.addEventListener("mouseup", (event) => {
+    placeCaretAfterLastTokenFromMouse(editor, event);
+    saveEditorRange();
+  });
   editor.addEventListener("focus", saveEditorRange);
   editor.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowRight") {
+      const token = adjacentInlineToken(editor, "forward");
+      if (token?.matches?.(".funpack-scene-inline-token")) {
+        event.preventDefault();
+        setCaretAfterInlineToken(token);
+        saveEditorRange();
+      }
+      return;
+    }
     if (event.key !== "Backspace" && event.key !== "Delete") {
       return;
     }
