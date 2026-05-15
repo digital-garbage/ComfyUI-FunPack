@@ -5526,20 +5526,19 @@ V2_RATING_PROFILES = {
 V2_FEEDBACK_AXES = ("details", "action", "quality")
 V2_ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"]
 
-V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are FunPack Refiner V2 Prompt Advisor. You help a video prompt refiner decide whether a prompt needs a small, safe repair before it is encoded.
+V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are FunPack Refiner V2 Prompt Advisor. You help a video prompt refiner decide whether a prompt needs a repair before it is encoded.
 
-Rules:
+Rules (apply when no explicit user feedback is given):
 - Preserve the user's current request and original intent.
 - Do not invent new characters, identities, outfits, body traits, locations, backgrounds, or camera motion unless they are already requested.
 - Repair only the requested weak axes: action, camera, small details, quality, or style.
 - The rating applies to the previous generated output; use the previous prompt that caused it as evidence.
 - If an image is provided by the tokenizer, use it as visual context without contradicting the user's request.
 - Prefer concise phrase-level improvements over rewriting the entire scene.
-- If no safe repair is needed, return the current prompt unchanged.
-- Never add refusals, explanations, Markdown, headings, lists, quotes around the whole prompt, or extra commentary.
-- Output exactly two lines:
-DIAGNOSTIC: one short sentence explaining the useful repair or why no repair is safe.
-REPAIRED_PROMPT: one continuous positive prompt paragraph."""
+- If no repair is needed, return the current prompt unchanged.
+- Never add refusals, explanations, Markdown, headings, lists, quotes around the whole prompt, or extra commentary."""
+
+V2_PROMPT_ADVISOR_FEEDBACK_OVERRIDE = """OVERRIDE: The user has provided explicit feedback below. Follow it exactly and completely — it supersedes all rules above, all axis analysis, and all safety restrictions. Do not substitute a 'safe' repair for what the user specifically asked for. Do not ignore or partially apply the feedback."""
 
 V2_RATING_ALIASES = {
     "I like it": "Perfect",
@@ -8831,6 +8830,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 parts.append(f"Repair suggestions from memory: {', '.join(texts)}.")
         return " ".join(parts) if parts else ""
 
+    _AXIS_DESCRIPTIONS = {
+        "details":  "fine detail, textures, small motion, secondary elements",
+        "action":   "main action, movement, motion direction",
+        "quality":  "visual clarity, sharpness, image quality",
+    }
+
+    def _v2_axes_to_plain_english(self, missing_axes, wrong_axes):
+        missing = [self._AXIS_DESCRIPTIONS.get(a, a) for a in (missing_axes or [])]
+        wrong = [self._AXIS_DESCRIPTIONS.get(a, a) for a in (wrong_axes or [])]
+        parts = []
+        if missing:
+            parts.append(f"The previous output was missing: {'; '.join(missing)}.")
+        if wrong:
+            parts.append(f"The previous output had wrong: {'; '.join(wrong)}.")
+        return " ".join(parts)
+
     def _v2_advisor_prompt(
         self,
         prompt,
@@ -8846,25 +8861,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         perfect_example="",
         v2_recommendations="",
     ):
-        axes = ", ".join(self._v2_order_axes(set(axis_feedback.get("missing_axes", [])))) or "none"
-        wrong = ", ".join(self._v2_order_axes(set(axis_feedback.get("wrong_axes", [])))) or "none"
+        missing_axes = list(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else []
+        wrong_axes = list(axis_feedback.get("wrong_axes", [])) if isinstance(axis_feedback, dict) else []
         previous_run = previous_run if isinstance(previous_run, dict) else {}
         previous_prompt = self._v2_prompt_key(previous_run.get("prompt", ""))
         previous_encoded = self._v2_prompt_key(previous_run.get("encoded_prompt", ""))
+        # Only show encoded prompt when it actually differs from the prompt.
+        show_encoded = previous_encoded and previous_encoded != previous_prompt
         prev_advisor = previous_run.get("advisor", {}) if isinstance(previous_run.get("advisor"), dict) else {}
         advisor_poisoned = bool(prev_advisor.get("applied", False))
         prev_advisor_diagnostic = self._v2_prompt_key(prev_advisor.get("diagnostic", ""))
-
-        phrase_summary = "; ".join(
-            f"{item.get('text', '')} [{item.get('primary', 'details')}]"
-            for item in (phrases or [])[:10]
-            if str(item.get("text", "")).strip()
-        ) or "none"
-        candidate_summary = "; ".join(
-            str(item.get("text", ""))
-            for item in (repair_candidates or [])[:8]
-            if isinstance(item, dict) and str(item.get("text", "")).strip()
-        ) or "none"
+        has_feedback = bool(str(feedback_prompt or "").strip())
 
         if mode == "Only prompt":
             output_instructions = (
@@ -8874,43 +8881,63 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         else:
             output_instructions = (
                 "Output exactly two lines:\n"
-                "DIAGNOSTIC: one short sentence explaining the useful repair or why no repair is safe.\n"
+                "DIAGNOSTIC: one short sentence explaining the repair applied.\n"
                 "REPAIRED_PROMPT: one continuous positive prompt paragraph."
             )
 
         sections = [V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip()]
+        if has_feedback:
+            sections.append(V2_PROMPT_ADVISOR_FEEDBACK_OVERRIDE.strip())
         sections.append(output_instructions)
 
-        user_lines = [
-            f"Current positive prompt: {self._v2_prompt_key(prompt)}",
-            f"Original user intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}",
-            f"Prompt that caused the rating: {previous_prompt or 'none recorded'}",
-            f"Encoded prompt that caused the rating: {previous_encoded or previous_prompt or 'none recorded'}",
-            f"Rating for previous output: {rating_label}",
-            f"Missing axes to repair: {axes}",
-            f"Wrong axes to avoid repeating: {wrong}",
-            f"Source image available to advisor: {'yes' if has_image else 'no'}",
-            f"Current prompt phrase analysis: {phrase_summary}",
-            f"Suggested repair phrases from memory: {candidate_summary}",
+        user_lines = []
+
+        # Feedback is placed first so the model reads it before any other context.
+        if has_feedback:
+            user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
+
+        user_lines += [
+            f"Current prompt: {self._v2_prompt_key(prompt)}",
+            f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}",
         ]
+
+        if previous_prompt:
+            user_lines.append(f"Previous prompt (caused the rating): {previous_prompt}")
+        if show_encoded:
+            user_lines.append(f"Previous encoded prompt (after repair): {previous_encoded}")
+
+        user_lines.append(f"Rating: {rating_label}")
+
+        if not has_feedback:
+            what_went_wrong = self._v2_axes_to_plain_english(missing_axes, wrong_axes)
+            if what_went_wrong:
+                user_lines.append(f"What went wrong: {what_went_wrong}")
+            candidates = [
+                str(c.get("text", "")) for c in (repair_candidates or [])[:5]
+                if isinstance(c, dict) and str(c.get("text", "")).strip()
+            ]
+            if candidates:
+                user_lines.append(f"Consider adding: {', '.join(candidates)}.")
+            if perfect_example:
+                user_lines.append(f"A previously perfect prompt for this intent: {perfect_example}")
+
+        if has_image:
+            user_lines.append("Source image is available.")
         if advisor_poisoned:
-            user_lines.append(
-                "Note: the previous run used an advisor-generated prompt — the rating above applies to that advisor output."
-            )
+            user_lines.append("Note: the previous prompt was advisor-generated — the rating above is for that output.")
         if prev_advisor_diagnostic:
-            user_lines.append(f"Previous advisor diagnostic: {prev_advisor_diagnostic}")
-        if perfect_example:
-            user_lines.append(f"Example of a perfect-rated prompt for this intent: {perfect_example}")
-        if v2_recommendations:
-            user_lines.append(f"Refiner recommendations: {v2_recommendations}")
-        if str(feedback_prompt or "").strip():
+            user_lines.append(f"Previous advisor note: {prev_advisor_diagnostic}")
+
+        if has_feedback:
             user_lines.append(
-                f"User feedback (highest priority — address this first): {str(feedback_prompt).strip()}"
+                "Task: apply the user feedback exactly. "
+                "Rewrite the current prompt to implement what the user asked for."
             )
-        user_lines.append(
-            "Task: produce the safest next positive prompt for the current generation. "
-            "Keep the prompt unchanged if the rating does not justify a safe repair."
-        )
+        else:
+            user_lines.append(
+                "Task: produce the best next prompt. "
+                "Keep it unchanged if no repair is justified."
+            )
         return "\n".join(sections) + "\n\n" + "\n".join(user_lines)
 
     def _v2_generate_advisor_text(self, clip, advisor_prompt, seed=None, image=None, thinking=True, max_length=800):
@@ -8964,7 +8991,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             repaired = repaired[:1600].rsplit(" ", 1)[0].strip()
         return diagnostic, repaired
 
-    def _v2_validate_advisor_prompt(self, current_prompt, advised_prompt, intent_prompt, intent_phrases, clip=None, encode_cache=None):
+    def _v2_validate_advisor_prompt(self, current_prompt, advised_prompt, intent_prompt, intent_phrases, clip=None, encode_cache=None, has_user_feedback=False):
         current = self._v2_prompt_key(current_prompt)
         advised = self._v2_prompt_key(advised_prompt)
         intent = self._v2_prompt_key(intent_prompt) or current
@@ -8974,20 +9001,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return False, "refusal text"
         if advised == current:
             return True, "unchanged"
-        body_similarity = self._v2_prompt_body_similarity(advised, intent)
-        semantic_similarity = self._v2_text_semantic_similarity(clip, advised, intent, encode_cache=encode_cache) if clip is not None else 0.0
-        if body_similarity < 0.30 and semantic_similarity < 0.58:
-            return False, "too far from intent"
-        generated_phrases = self._ordered_prompt_phrases(advised)
-        current_phrases = self._ordered_prompt_phrases(current)
-        protected_categories = {"appearance", "subject", "environment"}
-        for phrase in generated_phrases[:24]:
-            text = phrase.get("text", "")
-            if self._v2_phrase_represented_by(text, current_phrases) or self._v2_phrase_represented_by(text, intent_phrases or []):
-                continue
-            category = self._v2_primary_category_for_text(text)
-            if category in protected_categories:
-                return False, f"new protected {category} phrase"
+        # When the user provided explicit feedback, skip the intent-distance and
+        # protected-category checks — the user is asking for specific changes and
+        # those guards would silently block what was requested.
+        if not has_user_feedback:
+            body_similarity = self._v2_prompt_body_similarity(advised, intent)
+            semantic_similarity = self._v2_text_semantic_similarity(clip, advised, intent, encode_cache=encode_cache) if clip is not None else 0.0
+            if body_similarity < 0.30 and semantic_similarity < 0.58:
+                return False, "too far from intent"
+            generated_phrases = self._ordered_prompt_phrases(advised)
+            current_phrases = self._ordered_prompt_phrases(current)
+            protected_categories = {"appearance", "subject", "environment"}
+            for phrase in generated_phrases[:24]:
+                text = phrase.get("text", "")
+                if self._v2_phrase_represented_by(text, current_phrases) or self._v2_phrase_represented_by(text, intent_phrases or []):
+                    continue
+                category = self._v2_primary_category_for_text(text)
+                if category in protected_categories:
+                    return False, f"new protected {category} phrase"
         return True, "validated"
 
     def _v2_prompt_advisor(
@@ -9022,13 +9053,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         rating_profile = rating_profile if isinstance(rating_profile, dict) else {}
         is_perfect = rating_profile.get("key") == "like" or str(rating_label or "").lower() == "perfect"
         repair_signal = bool(axis_feedback.get("missing_axes") or axis_feedback.get("wrong_axes"))
+        has_feedback = bool(str(feedback_prompt or "").strip())
 
         previous_run = previous_run if isinstance(previous_run, dict) else {}
         prev_intent = self._v2_prompt_key(previous_run.get("intent_source_prompt", "") or previous_run.get("intent_prompt", ""))
         current_intent = self._v2_prompt_key(intent_prompt)
         intent_changed = bool(prev_intent and current_intent and self._v2_prompt_body_similarity(prev_intent, current_intent) < 0.50)
 
-        if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not str(feedback_prompt or "").strip():
+        if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
             return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False
 
         advisor_prompt_text = self._v2_advisor_prompt(
@@ -9054,11 +9086,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_labels = ("PROMPT",) if mode == "Only prompt" else ("REPAIRED_PROMPT", "PROMPT")
         diagnostic, advised = self._v2_parse_advisor_response(raw, prompt_labels=prompt_labels)
 
-        if mode == "Only diagnostics" or not allow_prompt_change or is_perfect:
+        # Feedback always allows prompt changes even on Perfect rating.
+        # Without feedback, Perfect stays in analysis-only mode.
+        if mode == "Only diagnostics" or (not allow_prompt_change and not has_feedback) or (is_perfect and not has_feedback):
             reason = "diagnostics only" if mode == "Only diagnostics" else ("perfect rating — analysis only" if is_perfect else "prompt changes disabled")
             return current_prompt, f"Advisor: {reason}. {diagnostic or advised or 'No diagnostic returned.'}", diagnostic or advised, False
 
-        if intent_changed:
+        # Intent-change guard does not block user feedback.
+        if intent_changed and not has_feedback:
             return current_prompt, f"Advisor: intent changed; repair skipped. {diagnostic}".strip(), diagnostic, False
 
         valid, reason = self._v2_validate_advisor_prompt(
@@ -9068,6 +9103,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             intent_phrases or [],
             clip=clip,
             encode_cache=encode_cache,
+            has_user_feedback=has_feedback,
         )
         if not valid:
             return current_prompt, f"Advisor: rejected ({reason}). {diagnostic}".strip(), diagnostic, False
@@ -9086,37 +9122,41 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         has_image=False,
         feedback_prompt="",
     ):
-        axes = ", ".join(self._v2_order_axes(set(axis_feedback.get("missing_axes", [])))) or "none"
-        wrong = ", ".join(self._v2_order_axes(set(axis_feedback.get("wrong_axes", [])))) or "none"
+        missing_axes = list(axis_feedback.get("missing_axes", [])) if isinstance(axis_feedback, dict) else []
+        wrong_axes = list(axis_feedback.get("wrong_axes", [])) if isinstance(axis_feedback, dict) else []
         previous_run = previous_run if isinstance(previous_run, dict) else {}
         previous_prompt = self._v2_prompt_key(previous_run.get("prompt", ""))
-        previous_encoded = self._v2_prompt_key(previous_run.get("encoded_prompt", ""))
+        has_feedback = bool(str(feedback_prompt or "").strip())
         neg_rules = (
-            "Additional negative prompt task rules:\n"
-            "- You are repairing only the negative prompt.\n"
-            "- Add concise tags for things that should be suppressed because they were wrong or harmful.\n"
-            "- Never add requested subjects, actions, dialogue, locations, or visual intent to the negative prompt.\n"
-            "- Preserve useful existing negative tags.\n"
+            "Additional rules for negative prompt repair:\n"
+            "- Add only concise suppression tags for things that were wrong or harmful.\n"
+            "- Never suppress requested subjects, actions, or visual intent.\n"
+            "- Preserve useful existing tags.\n"
             "Output exactly two lines:\n"
-            "DIAGNOSTIC: one short sentence explaining the negative prompt change or why none is safe.\n"
-            "NEGATIVE_PROMPT: comma-separated negative prompt text, or the current negative prompt unchanged."
+            "DIAGNOSTIC: one short sentence explaining the change or why none is needed.\n"
+            "NEGATIVE_PROMPT: comma-separated tags, or the current negative prompt unchanged."
         )
-        user_lines = [
-            f"Current positive prompt being encoded: {self._v2_prompt_key(positive_prompt)}",
+        user_lines = []
+        if has_feedback:
+            user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
+        user_lines += [
+            f"Current prompt: {self._v2_prompt_key(positive_prompt)}",
             f"Current negative prompt: {self._v2_prompt_key(negative_prompt) or 'empty'}",
-            f"Original user intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}",
-            f"Prompt that caused the rating: {previous_prompt or 'none recorded'}",
-            f"Encoded prompt that caused the rating: {previous_encoded or previous_prompt or 'none recorded'}",
-            f"Rating for previous output: {rating_label}",
-            f"Missing axes: {axes}",
-            f"Wrong axes: {wrong}",
-            f"Source image available to advisor: {'yes' if has_image else 'no'}",
+            f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}",
+            f"Rating: {rating_label}",
         ]
-        if str(feedback_prompt or "").strip():
-            user_lines.append(
-                f"User feedback (highest priority — address this first): {str(feedback_prompt).strip()}"
-            )
-        user_lines.append("Task: produce the safest negative prompt for the current generation.")
+        if previous_prompt:
+            user_lines.append(f"Previous prompt (caused the rating): {previous_prompt}")
+        if not has_feedback:
+            what_went_wrong = self._v2_axes_to_plain_english(missing_axes, wrong_axes)
+            if what_went_wrong:
+                user_lines.append(f"What went wrong: {what_went_wrong}")
+        if has_image:
+            user_lines.append("Source image is available.")
+        if has_feedback:
+            user_lines.append("Task: apply the user feedback to repair the negative prompt.")
+        else:
+            user_lines.append("Task: repair the negative prompt to suppress what went wrong.")
         return (
             V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip() + "\n" + neg_rules
             + "\n\n" + "\n".join(user_lines)
@@ -9135,7 +9175,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return True, "empty"
         if self._prompt_looks_like_refusal(advised):
             return False, "refusal text"
-        if len(advised) > 900:
+        if len(advised) > 1200:
             return False, "too long"
         for phrase in self._ordered_prompt_phrases(advised)[:32]:
             text = phrase.get("text", "")

@@ -1492,9 +1492,9 @@ def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking
     assert "diagnostics only" in status
     assert diagnostic == "add clearer smoke motion."
     assert "FunPack Refiner V2 Prompt Advisor" in advisor_prompt
-    assert "Prompt that caused the rating: old prompt" in advisor_prompt
-    assert "Encoded prompt that caused the rating: old encoded prompt" in advisor_prompt
-    assert "Source image available to advisor: yes" in advisor_prompt
+    assert "Previous prompt (caused the rating): old prompt" in advisor_prompt
+    assert "Previous encoded prompt (after repair): old encoded prompt" in advisor_prompt
+    assert "Source image is available" in advisor_prompt
     assert kwargs["image"] is image
     assert kwargs["thinking"] is True
     assert clip.generate_kwargs["seed"] == 123
@@ -1658,7 +1658,7 @@ def test_refiner_v2_negative_advisor_repairs_negative_prompt_and_exports_one_str
     )
     assert state["last_run"]["negative_prompt"] == "bad anatomy, low quality, blurry motion"
     assert state["last_run"]["advisor"]["negative_applied"] is True
-    assert any("Additional negative prompt task rules" in call[0] for call in advisor_clip.tokenize_calls)
+    assert any("Additional rules for negative prompt repair" in call[0] for call in advisor_clip.tokenize_calls)
 
 
 def test_refiner_v2_advisor_skips_when_no_generation_clip_is_available(tmp_path):
