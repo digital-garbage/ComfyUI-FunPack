@@ -1476,9 +1476,7 @@ def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking
         "Diagnostics",
         "person smoking",
         "person smoking",
-        "Missing details",
         {"missing_axes": ["details"], "wrong_axes": []},
-        prompt_phrases(refiner, "person smoking"),
         [],
         previous_run={"prompt": "old prompt", "encoded_prompt": "old encoded prompt"},
         image=image,
@@ -1492,9 +1490,7 @@ def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking
     assert "diagnostics only" in status
     assert diagnostic == "add clearer smoke motion."
     assert "FunPack Refiner V2 Prompt Advisor" in advisor_prompt
-    assert "Previous prompt (caused the rating): old prompt" in advisor_prompt
-    assert "Previous encoded prompt (after repair): old encoded prompt" in advisor_prompt
-    assert "Source image is available" in advisor_prompt
+    assert "Previous prompt (what caused the feedback): old encoded prompt" in advisor_prompt
     assert kwargs["image"] is image
     assert kwargs["thinking"] is True
     assert clip.generate_kwargs["seed"] == 123
