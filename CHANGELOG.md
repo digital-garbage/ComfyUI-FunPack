@@ -1,16 +1,54 @@
 # Changelog
 
-## Unreleased
+## [2.5.0] - 2026-05-15
 
 ### Added
 
-Added an optional CLIP text-generation advisor to `FunPack Video Refiner V2`. The advisor uses an explicit Refiner system prompt, can run Gemma thinking mode, passes source images to compatible CLIP tokenizers, sees the prompt that caused the current rating, and can either report diagnostics or apply a validated prompt repair before encoding.
+Added a CLIP text-generation advisor to `FunPack Video Refiner V2`. The advisor runs two sequential passes: an analysis pass that identifies what specifically needs to change in the suggested prompt, followed by a repair pass that applies those findings. Both passes see the current suggested prompt, user intent, previous prompt, memory suggestions, and the full feedback history.
 
-Added an optional `advisor_clip` input to `FunPack Video Refiner V2` so the advisor can use a separate generative CLIP/Gemma model while the main `clip` continues handling normal prompt encoding.
+Added `advisor_clip` input to use a separate generative CLIP/Gemma model for the advisor while the main `clip` continues handling encoding and similarity checks.
 
-Added a single `encoded_prompts` string output to `FunPack Video Refiner V2` with `Positive prompt:` and `Negative prompt:` sections, so workflows can inspect the exact prompt text used for conditioning.
+Added `advisor_mode` dropdown: `Off`, `Only diagnostics`, `Only prompt`, `Full`. In `Full` mode both analysis and repair passes run. In `Only diagnostics` mode only the analysis pass runs and its finding is stored in feedback history for the next run. In `Only prompt` mode only the repair pass runs silently.
 
-Updated the Refiner V2 advisor so `Repair prompt` can advise the negative prompt as well as the positive prompt when a rating indicates wrong or strongly bad content.
+Added `feedback_prompt` optional input. When connected, the user's natural-language description of what was wrong is placed first in both advisor passes, with the system instructed to follow it exactly and override all other repair logic.
+
+Added persistent `advisor_feedback_history` stored in V2 session state. Up to ten past feedback entries accumulate across runs, each labelled with the corresponding rating: `Missing action: he was supposed to hold her hand not her head`. Advisor-generated diagnostics from `Only diagnostics` runs are stored as `Advisor note:` entries so they carry forward into subsequent `Full` runs.
+
+Added `Prompt only` execution mode to `FunPack Video Refiner V2`. All prompt shaping runs as normal but conditioning vectors are passed through unchanged. Learning still applies. Useful when conditioning adaptation should be paused while prompt refinement continues.
+
+Added `prompt_repair` boolean input to `FunPack Video Refiner V2` (default on). Turning it off disables the rule-based phrase injection from phrase memory and passes no repair candidates to the advisor. Useful early in a session before enough context has been built.
+
+Added `encoded_prompts` STRING output to `FunPack Video Refiner V2`. When the advisor ran and produced a suggestion, the output includes up to four labelled sections: `Positive prompt` (what was encoded), `Advisor suggestion (applied/rejected)` (what the advisor generated), `Advisor analysis` (the diagnostic text from the analysis pass), and `Pre-advisor prompt` (the prompt before the advisor rewrote it).
+
+Added `eta_final` parameter to `FunPack Hybrid Euler 2S Sampler`. When set below `eta`, ancestral noise strength decays linearly toward this value as sigma approaches the quality phase boundary, smoothing the transition into deterministic refinement. Default `1.0` preserves existing behaviour.
+
+### Changed
+
+Replaced the Refiner V2 advisor system prompt with a structured repair format. The advisor now receives four explicit variables — `ORIGINAL_USER_INTENT`, `LAST_PROMPT`, `RATING`, and `OPTIONAL_NOTE` — and is instructed to rewrite `LAST_PROMPT` to fix the specific failure described by the rating. Memory suggestions, feedback history, and analysis context are folded into `OPTIONAL_NOTE`. The repair pass for `Only prompt` mode outputs a plain prompt string with no labels, matching the instruction to output only the final text.
+
+Removed `negative_prompt` input and `modified_negative` conditioning output from `FunPack Video Refiner V2`. Negative conditioning has no effect at CFG=1.0 with NAG guidance and added a redundant AI generation call in every mode. Both the rule-based negative repair and the negative advisor pass are removed.
+
+Increased advisor token budget: repair pass 800 → 1600 tokens, analysis pass fixed at 1200 tokens (was `repair // 2 = 400`). The analysis limit is now independent of the repair limit so it does not shrink if the repair budget changes.
+
+`FunPack Hybrid Euler 2S Sampler` early phase now uses an order-2 ancestral denoised extrapolation (Adams-Bashforth 2-step) in addition to the existing Euler-A update. The previous step's denoised estimate is used to extrapolate a better score direction at zero extra model-call cost. The state resets after any motion pulse.
+
+`FunPack Hybrid Euler 2S Sampler` quality phase now uses a progressive `correction_blend`: the first half of quality steps use a single-eval Euler ODE pass; the second half use the configured 2S correction. This reduces model calls in the quality phase while concentrating the expensive correction where sigma is lowest and it has the most impact.
+
+### Fixed
+
+Fixed `Only prompt` advisor mode running two AI generation calls per invocation (one for positive repair, one for the now-removed negative advisor), causing each run to take twice as long.
+
+Fixed `encoded_prompts` always showing only `Positive prompt:` regardless of advisor activity. The final return path was calling `_v2_encoded_prompts_output` without the advisor keyword arguments.
+
+Fixed Refiner V2 advisor generation: `do_sample` was `False`, forcing greedy decoding and silently ignoring temperature, top_k, top_p, and all sampling parameters. The model was always producing its highest-probability default output regardless of instructions or feedback. Changed to `do_sample=True` with temperature 0.5.
+
+Fixed advisor validation silently rejecting valid feedback-driven repairs: the intent-distance check and protected-category checks now bypass when `feedback_prompt` is connected, allowing the advisor to implement what the user explicitly requested.
+
+Fixed `_v2_find_perfect_example_for_intent` accessing a field (`loved_delta_sources`) that was never written. It now correctly reads from `perfect_anchors` and `loved_variants`.
+
+Fixed `_v2_update_streaks` updating conditioning strength signals (`avg_reward_ema`, `good_streak`, `bad_streak`) in `Prompt only` mode, which contaminated conditioning adaptation for subsequent `Refine` runs. Rating and axis labels still update for repair continuity.
+
+Fixed advisor rating label on first run or session reset: was forwarding the user's rating widget value even when there was no previous output to apply it to. Now passes `"No previous output (first run or session reset)"` when `has_previous_run` is false.
 
 ## [2.4.2] - 2026-05-15
 

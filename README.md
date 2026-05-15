@@ -2,6 +2,22 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.5.0
+
+Added a two-pass CLIP text-generation advisor to `FunPack Video Refiner V2`. Pass 1 analyses what specifically needs to change in the suggested prompt. Pass 2 applies those findings. The advisor uses a structured input format — `ORIGINAL_USER_INTENT`, `LAST_PROMPT`, `RATING`, and `OPTIONAL_NOTE` — so the model knows exactly what failed and what to fix. Token budget: 1200 tokens for analysis, 1600 for repair.
+
+Added `feedback_prompt` input. When connected, the user's natural-language description of what was wrong is placed first in both advisor passes and the system follows it exactly, overriding axis-based repair logic and validation guards.
+
+Added `Prompt only` execution mode: all prompt shaping runs normally but conditioning vectors pass through unchanged. Added `prompt_repair` boolean to disable the rule-based phrase injection from memory when not enough context has been built yet.
+
+Added `encoded_prompts` STRING output. When the advisor ran it shows up to four sections: `Positive prompt` (what was encoded), `Advisor suggestion (applied/rejected)` (the advisor's generated prompt), `Advisor analysis` (diagnostic from the analysis pass), and `Pre-advisor prompt` (the prompt before the advisor rewrote it).
+
+Added `eta_final` parameter to `FunPack Hybrid Euler 2S Sampler`. When set below `eta`, ancestral noise decays toward this value as sigma approaches the quality phase boundary. The early phase now uses order-2 denoised extrapolation (Adams-Bashforth 2-step) at zero extra model-call cost, and the quality phase uses progressive correction blending to reduce the number of expensive 2S evaluations.
+
+Removed `negative_prompt` input and `modified_negative` conditioning output from Refiner V2. Negative conditioning has no effect at CFG=1.0 and was adding a redundant generation call to every advisor run.
+
+Fixed greedy decoding in the advisor: `do_sample` was `False`, causing the model to always produce its highest-probability default output. Fixed `Only prompt` mode running two generation calls per invocation (positive + the now-removed negative advisor). Fixed `encoded_prompts` always showing only the positive prompt regardless of advisor activity. Also fixed four logic bugs: intent example lookup reading a nonexistent field, streak updates contaminating conditioning strength in Prompt only mode, unfiltered global phrase memory injecting unrelated vocabulary, and the first-run rating label being forwarded when no previous output existed.
+
 ## Updates in 2.4.2
 
 Added Refiner V2 `Learning` mode. It observes prompts, conditioning, ratings, phrase memory, and diagnostics while passing positive and negative prompt conditioning through unchanged.
@@ -26,51 +42,9 @@ Added advisory image/CLIP Vision context and repaired negative conditioning to `
 
 Added an opt-in experimental early velocity bias mode to `FunPack Hybrid Euler 2S Sampler` for capturing/applying averaged early denoise directions around normalized sigma 0.9 and 0.8.
 
-## Updates in 2.3.3
+## Updates in 2.3.x
 
-Refiner V2 now supports the restored pre-encoded conditioning workflow: connect `positive_conditioning` without `CLIP` and it accepts the finished Gemma3/LTX2 conditioning while loading only the Gemma3 tokenizer. If `CLIP` is connected, V2 still encodes the prompt itself and ignores the fallback conditioning path.
-
-## Updates in 2.3.2
-
-Refiner V2 now learns original-intent alignment when `user_intent_prompt` stays the same but an enhancer gives different `positive_prompt` variants. Ratings teach it which intent-enhance pairs represented the original request, which original phrases were missing, and which enhancer-only additions were rejected.
-
-Learned original-intent omissions can now be restored on later runs, while repeatedly rejected enhancer-only full words and adjacent word pairs can be omitted before encoding.
-
-## Updates in 2.3.1
-
-Refiner V2 Prompt Repair now keeps all missing/wrong ratings tied to the current prompt or explicit user intent. Learned favorite actions, details, quality cues, camera moves, and styles are not repaired into unrelated requests just because they scored well before.
-
-Prompt Repair now treats the same word in different neighbor contexts as separate evidence, so a liked phrase does not automatically transfer to a different request that happens to share one word.
-
-When the optional raw user intent is vague, such as `Figure it out`, Refiner V2 now treats the enhanced `positive_prompt` as the stronger repair anchor.
-
-## Updates in 2.3.0
-
-Refiner V2 now blocks learned appearance, character, subject, and background concepts from Prompt Repair, Lucky auto-injection, and legacy Void memory unless the current prompt explicitly asks for them.
-
-Added `Wrong appearance` for outputs polluted by remembered clothing or character traits. This suppresses the responsible appearance memory without penalizing unrelated action, camera, detail, or quality learning.
-
-Added `FunPack Refinement Key Loader` for selecting, creating, importing, and exporting Refiner V2 keys. The loader can feed both Refiner V2 and `FunPack Apply LoRA Weights`.
-
-Added a paste-friendly [`Refiner V2 quick guide`](docs/FunPackVideoRefinerV2QuickGuide.md) for new users.
-
-## Updates in 2.2.1
-
-Fixed Refiner V2 prompt phrase categorization so background, appearance, quality, camera, and action phrases stay aligned before the node updates Lucky memory or LoRA suggestions.
-
-## Updates in 2.2.0
-
-Added `FunPack Video Refiner V2`, a simpler prompt-owned refiner that takes `positive_prompt` and a connected `CLIP`, encodes the prompt inside the node, learns from ratings, and returns refined positive conditioning plus diagnostics.
-
-Removed Refiner V2's `mode` input. The node now accepts whatever connected `CLIP` the workflow provides and stores V2 state in a CLIP-owned namespace.
-
-Refiner V2 removes the old sigma refinement, latent refinement, manual scheduler controls, and feedback question workflow. It now adapts internally: consistently good ratings make updates gentler, while consistently bad ratings make updates stronger.
-
-Renamed visible Refiner and LoRA intent from `concept` to `action`. Internally, `action` means action plus motion, so movement verbs, physical motion, subject motion, and camera motion are treated together. Old `Missing concept` ratings and old `concept` LoRA rows are accepted as aliases.
-
-Updated `I'm Feeling Lucky` in Refiner V2 so Lucky is only a prompt composer. When Lucky is off, it can still train memory from rated runs, but it does not compose or alter the output.
-
-Removed the old public `FunPack Video Refiner`, its compatibility alias, and `FunPack Save Refinement Latent` from the node list. Use `FunPack Video Refiner V2` for new refinement workflows.
+Refiner V2 now supports pre-encoded conditioning workflows, original-intent alignment memory, improved prompt repair scoping, and a `Wrong appearance` rating for outputs polluted by remembered appearance concepts. Added `FunPack Refinement Key Loader`.
 
 ## Dev Branch
 
