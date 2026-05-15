@@ -264,6 +264,24 @@ def _prepare_dynamic_sigmas(sigmas, high_quality_pct, motion_pulse_mode="off",
     return base_sigmas, quality_sigma_start, pulse_steps, motion_pulse_options["noise"]
 
 
+def _order2_ancestral_denoised(denoised, prev_denoised, h, prev_h):
+    """
+    Linear extrapolation of the denoised estimate using the previous step's value.
+    Equivalent to the DPM-Solver++ 2M approach applied to the ancestral phase.
+    Gives second-order accuracy at zero extra model-call cost.
+    """
+    if prev_denoised is None or prev_h is None or prev_h < 1e-7 or h < 1e-7:
+        return denoised
+    r = max(0.25, min(4.0, prev_h / h))
+    c1 = 1.0 + 0.5 / r
+    c2 = 0.5 / r
+    try:
+        extrap = c1 * denoised - c2 * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
+        return extrap
+    except Exception:
+        return denoised
+
+
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, eta=1.0, s_noise=1.0,
                                    high_quality_pct=0.35, correction_blend=1.0,
@@ -278,11 +296,22 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    velocity_bias_mode="off",
                                    velocity_bias_strength=0.0,
                                    velocity_refinement_key="default",
-                                   velocity_aspect_bucket="any"):
+                                   velocity_aspect_bucket="any",
+                                   eta_final=1.0):
     """
     Hybrid sampler:
-    - Early schedule: Euler ancestral for motion/anatomy buildup.
-    - Late schedule: deterministic Euler / DPM-Solver++(2S) ODE refinement for detail.
+    - Early schedule: Euler ancestral with order-2 denoised extrapolation for
+      motion/anatomy buildup. Order-2 reuses the previous step's denoised to
+      extrapolate the score direction, giving DPM-Solver++ 2M accuracy at zero
+      extra model-call cost.
+    - Late schedule: deterministic DPM-Solver++(2S) ODE refinement for detail,
+      with progressive correction_blend — first half of quality steps use single-
+      eval Euler ODE, second half use the full configured 2S correction. This
+      cuts quality-phase model calls by roughly half while preserving the 2S
+      benefit where sigma is lowest and it matters most.
+    - Eta decay: when eta_final < eta, ancestral noise strength decays toward
+      eta_final as sigma approaches the quality boundary, giving a cleaner
+      transition into deterministic refinement.
     - Motion pulses: optional monotonic noise kicks before the late quality phase.
     """
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
@@ -301,10 +330,12 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
 
     high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
+    eta_final = max(0.0, min(float(eta), float(eta_final)))
     velocity_bias_mode = (velocity_bias_mode or "off").lower()
     if velocity_bias_mode not in VELOCITY_BIAS_MODES:
         velocity_bias_mode = "off"
     velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
+
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, computed_motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
@@ -322,16 +353,24 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
         for item in (motion_pulse_steps or [])
         if isinstance(item, dict)
     }
+
     s_in = x.new_ones([x.shape[0]])
     callback_step = 0
 
+    # Resolve quality phase boundary
+    late_start = _get_late_start_index(total_steps, high_quality_pct)
     if quality_sigma_start is None:
-        late_steps = max(1, int(math.ceil(total_steps * high_quality_pct))) if high_quality_pct > 0.0 else 0
-        late_start = max(0, total_steps - late_steps)
         if late_start < sigmas.shape[0]:
             quality_sigma_start = float(sigmas[late_start].item())
     else:
         quality_sigma_start = float(quality_sigma_start)
+
+    num_quality_steps = total_steps - late_start
+
+    # Order-2 ancestral state
+    prev_denoised = None
+    prev_h = None
+    quality_step_index = 0
 
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
@@ -339,9 +378,22 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
         in_quality_phase = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
 
         if not in_quality_phase:
+            # Adaptive eta: decay from eta toward eta_final as sigma
+            # approaches the quality boundary.
+            if quality_sigma_start is not None and quality_sigma_start > 0.0 and eta_final < eta:
+                sigma_val = float(sigma.item())
+                proximity = min(1.0, max(0.0, quality_sigma_start / max(sigma_val, 1e-8)))
+                effective_eta = eta_final + (eta - eta_final) * (1.0 - proximity)
+            else:
+                effective_eta = eta
+
             pulse_noise = motion_step_noise.get(int(i), 0.0)
             if pulse_noise > 0.0:
                 x = _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler)
+                # Pulse modifies x; previous denoised is no longer a valid
+                # second-order estimate for the next step.
+                prev_denoised = None
+                prev_h = None
 
             velocity_target = _velocity_bias_target(sigmas, sigma)
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
@@ -360,18 +412,34 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 })
                 callback_step += 1
 
-            sigma_down, sigma_up = k_diffusion_sampling.get_ancestral_step(sigma, sigma_next, eta=eta)
+            h = float((sigma - sigma_next).abs().item())
+            denoised_eff = _order2_ancestral_denoised(denoised, prev_denoised, h, prev_h)
 
+            sigma_down, sigma_up = k_diffusion_sampling.get_ancestral_step(sigma, sigma_next, eta=effective_eta)
             if sigma_down == 0:
-                x = denoised
+                x = denoised_eff
             else:
-                d = k_diffusion_sampling.to_d(x, sigma, denoised)
+                d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
                 dt = sigma_down - sigma
                 x = x + d * dt
-
-                if sigma_next > 0 and eta > 0 and s_noise > 0:
+                if sigma_next > 0 and effective_eta > 0 and s_noise > 0:
                     x = x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up
+
+            prev_denoised = denoised.detach()
+            prev_h = h
+
         else:
+            # Quality phase: progressive correction_blend.
+            # First half of quality steps use blend=0 (single-eval Euler ODE),
+            # second half use the configured blend (full 2S correction).
+            # 2S matters most at the lowest sigmas, so this concentrates the
+            # expensive second model call where it has the most impact.
+            if num_quality_steps <= 1:
+                effective_blend = correction_blend
+            else:
+                mid_quality = num_quality_steps // 2
+                effective_blend = 0.0 if quality_step_index < mid_quality else correction_blend
+
             denoised = model(x, sigma * s_in, **extra_args)
 
             if callback is not None:
@@ -391,9 +459,10 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 sigma_next,
                 s_in,
                 extra_args,
-                correction_blend,
+                effective_blend,
                 denoised=denoised,
             )
+            quality_step_index += 1
 
     return x
 
@@ -408,7 +477,14 @@ class FunPackHybridEuler2SSampler:
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01,
-                    "tooltip": "Ancestral stochasticity. Keep at 1.0 for classic ancestral behaviour."
+                    "tooltip": "Ancestral stochasticity at the start of sampling. Keep at 1.0 for classic ancestral behaviour."
+                }),
+                "eta_final": ("FLOAT", {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "tooltip": "Eta value at the quality phase boundary. When below eta, ancestral noise decays linearly toward this value as sigma approaches the quality phase. Lower values give a cleaner hand-off into deterministic refinement. Set equal to eta to disable decay."
                 }),
                 "s_noise": ("FLOAT", {
                     "default": 1.0,
@@ -422,14 +498,14 @@ class FunPackHybridEuler2SSampler:
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01,
-                    "tooltip": "Fraction of late denoise steps that receive the slower 2S quality correction."
+                    "tooltip": "Fraction of late denoise steps that enter the quality phase. The first half of quality steps use single-eval Euler ODE; the second half use the full 2S correction."
                 }),
                 "correction_blend": ("FLOAT", {
                     "default": 1.0,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01,
-                    "tooltip": "Blend between Euler ancestral (0.0) and late-step 2S correction (1.0)."
+                    "tooltip": "Blend between Euler ODE (0.0) and 2S correction (1.0) for the second half of quality-phase steps."
                 }),
                 "motion_pulse_mode": (MOTION_PULSE_MODES, {
                     "default": "off",
@@ -494,14 +570,18 @@ class FunPackHybridEuler2SSampler:
     RETURN_NAMES = ("sampler", "sigmas")
     FUNCTION = "get_sampler"
     CATEGORY = "FunPack/Sampling"
-    DESCRIPTION = "Hybrid sampler: early Euler ancestral for motion, late DPM-Solver++(2S) ODE refinement for quality, with optional anti-stiffness motion pulses."
+    DESCRIPTION = (
+        "Hybrid sampler: early Euler ancestral with order-2 denoised extrapolation for motion, "
+        "late DPM-Solver++(2S) ODE for quality with progressive correction blending. "
+        "Optional eta decay, anti-stiffness motion pulses, and experimental velocity bias."
+    )
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
                     motion_pulse_mode="off", motion_pulse_start_pct=0.30,
                     motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
                     motion_pulse_strength=0.85, velocity_bias_mode="off",
                     velocity_bias_strength=0.0, velocity_refinement_key="default",
-                    velocity_aspect_bucket="any", sigmas=None):
+                    velocity_aspect_bucket="any", sigmas=None, eta_final=1.0):
         prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
@@ -530,6 +610,7 @@ class FunPackHybridEuler2SSampler:
                 "velocity_bias_strength": velocity_bias_strength,
                 "velocity_refinement_key": velocity_refinement_key,
                 "velocity_aspect_bucket": velocity_aspect_bucket,
+                "eta_final": eta_final,
             }
         )
         return (sampler, prepared_sigmas)
