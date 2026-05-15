@@ -5766,6 +5766,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "I'm Feeling Lucky",
                     "tooltip": "Compose a learned prompt from V2 phrase memory, then encode it through the connected CLIP.",
                 }),
+                "prompt_repair": ("BOOLEAN", {
+                    "default": True,
+                    "label": "Prompt Repair",
+                    "tooltip": "Allow V2 to append learned phrases for missing axes. Disable when not enough context has been built yet or when memory suggestions are disrupting the generation.",
+                }),
                 "advisor_thinking": ("BOOLEAN", {
                     "default": True,
                     "label": "Advisor Thinking",
@@ -9895,7 +9900,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   seed=0, reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, negative_prompt="", mode="Refine", advisor_mode="Off", advisor_thinking=True,
-                  advisor_clip=None, feedback_prompt=""):
+                  advisor_clip=None, feedback_prompt="", prompt_repair=True):
         if seed != 0:
             torch.manual_seed(seed)
             random.seed(seed)
@@ -10098,16 +10103,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 {**learning_profile, "missing_axes": repair_feedback.get("missing_axes", [])},
             )
             advisor_active = advisor_mode != "Off"
-            prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
-                prompt_to_encode,
-                phrases,
-                global_state,
-                previous_run,
-                repair_feedback,
-                intent_phrases=intent_phrases,
-                intent_family_slot=current_family_slot,
-                apply=not advisor_active,
-            )
+            if prompt_repair:
+                prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
+                    prompt_to_encode,
+                    phrases,
+                    global_state,
+                    previous_run,
+                    repair_feedback,
+                    intent_phrases=intent_phrases,
+                    intent_family_slot=current_family_slot,
+                    apply=not advisor_active,
+                )
+            else:
+                repair_status = "Prompt repair: disabled."
             prompt_to_encode, wildcard_status = self._v2_resolve_scene_builder_wildcards(
                 prompt_to_encode,
                 scene_db,
