@@ -2,6 +2,12 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.4.2
+
+Added Refiner V2 `Learning` mode. It observes prompts, conditioning, ratings, phrase memory, and diagnostics while passing positive and negative prompt conditioning through unchanged.
+
+Fixed Scene Builder mode handling so the live Mode control stays independent from the selected saved scene, and fixed prompt editing so the cursor can move past a final phrase chip with the mouse or right arrow key.
+
 ## Updates in 2.4.1
 
 Improved Scene Builder database editing: phrase rows now expose the full phrase as a hover hint, and double-click editing opens a wider multiline editor with explicit OK/Cancel buttons.
