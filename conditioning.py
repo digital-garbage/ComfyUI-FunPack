@@ -8806,6 +8806,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             "feedback": feedback,
             "rating": str(rating_label or "").strip(),
             "iteration": int(iter_num),
+            "source": "user",
+        })
+        global_state["advisor_feedback_history"] = history[-limit:]
+
+    def _v2_record_advisor_diagnostic(self, global_state, diagnostic, rating_label, iter_num, limit=10):
+        diagnostic = str(diagnostic or "").strip()
+        if not diagnostic:
+            return
+        history = list(global_state.setdefault("advisor_feedback_history", []))
+        history.append({
+            "feedback": diagnostic,
+            "rating": str(rating_label or "").strip(),
+            "iteration": int(iter_num),
+            "source": "advisor",
         })
         global_state["advisor_feedback_history"] = history[-limit:]
 
@@ -8820,9 +8834,51 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if not feedback:
                 continue
             rating = str(entry.get("rating", "")).strip()
-            entry_text = f"{rating}: {feedback}" if rating else feedback
+            source = str(entry.get("source", "user")).strip()
+            if source == "advisor":
+                entry_text = f"Advisor note: {feedback}"
+            else:
+                entry_text = f"{rating}: {feedback}" if rating else feedback
             lines.append(f"{i}. {entry_text}")
         return "\n".join(lines)
+
+    def _v2_advisor_analysis_prompt(
+        self,
+        prompt,
+        intent_prompt,
+        repair_candidates,
+        previous_run=None,
+        feedback_prompt="",
+        feedback_history="",
+    ):
+        has_feedback = bool(str(feedback_prompt or "").strip())
+        previous_run = previous_run if isinstance(previous_run, dict) else {}
+        previous_prompt = self._v2_prompt_key(previous_run.get("encoded_prompt", "") or previous_run.get("prompt", ""))
+        analysis_system = (
+            "You are analyzing a video generation prompt to identify specific improvements needed.\n\n"
+            "Output exactly one line:\n"
+            "DIAGNOSTIC: a concise list of specific changes — what to add, what to remove, what to fix. "
+            "Be concrete. Reference actual words from the prompt."
+        )
+        if has_feedback:
+            analysis_system += "\n\n" + V2_PROMPT_ADVISOR_FEEDBACK_OVERRIDE.strip()
+        user_lines = []
+        if has_feedback:
+            user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
+        user_lines.append(f"Current prompt: {self._v2_prompt_key(prompt)}")
+        user_lines.append(f"User intent: {self._v2_prompt_key(intent_prompt) or 'same as current prompt'}")
+        if previous_prompt:
+            user_lines.append(f"Previous prompt (what caused the feedback): {previous_prompt}")
+        candidates = [
+            str(c.get("text", "")) for c in (repair_candidates or [])[:5]
+            if isinstance(c, dict) and str(c.get("text", "")).strip()
+        ]
+        if candidates:
+            user_lines.append(f"Memory suggestions: {', '.join(candidates)}.")
+        if feedback_history:
+            user_lines.append(f"Past feedback (most recent first):\n{feedback_history}")
+        user_lines.append("Task: identify exactly what needs to change in the current prompt.")
+        return analysis_system + "\n\n" + "\n".join(user_lines)
 
     def _v2_advisor_prompt(
         self,
@@ -8833,6 +8889,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mode="Full",
         feedback_prompt="",
         feedback_history="",
+        analysis="",
     ):
         has_feedback = bool(str(feedback_prompt or "").strip())
         previous_run = previous_run if isinstance(previous_run, dict) else {}
@@ -8876,14 +8933,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if feedback_history:
             user_lines.append(f"Past feedback (most recent first):\n{feedback_history}")
 
+        if analysis:
+            user_lines.append(f"Analysis of what needs to change: {analysis}")
+
         if has_feedback:
             user_lines.append(
-                "Task: apply the user feedback exactly. "
-                "Rewrite the current prompt to implement what the user asked for."
+                "Task: apply the user feedback and the analysis above. "
+                "Rewrite the current prompt to implement the required changes."
             )
         else:
             user_lines.append(
-                "Task: produce the best next prompt. "
+                "Task: apply the analysis above to produce the best next prompt. "
                 "Keep it unchanged if no repair is justified."
             )
         return "\n".join(sections) + "\n\n" + "\n".join(user_lines)
@@ -9008,7 +9068,38 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
             return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False
 
-        advisor_prompt_text = self._v2_advisor_prompt(
+        # Pass 1: analysis — always runs for Full and Only diagnostics.
+        # Only prompt skips this and goes straight to repair.
+        analysis = ""
+        if mode in {"Full", "Only diagnostics"}:
+            analysis_prompt_text = self._v2_advisor_analysis_prompt(
+                current_prompt,
+                intent_prompt,
+                repair_candidates,
+                previous_run=previous_run,
+                feedback_prompt=feedback_prompt,
+                feedback_history=feedback_history,
+            )
+            analysis_raw, analysis_status = self._v2_generate_advisor_text(
+                clip, analysis_prompt_text, seed=seed, image=image, thinking=thinking,
+                max_length=max(128, max_length // 2),
+            )
+            analysis, _ = self._v2_parse_advisor_response(analysis_raw, prompt_labels=("ANALYSIS",))
+            if not analysis and analysis_raw:
+                analysis = re.sub(r"\s+", " ", analysis_raw).strip()[:400]
+
+            if mode == "Only diagnostics":
+                return current_prompt, f"Advisor: diagnostics only. {analysis or 'No analysis returned.'}", analysis, False
+
+        # Guard checks before pass 2.
+        if (not allow_prompt_change and not has_feedback) or (is_perfect and not has_feedback):
+            reason = "perfect rating — analysis only" if is_perfect else "prompt changes disabled"
+            return current_prompt, f"Advisor: {reason}. {analysis}".strip(), analysis, False
+        if intent_changed and not has_feedback:
+            return current_prompt, f"Advisor: intent changed; repair skipped. {analysis}".strip(), analysis, False
+
+        # Pass 2: repair — builds on the analysis from pass 1 (or runs standalone for Only prompt).
+        repair_prompt_text = self._v2_advisor_prompt(
             current_prompt,
             intent_prompt,
             repair_candidates,
@@ -9016,25 +9107,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             mode=mode,
             feedback_prompt=feedback_prompt,
             feedback_history=feedback_history,
+            analysis=analysis,
         )
         raw, gen_status = self._v2_generate_advisor_text(
-            clip, advisor_prompt_text, seed=seed, image=image, thinking=thinking, max_length=max_length
+            clip, repair_prompt_text, seed=seed, image=image, thinking=thinking, max_length=max_length
         )
         if not raw:
-            return current_prompt, gen_status, "", False
+            return current_prompt, gen_status, analysis, False
 
         prompt_labels = ("PROMPT",) if mode == "Only prompt" else ("REPAIRED_PROMPT", "PROMPT")
-        diagnostic, advised = self._v2_parse_advisor_response(raw, prompt_labels=prompt_labels)
-
-        # Feedback always allows prompt changes even on Perfect rating.
-        # Without feedback, Perfect stays in analysis-only mode.
-        if mode == "Only diagnostics" or (not allow_prompt_change and not has_feedback) or (is_perfect and not has_feedback):
-            reason = "diagnostics only" if mode == "Only diagnostics" else ("perfect rating — analysis only" if is_perfect else "prompt changes disabled")
-            return current_prompt, f"Advisor: {reason}. {diagnostic or advised or 'No diagnostic returned.'}", diagnostic or advised, False
-
-        # Intent-change guard does not block user feedback.
-        if intent_changed and not has_feedback:
-            return current_prompt, f"Advisor: intent changed; repair skipped. {diagnostic}".strip(), diagnostic, False
+        _, advised = self._v2_parse_advisor_response(raw, prompt_labels=prompt_labels)
 
         valid, reason = self._v2_validate_advisor_prompt(
             current_prompt,
@@ -9046,10 +9128,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             has_user_feedback=has_feedback,
         )
         if not valid:
-            return current_prompt, f"Advisor: rejected ({reason}). {diagnostic}".strip(), diagnostic, False
+            return current_prompt, f"Advisor: rejected ({reason}). {analysis}".strip(), analysis, False
         if self._v2_prompt_key(advised) == self._v2_prompt_key(current_prompt):
-            return current_prompt, f"Advisor: no change. {diagnostic}".strip(), diagnostic, False
-        return advised, f"Advisor: applied repair. {diagnostic}".strip(), diagnostic, True
+            return current_prompt, f"Advisor: no change. {analysis}".strip(), analysis, False
+        return advised, f"Advisor: applied repair. {analysis}".strip(), analysis, True
 
     def _v2_negative_advisor_prompt(
         self,
@@ -10063,7 +10145,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             if advisor_applied:
                 encoded_role = "advisor repaired prompt"
-            elif advisor_mode != "Off" and not learning_mode and repair_candidates and not advisor_applied:
+            if advisor_mode == "Only diagnostics" and advisor_diagnostic:
+                self._v2_record_advisor_diagnostic(global_state, advisor_diagnostic, advisor_rating_label, int(global_state.get("total_iterations", 0)))
+            if advisor_mode != "Off" and not learning_mode and repair_candidates and not advisor_applied:
                 additions = [c["text"] for c in repair_candidates if isinstance(c, dict) and str(c.get("text", "")).strip()]
                 if additions:
                     base = str(pre_advisor_prompt or "").strip()
