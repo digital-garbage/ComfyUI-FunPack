@@ -9035,9 +9035,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     ):
         mode = self._v2_advisor_mode(mode)
         if mode == "Off":
-            return current_prompt, "Advisor: off.", "", False
+            return current_prompt, "Advisor: off.", "", False, ""
         if not self._v2_prompt_key(current_prompt):
-            return current_prompt, "Advisor: skipped; prompt empty.", "", False
+            return current_prompt, "Advisor: skipped; prompt empty.", "", False, ""
 
         rating_profile = rating_profile if isinstance(rating_profile, dict) else {}
         is_perfect = rating_profile.get("key") == "like"
@@ -9050,7 +9050,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         intent_changed = bool(prev_intent and current_intent and self._v2_prompt_body_similarity(prev_intent, current_intent) < 0.50)
 
         if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
-            return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False
+            return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False, ""
 
         # Pass 1: analysis — always runs for Full and Only diagnostics.
         # Only prompt skips this and goes straight to repair.
@@ -9073,14 +9073,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 analysis = re.sub(r"\s+", " ", analysis_raw).strip()[:400]
 
             if mode == "Only diagnostics":
-                return current_prompt, f"Advisor: diagnostics only. {analysis or 'No analysis returned.'}", analysis, False
+                return current_prompt, f"Advisor: diagnostics only. {analysis or 'No analysis returned.'}", analysis, False, ""
 
         # Guard checks before pass 2.
         if (not allow_prompt_change and not has_feedback) or (is_perfect and not has_feedback):
             reason = "perfect rating — analysis only" if is_perfect else "prompt changes disabled"
-            return current_prompt, f"Advisor: {reason}. {analysis}".strip(), analysis, False
+            return current_prompt, f"Advisor: {reason}. {analysis}".strip(), analysis, False, ""
         if intent_changed and not has_feedback:
-            return current_prompt, f"Advisor: intent changed; repair skipped. {analysis}".strip(), analysis, False
+            return current_prompt, f"Advisor: intent changed; repair skipped. {analysis}".strip(), analysis, False, ""
 
         # Pass 2: repair — builds on the analysis from pass 1 (or runs standalone for Only prompt).
         repair_prompt_text = self._v2_advisor_prompt(
@@ -9098,7 +9098,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             clip, repair_prompt_text, seed=seed, image=image, thinking=thinking, max_length=max_length
         )
         if not raw:
-            return current_prompt, gen_status, analysis, False
+            return current_prompt, gen_status, analysis, False, ""
 
         prompt_labels = ("PROMPT",) if mode == "Only prompt" else ("REPAIRED_PROMPT", "PROMPT")
         _, advised = self._v2_parse_advisor_response(raw, prompt_labels=prompt_labels)
@@ -9113,10 +9113,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             has_user_feedback=has_feedback,
         )
         if not valid:
-            return current_prompt, f"Advisor: rejected ({reason}). {analysis}".strip(), analysis, False
+            return current_prompt, f"Advisor: rejected ({reason}). {analysis}".strip(), analysis, False, advised
         if self._v2_prompt_key(advised) == self._v2_prompt_key(current_prompt):
-            return current_prompt, f"Advisor: no change. {analysis}".strip(), analysis, False
-        return advised, f"Advisor: applied repair. {analysis}".strip(), analysis, True
+            return current_prompt, f"Advisor: no change. {analysis}".strip(), analysis, False, ""
+        return advised, f"Advisor: applied repair. {analysis}".strip(), analysis, True, ""
 
     def _v2_negative_advisor_prompt(
         self,
@@ -9250,13 +9250,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return negative_prompt, f"Negative advisor: no change. {diagnostic}".strip(), diagnostic, False
         return advised, f"Negative advisor: applied. {diagnostic}".strip(), diagnostic, True
 
-    def _v2_encoded_prompts_output(self, positive_prompt, advisor_diagnostic="", pre_advisor_prompt=""):
+    def _v2_encoded_prompts_output(self, positive_prompt, advisor_diagnostic="", pre_advisor_prompt="", advisor_suggested=""):
         parts = [f"Positive prompt: {str(positive_prompt or '').strip()}"]
         positive_key = self._v2_prompt_key(positive_prompt)
         if advisor_diagnostic:
             parts.append(f"Advisor: {str(advisor_diagnostic).strip()}")
         if pre_advisor_prompt and self._v2_prompt_key(pre_advisor_prompt) != positive_key:
             parts.append(f"Pre-advisor prompt: {str(pre_advisor_prompt).strip()}")
+        if advisor_suggested and self._v2_prompt_key(advisor_suggested) != positive_key:
+            parts.append(f"Advisor suggested (rejected): {str(advisor_suggested).strip()}")
         return "\n\n".join(parts)
 
     def _v2_scene_builder_category_for_entry(self, entry):
@@ -10028,6 +10030,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_status = "Advisor: off."
         advisor_diagnostic = ""
         advisor_applied = False
+        advisor_suggested = ""
         pre_advisor_prompt = ""
         feedback_history = ""
         advisor_rating_label = rating_label
@@ -10113,7 +10116,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             feedback_history = self._v2_format_advisor_feedback_history(global_state)
             pre_advisor_prompt = prompt_to_encode
             advisor_rating_label = rating_label if has_previous_run else "No previous output (first run or session reset)"
-            prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied = self._v2_prompt_advisor(
+            prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied, advisor_suggested = self._v2_prompt_advisor(
                 advisor_clip,
                 advisor_mode,
                 prompt_to_encode,
@@ -10158,7 +10161,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 status,
                 training_info,
                 fallback_graph,
-                self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt),
+                self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
             )
 
         if learning_mode:
