@@ -9259,18 +9259,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     tokens = clip.tokenize(advisor_prompt, image=image)
                 except TypeError:
                     tokens = clip.tokenize(advisor_prompt)
-            generated_ids = clip.generate(
-                tokens,
+            generate_kwargs = dict(
                 do_sample=True,
                 max_length=max_length,
-                temperature=0.5,
+                temperature=0.7,
                 top_k=50,
                 top_p=0.92,
                 min_p=0.05,
-                repetition_penalty=1.05,
+                repetition_penalty=1.3,
+                no_repeat_ngram_size=5,
                 presence_penalty=0.0,
                 seed=seed if seed else None,
             )
+            try:
+                generated_ids = clip.generate(tokens, **generate_kwargs)
+            except TypeError:
+                generate_kwargs.pop("no_repeat_ngram_size", None)
+                generated_ids = clip.generate(tokens, **generate_kwargs)
             text = clip.decode(generated_ids, skip_special_tokens=True)
             return str(text or "").strip(), "Advisor: generated."
         except Exception as error:
