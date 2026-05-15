@@ -5527,13 +5527,15 @@ V2_FEEDBACK_AXES = ("details", "action", "quality")
 V2_ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"]
 
 V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are an exacting prompt repair system. You will receive:
-- ORIGINAL_USER_INTENT: the user's full original request.
+- ORIGINAL_USER_INTENT: the user's short request.
+- INTENT_NOTES: accumulated feedback that expands what this intent means (may be absent).
 - LAST_PROMPT: the positive prompt that was just used.
 - RATING: one of [Missing action, Missing details, Missing quality, Wrong action/details, Wrong appearance, Just forget it].
 - OPTIONAL_NOTE: user's optional clarification.
 
 Based on the RATING, rewrite LAST_PROMPT to fix the specific failure.
 RULES:
+- If INTENT_NOTES is present, treat it as the true expanded meaning of ORIGINAL_USER_INTENT and prioritize it.
 - Keep EVERY correct element exactly as the user originally specified.
 - Do NOT add any new concepts the user didn't ask for.
 - If the rating is "Missing X", add precise language to include X without altering unrelated parts.
@@ -8799,6 +8801,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             })
         return serializable
 
+    def _v2_update_intent_expansion(self, global_state, intent_prompt, feedback_prompt, limit=16):
+        feedback = str(feedback_prompt or "").strip()
+        key = self._v2_prompt_key(intent_prompt)
+        if not feedback or not key:
+            return
+        memory = global_state.setdefault("intent_expansion_memory", {})
+        entries = list(memory.get(key, []))
+        if feedback not in entries:
+            entries.append(feedback)
+        memory[key] = entries[-limit:]
+
+    def _v2_format_intent_expansions(self, global_state, intent_prompt):
+        key = self._v2_prompt_key(intent_prompt)
+        if not key:
+            return ""
+        entries = global_state.get("intent_expansion_memory", {}).get(key, [])
+        return "; ".join(entries) if entries else ""
+
     def _v2_update_advisor_feedback_history(self, global_state, feedback_prompt, rating_label, iter_num, limit=10):
         feedback = str(feedback_prompt or "").strip()
         if not feedback:
@@ -8892,6 +8912,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         feedback_history="",
         analysis="",
         rating_label="",
+        intent_expansions="",
     ):
         has_feedback = bool(str(feedback_prompt or "").strip())
         previous_run = previous_run if isinstance(previous_run, dict) else {}
@@ -8922,14 +8943,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             note_parts.append(f"Analysis: {analysis}")
         note = "; ".join(note_parts) if note_parts else "none"
 
-        user_block = "\n".join([
+        user_lines = [
             f"ORIGINAL_USER_INTENT: {self._v2_prompt_key(intent_prompt) or 'same as suggested prompt'}",
+        ]
+        if intent_expansions:
+            user_lines.append(f"INTENT_NOTES: {intent_expansions}")
+        user_lines += [
             f"LAST_PROMPT: {previous_prompt or self._v2_prompt_key(prompt) or 'none'}",
             f"RATING: {rating_label or 'Unknown'}",
             f"OPTIONAL_NOTE: {note}",
-        ])
+        ]
 
-        return "\n".join(sections) + "\n\n" + user_block
+        return "\n".join(sections) + "\n\n" + "\n".join(user_lines)
 
     def _v2_generate_advisor_text(self, clip, advisor_prompt, seed=None, image=None, thinking=True, max_length=800):
         if clip is None or not hasattr(clip, "generate") or not hasattr(clip, "decode"):
@@ -9031,6 +9056,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         feedback_history="",
         max_length=800,
         rating_profile=None,
+        intent_expansions="",
     ):
         mode = self._v2_advisor_mode(mode)
         if mode == "Off":
@@ -9092,6 +9118,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             feedback_history=feedback_history,
             analysis=analysis,
             rating_label=rating_profile.get("label", "") if isinstance(rating_profile, dict) else "",
+            intent_expansions=intent_expansions,
         )
         raw, gen_status = self._v2_generate_advisor_text(
             clip, repair_prompt_text, seed=seed, image=image, thinking=thinking, max_length=max_length
@@ -9920,6 +9947,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("active_repair_axes", [])
         global_state.setdefault("vision_memory", {})
         global_state.setdefault("loss_history", [])
+        global_state.setdefault("intent_expansion_memory", {})
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
         has_previous_run = isinstance(previous_run, dict) and not previous_run_refusal
@@ -10115,6 +10143,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         if not current_prompt_refusal:
             feedback_history = self._v2_format_advisor_feedback_history(global_state)
+            intent_expansions = self._v2_format_intent_expansions(global_state, intent_source_prompt)
             pre_advisor_prompt = prompt_to_encode
             advisor_rating_label = rating_label if has_previous_run else "No previous output (first run or session reset)"
             prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied, advisor_suggested = self._v2_prompt_advisor(
@@ -10135,6 +10164,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 feedback_history=feedback_history,
                 max_length=self._V2_ADVISOR_MAX_TOKENS,
                 rating_profile=learning_profile,
+                intent_expansions=intent_expansions,
             )
             if advisor_applied:
                 encoded_role = "advisor repaired prompt"
@@ -10304,6 +10334,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "iteration": int(global_state["total_iterations"]),
             }
         self._v2_update_advisor_feedback_history(global_state, feedback_prompt, advisor_rating_label, int(global_state.get("total_iterations", 0)))
+        if feedback_prompt and intent_source_prompt and not current_prompt_refusal:
+            self._v2_update_intent_expansion(global_state, intent_source_prompt, feedback_prompt)
         state["global"] = global_state
         self._v2_save_state(state, refinement_key)
 
