@@ -5484,6 +5484,9 @@ class FunPackVideoRefiner:
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 
 
+_V2_PERSISTENT_ENCODE_CACHE = {}
+_V2_PERSISTENT_CACHE_MAX = 4096
+
 V2_RATING_LABELS = [
     "-Just forget it-",
     "Perfect",
@@ -5927,12 +5930,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         prompt_text = str(prompt_text or "").strip()
         if not prompt_text:
             return None, {"pooled_output": None}, "prompt empty"
-        cache_key = None
+        cache_key = (id(clip), prompt_text)
         if isinstance(encode_cache, dict):
-            cache_key = (id(clip), prompt_text)
             cached = encode_cache.get(cache_key)
             if cached is not None:
                 return cached
+        cached = _V2_PERSISTENT_ENCODE_CACHE.get(cache_key)
+        if cached is not None:
+            if isinstance(encode_cache, dict):
+                encode_cache[cache_key] = cached
+            return cached
         try:
             encoded = clip.encode_from_tokens_scheduled(clip.tokenize(prompt_text))
         except Exception as error:
@@ -5941,8 +5948,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not isinstance(cond, torch.Tensor):
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions")
-        if cache_key is not None:
+        if isinstance(encode_cache, dict):
             encode_cache[cache_key] = result
+        if len(_V2_PERSISTENT_ENCODE_CACHE) < _V2_PERSISTENT_CACHE_MAX:
+            _V2_PERSISTENT_ENCODE_CACHE[cache_key] = result
         return result
 
     def _v2_gemma3_tokenizer_status(self):
