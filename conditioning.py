@@ -10340,6 +10340,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         perfect_repair_adjustments = []
         wildcard_status = "Scene Builder wildcard cleanup: none."
         advisor_status = "Advisor: off."
+        model_patch_status = "Model patch: no model connected."
         advisor_diagnostic = ""
         advisor_applied = False
         advisor_suggested = ""
