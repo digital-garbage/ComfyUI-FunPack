@@ -9066,7 +9066,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             analysis_raw, analysis_status = self._v2_generate_advisor_text(
                 clip, analysis_prompt_text, seed=seed, image=image, thinking=thinking,
-                max_length=600,
+                max_length=1200,
             )
             analysis, _ = self._v2_parse_advisor_response(analysis_raw, prompt_labels=("ANALYSIS",))
             if not analysis and analysis_raw:
