@@ -5529,9 +5529,11 @@ V2_RATING_PROFILES = {
 V2_FEEDBACK_AXES = ("details", "action", "quality")
 V2_ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"]
 
-V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are an exacting prompt repair system. You will receive:
+V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are an exacting prompt repair system.
+
+The user message will contain:
 - ORIGINAL_USER_INTENT: the user's short request.
-- INTENT_NOTES: accumulated feedback that expands what this intent means (may be absent).
+- INTENT_NOTES: accumulated feedback expanding what this intent means (may be absent).
 - LAST_PROMPT: the positive prompt that was just used.
 - RATING: one of:
     Missing action - main action or large motion is absent from the output
@@ -5540,7 +5542,7 @@ V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are an exacting prompt repair system. Y
     Wrong action/details - action or small detail is present but incorrect
     Wrong appearance - wrong character, clothing, or background bled in from memory
     Just forget it - generation failed for unrelated reasons, do not learn
-- OPTIONAL_NOTE: user's optional clarification.
+- OPTIONAL_NOTE: user's optional clarification or feedback.
 
 Based on the RATING, rewrite LAST_PROMPT to fix the specific failure.
 RULES:
@@ -9155,6 +9157,35 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lines.append(f"{i}. {entry_text}")
         return "\n".join(lines)
 
+    def _v2_find_chat_tokenizer(self, clip):
+        """BFS through CLIP wrapper hierarchy to find a HuggingFace tokenizer
+        that exposes apply_chat_template. Returns None if not found."""
+        seen = set()
+        queue = [clip]
+        attrs = ("tokenizer", "processor", "cond_stage_model", "patcher", "model", "transformer")
+        depth = 0
+        while queue and depth < 5:
+            next_q = []
+            for obj in queue:
+                if obj is None or id(obj) in seen:
+                    continue
+                seen.add(id(obj))
+                try:
+                    if hasattr(obj, "apply_chat_template"):
+                        return obj
+                    for attr in attrs:
+                        child = getattr(obj, attr, None)
+                        if child is not None:
+                            next_q.append(child)
+                    tkns = getattr(obj, "tokenizers", None)
+                    if isinstance(tkns, dict):
+                        next_q.extend(tkns.values())
+                except Exception:
+                    continue
+            queue = next_q
+            depth += 1
+        return None
+
     def _v2_advisor_analysis_prompt(
         self,
         prompt,
@@ -9190,7 +9221,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if feedback_history:
             user_lines.append(f"Past feedback (most recent first):\n{feedback_history}")
         user_lines.append("Task: identify exactly what needs to change in the suggested prompt.")
-        return analysis_system + "\n\n" + "\n".join(user_lines)
+        return analysis_system, "\n".join(user_lines)
 
     def _v2_advisor_prompt(
         self,
@@ -9245,12 +9276,30 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"OPTIONAL_NOTE: {note}",
         ]
 
-        return "\n".join(sections) + "\n\n" + "\n".join(user_lines)
+        return "\n".join(sections), "\n".join(user_lines)
 
-    def _v2_generate_advisor_text(self, clip, advisor_prompt, seed=None, image=None, thinking=True, max_length=800):
+    def _v2_generate_advisor_text(self, clip, system_prompt, user_prompt, seed=None, image=None, thinking=True, max_length=800):
         if clip is None or not hasattr(clip, "generate") or not hasattr(clip, "decode"):
             return "", "Advisor: unavailable; connected CLIP does not expose text generation."
         max_length = max(128, int(max_length or 800))
+        # Try to apply the model's native chat template for proper role separation.
+        # This prevents system prompt content from bleeding into the generated output.
+        chat_tokenizer = self._v2_find_chat_tokenizer(clip)
+        if chat_tokenizer is not None:
+            try:
+                messages = [
+                    {"role": "system", "content": str(system_prompt)},
+                    {"role": "user", "content": str(user_prompt)},
+                ]
+                advisor_prompt = chat_tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
+            except Exception:
+                advisor_prompt = str(system_prompt) + "\n\n" + str(user_prompt)
+        else:
+            # Fallback: flat string with a completion anchor so the model generates
+            # output rather than echoing the instructions back.
+            advisor_prompt = str(system_prompt) + "\n\n" + str(user_prompt) + "\n\nOutput:"
         try:
             try:
                 tokens = clip.tokenize(advisor_prompt, image=image, min_length=1, thinking=bool(thinking))
@@ -9378,7 +9427,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # - rating is Perfect with no feedback (nothing to analyse; repair will be blocked anyway).
         analysis = ""
         if mode in {"Full", "Only diagnostics"} and not has_feedback and not is_perfect:
-            analysis_prompt_text = self._v2_advisor_analysis_prompt(
+            analysis_system, analysis_user = self._v2_advisor_analysis_prompt(
                 current_prompt,
                 intent_prompt,
                 repair_candidates,
@@ -9387,7 +9436,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 feedback_history=feedback_history,
             )
             analysis_raw, analysis_status = self._v2_generate_advisor_text(
-                clip, analysis_prompt_text, seed=seed, image=image, thinking=thinking,
+                clip, analysis_system, analysis_user, seed=seed, image=image, thinking=thinking,
                 max_length=1200,
             )
             analysis, _ = self._v2_parse_advisor_response(analysis_raw, prompt_labels=("ANALYSIS",))
@@ -9405,7 +9454,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return current_prompt, f"Advisor: intent changed; repair skipped. {analysis}".strip(), analysis, False, ""
 
         # Pass 2: repair — builds on the analysis from pass 1 (or runs standalone for Only prompt).
-        repair_prompt_text = self._v2_advisor_prompt(
+        repair_system, repair_user = self._v2_advisor_prompt(
             current_prompt,
             intent_prompt,
             repair_candidates,
@@ -9418,7 +9467,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             intent_expansions=intent_expansions,
         )
         raw, gen_status = self._v2_generate_advisor_text(
-            clip, repair_prompt_text, seed=seed, image=image, thinking=thinking, max_length=max_length
+            clip, repair_system, repair_user, seed=seed, image=image, thinking=thinking, max_length=max_length
         )
         if not raw:
             return current_prompt, gen_status, analysis, False, ""
