@@ -1453,8 +1453,8 @@ def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
 
     assert "clip" not in inputs["required"]
     assert "positive_conditioning" not in inputs["required"]
-    assert inputs["required"]["mode"][0] == ["Refine", "Learning"]
-    assert inputs["required"]["advisor_mode"][0] == ["Off", "Diagnostics", "Repair prompt"]
+    assert inputs["required"]["mode"][0] == ["Refine", "Prompt only", "Learning"]
+    assert inputs["required"]["advisor_mode"][0] == ["Off", "Only diagnostics", "Only prompt", "Full"]
     assert FunPackVideoRefinerV2.RETURN_NAMES[-1] == "encoded_prompts"
     assert FunPackVideoRefinerV2.RETURN_TYPES[-1] == "STRING"
     assert "clip" in inputs["optional"]
@@ -1557,7 +1557,7 @@ def test_refiner_v2_advisor_repair_applies_validated_generated_prompt(tmp_path):
     )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "Advisor: applied generated repair" in status
+    assert "Advisor: applied repair" in status
     assert "Encoded: advisor repaired prompt" in training_info
     assert encoded_prompts == "Positive prompt: person smoking, smoke trails drifting upward\n\nNegative prompt: "
     assert state["last_run"]["encoded_prompt"] == "person smoking, smoke trails drifting upward"
@@ -1649,8 +1649,8 @@ def test_refiner_v2_negative_advisor_repairs_negative_prompt_and_exports_one_str
     )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "Negative advisor: applied generated negative prompt" in status
-    assert "Negative advisor: applied generated negative prompt" in training_info
+    assert "Negative advisor: applied" in status
+    assert "Negative advisor: applied" in training_info
     assert negative
     assert encoded_prompts == (
         "Positive prompt: person smoking\n\n"
@@ -1792,7 +1792,7 @@ def test_refiner_v2_learning_mode_passes_prompt_and_conditioning_through(tmp_pat
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "Mode Learning" in status
-    assert "Learning mode observation only" in status
+    assert "Learning mode" in status
     assert "Mode: Learning" in training_info
     assert torch.equal(modified[0][0], positive_conditioning[0][0])
     assert state["last_run"]["encoded_prompt"] == "person smoking"
