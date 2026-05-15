@@ -8226,20 +8226,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             global_state["bad_conditioning"] = payload
             global_state["bad_conditioning_count"] = int(global_state.get("bad_conditioning_count", 0)) + 1
 
-    def _v2_update_streaks(self, global_state, rating_profile):
+    def _v2_update_streaks(self, global_state, rating_profile, update_conditioning_strength=True):
         reward = float(rating_profile.get("reward", 0.0))
-        avg = float(global_state.get("avg_reward_ema", 0.0))
-        avg = 0.86 * avg + 0.14 * reward
-        global_state["avg_reward_ema"] = round(avg, 6)
-        if rating_profile.get("key") == "like":
-            global_state["good_streak"] = int(global_state.get("good_streak", 0)) + 1
-            global_state["bad_streak"] = 0
-        elif reward < -0.25:
-            global_state["bad_streak"] = int(global_state.get("bad_streak", 0)) + 1
-            global_state["good_streak"] = 0
-        else:
-            global_state["good_streak"] = 0
-            global_state["bad_streak"] = 0
+        if update_conditioning_strength:
+            avg = float(global_state.get("avg_reward_ema", 0.0))
+            avg = 0.86 * avg + 0.14 * reward
+            global_state["avg_reward_ema"] = round(avg, 6)
+            if rating_profile.get("key") == "like":
+                global_state["good_streak"] = int(global_state.get("good_streak", 0)) + 1
+                global_state["bad_streak"] = 0
+            elif reward < -0.25:
+                global_state["bad_streak"] = int(global_state.get("bad_streak", 0)) + 1
+                global_state["good_streak"] = 0
+            else:
+                global_state["good_streak"] = 0
+                global_state["bad_streak"] = 0
         global_state["last_rating_label"] = rating_profile.get("label", "")
         global_state["last_missing_axes"] = list(rating_profile.get("missing_axes", []))
 
@@ -8796,20 +8797,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return serializable
 
     def _v2_find_perfect_example_for_intent(self, global_state, intent_family_slot):
-        if isinstance(intent_family_slot, dict):
-            for entry in intent_family_slot.get("loved_delta_sources", []):
-                if isinstance(entry, dict):
-                    prompt = self._v2_prompt_key(entry.get("prompt", ""))
-                    if prompt and str(entry.get("rating_label", "")).lower() in {"perfect", "like"}:
-                        return prompt
-            for entry in sorted(
-                intent_family_slot.get("intent_preference_phrases", {}).values(),
-                key=lambda e: float(e.get("score", 0.0)) if isinstance(e, dict) else 0.0,
-                reverse=True,
-            ):
-                if not isinstance(entry, dict):
-                    continue
-                prompt = self._v2_prompt_key(entry.get("source_prompt", ""))
+        if not isinstance(intent_family_slot, dict):
+            return ""
+        base = intent_family_slot.get("perfect_anchors", {}).get("base", {})
+        if isinstance(base, dict):
+            prompt = self._v2_prompt_key(base.get("positive_prompt", "") or base.get("encoded_prompt", ""))
+            if prompt:
+                return prompt
+        loved = intent_family_slot.get("loved_variants", {})
+        if isinstance(loved, dict) and loved:
+            best = max(
+                (e for e in loved.values() if isinstance(e, dict)),
+                key=lambda e: int(e.get("last_seen_iter", 0)),
+                default=None,
+            )
+            if best:
+                prompt = self._v2_prompt_key(best.get("positive_prompt", "") or best.get("encoded_prompt", ""))
                 if prompt:
                     return prompt
         return ""
@@ -8826,16 +8829,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             texts = [str(c.get("text", "")) for c in repair_candidates[:6] if isinstance(c, dict) and c.get("text")]
             if texts:
                 parts.append(f"Repair suggestions from memory: {', '.join(texts)}.")
-        phrase_mem = global_state.get("phrase_memory", {}) if isinstance(global_state, dict) else {}
-        top_liked = sorted(
-            (e for e in phrase_mem.values() if isinstance(e, dict) and int(e.get("liked_count", 0) or 0) >= 2),
-            key=lambda e: float(e.get("score", 0.0)),
-            reverse=True,
-        )[:4]
-        if top_liked:
-            liked_texts = [str(e.get("text", "")) for e in top_liked if e.get("text")]
-            if liked_texts:
-                parts.append(f"Consistently liked phrases: {', '.join(liked_texts)}.")
         return " ".join(parts) if parts else ""
 
     def _v2_advisor_prompt(
@@ -9939,7 +9932,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         memory_status = f"{memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
-            self._v2_update_streaks(global_state, learning_profile)
+            self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
         repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
             global_state,
             axis_feedback,
@@ -10079,12 +10072,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             v2_recommendations = self._v2_build_v2_recommendations(repair_feedback, phrases, repair_candidates, global_state)
             perfect_example = self._v2_find_perfect_example_for_intent(global_state, current_family_slot)
             pre_advisor_prompt = prompt_to_encode
+            advisor_rating_label = rating_label if has_previous_run else "No previous output (first run or session reset)"
             prompt_to_encode, advisor_status, advisor_diagnostic, advisor_applied = self._v2_prompt_advisor(
                 advisor_clip,
                 advisor_mode,
                 prompt_to_encode,
                 intent_source_prompt,
-                rating_label,
+                advisor_rating_label,
                 repair_feedback,
                 phrases,
                 repair_candidates,
@@ -10170,7 +10164,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 prompt_to_encode,
                 repaired_negative_prompt,
                 intent_source_prompt,
-                rating_label,
+                advisor_rating_label,
                 learning_profile,
                 repair_feedback,
                 previous_run=previous_run,
