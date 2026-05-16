@@ -10,7 +10,11 @@ const REFINER_MODES = ["Refine", "Prompt only", "Learning"];
 const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
-const TABS = ["Session", "Scene", "Refiner", "Advisor", "LoRA", "Adjustments"];
+const TABS = ["Session", "Scene", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
+const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
+const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
+const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
+const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
 
 let activePanel = null;
 let studioSceneData = null;
@@ -65,6 +69,10 @@ function defaultSettings() {
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
+    samplers: {
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any" }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any" }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+    },
   };
 }
 
@@ -274,6 +282,7 @@ function openPanel(node) {
     else if (name === "Refiner") renderRefiner();
     else if (name === "Advisor") renderAdvisor();
     else if (name === "LoRA") renderLora();
+    else if (name === "Sampler") renderSampler();
     else if (name === "Adjustments") renderAdjustments();
   }
 
@@ -596,6 +605,90 @@ function openPanel(node) {
     body.append(footer);
 
     fetchLoras().then((allLoras) => renderLoraRows(allLoras));
+  }
+
+  // SAMPLER ──────────────────────────────────────────────────────────────────
+  function renderSampler() {
+    if (!settings.samplers) settings.samplers = defaultSettings().samplers;
+
+    function renderPassSection(passKey, label) {
+      const cfg = settings.samplers[passKey];
+      body.append(sectionTitle(label));
+
+      // Type selector
+      const typeSelect = selectEl(SAMPLER_TYPES, cfg.type || "Hybrid Euler 2S");
+      typeSelect.addEventListener("change", () => { cfg.type = typeSelect.value; renderSampler(); });
+      body.append(row("Sampler", typeSelect));
+
+      // Sigmas
+      const sigmasInput = el("input", "funpack-studio-input");
+      sigmasInput.type = "text";
+      sigmasInput.value = cfg.sigmas || "";
+      sigmasInput.placeholder = "e.g. 20.0, 14.0, 8.0, 4.0, 1.0, 0.0";
+      sigmasInput.addEventListener("input", () => { cfg.sigmas = sigmasInput.value; });
+      body.append(row("Sigmas", sigmasInput));
+      body.append(el("div", "funpack-studio-hint",
+        "Comma-separated floats. Leave empty to let the sampler decide (pass in sigmas externally)."));
+
+      if (cfg.type === "Hybrid Euler 2S") {
+        const hc = cfg.hybrid;
+        body.append(sectionTitle("Hybrid Euler 2S settings"));
+        [["eta", 0, 1, 0.01], ["eta_final", 0, 1, 0.01], ["s_noise", 0, 10, 0.01],
+         ["high_quality_pct", 0, 1, 0.01], ["correction_blend", 0, 1, 0.01]].forEach(([k, mn, mx, st]) => {
+          const inp = numInput(hc[k], mn, mx, st);
+          inp.addEventListener("input", () => { hc[k] = parseFloat(inp.value); });
+          body.append(row(k.replace(/_/g, " "), inp));
+        });
+        const mpm = selectEl(MOTION_PULSE_MODES, hc.motion_pulse_mode || "off");
+        mpm.addEventListener("change", () => { hc.motion_pulse_mode = mpm.value; renderSampler(); });
+        body.append(row("motion pulse mode", mpm));
+        if (hc.motion_pulse_mode !== "off") {
+          [["motion_pulse_start_pct", 0, 0.95, 0.01], ["motion_pulse_spacing_pct", 0.04, 0.45, 0.01],
+           ["motion_pulse_strength", 0, 1, 0.01]].forEach(([k, mn, mx, st]) => {
+            const inp = numInput(hc[k], mn, mx, st);
+            inp.addEventListener("input", () => { hc[k] = parseFloat(inp.value); });
+            body.append(row(k.replace(/_/g, " "), inp));
+          });
+          const mpcInp = numInput(hc.motion_pulse_count, 1, 6, 1);
+          mpcInp.addEventListener("input", () => { hc.motion_pulse_count = parseInt(mpcInp.value); });
+          body.append(row("motion pulse count", mpcInp));
+        }
+        const vbm = selectEl(VELOCITY_BIAS_MODES, hc.velocity_bias_mode || "off");
+        vbm.addEventListener("change", () => { hc.velocity_bias_mode = vbm.value; renderSampler(); });
+        body.append(row("velocity bias mode", vbm));
+        if (hc.velocity_bias_mode !== "off") {
+          const vbs = numInput(hc.velocity_bias_strength, 0, 0.35, 0.01);
+          vbs.addEventListener("input", () => { hc.velocity_bias_strength = parseFloat(vbs.value); });
+          body.append(row("velocity bias strength", vbs));
+          const vrk = textInput(hc.velocity_refinement_key, "default");
+          vrk.addEventListener("input", () => { hc.velocity_refinement_key = vrk.value; });
+          body.append(row("velocity key", vrk));
+          const vab = textInput(hc.velocity_aspect_bucket, "any");
+          vab.addEventListener("input", () => { hc.velocity_aspect_bucket = vab.value; });
+          body.append(row("aspect bucket", vab));
+        }
+      } else if (cfg.type === "Distilled Flow") {
+        const dc = cfg.distilled;
+        body.append(sectionTitle("Distilled Flow settings"));
+        const orderInp = numInput(dc.order, 1, 2, 1);
+        orderInp.addEventListener("input", () => { dc.order = parseInt(orderInp.value); });
+        body.append(row("order", orderInp));
+        const fcsInp = numInput(dc.final_correction_steps, 0, 3, 1);
+        fcsInp.addEventListener("input", () => { dc.final_correction_steps = parseInt(fcsInp.value); });
+        body.append(row("final correction steps", fcsInp));
+        const snInp = numInput(dc.s_noise, 0, 0.5, 0.01);
+        snInp.addEventListener("input", () => { dc.s_noise = parseFloat(snInp.value); });
+        body.append(row("s_noise", snInp));
+      } else if (cfg.type === "KSampler") {
+        body.append(sectionTitle("KSampler settings"));
+        const ksSelect = selectEl(KSAMPLER_NAMES, cfg.ksampler_name || "euler");
+        ksSelect.addEventListener("change", () => { cfg.ksampler_name = ksSelect.value; });
+        body.append(row("sampler name", ksSelect));
+      }
+    }
+
+    renderPassSection("high", "High Pass");
+    renderPassSection("low",  "Low Pass");
   }
 
   // ADJUSTMENTS ──────────────────────────────────────────────────────────────

@@ -11859,8 +11859,8 @@ class FunPackStudio:
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
 
     CATEGORY = "FunPack"
-    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "IMAGE", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "loss_graph", "status", "training_info", "encoded_prompts")
+    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "SAMPLER", "SIGMAS", "SAMPLER", "SIGMAS", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "high_pass_sampler", "high_pass_sigmas", "low_pass_sampler", "low_pass_sigmas", "loss_graph", "status", "training_info", "encoded_prompts")
     FUNCTION = "run"
     DESCRIPTION = (
         "FunPack Studio - all FunPack refinement tools in one node. "
@@ -12105,4 +12105,82 @@ class FunPackStudio:
             except Exception as e:
                 status = f"{status}\nConditioning adjust failed: {e}"
 
-        return (out_model, cond, out_negative, seed, loss_graph, status, training_info, encoded_prompts)
+        # --- Samplers ---
+        high_sampler, high_sigmas, low_sampler, low_sigmas = self._build_samplers(
+            settings.get("samplers", {})
+        )
+
+        return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts)
+
+    @staticmethod
+    def _parse_sigmas(text):
+        try:
+            vals = [float(v.strip()) for v in str(text or "").replace(";", ",").split(",") if v.strip()]
+            if vals:
+                return torch.tensor(vals, dtype=torch.float32)
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def _build_one_sampler(cls, cfg):
+        sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
+        sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
+
+        try:
+            if sampler_type == "Distilled Flow":
+                try:
+                    from .samplers import FunPackDistilledFlowSampler
+                except ImportError:
+                    from samplers import FunPackDistilledFlowSampler
+                dc = cfg.get("distilled", {}) if isinstance(cfg.get("distilled"), dict) else {}
+                node = FunPackDistilledFlowSampler()
+                sampler, out_sigmas = node.get_sampler(
+                    order=int(dc.get("order", 2)),
+                    final_correction_steps=int(dc.get("final_correction_steps", 1)),
+                    s_noise=float(dc.get("s_noise", 0.0)),
+                    sigmas=sigmas_raw,
+                )
+            elif sampler_type == "KSampler":
+                import comfy.samplers as _cs
+                sampler_name = str(cfg.get("ksampler_name", "euler") or "euler")
+                sampler = _cs.sampler_object(sampler_name)
+                out_sigmas = sigmas_raw
+            else:  # Hybrid Euler 2S (default)
+                try:
+                    from .samplers import FunPackHybridEuler2SSampler
+                except ImportError:
+                    from samplers import FunPackHybridEuler2SSampler
+                hc = cfg.get("hybrid", {}) if isinstance(cfg.get("hybrid"), dict) else {}
+                node = FunPackHybridEuler2SSampler()
+                sampler, out_sigmas = node.get_sampler(
+                    eta=float(hc.get("eta", 1.0)),
+                    eta_final=float(hc.get("eta_final", 1.0)),
+                    s_noise=float(hc.get("s_noise", 1.0)),
+                    high_quality_pct=float(hc.get("high_quality_pct", 0.35)),
+                    correction_blend=float(hc.get("correction_blend", 1.0)),
+                    motion_pulse_mode=str(hc.get("motion_pulse_mode", "off")),
+                    motion_pulse_start_pct=float(hc.get("motion_pulse_start_pct", 0.30)),
+                    motion_pulse_count=int(hc.get("motion_pulse_count", 2)),
+                    motion_pulse_spacing_pct=float(hc.get("motion_pulse_spacing_pct", 0.22)),
+                    motion_pulse_strength=float(hc.get("motion_pulse_strength", 0.85)),
+                    velocity_bias_mode=str(hc.get("velocity_bias_mode", "off")),
+                    velocity_bias_strength=float(hc.get("velocity_bias_strength", 0.0)),
+                    velocity_refinement_key=str(hc.get("velocity_refinement_key", "default")),
+                    velocity_aspect_bucket=str(hc.get("velocity_aspect_bucket", "any")),
+                    sigmas=sigmas_raw,
+                )
+            if out_sigmas is None:
+                out_sigmas = sigmas_raw
+            return sampler, out_sigmas
+        except Exception as e:
+            print(f"[FunPackStudio] Sampler build failed ({sampler_type}): {e}")
+            return None, sigmas_raw
+
+    @classmethod
+    def _build_samplers(cls, samplers_cfg):
+        if not isinstance(samplers_cfg, dict):
+            samplers_cfg = {}
+        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}))
+        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}))
+        return high_sampler, high_sigmas, low_sampler, low_sigmas
