@@ -11917,6 +11917,8 @@ class FunPackStudio:
                 "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "External LoRA stack. Bypasses Studio's internal LoRA management entirely when connected."}),
                 "positive_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
                     "tooltip": "Positive prompt. Ignored when Scene Builder mode is not Pass-through."}),
+                "negative_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
+                    "tooltip": "Negative prompt text. Encoded via CLIP and output as negative conditioning. Skipped when negative_conditioning is connected."}),
                 "user_intent_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True}),
                 "feedback_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
                     "tooltip": "Feedback about the previous output. Overrides the feedback set inside Studio."}),
@@ -11928,8 +11930,8 @@ class FunPackStudio:
             model=None, clip=None, advisor_clip=None,
             positive_conditioning=None, negative_conditioning=None,
             clip_vision_output=None, source_image=None,
-            lora_stack=None, positive_prompt=None, user_intent_prompt=None,
-            feedback_prompt=None, refinement_key_input=""):
+            lora_stack=None, positive_prompt=None, negative_prompt=None,
+            user_intent_prompt=None, feedback_prompt=None, refinement_key_input=""):
 
         try:
             settings = json.loads(str(studio_settings or "{}"))
@@ -11946,11 +11948,29 @@ class FunPackStudio:
         else:
             active_prompt = str(sb.get("scene_positive", "") or "").strip() or str(positive_prompt or "").strip()
 
-        # --- Negative conditioning: pass through unchanged ---
-        out_negative = negative_conditioning if negative_conditioning is not None else []
+        # --- Negative conditioning ---
+        # Priority: pre-encoded input > encode negative_prompt via CLIP > popup default > empty
+        out_negative = []
+        if negative_conditioning is not None:
+            out_negative = negative_conditioning
+        else:
+            rf_neg = str(settings.get("refiner", {}).get("negative_prompt", "") or "")
+            effective_negative = str(negative_prompt or "").strip() or rf_neg
+            if effective_negative and clip is not None:
+                try:
+                    neg_encoded = clip.encode_from_tokens_scheduled(clip.tokenize(effective_negative))
+                    if neg_encoded:
+                        out_negative = neg_encoded
+                except Exception as e:
+                    print(f"[FunPackStudio] Negative encode failed: {e}")
 
         # --- Overrides: when True, popup value wins over connected input ---
         ov = settings.get("overrides", {}) if isinstance(settings.get("overrides"), dict) else {}
+
+        # negative_prompt override
+        rf_neg_popup = str(settings.get("refiner", {}).get("negative_prompt", "") or "")
+        if ov.get("negative_prompt"):
+            negative_prompt = rf_neg_popup
 
         # --- Refiner settings ---
         rf = settings.get("refiner", {}) if isinstance(settings.get("refiner"), dict) else {}

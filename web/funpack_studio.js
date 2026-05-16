@@ -59,9 +59,9 @@ function deepMerge(target, src) {
 function defaultSettings() {
   return {
     refinement_key: "",
-    overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false },
+    overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "" },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "" },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -456,6 +456,17 @@ function openPanel(node) {
     const luckyToggle = toggleEl(settings.refiner.im_feeling_lucky, "I'm Feeling Lucky");
     luckyToggle.inp.addEventListener("change", () => { settings.refiner.im_feeling_lucky = luckyToggle.inp.checked; });
     body.append(row("Lucky", luckyToggle.wrap));
+
+    body.append(sectionTitle("Negative prompt"));
+    body.append(el("div", "funpack-studio-hint",
+      "Encoded via CLIP and output as negative conditioning. Skipped when negative_conditioning input is connected."));
+    body.append(overrideToggle(settings, "negative_prompt",
+      "Override - use popup value even when negative_prompt input is connected"));
+    const negArea = el("textarea", "funpack-studio-textarea short");
+    negArea.value = settings.refiner.negative_prompt || "";
+    negArea.placeholder = "Negative prompt text (e.g. blurry, low quality, noise)...";
+    negArea.addEventListener("input", () => { settings.refiner.negative_prompt = negArea.value; });
+    body.append(negArea);
 
     body.append(sectionTitle("Feedback"));
     body.append(overrideToggle(settings, "feedback_prompt",
