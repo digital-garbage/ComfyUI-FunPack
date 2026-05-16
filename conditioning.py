@@ -11731,3 +11731,96 @@ class FunPackStoryWriter:
                 torch.cuda.empty_cache()
             gc.collect()
             print("[FunPackStoryWriter] LLM model and tokenizer unloaded and memory cleared.")
+
+
+class FunPackConditioningAdjust:
+    CATEGORY = "FunPack/Refinement"
+    RETURN_TYPES = ("CONDITIONING", "STRING")
+    RETURN_NAMES = ("conditioning", "status")
+    FUNCTION = "adjust"
+    DESCRIPTION = (
+        "Manually adjust conditioning by blending specific phrase directions at user-set strengths. "
+        "Insert between Refiner V2 and the sampler. Use the popup editor to manage phrase/strength pairs."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "conditioning": ("CONDITIONING",),
+                "clip": ("CLIP",),
+                "adjustments": ("STRING", {
+                    "default": "[]",
+                    "multiline": False,
+                    "tooltip": "JSON list managed by the node editor. Do not edit manually.",
+                }),
+            },
+        }
+
+    def _encode_pooled(self, clip, phrase):
+        try:
+            tokens = clip.tokenize(phrase)
+            encoded = clip.encode_from_tokens_scheduled(tokens)
+            if not encoded:
+                return None
+            _, meta = encoded[0]
+            return meta.get("pooled_output") if isinstance(meta, dict) else None
+        except Exception:
+            return None
+
+    def adjust(self, conditioning, clip, adjustments):
+        import json as _json
+        try:
+            items = _json.loads(str(adjustments or "[]"))
+        except Exception:
+            items = []
+
+        active = [
+            item for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict)
+            and str(item.get("phrase", "") or "").strip()
+            and abs(float(item.get("strength", 0.0) or 0.0)) > 1e-6
+        ]
+
+        if not active:
+            return (conditioning, "Conditioning adjust: no active adjustments.")
+        if not conditioning or not isinstance(conditioning, list):
+            return (conditioning, "Conditioning adjust: invalid conditioning input.")
+
+        log = []
+        new_conditioning = []
+
+        for cond_item in conditioning:
+            if not (isinstance(cond_item, (list, tuple)) and len(cond_item) == 2):
+                new_conditioning.append(cond_item)
+                continue
+            cond_tensor, meta = cond_item
+            base_pooled = meta.get("pooled_output") if isinstance(meta, dict) else None
+            if base_pooled is None:
+                new_conditioning.append(cond_item)
+                continue
+
+            new_pooled = base_pooled.clone().float()
+            for item in active:
+                phrase = str(item.get("phrase", "")).strip()
+                strength = float(item.get("strength", 0.0))
+                phrase_pooled = self._encode_pooled(clip, phrase)
+                if phrase_pooled is None:
+                    log.append(f"'{phrase}': encode failed")
+                    continue
+                phrase_pooled = phrase_pooled.float().to(new_pooled.device)
+                delta = phrase_pooled - new_pooled
+                delta_norm = delta.norm()
+                if delta_norm < 1e-8:
+                    log.append(f"'{phrase}': no direction")
+                    continue
+                direction = delta / delta_norm
+                magnitude = new_pooled.norm()
+                new_pooled = new_pooled + strength * magnitude * direction
+                log.append(f"'{phrase}' {strength:+.2f}")
+
+            new_meta = {**meta, "pooled_output": new_pooled.to(base_pooled.dtype)}
+            new_conditioning.append((cond_tensor, new_meta))
+
+        status = "Conditioning adjust: " + (", ".join(log) if log else "nothing applied")
+        return (new_conditioning, status)

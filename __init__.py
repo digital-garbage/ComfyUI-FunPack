@@ -3,6 +3,7 @@
 if __package__:
     from .conditioning import (
         FunPackAdvisorLLM,
+        FunPackConditioningAdjust,
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
@@ -24,6 +25,7 @@ else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (
         FunPackAdvisorLLM,
+        FunPackConditioningAdjust,
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
@@ -68,6 +70,7 @@ WEB_DIRECTORY = "./web"
 
 NODE_CLASS_MAPPINGS = {
     "FunPackAdvisorLLM": FunPackAdvisorLLM,
+    "FunPackConditioningAdjust": FunPackConditioningAdjust,
     "FunPackPromptCombiner": FunPackPromptCombiner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
@@ -90,6 +93,7 @@ NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackAdvisorLLM": "FunPack Advisor LLM",
+    "FunPackConditioningAdjust": "FunPack Conditioning Adjust",
     "FunPackPromptCombiner": "FunPack Prompt Combiner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",
