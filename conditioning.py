@@ -11886,11 +11886,6 @@ class FunPackStudio:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "positive_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Positive prompt. Ignored when Scene Builder mode is not Pass-through.",
-                }),
                 "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
                 "studio_settings": ("STRING", {
                     "default": "{}",
@@ -11904,6 +11899,12 @@ class FunPackStudio:
                 }),
             },
             "optional": {
+                "positive_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "forceInput": True,
+                    "tooltip": "Positive prompt. Ignored when Scene Builder mode is not Pass-through.",
+                }),
                 "clip": ("CLIP", {"tooltip": "Text encoder. Required for prompt encoding and conditioning adjustments."}),
                 "model": ("MODEL", {"tooltip": "Diffusion model. Required for LoRA loading and direction injection."}),
                 "source_image": ("IMAGE",),
