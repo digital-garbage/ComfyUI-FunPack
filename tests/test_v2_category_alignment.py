@@ -1489,8 +1489,8 @@ def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking
     assert applied is False
     assert "diagnostics only" in status
     assert diagnostic == "add clearer smoke motion."
-    assert "Prompt to analyze: person smoking" in advisor_prompt
-    assert "Previous prompt (what caused this rating): old encoded prompt" in advisor_prompt
+    assert "Current prompt: person smoking" in advisor_prompt
+    assert "Previous prompt: old encoded prompt" in advisor_prompt
     assert kwargs["image"] is image
     assert kwargs["thinking"] is True
     assert clip.generate_kwargs["seed"] == 123

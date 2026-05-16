@@ -9241,31 +9241,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         previous_run=None,
         feedback_prompt="",
         feedback_history="",
+        axis_feedback=None,
+        rating_label="",
     ):
-        has_feedback = bool(str(feedback_prompt or "").strip())
         previous_run = previous_run if isinstance(previous_run, dict) else {}
         previous_prompt = self._v2_prompt_key(previous_run.get("encoded_prompt", "") or previous_run.get("prompt", ""))
+        axis_feedback = axis_feedback if isinstance(axis_feedback, dict) else {}
+        missing = axis_feedback.get("missing_axes", [])
+        resolved = axis_feedback.get("resolved_axes", [])
+        regressed = axis_feedback.get("regressed_axes", [])
+        wrong = axis_feedback.get("wrong_axes", [])
+
         analysis_system = (
-            "You are analyzing a video generation prompt to identify specific improvements needed.\n\n"
-            "Output exactly one line in this format:\n"
-            "DIAGNOSTIC: <your specific analysis — what is missing, wrong, or needs to change, referencing actual words from the prompt>"
+            "You are diagnosing a video generation prompt session. "
+            "Your job is to identify the root cause of recurring issues across runs, not just describe the current problem.\n\n"
+            "Output exactly one line:\n"
+            "DIAGNOSTIC: <root cause or pattern — what is structurally wrong with this prompt that keeps causing failures, "
+            "or what the session history reveals about why fixes are not sticking>"
         )
         user_lines = []
-        if has_feedback:
-            user_lines.append(f"User feedback: {str(feedback_prompt).strip()}")
+        user_lines.append(f"Current rating: {rating_label or 'unrated'}")
+        if missing:
+            user_lines.append(f"Still missing: {', '.join(missing)}")
+        if regressed:
+            user_lines.append(f"Regressed (was fixed, broke again): {', '.join(regressed)}")
+        if resolved:
+            user_lines.append(f"Recently resolved: {', '.join(resolved)}")
+        if wrong:
+            user_lines.append(f"Wrong (present but incorrect): {', '.join(wrong)}")
         user_lines.append(f"Intent: {self._v2_prompt_key(intent_prompt) or 'same as prompt'}")
-        user_lines.append(f"Prompt to analyze: {self._v2_prompt_key(prompt)}")
-        if previous_prompt:
-            user_lines.append(f"Previous prompt (what caused this rating): {previous_prompt}")
+        user_lines.append(f"Current prompt: {self._v2_prompt_key(prompt)}")
+        if previous_prompt and previous_prompt != self._v2_prompt_key(prompt):
+            user_lines.append(f"Previous prompt: {previous_prompt}")
         candidates = [
             str(c.get("text", "")) for c in (repair_candidates or [])[:4]
             if isinstance(c, dict) and str(c.get("text", "")).strip()
         ]
         if candidates:
-            user_lines.append(f"Memory suggestions: {', '.join(candidates)}")
+            user_lines.append(f"Memory suggests adding: {', '.join(candidates)}")
         if feedback_history:
-            user_lines.append(f"Past feedback:\n{feedback_history}")
-        user_lines.append("\nWhat specifically needs to change? One or two sentences, reference actual words from the prompt.")
+            user_lines.append(f"Session history:\n{feedback_history}")
+        user_lines.append("\nWhat is the root cause? One sentence.")
         return analysis_system, "\n".join(user_lines)
 
     def _v2_advisor_prompt(
@@ -9470,9 +9486,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
             return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False, ""
 
-        # Pass 1: analysis — runs for Full and Only diagnostics when no explicit feedback was given
-        # (explicit feedback already tells the advisor what to do; analysis is for when it needs to
-        # figure out what's wrong on its own).
+        # Pass 1: diagnostic analysis — runs for Full and Only diagnostics when no explicit feedback
+        # was given. Explicit feedback already names the problem; the diagnostic is for identifying
+        # patterns and root causes across the session when the user hasn't said what's wrong.
         analysis = ""
         if mode in {"Full", "Only diagnostics"} and not has_feedback:
             analysis_system, analysis_user = self._v2_advisor_analysis_prompt(
@@ -9482,6 +9498,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 previous_run=previous_run,
                 feedback_prompt=feedback_prompt,
                 feedback_history=feedback_history,
+                axis_feedback=axis_feedback,
+                rating_label=rating_profile.get("label", ""),
             )
             analysis_raw, analysis_status = self._v2_generate_advisor_text(
                 clip, analysis_system, analysis_user, seed=seed, image=image, thinking=thinking,
@@ -10589,7 +10607,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             if advisor_applied:
                 encoded_role = "advisor repaired prompt"
-            if advisor_mode == "Only diagnostics" and advisor_diagnostic:
+            if advisor_diagnostic:
                 self._v2_record_advisor_diagnostic(global_state, advisor_diagnostic, advisor_rating_label, int(global_state.get("total_iterations", 0)))
             if advisor_mode != "Off" and not learning_mode and repair_candidates and not advisor_applied:
                 additions = [c["text"] for c in repair_candidates if isinstance(c, dict) and str(c.get("text", "")).strip()]
