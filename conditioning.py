@@ -9330,7 +9330,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         user_lines.append("")
         user_lines.append("Write the corrected prompt.")
 
-        return V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip(), "\n".join(user_lines)
+        system = V2_PROMPT_ADVISOR_SYSTEM_PROMPT.strip()
+        if analysis:
+            system += f"\n\nSession diagnostic: {analysis}"
+        return system, "\n".join(user_lines)
 
     def _v2_generate_advisor_text(self, clip, system_prompt, user_prompt, seed=None, image=None, thinking=True, max_length=800):
         if clip is None or not hasattr(clip, "generate") or not hasattr(clip, "decode"):
