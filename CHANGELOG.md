@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.5.1] - 2026-05-16
+
+### Added
+
+Added `FunPackAdvisorLLM` node. Loads any HuggingFace CausalLM (including sharded checkpoints) as an advisor for Refiner V2. Connect the output to `advisor_clip`. Model is cached after first load so subsequent runs do not reload. Also fully compatible with the built-in `TextGenerate` and `TextGenerateLTX2Prompt` nodes - supports `skip_template`, `min_p`, `presence_penalty`, and progressive fallback for unsupported generation parameters.
+
+Added `_v2_direction_readout` to training_info Adaptation section. Shows each direction memory slot in plain language: run count, magnitude, whether it is in direction mode or lerp fallback, and the role each axis is playing this run.
+
+### Changed
+
+Advisor prompt format rewritten to natural language. Both the repair and analysis user messages now read as plain enhancement requests rather than structured field-value pairs. Works with enhancement-type models (Sulphur, Qwen prompt enhancers) as well as instruction-following models. System prompt reduced to one sentence.
+
+Direction-based conditioning now uses `max_new_tokens` instead of `max_length` in the `FunPackAdvisorLLM` wrapper so prompt length does not eat into the generation budget.
+
+Model patch status expanded to show which direction slots are active with run counts and which phrase texts are being emphasized in cross-attention.
+
+Adaptation status block rewritten to multi-line readable format showing strength, reward trend, streak, per-slot mode (direction vs lerp fallback), and axis adjustments applied this run.
+
+### Fixed
+
+Fixed `_v2_generate_advisor_text` returning `None` when layer 1 tokenization succeeded - `generate`/`decode`/`return` were inside the `except TypeError` block so they only ran when layer 1 failed.
+
+Fixed session reset not clearing `intent_expansion_memory`, `session_source_mean_count`, `liked_dir`, and `bad_dir` - these fields were missing from `_v2_empty_state` and survived reset via `setdefault`.
+
+Fixed advisor repetition loops: `repetition_penalty` raised from 1.05 to 1.3, added `no_repeat_ngram_size=5`, temperature raised from 0.5 to 0.7.
+
+Fixed system prompt bleeding into advisor output by splitting prompts into `(system, user)` tuples and applying the model's native chat template. Three-layer fallback: native `system_prompt` kwarg, manual `apply_chat_template` via BFS, flat string with completion anchor.
+
+Added persistent cross-run encode cache (`_V2_PERSISTENT_ENCODE_CACHE`, 4096 entry cap) so phrase encodings are not recomputed every run when CLIP and text are unchanged.
+
 ## [2.5.0] - 2026-05-15
 
 ### Added

@@ -2,6 +2,18 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.5.1
+
+Added `FunPack Advisor LLM` node - loads any HuggingFace CausalLM (sharded or single-file) as an advisor for Refiner V2 or as a drop-in replacement for the built-in `TextGenerate` node. Set a HuggingFace repo ID or local path, pick dtype, connect the output to `advisor_clip`. Model is cached after first load. Compatible with `skip_template`, `min_p`, `presence_penalty`, and any model architecture that `AutoModelForCausalLM.from_pretrained` supports.
+
+Advisor prompt format rewritten to plain natural language so enhancement-type models (Sulphur, Qwen prompt enhancers) produce useful output rather than ignoring structured field-value instructions. System prompt reduced to one sentence.
+
+Training info Adaptation section now shows direction memory in plain language: run count per slot, magnitude, whether each axis is in direction mode or lerp fallback, and what was applied this run. Model patch status shows which directions were injected into cross-attention and which phrase texts are being emphasized.
+
+Fixed several bugs: advisor returning None when tokenization succeeded (generate was inside the wrong branch), session reset not clearing newer memory fields, system prompt bleeding into advisor output, and repetition loops from the 1.05 penalty being too weak for 8B+ models.
+
+Added persistent cross-run encode cache so phrase encodings are not recomputed every run.
+
 ## Updates in 2.5.0
 
 Added a two-pass CLIP text-generation advisor to `FunPack Video Refiner V2`. Pass 1 analyses what specifically needs to change in the suggested prompt. Pass 2 applies those findings. The advisor uses a structured input format — `ORIGINAL_USER_INTENT`, `LAST_PROMPT`, `RATING`, and `OPTIONAL_NOTE` — so the model knows exactly what failed and what to fix. Token budget: 1200 tokens for analysis, 1600 for repair.
