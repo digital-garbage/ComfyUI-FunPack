@@ -11755,6 +11755,12 @@ class FunPackConditioningAdjust:
                     "tooltip": "JSON list managed by the node editor. Do not edit manually.",
                 }),
             },
+            "optional": {
+                "refinement_key_input": ("STRING", {
+                    "forceInput": True,
+                    "tooltip": "Optional refinement key from FunPack Refinement Key Loader. When connected, the popup shows learned phrases from that session as a clickable bank.",
+                }),
+            },
         }
 
     def _encode_pooled(self, clip, phrase):
@@ -11768,7 +11774,7 @@ class FunPackConditioningAdjust:
         except Exception:
             return None
 
-    def adjust(self, conditioning, clip, adjustments):
+    def adjust(self, conditioning, clip, adjustments, refinement_key_input=""):
         import json as _json
         try:
             items = _json.loads(str(adjustments or "[]"))

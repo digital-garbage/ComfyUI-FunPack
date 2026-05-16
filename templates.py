@@ -1088,6 +1088,35 @@ async def funpack_refinement_keys_import(request):
     return web.json_response({"imported": key, "keys": refinement_key_names()})
 
 
+@PromptServer.instance.routes.get("/funpack/phrase_memory")
+async def funpack_phrase_memory(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    if not key:
+        return web.json_response({"phrases": [], "key": ""})
+    state, loaded_key, _ = load_refinement_key_state(key, create=False)
+    if not isinstance(state, dict):
+        return web.json_response({"phrases": [], "key": key})
+    global_state = state.get("global", {})
+    phrase_memory = global_state.get("phrase_memory", {}) if isinstance(global_state, dict) else {}
+    phrases = []
+    for text, entry in (phrase_memory.items() if isinstance(phrase_memory, dict) else []):
+        if not isinstance(entry, dict):
+            continue
+        clean = str(entry.get("text", text) or text).strip()
+        if not clean:
+            continue
+        phrases.append({
+            "text": clean,
+            "category": str(entry.get("primary", "") or entry.get("machine_primary", "") or "details"),
+            "evidence": int(entry.get("occurrence_count", 0) or 0),
+        })
+    phrases.sort(key=lambda p: (-p["evidence"], p["text"]))
+    return web.json_response(
+        {"phrases": phrases, "key": loaded_key or key},
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
 class FunPackRefinementKeyLoader:
     CATEGORY = "FunPack/Refinement"
     RETURN_TYPES = ("STRING", "STRING")
