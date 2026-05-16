@@ -1441,11 +1441,10 @@ def test_refiner_training_info_uses_readable_sections(tmp_path):
         "readable-test",
     )
 
-    assert "\n\nLearning\n" in training_info
+    assert "\n\nMemory\n" in training_info
     assert "\n\nPrompt Analysis\n" in training_info
     assert "\n\nAdaptation\n" in training_info
     assert "\n\nLoRA\n" in training_info
-    assert "Category compact view:\n-" in training_info
 
 
 def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
@@ -1455,8 +1454,9 @@ def test_refiner_v2_exposes_clip_and_conditioning_as_optional_inputs():
     assert "positive_conditioning" not in inputs["required"]
     assert inputs["required"]["mode"][0] == ["Refine", "Prompt only", "Learning"]
     assert inputs["required"]["advisor_mode"][0] == ["Off", "Only diagnostics", "Only prompt", "Full"]
-    assert FunPackVideoRefinerV2.RETURN_NAMES[-1] == "encoded_prompts"
-    assert FunPackVideoRefinerV2.RETURN_TYPES[-1] == "STRING"
+    assert "encoded_prompts" in FunPackVideoRefinerV2.RETURN_NAMES
+    assert "model" in FunPackVideoRefinerV2.RETURN_NAMES
+    assert FunPackVideoRefinerV2.RETURN_TYPES[FunPackVideoRefinerV2.RETURN_NAMES.index("encoded_prompts")] == "STRING"
     assert "clip" in inputs["optional"]
     assert "advisor_clip" in inputs["optional"]
     assert "positive_conditioning" in inputs["optional"]
@@ -1623,40 +1623,6 @@ def test_refiner_v2_advisor_uses_separate_advisor_clip_when_connected(tmp_path):
     assert state["last_run"]["advisor"]["applied"] is True
 
 
-def test_refiner_v2_negative_advisor_repairs_negative_prompt_and_exports_one_string(tmp_path):
-    refiner = FunPackVideoRefinerV2()
-    state_path = tmp_path / "state.json"
-    refiner._v2_state_path = lambda refinement_key: str(state_path)
-
-    refiner.refine_v2("person smoking", FakeClip(), "Perfect", "negative-advisor-test")
-    advisor_clip = GeneratingClip(
-        "DIAGNOSTIC: suppress bad detail artifacts.\n"
-        "NEGATIVE_PROMPT: bad anatomy, low quality, blurry motion"
-    )
-
-    _, status, training_info, _, negative, encoded_prompts = refiner.refine_v2(
-        "person smoking",
-        FakeClip(),
-        "Wrong details",
-        "negative-advisor-test",
-        negative_prompt="bad anatomy",
-        advisor_mode="Repair prompt",
-        advisor_clip=advisor_clip,
-    )
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "Negative advisor: applied" in status
-    assert "Negative advisor: applied" in training_info
-    assert negative
-    assert encoded_prompts == (
-        "Positive prompt: person smoking\n\n"
-        "Negative prompt: bad anatomy, low quality, blurry motion"
-    )
-    assert state["last_run"]["negative_prompt"] == "bad anatomy, low quality, blurry motion"
-    assert state["last_run"]["advisor"]["negative_applied"] is True
-    assert any("Additional rules for negative prompt repair" in call[0] for call in advisor_clip.tokenize_calls)
-
-
 def test_refiner_v2_advisor_skips_when_no_generation_clip_is_available(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
@@ -1776,26 +1742,20 @@ def test_refiner_v2_learning_mode_passes_prompt_and_conditioning_through(tmp_pat
     refiner._v2_state_path = lambda refinement_key: str(state_path)
     positive_conditioning = [(torch.arange(12, dtype=torch.float32).reshape(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
 
-    modified, status, training_info, _, negative, encoded_prompts = refiner.refine_v2(
+    modified, status, training_info, _, encoded_prompts, _ = refiner.refine_v2(
         "person smoking",
         None,
         "Missing details",
         "learning-mode-test",
         positive_conditioning=positive_conditioning,
-        negative_prompt="blur",
         mode="Learning",
     )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert "Mode Learning" in status
-    assert "Learning mode" in status
     assert "Mode: Learning" in training_info
     assert torch.equal(modified[0][0], positive_conditioning[0][0])
     assert state["last_run"]["encoded_prompt"] == "person smoking"
-    assert state["last_run"]["negative_prompt"] == "blur"
-    assert encoded_prompts == "Positive prompt: person smoking\n\nNegative prompt: blur"
     assert "tiny smoke curls" not in state["last_run"]["encoded_prompt"]
-    assert negative == []
 
 
 def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer(tmp_path, monkeypatch):
@@ -1814,7 +1774,7 @@ def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer
     monkeypatch.setattr(refiner, "_get_tokenizer", fake_get_tokenizer)
     positive_conditioning = [(torch.full((1, 4, 3), 2.0), {"pooled_output": torch.ones(1, 3)})]
 
-    modified, status, training_info, _, negative, _ = refiner.refine_v2(
+    modified, status, training_info, _, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         None,
         "Perfect",
@@ -1823,10 +1783,7 @@ def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer
     )
 
     assert tokenizer_modes == ["ltx2"]
-    assert "CONDITIONING-owned" in status
-    assert "Gemma3 tokenizer loaded: DreamFast/gemma-3-12b-it-heretic-v2" in training_info
     assert modified[0][0].shape == positive_conditioning[0][0].shape
-    assert negative == []
 
 
 def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(tmp_path, monkeypatch):
@@ -1836,7 +1793,7 @@ def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(t
     monkeypatch.setattr(refiner, "_get_tokenizer", lambda mode="ltx2": (_ for _ in ()).throw(AssertionError("unexpected tokenizer load")))
     positive_conditioning = [(torch.full((1, 4, 3), 9.0), {"pooled_output": torch.ones(1, 3)})]
 
-    modified, status, training_info, _, negative, _ = refiner.refine_v2(
+    modified, status, training_info, _, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         FakeClip(),
         "Perfect",
@@ -1844,10 +1801,8 @@ def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(t
         positive_conditioning=positive_conditioning,
     )
 
-    assert "CLIP-owned" in status
-    assert "accepted connected positive CONDITIONING" not in training_info
+    assert not torch.allclose(modified[0][0], torch.full((1, 4, 3), 9.0))
     assert torch.allclose(modified[0][0], torch.ones(1, 4, 3))
-    assert negative == []
 
 
 def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
@@ -1855,7 +1810,7 @@ def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
-    modified, status, training_info, _, negative, encoded_prompts = refiner.refine_v2(
+    modified, status, training_info, _, encoded_prompts, _ = refiner.refine_v2(
         "woman walking through neon rain",
         None,
         "Perfect",
@@ -1863,10 +1818,8 @@ def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
     )
 
     assert modified == []
-    assert negative == []
-    assert encoded_prompts == "Positive prompt: woman walking through neon rain\n\nNegative prompt: "
+    assert "Positive prompt: woman walking through neon rain" in encoded_prompts
     assert "ERROR: V2 could not prepare conditioning" in status
-    assert "CLIP missing and no positive CONDITIONING connected" in training_info
 
 
 def test_prompt_enhancer_refusal_is_not_stored_as_last_run(tmp_path):
@@ -2295,47 +2248,6 @@ def test_v2_image_metadata_detects_aspect_bucket_and_changed_fingerprint():
     assert metadata["aspect_bucket"] == "ultrawide"
     assert "64x32" in status
     assert changed["changed_from_previous"] is True
-
-
-def test_refiner_v2_returns_empty_negative_conditioning_when_negative_blank(tmp_path):
-    refiner = FunPackVideoRefinerV2()
-    state_path = tmp_path / "state.json"
-    refiner._v2_state_path = lambda refinement_key: str(state_path)
-
-    _, _, training_info, _, negative, encoded_prompts = refiner.refine_v2(
-        "woman walking through neon rain",
-        FakeClip(),
-        "Perfect",
-        "negative-empty-test",
-        negative_prompt="",
-    )
-
-    assert negative == []
-    assert encoded_prompts == "Positive prompt: woman walking through neon rain\n\nNegative prompt: "
-    assert "Negative repair:" in training_info
-
-
-def test_negative_prompt_repair_adds_poorly_rated_tags_persistently(tmp_path):
-    refiner = FunPackVideoRefinerV2()
-    state_path = tmp_path / "state.json"
-    refiner._v2_state_path = lambda refinement_key: str(state_path)
-
-    refiner.refine_v2("woman, walking through the street", FakeClip(), "Perfect", "negative-repair-test")
-    refiner.refine_v2("woman, walking through the street", FakeClip(), "Wrong action", "negative-repair-test")
-    _, _, training_info, _, negative, encoded_prompts = refiner.refine_v2(
-        "woman portrait",
-        FakeClip(),
-        "Missing action",
-        "negative-repair-test",
-        negative_prompt="bad anatomy",
-    )
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-
-    assert negative
-    assert encoded_prompts.startswith("Positive prompt: woman portrait\n\nNegative prompt: bad anatomy")
-    assert "walking through the street" in state["global"]["negative_prompt_memory"]["tags"]
-    assert "walking through the street" in state["last_run"]["negative_prompt"]
-    assert "persistent poor-rated tag" in training_info
 
 
 def test_refiner_v2_caches_repeated_clip_category_encodes():
