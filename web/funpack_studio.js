@@ -234,7 +234,9 @@ function openPanel(node) {
 
   const settings = deepMerge(defaultSettings(), getSettings(node));
   const adjItems = getAdjustments(node).map((i) => ({ ...i }));
-  let activeTab = "Session";
+  const tabKey = `funpack_studio_tab_${node.id}`;
+  let activeTab = localStorage.getItem(tabKey) || "Session";
+  if (!TABS.includes(activeTab)) activeTab = "Session";
 
   // Header
   const header = el("div", "funpack-studio-header");
@@ -259,6 +261,7 @@ function openPanel(node) {
 
   function switchTab(name) {
     activeTab = name;
+    localStorage.setItem(tabKey, name);
     for (const t of tabBar.querySelectorAll(".funpack-studio-tab"))
       t.classList.toggle("active", t.dataset.tab === name);
     renderTab(name);
