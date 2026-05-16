@@ -2,6 +2,7 @@
 
 if __package__:
     from .conditioning import (
+        FunPackAdvisorLLM,
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
@@ -65,6 +66,7 @@ else:
 WEB_DIRECTORY = "./web"
 
 NODE_CLASS_MAPPINGS = {
+    "FunPackAdvisorLLM": FunPackAdvisorLLM,
     "FunPackPromptCombiner": FunPackPromptCombiner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
@@ -86,6 +88,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "FunPackAdvisorLLM": "FunPack Advisor LLM",
     "FunPackPromptCombiner": "FunPack Prompt Combiner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",

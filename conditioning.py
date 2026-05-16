@@ -5824,8 +5824,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "conditioning_deltas": {},
                 "active_repair_axes": [],
                 "advisor_feedback_history": [],
+                "intent_expansion_memory": {},
                 "vision_memory": {},
                 "loss_history": [],
+                "session_source_mean_count": 0,
+                "liked_dir": {},
+                "bad_dir": {},
             },
             "prompt_histories": {},
             "last_run": None,
@@ -11060,6 +11064,119 @@ class FunPackLorebookEnhancer:
 
         injected_text = "\n\n".join(injected) if injected else "No content injected"
         return (enhanced, injected_text)
+
+class _FunPackAdvisorLLMWrapper:
+    """Wraps a HuggingFace CausalLM to expose the tokenize/generate/decode
+    interface expected by FunPack Refiner V2's advisor."""
+
+    def __init__(self, model, tokenizer, device):
+        self._model = model
+        self._tokenizer = tokenizer
+        self._device = device
+
+    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True):
+        return self._tokenizer.apply_chat_template(
+            messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
+        )
+
+    def tokenize(self, text, system_prompt=None, **kwargs):
+        if system_prompt:
+            messages = [
+                {"role": "system", "content": str(system_prompt)},
+                {"role": "user", "content": str(text)},
+            ]
+        else:
+            messages = [{"role": "user", "content": str(text)}]
+        input_ids = self._tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+        ).to(self._device)
+        return {"input_ids": input_ids, "prompt_length": int(input_ids.shape[1])}
+
+    def generate(self, tokens, do_sample=True, max_length=800, temperature=0.7,
+                 top_k=50, top_p=0.92, repetition_penalty=1.3,
+                 no_repeat_ngram_size=5, seed=None, **kwargs):
+        input_ids = tokens["input_ids"]
+        prompt_length = tokens.get("prompt_length", int(input_ids.shape[1]))
+        if seed:
+            torch.manual_seed(int(seed))
+        gen_kwargs = dict(
+            do_sample=do_sample,
+            max_new_tokens=int(max_length),
+            temperature=float(temperature),
+            top_k=int(top_k),
+            top_p=float(top_p),
+            repetition_penalty=float(repetition_penalty),
+            pad_token_id=self._tokenizer.pad_token_id or self._tokenizer.eos_token_id,
+        )
+        try:
+            gen_kwargs["no_repeat_ngram_size"] = int(no_repeat_ngram_size)
+            with torch.no_grad():
+                output = self._model.generate(input_ids, **gen_kwargs)
+        except Exception:
+            gen_kwargs.pop("no_repeat_ngram_size", None)
+            with torch.no_grad():
+                output = self._model.generate(input_ids, **gen_kwargs)
+        return {"output_ids": output, "prompt_length": prompt_length}
+
+    def decode(self, generated, skip_special_tokens=True):
+        output_ids = generated["output_ids"]
+        prompt_length = generated.get("prompt_length", 0)
+        new_tokens = output_ids[0][prompt_length:]
+        return self._tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
+
+
+_FUNPACK_ADVISOR_LLM_CACHE = {}
+
+
+class FunPackAdvisorLLM:
+    CATEGORY = "FunPack/Refinement"
+    RETURN_TYPES = ("CLIP",)
+    RETURN_NAMES = ("advisor_clip",)
+    FUNCTION = "load_advisor"
+    DESCRIPTION = "Loads any HuggingFace CausalLM for use as FunPack Refiner V2 advisor. Connect the output to advisor_clip."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_path": ("STRING", {
+                    "default": "huihui-ai/Huihui-Qwen3-8B-abliterated-v2",
+                    "multiline": False,
+                    "tooltip": "HuggingFace repo ID (e.g. huihui-ai/Huihui-Qwen3-8B-abliterated-v2) or absolute local path to a model directory.",
+                }),
+                "dtype": (["bfloat16", "float16", "float32"], {
+                    "default": "bfloat16",
+                    "tooltip": "Model precision. bfloat16 recommended for CUDA; float32 for CPU.",
+                }),
+            },
+        }
+
+    def load_advisor(self, model_path, dtype):
+        model_path = str(model_path).strip()
+        cache_key = (model_path, dtype)
+        if cache_key in _FUNPACK_ADVISOR_LLM_CACHE:
+            print(f"[FunPackAdvisorLLM] Using cached model: {model_path}")
+            return (_FUNPACK_ADVISOR_LLM_CACHE[cache_key],)
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}
+        torch_dtype = dtype_map.get(dtype, torch.bfloat16)
+
+        print(f"[FunPackAdvisorLLM] Loading {model_path} as {dtype} on {device} ...")
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path, trust_remote_code=True, torch_dtype=torch_dtype,
+        ).eval().to(device).requires_grad_(False)
+
+        if tokenizer.pad_token_id is None:
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        wrapper = _FunPackAdvisorLLMWrapper(model, tokenizer, device)
+        _FUNPACK_ADVISOR_LLM_CACHE[cache_key] = wrapper
+        print(f"[FunPackAdvisorLLM] Ready.")
+        return (wrapper,)
+
 
 class FunPackPromptEnhancer:
     @classmethod
