@@ -9252,25 +9252,34 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         regressed = axis_feedback.get("regressed_axes", [])
         wrong = axis_feedback.get("wrong_axes", [])
 
-        analysis_system = (
-            "You are diagnosing a video generation prompt session. "
-            "Your job is to identify the root cause of recurring issues across runs, not just describe the current problem.\n\n"
-            "Output exactly one line:\n"
-            "DIAGNOSTIC: <root cause or pattern — what is structurally wrong with this prompt that keeps causing failures, "
-            "or what the session history reveals about why fixes are not sticking>"
-        )
+        has_history = bool(str(feedback_history or "").strip())
+        if has_history:
+            analysis_system = (
+                "You are diagnosing a video generation prompt session. "
+                "Look at the session history and identify the root cause of why the same issues keep returning.\n\n"
+                "Output exactly one line:\n"
+                "DIAGNOSTIC: <what the session history reveals — why fixes are not sticking, "
+                "or what structural problem in the prompt causes recurring failures>"
+            )
+        else:
+            analysis_system = (
+                "You are analyzing a video generation prompt. "
+                "Identify what is specifically wrong or missing that caused this rating.\n\n"
+                "Output exactly one line:\n"
+                "DIAGNOSTIC: <what is wrong or missing in the prompt, referencing actual words from it>"
+            )
         user_lines = []
-        user_lines.append(f"Current rating: {rating_label or 'unrated'}")
+        user_lines.append(f"Rating: {rating_label or 'unrated'}")
         if missing:
-            user_lines.append(f"Still missing: {', '.join(missing)}")
+            user_lines.append(f"Missing: {', '.join(missing)}")
         if regressed:
-            user_lines.append(f"Regressed (was fixed, broke again): {', '.join(regressed)}")
+            user_lines.append(f"Regressed: {', '.join(regressed)}")
         if resolved:
-            user_lines.append(f"Recently resolved: {', '.join(resolved)}")
+            user_lines.append(f"Resolved: {', '.join(resolved)}")
         if wrong:
-            user_lines.append(f"Wrong (present but incorrect): {', '.join(wrong)}")
+            user_lines.append(f"Wrong: {', '.join(wrong)}")
         user_lines.append(f"Intent: {self._v2_prompt_key(intent_prompt) or 'same as prompt'}")
-        user_lines.append(f"Current prompt: {self._v2_prompt_key(prompt)}")
+        user_lines.append(f"Prompt: {self._v2_prompt_key(prompt)}")
         if previous_prompt and previous_prompt != self._v2_prompt_key(prompt):
             user_lines.append(f"Previous prompt: {previous_prompt}")
         candidates = [
@@ -9278,10 +9287,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if isinstance(c, dict) and str(c.get("text", "")).strip()
         ]
         if candidates:
-            user_lines.append(f"Memory suggests adding: {', '.join(candidates)}")
-        if feedback_history:
+            user_lines.append(f"Memory suggests: {', '.join(candidates)}")
+        if has_history:
             user_lines.append(f"Session history:\n{feedback_history}")
-        user_lines.append("\nWhat is the root cause? One sentence.")
+        user_lines.append("\nOne sentence.")
         return analysis_system, "\n".join(user_lines)
 
     def _v2_advisor_prompt(
@@ -9511,6 +9520,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             analysis, _ = self._v2_parse_advisor_response(analysis_raw, prompt_labels=("ANALYSIS",))
             if not analysis and analysis_raw:
                 analysis = re.sub(r"\s+", " ", analysis_raw).strip()[:400]
+            if not analysis:
+                # LLM failed or produced empty output - build a rule-based fallback so
+                # the diagnostic history always grows and future runs have context.
+                parts = []
+                if axis_feedback.get("regressed_axes"):
+                    parts.append(f"{', '.join(axis_feedback['regressed_axes'])} regressing after repair")
+                if axis_feedback.get("missing_axes"):
+                    parts.append(f"missing {', '.join(axis_feedback['missing_axes'])}")
+                if axis_feedback.get("wrong_axes"):
+                    parts.append(f"wrong {', '.join(axis_feedback['wrong_axes'])}")
+                analysis = f"Session note: {'; '.join(parts)}." if parts else f"Rating: {rating_profile.get('label', 'unrated')}."
 
             if mode == "Only diagnostics":
                 return current_prompt, f"Advisor: diagnostics only. {analysis or 'No analysis returned.'}", analysis, False, ""
