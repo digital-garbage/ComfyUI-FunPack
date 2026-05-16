@@ -609,6 +609,8 @@ function openPanel(node) {
 
   // SAMPLER ──────────────────────────────────────────────────────────────────
   function renderSampler() {
+    body.replaceChildren();
+    errorEl.textContent = "";
     if (!settings.samplers) settings.samplers = defaultSettings().samplers;
 
     function renderPassSection(passKey, label) {
