@@ -1088,6 +1088,19 @@ async def funpack_refinement_keys_import(request):
     return web.json_response({"imported": key, "keys": refinement_key_names()})
 
 
+@PromptServer.instance.routes.get("/funpack/available_loras")
+async def funpack_available_loras(request):
+    try:
+        import folder_paths as _fp
+        loras = _fp.get_filename_list("loras")
+    except Exception:
+        loras = []
+    return web.json_response(
+        {"loras": sorted(loras)},
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
 @PromptServer.instance.routes.get("/funpack/phrase_memory")
 async def funpack_phrase_memory(request):
     key = normalize_refinement_key(request.query.get("key", ""))

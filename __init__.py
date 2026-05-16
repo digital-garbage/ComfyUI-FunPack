@@ -8,6 +8,7 @@ if __package__:
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
         FunPackStoryWriter,
+        FunPackStudio,
         FunPackVideoRefinerV2,
     )
     from .image_processing import (
@@ -30,6 +31,7 @@ else:
         FunPackPromptCombiner,
         FunPackPromptEnhancer,
         FunPackStoryWriter,
+        FunPackStudio,
         FunPackVideoRefinerV2,
     )
     try:
@@ -71,6 +73,7 @@ WEB_DIRECTORY = "./web"
 NODE_CLASS_MAPPINGS = {
     "FunPackAdvisorLLM": FunPackAdvisorLLM,
     "FunPackConditioningAdjust": FunPackConditioningAdjust,
+    "FunPackStudio": FunPackStudio,
     "FunPackPromptCombiner": FunPackPromptCombiner,
     "FunPackStoryMemKeyframeExtractor": FunPackStoryMemKeyframeExtractor,
     "FunPackStoryMemLastFrameExtractor": FunPackStoryMemLastFrameExtractor,
@@ -94,6 +97,7 @@ NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if
 NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackAdvisorLLM": "FunPack Advisor LLM",
     "FunPackConditioningAdjust": "FunPack Conditioning Adjust",
+    "FunPackStudio": "FunPack Studio",
     "FunPackPromptCombiner": "FunPack Prompt Combiner",
     "FunPackStoryMemKeyframeExtractor": "FunPack StoryMem Keyframe Extractor",
     "FunPackStoryMemLastFrameExtractor": "FunPack StoryMem Last Frame Extractor",

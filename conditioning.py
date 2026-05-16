@@ -10347,8 +10347,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
-                  advisor_clip=None, feedback_prompt="", prompt_repair=True):
-        seed = random.randint(1, 0xffffffffffffffff)
+                  advisor_clip=None, feedback_prompt="", prompt_repair=True, _seed=None):
+        seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
         if linked_refinement_key:
@@ -11852,3 +11852,184 @@ class FunPackConditioningAdjust:
 
         status = "Conditioning adjust: " + (", ".join(log) if log else "nothing applied")
         return (new_conditioning, status)
+
+
+class FunPackStudio:
+    """Single node combining Refinement Key, Refiner V2, Scene Builder,
+    Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
+
+    CATEGORY = "FunPack"
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "INT")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "seed")
+    FUNCTION = "run"
+    DESCRIPTION = (
+        "FunPack Studio - all FunPack refinement tools in one node. "
+        "Rating widget stays on the node face; everything else lives in the popup editor."
+    )
+
+    _lora_loader = None
+
+    @classmethod
+    def _get_lora_loader(cls):
+        if cls._lora_loader is None:
+            try:
+                try:
+                    from .model_management import FunPackLoraLoader
+                except ImportError:
+                    from model_management import FunPackLoraLoader
+                cls._lora_loader = FunPackLoraLoader()
+            except Exception:
+                cls._lora_loader = None
+        return cls._lora_loader
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "positive_prompt": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Positive prompt. Ignored when Scene Builder mode is not Pass-through.",
+                }),
+                "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
+                "studio_settings": ("STRING", {
+                    "default": "{}",
+                    "multiline": False,
+                    "tooltip": "JSON managed by the Studio popup editor. Do not edit manually.",
+                }),
+                "adjustments": ("STRING", {
+                    "default": "[]",
+                    "multiline": False,
+                    "tooltip": "Conditioning adjustment phrase list. Managed by the Studio popup.",
+                }),
+            },
+            "optional": {
+                "clip": ("CLIP", {"tooltip": "Text encoder. Required for prompt encoding and conditioning adjustments."}),
+                "model": ("MODEL", {"tooltip": "Diffusion model. Required for LoRA loading and direction injection."}),
+                "source_image": ("IMAGE",),
+                "clip_vision_output": ("CLIP_VISION_OUTPUT",),
+                "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional external LoRA stack. Takes precedence over LoRAs configured inside Studio."}),
+                "refinement_key_input": ("STRING", {"forceInput": True}),
+                "user_intent_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True}),
+                "positive_conditioning": ("CONDITIONING",),
+            },
+        }
+
+    def run(self, positive_prompt, rating, studio_settings, adjustments,
+            clip=None, model=None, source_image=None, clip_vision_output=None,
+            lora_stack=None, refinement_key_input="", user_intent_prompt="",
+            positive_conditioning=None):
+
+        try:
+            settings = json.loads(str(studio_settings or "{}"))
+        except Exception:
+            settings = {}
+
+        seed = random.randint(1, 0xffffffffffffffff)
+
+        # --- Scene Builder ---
+        sb = settings.get("scene_builder", {}) if isinstance(settings.get("scene_builder"), dict) else {}
+        sb_mode = str(sb.get("mode", "Pass-through")).strip()
+        if sb_mode == "Pass-through" or not sb_mode:
+            active_prompt = str(positive_prompt or "").strip()
+        else:
+            active_prompt = str(sb.get("scene_positive", "") or "").strip() or str(positive_prompt or "").strip()
+
+        # --- Refiner settings ---
+        rf = settings.get("refiner", {}) if isinstance(settings.get("refiner"), dict) else {}
+        mode = str(rf.get("mode", "Refine") or "Refine")
+        advisor_mode = str(rf.get("advisor_mode", "Off") or "Off")
+        advisor_thinking = bool(rf.get("advisor_thinking", True))
+        prompt_repair = bool(rf.get("prompt_repair", True))
+        im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
+        reset_session = bool(rf.get("reset_session", False))
+        feedback_prompt = str(rf.get("feedback_prompt", "") or "")
+        intent_override = str(rf.get("user_intent_prompt_override", "") or "")
+        effective_intent = intent_override or str(user_intent_prompt or "")
+
+        # --- Refinement key ---
+        key = str(settings.get("refinement_key", "") or "").strip()
+
+        # --- Advisor LLM ---
+        advisor_clip = None
+        llm_cfg = settings.get("advisor_llm", {})
+        if isinstance(llm_cfg, dict) and llm_cfg.get("enabled") and llm_cfg.get("model_path"):
+            try:
+                (advisor_clip,) = FunPackAdvisorLLM().load_advisor(
+                    str(llm_cfg["model_path"]),
+                    str(llm_cfg.get("dtype", "bfloat16")),
+                )
+            except Exception as e:
+                print(f"[FunPackStudio] Advisor LLM load failed: {e}")
+
+        # --- LoRA stack ---
+        active_lora_stack = lora_stack
+        studio_loras = settings.get("loras", [])
+        if not active_lora_stack and studio_loras and model is not None:
+            lora_entries = []
+            for idx, entry in enumerate(studio_loras if isinstance(studio_loras, list) else []):
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name", "") or "").strip()
+                if not name or name == "None":
+                    continue
+                mw = float(entry.get("model_weight", 1.0) or 1.0)
+                cw = float(entry.get("clip_weight", 1.0) or 1.0)
+                lora_entries.append({
+                    "slot": idx,
+                    "name": name,
+                    "type": str(entry.get("type", "general") or "general"),
+                    "base_model_weight": mw,
+                    "base_clip_weight": cw,
+                    "model_weight": mw,
+                    "clip_weight": cw,
+                })
+            if lora_entries:
+                raw_stack = {"refinement_key": key, "loras": lora_entries, "per_block": False}
+                loader = self._get_lora_loader()
+                if loader is not None:
+                    try:
+                        model, clip, active_lora_stack, lora_status = loader.load_loras(
+                            model, raw_stack, clip=clip
+                        )
+                        print(f"[FunPackStudio] {lora_status}")
+                    except Exception as e:
+                        print(f"[FunPackStudio] LoRA load failed: {e}")
+                        active_lora_stack = raw_stack
+
+        # --- Refiner V2 ---
+        refiner = FunPackVideoRefinerV2()
+        cond, status, training_info, loss_graph, encoded_prompts, out_model = refiner.refine_v2(
+            active_prompt,
+            clip=clip,
+            rating=rating,
+            refinement_key=key,
+            reset_session=reset_session,
+            lora_stack=active_lora_stack,
+            im_feeling_lucky=im_feeling_lucky,
+            user_intent_prompt=effective_intent,
+            refinement_key_input=refinement_key_input,
+            positive_conditioning=positive_conditioning,
+            clip_vision_output=clip_vision_output,
+            source_image=source_image,
+            model=model,
+            mode=mode,
+            advisor_mode=advisor_mode,
+            advisor_thinking=advisor_thinking,
+            advisor_clip=advisor_clip,
+            feedback_prompt=feedback_prompt,
+            prompt_repair=prompt_repair,
+            _seed=seed,
+        )
+
+        # --- Conditioning Adjust ---
+        adj_raw = str(adjustments or "[]").strip()
+        if adj_raw not in ("[]", "", "null") and clip is not None:
+            try:
+                adj_node = FunPackConditioningAdjust()
+                cond, adj_status = adj_node.adjust(cond, clip, adj_raw)
+                status = f"{status}\n{adj_status}"
+            except Exception as e:
+                status = f"{status}\nConditioning adjust failed: {e}"
+
+        return (cond, status, training_info, loss_graph, encoded_prompts, out_model, seed)
