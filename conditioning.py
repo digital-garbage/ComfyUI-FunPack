@@ -11079,27 +11079,33 @@ class _FunPackAdvisorLLMWrapper:
             messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt
         )
 
-    def tokenize(self, text, system_prompt=None, **kwargs):
-        if system_prompt:
-            messages = [
-                {"role": "system", "content": str(system_prompt)},
-                {"role": "user", "content": str(text)},
-            ]
+    def tokenize(self, text, system_prompt=None, skip_template=False, **kwargs):
+        if skip_template:
+            # Text already has role tokens baked in (e.g. from TextGenerateLTX2Prompt).
+            input_ids = self._tokenizer.encode(
+                str(text), return_tensors="pt", add_special_tokens=False
+            ).to(self._device)
         else:
-            messages = [{"role": "user", "content": str(text)}]
-        input_ids = self._tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-        ).to(self._device)
+            if system_prompt:
+                messages = [
+                    {"role": "system", "content": str(system_prompt)},
+                    {"role": "user", "content": str(text)},
+                ]
+            else:
+                messages = [{"role": "user", "content": str(text)}]
+            input_ids = self._tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+            ).to(self._device)
         return {"input_ids": input_ids, "prompt_length": int(input_ids.shape[1])}
 
     def generate(self, tokens, do_sample=True, max_length=800, temperature=0.7,
-                 top_k=50, top_p=0.92, repetition_penalty=1.3,
-                 no_repeat_ngram_size=5, seed=None, **kwargs):
+                 top_k=50, top_p=0.92, min_p=0.0, repetition_penalty=1.3,
+                 no_repeat_ngram_size=5, presence_penalty=0.0, seed=None, **kwargs):
         input_ids = tokens["input_ids"]
         prompt_length = tokens.get("prompt_length", int(input_ids.shape[1]))
         if seed:
             torch.manual_seed(int(seed))
-        gen_kwargs = dict(
+        required = dict(
             do_sample=do_sample,
             max_new_tokens=int(max_length),
             temperature=float(temperature),
@@ -11108,14 +11114,27 @@ class _FunPackAdvisorLLMWrapper:
             repetition_penalty=float(repetition_penalty),
             pad_token_id=self._tokenizer.pad_token_id or self._tokenizer.eos_token_id,
         )
-        try:
-            gen_kwargs["no_repeat_ngram_size"] = int(no_repeat_ngram_size)
+        # Optional params not supported by all models - try progressively stripping
+        optional = {}
+        if no_repeat_ngram_size:
+            optional["no_repeat_ngram_size"] = int(no_repeat_ngram_size)
+        if min_p > 0:
+            optional["min_p"] = float(min_p)
+        if presence_penalty != 0:
+            optional["presence_penalty"] = float(presence_penalty)
+        strips = [[], ["presence_penalty"], ["presence_penalty", "min_p"], list(optional.keys())]
+        output = None
+        for strip in strips:
+            gen_kwargs = {**required, **{k: v for k, v in optional.items() if k not in strip}}
+            try:
+                with torch.no_grad():
+                    output = self._model.generate(input_ids, **gen_kwargs)
+                break
+            except TypeError:
+                continue
+        if output is None:
             with torch.no_grad():
-                output = self._model.generate(input_ids, **gen_kwargs)
-        except Exception:
-            gen_kwargs.pop("no_repeat_ngram_size", None)
-            with torch.no_grad():
-                output = self._model.generate(input_ids, **gen_kwargs)
+                output = self._model.generate(input_ids, **required)
         return {"output_ids": output, "prompt_length": prompt_length}
 
     def decode(self, generated, skip_special_tokens=True):
