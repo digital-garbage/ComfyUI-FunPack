@@ -789,6 +789,18 @@ function openPanel(node) {
     }
   }
 
+  // ── auto-save on any field change ─────────────────────────────────────────
+  let autoSaveTimer = null;
+  const scheduleAutoSave = () => {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = setTimeout(() => {
+      saveSettings(node, settings);
+      saveAdjustments(node, adjItems.filter((i) => String(i.phrase || "").trim()));
+    }, 600);
+  };
+  root.addEventListener("input", scheduleAutoSave);
+  root.addEventListener("change", scheduleAutoSave);
+
   // ── initial render ─────────────────────────────────────────────────────────
   switchTab("Session");
 }
