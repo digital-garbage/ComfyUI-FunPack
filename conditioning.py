@@ -11763,14 +11763,22 @@ class FunPackConditioningAdjust:
             },
         }
 
-    def _encode_pooled(self, clip, phrase):
+    def _cond_mean_vector(self, cond_tensor):
+        if not isinstance(cond_tensor, torch.Tensor) or cond_tensor.dim() < 2:
+            return None
+        vec = cond_tensor.detach().float()
+        if vec.dim() == 3:
+            return vec.mean(dim=(0, 1))
+        return vec.mean(dim=0)
+
+    def _encode_mean_vector(self, clip, phrase):
         try:
             tokens = clip.tokenize(phrase)
             encoded = clip.encode_from_tokens_scheduled(tokens)
             if not encoded:
                 return None
-            _, meta = encoded[0]
-            return meta.get("pooled_output") if isinstance(meta, dict) else None
+            cond_tensor, _ = encoded[0]
+            return self._cond_mean_vector(cond_tensor)
         except Exception:
             return None
 
@@ -11801,32 +11809,46 @@ class FunPackConditioningAdjust:
                 new_conditioning.append(cond_item)
                 continue
             cond_tensor, meta = cond_item
-            base_pooled = meta.get("pooled_output") if isinstance(meta, dict) else None
-            if base_pooled is None:
+            if not isinstance(cond_tensor, torch.Tensor):
                 new_conditioning.append(cond_item)
                 continue
 
-            new_pooled = base_pooled.clone().float()
+            base_vec = self._cond_mean_vector(cond_tensor)
+            if base_vec is None:
+                new_conditioning.append(cond_item)
+                continue
+
+            # Accumulate direction adjustments then apply once as a uniform shift
+            # to all sequence positions, keeping the original tensor shape intact.
+            total_delta = torch.zeros_like(base_vec)
             for item in active:
                 phrase = str(item.get("phrase", "")).strip()
                 strength = float(item.get("strength", 0.0))
-                phrase_pooled = self._encode_pooled(clip, phrase)
-                if phrase_pooled is None:
+                phrase_vec = self._encode_mean_vector(clip, phrase)
+                if phrase_vec is None:
                     log.append(f"'{phrase}': encode failed")
                     continue
-                phrase_pooled = phrase_pooled.float().to(new_pooled.device)
-                delta = phrase_pooled - new_pooled
+                phrase_vec = phrase_vec.to(base_vec.device)
+                delta = phrase_vec - base_vec
                 delta_norm = delta.norm()
                 if delta_norm < 1e-8:
                     log.append(f"'{phrase}': no direction")
                     continue
                 direction = delta / delta_norm
-                magnitude = new_pooled.norm()
-                new_pooled = new_pooled + strength * magnitude * direction
+                magnitude = base_vec.norm()
+                total_delta = total_delta + strength * magnitude * direction
                 log.append(f"'{phrase}' {strength:+.2f}")
 
-            new_meta = {**meta, "pooled_output": new_pooled.to(base_pooled.dtype)}
-            new_conditioning.append((cond_tensor, new_meta))
+            if total_delta.norm() < 1e-8:
+                new_conditioning.append(cond_item)
+                continue
+
+            # Broadcast the uniform shift across the sequence dimension
+            shift = total_delta.to(cond_tensor.dtype)
+            while shift.dim() < cond_tensor.dim():
+                shift = shift.unsqueeze(0)
+            new_tensor = cond_tensor + shift
+            new_conditioning.append((new_tensor, meta))
 
         status = "Conditioning adjust: " + (", ".join(log) if log else "nothing applied")
         return (new_conditioning, status)
