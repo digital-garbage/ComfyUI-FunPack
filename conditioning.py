@@ -7292,6 +7292,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 entry = rejected_repairs.setdefault(text, {"text": text, "count": 0, "last_seen_iter": 0})
                 entry["count"] = int(entry.get("count", 0)) + 1
                 entry["last_seen_iter"] = int(iter_num)
+        evicted_repairs = []
+        if rating_profile.get("key") in {"awful", "wrong_appearance"} and isinstance(slot.get("perfect_repairs"), dict):
+            evict_texts = {
+                self._v2_clean_phrase_text(item.get("text", ""))
+                for item in (last_run.get("intent_alignment_adjustments") or [])
+                if isinstance(item, dict) and item.get("source") == "perfect_repair"
+            }
+            for text in evict_texts:
+                if text and slot["perfect_repairs"].pop(text, None) is not None:
+                    evicted_repairs.append(text)
         if rating_profile.get("key") == "like" and isinstance(last_run.get("conditioning"), dict):
             anchor_payload = {
                 "intent_prompt": source_intent,
@@ -7351,11 +7361,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )[:40])
 
         self._v2_sync_intent_family_aliases(global_state, family_key, slot)
+        eviction_note = (
+            f" Perfect-repair evicted: {', '.join(evicted_repairs)}." if evicted_repairs else ""
+        )
         return (
             "Intent family learned: "
             f"family={family_key[:8]} sim={similarity:.2f}, repeated preference(s)={preference_updates}, "
             f"anchors={anchor_count or len(slot.get('perfect_anchors', {})) + len(slot.get('loved_variants', {}))}, "
-            f"variant reward {variant['avg_reward']:+.2f}, delta update(s)={delta_updates}."
+            f"variant reward {variant['avg_reward']:+.2f}, delta update(s)={delta_updates}.{eviction_note}"
         ), family_key
 
     def _v2_apply_intent_family_delta(self, conditioning, family_slot, strength):
