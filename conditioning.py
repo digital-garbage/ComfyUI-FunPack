@@ -11248,10 +11248,17 @@ class _FunPackAdvisorLLMWrapper:
         output_ids = generated["output_ids"]
         prompt_length = generated.get("prompt_length", 0)
         new_tokens = output_ids[0][prompt_length:]
-        text = self._tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
-        # Strip chain-of-thought thinking blocks emitted by models like Qwen3.
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
-        return text
+        # Decode with special tokens preserved so thinking delimiters are visible
+        # for stripping. Models like Qwen3 encode <think>/</ think> as special token
+        # IDs - with skip_special_tokens=True they vanish silently and the raw
+        # reasoning content bleeds into the output as if it were the response.
+        text = self._tokenizer.decode(new_tokens, skip_special_tokens=False)
+        # Strip complete thinking blocks first, then any truncated one (no closing tag).
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"<think>[\s\S]*", "", text, flags=re.IGNORECASE)
+        # Strip remaining special tokens: <|im_end|>, <|endoftext|>, etc.
+        text = re.sub(r"<\|[^|]*\|>", "", text)
+        return text.strip()
 
 
 _FUNPACK_ADVISOR_LLM_CACHE = {}
