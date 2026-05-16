@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.5.3] - 2026-05-16
+
+### Fixed
+
+Fixed `FunPackAdvisorLLM` wrapper not triggering advisor generation. Qwen3 and other chain-of-thought models emit `<think>...</think>` blocks that were not stripped, causing the parsed repaired prompt to contain reasoning text. This made body-similarity validation reject the result as "too far from intent." Fixed by stripping thinking blocks in `decode`. Also added `enable_thinking` kwarg support in `tokenize` (with TypeError fallback for models that don't support it) and expanded `max_new_tokens` by 2048 when thinking mode is active so the reasoning budget does not crowd out the actual response. Fixed `_v2_text_semantic_similarity` returning 0.0 for generation-only clips that have no `encode_from_tokens_scheduled` - these now return 1.0 (skip the semantic gate) instead of causing spurious rejections. Fixed `FunPackAdvisorLLM` missing from the standalone import block in `__init__.py`, which broke the test suite.
+
+Removed Perfect-rating advisor gate. The advisor was silently skipping both the analysis pass and the repair pass whenever the rating was Perfect and no text feedback was provided, even when the user had an active advisor mode. Perfect is not a ceiling - if the user provides `feedback_prompt`, it must be honored regardless of rating. The only remaining guard is the `allow_prompt_change` check (Learning mode).
+
 ## [2.5.1] - 2026-05-16
 
 ### Added
