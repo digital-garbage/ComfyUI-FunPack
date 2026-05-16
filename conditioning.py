@@ -11911,6 +11911,8 @@ class FunPackStudio:
                 "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional external LoRA stack. Takes precedence over LoRAs configured inside Studio."}),
                 "refinement_key_input": ("STRING", {"forceInput": True}),
                 "user_intent_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True}),
+                "feedback_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
+                    "tooltip": "Optional feedback describing what was wrong with the previous output. Overrides the feedback set inside the Studio popup."}),
                 "positive_conditioning": ("CONDITIONING",),
             },
         }
@@ -11918,7 +11920,7 @@ class FunPackStudio:
     def run(self, positive_prompt, rating, studio_settings, adjustments,
             clip=None, model=None, source_image=None, clip_vision_output=None,
             lora_stack=None, refinement_key_input="", user_intent_prompt="",
-            positive_conditioning=None):
+            feedback_prompt=None, positive_conditioning=None):
 
         try:
             settings = json.loads(str(studio_settings or "{}"))
@@ -11943,7 +11945,8 @@ class FunPackStudio:
         prompt_repair = bool(rf.get("prompt_repair", True))
         im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
         reset_session = bool(rf.get("reset_session", False))
-        feedback_prompt = str(rf.get("feedback_prompt", "") or "")
+        # Connected input takes precedence over popup value
+        feedback_prompt = str(feedback_prompt) if feedback_prompt is not None else str(rf.get("feedback_prompt", "") or "")
         intent_override = str(rf.get("user_intent_prompt_override", "") or "")
         effective_intent = intent_override or str(user_intent_prompt or "")
 
