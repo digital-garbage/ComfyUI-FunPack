@@ -10543,20 +10543,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_phrases,
                 global_state,
             )
-            aligned_prompt, perfect_repair_status, perfect_repair_adjustments = self._v2_apply_perfect_repair_phrases(
-                aligned_prompt,
-                current_family_slot,
-                intent_prompt=intent_source_prompt,
-                intent_phrases=intent_phrases,
-                clip=clip,
-                encode_cache=encode_cache,
-            )
-            prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(
-                aligned_prompt,
-                phrases,
-                global_state,
-                {**learning_profile, "missing_axes": repair_feedback.get("missing_axes", [])},
-            )
+            if prompt_repair:
+                aligned_prompt, perfect_repair_status, perfect_repair_adjustments = self._v2_apply_perfect_repair_phrases(
+                    aligned_prompt,
+                    current_family_slot,
+                    intent_prompt=intent_source_prompt,
+                    intent_phrases=intent_phrases,
+                    clip=clip,
+                    encode_cache=encode_cache,
+                )
+                prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(
+                    aligned_prompt,
+                    phrases,
+                    global_state,
+                    {**learning_profile, "missing_axes": repair_feedback.get("missing_axes", [])},
+                )
+            else:
+                perfect_repair_status = "Perfect repairs: disabled."
+                perfect_repair_adjustments = []
+                prompt_to_encode = aligned_prompt
+                emphasis_status = "Prompt emphasis: disabled."
             advisor_active = advisor_mode != "Off"
             if prompt_repair:
                 prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
