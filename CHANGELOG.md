@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.6.0] - 2026-05-16
+
+### Added
+
+Added `FunPack Studio` - a single node that replaces the typical chain of Refinement Key Loader, Scene Builder, Apply LoRA Weights, LoRA Loader, Video Refiner V2, and Conditioning Adjust with a tabbed popup editor. All settings are managed inside the popup; only the rating widget and Open Studio button are visible on the node face.
+
+Studio inputs (in order): model, clip, advisor_clip, positive_conditioning, negative_conditioning, clip_vision_output, source_image, lora_stack, positive_prompt, negative_prompt, user_intent_prompt, feedback_prompt, refinement_key_input.
+
+Studio outputs (in order): model (LoRAs applied + attn2 direction patch), modified_positive, negative (encoded from negative_prompt or passed through from negative_conditioning), seed (for wiring to sampler), high_pass_sampler, high_pass_sigmas, low_pass_sampler, low_pass_sigmas, loss_graph, status, training_info, encoded_prompts.
+
+Studio popup tabs:
+- **Session**: refinement key management and Scene Builder mode selector (Pass-through / Manual / Auto / Learning).
+- **Scene**: scene preset load and save, phrase bank from session memory, positive prompt composer.
+- **Refiner**: all Refiner V2 settings including negative prompt field, feedback, and intent override. Shows a banner and disables the intent field when Scene Builder is active.
+- **Advisor**: enable/configure an internal HuggingFace CausalLM advisor. Uses the same model cache as the standalone Advisor LLM node.
+- **LoRA**: full LoRA pipeline - session weight suggestions are read first, then LoRAs are applied to model and CLIP, then the direction patch is applied on top. Supports model type (ltx2/wan) and per-block settings.
+- **Sampler**: configure Hybrid Euler 2S, Distilled Flow, or any KSampler for the high-pass and low-pass outputs independently. Sigma schedules entered as comma-separated floats.
+- **Adjustments**: phrase-level conditioning adjustments with session phrase bank.
+
+Three text inputs (refinement_key, feedback_prompt, user_intent_prompt) have override toggles: when off, connected inputs win; when on, popup values win.
+
+The popup remembers its last active tab per node via localStorage. All field changes auto-save to the node widget after 600ms, so settings survive page refresh without requiring Close to be clicked.
+
+Added `negative_prompt` encoding to Studio: when no pre-encoded `negative_conditioning` is connected, Studio encodes the `negative_prompt` text via CLIP internally, removing the need for an external CLIPTextEncode node.
+
+Added `/funpack/available_loras` and `/funpack/phrase_memory` backend endpoints used by Studio's LoRA picker and phrase banks.
+
+Added `FunPackConditioningAdjust` standalone node for phrase-level conditioning adjustments. Encodes each phrase via CLIP, computes a unit-norm direction from the base conditioning, and applies it at user-set strength. Positive pushes toward the phrase, negative pushes away. Popup editor with session phrase bank.
+
+Added `seed` output to `FunPack Video Refiner V2` (via optional `_seed` parameter) so Studio can generate a seed and expose it as an output for wiring to samplers.
+
+### Fixed
+
+Fixed `FunPackAdvisorLLM` tokenize failing with `AttributeError` when `apply_chat_template` returns a `BatchEncoding` instead of a plain tensor in newer transformers versions. Explicit `hasattr(result, "input_ids")` check now handles both return types.
+
+Fixed advisor generation producing no output for Qwen3 and other chain-of-thought models: thinking tokens (`<think>...</think>`) were not being stripped because they are special token IDs that disappear with `skip_special_tokens=True`. Switched to decoding with `skip_special_tokens=False` then stripping thinking blocks with regex. Truncated thinking blocks (no closing tag, token budget exhausted) are also stripped.
+
+Fixed `FunPackAdvisorLLM` attention mask warning and erratic output (echoed prompts, missing spaces) caused by `pad_token == eos_token` without an explicit mask. Now passes `torch.ones_like(input_ids)` as attention mask to all generate calls.
+
+Fixed `FunPackConditioningAdjust` adjustments not applying for LTX/Gemma3 conditioning: the node was reading `pooled_output` which is `None` for T5-based encoders. Now uses `conditioning.mean(dim=(0,1))` on the sequence tensor, matching how V2 handles conditioning internally.
+
+Fixed Refiner V2 advisor diagnostic not being generated in Full mode: the LLM analysis prompt was asking for session-wide pattern recognition when no history existed yet. Now adapts - uses a simple per-run analysis on early sessions and session pattern analysis when history exists. Added a rule-based fallback so diagnostic history always accumulates even when the LLM produces empty output.
+
+Fixed `perfect_repair_phrases` and `_v2_emphasized_prompt` injecting phrases regardless of the `prompt_repair` toggle. Both are now gated behind `prompt_repair=False`.
+
+Removed the Perfect-rating advisor gate. The advisor previously skipped both analysis and repair when rating was Perfect and no text feedback was provided. Perfect is not a ceiling - the advisor now runs normally for Perfect ratings.
+
 ## [2.5.3] - 2026-05-16
 
 ### Fixed

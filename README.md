@@ -2,6 +2,24 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.6.0
+
+Added `FunPack Studio` - a single node that combines Refinement Key management, Scene Builder, LoRA loading, Refiner V2, Conditioning Adjust, and sampler configuration into one interface. The node face shows only the rating widget and an Open Studio button. All settings live in a tabbed popup editor.
+
+**Popup tabs:** Session (refinement key, scene builder mode), Scene (prompt composer, phrase bank), Refiner (all V2 settings, negative prompt, feedback, intent), Advisor (internal HuggingFace LLM), LoRA (session weight suggestions + loading with per-block support), Sampler (Hybrid Euler 2S / Distilled Flow / KSampler for high and low pass, sigma schedules as comma-separated floats), Adjustments (phrase-level conditioning shifts with session phrase bank).
+
+Negative prompt is encoded internally via CLIP when no pre-encoded conditioning is connected, removing the need for an external CLIPTextEncode node in the negative path.
+
+The full LoRA pipeline runs inside Studio: session weight suggestions are read first, LoRAs are applied to model and CLIP, and the Refiner direction patch is applied on top. The model output carries everything.
+
+Two sampler outputs (high pass and low pass) sit between the seed and loss graph outputs. Wire sampler and sigmas directly to your LTX or WAN sampling nodes.
+
+Studio popup remembers the last active tab per node across page refreshes. Field values auto-save 600ms after typing stops.
+
+Also added as standalone nodes: `FunPack Conditioning Adjust` (phrase-level conditioning adjustment with CLIP-encoded directions, popup editor with session phrase bank).
+
+Fixed `FunPackAdvisorLLM` crashing with newer transformers versions (`apply_chat_template` returning `BatchEncoding` instead of a plain tensor). Fixed advisor producing empty or garbled output for Qwen3 and other thinking models (thinking tokens stripped correctly, attention mask now explicitly provided). Fixed conditioning adjustments not applying for LTX/Gemma3 workflows (was reading `pooled_output` which is `None` for T5 encoders, now uses sequence mean). Fixed `prompt_repair=False` not preventing phrase injection from perfect-repair memory and emphasis. Removed the advisor gate that blocked repair for Perfect-rated outputs.
+
 ## Updates in 2.5.1
 
 Added `FunPack Advisor LLM` node - loads any HuggingFace CausalLM (sharded or single-file) as an advisor for Refiner V2 or as a drop-in replacement for the built-in `TextGenerate` node. Set a HuggingFace repo ID or local path, pick dtype, connect the output to `advisor_clip`. Model is cached after first load. Compatible with `skip_template`, `min_p`, `presence_penalty`, and any model architecture that `AutoModelForCausalLM.from_pretrained` supports.
