@@ -11859,8 +11859,8 @@ class FunPackStudio:
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
 
     CATEGORY = "FunPack"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "INT")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "seed")
+    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "IMAGE", "STRING", "STRING", "STRING")
+    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "loss_graph", "status", "training_info", "encoded_prompts")
     FUNCTION = "run"
     DESCRIPTION = (
         "FunPack Studio - all FunPack refinement tools in one node. "
@@ -11901,41 +11901,35 @@ class FunPackStudio:
         return {
             "required": {
                 "rating": (V2_RATING_LABELS, {"default": "Missing action", "label": "Rating"}),
-                "studio_settings": ("STRING", {
-                    "default": "{}",
-                    "multiline": False,
-                    "tooltip": "JSON managed by the Studio popup editor. Do not edit manually.",
-                }),
-                "adjustments": ("STRING", {
-                    "default": "[]",
-                    "multiline": False,
-                    "tooltip": "Conditioning adjustment phrase list. Managed by the Studio popup.",
-                }),
+                "studio_settings": ("STRING", {"default": "{}", "multiline": False,
+                    "tooltip": "JSON managed by the Studio popup editor. Do not edit manually."}),
+                "adjustments": ("STRING", {"default": "[]", "multiline": False,
+                    "tooltip": "Conditioning adjustment phrase list. Managed by the Studio popup."}),
             },
             "optional": {
-                "positive_prompt": ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "forceInput": True,
-                    "tooltip": "Positive prompt. Ignored when Scene Builder mode is not Pass-through.",
-                }),
-                "clip": ("CLIP", {"tooltip": "Text encoder. Required for prompt encoding and conditioning adjustments."}),
-                "model": ("MODEL", {"tooltip": "Diffusion model. Required for LoRA loading and direction injection."}),
-                "source_image": ("IMAGE",),
+                "model": ("MODEL",),
+                "clip": ("CLIP",),
+                "advisor_clip": ("CLIP", {"tooltip": "Pre-loaded text generator for advisor. Overrides the LLM configured inside Studio."}),
+                "positive_conditioning": ("CONDITIONING",),
+                "negative_conditioning": ("CONDITIONING", {"tooltip": "Negative conditioning passed through unchanged to the output."}),
                 "clip_vision_output": ("CLIP_VISION_OUTPUT",),
-                "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional external LoRA stack. Bypasses Studio's internal LoRA management entirely when connected."}),
-                "refinement_key_input": ("STRING", {"forceInput": True}),
+                "source_image": ("IMAGE",),
+                "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "External LoRA stack. Bypasses Studio's internal LoRA management entirely when connected."}),
+                "positive_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
+                    "tooltip": "Positive prompt. Ignored when Scene Builder mode is not Pass-through."}),
                 "user_intent_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True}),
                 "feedback_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
-                    "tooltip": "Optional feedback describing what was wrong with the previous output. Overrides the feedback set inside the Studio popup."}),
-                "positive_conditioning": ("CONDITIONING",),
+                    "tooltip": "Feedback about the previous output. Overrides the feedback set inside Studio."}),
+                "refinement_key_input": ("STRING", {"forceInput": True}),
             },
         }
 
-    def run(self, positive_prompt, rating, studio_settings, adjustments,
-            clip=None, model=None, source_image=None, clip_vision_output=None,
-            lora_stack=None, refinement_key_input="", user_intent_prompt="",
-            feedback_prompt=None, positive_conditioning=None):
+    def run(self, rating, studio_settings, adjustments,
+            model=None, clip=None, advisor_clip=None,
+            positive_conditioning=None, negative_conditioning=None,
+            clip_vision_output=None, source_image=None,
+            lora_stack=None, positive_prompt=None, user_intent_prompt=None,
+            feedback_prompt=None, refinement_key_input=""):
 
         try:
             settings = json.loads(str(studio_settings or "{}"))
@@ -11951,6 +11945,9 @@ class FunPackStudio:
             active_prompt = str(positive_prompt or "").strip()
         else:
             active_prompt = str(sb.get("scene_positive", "") or "").strip() or str(positive_prompt or "").strip()
+
+        # --- Negative conditioning: pass through unchanged ---
+        out_negative = negative_conditioning if negative_conditioning is not None else []
 
         # --- Overrides: when True, popup value wins over connected input ---
         ov = settings.get("overrides", {}) if isinstance(settings.get("overrides"), dict) else {}
@@ -11986,17 +11983,17 @@ class FunPackStudio:
         else:
             key = popup_key  # refine_v2 uses refinement_key_input when non-empty
 
-        # --- Advisor LLM ---
-        advisor_clip = None
-        llm_cfg = settings.get("advisor_llm", {})
-        if isinstance(llm_cfg, dict) and llm_cfg.get("enabled") and llm_cfg.get("model_path"):
-            try:
-                (advisor_clip,) = FunPackAdvisorLLM().load_advisor(
-                    str(llm_cfg["model_path"]),
-                    str(llm_cfg.get("dtype", "bfloat16")),
-                )
-            except Exception as e:
-                print(f"[FunPackStudio] Advisor LLM load failed: {e}")
+        # --- Advisor LLM: external input takes precedence over popup-configured model ---
+        if advisor_clip is None:
+            llm_cfg = settings.get("advisor_llm", {})
+            if isinstance(llm_cfg, dict) and llm_cfg.get("enabled") and llm_cfg.get("model_path"):
+                try:
+                    (advisor_clip,) = FunPackAdvisorLLM().load_advisor(
+                        str(llm_cfg["model_path"]),
+                        str(llm_cfg.get("dtype", "bfloat16")),
+                    )
+                except Exception as e:
+                    print(f"[FunPackStudio] Advisor LLM load failed: {e}")
 
         # --- LoRA: ApplyWeights (session suggestions) then Load ---
         # 1. Build lora_list from studio settings or use provided external stack directly.
@@ -12088,4 +12085,4 @@ class FunPackStudio:
             except Exception as e:
                 status = f"{status}\nConditioning adjust failed: {e}"
 
-        return (cond, status, training_info, loss_graph, encoded_prompts, out_model, seed)
+        return (out_model, cond, out_negative, seed, loss_graph, status, training_info, encoded_prompts)
