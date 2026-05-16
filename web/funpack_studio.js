@@ -64,6 +64,7 @@ function defaultSettings() {
     refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "" },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
+    loras_config: { mode: "ltx2", per_block: false },
   };
 }
 
@@ -507,9 +508,17 @@ function openPanel(node) {
 
   // LORA ─────────────────────────────────────────────────────────────────────
   function renderLora() {
-    body.append(sectionTitle("LoRA List"));
+    body.append(sectionTitle("LoRA Settings"));
+    if (!settings.loras_config) settings.loras_config = { mode: "ltx2", per_block: false };
+    const modeSelect = selectEl(["ltx2", "wan"], settings.loras_config.mode);
+    modeSelect.addEventListener("change", () => { settings.loras_config.mode = modeSelect.value; });
+    body.append(row("Model type", modeSelect));
+    const perBlockToggle = toggleEl(settings.loras_config.per_block, "Per-block application");
+    perBlockToggle.inp.addEventListener("change", () => { settings.loras_config.per_block = perBlockToggle.inp.checked; });
+    body.append(row("Per-block", perBlockToggle.wrap));
     body.append(el("div", "funpack-studio-hint",
-      "LoRAs are loaded in order each run. An external lora_stack input overrides this list entirely."));
+      "Studio applies LoRAs internally: session weight suggestions are read first, then LoRAs are loaded, then the direction patch is applied on top. An external lora_stack input bypasses this entirely."));
+    body.append(sectionTitle("LoRA List"));
 
     const list = el("div", "funpack-studio-lora-list");
 

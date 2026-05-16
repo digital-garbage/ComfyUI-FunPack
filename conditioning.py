@@ -11859,8 +11859,8 @@ class FunPackStudio:
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
 
     CATEGORY = "FunPack"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "INT", "FUNPACK_LORA_STACK")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "seed", "lora_stack")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "INT")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "seed")
     FUNCTION = "run"
     DESCRIPTION = (
         "FunPack Studio - all FunPack refinement tools in one node. "
@@ -11868,6 +11868,7 @@ class FunPackStudio:
     )
 
     _lora_loader = None
+    _apply_weights_node = None
 
     @classmethod
     def _get_lora_loader(cls):
@@ -11881,6 +11882,19 @@ class FunPackStudio:
             except Exception:
                 cls._lora_loader = None
         return cls._lora_loader
+
+    @classmethod
+    def _get_apply_weights_node(cls):
+        if cls._apply_weights_node is None:
+            try:
+                try:
+                    from .model_management import FunPackApplyLoraWeights
+                except ImportError:
+                    from model_management import FunPackApplyLoraWeights
+                cls._apply_weights_node = FunPackApplyLoraWeights()
+            except Exception:
+                cls._apply_weights_node = None
+        return cls._apply_weights_node
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -11909,7 +11923,7 @@ class FunPackStudio:
                 "model": ("MODEL", {"tooltip": "Diffusion model. Required for LoRA loading and direction injection."}),
                 "source_image": ("IMAGE",),
                 "clip_vision_output": ("CLIP_VISION_OUTPUT",),
-                "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional external LoRA stack. Takes precedence over LoRAs configured inside Studio."}),
+                "lora_stack": ("FUNPACK_LORA_STACK", {"tooltip": "Optional external LoRA stack. Bypasses Studio's internal LoRA management entirely when connected."}),
                 "refinement_key_input": ("STRING", {"forceInput": True}),
                 "user_intent_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True}),
                 "feedback_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
@@ -11984,40 +11998,60 @@ class FunPackStudio:
             except Exception as e:
                 print(f"[FunPackStudio] Advisor LLM load failed: {e}")
 
-        # --- LoRA stack ---
-        active_lora_stack = lora_stack
+        # --- LoRA: ApplyWeights (session suggestions) then Load ---
+        # 1. Build lora_list from studio settings or use provided external stack directly.
+        # 2. FunPackApplyLoraWeights reads session weight suggestions for current prompt.
+        # 3. FunPackLoraLoader applies the stack to model/clip.
+        # 4. refine_v2 then applies attn2 direction patch on top of the LoRA-patched model.
+        active_lora_stack = lora_stack  # external stack bypasses steps 1-2
         studio_loras = settings.get("loras", [])
+        lora_cfg = settings.get("loras_config", {}) if isinstance(settings.get("loras_config"), dict) else {}
+        lora_mode = str(lora_cfg.get("mode", "ltx2") or "ltx2")
+        per_block = bool(lora_cfg.get("per_block", False))
+
         if not active_lora_stack and studio_loras and model is not None:
-            lora_entries = []
-            for idx, entry in enumerate(studio_loras if isinstance(studio_loras, list) else []):
-                if not isinstance(entry, dict):
-                    continue
-                name = str(entry.get("name", "") or "").strip()
-                if not name or name == "None":
-                    continue
-                mw = float(entry.get("model_weight", 1.0) or 1.0)
-                cw = float(entry.get("clip_weight", 1.0) or 1.0)
-                lora_entries.append({
-                    "slot": idx,
-                    "name": name,
-                    "type": str(entry.get("type", "general") or "general"),
-                    "base_model_weight": mw,
-                    "base_clip_weight": cw,
-                    "model_weight": mw,
-                    "clip_weight": cw,
-                })
-            if lora_entries:
-                raw_stack = {"refinement_key": key, "loras": lora_entries, "per_block": False}
-                loader = self._get_lora_loader()
-                if loader is not None:
+            valid_loras = [
+                e for e in (studio_loras if isinstance(studio_loras, list) else [])
+                if isinstance(e, dict) and str(e.get("name", "") or "").strip() not in ("", "None")
+            ]
+            if valid_loras:
+                # Build lora_list in the format FunPackApplyLoraWeights expects
+                clip_weights = {str(e.get("name", "")): float(e.get("clip_weight", 1.0) or 1.0)
+                                for e in valid_loras}
+                lora_list_json = json.dumps([
+                    {
+                        "name": str(e.get("name", "")),
+                        "type": str(e.get("type", "general") or "general"),
+                        "strength": float(e.get("model_weight", 1.0) or 1.0),
+                        "on": True,
+                    }
+                    for e in valid_loras
+                ])
+                apply_node = self._get_apply_weights_node()
+                if apply_node is not None:
                     try:
-                        model, clip, active_lora_stack, lora_status = loader.load_loras(
-                            model, raw_stack, clip=clip
+                        effective_key = key or "studio"
+                        active_lora_stack, lora_apply_status = apply_node.apply_lora_weights(
+                            active_prompt, effective_key, lora_mode,
+                            per_block=per_block,
+                            lora_list=lora_list_json,
                         )
-                        print(f"[FunPackStudio] {lora_status}")
+                        # Inject clip_weight values (ApplyLoraWeights only handles model weights)
+                        for entry in active_lora_stack.get("loras", []):
+                            entry["clip_weight"] = clip_weights.get(str(entry.get("name", "")), 1.0)
+                        print(f"[FunPackStudio] {lora_apply_status}")
+                    except Exception as e:
+                        print(f"[FunPackStudio] Apply LoRA weights failed: {e}")
+
+                loader = self._get_lora_loader()
+                if loader is not None and active_lora_stack is not None:
+                    try:
+                        model, clip, active_lora_stack, lora_load_status = loader.load_loras(
+                            model, active_lora_stack, clip=clip
+                        )
+                        print(f"[FunPackStudio] {lora_load_status}")
                     except Exception as e:
                         print(f"[FunPackStudio] LoRA load failed: {e}")
-                        active_lora_stack = raw_stack
 
         # --- Refiner V2 ---
         refiner = FunPackVideoRefinerV2()
@@ -12054,4 +12088,4 @@ class FunPackStudio:
             except Exception as e:
                 status = f"{status}\nConditioning adjust failed: {e}"
 
-        return (cond, status, training_info, loss_graph, encoded_prompts, out_model, seed, active_lora_stack)
+        return (cond, status, training_info, loss_graph, encoded_prompts, out_model, seed)
