@@ -9464,11 +9464,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if mode in {"Only prompt", "Full"} and not repair_signal and not is_perfect and not has_feedback:
             return current_prompt, "Advisor: skipped; no repair signal and no user feedback.", "", False, ""
 
-        # Pass 1: analysis — runs for Full and Only diagnostics, but skipped when:
-        # - user provided explicit feedback (they already said what's wrong), or
-        # - rating is Perfect with no feedback (nothing to analyse; repair will be blocked anyway).
+        # Pass 1: analysis — runs for Full and Only diagnostics when no explicit feedback was given
+        # (explicit feedback already tells the advisor what to do; analysis is for when it needs to
+        # figure out what's wrong on its own).
         analysis = ""
-        if mode in {"Full", "Only diagnostics"} and not has_feedback and not is_perfect:
+        if mode in {"Full", "Only diagnostics"} and not has_feedback:
             analysis_system, analysis_user = self._v2_advisor_analysis_prompt(
                 current_prompt,
                 intent_prompt,
@@ -9489,9 +9489,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return current_prompt, f"Advisor: diagnostics only. {analysis or 'No analysis returned.'}", analysis, False, ""
 
         # Guard checks before pass 2.
-        if (not allow_prompt_change and not has_feedback) or (is_perfect and not has_feedback):
-            reason = "perfect rating — analysis only" if is_perfect else "prompt changes disabled"
-            return current_prompt, f"Advisor: {reason}. {analysis}".strip(), analysis, False, ""
+        if not allow_prompt_change and not has_feedback:
+            return current_prompt, f"Advisor: prompt changes disabled. {analysis}".strip(), analysis, False, ""
         if intent_changed and not has_feedback:
             return current_prompt, f"Advisor: intent changed; repair skipped. {analysis}".strip(), analysis, False, ""
 

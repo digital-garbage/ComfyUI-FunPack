@@ -1,6 +1,6 @@
 # FunPack Hybrid Euler 2S Sampler
 
-This node outputs a ComfyUI `SAMPLER` and can also take optional `SIGMAS` input and output modified `SIGMAS` for use with `CustomSamplerAdvanced` / `SamplerCustomAdvanced`.
+This node outputs a ComfyUI `SAMPLER` and can also take optional `SIGMAS` input and output modified `SIGMAS` for use with `SamplerCustomAdvanced` / `CustomSamplerAdvanced`.
 
 ## Purpose
 
@@ -13,10 +13,6 @@ This sampler keeps classic Euler ancestral for the early "structure building" st
 
 It can also apply optional early/mid **motion pulses** for single-clip image-to-video workflows. These pulses add monotonic noise kicks at selected normal denoise steps instead of inserting upward sigma jumps. This is intended to push LTX2.3 away from stale frame-1 reference stiffness while avoiding the audio damage caused by Restart replay.
 
-Restart replay has been removed because upward sigma replay can break LTX audio generation.
-
-For hard viewpoint or scene-context resets, use `FunPack Context Transition Windows` before sampling. That node changes which frames the model can see in each denoise evaluation; this sampler only changes the denoise trajectory.
-
 ## Recommended wiring
 
 Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
@@ -25,18 +21,17 @@ Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
 - connect this node's `sampler` output into the sampler input
 - connect this node's `sigmas` output into the sigmas input
 
-This node is not intended for `KSampler`.
-
 ## Parameters
 
-**eta**: Ancestral stochasticity. `1.0` keeps normal ancestral behavior.
+**eta**: Ancestral stochasticity at the start of sampling. `1.0` keeps normal ancestral behaviour.
+
+**eta_final**: Eta value at the quality phase boundary. When set below `eta`, ancestral noise strength decays linearly toward this value as sigma approaches the quality phase. Lower values give a cleaner hand-off into deterministic refinement. Set equal to `eta` to disable decay.
 
 **s_noise**: Noise multiplier for ancestral noise injection.
 
-**high_quality_pct**: Fraction of the *late* denoise steps that switch from Euler ancestral into deterministic quality refinement.  
-Example: `0.35` means only the last 35% of steps use the ODE refinement path.
+**high_quality_pct**: Fraction of the *late* denoise steps that switch from Euler ancestral into deterministic quality refinement. Example: `0.35` means the last 35% of steps use the ODE refinement path.
 
-**correction_blend**: Blend between late-step Euler ODE and late-step 2S correction.
+**correction_blend**: Blend between late-step Euler ODE and late-step 2S correction for the second half of quality-phase steps.
 
 - `0.0` = pure late-step Euler ODE
 - `1.0` = full late-step DPM++(2S)-style correction
@@ -56,12 +51,7 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 
 **motion_pulse_strength**: Strength of the monotonic noise kick. Higher values push harder against stale image references, with more drift risk.
 
-**velocity_bias_mode**: Experimental early velocity steering mode:
-
-- `off`: preserve legacy sampler behavior.
-- `capture`: save averaged early velocity directions around normalized sigma `0.9` and `0.8`.
-- `apply`: apply a previously captured matching bias.
-- `capture_and_apply`: do both in one run.
+**velocity_bias_mode**: Experimental early velocity steering mode.
 
 **velocity_bias_strength**: Strength for applying captured early velocity bias. Keep this low; `0.0` disables the applied delta.
 
@@ -69,18 +59,20 @@ Example: `0.35` means only the last 35% of steps use the ODE refinement path.
 
 **velocity_aspect_bucket**: Optional grouping value such as `landscape`, `portrait`, `square`, `ultrawide`, or `vertical`.
 
-**sigmas**: Optional incoming sigma schedule. If connected, the node returns the same monotonic schedule plus sampler-side metadata for motion pulses. If not connected, the sampler computes pulse positions from the runtime schedule.
+**sigmas**: Optional incoming sigma schedule. If connected, the node returns the same schedule plus sampler-side metadata for motion pulses.
 
 ## Recommended starting values
 
-- `eta = 1.0`
+- `eta = 1.0`, `eta_final = 1.0`
 - `s_noise = 1.0`
 - `high_quality_pct = 0.30` to `0.40`
 - `correction_blend = 1.0`
 - `motion_pulse_mode = off` for baseline testing
-- `velocity_bias_mode = off` unless you are deliberately testing captured good-run steering
+- `velocity_bias_mode = off`
 
-For an aggressive LTX2.3 image-to-video motion test, try:
+To smooth the transition into the quality phase, try `eta_final = 0.5`. This decays ancestral noise from `1.0` at the start toward `0.5` as sigma approaches the quality boundary.
+
+For an aggressive LTX2.3 image-to-video motion test:
 
 - `high_quality_pct = 0.35`
 - `correction_blend = 1.0`
@@ -89,8 +81,6 @@ For an aggressive LTX2.3 image-to-video motion test, try:
 - `motion_pulse_count = 2`
 - `motion_pulse_spacing_pct = 0.22`
 - `motion_pulse_strength = 0.85`
-
-Keep the prompt/refiner conditioning explicit about both action and camera change, for example `orbiting camera`, `dolly in`, `zoom out`, `new side angle`, `turning`, or `dynamic pose change`.
 
 ## Expected behavior
 
@@ -101,14 +91,10 @@ Compared to plain `euler_ancestral`, this sampler should usually:
 - keep the early motion/anatomy formation more lively
 - cost less than running a heavier deterministic solver for the whole schedule
 
-With motion pulses enabled, it should more strongly encourage action, camera movement, and viewpoint changes inside a single clip. Stronger settings can increase subject drift or visual instability.
+The early phase uses a second-order denoised extrapolation (Adams-Bashforth 2-step) that reuses the previous step's denoised estimate to improve the score direction at no extra model-call cost. The quality phase uses progressive correction blending: the first half of quality steps use single-eval Euler ODE, the second half use the full configured 2S correction, concentrating the expensive second model call where sigma is lowest.
+
+Motion pulse state resets after any pulse fires because the pulse modifies the latent and invalidates the previous denoised estimate.
 
 The outgoing `SIGMAS` remain monotonic. Motion pulses happen inside the sampler at selected denoise steps rather than by expanding the schedule.
 
-Velocity bias memory is process-local and experimental. Capture only runs you consider good references, then apply with the same refinement key, aspect bucket, and latent shape. Incompatible shapes are ignored.
-
 If you need the model to stop carrying the previous segment's temporal context forward, add `FunPack Context Transition Windows`. It is the stronger transition tool and should be preferred for multi-view or "scene reset" testing.
-
-## Limitation
-
-This node improves the **sampler-side quality/speed tradeoff**. It does **not** reduce the underlying cost of CFG++ guidance itself. If the goal becomes specifically "CFG++ quality at lower guidance cost", that likely requires a custom `GUIDER`, not just a custom `SAMPLER`.
