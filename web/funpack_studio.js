@@ -3,7 +3,7 @@ import { api } from "../../scripts/api.js";
 
 const NODE_NAME = "FunPackStudio";
 const NONE_SENTINEL = "-None-";
-const HIDDEN_WIDGETS = new Set(["studio_settings", "adjustments", "positive_prompt"]);
+const HIDDEN_WIDGETS = new Set(["studio_settings", "adjustments"]);
 const LORA_TYPES = ["general", "action", "concept", "style", "quality", "character"];
 const ADVISOR_DTYPES = ["bfloat16", "float16", "float32"];
 const REFINER_MODES = ["Refine", "Prompt only", "Learning"];

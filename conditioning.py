@@ -11859,8 +11859,8 @@ class FunPackStudio:
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
 
     CATEGORY = "FunPack"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "INT")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "seed")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "INT", "FUNPACK_LORA_STACK")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "seed", "lora_stack")
     FUNCTION = "run"
     DESCRIPTION = (
         "FunPack Studio - all FunPack refinement tools in one node. "
@@ -12053,4 +12053,4 @@ class FunPackStudio:
             except Exception as e:
                 status = f"{status}\nConditioning adjust failed: {e}"
 
-        return (cond, status, training_info, loss_graph, encoded_prompts, out_model, seed)
+        return (cond, status, training_info, loss_graph, encoded_prompts, out_model, seed, active_lora_stack)
