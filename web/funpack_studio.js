@@ -435,6 +435,15 @@ function openPanel(node) {
 
   // REFINER ──────────────────────────────────────────────────────────────────
   function renderRefiner() {
+    const sbMode = settings.scene_builder?.mode || "Pass-through";
+    const sbActive = sbMode !== "Pass-through";
+    if (sbActive) {
+      const banner = el("div", "funpack-studio-banner");
+      banner.innerHTML = `Scene Builder is active (<b>${sbMode}</b> mode) — positive prompt is built in the <a href="#" class="funpack-studio-tab-link">Scene tab</a>, not from the node input.`;
+      banner.querySelector("a").addEventListener("click", (e) => { e.preventDefault(); switchTab("Scene"); });
+      body.append(banner);
+    }
+
     body.append(sectionTitle("Execution"));
 
     const modeSelect = selectEl(REFINER_MODES, settings.refiner.mode);
@@ -478,11 +487,17 @@ function openPanel(node) {
     body.append(fbArea);
 
     body.append(sectionTitle("Intent"));
+    if (sbActive) {
+      body.append(el("div", "funpack-studio-hint",
+        "Intent is derived from the Scene Builder prompt when Scene Builder is active."));
+    }
     body.append(overrideToggle(settings, "user_intent_prompt",
       "Override - use popup value even when user_intent_prompt input is connected"));
     const intentArea = el("textarea", "funpack-studio-textarea short");
     intentArea.value = settings.refiner.user_intent_prompt_override || "";
     intentArea.placeholder = "Intent override (overrides the user_intent_prompt node input)...";
+    intentArea.disabled = sbActive;
+    if (sbActive) intentArea.style.opacity = "0.45";
     intentArea.addEventListener("input", () => { settings.refiner.user_intent_prompt_override = intentArea.value; });
     body.append(intentArea);
   }
@@ -839,6 +854,12 @@ function injectStyles() {
     .funpack-studio-chip:hover { background: rgba(100,210,140,0.25); border-color: rgba(100,210,140,0.5); }
     .funpack-studio-override-toggle { color: #9da6b0; font-size: 11px; margin-bottom: 3px; }
     .funpack-studio-override-toggle span { color: #9da6b0; }
+    .funpack-studio-banner {
+      padding: 7px 10px; border-radius: 5px; font-size: 11px; line-height: 1.5;
+      background: rgba(88,166,214,0.12); border: 1px solid rgba(88,166,214,0.35); color: #c8dff0;
+    }
+    .funpack-studio-tab-link { color: #58a6d6; text-decoration: underline; cursor: pointer; }
+    .funpack-studio-tab-link:hover { color: #8dcff5; }
   `;
   document.head.append(style);
 }
