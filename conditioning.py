@@ -11207,6 +11207,10 @@ class _FunPackAdvisorLLMWrapper:
         # When thinking mode is active, add extra budget for the reasoning chain so the
         # actual response is not crowded out by thinking tokens.
         effective_max = int(max_length) + 2048 if thinking else int(max_length)
+        # Explicit attention mask prevents the "pad token == eos token" warning and
+        # stops the model from attending to padding positions, which causes it to echo
+        # the input, drop spaces, or otherwise produce garbled output.
+        attention_mask = torch.ones_like(input_ids)
         required = dict(
             do_sample=do_sample,
             max_new_tokens=effective_max,
@@ -11215,6 +11219,7 @@ class _FunPackAdvisorLLMWrapper:
             top_p=float(top_p),
             repetition_penalty=float(repetition_penalty),
             pad_token_id=self._tokenizer.pad_token_id or self._tokenizer.eos_token_id,
+            attention_mask=attention_mask,
         )
         # Optional params not supported by all models - try progressively stripping
         optional = {}
