@@ -8609,14 +8609,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mixed = torch.clamp(mixed, min=-60.0, max=60.0)
         mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * original_norm
 
-        liked_mode = "dir" if int(liked_dir_slot.get("direction_count", 0)) >= 3 else "lerp"
+        liked_count = int(liked_dir_slot.get("direction_count", 0))
+        liked_mode = f"direction ({liked_count} runs)" if liked_count >= 3 else f"lerp fallback ({liked_count}/3 runs)"
+        bad_count = int(bad_dir_slot.get("direction_count", 0))
+        ema = float(global_state.get("avg_reward_ema", 0.0))
+        good_s = int(global_state.get("good_streak", 0))
+        bad_s = int(global_state.get("bad_streak", 0))
+        streak_str = f"good streak {good_s}" if good_s > 0 else (f"bad streak {bad_s}" if bad_s > 0 else "no streak")
+        axis_str = ", ".join(axis_actions) if axis_actions else "none"
         return mixed, (
-            f"Adaptation: strength {strength:.3f} liked={liked_mode} | "
-            f"good streak {int(global_state.get('good_streak', 0))} | "
-            f"bad streak {int(global_state.get('bad_streak', 0))} | "
-            f"reward ema {float(global_state.get('avg_reward_ema', 0.0)):+.3f} | "
-            f"axis memory {', '.join(axis_actions) if axis_actions else 'idle'} | "
-            f"{family_delta_status}"
+            f"Strength {strength:.3f} | reward trend {ema:+.3f} | {streak_str}\n"
+            f"  Liked conditioning: {liked_mode}\n"
+            f"  Bad conditioning: {'direction' if bad_count >= 3 else f'lerp fallback ({bad_count}/3 runs)'}\n"
+            f"  Axis adjustments: {axis_str}\n"
+            f"  {family_delta_status}\n"
+            f"  Total delta clamped to 7.5% of conditioning norm"
         )
 
     def _v2_emphasized_prompt(self, prompt, phrases, global_state, rating_profile):
@@ -9137,6 +9144,42 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             else:
                 entry_text = f"{rating}: {feedback}" if rating else feedback
             lines.append(f"{i}. {entry_text}")
+        return "\n".join(lines)
+
+    def _v2_direction_readout(self, global_state, axis_feedback=None):
+        """Human-readable summary of all direction memory slots and their status."""
+        def slot_line(slot, label, negate=False):
+            count = int(slot.get("direction_count", 0)) if isinstance(slot, dict) else 0
+            if count == 0:
+                return f"  {label}: no data yet"
+            mag = float(slot.get("direction_magnitude", 0.0)) if isinstance(slot, dict) else 0.0
+            if count < 3:
+                return f"  {label}: warming up ({count}/3 runs needed)"
+            arrow = "away from" if negate else "toward"
+            return f"  {label}: active ({count} runs, mag {mag:.3f}) - pulling {arrow} learned pattern"
+
+        missing_axes = set((axis_feedback or {}).get("missing_axes", []))
+        satisfied_axes = set((axis_feedback or {}).get("satisfied_axes", []))
+        axis_memory = global_state.get("axis_conditioning_memory", {}) if isinstance(global_state, dict) else {}
+
+        lines = [
+            slot_line(global_state.get("liked_dir", {}), "Liked"),
+            slot_line(global_state.get("bad_dir", {}), "Bad", negate=True),
+        ]
+        for axis in V2_FEEDBACK_AXES:
+            axis_slot = axis_memory.get(axis, {}) if isinstance(axis_memory, dict) else {}
+            if not isinstance(axis_slot, dict):
+                continue
+            pos_slot = axis_slot.get("positive", {})
+            neg_slot = axis_slot.get("negative", {})
+            pos_count = int(pos_slot.get("direction_count", 0))
+            neg_count = int(neg_slot.get("direction_count", 0))
+            if pos_count == 0 and neg_count == 0:
+                continue
+            role = "REPAIR" if axis in missing_axes else ("preserve" if axis in satisfied_axes else "idle")
+            pos_str = f"dir({pos_count})" if pos_count >= 3 else f"lerp({pos_count}/3)"
+            neg_str = f"dir({neg_count})" if neg_count >= 3 else f"lerp({neg_count}/3)"
+            lines.append(f"  Axis {axis}: {role} | + {pos_str} | - {neg_str}")
         return "\n".join(lines)
 
     def _v2_find_chat_tokenizer(self, clip):
@@ -10763,8 +10806,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             ),
             (
                 "Adaptation\n"
-                f"{adaptation_status}\n"
-                + "\n".join(filter(None, [
+                f"{adaptation_status}\n\n"
+                f"Direction memory:\n{self._v2_direction_readout(global_state, repair_feedback)}"
+                + ("\n\n" + "\n".join(filter(None, [
                     _active(intent_alignment_status),
                     _active(perfect_repair_status),
                     _active(repair_status),
@@ -10774,7 +10818,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     _active(vision_status),
                     model_patch_status if model is not None else "",
                     refusal_status if refusal_status else "",
-                ]))
+                ])) if any(filter(None, [
+                    _active(intent_alignment_status),
+                    _active(perfect_repair_status),
+                    _active(repair_status),
+                    _active(advisor_status),
+                    _active(lucky_status),
+                    _active(wildcard_status),
+                    _active(vision_status),
+                    model_patch_status if model is not None else "",
+                    refusal_status if refusal_status else "",
+                ])) else "")
             ),
             (
                 "Guidance\n"
@@ -10802,12 +10856,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             if patched is not None:
                 patched_model = patched
+                axis_memory = global_state.get("axis_conditioning_memory", {})
+                active_dirs = []
+                liked_c = int(global_state.get("liked_dir", {}).get("direction_count", 0))
+                if liked_c >= 3:
+                    active_dirs.append(f"liked({liked_c})")
+                for ax in V2_FEEDBACK_AXES:
+                    ax_slot = axis_memory.get(ax, {}) if isinstance(axis_memory, dict) else {}
+                    pos_c = int(ax_slot.get("positive", {}).get("direction_count", 0))
+                    if pos_c >= 3:
+                        active_dirs.append(f"{ax}({pos_c})")
+                dirs_str = ", ".join(active_dirs) if active_dirs else "none yet"
+                phrases_str = (
+                    f": {', '.join(repr(p) for p in emphasis_phrases[:4])}"
+                    if emphasis_phrases else ""
+                )
                 model_patch_status = (
-                    f"Model patch: applied | strength {model_strength:.3f} | "
-                    f"emphasis ranges {len(emphasis_ranges)}"
+                    f"Model patch (attn2 K/V injection): active\n"
+                    f"  Strength: {model_strength:.3f}\n"
+                    f"  Active directions injected: {dirs_str}\n"
+                    f"  Phrase emphasis: {len(emphasis_ranges)} position range(s){phrases_str}"
                 )
             else:
-                model_patch_status = "Model patch: connected but no directions ready yet (need 3+ rated runs)."
+                model_patch_status = "Model patch: connected but no directions ready yet (need 3+ rated runs per slot)."
 
         return (
             [(refined, meta)],
