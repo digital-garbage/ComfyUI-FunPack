@@ -11169,9 +11169,10 @@ class _FunPackAdvisorLLMWrapper:
         thinking = bool(kwargs.get("thinking", True))
         if skip_template:
             # Text already has role tokens baked in (e.g. from TextGenerateLTX2Prompt).
-            input_ids = self._tokenizer.encode(
+            result = self._tokenizer.encode(
                 str(text), return_tensors="pt", add_special_tokens=False
-            ).to(self._device)
+            )
+            input_ids = (result.input_ids if hasattr(result, "input_ids") else result).to(self._device)
         else:
             if system_prompt:
                 messages = [
@@ -11181,14 +11182,18 @@ class _FunPackAdvisorLLMWrapper:
             else:
                 messages = [{"role": "user", "content": str(text)}]
             try:
-                input_ids = self._tokenizer.apply_chat_template(
+                result = self._tokenizer.apply_chat_template(
                     messages, tokenize=True, add_generation_prompt=True, return_tensors="pt",
                     enable_thinking=thinking,
-                ).to(self._device)
+                )
             except TypeError:
-                input_ids = self._tokenizer.apply_chat_template(
+                result = self._tokenizer.apply_chat_template(
                     messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-                ).to(self._device)
+                )
+            # apply_chat_template may return a BatchEncoding or a plain tensor depending
+            # on the transformers version and tokenizer. Extract input_ids from either.
+            input_ids = result.input_ids if hasattr(result, "input_ids") else result
+            input_ids = input_ids.to(self._device)
         return {"input_ids": input_ids, "prompt_length": int(input_ids.shape[1]), "thinking": thinking}
 
     def generate(self, tokens, do_sample=True, max_length=800, temperature=0.7,
