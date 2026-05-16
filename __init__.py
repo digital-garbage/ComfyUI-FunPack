@@ -23,6 +23,7 @@ if __package__:
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (
+        FunPackAdvisorLLM,
         FunPackLorebookEnhancer,
         FunPackPromptCombiner,
         FunPackPromptEnhancer,

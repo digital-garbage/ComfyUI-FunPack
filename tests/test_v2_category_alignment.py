@@ -1471,7 +1471,7 @@ def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking
         "REPAIRED_PROMPT: person smoking, smoke trails drifting upward"
     )
 
-    prompt, status, diagnostic, applied = refiner._v2_prompt_advisor(
+    prompt, status, diagnostic, applied, _ = refiner._v2_prompt_advisor(
         clip,
         "Diagnostics",
         "person smoking",
@@ -1489,8 +1489,8 @@ def test_refiner_v2_advisor_uses_explicit_system_prompt_previous_prompt_thinking
     assert applied is False
     assert "diagnostics only" in status
     assert diagnostic == "add clearer smoke motion."
-    assert "analyzing a video generation prompt" in advisor_prompt
-    assert "Previous prompt (what caused the feedback): old encoded prompt" in advisor_prompt
+    assert "Prompt to analyze: person smoking" in advisor_prompt
+    assert "Previous prompt (what caused this rating): old encoded prompt" in advisor_prompt
     assert kwargs["image"] is image
     assert kwargs["thinking"] is True
     assert clip.generate_kwargs["seed"] == 123
@@ -1542,7 +1542,7 @@ def test_refiner_v2_advisor_repair_applies_validated_generated_prompt(tmp_path):
         "REPAIRED_PROMPT: person smoking, smoke trails drifting upward"
     )
 
-    _, status, training_info, _, _, encoded_prompts = refiner.refine_v2(
+    _, status, training_info, _, encoded_prompts, _ = refiner.refine_v2(
         "person smoking",
         clip,
         "Missing details",
@@ -1554,8 +1554,8 @@ def test_refiner_v2_advisor_repair_applies_validated_generated_prompt(tmp_path):
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert "Advisor: applied repair" in status
-    assert "Encoded: advisor repaired prompt" in training_info
-    assert encoded_prompts == "Positive prompt: person smoking, smoke trails drifting upward\n\nNegative prompt: "
+    assert "Encoded as: advisor repaired prompt" in training_info
+    assert "Positive prompt: person smoking, smoke trails drifting upward" in encoded_prompts
     assert state["last_run"]["encoded_prompt"] == "person smoking, smoke trails drifting upward"
     assert state["last_run"]["advisor"]["applied"] is True
 

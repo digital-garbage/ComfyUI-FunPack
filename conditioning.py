@@ -7010,6 +7010,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_text_semantic_similarity(self, clip, left, right, encode_cache=None):
         if clip is None:
             return 0.0
+        if not hasattr(clip, "encode_from_tokens_scheduled"):
+            # Generation-only clip (e.g. FunPackAdvisorLLM) can't encode; skip semantic gate.
+            return 1.0
         left = self._v2_clean_phrase_text(left)
         right = self._v2_clean_phrase_text(right)
         if not left or not right:
@@ -11164,6 +11167,7 @@ class _FunPackAdvisorLLMWrapper:
         )
 
     def tokenize(self, text, system_prompt=None, skip_template=False, **kwargs):
+        thinking = bool(kwargs.get("thinking", True))
         if skip_template:
             # Text already has role tokens baked in (e.g. from TextGenerateLTX2Prompt).
             input_ids = self._tokenizer.encode(
@@ -11177,21 +11181,31 @@ class _FunPackAdvisorLLMWrapper:
                 ]
             else:
                 messages = [{"role": "user", "content": str(text)}]
-            input_ids = self._tokenizer.apply_chat_template(
-                messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
-            ).to(self._device)
-        return {"input_ids": input_ids, "prompt_length": int(input_ids.shape[1])}
+            try:
+                input_ids = self._tokenizer.apply_chat_template(
+                    messages, tokenize=True, add_generation_prompt=True, return_tensors="pt",
+                    enable_thinking=thinking,
+                ).to(self._device)
+            except TypeError:
+                input_ids = self._tokenizer.apply_chat_template(
+                    messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+                ).to(self._device)
+        return {"input_ids": input_ids, "prompt_length": int(input_ids.shape[1]), "thinking": thinking}
 
     def generate(self, tokens, do_sample=True, max_length=800, temperature=0.7,
                  top_k=50, top_p=0.92, min_p=0.0, repetition_penalty=1.3,
                  no_repeat_ngram_size=5, presence_penalty=0.0, seed=None, **kwargs):
         input_ids = tokens["input_ids"]
         prompt_length = tokens.get("prompt_length", int(input_ids.shape[1]))
+        thinking = tokens.get("thinking", False)
         if seed:
             torch.manual_seed(int(seed))
+        # When thinking mode is active, add extra budget for the reasoning chain so the
+        # actual response is not crowded out by thinking tokens.
+        effective_max = int(max_length) + 2048 if thinking else int(max_length)
         required = dict(
             do_sample=do_sample,
-            max_new_tokens=int(max_length),
+            max_new_tokens=effective_max,
             temperature=float(temperature),
             top_k=int(top_k),
             top_p=float(top_p),
@@ -11225,7 +11239,10 @@ class _FunPackAdvisorLLMWrapper:
         output_ids = generated["output_ids"]
         prompt_length = generated.get("prompt_length", 0)
         new_tokens = output_ids[0][prompt_length:]
-        return self._tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
+        text = self._tokenizer.decode(new_tokens, skip_special_tokens=skip_special_tokens)
+        # Strip chain-of-thought thinking blocks emitted by models like Qwen3.
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
+        return text
 
 
 _FUNPACK_ADVISOR_LLM_CACHE = {}
