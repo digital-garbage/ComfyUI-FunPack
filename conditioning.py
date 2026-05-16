@@ -11937,6 +11937,9 @@ class FunPackStudio:
         else:
             active_prompt = str(sb.get("scene_positive", "") or "").strip() or str(positive_prompt or "").strip()
 
+        # --- Overrides: when True, popup value wins over connected input ---
+        ov = settings.get("overrides", {}) if isinstance(settings.get("overrides"), dict) else {}
+
         # --- Refiner settings ---
         rf = settings.get("refiner", {}) if isinstance(settings.get("refiner"), dict) else {}
         mode = str(rf.get("mode", "Refine") or "Refine")
@@ -11945,13 +11948,28 @@ class FunPackStudio:
         prompt_repair = bool(rf.get("prompt_repair", True))
         im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
         reset_session = bool(rf.get("reset_session", False))
-        # Connected input takes precedence over popup value
-        feedback_prompt = str(feedback_prompt) if feedback_prompt is not None else str(rf.get("feedback_prompt", "") or "")
-        intent_override = str(rf.get("user_intent_prompt_override", "") or "")
-        effective_intent = intent_override or str(user_intent_prompt or "")
 
-        # --- Refinement key ---
-        key = str(settings.get("refinement_key", "") or "").strip()
+        # feedback_prompt: popup wins if override is on, else external wins
+        popup_feedback = str(rf.get("feedback_prompt", "") or "")
+        if ov.get("feedback_prompt"):
+            feedback_prompt = popup_feedback
+        else:
+            feedback_prompt = str(feedback_prompt) if feedback_prompt is not None else popup_feedback
+
+        # user_intent_prompt: popup wins if override is on, else external wins
+        popup_intent = str(rf.get("user_intent_prompt_override", "") or "")
+        if ov.get("user_intent_prompt"):
+            effective_intent = popup_intent
+        else:
+            effective_intent = str(user_intent_prompt or "") or popup_intent
+
+        # --- Refinement key: popup wins if override is on, else external input wins ---
+        popup_key = str(settings.get("refinement_key", "") or "").strip()
+        if ov.get("refinement_key"):
+            key = popup_key
+            refinement_key_input = ""  # suppress external so refine_v2 uses widget key
+        else:
+            key = popup_key  # refine_v2 uses refinement_key_input when non-empty
 
         # --- Advisor LLM ---
         advisor_clip = None

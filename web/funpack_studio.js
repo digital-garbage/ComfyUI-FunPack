@@ -59,11 +59,20 @@ function deepMerge(target, src) {
 function defaultSettings() {
   return {
     refinement_key: "",
+    overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
     refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "" },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
   };
+}
+
+function overrideToggle(settings, key, label) {
+  if (!settings.overrides) settings.overrides = {};
+  const { wrap, inp } = toggleEl(settings.overrides[key] || false, label);
+  inp.addEventListener("change", () => { settings.overrides[key] = inp.checked; });
+  wrap.className += " funpack-studio-override-toggle";
+  return wrap;
 }
 
 function linkedRefinementKey(node) {
@@ -276,11 +285,13 @@ function openPanel(node) {
 
     const linkedKey = linkedRefinementKey(node);
     if (linkedKey) {
-      const hint = el("div", "funpack-studio-hint", `Linked key from node input: ${linkedKey} (takes precedence at runtime)`);
+      const hint = el("div", "funpack-studio-hint", `Linked key from node input: ${linkedKey}`);
       body.append(hint);
     }
 
     body.append(row("Session key", keyInput));
+    body.append(overrideToggle(settings, "refinement_key",
+      "Override - use popup key even when refinement_key_input is connected"));
 
     const resetToggle = toggleEl(settings.refiner.reset_session, "Reset session on next run");
     resetToggle.inp.addEventListener("change", () => { settings.refiner.reset_session = resetToggle.inp.checked; });
@@ -446,17 +457,20 @@ function openPanel(node) {
     body.append(row("Lucky", luckyToggle.wrap));
 
     body.append(sectionTitle("Feedback"));
-
+    body.append(overrideToggle(settings, "feedback_prompt",
+      "Override - use popup value even when feedback_prompt input is connected"));
     const fbArea = el("textarea", "funpack-studio-textarea short");
     fbArea.value = settings.refiner.feedback_prompt || "";
-    fbArea.placeholder = "Optional feedback: describe what was wrong with the previous output...";
+    fbArea.placeholder = "Feedback: describe what was wrong with the previous output...";
     fbArea.addEventListener("input", () => { settings.refiner.feedback_prompt = fbArea.value; });
     body.append(fbArea);
 
-    body.append(sectionTitle("Intent override"));
+    body.append(sectionTitle("Intent"));
+    body.append(overrideToggle(settings, "user_intent_prompt",
+      "Override - use popup value even when user_intent_prompt input is connected"));
     const intentArea = el("textarea", "funpack-studio-textarea short");
     intentArea.value = settings.refiner.user_intent_prompt_override || "";
-    intentArea.placeholder = "Optional intent override (overrides the user_intent_prompt input)...";
+    intentArea.placeholder = "Intent override (overrides the user_intent_prompt node input)...";
     intentArea.addEventListener("input", () => { settings.refiner.user_intent_prompt_override = intentArea.value; });
     body.append(intentArea);
   }
@@ -803,6 +817,8 @@ function injectStyles() {
       background: rgba(255,255,255,0.07); color: #eee; cursor: pointer; font: 11px sans-serif;
     }
     .funpack-studio-chip:hover { background: rgba(100,210,140,0.25); border-color: rgba(100,210,140,0.5); }
+    .funpack-studio-override-toggle { color: #9da6b0; font-size: 11px; margin-bottom: 3px; }
+    .funpack-studio-override-toggle span { color: #9da6b0; }
   `;
   document.head.append(style);
 }
