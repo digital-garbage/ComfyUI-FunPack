@@ -122,6 +122,22 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward):
         return None
 
 
+def clear_refinement_data(refinement_key):
+    """Remove all enhancement files for a key. Called on reset_session."""
+    if not refinement_key:
+        return
+    for path in (
+        _temp_maps_path(refinement_key),
+        _blessed_maps_path(refinement_key),
+        _creativity_latent_path(refinement_key),
+    ):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception as e:
+            print(f"[FunPackEnhancements] Cleanup failed for {path}: {e}")
+
+
 def bless_attention_maps(refinement_key):
     """Promote temp maps to blessed. Call when user rates a generation Perfect."""
     src = _temp_maps_path(refinement_key)

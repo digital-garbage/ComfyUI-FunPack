@@ -5847,6 +5847,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_load_state(self, refinement_key, reset_session=False):
         path = self._v2_state_path(refinement_key)
+        if reset_session:
+            try:
+                try:
+                    from .ltx_enhancements import clear_refinement_data
+                except ImportError:
+                    from ltx_enhancements import clear_refinement_data
+                clear_refinement_data(refinement_key)
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] Enhancement cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
             preserved_scene_builder = None
             if reset_session and os.path.exists(path):
