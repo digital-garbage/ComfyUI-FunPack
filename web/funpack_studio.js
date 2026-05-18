@@ -521,7 +521,7 @@ function openPanel(node) {
     const enableToggle = toggleEl(settings.advisor_llm.enabled, "Enable Advisor LLM");
     enableToggle.inp.addEventListener("change", () => {
       settings.advisor_llm.enabled = enableToggle.inp.checked;
-      renderAdvisor();
+      renderTab("Advisor");
     });
     body.append(row("Enable", enableToggle.wrap));
 
