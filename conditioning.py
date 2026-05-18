@@ -5602,8 +5602,8 @@ def normalize_refiner_v2_rating(value):
 
 class FunPackVideoRefinerV2(FunPackVideoRefiner):
     CATEGORY = "FunPack/Refinement"
-    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL")
-    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model")
+    RETURN_TYPES = ("CONDITIONING", "STRING", "STRING", "IMAGE", "STRING", "MODEL", "LATENT")
+    RETURN_NAMES = ("modified_positive", "status", "training_info", "loss_graph", "encoded_prompts", "model", "video_latent")
     FUNCTION = "refine_v2"
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
@@ -10980,6 +10980,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] LTX enhancements failed: {e}")
 
+        video_latent = None
+        if eff_key:
+            try:
+                try:
+                    from .ltx_enhancements import load_and_apply_creativity_mask
+                except ImportError:
+                    from ltx_enhancements import load_and_apply_creativity_mask
+                video_latent = load_and_apply_creativity_mask(
+                    eff_key,
+                    learning_profile if isinstance(learning_profile, dict) else {},
+                    prev_reward,
+                )
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
+
         return (
             [(refined, meta)],
             status + enhancement_status,
@@ -10987,6 +11002,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             loss_graph,
             self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
             patched_model,
+            video_latent,
         )
 
 
@@ -10995,7 +11011,11 @@ class FunPackSaveRefinementLatent:
     RETURN_TYPES = ("LATENT", "STRING")
     RETURN_NAMES = ("latent", "status")
     FUNCTION = "save_latent"
-    DESCRIPTION = "Saves a latent tensor bundle under a refinement key for FunPack Video Refiner latent refinement."
+    DESCRIPTION = (
+        "Saves a video latent under a refinement key so Studio and Refiner V2 can compute "
+        "a spatial creativity mask on the next run. Connect your KSampler latent output here. "
+        "Audio and combined AV latents are skipped automatically - video only."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -11003,7 +11023,6 @@ class FunPackSaveRefinementLatent:
             "required": {
                 "latent": ("LATENT",),
                 "refinement_key": ("STRING", {"default": "my_style_v1", "multiline": False}),
-                "mode": (["ltx2", "wan"], {"default": "ltx2"}),
             }
         }
 
@@ -11011,16 +11030,22 @@ class FunPackSaveRefinementLatent:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def save_latent(self, latent, refinement_key, mode):
-        if isinstance(latent, dict) and not latent_is_plain_video_tensor(latent):
-            FunPackVideoRefiner()._raise_wrong_latent(latent)
-
+    def save_latent(self, latent, refinement_key):
         samples = latent_samples(latent)
         if samples is None:
             return (clone_latent(latent), "No latent samples tensor found.")
 
-        FunPackVideoRefiner()._save_latent_reference(latent, refinement_key, mode)
-        return (clone_latent(latent), f"Saved latent for key '{refinement_key}' ({mode}) shape={tuple(samples.shape)}")
+        try:
+            try:
+                from .ltx_enhancements import save_creativity_latent
+            except ImportError:
+                from ltx_enhancements import save_creativity_latent
+            save_creativity_latent(latent, refinement_key)
+        except Exception as e:
+            print(f"[FunPackSaveRefinementLatent] Save failed: {e}")
+            return (clone_latent(latent), f"Save failed: {e}")
+
+        return (clone_latent(latent), f"Saved video latent for key '{refinement_key}' shape={tuple(samples.shape)}")
 
 
 class FunPackPromptCombiner:
@@ -11891,8 +11916,8 @@ class FunPackStudio:
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
 
     CATEGORY = "FunPack"
-    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "SAMPLER", "SIGMAS", "SAMPLER", "SIGMAS", "IMAGE", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "high_pass_sampler", "high_pass_sigmas", "low_pass_sampler", "low_pass_sigmas", "loss_graph", "status", "training_info", "encoded_prompts")
+    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING", "INT", "SAMPLER", "SIGMAS", "SAMPLER", "SIGMAS", "IMAGE", "STRING", "STRING", "STRING", "LATENT")
+    RETURN_NAMES = ("model", "modified_positive", "negative", "seed", "high_pass_sampler", "high_pass_sigmas", "low_pass_sampler", "low_pass_sigmas", "loss_graph", "status", "training_info", "encoded_prompts", "video_latent")
     FUNCTION = "run"
     DESCRIPTION = (
         "FunPack Studio - all FunPack refinement tools in one node. "
@@ -12105,7 +12130,7 @@ class FunPackStudio:
 
         # --- Refiner V2 ---
         refiner = FunPackVideoRefinerV2()
-        cond, status, training_info, loss_graph, encoded_prompts, out_model = refiner.refine_v2(
+        cond, status, training_info, loss_graph, encoded_prompts, out_model, video_latent = refiner.refine_v2(
             active_prompt,
             clip=clip,
             rating=rating,
@@ -12144,7 +12169,7 @@ class FunPackStudio:
             settings.get("samplers", {})
         )
 
-        return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts)
+        return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
 
     @staticmethod
     def _parse_sigmas(text):

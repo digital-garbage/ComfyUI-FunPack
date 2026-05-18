@@ -58,6 +58,70 @@ def _blessed_maps_path(refinement_key):
     return os.path.join(_maps_dir(), f"blessed_{_safe_key(refinement_key)}.pt")
 
 
+def _creativity_latent_path(refinement_key):
+    return os.path.join(_maps_dir(), f"creativity_latent_{_safe_key(refinement_key)}.pt")
+
+
+# ---------------------------------------------------------------------------
+# Creativity latent save / load
+# ---------------------------------------------------------------------------
+
+def save_creativity_latent(latent, refinement_key):
+    """
+    Save a video latent for creativity masking. Called by Save Refinement Latent node.
+    Audio latents and combined AV latents are skipped - video samples only.
+    """
+    if not refinement_key:
+        return False
+    if not isinstance(latent, dict):
+        return False
+    if latent.get("type") == "audio":
+        return False
+    samples = latent.get("samples")
+    if not isinstance(samples, torch.Tensor) or samples.dim() not in (4, 5):
+        return False
+    try:
+        torch.save({"samples": samples.detach().cpu()}, _creativity_latent_path(refinement_key))
+        return True
+    except Exception as e:
+        print(f"[FunPackEnhancements] Save creativity latent failed: {e}")
+        return False
+
+
+def load_and_apply_creativity_mask(refinement_key, rating_profile, reward):
+    """
+    Auto-loads saved creativity latent for key, computes mask, returns
+    noise-modified latent dict or None.
+    Returns None if no saved latent, reward is high, or mask is flat.
+    """
+    if not refinement_key or reward >= 0.8:
+        return None
+    path = _creativity_latent_path(refinement_key)
+    if not os.path.exists(path):
+        return None
+    try:
+        saved = torch.load(path, map_location="cpu", weights_only=True)
+        samples = saved.get("samples")
+        if not isinstance(samples, torch.Tensor) or samples.dim() not in (4, 5):
+            return None
+
+        mask = build_creativity_mask({"samples": samples}, rating_profile, reward)
+        if mask is None:
+            return None
+
+        # mask shape: [B, T, H, W] (5D) or [B, H, W] (4D)
+        # samples shape: [B, C, T, H, W] or [B, C, H, W]
+        # Add extra noise to high-variance regions, scaled to latent's own std
+        latent_std = float(samples.std().clamp_min(1e-8).item())
+        noise = torch.randn_like(samples)
+        noise_scale = (mask * latent_std).unsqueeze(1)  # [B, 1, T, H, W] or [B, 1, H, W]
+        creative_samples = samples + noise * noise_scale
+        return {"samples": creative_samples}
+    except Exception as e:
+        print(f"[FunPackEnhancements] Load/apply creativity mask failed: {e}")
+        return None
+
+
 def bless_attention_maps(refinement_key):
     """Promote temp maps to blessed. Call when user rates a generation Perfect."""
     src = _temp_maps_path(refinement_key)
