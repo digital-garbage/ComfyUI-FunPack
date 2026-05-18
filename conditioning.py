@@ -22,7 +22,6 @@ import folder_paths
 LORA_REFINER_TYPE_PROFILES = {
     "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
     "action": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
-    "concept": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
     "style": {"step": 0.032, "max_offset": 0.28, "min_offset": -0.38, "bad_max_offset": 0.58, "bad_min_offset": -1.55, "culprit_bias": 0.20},
     "quality": {"step": 0.022, "max_offset": 0.18, "min_offset": -0.30, "bad_max_offset": 0.38, "bad_min_offset": -1.20, "culprit_bias": 0.18},
     "character": {"step": 0.024, "max_offset": 0.20, "min_offset": -0.32, "bad_max_offset": 0.42, "bad_min_offset": -1.30, "culprit_bias": 0.10},
@@ -5609,7 +5608,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
     V2_STATE_PREFIX = "refine_v2"
-    ACTION_LORA_TYPES = {"action", "concept"}
+    ACTION_LORA_TYPES = {"action"}
     AUTO_INJECT_BLOCKED_CATEGORIES = {"appearance", "subject", "environment"}
     AUTO_INJECT_ALLOWED_CATEGORIES = {"action", "camera", "details", "quality", "style"}
     CATEGORY_DESCRIPTIONS = {

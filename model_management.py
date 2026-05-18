@@ -26,7 +26,6 @@ LORA_PROFILE_CACHE_SIZE = 24
 LORA_BLOCK_TYPE_PROFILES = {
     "character": {"priority": 1.18, "yield": 0.48},
     "action": {"priority": 1.12, "yield": 0.62},
-    "concept": {"priority": 1.12, "yield": 0.62},
     "quality": {"priority": 1.04, "yield": 0.72},
     "style": {"priority": 0.96, "yield": 0.96},
     "general": {"priority": 0.90, "yield": 1.12},
@@ -37,7 +36,6 @@ LORA_BLOCK_TYPE_PROFILES = {
 LORA_TYPE_BLOCK_ZONES = {
     "character": {"good": (0.45, 1.00), "bad": (0.00, 0.20)},
     "action":    {"good": (0.20, 0.80), "bad": None},
-    "concept":   {"good": (0.20, 0.80), "bad": None},
     "quality":   {"good": None,         "bad": None},
     "style":     {"good": (0.00, 0.50), "bad": (0.65, 1.00)},
     "general":   {"good": None,         "bad": None},
@@ -334,7 +332,7 @@ class FunPackApplyLoraWeights:
 
             shifted_base_weight = None
             lora_type = kwargs.get(f"lora_{index}_type", "general")
-            if not isinstance(lora_name, str) and isinstance(lora_type, str) and lora_type not in LORA_TYPES and lora_type != "concept":
+            if not isinstance(lora_name, str) and isinstance(lora_type, str) and lora_type not in LORA_TYPES:
                 shifted_base_weight = safe_float(lora_name, 1.0)
                 lora_name = lora_type
                 lora_type = "general"
