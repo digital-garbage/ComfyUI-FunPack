@@ -10992,15 +10992,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         # --- LTX enhancements (temperature, temporal RoPE, attention anchors) ---
         enhancement_status = ""
+        eff_key = refinement_key or ""
+        prev_reward = float(learning_profile.get("reward", 0.0)) if isinstance(learning_profile, dict) else 0.0
         if patched_model is not None:
             try:
                 try:
                     from .ltx_enhancements import build_enhancements, bless_attention_maps
                 except ImportError:
                     from ltx_enhancements import build_enhancements, bless_attention_maps
-
-                eff_key = refinement_key or ""
-                prev_reward = float(learning_profile.get("reward", 0.0)) if isinstance(learning_profile, dict) else 0.0
 
                 # Bless attention maps when the previous run was rated Perfect or Loved it
                 if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it"}:

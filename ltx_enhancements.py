@@ -128,7 +128,18 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
         latent_std = float(samples.std().clamp_min(1e-8).item())
         noise = torch.randn_like(samples)
         noise_scale = (mask * latent_std).unsqueeze(1)  # broadcast over channel dim
-        return {"samples": samples + noise * noise_scale}
+        modified = samples + noise * noise_scale
+
+        # Preserve all original keys from the source latent; only replace samples.
+        # Keep samples on the same device as the original to avoid device mismatches.
+        if explicit_latent is not None:
+            result = dict(explicit_latent)
+            orig_samples = explicit_latent.get("samples")
+            if isinstance(orig_samples, torch.Tensor):
+                modified = modified.to(device=orig_samples.device, dtype=orig_samples.dtype)
+            result["samples"] = modified
+            return result
+        return {"samples": modified}
     except Exception as e:
         print(f"[FunPackEnhancements] Apply creativity mask failed: {e}")
         return explicit_latent  # on error, pass through explicit input unchanged
