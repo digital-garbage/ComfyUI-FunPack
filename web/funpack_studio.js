@@ -8,6 +8,7 @@ const LORA_TYPES = ["general", "action", "concept", "style", "quality", "charact
 const ADVISOR_DTYPES = ["bfloat16", "float16", "float32"];
 const REFINER_MODES = ["Refine", "Prompt only", "Learning"];
 const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
+const TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
 const TABS = ["Session", "Scene", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
@@ -65,7 +66,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "" },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural" },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -477,6 +478,17 @@ function openPanel(node) {
     const luckyToggle = toggleEl(settings.refiner.im_feeling_lucky, "I'm Feeling Lucky");
     luckyToggle.inp.addEventListener("change", () => { settings.refiner.im_feeling_lucky = luckyToggle.inp.checked; });
     body.append(row("Lucky", luckyToggle.wrap));
+
+    body.append(sectionTitle("Generation"));
+    body.append(el("div", "funpack-studio-hint",
+      "Temporal style controls how the model perceives motion timing via RoPE frame_rate manipulation. " +
+      "natural = no change. accelerate = faster, snappier motion. decelerate = heavier, slower motion. " +
+      "loop = circular temporal coords (experimental). freeze = highly compressed time (experimental). " +
+      "Attention anchors from Perfect-rated outputs are automatically captured and injected into future runs."));
+    if (!settings.refiner.temporal_style) settings.refiner.temporal_style = "natural";
+    const temporalSelect = selectEl(TEMPORAL_STYLES, settings.refiner.temporal_style);
+    temporalSelect.addEventListener("change", () => { settings.refiner.temporal_style = temporalSelect.value; });
+    body.append(row("Temporal style", temporalSelect));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",

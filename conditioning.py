@@ -5777,6 +5777,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "default": "",
                     "tooltip": "Optional user feedback describing what was specifically wrong with the previous output (e.g. 'he was supposed to hold her hand, not her head'). Has highest priority in the advisor system prompt.",
                 }),
+                "temporal_style": (["natural", "accelerate", "decelerate", "loop", "freeze"], {
+                    "default": "natural",
+                    "label": "Temporal Style",
+                    "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time.",
+                }),
             },
         }
 
@@ -10347,7 +10352,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
-                  advisor_clip=None, feedback_prompt="", prompt_repair=True, _seed=None):
+                  advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
+                  _seed=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -10948,9 +10954,36 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             else:
                 model_patch_status = "Model patch: connected but no directions ready yet (need 3+ rated runs per slot)."
 
+        # --- LTX enhancements (temperature, temporal RoPE, attention anchors) ---
+        enhancement_status = ""
+        if patched_model is not None:
+            try:
+                try:
+                    from .ltx_enhancements import build_enhancements, bless_attention_maps
+                except ImportError:
+                    from ltx_enhancements import build_enhancements, bless_attention_maps
+
+                eff_key = refinement_key or ""
+                prev_reward = float(learning_profile.get("reward", 0.0)) if isinstance(learning_profile, dict) else 0.0
+
+                # Bless attention maps when the previous run was rated Perfect
+                if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") == "like":
+                    bless_attention_maps(eff_key)
+
+                patched_model = build_enhancements(
+                    patched_model,
+                    rating_profile=learning_profile if isinstance(learning_profile, dict) else {},
+                    temporal_style=temporal_style,
+                    refinement_key=eff_key,
+                    reward=prev_reward,
+                )
+                enhancement_status = f"\nLTX enhancements: temporal={temporal_style}, reward={prev_reward:+.2f}"
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] LTX enhancements failed: {e}")
+
         return (
             [(refined, meta)],
-            status,
+            status + enhancement_status,
             training_info,
             loss_graph,
             self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
@@ -11980,6 +12013,7 @@ class FunPackStudio:
         prompt_repair = bool(rf.get("prompt_repair", True))
         im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
         reset_session = bool(rf.get("reset_session", False))
+        temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -12092,6 +12126,7 @@ class FunPackStudio:
             advisor_clip=advisor_clip,
             feedback_prompt=feedback_prompt,
             prompt_repair=prompt_repair,
+            temporal_style=temporal_style,
             _seed=seed,
         )
 
