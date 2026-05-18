@@ -93,12 +93,16 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
     Computes creativity mask and returns noise-modified latent dict or None.
     Source priority: connected latent arg > saved file by key > None.
     At high reward the global floor is 0 and only gentle spatial variance applies.
+    If mask cannot fire and a latent was explicitly connected, returns it unchanged.
     """
 
-    # Resolve source latent
+    # Track whether a latent was explicitly provided (for passthrough fallback)
+    explicit_latent = latent if isinstance(latent, dict) and latent.get("type") != "audio" else None
+
+    # Resolve samples source
     samples = None
-    if isinstance(latent, dict) and latent.get("type") != "audio":
-        s = latent.get("samples")
+    if explicit_latent is not None:
+        s = explicit_latent.get("samples")
         if isinstance(s, torch.Tensor) and s.dim() in (4, 5):
             samples = s.detach().cpu()
 
@@ -114,12 +118,12 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
                 print(f"[FunPackEnhancements] Load creativity latent failed: {e}")
 
     if samples is None:
-        return None
+        return explicit_latent  # nothing to work with; pass through explicit input if any
 
     try:
         mask = build_creativity_mask({"samples": samples}, rating_profile, reward)
         if mask is None:
-            return None
+            return explicit_latent  # mask flat/invalid; pass through explicit input if any
 
         latent_std = float(samples.std().clamp_min(1e-8).item())
         noise = torch.randn_like(samples)
@@ -127,7 +131,7 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
         return {"samples": samples + noise * noise_scale}
     except Exception as e:
         print(f"[FunPackEnhancements] Apply creativity mask failed: {e}")
-        return None
+        return explicit_latent  # on error, pass through explicit input unchanged
 
 
 def clear_refinement_data(refinement_key):

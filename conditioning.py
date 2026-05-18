@@ -11017,21 +11017,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] LTX enhancements failed: {e}")
 
-        video_latent = None
-        if eff_key:
+        video_latent = latent  # pass through unchanged by default; mask overwrites if it fires
+        try:
             try:
-                try:
-                    from .ltx_enhancements import load_and_apply_creativity_mask
-                except ImportError:
-                    from ltx_enhancements import load_and_apply_creativity_mask
-                video_latent = load_and_apply_creativity_mask(
-                    eff_key,
-                    learning_profile if isinstance(learning_profile, dict) else {},
-                    prev_reward,
-                    latent=latent,
-                )
-            except Exception as e:
-                print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
+                from .ltx_enhancements import load_and_apply_creativity_mask
+            except ImportError:
+                from ltx_enhancements import load_and_apply_creativity_mask
+            result = load_and_apply_creativity_mask(
+                eff_key,
+                learning_profile if isinstance(learning_profile, dict) else {},
+                prev_reward,
+                latent=latent,
+            )
+            if result is not None:
+                video_latent = result
+        except Exception as e:
+            print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
         return (
             [(refined, meta)],
