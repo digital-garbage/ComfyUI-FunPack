@@ -88,37 +88,47 @@ def save_creativity_latent(latent, refinement_key):
         return False
 
 
-def load_and_apply_creativity_mask(refinement_key, rating_profile, reward):
+def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, latent=None):
     """
-    Auto-loads saved creativity latent for key, computes mask, returns
-    noise-modified latent dict or None.
-    Returns None if no saved latent, reward is high, or mask is flat.
+    Computes creativity mask and returns noise-modified latent dict or None.
+    Source priority: connected latent arg > saved file by key > None.
+    Returns None when reward >= 0.8 (no need to push harder when things work).
     """
-    if not refinement_key or reward >= 0.8:
+    if reward >= 0.8:
         return None
-    path = _creativity_latent_path(refinement_key)
-    if not os.path.exists(path):
-        return None
-    try:
-        saved = torch.load(path, map_location="cpu", weights_only=True)
-        samples = saved.get("samples")
-        if not isinstance(samples, torch.Tensor) or samples.dim() not in (4, 5):
-            return None
 
+    # Resolve source latent
+    samples = None
+    if isinstance(latent, dict) and latent.get("type") != "audio":
+        s = latent.get("samples")
+        if isinstance(s, torch.Tensor) and s.dim() in (4, 5):
+            samples = s.detach().cpu()
+
+    if samples is None and refinement_key:
+        path = _creativity_latent_path(refinement_key)
+        if os.path.exists(path):
+            try:
+                saved = torch.load(path, map_location="cpu", weights_only=True)
+                s = saved.get("samples")
+                if isinstance(s, torch.Tensor) and s.dim() in (4, 5):
+                    samples = s
+            except Exception as e:
+                print(f"[FunPackEnhancements] Load creativity latent failed: {e}")
+
+    if samples is None:
+        return None
+
+    try:
         mask = build_creativity_mask({"samples": samples}, rating_profile, reward)
         if mask is None:
             return None
 
-        # mask shape: [B, T, H, W] (5D) or [B, H, W] (4D)
-        # samples shape: [B, C, T, H, W] or [B, C, H, W]
-        # Add extra noise to high-variance regions, scaled to latent's own std
         latent_std = float(samples.std().clamp_min(1e-8).item())
         noise = torch.randn_like(samples)
-        noise_scale = (mask * latent_std).unsqueeze(1)  # [B, 1, T, H, W] or [B, 1, H, W]
-        creative_samples = samples + noise * noise_scale
-        return {"samples": creative_samples}
+        noise_scale = (mask * latent_std).unsqueeze(1)  # broadcast over channel dim
+        return {"samples": samples + noise * noise_scale}
     except Exception as e:
-        print(f"[FunPackEnhancements] Load/apply creativity mask failed: {e}")
+        print(f"[FunPackEnhancements] Apply creativity mask failed: {e}")
         return None
 
 

@@ -5781,6 +5781,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "Temporal Style",
                     "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time.",
                 }),
+                "latent": ("LATENT", {
+                    "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
+                }),
             },
         }
 
@@ -10361,7 +10364,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  _seed=None):
+                  latent=None, _seed=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -11000,6 +11003,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     eff_key,
                     learning_profile if isinstance(learning_profile, dict) else {},
                     prev_reward,
+                    latent=latent,
                 )
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
@@ -11989,6 +11993,9 @@ class FunPackStudio:
                 "feedback_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
                     "tooltip": "Feedback about the previous output. Overrides the feedback set inside Studio."}),
                 "refinement_key_input": ("STRING", {"forceInput": True}),
+                "latent": ("LATENT", {
+                    "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
+                }),
             },
         }
 
@@ -11997,7 +12004,8 @@ class FunPackStudio:
             positive_conditioning=None, negative_conditioning=None,
             clip_vision_output=None, source_image=None,
             lora_stack=None, positive_prompt=None, negative_prompt=None,
-            user_intent_prompt=None, feedback_prompt=None, refinement_key_input=""):
+            user_intent_prompt=None, feedback_prompt=None, refinement_key_input="",
+            latent=None):
 
         try:
             settings = json.loads(str(studio_settings or "{}"))
@@ -12160,6 +12168,7 @@ class FunPackStudio:
             feedback_prompt=feedback_prompt,
             prompt_repair=prompt_repair,
             temporal_style=temporal_style,
+            latent=latent,
             _seed=seed,
         )
 
