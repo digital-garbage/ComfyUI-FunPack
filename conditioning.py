@@ -5744,7 +5744,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "tooltip": "Optional original/source image or frame batch. V2 stores size, aspect ratio, and a simple fingerprint to notice changed inputs.",
                 }),
                 "model": ("MODEL", {
-                    "tooltip": "Optional model. When connected, Refiner applies per-layer direction injection and phrase emphasis to cross-attention K/V via attn2_patch. Connect the model output to your sampler.",
+                    "tooltip": "Optional model. LTX-2 / LTXAV family only - attn2 direction injection, attention temperature, temporal RoPE, and anchor transfer all require LTX transformer internals. Connecting a non-LTX model (e.g. WAN) passes it through unchanged. Connect the model output to your sampler.",
                 }),
                 "refinement_key_input": ("STRING", {
                     "default": "",

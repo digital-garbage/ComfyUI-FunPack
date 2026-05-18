@@ -246,6 +246,35 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
 
 
 # ---------------------------------------------------------------------------
+# Model family detection
+# ---------------------------------------------------------------------------
+
+def _is_ltx_model(model):
+    """Return True if model is from the LTX-V / LTXAV family."""
+    try:
+        # Check the diffusion model class name
+        inner = getattr(model, "model", None) or getattr(model, "inner_model", None)
+        if inner is not None:
+            cls_name = type(inner).__name__
+            if any(x in cls_name for x in ("LTXV", "LTXAVModel", "LTXVModel", "LTXBaseModel")):
+                return True
+        # Check unet_config image_model key set by ComfyUI model detection
+        cfg = getattr(model, "model_config", None)
+        if cfg is not None:
+            unet_cfg = getattr(cfg, "unet_config", {}) or {}
+            image_model = str(unet_cfg.get("image_model", "")).lower()
+            if image_model in {"ltxv", "ltxav"}:
+                return True
+        # Fallback: check model_type string if present
+        model_type = str(getattr(model, "model_type", "") or "").lower()
+        if "ltx" in model_type:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Main enhancement builder
 # ---------------------------------------------------------------------------
 
@@ -257,6 +286,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     Called by refine_v2 / Studio.run after the attn2 direction patch is applied.
     """
     if model is None:
+        return model
+
+    if not _is_ltx_model(model):
+        print("[FunPackEnhancements] Non-LTX model detected - skipping all LTX enhancements, passing model through unchanged.")
         return model
 
     temporal_style = str(temporal_style or "natural").strip().lower()
