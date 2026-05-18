@@ -31,6 +31,22 @@ LORA_BLOCK_TYPE_PROFILES = {
     "style": {"priority": 0.96, "yield": 0.96},
     "general": {"priority": 0.90, "yield": 1.12},
 }
+# Normalized block position zones (0.0=first block, 1.0=last block).
+# good: primary contribution zone - blocks here get a mild boost
+# bad: blocks here actively work against the type's purpose - suppressed to 0.0
+LORA_TYPE_BLOCK_ZONES = {
+    "character": {"good": (0.45, 1.00), "bad": (0.00, 0.20)},
+    "action":    {"good": (0.20, 0.80), "bad": None},
+    "concept":   {"good": (0.20, 0.80), "bad": None},
+    "quality":   {"good": None,         "bad": None},
+    "style":     {"good": (0.00, 0.50), "bad": (0.65, 1.00)},
+    "general":   {"good": None,         "bad": None},
+}
+LORA_ZONE_BOOST = 1.12
+LORA_ZONE_SCALE_CAP = 1.75
+# Blocks confirmed as primary semantic focal points (PAG default=14, STG defaults=14,19).
+# These are never zeroed by type-zone suppression and never damped by stack pressure.
+SEMANTIC_ANCHOR_BLOCKS = frozenset({14, 19})
 
 
 @PromptServer.instance.routes.get("/funpack/loras")
@@ -597,12 +613,56 @@ class FunPackLoraLoader:
             self._cache_put(self.block_profile_cache, patch_cache_key, template, LORA_PROFILE_CACHE_SIZE)
         return template
 
+    def _apply_type_zone_scales(self, scales, entry):
+        lora_type = normalize_lora_type(entry.get("type", "general"))
+        zone = LORA_TYPE_BLOCK_ZONES.get(lora_type, {})
+        good = zone.get("good")
+        bad = zone.get("bad")
+        if not good and not bad:
+            return scales, 0
+
+        block_indices = list(scales.keys())
+        if not block_indices:
+            return scales, 0
+        max_idx = max(block_indices)
+        if max_idx == 0:
+            return scales, 0
+
+        result = dict(scales)
+        suppressed = 0
+        for block_index, scale in scales.items():
+            pos = block_index / max_idx
+            if bad and bad[0] <= pos <= bad[1]:
+                if block_index in SEMANTIC_ANCHOR_BLOCKS:
+                    continue
+                result[block_index] = 0.0
+                suppressed += 1
+            elif good and good[0] <= pos <= good[1]:
+                result[block_index] = min(LORA_ZONE_SCALE_CAP, scale * LORA_ZONE_BOOST)
+        return result, suppressed
+
+    def _semantic_anchor_quality(self, block_scores):
+        total = sum(block_scores.values())
+        if total <= 0.0:
+            return 1.0
+        anchor_energy = sum(block_scores.get(b, 0.0) for b in SEMANTIC_ANCHOR_BLOCKS)
+        anchor_share = anchor_energy / total
+        expected = len(SEMANTIC_ANCHOR_BLOCKS) / max(len(block_scores), 1)
+        ratio = anchor_share / max(expected, 1e-9)
+        return max(0.92, min(1.08, 1.0 + (ratio - 1.0) * 0.08))
+
     def _lora_block_profile(self, entry, loaded, model_weight, patch_cache_key=None):
         template = self._block_profile_template(loaded, patch_cache_key)
         if template is None:
             return None
 
         type_profile = self._block_type_profile(entry)
+        stack_scales, suppressed = self._apply_type_zone_scales(dict(template["base_scales"]), entry)
+        quality = self._semantic_anchor_quality(template["block_scores"])
+        stack_scales = {
+            k: min(LORA_ZONE_SCALE_CAP, v * quality) if v > 0.0 else v
+            for k, v in stack_scales.items()
+        }
         return {
             "entry": entry,
             "loaded": loaded,
@@ -611,7 +671,9 @@ class FunPackLoraLoader:
             "block_count": template["block_count"],
             "block_scores": template["block_scores"],
             "base_scales": template["base_scales"],
-            "stack_scales": dict(template["base_scales"]),
+            "stack_scales": stack_scales,
+            "suppressed_count": suppressed,
+            "anchor_quality": quality,
             "normalized_scores": template["normalized_scores"],
             "top_blocks": template["top_blocks"],
             "concentration": template["concentration"],
@@ -652,6 +714,8 @@ class FunPackLoraLoader:
                 continue
 
             for profile in contributors:
+                if profile["stack_scales"].get(block_index, 1.0) == 0.0:
+                    continue
                 own_presence = profile["normalized_scores"].get(block_index, 0.0)
                 own_weight = max(0.05, abs(profile["model_weight"]))
                 own_signal = own_presence * own_weight * profile["priority"]
@@ -675,6 +739,8 @@ class FunPackLoraLoader:
                 advantage = (own_signal - strongest_other) / max(own_signal + strongest_other, 1e-9)
                 if advantage >= 0.0:
                     multiplier = 1.0 + min(0.18, advantage * 0.14) * min(1.0, overlap_ratio * 1.25)
+                elif block_index in SEMANTIC_ANCHOR_BLOCKS:
+                    continue
                 else:
                     pressure = min(1.0, overlap_ratio * 1.35)
                     damp = min(0.35, (-advantage) * 0.22 * profile["yield"] * pressure)
@@ -710,14 +776,23 @@ class FunPackLoraLoader:
 
     def _per_block_status(self, profile):
         scales = profile["stack_scales"]
-        min_scale = min(scales.values())
-        max_scale = max(scales.values())
+        w = profile["model_weight"]
+        active = {k: v for k, v in scales.items() if v > 0.0}
+        min_eff = w * min(active.values()) if active else 0.0
+        max_eff = w * max(active.values()) if active else 0.0
+        suppressed = profile.get("suppressed_count", 0)
+        quality = profile.get("anchor_quality", 1.0)
         mode = "smart-per-block" if profile["overlap_score"] > 0.0 else "per-block"
-        return (
-            f"{mode} blocks={len(scales)} non_block={profile['global_count']} "
-            f"range={min_scale:.2f}..{max_scale:.2f} "
-            f"top={profile['top_blocks']} overlap={profile['overlap_score']:.2f}"
-        )
+        parts = [
+            f"{mode} blocks={len(scales)} non_block={profile['global_count']}",
+            f"range={min_eff:.3f}..{max_eff:.3f}",
+            f"top={profile['top_blocks']} overlap={profile['overlap_score']:.2f}",
+        ]
+        if suppressed:
+            parts.insert(2, f"zeroed={suppressed}")
+        if quality != 1.0:
+            parts.insert(-1, f"anchor_q={quality:.2f}")
+        return " ".join(parts)
 
     def _load_lora_per_block(self, model, lora, model_weight):
         lora_cache_key = None
@@ -732,11 +807,12 @@ class FunPackLoraLoader:
             model_weight,
             block_scales=profile["stack_scales"],
         )
-        min_scale = min(profile["stack_scales"].values())
-        max_scale = max(profile["stack_scales"].values())
+        scales = profile["stack_scales"]
+        min_eff = model_weight * min(scales.values())
+        max_eff = model_weight * max(scales.values())
         status = (
-            f"per-block blocks={len(profile['stack_scales'])} non_block={non_block_count} "
-            f"range={min_scale:.2f}..{max_scale:.2f}"
+            f"per-block blocks={len(scales)} non_block={non_block_count} "
+            f"range={min_eff:.3f}..{max_eff:.3f}"
         )
         return new_model, status
 
