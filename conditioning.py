@@ -10238,7 +10238,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_lora_feedback_axes(self, lora_type):
         lora_type = self._v2_lora_type(lora_type)
         if lora_type == "action":
-            return {"action"}
+            return {"action", "details"}
         if lora_type == "quality":
             return {"quality"}
         if lora_type == "style":
