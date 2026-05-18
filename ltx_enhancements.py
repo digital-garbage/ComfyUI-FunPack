@@ -341,7 +341,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     pass
             if _old is not None:
                 return _old(apply_fn, args)
-            return apply_fn(args)
+            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
         model.model_options["model_function_wrapper"] = _temporal_wrapper
 
@@ -358,7 +358,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             if _ew is not None:
                 result = _ew(apply_fn, args)
             else:
-                result = apply_fn(args)
+                result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
             # Opportunistically save the capture buffer when it has anchor maps.
             # We do this every call so the last (cleanest) capture wins.
