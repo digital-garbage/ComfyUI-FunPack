@@ -340,25 +340,27 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
 # ---------------------------------------------------------------------------
 
 def _is_ltx_model(model):
-    """Return True if model is from the LTX-V / LTXAV family."""
+    """Return True if model is from the LTX-V / LTXAV family.
+
+    ModelPatcher stores the BaseModel at .model, which in turn stores
+    model_config (from supported_models) at .model_config. The unet_config
+    inside that has image_model = 'ltxv' or 'ltxav'.
+    """
     try:
-        # Check the diffusion model class name
-        inner = getattr(model, "model", None) or getattr(model, "inner_model", None)
-        if inner is not None:
-            cls_name = type(inner).__name__
-            if any(x in cls_name for x in ("LTXV", "LTXAVModel", "LTXVModel", "LTXBaseModel")):
-                return True
-        # Check unet_config image_model key set by ComfyUI model detection
-        cfg = getattr(model, "model_config", None)
+        inner = getattr(model, "model", None)
+        if inner is None:
+            return False
+        # Class name check - must include both LTXV and LTXAV explicitly
+        # ('LTXV' in 'LTXAV' is False, so substring search doesn't catch LTXAV)
+        cls_name = type(inner).__name__
+        if cls_name in {"LTXV", "LTXAV"} or "LTXVModel" in cls_name or "LTXBaseModel" in cls_name:
+            return True
+        # unet_config path via model_config stored by BaseModel.__init__
+        cfg = getattr(inner, "model_config", None)
         if cfg is not None:
             unet_cfg = getattr(cfg, "unet_config", {}) or {}
-            image_model = str(unet_cfg.get("image_model", "")).lower()
-            if image_model in {"ltxv", "ltxav"}:
+            if str(unet_cfg.get("image_model", "")).lower() in {"ltxv", "ltxav"}:
                 return True
-        # Fallback: check model_type string if present
-        model_type = str(getattr(model, "model_type", "") or "").lower()
-        if "ltx" in model_type:
-            return True
     except Exception:
         pass
     return False
