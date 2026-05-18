@@ -92,10 +92,8 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
     """
     Computes creativity mask and returns noise-modified latent dict or None.
     Source priority: connected latent arg > saved file by key > None.
-    Returns None when reward >= 0.8 (no need to push harder when things work).
+    At high reward the global floor is 0 and only gentle spatial variance applies.
     """
-    if reward >= 0.8:
-        return None
 
     # Resolve source latent
     samples = None
@@ -225,12 +223,10 @@ def _derive_temperature_map(rating_profile, reward):
 
 def build_creativity_mask(latent, rating_profile, reward):
     """
-    Returns a denoise_mask tensor [B, T, H, W] or None if no adjustment needed.
-    High-variance latent regions get more creative freedom (higher mask values).
-    Rating drives global floor: worse rating = more freedom everywhere.
+    Returns a noise scale mask or None if latent is unusable.
+    High-variance regions get more creative freedom. Global floor is 0 at
+    high reward (formula clamps naturally) and rises toward 0.35 at reward -1.0.
     """
-    if reward >= 0.8:
-        return None
 
     samples = latent.get("samples") if isinstance(latent, dict) else None
     if not isinstance(samples, torch.Tensor):
