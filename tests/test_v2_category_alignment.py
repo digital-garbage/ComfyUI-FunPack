@@ -2395,9 +2395,12 @@ def test_new_transition_phrases_and_then_handling():
     refiner = FunPackVideoRefinerV2()
     prompt = (
         "character anchor, as the action continues she runs, "
+        "as the video progresses she turns, "
         "the final sequence shows her smiling, "
         "in the final moments she waves, "
         "the camera then shifts to the sky, "
+        "the camera shifts to the window, "
+        "the scene transitions to a rooftop, "
         "the scene shifts to a hallway, "
         "in the next segment she sits"
     )
@@ -2405,9 +2408,11 @@ def test_new_transition_phrases_and_then_handling():
     segments = refiner._v2_split_prompt_by_transitions(prompt)
     texts = refiner._v2_transition_scene_texts(segments)
 
-    assert len(texts) == 6
+    assert len(texts) == 9
     assert all(text.startswith("character anchor") for text in texts)
-    assert "the camera then shifts to the sky" in texts[3]
+    assert "the camera then shifts to the sky" in texts[4]
+    assert "the camera shifts to the window" in texts[5]
+    assert "the scene transitions to a rooftop" in texts[6]
 
 
 def test_split_by_transitions_has_no_hard_scene_cap(tmp_path):

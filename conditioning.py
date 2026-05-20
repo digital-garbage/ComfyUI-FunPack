@@ -423,8 +423,9 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     # Explicit scene-boundary phrases
     "after a brief scene cut", "as the scene transitions",
     "the scene begins with", "in the next scene",
-    "as the action continues", "the final sequence shows",
-    "in the final moments", "the camera then shifts",
+    "as the action continues", "as the video progresses",
+    "the final sequence shows", "in the final moments",
+    "the camera then shifts", "the camera shifts to",
     "the scene shifts to", "in the next segment",
     "later, another scene shows", "another scene shows",
     "the video concludes",
