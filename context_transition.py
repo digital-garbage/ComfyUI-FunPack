@@ -135,24 +135,26 @@ class FunPackSceneCutWindows:
 class FunPackSceneNoise:
     """Generate initial noise with different seeds per scene temporal region.
 
-    Combined with the full prompt (transition words preserved), the distinct
-    noise per region biases LTX to place different scene content at the right
-    temporal positions more reliably across runs.
+    For t2v: connect an empty latent to 'latent', output goes to
+    KSamplerAdvanced latent_image with add_noise=disable.
 
-    Connect to KSamplerAdvanced (set add_noise to 'disable') with this node's
-    output as latent_image, or pair with FunPack Scene Cut Windows.
-    Scene count auto-detected from positive conditioning entries.
+    For i2v: connect your image latent to BOTH 'latent' AND 'image_latent'.
+    The scene noise is added on top of the image latent so the reference
+    image is preserved. Use with KSamplerAdvanced add_noise=disable.
+
+    Scene count is auto-detected from the 'positive' conditioning entries.
     """
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "latent": ("LATENT", {"tooltip": "Empty/reference latent that defines shape, device, and dtype."}),
+                "latent": ("LATENT", {"tooltip": "Defines shape/device/dtype. For i2v also connect your image latent to image_latent."}),
                 "seed":   ("INT",    {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
             },
             "optional": {
-                "positive": ("CONDITIONING", {"tooltip": "Auto-detects scene count from the number of conditioning entries."}),
+                "positive":     ("CONDITIONING", {"tooltip": "Auto-detects scene count from conditioning entries."}),
+                "image_latent": ("LATENT", {"tooltip": "i2v only: image latent to blend scene noise onto. Scene noise is added on top so the reference image is preserved."}),
             },
         }
 
@@ -161,7 +163,7 @@ class FunPackSceneNoise:
     FUNCTION = "generate"
     CATEGORY = "FunPack/Sampling"
 
-    def generate(self, latent, seed, positive=None):
+    def generate(self, latent, seed, positive=None, image_latent=None):
         samples = latent["samples"]
         num_scenes = max(1, len(positive)) if positive else 1
 
@@ -171,7 +173,12 @@ class FunPackSceneNoise:
             return torch.randn(shape, generator=rng, dtype=samples.dtype, device=samples.device)
 
         if num_scenes <= 1:
-            return ({"samples": _make_noise(samples.shape, seed)},)
+            base_noise = _make_noise(samples.shape, seed)
+            if image_latent is not None:
+                img = image_latent["samples"].to(dtype=samples.dtype, device=samples.device)
+                if img.shape == base_noise.shape:
+                    base_noise = img + base_noise
+            return ({"samples": base_noise},)
 
         temporal_dim = None
         for d in [2, 1, 0] + list(range(3, samples.dim())):
@@ -180,7 +187,12 @@ class FunPackSceneNoise:
                 break
 
         if temporal_dim is None:
-            return ({"samples": _make_noise(samples.shape, seed)},)
+            base_noise = _make_noise(samples.shape, seed)
+            if image_latent is not None:
+                img = image_latent["samples"].to(dtype=samples.dtype, device=samples.device)
+                if img.shape == base_noise.shape:
+                    base_noise = img + base_noise
+            return ({"samples": base_noise},)
 
         total_frames = int(samples.size(temporal_dim))
         noise = torch.zeros_like(samples)
@@ -196,8 +208,13 @@ class FunPackSceneNoise:
             scene_shape[temporal_dim] = end - start
             noise[tuple(slices)] = _make_noise(scene_shape, scene_seed)
 
+        if image_latent is not None:
+            img = image_latent["samples"].to(dtype=samples.dtype, device=samples.device)
+            if img.shape == noise.shape:
+                noise = img + noise
+
         logging.info(
-            "FunPack scene noise: %s scenes, temporal_dim=%s, total_frames=%s.",
-            num_scenes, temporal_dim, total_frames,
+            "FunPack scene noise: %s scenes, temporal_dim=%s, total_frames=%s, i2v=%s.",
+            num_scenes, temporal_dim, total_frames, image_latent is not None,
         )
         return ({"samples": noise},)
