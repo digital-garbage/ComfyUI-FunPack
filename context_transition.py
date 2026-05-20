@@ -1,18 +1,28 @@
 import logging
 
+import torch
 import comfy.context_windows
+import comfy.ldm.modules.attention as _attn_mod
 
+
+# ---------------------------------------------------------------------------
+# Original context-window node (kept for long-video windowed denoising)
+# ---------------------------------------------------------------------------
 
 _DIM = 2
 _FALLBACK_CONTEXT_LENGTH = 16
 
 
-def _make_auto_schedule():
-    """One isolated window per scene - no overlap, no stride, no carryover between scenes.
+def _offset_windows(local_windows, offset, num_frames):
+    shifted = []
+    for window in local_windows:
+        w = [idx + offset for idx in window if 0 <= idx + offset < num_frames]
+        if w:
+            shifted.append(w)
+    return shifted
 
-    Each scene segment covers exactly its slice of frames. The character description
-    in the conditioning is what keeps the subject consistent, not temporal bleed.
-    """
+
+def _make_auto_schedule():
     base = comfy.context_windows.get_matching_context_schedule(
         comfy.context_windows.ContextSchedules.STATIC_STANDARD
     )
@@ -36,7 +46,6 @@ def _make_auto_schedule():
             for i in range(len(cuts) - 1)
             if cuts[i + 1] > cuts[i]
         ]
-
         logging.info(
             "FunPack context windows: %s isolated scenes, frame boundaries at %s.",
             num_windows, boundaries,
@@ -57,7 +66,7 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
                 comfy.context_windows.ContextFuseMethods.PYRAMID
             ),
             context_length=_FALLBACK_CONTEXT_LENGTH,
-            context_overlap=0,   # scenes are fully isolated - no overlap
+            context_overlap=0,
             context_stride=1,
             closed_loop=False,
             dim=_DIM,
@@ -69,15 +78,6 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
         self.auto_num_windows = 1
 
     def _detect_temporal_dim(self, x_in):
-        """Return the first dim that looks like a temporal frame axis.
-
-        A usable temporal dim has size > 1 and <= 4096.
-        Packed/flat formats like LTXAV combine all tokens into millions of elements
-        and have no single axis that maps to frame count - those return None.
-
-        Search order: 2 (standard [B,C,T,H,W]), 1, 0 (LTXAV packs frames at dim 0),
-        then any remaining dims.
-        """
         ndim = x_in.dim()
         priority = [d for d in [2, 1, 0] if d < ndim]
         rest = [d for d in range(ndim) if d not in priority]
@@ -88,8 +88,6 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
         return None
 
     def should_use_context(self, model, conds, x_in, timestep, model_options):
-        # Detect a usable temporal dimension. Packed flat formats (e.g. LTXAV) produce
-        # sub-tensors that cannot be unpacked by the model - skip windowing entirely.
         detected = self._detect_temporal_dim(x_in)
         if detected is None:
             logging.debug(
@@ -104,9 +102,6 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
             )
             self.dim = detected
 
-        # Detect how many conditioning entries Refiner/Studio produced.
-        # conds = [uncond_list, cond_list, ...] - we read the MAX across all groups
-        # because conds[0] is the negative conditioning which always has 1 entry.
         try:
             group_sizes = [len(c) for c in conds if c]
             num_windows = max(group_sizes, default=1)
@@ -119,7 +114,6 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
             group_sizes, num_windows, self.dim, list(x_in.shape),
         )
 
-        # Set context_length to segment size (total / N) for accurate VRAM estimation
         if num_windows > 1:
             total = self.auto_total_frames if self.auto_total_frames > 0 else int(x_in.size(self.dim))
             self.context_length = max(1, total // num_windows)
@@ -132,20 +126,14 @@ class FunPackContextTransitionWindows:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model": ("MODEL", {
-                    "tooltip": "The model to wrap with per-scene context windows.",
-                }),
+                "model": ("MODEL", {"tooltip": "The model to wrap with per-scene context windows."}),
             },
             "optional": {
                 "total_frames": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 16384,
-                    "step": 1,
+                    "default": 0, "min": 0, "max": 16384, "step": 1,
                     "tooltip": (
-                        "Latent frame count of your video. Used for VRAM estimation and to "
-                        "pre-size windows before sampling begins. Leave 0 to auto-detect from "
-                        "the latent at sampling time."
+                        "Latent frame count of your video. Used for VRAM estimation. "
+                        "Leave 0 to auto-detect from the latent at sampling time."
                     ),
                 }),
             },
@@ -156,11 +144,9 @@ class FunPackContextTransitionWindows:
     FUNCTION = "apply"
     CATEGORY = "FunPack/Sampling"
     DESCRIPTION = (
-        "Wraps a model with per-scene context windows. Connect after Refiner V2 or Studio "
-        "with 'Split by Transitions' enabled. Window count is derived from the number of "
-        "conditioning entries at sampling time - one fully isolated window per scene, "
-        "no overlap, no temporal carryover. Character consistency is handled by the "
-        "shared character description in each window's conditioning."
+        "Wraps a model with per-scene context windows (denoising-loop level). "
+        "Works for standard LTX but NOT for LTXAV (packed latent format). "
+        "For LTXAV, use FunPack Scene Cut Windows instead."
     )
 
     def apply(self, model, total_frames=0):
@@ -169,3 +155,213 @@ class FunPackContextTransitionWindows:
         model.model_options["context_handler"] = handler
         comfy.context_windows.create_prepare_sampling_wrapper(model)
         return (model,)
+
+
+# ---------------------------------------------------------------------------
+# Scene-cut attention masking: correct approach for LTXAV and standard LTX
+# ---------------------------------------------------------------------------
+
+def _scene_split_self_attn(orig_fn, q, k, v, heads, num_scenes, cache, *args, **kwargs):
+    """Run self-attention in per-scene chunks so tokens in different scenes never attend each other."""
+    seq_len = q.shape[1]
+    cache_key = (seq_len, num_scenes, q.device.type)
+
+    if cache_key not in cache:
+        tokens_per_scene = max(1, seq_len // num_scenes)
+        ids = torch.arange(seq_len, device=q.device)
+        cache[cache_key] = (ids // tokens_per_scene).clamp(max=num_scenes - 1)
+
+    scene_ids = cache[cache_key]
+    out = torch.zeros_like(q)
+
+    for scene_id in range(num_scenes):
+        mask = (scene_ids == scene_id)
+        if not mask.any():
+            continue
+        out[:, mask, :] = orig_fn(
+            q[:, mask, :], k[:, mask, :], v[:, mask, :], heads, *args, **kwargs
+        )
+
+    return out
+
+
+class FunPackSceneCutHandler:
+    """Reads num_scenes from conditioning on each step; never activates context windows."""
+
+    def __init__(self):
+        self.num_scenes = 1
+
+    def should_use_context(self, model, conds, x_in, timestep, model_options):
+        try:
+            self.num_scenes = max((len(c) for c in conds if c), default=1)
+        except Exception:
+            self.num_scenes = 1
+        logging.info(
+            "FunPack scene cut: num_scenes=%s detected from conditioning.",
+            self.num_scenes,
+        )
+        return False  # full-pass denoising; masking applied inside each forward
+
+
+class FunPackSceneCutWindows:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL", {
+                    "tooltip": "The model to wrap with scene-boundary attention masking.",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "apply"
+    CATEGORY = "FunPack/Sampling"
+    DESCRIPTION = (
+        "Enforces scene cuts by blocking temporal self-attention across scene boundaries. "
+        "All frames are denoised in one forward pass (full temporal attention preserved "
+        "within each scene). Works for both LTXV and LTXAV. "
+        "Connect after Refiner V2 or Studio with 'Split by Transitions' enabled. "
+        "Scene count is auto-detected from the number of conditioning entries."
+    )
+
+    def apply(self, model):
+        model = model.clone()
+        attn_mask_cache = {}
+
+        handler = FunPackSceneCutHandler()
+        # Use context_handler slot so should_use_context runs each step
+        model.model_options["context_handler"] = handler
+
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _scene_wrapper(apply_fn, args, _old=old_wrapper):
+            num_scenes = handler.num_scenes
+
+            if num_scenes <= 1:
+                if _old is not None:
+                    return _old(apply_fn, args)
+                return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+            orig_attn = _attn_mod.optimized_attention
+            orig_attn_masked = _attn_mod.optimized_attention_masked
+
+            def _patched(q, k, v, heads, *a, **kw):
+                # Only mask self-attention (q and k same seq-len = same sequence = video tokens)
+                if q.shape[1] == k.shape[1]:
+                    return _scene_split_self_attn(orig_attn, q, k, v, heads, num_scenes, attn_mask_cache, *a, **kw)
+                return orig_attn(q, k, v, heads, *a, **kw)
+
+            def _patched_masked(q, k, v, heads, mask, *a, **kw):
+                if q.shape[1] == k.shape[1]:
+                    return _scene_split_self_attn(orig_attn_masked, q, k, v, heads, num_scenes, attn_mask_cache, *a, **kw)
+                return orig_attn_masked(q, k, v, heads, mask, *a, **kw)
+
+            _attn_mod.optimized_attention = _patched
+            _attn_mod.optimized_attention_masked = _patched_masked
+            try:
+                if _old is not None:
+                    result = _old(apply_fn, args)
+                else:
+                    result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            finally:
+                _attn_mod.optimized_attention = orig_attn
+                _attn_mod.optimized_attention_masked = orig_attn_masked
+
+            return result
+
+        model.model_options["model_function_wrapper"] = _scene_wrapper
+        return (model,)
+
+
+# ---------------------------------------------------------------------------
+# Seeded temporal noise: reinforce scene cuts via distinct noise per region
+# ---------------------------------------------------------------------------
+
+class FunPackSceneNoise:
+    """Generate initial noise with different seeds per scene temporal region.
+
+    Combined with the full prompt (transition words preserved), the distinct
+    noise per region biases LTX to place different scene content at the right
+    temporal positions more reliably across runs.
+
+    Connect to KSamplerAdvanced (set add_noise to 'disable') with this node's
+    output as latent_image, or pair with FunPack Scene Cut Windows.
+    Scene count auto-detected from positive conditioning entries.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "latent": ("LATENT", {"tooltip": "Empty/reference latent that defines shape, device, and dtype."}),
+                "seed":   ("INT",    {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            },
+            "optional": {
+                "positive": ("CONDITIONING", {"tooltip": "Auto-detects scene count from the number of conditioning entries."}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("noise",)
+    FUNCTION = "generate"
+    CATEGORY = "FunPack/Sampling"
+
+    def generate(self, latent, seed, positive=None):
+        samples = latent["samples"]
+
+        num_scenes = max(1, len(positive)) if positive else 1
+
+        if num_scenes <= 1:
+            # Single scene: standard noise, same as empty latent into KSampler
+            rng = torch.Generator(device=samples.device)
+            rng.manual_seed(seed)
+            noise = torch.randn(samples.shape, generator=rng,
+                                dtype=samples.dtype, device=samples.device)
+            return ({"samples": noise},)
+
+        # Find the temporal dimension: the axis with size > 1 and <= 4096
+        temporal_dim = None
+        for d in [2, 1, 0] + list(range(3, samples.dim())):
+            s = int(samples.size(d))
+            if 1 < s <= 4096:
+                temporal_dim = d
+                break
+
+        if temporal_dim is None:
+            # Packed format - fall back to single noise
+            rng = torch.Generator(device=samples.device)
+            rng.manual_seed(seed)
+            noise = torch.randn(samples.shape, generator=rng,
+                                dtype=samples.dtype, device=samples.device)
+            return ({"samples": noise},)
+
+        total_frames = int(samples.size(temporal_dim))
+        noise = torch.zeros_like(samples)
+        scene_size = total_frames // num_scenes
+
+        for i in range(num_scenes):
+            scene_seed = (seed + i * 31337) & 0xffffffffffffffff
+            rng = torch.Generator(device=samples.device)
+            rng.manual_seed(scene_seed)
+
+            start = i * scene_size
+            end = (i + 1) * scene_size if i < num_scenes - 1 else total_frames
+
+            # Build a slice for the temporal dimension
+            slices = [slice(None)] * samples.dim()
+            slices[temporal_dim] = slice(start, end)
+            scene_shape = list(samples.shape)
+            scene_shape[temporal_dim] = end - start
+
+            noise[tuple(slices)] = torch.randn(
+                scene_shape, generator=rng,
+                dtype=samples.dtype, device=samples.device,
+            )
+
+        logging.info(
+            "FunPack scene noise: %s scenes, temporal_dim=%s, total_frames=%s.",
+            num_scenes, temporal_dim, total_frames,
+        )
+        return ({"samples": noise},)
