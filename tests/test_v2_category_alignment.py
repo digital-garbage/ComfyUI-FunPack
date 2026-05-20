@@ -2397,9 +2397,14 @@ def test_new_transition_phrases_and_then_handling():
         "character anchor, as the action continues she runs, "
         "as the video progresses she turns, "
         "the final sequence shows her smiling, "
+        "the final shot returns to her face, "
         "in the final moments she waves, "
+        "a final shot zooms out from the city, "
         "the camera then shifts to the sky, "
+        "the camera then pulls back from her, "
         "the camera shifts to the window, "
+        "the camera zooms in on her eyes, "
+        "finally, the scene transitions into rain, "
         "the scene transitions to a rooftop, "
         "the scene shifts to a hallway, "
         "in the next segment she sits"
@@ -2408,11 +2413,16 @@ def test_new_transition_phrases_and_then_handling():
     segments = refiner._v2_split_prompt_by_transitions(prompt)
     texts = refiner._v2_transition_scene_texts(segments)
 
-    assert len(texts) == 9
+    assert len(texts) == 14
     assert all(text.startswith("character anchor") for text in texts)
-    assert "the camera then shifts to the sky" in texts[4]
-    assert "the camera shifts to the window" in texts[5]
-    assert "the scene transitions to a rooftop" in texts[6]
+    assert "the final shot returns to her face" in texts[3]
+    assert "a final shot zooms out from the city" in texts[5]
+    assert "the camera then shifts to the sky" in texts[6]
+    assert "the camera then pulls back from her" in texts[7]
+    assert "the camera shifts to the window" in texts[8]
+    assert "the camera zooms in on her eyes" in texts[9]
+    assert "finally, the scene transitions into rain" in texts[10]
+    assert "the scene transitions to a rooftop" in texts[11]
 
 
 def test_split_by_transitions_has_no_hard_scene_cap(tmp_path):
