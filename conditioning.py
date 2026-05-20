@@ -12146,11 +12146,6 @@ class FunPackStudio:
                 "feedback_prompt": ("STRING", {"multiline": True, "default": "", "forceInput": True,
                     "tooltip": "Feedback about the previous output. Overrides the feedback set inside Studio."}),
                 "refinement_key_input": ("STRING", {"forceInput": True}),
-                "split_by_transitions": ("BOOLEAN", {
-                    "default": False,
-                    "label": "Split by Transitions",
-                    "tooltip": "Detect transition words in the prompt and encode each scene segment as a separate conditioning entry. The character description (text before the first comma) is prepended to every segment. Use with FunPack Context Transition Windows + split_conds_to_windows.",
-                }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
@@ -12163,7 +12158,7 @@ class FunPackStudio:
             clip_vision_output=None, source_image=None,
             lora_stack=None, positive_prompt=None, negative_prompt=None,
             user_intent_prompt=None, feedback_prompt=None, refinement_key_input="",
-            split_by_transitions=None, latent=None):
+            latent=None):
 
         try:
             settings = json.loads(str(studio_settings or "{}"))
@@ -12213,11 +12208,7 @@ class FunPackStudio:
         im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
         reset_session = bool(rf.get("reset_session", False))
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
-        # Direct input wins over popup JSON setting
-        if split_by_transitions is None:
-            split_by_transitions = bool(rf.get("split_by_transitions", False))
-        else:
-            split_by_transitions = bool(split_by_transitions)
+        split_by_transitions = bool(rf.get("split_by_transitions", False))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")

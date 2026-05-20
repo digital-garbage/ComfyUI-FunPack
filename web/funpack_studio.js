@@ -66,7 +66,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural" },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -489,6 +489,14 @@ function openPanel(node) {
     const temporalSelect = selectEl(TEMPORAL_STYLES, settings.refiner.temporal_style);
     temporalSelect.addEventListener("change", () => { settings.refiner.temporal_style = temporalSelect.value; });
     body.append(row("Temporal style", temporalSelect));
+
+    const splitToggle = toggleEl(!!settings.refiner.split_by_transitions, "Split prompt by transitions");
+    splitToggle.inp.addEventListener("change", () => { settings.refiner.split_by_transitions = splitToggle.inp.checked; });
+    body.append(el("div", "funpack-studio-hint",
+      "Detect transition words in the prompt (then, suddenly, cut to...) and encode each scene segment as a separate conditioning entry. " +
+      "The character description (text before the first comma) is prepended to every segment to keep the subject consistent. " +
+      "Use together with FunPack Context Transition Windows."));
+    body.append(row("Split by transitions", splitToggle.container));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",
