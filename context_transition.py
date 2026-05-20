@@ -9,7 +9,12 @@ import comfy.ldm.modules.attention as _attn_mod
 # ---------------------------------------------------------------------------
 
 def _scene_split_self_attn(orig_fn, q, k, v, heads, num_scenes, cache, *args, **kwargs):
-    """Run self-attention in per-scene chunks so tokens in different scenes never attend each other."""
+    """Run self-attention in per-scene chunks so tokens in different scenes never attend each other.
+
+    Scene 0's tokens are also available as key/value to all other scenes.
+    This preserves i2v guide-frame attention: the reference image lives in scene 0's
+    temporal region, and later scenes need to see it for visual consistency.
+    """
     seq_len = q.shape[1]
     cache_key = (seq_len, num_scenes, q.device.type)
 
@@ -19,14 +24,17 @@ def _scene_split_self_attn(orig_fn, q, k, v, heads, num_scenes, cache, *args, **
         cache[cache_key] = (ids // tokens_per_scene).clamp(max=num_scenes - 1)
 
     scene_ids = cache[cache_key]
+    scene0_mask = (scene_ids == 0)
     out = torch.zeros_like(q)
 
     for scene_id in range(num_scenes):
-        mask = (scene_ids == scene_id)
-        if not mask.any():
+        query_mask = (scene_ids == scene_id)
+        if not query_mask.any():
             continue
-        out[:, mask, :] = orig_fn(
-            q[:, mask, :], k[:, mask, :], v[:, mask, :], heads, *args, **kwargs
+        # Each scene queries its own tokens; keys/values come from own tokens + scene 0
+        kv_mask = query_mask | scene0_mask if scene_id > 0 else query_mask
+        out[:, query_mask, :] = orig_fn(
+            q[:, query_mask, :], k[:, kv_mask, :], v[:, kv_mask, :], heads, *args, **kwargs
         )
 
     return out

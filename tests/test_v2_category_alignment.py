@@ -2309,13 +2309,25 @@ def test_split_prompt_by_transitions_detects_known_phrases():
     assert len(segments_none) == 1
 
 
-def test_split_char_from_scene_extracts_character_at_first_comma():
+def test_per_window_anchor_uses_full_first_segment():
+    """Window 0 = full segment[0]; windows 1+ = segment[0] + scene content.
+    No splitting at the first comma - prevents breaking prompts like
+    'In this anime video, Character Name is ...'."""
     refiner = FunPackVideoRefinerV2()
 
-    char, scene = refiner._v2_split_char_from_scene("a woman in a red dress, walking in a park")
-    assert char == "a woman in a red dress"
-    assert scene == "walking in a park"
+    class FakeClip:
+        def tokenize(self, text): return text
+        def encode_from_tokens_scheduled(self, t):
+            import torch
+            return [(torch.ones(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
 
-    char_only, scene_empty = refiner._v2_split_char_from_scene("a woman in a red dress")
-    assert char_only == "a woman in a red dress"
-    assert scene_empty == ""
+    segs = refiner._v2_split_prompt_by_transitions(
+        "In this anime video, Hiyuki is a mature woman, then she walks, suddenly she sits"
+    )
+    assert len(segs) == 3
+    conds, texts = refiner._v2_encode_per_window_conditionings(FakeClip(), segs)
+    assert len(conds) == 3
+    # anchor = full first segment, not just "In this anime video"
+    assert texts[0] == "In this anime video, Hiyuki is a mature woman"
+    assert texts[1].startswith("In this anime video, Hiyuki is a mature woman")
+    assert "then she walks" in texts[1]

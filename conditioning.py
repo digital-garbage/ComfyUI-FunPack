@@ -6116,17 +6116,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         return segments if len(segments) > 1 else [text]
 
-    def _v2_split_char_from_scene(self, first_segment):
-        """Split the first prompt segment into (character_desc, scene0_context) at the first comma."""
-        first_segment = first_segment.strip()
-        m = re.search(r"[,;]", first_segment)
-        if m:
-            char_part = first_segment[:m.start()].strip()
-            scene_part = first_segment[m.end():].strip()
-            if char_part:
-                return char_part, scene_part
-        return first_segment, ""
-
     def _v2_contrastive_cond(self, scene_cond, general_cond, contrast):
         """Push scene_cond further away from general_cond by the contrast factor.
 
@@ -6173,23 +6162,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return None, []
             return [(cond, meta)], [segments[0]]
 
-        char_desc, scene0_context = self._v2_split_char_from_scene(segments[0])
+        # The entire first segment (everything before the first transition word) is the anchor.
+        # Splitting at the first comma within it breaks prompts like
+        # "In this anime video, Character Name is a..." where the comma is inside the description.
+        anchor = segments[0].strip()
         conditionings = []
         window_texts = []
 
-        scene0_text = (char_desc + (", " + scene0_context if scene0_context else "")).strip()
-        cond0_raw, meta0, _ = self._v2_encode_prompt(clip, scene0_text, encode_cache=encode_cache)
+        cond0_raw, meta0, _ = self._v2_encode_prompt(clip, anchor, encode_cache=encode_cache)
         if not isinstance(cond0_raw, torch.Tensor):
             return None, []
         cond0 = self._v2_contrastive_cond(cond0_raw, general_cond, contrast)
         conditionings.append((cond0, meta0))
-        window_texts.append(scene0_text)
+        window_texts.append(anchor)
 
         for seg in segments[1:]:
             seg = seg.strip()
             if not seg:
                 continue
-            combined = char_desc + ", " + seg
+            combined = anchor + ", " + seg
             cond_i_raw, meta_i, _ = self._v2_encode_prompt(clip, combined, encode_cache=encode_cache)
             if isinstance(cond_i_raw, torch.Tensor):
                 cond_i = self._v2_contrastive_cond(cond_i_raw, general_cond, contrast)
@@ -6199,7 +6190,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             window_texts.append(combined)
 
         if len(conditionings) <= 1:
-            return [(cond0, meta0)], [scene0_text]
+            return [(cond0, meta0)], [anchor]
         return conditionings, window_texts
 
     def _v2_conditioning_vector(self, conditioning):
