@@ -83,7 +83,44 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
         self.auto_total_frames = int(auto_total_frames or 0)
         self.auto_num_windows = 1
 
+    def _detect_temporal_dim(self, x_in):
+        """Return the first dim that looks like a temporal frame axis.
+
+        A temporal dim has a size that is:
+        - greater than context_overlap (otherwise nothing meaningful to window)
+        - at most 4096 (packed flat formats like LTXAV combine all tokens and reach millions)
+
+        Search order: 2 (standard [B,C,T,H,W]), 1, 0 (LTXAV packs frames at dim 0),
+        then any remaining dims. Returns None when no suitable dim is found.
+        """
+        min_size = max(2, self.context_overlap + 1)
+        ndim = x_in.dim()
+        priority = [d for d in [2, 1, 0] if d < ndim]
+        rest = [d for d in range(ndim) if d not in priority]
+        for d in priority + rest:
+            size = int(x_in.size(d))
+            if min_size < size <= 4096:
+                return d
+        return None
+
     def should_use_context(self, model, conds, x_in, timestep, model_options):
+        # Detect a usable temporal dimension. Packed flat formats (e.g. LTXAV) have
+        # no suitable dim and must be skipped - windowing over a flat packed sequence
+        # produces sub-tensors that cannot be unpacked by the model.
+        detected = self._detect_temporal_dim(x_in)
+        if detected is None:
+            logging.debug(
+                "FunPack context windows: x_in shape %s has no suitable temporal dim; skipping.",
+                list(x_in.shape),
+            )
+            return False
+        if detected != self.dim:
+            logging.info(
+                "FunPack context windows: auto-detected temporal dim=%s (shape %s).",
+                detected, list(x_in.shape),
+            )
+            self.dim = detected
+
         # Detect how many conditioning entries Refiner/Studio produced
         try:
             num_windows = max(1, len(conds[0])) if conds and conds[0] else 1
@@ -91,7 +128,7 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
             num_windows = 1
         self.auto_num_windows = num_windows
 
-        # Auto-size context_length to fit windows
+        # Auto-size context_length to fit windows evenly
         if num_windows > 1:
             total = self.auto_total_frames if self.auto_total_frames > 0 else int(x_in.size(self.dim))
             self.context_length = max(1, total // num_windows)

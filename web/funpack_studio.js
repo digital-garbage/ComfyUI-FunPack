@@ -496,7 +496,7 @@ function openPanel(node) {
       "Detect transition words in the prompt (then, suddenly, cut to...) and encode each scene segment as a separate conditioning entry. " +
       "The character description (text before the first comma) is prepended to every segment to keep the subject consistent. " +
       "Use together with FunPack Context Transition Windows."));
-    body.append(row("Split by transitions", splitToggle.container));
+    body.append(row("Split by transitions", splitToggle.wrap));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",
