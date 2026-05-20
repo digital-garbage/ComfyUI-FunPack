@@ -5843,14 +5843,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "Split by Transitions",
                     "tooltip": "Detect transition words in the prompt (e.g. 'then', 'suddenly', 'cut to') and encode each scene segment as a separate conditioning entry. The character description (text before the first comma) is prepended to every segment. Designed to work with FunPack Context Transition Windows using split_conds_to_windows.",
                 }),
-                "transition_contrast": ("FLOAT", {
-                    "default": 1.5,
-                    "min": 1.0,
-                    "max": 4.0,
-                    "step": 0.1,
-                    "label": "Transition Contrast",
-                    "tooltip": "When Split by Transitions is active: pushes each scene's conditioning further away from the full-prompt baseline. Formula: general + contrast × (scene − general). At 1.0 = plain scene encoding. At 2.0 = classic contrastive (2×scene − general). Higher values create sharper scene cuts but may cause artifacts.",
-                }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
@@ -10582,7 +10574,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  split_by_transitions=False, transition_contrast=1.5, latent=None, _seed=None):
+                  split_by_transitions=False, latent=None, _seed=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -12315,7 +12307,6 @@ class FunPackStudio:
         reset_session = bool(rf.get("reset_session", False))
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
         split_by_transitions = bool(rf.get("split_by_transitions", False))
-        transition_contrast = float(rf.get("transition_contrast", 1.5))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -12430,7 +12421,6 @@ class FunPackStudio:
             prompt_repair=prompt_repair,
             temporal_style=temporal_style,
             split_by_transitions=split_by_transitions,
-            transition_contrast=transition_contrast,
             latent=latent,
             _seed=seed,
         )
