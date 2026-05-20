@@ -2269,17 +2269,19 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
     cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
-        "a woman in a red dress, then she runs, suddenly stops",
+        "a woman in a red dress, scene ten she runs, suddenly stops",
         FakeClip(),
         "Perfect",
         "transition-test",
         split_by_transitions=True,
     )
 
-    assert len(cond) == 3
+    assert len(cond) == 2
     assert cond[0][1]["funpack_scene_index"] == 0
-    assert cond[0][1]["funpack_scene_count"] == 3
-    assert "a woman in a red dress" in cond[1][1]["funpack_scene_text"]
+    assert cond[0][1]["funpack_scene_count"] == 2
+    assert "a woman in a red dress" in cond[0][1]["funpack_scene_text"]
+    assert "scene ten she runs" in cond[0][1]["funpack_scene_text"]
+    assert "suddenly stops" in cond[1][1]["funpack_scene_text"]
     assert "Scene chain mode" in status
     assert "Transition split" in status
     assert "Detected scenes" in encoded_prompts
@@ -2307,51 +2309,67 @@ def test_split_prompt_by_transitions_detects_known_phrases():
     refiner = FunPackVideoRefinerV2()
 
     segments = refiner._v2_split_prompt_by_transitions(
-        "a dog running in a field, then jumping over a fence, suddenly stopping"
+        "a dog running in a field, scene one jumping over a fence, suddenly stopping"
     )
     assert len(segments) == 3
 
     segments_none = refiner._v2_split_prompt_by_transitions("a dog running in a field")
     assert len(segments_none) == 1
 
+    standalone_then = refiner._v2_split_prompt_by_transitions("a dog running in a field, then jumping")
+    assert len(standalone_then) == 1
+
+    scene_labels = refiner._v2_split_prompt_by_transitions(
+        "character description, scene one shows walking, scene -999999 shows fighting, scene minus infinity shows resting"
+    )
+    assert len(scene_labels) == 4
+
+    plural_description = refiner._v2_split_prompt_by_transitions(
+        "character description shown in three distinct scenes"
+    )
+    assert len(plural_description) == 1
+
 
 def test_transition_scene_preview_uses_full_first_segment():
     refiner = FunPackVideoRefinerV2()
 
     segs = refiner._v2_split_prompt_by_transitions(
-        "In this anime video, Hiyuki is a mature woman, then she walks, suddenly she sits"
+        "In this anime video, Hiyuki is a mature woman, scene one she walks, suddenly she sits"
     )
     assert len(segs) == 3
     texts = refiner._v2_transition_scene_texts(segs)
-    assert len(texts) == 3
-    assert texts[0] == "In this anime video, Hiyuki is a mature woman"
+    assert len(texts) == 2
+    assert texts[0].startswith("In this anime video, Hiyuki is a mature woman")
     assert texts[1].startswith("In this anime video, Hiyuki is a mature woman")
-    assert "then she walks" in texts[1]
+    assert "scene one she walks" in texts[0]
+    assert "suddenly she sits" in texts[1]
 
 
-def test_declared_scene_prefix_is_not_counted_as_scene(tmp_path):
+def test_scene_labels_after_transitions_are_scene_text_not_boundaries(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
     prompt = (
         "In this 3D animated video, Kai'Sa from League of Legends is shown in three distinct scenes. "
-        "The first scene shows her walking through a neon corridor, "
-        "the second scene shows her charging her weapons, "
-        "the third scene shows her landing on a rooftop."
+        "Scene ten shows her walking through a neon corridor, "
+        "scene -999999 shows her charging her weapons, "
+        "scene minus infinity shows her landing on a rooftop."
     )
 
     segments = refiner._v2_split_prompt_by_transitions(prompt)
     texts = refiner._v2_transition_scene_texts(segments)
     assert len(texts) == 3
     assert all("Kai'Sa from League of Legends" in text for text in texts)
-    assert "The first scene shows her walking" in texts[0]
+    assert "Scene ten shows her walking" in texts[0]
+    assert "scene -999999 shows her charging" in texts[1]
+    assert "scene minus infinity shows her landing" in texts[2]
     assert "shown in three distinct scenes" not in texts[0].split(", ")[-1]
 
     cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
         prompt,
         FakeClip(),
         "Perfect",
-        "declared-scene-prefix-test",
+        "transition-label-text-test",
         split_by_transitions=True,
     )
 
@@ -2361,11 +2379,42 @@ def test_declared_scene_prefix_is_not_counted_as_scene(tmp_path):
     assert "Scene 4" not in encoded_prompts
 
 
-def test_split_by_transitions_caps_scene_conditionings_at_eight(tmp_path):
+def test_prompt_starting_with_scene_label_keeps_first_scene():
+    refiner = FunPackVideoRefinerV2()
+    prompt = "scene ten: she walks into a room, scene one: she walks out"
+
+    segments = refiner._v2_split_prompt_by_transitions(prompt)
+    texts = refiner._v2_transition_scene_texts(segments)
+
+    assert len(texts) == 2
+    assert texts[0].startswith("scene ten she walks into a room")
+    assert texts[1].startswith("scene one she walks out")
+
+
+def test_new_transition_phrases_and_then_handling():
+    refiner = FunPackVideoRefinerV2()
+    prompt = (
+        "character anchor, as the action continues she runs, "
+        "the final sequence shows her smiling, "
+        "in the final moments she waves, "
+        "the camera then shifts to the sky, "
+        "the scene shifts to a hallway, "
+        "in the next segment she sits"
+    )
+
+    segments = refiner._v2_split_prompt_by_transitions(prompt)
+    texts = refiner._v2_transition_scene_texts(segments)
+
+    assert len(texts) == 6
+    assert all(text.startswith("character anchor") for text in texts)
+    assert "the camera then shifts to the sky" in texts[3]
+
+
+def test_split_by_transitions_has_no_hard_scene_cap(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
-    prompt = "anchor, " + ", ".join(f"then scene {i}" for i in range(1, 12))
+    prompt = "anchor, " + ", ".join(f"scene {i} shows action {i}" for i in range(1, 12))
 
     cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
         prompt,
@@ -2375,8 +2424,7 @@ def test_split_by_transitions_caps_scene_conditionings_at_eight(tmp_path):
         split_by_transitions=True,
     )
 
-    assert len(cond) == 8
-    assert cond[-1][1]["funpack_scene_count"] == 8
-    assert "capped at 8 scenes" in status
-    assert "Scene 8" in encoded_prompts
-    assert "Scene 9" not in encoded_prompts
+    assert len(cond) == 11
+    assert cond[-1][1]["funpack_scene_count"] == 11
+    assert "capped at 8 scenes" not in status
+    assert "Scene 11" in encoded_prompts

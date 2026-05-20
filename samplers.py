@@ -779,7 +779,7 @@ class FunPackLTXAVSceneChainSampler:
                 "num_frames_per_scene": ("INT", {"default": 97, "min": 1, "max": 4096, "step": 8}),
                 "frame_overlap": ("INT", {"default": 16, "min": 0, "max": 512, "step": 8}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1}),
-                "max_scenes": ("INT", {"default": 8, "min": 1, "max": 8}),
+                "max_scenes": ("INT", {"default": 8, "min": 1, "step": 1}),
             }
         }
 
@@ -980,7 +980,7 @@ class FunPackLTXAVSceneChainSampler:
         if negative is None:
             negative = []
 
-        max_scene_count = max(1, min(8, int(max_scenes)))
+        max_scene_count = max(1, int(max_scenes))
         scene_conditionings = positive[:max_scene_count]
         scene_count = len(scene_conditionings)
         time_scale = self._time_scale(vae)

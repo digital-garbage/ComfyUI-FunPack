@@ -313,7 +313,15 @@ function openPanel(node) {
 
     body.append(sectionTitle("Scene Builder"));
     const modeSelect = selectEl(SB_MODES, settings.scene_builder.mode);
-    modeSelect.addEventListener("change", () => { settings.scene_builder.mode = modeSelect.value; renderSession(); });
+    modeSelect.addEventListener("change", async () => {
+      settings.scene_builder.mode = modeSelect.value;
+      saveSettings(node, settings);
+      studioSceneData = null;
+      if (settings.scene_builder.mode !== "Pass-through") {
+        await fetchScenes(settings.refinement_key || linkedRefinementKey(node));
+      }
+      renderTab(activeTab);
+    });
     body.append(row("Mode", modeSelect));
 
     if (settings.scene_builder.mode !== "Pass-through") {

@@ -172,3 +172,36 @@ def test_scene_chain_preserves_nested_av_structure_and_audio_length():
     assert scene_count == 2
     assert video_out.shape[2] == 8
     assert audio_out.shape[2] == 16
+
+
+def test_scene_chain_default_max_is_eight_but_allows_more():
+    inputs = FunPackLTXAVSceneChainSampler.INPUT_TYPES()["required"]["max_scenes"][1]
+    assert inputs["default"] == 8
+    assert "max" not in inputs
+
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    latent_template = {"samples": torch.zeros(1, 2, 3, 2, 2)}
+    positive = [scene_cond(index) for index in range(10)]
+
+    latent, status, scene_count, report = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=30,
+        latent_template=latent_template,
+        num_frames_per_scene=3,
+        frame_overlap=0,
+        cfg=1.0,
+        max_scenes=10,
+    )
+
+    assert scene_count == 10
+    assert len(sample_calls) == 10
+    assert sample_calls[-1]["seed"] == 39
+    assert latent["samples"].shape[2] == 30
+    assert "10 scene(s)" in status
+    assert "Scene 10" in report

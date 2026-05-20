@@ -423,6 +423,9 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     # Explicit scene-boundary phrases
     "after a brief scene cut", "as the scene transitions",
     "the scene begins with", "in the next scene",
+    "as the action continues", "the final sequence shows",
+    "in the final moments", "the camera then shifts",
+    "the scene shifts to", "in the next segment",
     "later, another scene shows", "another scene shows",
     "the video concludes",
     # Multi-word scene-cut language
@@ -452,7 +455,7 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     "and then", "but then", "and suddenly", "and next",
     "and finally", "and eventually",
     # Single-word temporal markers
-    "then", "next", "subsequently", "thereafter",
+    "next", "subsequently", "thereafter",
     "suddenly", "abruptly", "instantly",
     "meanwhile", "elsewhere", "simultaneously",
     "later", "afterwards", "afterward",
@@ -460,8 +463,10 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     "soon", "shortly",
 ], key=len, reverse=True)
 
+_GENERIC_SCENE_LABEL_PATTERN = r"\bscene\s+(?:[-+]?\d+|minus\s+[a-z][\w-]*|[a-z][\w-]*)\b"
 _TRANSITION_SPLIT_PATTERN = re.compile(
-    r"\b(?:" + "|".join(re.escape(p) for p in _PROMPT_TRANSITION_PHRASES) + r")\b",
+    r"(?:\b(?:" + "|".join(re.escape(p) for p in _PROMPT_TRANSITION_PHRASES) + r")\b|"
+    + _GENERIC_SCENE_LABEL_PATTERN + r")",
     re.IGNORECASE,
 )
 
@@ -5665,11 +5670,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
     V2_STATE_PREFIX = "refine_v2"
-    MAX_TRANSITION_SCENES = 8
-    SCENE_COUNT_WORDS = {
-        "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
-        "eight": 8, "nine": 9, "ten": 10,
-    }
     ACTION_LORA_TYPES = {"action"}
     AUTO_INJECT_BLOCKED_CATEGORIES = {"appearance", "subject", "environment"}
     AUTO_INJECT_ALLOWED_CATEGORIES = {"action", "camera", "details", "quality", "style"}
@@ -6085,16 +6085,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         parts = capturing_pattern.split(text)
         segments = []
         # parts[0] = text before first transition; then pairs of (trans_word, following_text)
-        current = parts[0].strip().strip(",;.").strip()
+        first_segment = parts[0].strip().strip(",;.:").strip()
+        starts_with_transition = not first_segment
+        if starts_with_transition:
+            segments.append("")
+        current = first_segment
         i = 1
         while i < len(parts):
-            trans_word = parts[i].strip()          # the transition word
+            trans_word = parts[i].strip()
             following = parts[i + 1] if i + 1 < len(parts) else ""
-            following = following.strip().lstrip(",;.").strip()
+            following = following.strip().lstrip(",;.:").strip()
             if current:
                 segments.append(current)
-            # New segment starts with the transition word (kept as a conditioning signal)
-            current = (trans_word + " " + following).strip().strip(",;.").strip()
+            current = (trans_word + " " + following).strip().strip(",;.:").strip()
             i += 2
         if current:
             segments.append(current)
@@ -6104,7 +6107,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Prepend the pure-transition segment to the FOLLOWING segment so they read as one unit.
         i = 0
         while i < len(segments):
-            stripped = _TRANSITION_SPLIT_PATTERN.sub("", segments[i]).strip().strip(",;. ")
+            if segments[i] == "":
+                i += 1
+                continue
+            stripped = _TRANSITION_SPLIT_PATTERN.sub("", segments[i]).strip().strip(",;.: ")
             if not stripped and i + 1 < len(segments):
                 segments[i + 1] = segments[i] + ", " + segments[i + 1]
                 segments.pop(i)
@@ -6120,57 +6126,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return [segments[0]]
 
         anchor = segments[0].strip()
-        scene_segments = segments[1:] if self._v2_first_segment_is_scene_prefix(segments) else segments
         scene_texts = []
-        for index, seg in enumerate(scene_segments):
+        for seg in segments[1:]:
             seg = seg.strip()
             if not seg:
                 continue
-            if index == 0 and seg == anchor:
-                scene_texts.append(anchor)
-            else:
-                scene_texts.append(anchor + ", " + seg)
+            scene_texts.append(anchor + ", " + seg if anchor else seg)
         return scene_texts
-
-    def _v2_first_segment_is_scene_prefix(self, segments):
-        if len(segments) <= 1:
-            return False
-        expected = self._v2_declared_scene_count(segments[0])
-        if expected is None or expected != len(segments) - 1:
-            return False
-        return all(self._v2_starts_with_explicit_scene_marker(seg) for seg in segments[1:])
-
-    def _v2_declared_scene_count(self, text):
-        match = re.search(
-            r"\b(\d+|two|three|four|five|six|seven|eight|nine|ten)\s+"
-            r"(?:distinct\s+|separate\s+|different\s+)?scenes?\b",
-            str(text or "").lower(),
-        )
-        if not match:
-            return None
-        raw = match.group(1)
-        if raw.isdigit():
-            return int(raw)
-        return self.SCENE_COUNT_WORDS.get(raw)
-
-    def _v2_starts_with_explicit_scene_marker(self, text):
-        clean = str(text or "").strip().lower()
-        return bool(re.match(
-            r"^(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|final|last)\s+scene\b"
-            r"|^scene\s+(?:one|two|three|four|five|six|seven|eight|nine|ten)\b",
-            clean,
-        ))
 
     def _v2_transition_scene_conditionings(self, clip, scene_texts, encode_cache=None):
         if clip is None:
             return None
-        capped_texts = list(scene_texts or [])[:self.MAX_TRANSITION_SCENES]
-        if not capped_texts:
+        scene_texts = list(scene_texts or [])
+        if not scene_texts:
             return None
 
         conditionings = []
-        scene_count = len(capped_texts)
-        for scene_index, scene_text in enumerate(capped_texts):
+        scene_count = len(scene_texts)
+        for scene_index, scene_text in enumerate(scene_texts):
             cond, meta, _ = self._v2_encode_prompt(clip, scene_text, encode_cache=encode_cache)
             if not isinstance(cond, torch.Tensor):
                 return None
@@ -11220,7 +11193,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             try:
                 segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
                 if len(segments) > 1:
-                    scene_texts = self._v2_transition_scene_texts(segments)[:self.MAX_TRANSITION_SCENES]
+                    scene_texts = self._v2_transition_scene_texts(segments)
                     if scene_texts:
                         scene_conditionings = self._v2_transition_scene_conditionings(
                             clip, scene_texts, encode_cache=encode_cache,
@@ -11235,8 +11208,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             scene_mode = "Scene chain mode unavailable: CLIP missing, single conditioning returned"
                         detected_count = len(scene_texts)
                         status_suffix = f"\nTransition split: {detected_count} scenes detected\n{scene_mode}"
-                        if len(segments) > self.MAX_TRANSITION_SCENES:
-                            status_suffix += f"\nTransition split capped at {self.MAX_TRANSITION_SCENES} scenes"
                         status = status + status_suffix + enhancement_status
                         scene_lines = "\n".join(
                             f"  Scene {i + 1}: {t}" for i, t in enumerate(scene_texts)
