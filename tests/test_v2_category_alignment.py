@@ -2263,12 +2263,12 @@ def test_refiner_v2_caches_repeated_clip_category_encodes():
     assert clip.calls <= len(refiner.CATEGORY_DESCRIPTIONS) + 1
 
 
-def test_split_by_transitions_returns_multi_entry_conditioning(tmp_path):
+def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
-    cond, status, _, _, _, _, _ = refiner.refine_v2(
+    cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
         "a woman in a red dress, then she runs, suddenly stops",
         FakeClip(),
         "Perfect",
@@ -2276,8 +2276,11 @@ def test_split_by_transitions_returns_multi_entry_conditioning(tmp_path):
         split_by_transitions=True,
     )
 
-    assert len(cond) > 1, "Expected multiple conditioning entries from transition split"
+    # Single conditioning entry (full prompt) - no per-window routing without context windows
+    assert len(cond) == 1
     assert "Transition split" in status
+    assert "Detected scenes" in encoded_prompts
+    assert "Scene 1" in encoded_prompts
 
 
 def test_split_by_transitions_disabled_returns_single_entry(tmp_path):
@@ -2293,7 +2296,7 @@ def test_split_by_transitions_disabled_returns_single_entry(tmp_path):
         split_by_transitions=False,
     )
 
-    assert len(cond) == 1, "Expected single conditioning entry when split_by_transitions is False"
+    assert len(cond) == 1
     assert "Transition split" not in status
 
 

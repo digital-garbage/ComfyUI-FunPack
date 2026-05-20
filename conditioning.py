@@ -11227,26 +11227,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as e:
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
-        # Transition-based prompt splitting: encode one conditioning per scene window.
-        # The character description (before the first comma in segment 0) is prepended
-        # to every subsequent scene so the subject stays consistent across windows.
+        # When split_by_transitions is on, detect scene segments and show them in
+        # encoded_prompts for transparency, but output a SINGLE full-prompt conditioning.
+        # Multi-entry conditioning without a working per-window routing mechanism just
+        # accumulates all scene conditionings onto every frame, which confuses the model.
+        # The transition words in the full prompt already guide the model's natural scene cuts.
         output_conditioning = [(refined, meta)]
         if split_by_transitions and clip is not None:
             try:
                 segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
                 if len(segments) > 1:
-                    per_window, window_texts = self._v2_encode_per_window_conditionings(
-                        clip, segments,
-                        general_cond=refined if isinstance(refined, torch.Tensor) else None,
-                        contrast=float(transition_contrast or 1.0),
-                        encode_cache=encode_cache,
+                    _, window_texts = self._v2_encode_per_window_conditionings(
+                        clip, segments, encode_cache=encode_cache,
                     )
-                    if per_window and len(per_window) > 1:
-                        output_conditioning = per_window
-                        status_suffix = f"\nTransition split: {len(per_window)} windows from {len(segments)} segments"
+                    if window_texts:
+                        status_suffix = f"\nTransition split: {len(segments)} scenes detected"
                         status = status + status_suffix + enhancement_status
                         window_lines = "\n".join(
-                            f"  Window {i + 1}: {t}" for i, t in enumerate(window_texts)
+                            f"  Scene {i + 1}: {t}" for i, t in enumerate(window_texts)
                         )
                         split_encoded_prompts = (
                             self._v2_encoded_prompts_output(
@@ -11255,7 +11253,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 pre_advisor_prompt=pre_advisor_prompt,
                                 advisor_suggested=advisor_suggested,
                             )
-                            + f"\n\nPer-window prompts:\n{window_lines}"
+                            + f"\n\nDetected scenes (for FunPack Scene Noise):\n{window_lines}"
                         )
                         return (
                             output_conditioning,
