@@ -66,7 +66,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, transition_contrast: 1.5 },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -497,6 +497,21 @@ function openPanel(node) {
       "The character description (text before the first comma) is prepended to every segment to keep the subject consistent. " +
       "Use together with FunPack Context Transition Windows."));
     body.append(row("Split by transitions", splitToggle.wrap));
+
+    if (!settings.refiner.transition_contrast) settings.refiner.transition_contrast = 1.5;
+    const contrastInp = el("input");
+    contrastInp.type = "number"; contrastInp.min = "1.0"; contrastInp.max = "4.0"; contrastInp.step = "0.1";
+    contrastInp.value = settings.refiner.transition_contrast;
+    contrastInp.style.width = "70px";
+    contrastInp.addEventListener("change", () => {
+      settings.refiner.transition_contrast = Math.max(1.0, Math.min(4.0, parseFloat(contrastInp.value) || 1.5));
+      contrastInp.value = settings.refiner.transition_contrast;
+    });
+    body.append(el("div", "funpack-studio-hint",
+      "Scene contrast strength. Formula: general + contrast × (scene − general). " +
+      "1.0 = plain scene encoding. 2.0 = classic contrastive (2×scene − general). " +
+      "Higher values create sharper scene boundaries. Only applies when Split by Transitions is on."));
+    body.append(row("Transition contrast", contrastInp));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",

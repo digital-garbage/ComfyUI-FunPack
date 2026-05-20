@@ -5838,6 +5838,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "Split by Transitions",
                     "tooltip": "Detect transition words in the prompt (e.g. 'then', 'suddenly', 'cut to') and encode each scene segment as a separate conditioning entry. The character description (text before the first comma) is prepended to every segment. Designed to work with FunPack Context Transition Windows using split_conds_to_windows.",
                 }),
+                "transition_contrast": ("FLOAT", {
+                    "default": 1.5,
+                    "min": 1.0,
+                    "max": 4.0,
+                    "step": 0.1,
+                    "label": "Transition Contrast",
+                    "tooltip": "When Split by Transitions is active: pushes each scene's conditioning further away from the full-prompt baseline. Formula: general + contrast × (scene − general). At 1.0 = plain scene encoding. At 2.0 = classic contrastive (2×scene − general). Higher values create sharper scene cuts but may cause artifacts.",
+                }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
@@ -6101,16 +6109,43 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 return char_part, scene_part
         return first_segment, ""
 
-    def _v2_encode_per_window_conditionings(self, clip, segments, encode_cache=None):
+    def _v2_contrastive_cond(self, scene_cond, general_cond, contrast):
+        """Push scene_cond further away from general_cond by the contrast factor.
+
+        Formula: general + contrast × (scene − general)
+        At contrast=1.0 → plain scene_cond (no change).
+        At contrast=2.0 → 2×scene − general (classic contrastive).
+
+        The character description is shared between scene_cond and general_cond,
+        so it cancels in the delta. The push focuses on what is unique to the scene.
+        Returns scene_cond unchanged if shapes mismatch or contrast is 1.0.
+        """
+        if contrast == 1.0 or not isinstance(general_cond, torch.Tensor):
+            return scene_cond
+        try:
+            if scene_cond.shape != general_cond.shape:
+                return scene_cond
+            gen = general_cond.to(dtype=scene_cond.dtype, device=scene_cond.device)
+            return gen + contrast * (scene_cond - gen)
+        except Exception:
+            return scene_cond
+
+    def _v2_encode_per_window_conditionings(self, clip, segments, general_cond=None,
+                                             contrast=1.0, encode_cache=None):
         """Encode one conditioning entry per scene window.
 
         segments[0] is split into character description + first-scene context.
         Each subsequent segment is combined with the character description to form
         that window's conditioning.
 
+        When general_cond (the full-prompt conditioning) and contrast > 1.0 are
+        provided, each window's conditioning is pushed further toward its unique
+        scene content and away from the shared baseline via:
+            window_i = general + contrast × (scene_i − general)
+
         Returns (conditionings, window_texts) where conditionings is a list of
-        (tensor, meta) pairs and window_texts is the list of prompt strings encoded
-        for each window. Returns (None, []) on failure.
+        (tensor, meta) pairs and window_texts is the prompt strings per window.
+        Returns (None, []) on failure.
         """
         if not segments or clip is None:
             return None, []
@@ -6125,9 +6160,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         window_texts = []
 
         scene0_text = (char_desc + (", " + scene0_context if scene0_context else "")).strip()
-        cond0, meta0, _ = self._v2_encode_prompt(clip, scene0_text, encode_cache=encode_cache)
-        if not isinstance(cond0, torch.Tensor):
+        cond0_raw, meta0, _ = self._v2_encode_prompt(clip, scene0_text, encode_cache=encode_cache)
+        if not isinstance(cond0_raw, torch.Tensor):
             return None, []
+        cond0 = self._v2_contrastive_cond(cond0_raw, general_cond, contrast)
         conditionings.append((cond0, meta0))
         window_texts.append(scene0_text)
 
@@ -6136,9 +6172,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if not seg:
                 continue
             combined = char_desc + ", " + seg
-            cond_i, meta_i, _ = self._v2_encode_prompt(clip, combined, encode_cache=encode_cache)
-            conditionings.append((cond_i if isinstance(cond_i, torch.Tensor) else cond0,
-                                   meta_i if isinstance(cond_i, torch.Tensor) else meta0))
+            cond_i_raw, meta_i, _ = self._v2_encode_prompt(clip, combined, encode_cache=encode_cache)
+            if isinstance(cond_i_raw, torch.Tensor):
+                cond_i = self._v2_contrastive_cond(cond_i_raw, general_cond, contrast)
+                conditionings.append((cond_i, meta_i))
+            else:
+                conditionings.append((cond0, meta0))
             window_texts.append(combined)
 
         if len(conditionings) <= 1:
@@ -10534,7 +10573,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  split_by_transitions=False, latent=None, _seed=None):
+                  split_by_transitions=False, transition_contrast=1.5, latent=None, _seed=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -11188,7 +11227,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
                 if len(segments) > 1:
                     per_window, window_texts = self._v2_encode_per_window_conditionings(
-                        clip, segments, encode_cache=encode_cache
+                        clip, segments,
+                        general_cond=refined if isinstance(refined, torch.Tensor) else None,
+                        contrast=float(transition_contrast or 1.0),
+                        encode_cache=encode_cache,
                     )
                     if per_window and len(per_window) > 1:
                         output_conditioning = per_window
@@ -12266,6 +12308,7 @@ class FunPackStudio:
         reset_session = bool(rf.get("reset_session", False))
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
         split_by_transitions = bool(rf.get("split_by_transitions", False))
+        transition_contrast = float(rf.get("transition_contrast", 1.5))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -12380,6 +12423,7 @@ class FunPackStudio:
             prompt_repair=prompt_repair,
             temporal_style=temporal_style,
             split_by_transitions=split_by_transitions,
+            transition_contrast=transition_contrast,
             latent=latent,
             _seed=seed,
         )
