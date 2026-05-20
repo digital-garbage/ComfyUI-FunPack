@@ -414,12 +414,17 @@ def latent_from_tensor_bundle(bundle):
 # Transition phrases sorted longest-first so regex alternation picks the most specific match.
 # These mark scene or temporal cuts in video prompts and drive prompt splitting.
 _PROMPT_TRANSITION_PHRASES = sorted([
-    # Ordinal scene markers - let users explicitly label scenes
+    # Ordinal and narrative scene markers
     "the tenth scene", "the ninth scene", "the eighth scene", "the seventh scene",
     "the sixth scene", "the fifth scene", "the fourth scene", "the third scene",
     "the second scene", "the first scene", "the final scene", "the last scene",
     "scene ten", "scene nine", "scene eight", "scene seven",
     "scene six", "scene five", "scene four", "scene three", "scene two", "scene one",
+    # Explicit scene-boundary phrases
+    "after a brief scene cut", "as the scene transitions",
+    "the scene begins with", "in the next scene",
+    "later, another scene shows", "another scene shows",
+    "the video concludes",
     # Multi-word scene-cut language
     "the scene then cuts to", "the scene cuts to", "the scene then transitions to",
     "the scene transitions to", "the scene then fades to", "the scene fades to",
@@ -6096,6 +6101,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             i += 2
         if current:
             segments.append(current)
+
+        # Stacking fix: if a segment consists entirely of transition markers with no real content,
+        # two transition phrases were adjacent ("after a brief scene cut, in the next scene ...").
+        # Prepend the pure-transition segment to the FOLLOWING segment so they read as one unit.
+        i = 0
+        while i < len(segments):
+            stripped = _TRANSITION_SPLIT_PATTERN.sub("", segments[i]).strip().strip(",;. ")
+            if not stripped and i + 1 < len(segments):
+                segments[i + 1] = segments[i] + ", " + segments[i + 1]
+                segments.pop(i)
+            else:
+                i += 1
+
         return segments if len(segments) > 1 else [text]
 
     def _v2_split_char_from_scene(self, first_segment):

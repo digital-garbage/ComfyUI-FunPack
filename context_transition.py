@@ -108,10 +108,16 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
         # conds = [uncond_list, cond_list, ...] - we read the MAX across all groups
         # because conds[0] is the negative conditioning which always has 1 entry.
         try:
-            num_windows = max((len(c) for c in conds if c), default=1)
+            group_sizes = [len(c) for c in conds if c]
+            num_windows = max(group_sizes, default=1)
         except Exception:
+            group_sizes = []
             num_windows = 1
         self.auto_num_windows = num_windows
+        logging.info(
+            "FunPack context windows: cond group sizes=%s, num_windows=%s, dim=%s, x_in=%s.",
+            group_sizes, num_windows, self.dim, list(x_in.shape),
+        )
 
         # Set context_length to segment size (total / N) for accurate VRAM estimation
         if num_windows > 1:
