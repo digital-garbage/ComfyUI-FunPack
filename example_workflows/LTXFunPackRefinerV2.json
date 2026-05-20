@@ -2938,7 +2938,6 @@
             "name": "VAE",
             "type": "VAE",
             "linkIds": [
-              13426,
               13426
             ],
             "localized_name": "VAE",
@@ -2980,7 +2979,6 @@
             "name": "VAE_2",
             "type": "VAE",
             "linkIds": [
-              13428,
               13428
             ],
             "localized_name": "VAE_2",
@@ -3009,7 +3007,6 @@
             "name": "CLIP",
             "type": "CLIP",
             "linkIds": [
-              13435,
               13435
             ],
             "localized_name": "CLIP",
@@ -3361,7 +3358,7 @@
                 "name": "model",
                 "type": "MODEL",
                 "links": [
-                  14498
+                  14418
                 ]
               },
               {
@@ -3464,61 +3461,6 @@
               0,
               1
             ]
-          },
-          {
-            "id": 5225,
-            "type": "FunPackContextTransitionWindows",
-            "pos": [
-              -3499.400882804922,
-              4203.790940060165
-            ],
-            "size": [
-              346.26666870117185,
-              394
-            ],
-            "flags": {},
-            "order": 8,
-            "mode": 4,
-            "inputs": [
-              {
-                "localized_name": "model",
-                "name": "model",
-                "type": "MODEL",
-                "link": 14498
-              }
-            ],
-            "outputs": [
-              {
-                "localized_name": "model",
-                "name": "model",
-                "type": "MODEL",
-                "links": [
-                  14418
-                ]
-              }
-            ],
-            "properties": {
-              "cnr_id": "ComfyUI-FunPack",
-              "ver": "ace940fed3f7f2724f784b8d3165871a4e027281",
-              "Node name for S&R": "FunPackContextTransitionWindows"
-            },
-            "widgets_values": [
-              "balanced",
-              241,
-              73,
-              "standard_uniform",
-              "overlap-linear",
-              0,
-              0,
-              4,
-              0.2,
-              1,
-              1,
-              false,
-              true,
-              "",
-              false
-            ]
           }
         ],
         "groups": [],
@@ -3605,18 +3547,10 @@
           },
           {
             "id": 14418,
-            "origin_id": 5225,
+            "origin_id": 5204,
             "origin_slot": 0,
             "target_id": -20,
             "target_slot": 4,
-            "type": "MODEL"
-          },
-          {
-            "id": 14498,
-            "origin_id": 5204,
-            "origin_slot": 0,
-            "target_id": 5225,
-            "target_slot": 0,
             "type": "MODEL"
           }
         ],

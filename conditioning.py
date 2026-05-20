@@ -5841,7 +5841,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "split_by_transitions": ("BOOLEAN", {
                     "default": False,
                     "label": "Split by Transitions",
-                    "tooltip": "Detect transition words in the prompt (e.g. 'then', 'suddenly', 'cut to') and encode each scene segment as a separate conditioning entry. The character description (text before the first comma) is prepended to every segment. Designed to work with FunPack Context Transition Windows using split_conds_to_windows.",
+                    "tooltip": "Detect transition words in the prompt and preview scene segments in the encoded prompts output. The refiner still returns one full-prompt conditioning entry.",
                 }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
@@ -6108,82 +6108,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         return segments if len(segments) > 1 else [text]
 
-    def _v2_contrastive_cond(self, scene_cond, general_cond, contrast):
-        """Push scene_cond further away from general_cond by the contrast factor.
-
-        Formula: general + contrast × (scene − general)
-        At contrast=1.0 → plain scene_cond (no change).
-        At contrast=2.0 → 2×scene − general (classic contrastive).
-
-        The character description is shared between scene_cond and general_cond,
-        so it cancels in the delta. The push focuses on what is unique to the scene.
-        Returns scene_cond unchanged if shapes mismatch or contrast is 1.0.
-        """
-        if contrast == 1.0 or not isinstance(general_cond, torch.Tensor):
-            return scene_cond
-        try:
-            if scene_cond.shape != general_cond.shape:
-                return scene_cond
-            gen = general_cond.to(dtype=scene_cond.dtype, device=scene_cond.device)
-            return gen + contrast * (scene_cond - gen)
-        except Exception:
-            return scene_cond
-
-    def _v2_encode_per_window_conditionings(self, clip, segments, general_cond=None,
-                                             contrast=1.0, encode_cache=None):
-        """Encode one conditioning entry per scene window.
-
-        segments[0] is split into character description + first-scene context.
-        Each subsequent segment is combined with the character description to form
-        that window's conditioning.
-
-        When general_cond (the full-prompt conditioning) and contrast > 1.0 are
-        provided, each window's conditioning is pushed further toward its unique
-        scene content and away from the shared baseline via:
-            window_i = general + contrast × (scene_i − general)
-
-        Returns (conditionings, window_texts) where conditionings is a list of
-        (tensor, meta) pairs and window_texts is the prompt strings per window.
-        Returns (None, []) on failure.
-        """
-        if not segments or clip is None:
-            return None, []
+    def _v2_transition_scene_texts(self, segments):
+        if not segments:
+            return []
         if len(segments) == 1:
-            cond, meta, _ = self._v2_encode_prompt(clip, segments[0], encode_cache=encode_cache)
-            if not isinstance(cond, torch.Tensor):
-                return None, []
-            return [(cond, meta)], [segments[0]]
+            return [segments[0]]
 
-        # The entire first segment (everything before the first transition word) is the anchor.
-        # Splitting at the first comma within it breaks prompts like
-        # "In this anime video, Character Name is a..." where the comma is inside the description.
+        # Use the whole first segment as the anchor. Splitting at the first comma
+        # breaks prompts like "In this anime video, Character Name is a...".
         anchor = segments[0].strip()
-        conditionings = []
-        window_texts = []
-
-        cond0_raw, meta0, _ = self._v2_encode_prompt(clip, anchor, encode_cache=encode_cache)
-        if not isinstance(cond0_raw, torch.Tensor):
-            return None, []
-        cond0 = self._v2_contrastive_cond(cond0_raw, general_cond, contrast)
-        conditionings.append((cond0, meta0))
-        window_texts.append(anchor)
-
+        scene_texts = [anchor]
         for seg in segments[1:]:
             seg = seg.strip()
-            if not seg:
-                continue
-            combined = anchor + ", " + seg
-            cond_i_raw, meta_i, _ = self._v2_encode_prompt(clip, combined, encode_cache=encode_cache)
-            if isinstance(cond_i_raw, torch.Tensor):
-                cond_i = self._v2_contrastive_cond(cond_i_raw, general_cond, contrast)
-                conditionings.append((cond_i, meta_i))
-            else:
-                conditionings.append((cond0, meta0))
-            window_texts.append(combined)
-
-        if len(conditionings) <= 1:
-            return [(cond0, meta0)], [anchor]
-        return conditionings, window_texts
+            if seg:
+                scene_texts.append(anchor + ", " + seg)
+        return scene_texts
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -11221,22 +11160,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         # When split_by_transitions is on, detect scene segments and show them in
         # encoded_prompts for transparency, but output a SINGLE full-prompt conditioning.
-        # Multi-entry conditioning without a working per-window routing mechanism just
-        # accumulates all scene conditionings onto every frame, which confuses the model.
+        # Multi-entry conditioning accumulates all scene conditionings onto every frame,
+        # which confuses the model.
         # The transition words in the full prompt already guide the model's natural scene cuts.
         output_conditioning = [(refined, meta)]
-        if split_by_transitions and clip is not None:
+        if split_by_transitions:
             try:
                 segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
                 if len(segments) > 1:
-                    _, window_texts = self._v2_encode_per_window_conditionings(
-                        clip, segments, encode_cache=encode_cache,
-                    )
-                    if window_texts:
+                    scene_texts = self._v2_transition_scene_texts(segments)
+                    if scene_texts:
                         status_suffix = f"\nTransition split: {len(segments)} scenes detected"
                         status = status + status_suffix + enhancement_status
-                        window_lines = "\n".join(
-                            f"  Scene {i + 1}: {t}" for i, t in enumerate(window_texts)
+                        scene_lines = "\n".join(
+                            f"  Scene {i + 1}: {t}" for i, t in enumerate(scene_texts)
                         )
                         split_encoded_prompts = (
                             self._v2_encoded_prompts_output(
@@ -11245,7 +11182,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                 pre_advisor_prompt=pre_advisor_prompt,
                                 advisor_suggested=advisor_suggested,
                             )
-                            + f"\n\nDetected scenes (for FunPack Scene Noise):\n{window_lines}"
+                            + f"\n\nDetected scenes:\n{scene_lines}"
                         )
                         return (
                             output_conditioning,

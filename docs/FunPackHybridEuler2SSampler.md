@@ -96,5 +96,3 @@ The early phase uses a second-order denoised extrapolation (Adams-Bashforth 2-st
 Motion pulse state resets after any pulse fires because the pulse modifies the latent and invalidates the previous denoised estimate.
 
 The outgoing `SIGMAS` remain monotonic. Motion pulses happen inside the sampler at selected denoise steps rather than by expanding the schedule.
-
-If you need the model to stop carrying the previous segment's temporal context forward, add `FunPack Context Transition Windows`. It is the stronger transition tool and should be preferred for multi-view or "scene reset" testing.

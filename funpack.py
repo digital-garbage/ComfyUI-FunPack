@@ -18,7 +18,6 @@ try:
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
-    from .context_transition import FunPackContextTransitionWindows
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 except ImportError:
     from conditioning import (
@@ -37,7 +36,6 @@ except ImportError:
     )
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
-    from context_transition import FunPackContextTransitionWindows
     from templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 
     NODE_CLASS_MAPPINGS = {
@@ -52,7 +50,6 @@ except ImportError:
         "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
         "FunPackVideoRefinerV2": FunPackVideoRefinerV2,
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
-        "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
         "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
@@ -71,7 +68,6 @@ except ImportError:
         "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
         "FunPackVideoRefinerV2": "FunPack Video Refiner V2",
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
-        "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
         "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
@@ -83,7 +79,6 @@ __all__ = [
     "NODE_DISPLAY_NAME_MAPPINGS",
     "FunPackVideoRefinerV2",
     "FunPackHybridEuler2SSampler",
-    "FunPackContextTransitionWindows",
     "FunPackPromptCombiner",
     "FunPackLorebookEnhancer",
     "FunPackPromptEnhancer",

@@ -2276,7 +2276,7 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
         split_by_transitions=True,
     )
 
-    # Single conditioning entry (full prompt) - no per-window routing without context windows
+    # Single conditioning entry - split mode is a prompt preview only.
     assert len(cond) == 1
     assert "Transition split" in status
     assert "Detected scenes" in encoded_prompts
@@ -2312,25 +2312,15 @@ def test_split_prompt_by_transitions_detects_known_phrases():
     assert len(segments_none) == 1
 
 
-def test_per_window_anchor_uses_full_first_segment():
-    """Window 0 = full segment[0]; windows 1+ = segment[0] + scene content.
-    No splitting at the first comma - prevents breaking prompts like
-    'In this anime video, Character Name is ...'."""
+def test_transition_scene_preview_uses_full_first_segment():
     refiner = FunPackVideoRefinerV2()
-
-    class FakeClip:
-        def tokenize(self, text): return text
-        def encode_from_tokens_scheduled(self, t):
-            import torch
-            return [(torch.ones(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
 
     segs = refiner._v2_split_prompt_by_transitions(
         "In this anime video, Hiyuki is a mature woman, then she walks, suddenly she sits"
     )
     assert len(segs) == 3
-    conds, texts = refiner._v2_encode_per_window_conditionings(FakeClip(), segs)
-    assert len(conds) == 3
-    # anchor = full first segment, not just "In this anime video"
+    texts = refiner._v2_transition_scene_texts(segs)
+    assert len(texts) == 3
     assert texts[0] == "In this anime video, Hiyuki is a mature woman"
     assert texts[1].startswith("In this anime video, Hiyuki is a mature woman")
     assert "then she walks" in texts[1]

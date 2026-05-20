@@ -493,9 +493,8 @@ function openPanel(node) {
     const splitToggle = toggleEl(!!settings.refiner.split_by_transitions, "Split prompt by transitions");
     splitToggle.inp.addEventListener("change", () => { settings.refiner.split_by_transitions = splitToggle.inp.checked; });
     body.append(el("div", "funpack-studio-hint",
-      "Detect transition words in the prompt (then, suddenly, cut to...) and encode each scene segment as a separate conditioning entry. " +
-      "The character description (text before the first comma) is prepended to every segment to keep the subject consistent. " +
-      "Use together with FunPack Context Transition Windows."));
+      "Detect transition words in the prompt and preview scene segments in the encoded prompts output. " +
+      "The refiner still returns one full-prompt conditioning entry."));
     body.append(row("Split by transitions", splitToggle.wrap));
 
     body.append(sectionTitle("Negative prompt"));
