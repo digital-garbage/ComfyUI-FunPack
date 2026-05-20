@@ -421,6 +421,10 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     "scene ten", "scene nine", "scene eight", "scene seven",
     "scene six", "scene five", "scene four", "scene three", "scene two", "scene one",
     # Multi-word scene-cut language
+    "the scene then cuts to", "the scene cuts to", "the scene then transitions to",
+    "the scene transitions to", "the scene then fades to", "the scene fades to",
+    "the scene then dissolves to", "the scene dissolves to",
+    "the scene then cuts", "the scene cuts",
     "hard cut to", "smash cut to", "jump cut to", "snap cut to",
     "slow dissolve to", "cross dissolve to", "match cut to",
     "fade to black", "fade to white",
@@ -6102,23 +6106,30 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         segments[0] is split into character description + first-scene context.
         Each subsequent segment is combined with the character description to form
-        that window's conditioning. Returns a list of (tensor, meta) pairs, or None
-        on failure.
+        that window's conditioning.
+
+        Returns (conditionings, window_texts) where conditionings is a list of
+        (tensor, meta) pairs and window_texts is the list of prompt strings encoded
+        for each window. Returns (None, []) on failure.
         """
         if not segments or clip is None:
-            return None
+            return None, []
         if len(segments) == 1:
             cond, meta, _ = self._v2_encode_prompt(clip, segments[0], encode_cache=encode_cache)
-            return [(cond, meta)] if isinstance(cond, torch.Tensor) else None
+            if not isinstance(cond, torch.Tensor):
+                return None, []
+            return [(cond, meta)], [segments[0]]
 
         char_desc, scene0_context = self._v2_split_char_from_scene(segments[0])
         conditionings = []
+        window_texts = []
 
-        scene0_text = char_desc + (", " + scene0_context if scene0_context else "")
-        cond0, meta0, _ = self._v2_encode_prompt(clip, scene0_text.strip(), encode_cache=encode_cache)
+        scene0_text = (char_desc + (", " + scene0_context if scene0_context else "")).strip()
+        cond0, meta0, _ = self._v2_encode_prompt(clip, scene0_text, encode_cache=encode_cache)
         if not isinstance(cond0, torch.Tensor):
-            return None
+            return None, []
         conditionings.append((cond0, meta0))
+        window_texts.append(scene0_text)
 
         for seg in segments[1:]:
             seg = seg.strip()
@@ -6128,8 +6139,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             cond_i, meta_i, _ = self._v2_encode_prompt(clip, combined, encode_cache=encode_cache)
             conditionings.append((cond_i if isinstance(cond_i, torch.Tensor) else cond0,
                                    meta_i if isinstance(cond_i, torch.Tensor) else meta0))
+            window_texts.append(combined)
 
-        return conditionings if len(conditionings) > 1 else [(cond0, meta0)]
+        if len(conditionings) <= 1:
+            return [(cond0, meta0)], [scene0_text]
+        return conditionings, window_texts
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -11173,19 +11187,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             try:
                 segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
                 if len(segments) > 1:
-                    per_window = self._v2_encode_per_window_conditionings(
+                    per_window, window_texts = self._v2_encode_per_window_conditionings(
                         clip, segments, encode_cache=encode_cache
                     )
                     if per_window and len(per_window) > 1:
                         output_conditioning = per_window
                         status_suffix = f"\nTransition split: {len(per_window)} windows from {len(segments)} segments"
                         status = status + status_suffix + enhancement_status
+                        window_lines = "\n".join(
+                            f"  Window {i + 1}: {t}" for i, t in enumerate(window_texts)
+                        )
+                        split_encoded_prompts = (
+                            self._v2_encoded_prompts_output(
+                                prompt_to_encode,
+                                advisor_diagnostic=advisor_diagnostic,
+                                pre_advisor_prompt=pre_advisor_prompt,
+                                advisor_suggested=advisor_suggested,
+                            )
+                            + f"\n\nPer-window prompts:\n{window_lines}"
+                        )
                         return (
                             output_conditioning,
                             status,
                             training_info,
                             loss_graph,
-                            self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
+                            split_encoded_prompts,
                             patched_model,
                             video_latent,
                         )
