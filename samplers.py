@@ -781,8 +781,8 @@ class FunPackLTXAVSceneChainSampler:
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1}),
                 "max_scenes": ("INT", {"default": 8, "min": 1, "step": 1}),
                 "carry_i2v_guides": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
+                    "default": False,
+                    "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
                 }),
             }
         }
@@ -901,13 +901,10 @@ class FunPackLTXAVSceneChainSampler:
         tensor[tuple(slices)] = value
         return tensor
 
-    def _make_mask_tensor(self, tensor, overlap, template_mask=None):
+    def _make_mask_tensor(self, tensor, overlap):
         mask = torch.ones_like(tensor)
         if overlap > 0:
             mask[:, :, :overlap] = 0
-        if template_mask is not None:
-            template_mask = template_mask.to(device=mask.device, dtype=mask.dtype)
-            mask = torch.minimum(mask, template_mask)
         return mask
 
     def _protected_prefix_frames(self, template_mask, tensor_frames):
@@ -923,26 +920,9 @@ class FunPackLTXAVSceneChainSampler:
             count += 1
         return count
 
-    def _carry_template_prefix(self, target, mask, template_tensor, template_mask, overlap):
-        protected = self._protected_prefix_frames(template_mask, self._tensor_frames(template_tensor))
-        if protected <= 0 or overlap >= self._tensor_frames(target):
-            return target, mask, 0
-        copy_len = min(protected, self._tensor_frames(target) - overlap)
-        target = target.clone()
-        mask = mask.clone()
-        guide_frames = self._time_slice(template_tensor, 0, copy_len).to(device=target.device, dtype=target.dtype)
-        self._set_time_slice(target, overlap, overlap + copy_len, guide_frames)
-        if template_mask is not None:
-            guide_mask = self._time_slice(template_mask, 0, copy_len).to(device=mask.device, dtype=mask.dtype)
-            target_mask = self._time_slice(mask, overlap, overlap + copy_len)
-            self._set_time_slice(mask, overlap, overlap + copy_len, torch.minimum(target_mask, guide_mask))
-        return target, mask, copy_len
-
-    def _build_continuation_chunk(self, template, previous, video_overlap, carry_i2v_guides):
+    def _build_continuation_chunk(self, template, previous, video_overlap):
         chunk = self._clone_latent(template)
         chunk_tensors = self._latent_tensors(chunk)
-        template_tensors = self._latent_tensors(template)
-        template_masks = self._latent_masks(template, len(chunk_tensors))
         previous_tensors = self._latent_tensors(previous)
         if len(chunk_tensors) != len(previous_tensors):
             raise ValueError("Previous output and latent_template must have the same latent structure.")
@@ -950,19 +930,12 @@ class FunPackLTXAVSceneChainSampler:
         video_frames = self._tensor_frames(chunk_tensors[0])
         out_tensors = []
         mask_tensors = []
-        carried_guides = 0
         for index, tensor in enumerate(chunk_tensors):
             tensor_frames = self._tensor_frames(tensor)
             overlap = video_overlap if index == 0 else self._derived_overlap(video_overlap, video_frames, tensor_frames)
-            template_mask = template_masks[index] if carry_i2v_guides else None
             prev_tail = self._tail(previous_tensors[index], overlap)
             out_tensor = self._replace_start(tensor, prev_tail, overlap)
-            mask_tensor = self._make_mask_tensor(tensor, overlap, template_mask=template_mask)
-            if carry_i2v_guides and index == 0:
-                out_tensor, mask_tensor, carried = self._carry_template_prefix(
-                    out_tensor, mask_tensor, template_tensors[index], template_mask, overlap,
-                )
-                carried_guides = max(carried_guides, carried)
+            mask_tensor = self._make_mask_tensor(tensor, overlap)
             out_tensors.append(out_tensor)
             mask_tensors.append(mask_tensor)
 
@@ -972,7 +945,110 @@ class FunPackLTXAVSceneChainSampler:
         else:
             chunk["samples"] = out_tensors[0]
             chunk["noise_mask"] = mask_tensors[0]
-        return chunk, carried_guides
+        return chunk
+
+    def _condition_with_values(self, conditioning, values):
+        out = []
+        for cond, meta in conditioning:
+            new_meta = dict(meta) if isinstance(meta, dict) else {}
+            for key, value in values.items():
+                if value is None:
+                    new_meta.pop(key, None)
+                else:
+                    new_meta[key] = value
+            out.append((cond, new_meta))
+        return out
+
+    def _conditioning_value(self, conditioning, key):
+        for item in conditioning or []:
+            if isinstance(item, (list, tuple)) and len(item) >= 2 and isinstance(item[1], dict) and key in item[1]:
+                return item[1][key]
+        return None
+
+    def _guide_keyframe_idxs(self, guiding_latent, scale_factors):
+        try:
+            from comfy.ldm.lightricks.symmetric_patchifier import SymmetricPatchifier, latent_to_pixel_coords
+            patchifier = SymmetricPatchifier(1, start_end=True)
+            _, latent_coords = patchifier.patchify(guiding_latent)
+            return latent_to_pixel_coords(latent_coords, scale_factors, causal_fix=True)
+        except Exception:
+            b, _, f, h, w = guiding_latent.shape
+            return torch.zeros((b, 3, f * h * w, 2), dtype=torch.float32, device=guiding_latent.device)
+
+    def _append_guide_conditioning(self, conditioning, keyframe_idxs, guide_entry):
+        existing_idxs = self._conditioning_value(conditioning, "keyframe_idxs")
+        if isinstance(existing_idxs, torch.Tensor):
+            keyframe_idxs = torch.cat([existing_idxs.to(keyframe_idxs.device, keyframe_idxs.dtype), keyframe_idxs], dim=2)
+        existing_entries = self._conditioning_value(conditioning, "guide_attention_entries")
+        entries = list(existing_entries or [])
+        entries.append(guide_entry)
+        return self._condition_with_values(conditioning, {
+            "keyframe_idxs": keyframe_idxs,
+            "guide_attention_entries": entries,
+        })
+
+    def _append_i2v_guides(self, chunk, template, positive, negative, vae):
+        chunk_tensors = self._latent_tensors(chunk)
+        template_tensors = self._latent_tensors(template)
+        template_masks = self._latent_masks(template, len(template_tensors))
+        if not chunk_tensors or not template_tensors:
+            return chunk, positive, negative, 0
+
+        video_mask = template_masks[0]
+        protected = self._protected_prefix_frames(video_mask, self._tensor_frames(template_tensors[0]))
+        if protected <= 0:
+            return chunk, positive, negative, 0
+
+        guide = self._time_slice(template_tensors[0], 0, protected).to(
+            device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype,
+        )
+        guide_mask = self._time_slice(video_mask, 0, protected).to(
+            device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype,
+        )
+
+        out_tensors = list(chunk_tensors)
+        out_masks = self._latent_masks(chunk, len(out_tensors))
+        if out_masks[0] is None:
+            out_masks[0] = torch.ones_like(out_tensors[0])
+        out_tensors[0] = torch.cat([out_tensors[0], guide], dim=2)
+        if guide_mask.shape[1] != out_masks[0].shape[1]:
+            guide_mask = guide_mask.expand(-1, out_masks[0].shape[1], -1, -1, -1)
+        out_masks[0] = torch.cat([out_masks[0].to(guide_mask.device, guide_mask.dtype), guide_mask], dim=2)
+
+        if self._is_nested(chunk.get("samples")):
+            chunk["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
+            chunk["noise_mask"] = comfy.nested_tensor.NestedTensor(out_masks)
+        else:
+            chunk["samples"] = out_tensors[0]
+            chunk["noise_mask"] = out_masks[0]
+
+        scale_factors = getattr(vae, "downscale_index_formula", (1, 1, 1))
+        keyframe_idxs = self._guide_keyframe_idxs(guide, scale_factors)
+        guide_strength = max(0.0, min(1.0, 1.0 - float(guide_mask.float().mean().item())))
+        guide_entry = {
+            "pre_filter_count": guide.shape[2] * guide.shape[3] * guide.shape[4],
+            "strength": guide_strength,
+            "pixel_mask": None,
+            "latent_shape": list(guide.shape[2:]),
+        }
+        return (
+            chunk,
+            self._append_guide_conditioning(positive, keyframe_idxs, guide_entry),
+            self._append_guide_conditioning(negative, keyframe_idxs, guide_entry),
+            protected,
+        )
+
+    def _crop_video_tail(self, latent, count):
+        if count <= 0:
+            return latent
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        tensors[0] = tensors[0][:, :, :-count]
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        return result
 
     def _blend_tensors(self, left, right, overlap):
         if overlap <= 0:
@@ -1043,7 +1119,7 @@ class FunPackLTXAVSceneChainSampler:
         return f"Scene {index + 1}"
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
-               num_frames_per_scene, frame_overlap, cfg, max_scenes, carry_i2v_guides=True):
+               num_frames_per_scene, frame_overlap, cfg, max_scenes, carry_i2v_guides=False):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -1061,17 +1137,23 @@ class FunPackLTXAVSceneChainSampler:
         carried_guide_frames = 0
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
+            scene_negative = negative
             scene_seed = int(seed) + scene_index
+            carried = 0
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
-                chunk, carried = self._build_continuation_chunk(
-                    latent_template, output, video_overlap, bool(carry_i2v_guides),
-                )
-                carried_guide_frames = max(carried_guide_frames, carried)
+                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
+                if carry_i2v_guides:
+                    chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
+                        chunk, latent_template, scene_positive, scene_negative, vae,
+                    )
+                    carried_guide_frames = max(carried_guide_frames, carried)
             sampled = self._sample_chunk(
-                model, sampler, sigmas, scene_seed, cfg, scene_positive, negative, chunk,
+                model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
+            if carry_i2v_guides and carried > 0:
+                sampled = self._crop_video_tail(sampled, carried)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
 
@@ -1081,5 +1163,5 @@ class FunPackLTXAVSceneChainSampler:
             f"template={video_frames} latent frames, overlap={video_overlap}, output={final_frames}"
         )
         if carry_i2v_guides and carried_guide_frames > 0:
-            status += f", i2v guide carry={carried_guide_frames} latent frame(s)"
+            status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
         return (output, status, scene_count, "\n".join(report_lines))

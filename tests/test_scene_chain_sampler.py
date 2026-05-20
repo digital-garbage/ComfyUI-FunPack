@@ -217,7 +217,7 @@ def test_scene_chain_default_max_is_eight_but_allows_more():
     assert "Scene 10" in report
 
 
-def test_scene_chain_carries_i2v_template_mask_after_overlap():
+def test_scene_chain_can_append_i2v_template_as_hidden_guide():
     sample_calls.clear()
     node = FunPackLTXAVSceneChainSampler()
     samples = torch.zeros(1, 2, 5, 1, 1)
@@ -227,7 +227,7 @@ def test_scene_chain_carries_i2v_template_mask_after_overlap():
     latent_template = {"samples": samples, "noise_mask": mask}
     positive = [scene_cond(0), scene_cond(1)]
 
-    _, status, scene_count, _ = node.sample(
+    latent, status, scene_count, _ = node.sample(
         model=object(),
         vae=FakeVAE(),
         positive=positive,
@@ -245,7 +245,49 @@ def test_scene_chain_carries_i2v_template_mask_after_overlap():
 
     second_call = sample_calls[1]
     assert scene_count == 2
-    assert torch.all(second_call["latent_image"][:, :, 2] == 7.0)
-    assert torch.all(second_call["noise_mask"][:, :, :3] == 0.0)
-    assert torch.all(second_call["noise_mask"][:, :, 3:] == 1.0)
-    assert "i2v guide carry=1 latent frame(s)" in status
+    assert second_call["latent_image"].shape[2] == 6
+    assert torch.all(second_call["latent_image"][:, :, 2:5] == 0.0)
+    assert torch.all(second_call["latent_image"][:, :, 5] == 7.0)
+    assert torch.all(second_call["noise_mask"][:, :, :2] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, 2:5] == 1.0)
+    assert torch.all(second_call["noise_mask"][:, :, 5] == 0.0)
+    assert "keyframe_idxs" in second_call["positive"][0][1]
+    assert second_call["positive"][0][1]["guide_attention_entries"][0]["pre_filter_count"] == 1
+    assert latent["samples"].shape[2] == 8
+    assert "i2v guide tokens=1 latent frame(s)" in status
+
+
+def test_scene_chain_does_not_carry_i2v_guides_by_default():
+    inputs = FunPackLTXAVSceneChainSampler.INPUT_TYPES()["required"]["carry_i2v_guides"][1]
+    assert inputs["default"] is False
+
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    samples = torch.zeros(1, 2, 5, 1, 1)
+    samples[:, :, 0] = 7.0
+    mask = torch.ones(1, 1, 5, 1, 1)
+    mask[:, :, 0] = 0.0
+    latent_template = {"samples": samples, "noise_mask": mask}
+    positive = [scene_cond(0), scene_cond(1)]
+
+    _, status, scene_count, _ = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=50,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+    )
+
+    second_call = sample_calls[1]
+    assert scene_count == 2
+    assert torch.all(second_call["latent_image"][:, :, 2] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, :2] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, 2:] == 1.0)
+    assert "i2v guide" not in status
