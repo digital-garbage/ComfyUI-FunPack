@@ -493,8 +493,8 @@ function openPanel(node) {
     const splitToggle = toggleEl(!!settings.refiner.split_by_transitions, "Split prompt by transitions");
     splitToggle.inp.addEventListener("change", () => { settings.refiner.split_by_transitions = splitToggle.inp.checked; });
     body.append(el("div", "funpack-studio-hint",
-      "Detect transition words in the prompt and preview scene segments in the encoded prompts output. " +
-      "The refiner still returns one full-prompt conditioning entry."));
+      "Detect transition words and output one conditioning entry per scene for FunPack LTXAV Scene Chain Sampler. " +
+      "Leave off for normal single-conditioning workflows."));
     body.append(row("Split by transitions", splitToggle.wrap));
 
     body.append(sectionTitle("Negative prompt"));

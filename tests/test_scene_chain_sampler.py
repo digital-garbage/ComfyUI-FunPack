@@ -1,0 +1,174 @@
+import sys
+import types
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+class FakeNestedTensor:
+    def __init__(self, tensors):
+        self.tensors = list(tensors)
+        self.is_nested = True
+
+    def unbind(self):
+        return self.tensors
+
+    @property
+    def shape(self):
+        return self.tensors[0].shape
+
+    @property
+    def device(self):
+        return self.tensors[0].device
+
+    @property
+    def dtype(self):
+        return self.tensors[0].dtype
+
+    @property
+    def layout(self):
+        return self.tensors[0].layout
+
+    def size(self):
+        return self.tensors[0].size()
+
+
+sample_calls = []
+
+
+def _zeros_like(value):
+    if getattr(value, "is_nested", False):
+        return FakeNestedTensor([torch.zeros_like(t) for t in value.unbind()])
+    return torch.zeros_like(value)
+
+
+def _sample_like(value, mask, seed):
+    if getattr(value, "is_nested", False):
+        masks = mask.unbind() if getattr(mask, "is_nested", False) else [None] * len(value.unbind())
+        return FakeNestedTensor([
+            _sample_like(tensor, masks[index], seed)
+            for index, tensor in enumerate(value.unbind())
+        ])
+    if mask is None:
+        return value + float(seed)
+    return value + mask.to(value.device, value.dtype) * float(seed)
+
+
+def fake_prepare_noise(samples, seed, noise_inds=None):
+    return _zeros_like(samples)
+
+
+def fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative, latent_image,
+                       noise_mask=None, callback=None, disable_pbar=False, seed=None):
+    sample_calls.append({
+        "seed": seed,
+        "positive": positive,
+        "negative": negative,
+        "cfg": cfg,
+    })
+    return _sample_like(latent_image, noise_mask, seed)
+
+
+comfy_mod = types.ModuleType("comfy")
+comfy_kd_mod = types.ModuleType("comfy.k_diffusion")
+comfy_kd_sampling_mod = types.ModuleType("comfy.k_diffusion.sampling")
+comfy_model_sampling_mod = types.ModuleType("comfy.model_sampling")
+comfy_nested_mod = types.ModuleType("comfy.nested_tensor")
+comfy_sample_mod = types.ModuleType("comfy.sample")
+comfy_samplers_mod = types.ModuleType("comfy.samplers")
+comfy_utils_mod = types.ModuleType("comfy.utils")
+
+comfy_nested_mod.NestedTensor = FakeNestedTensor
+comfy_sample_mod.prepare_noise = fake_prepare_noise
+comfy_sample_mod.sample_custom = fake_sample_custom
+
+comfy_mod.k_diffusion = comfy_kd_mod
+comfy_kd_mod.sampling = comfy_kd_sampling_mod
+comfy_mod.model_sampling = comfy_model_sampling_mod
+comfy_mod.nested_tensor = comfy_nested_mod
+comfy_mod.sample = comfy_sample_mod
+comfy_mod.samplers = comfy_samplers_mod
+comfy_mod.utils = comfy_utils_mod
+
+sys.modules.setdefault("comfy", comfy_mod)
+sys.modules.setdefault("comfy.k_diffusion", comfy_kd_mod)
+sys.modules.setdefault("comfy.k_diffusion.sampling", comfy_kd_sampling_mod)
+sys.modules.setdefault("comfy.model_sampling", comfy_model_sampling_mod)
+sys.modules.setdefault("comfy.nested_tensor", comfy_nested_mod)
+sys.modules.setdefault("comfy.sample", comfy_sample_mod)
+sys.modules.setdefault("comfy.samplers", comfy_samplers_mod)
+sys.modules.setdefault("comfy.utils", comfy_utils_mod)
+
+from samplers import FunPackLTXAVSceneChainSampler
+
+
+class FakeVAE:
+    downscale_index_formula = (1, 1, 1)
+
+
+def scene_cond(index):
+    return (
+        torch.ones(1, 2, 3) * float(index + 1),
+        {"funpack_scene_text": f"scene {index + 1}"},
+    )
+
+
+def test_scene_chain_detects_scene_count_and_increments_seed():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [scene_cond(0), scene_cond(1), scene_cond(2)]
+    negative = [(torch.zeros(1, 2, 3), {})]
+
+    latent, status, scene_count, report = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=negative,
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.5,
+        max_scenes=8,
+    )
+
+    assert scene_count == 3
+    assert [call["seed"] for call in sample_calls] == [10, 11, 12]
+    assert [call["positive"][0][1]["funpack_scene_text"] for call in sample_calls] == ["scene 1", "scene 2", "scene 3"]
+    assert latent["samples"].shape[2] == 11
+    assert "Scene chain complete" in status
+    assert "Scene 3" in report
+
+
+def test_scene_chain_preserves_nested_av_structure_and_audio_length():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    video = torch.zeros(1, 2, 5, 3, 3)
+    audio = torch.zeros(1, 1, 10, 4)
+    latent_template = {"samples": FakeNestedTensor([video, audio])}
+    positive = [scene_cond(0), scene_cond(1)]
+
+    latent, _, scene_count, _ = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=20,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=8,
+    )
+
+    video_out, audio_out = latent["samples"].unbind()
+    assert scene_count == 2
+    assert video_out.shape[2] == 8
+    assert audio_out.shape[2] == 16

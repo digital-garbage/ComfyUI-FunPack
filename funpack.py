@@ -17,7 +17,7 @@ try:
         FunPackVideoStitch,
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
-    from .samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from .samplers import FunPackHybridEuler2SSampler, FunPackLTXAVSceneChainSampler, sample_funpack_hybrid_euler_2s
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 except ImportError:
     from conditioning import (
@@ -35,7 +35,7 @@ except ImportError:
         FunPackVideoStitch,
     )
     from model_management import FunPackApplyLoraWeights, FunPackLoraLoader
-    from samplers import FunPackHybridEuler2SSampler, sample_funpack_hybrid_euler_2s
+    from samplers import FunPackHybridEuler2SSampler, FunPackLTXAVSceneChainSampler, sample_funpack_hybrid_euler_2s
     from templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 
     NODE_CLASS_MAPPINGS = {
@@ -50,6 +50,7 @@ except ImportError:
         "FunPackLorebookEnhancer": FunPackLorebookEnhancer,
         "FunPackVideoRefinerV2": FunPackVideoRefinerV2,
         "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
+        "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
         "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
         "FunPackLoraLoader": FunPackLoraLoader,
         "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
@@ -68,6 +69,7 @@ except ImportError:
         "FunPackLorebookEnhancer": "FunPack Lorebook Enhancer",
         "FunPackVideoRefinerV2": "FunPack Video Refiner V2",
         "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
+        "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
         "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
         "FunPackLoraLoader": "FunPack LoRA Loader",
         "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
@@ -79,6 +81,7 @@ __all__ = [
     "NODE_DISPLAY_NAME_MAPPINGS",
     "FunPackVideoRefinerV2",
     "FunPackHybridEuler2SSampler",
+    "FunPackLTXAVSceneChainSampler",
     "FunPackPromptCombiner",
     "FunPackLorebookEnhancer",
     "FunPackPromptEnhancer",

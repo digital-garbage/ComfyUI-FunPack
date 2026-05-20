@@ -20,7 +20,7 @@ if __package__:
         FunPackVideoStitch,
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
-    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler
+    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
@@ -55,10 +55,11 @@ else:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
     try:
-        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler
+        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     except Exception:
         FunPackHybridEuler2SSampler = None
         FunPackDistilledFlowSampler = None
+        FunPackLTXAVSceneChainSampler = None
     try:
         from templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
     except Exception:
@@ -84,6 +85,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
     "FunPackDistilledFlowSampler": FunPackDistilledFlowSampler,
+    "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
@@ -108,6 +110,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
     "FunPackDistilledFlowSampler": "FunPack Distilled Flow Sampler",
+    "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",

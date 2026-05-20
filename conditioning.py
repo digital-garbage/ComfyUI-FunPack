@@ -5665,6 +5665,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     DESCRIPTION = "Prompt-owned Video Refiner V2. Encodes through the connected CLIP, learns from ratings, and writes LoRA suggestions without sigma/latent/feedback systems."
 
     V2_STATE_PREFIX = "refine_v2"
+    MAX_TRANSITION_SCENES = 8
     ACTION_LORA_TYPES = {"action"}
     AUTO_INJECT_BLOCKED_CATEGORIES = {"appearance", "subject", "environment"}
     AUTO_INJECT_ALLOWED_CATEGORIES = {"action", "camera", "details", "quality", "style"}
@@ -5841,7 +5842,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "split_by_transitions": ("BOOLEAN", {
                     "default": False,
                     "label": "Split by Transitions",
-                    "tooltip": "Detect transition words in the prompt and preview scene segments in the encoded prompts output. The refiner still returns one full-prompt conditioning entry.",
+                    "tooltip": "Detect transition words and return one conditioning entry per scene for FunPack LTXAV Scene Chain Sampler. Leave off for normal single-conditioning workflows.",
                 }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
@@ -6123,6 +6124,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if seg:
                 scene_texts.append(anchor + ", " + seg)
         return scene_texts
+
+    def _v2_transition_scene_conditionings(self, clip, scene_texts, encode_cache=None):
+        if clip is None:
+            return None
+        capped_texts = list(scene_texts or [])[:self.MAX_TRANSITION_SCENES]
+        if not capped_texts:
+            return None
+
+        conditionings = []
+        scene_count = len(capped_texts)
+        for scene_index, scene_text in enumerate(capped_texts):
+            cond, meta, _ = self._v2_encode_prompt(clip, scene_text, encode_cache=encode_cache)
+            if not isinstance(cond, torch.Tensor):
+                return None
+            scene_meta = dict(meta) if isinstance(meta, dict) else {"pooled_output": None}
+            scene_meta["funpack_scene_index"] = scene_index
+            scene_meta["funpack_scene_count"] = scene_count
+            scene_meta["funpack_scene_text"] = scene_text
+            conditionings.append((cond, scene_meta))
+        return conditionings
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -11158,19 +11179,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as e:
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
-        # When split_by_transitions is on, detect scene segments and show them in
-        # encoded_prompts for transparency, but output a SINGLE full-prompt conditioning.
-        # Multi-entry conditioning accumulates all scene conditionings onto every frame,
-        # which confuses the model.
-        # The transition words in the full prompt already guide the model's natural scene cuts.
         output_conditioning = [(refined, meta)]
         if split_by_transitions:
             try:
                 segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
                 if len(segments) > 1:
-                    scene_texts = self._v2_transition_scene_texts(segments)
+                    scene_texts = self._v2_transition_scene_texts(segments)[:self.MAX_TRANSITION_SCENES]
                     if scene_texts:
-                        status_suffix = f"\nTransition split: {len(segments)} scenes detected"
+                        scene_conditionings = self._v2_transition_scene_conditionings(
+                            clip, scene_texts, encode_cache=encode_cache,
+                        )
+                        if scene_conditionings is not None:
+                            output_conditioning = scene_conditionings
+                            scene_mode = (
+                                "Scene chain mode: multi-entry conditioning for "
+                                "FunPack LTXAV Scene Chain Sampler"
+                            )
+                        else:
+                            scene_mode = "Scene chain mode unavailable: CLIP missing, single conditioning returned"
+                        detected_count = len(scene_texts)
+                        status_suffix = f"\nTransition split: {detected_count} scenes detected\n{scene_mode}"
+                        if len(segments) > self.MAX_TRANSITION_SCENES:
+                            status_suffix += f"\nTransition split capped at {self.MAX_TRANSITION_SCENES} scenes"
                         status = status + status_suffix + enhancement_status
                         scene_lines = "\n".join(
                             f"  Scene {i + 1}: {t}" for i, t in enumerate(scene_texts)

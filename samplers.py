@@ -4,6 +4,8 @@ import torch
 
 import comfy.k_diffusion.sampling as k_diffusion_sampling
 import comfy.model_sampling
+import comfy.nested_tensor
+import comfy.sample
 import comfy.samplers
 import comfy.utils
 
@@ -759,3 +761,250 @@ class FunPackDistilledFlowSampler:
             }
         )
         return (sampler, prepared_sigmas)
+
+
+class FunPackLTXAVSceneChainSampler:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "vae": ("VAE",),
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
+                "sampler": ("SAMPLER",),
+                "sigmas": ("SIGMAS",),
+                "seed": ("INT", {"default": 1, "min": 0, "max": 0xffffffffffffffff}),
+                "latent_template": ("LATENT",),
+                "num_frames_per_scene": ("INT", {"default": 97, "min": 1, "max": 4096, "step": 8}),
+                "frame_overlap": ("INT", {"default": 16, "min": 0, "max": 512, "step": 8}),
+                "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1}),
+                "max_scenes": ("INT", {"default": 8, "min": 1, "max": 8}),
+            }
+        }
+
+    RETURN_TYPES = ("LATENT", "STRING", "INT", "STRING")
+    RETURN_NAMES = ("latent", "status", "scene_count", "scene_report")
+    FUNCTION = "sample"
+    CATEGORY = "FunPack/Sampling"
+    DESCRIPTION = (
+        "Samples multi-entry scene conditioning as a smooth LTXV/LTXAV continuation chain. "
+        "Use with FunPack Studio split-by-transitions output."
+    )
+
+    def _is_nested(self, samples):
+        return bool(getattr(samples, "is_nested", False))
+
+    def _clone_value(self, value):
+        if isinstance(value, torch.Tensor):
+            return value.detach().clone()
+        if self._is_nested(value):
+            return comfy.nested_tensor.NestedTensor([t.detach().clone() for t in value.unbind()])
+        return value
+
+    def _clone_latent(self, latent):
+        if not isinstance(latent, dict) or "samples" not in latent:
+            raise ValueError("latent_template must be a LATENT dict with samples.")
+        return {key: self._clone_value(value) for key, value in latent.items()}
+
+    def _tensor_frames(self, tensor):
+        if not isinstance(tensor, torch.Tensor) or tensor.dim() < 3:
+            raise ValueError("Scene chain latents must have a time dimension at index 2.")
+        return int(tensor.shape[2])
+
+    def _latent_tensors(self, latent):
+        samples = latent.get("samples")
+        if self._is_nested(samples):
+            tensors = list(samples.unbind())
+            if not tensors:
+                raise ValueError("Nested latent has no tensors.")
+            return tensors
+        if isinstance(samples, torch.Tensor):
+            return [samples]
+        raise ValueError("Scene chain sampler requires tensor or nested tensor latent samples.")
+
+    def _time_scale(self, vae):
+        scale = getattr(vae, "downscale_index_formula", None)
+        if isinstance(scale, (list, tuple)) and scale:
+            try:
+                return max(1, int(scale[0]))
+            except Exception:
+                return 1
+        return 1
+
+    def _expected_latent_frames(self, pixel_frames, time_scale):
+        return ((max(1, int(pixel_frames)) - 1) // max(1, int(time_scale))) + 1
+
+    def _validate_template_length(self, latent_template, num_frames_per_scene, time_scale):
+        video_frames = self._tensor_frames(self._latent_tensors(latent_template)[0])
+        expected = self._expected_latent_frames(num_frames_per_scene, time_scale)
+        if video_frames != expected:
+            raise ValueError(
+                f"latent_template has {video_frames} video latent frames, expected {expected} "
+                f"from num_frames_per_scene={num_frames_per_scene} and time scale={time_scale}."
+            )
+        return video_frames
+
+    def _overlap_frames(self, latent_template, frame_overlap, time_scale):
+        video_frames = self._tensor_frames(self._latent_tensors(latent_template)[0])
+        overlap = self._expected_latent_frames(frame_overlap + 1, time_scale) - 1
+        if frame_overlap <= 0:
+            overlap = 0
+        if overlap >= video_frames:
+            raise ValueError("frame_overlap must be smaller than the latent scene length.")
+        return max(0, int(overlap))
+
+    def _derived_overlap(self, video_overlap, video_frames, tensor_frames):
+        if video_overlap <= 0:
+            return 0
+        ratio = tensor_frames / max(1, video_frames)
+        overlap = int(round(video_overlap * ratio))
+        return max(1, min(tensor_frames - 1, overlap))
+
+    def _replace_start(self, target, source_tail, overlap):
+        if overlap <= 0:
+            return target
+        target = target.clone()
+        source_tail = source_tail.to(device=target.device, dtype=target.dtype)
+        target[:, :, :overlap] = source_tail
+        return target
+
+    def _tail(self, tensor, overlap):
+        if overlap <= 0:
+            return tensor[:, :, :0]
+        return tensor[:, :, -overlap:]
+
+    def _make_mask_tensor(self, tensor, overlap):
+        mask = torch.ones_like(tensor)
+        if overlap > 0:
+            mask[:, :, :overlap] = 0
+        return mask
+
+    def _build_continuation_chunk(self, template, previous, video_overlap):
+        chunk = self._clone_latent(template)
+        chunk_tensors = self._latent_tensors(chunk)
+        previous_tensors = self._latent_tensors(previous)
+        if len(chunk_tensors) != len(previous_tensors):
+            raise ValueError("Previous output and latent_template must have the same latent structure.")
+
+        video_frames = self._tensor_frames(chunk_tensors[0])
+        out_tensors = []
+        mask_tensors = []
+        for index, tensor in enumerate(chunk_tensors):
+            tensor_frames = self._tensor_frames(tensor)
+            overlap = video_overlap if index == 0 else self._derived_overlap(video_overlap, video_frames, tensor_frames)
+            prev_tail = self._tail(previous_tensors[index], overlap)
+            out_tensors.append(self._replace_start(tensor, prev_tail, overlap))
+            mask_tensors.append(self._make_mask_tensor(tensor, overlap))
+
+        if self._is_nested(chunk.get("samples")):
+            chunk["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
+            chunk["noise_mask"] = comfy.nested_tensor.NestedTensor(mask_tensors)
+        else:
+            chunk["samples"] = out_tensors[0]
+            chunk["noise_mask"] = mask_tensors[0]
+        return chunk
+
+    def _blend_tensors(self, left, right, overlap):
+        if overlap <= 0:
+            return torch.cat([left, right], dim=2)
+        if left.shape[:2] != right.shape[:2] or left.shape[3:] != right.shape[3:]:
+            raise ValueError("Cannot blend scene latents with different non-time dimensions.")
+        alpha = torch.linspace(1.0, 0.0, overlap + 2, device=left.device, dtype=left.dtype)[1:-1]
+        shape = [1] * left.dim()
+        shape[2] = overlap
+        alpha = alpha.reshape(shape)
+        blended = alpha * left[:, :, -overlap:] + (1.0 - alpha) * right[:, :, :overlap].to(left.device, left.dtype)
+        return torch.cat([left[:, :, :-overlap], blended, right[:, :, overlap:].to(left.device, left.dtype)], dim=2)
+
+    def _blend_latents(self, previous, current, video_overlap):
+        result = self._clone_latent(previous)
+        previous_tensors = self._latent_tensors(previous)
+        current_tensors = self._latent_tensors(current)
+        if len(previous_tensors) != len(current_tensors):
+            raise ValueError("Cannot blend different latent structures.")
+
+        video_frames = self._tensor_frames(current_tensors[0])
+        blended_tensors = []
+        for index, tensor in enumerate(current_tensors):
+            tensor_frames = self._tensor_frames(tensor)
+            overlap = video_overlap if index == 0 else self._derived_overlap(video_overlap, video_frames, tensor_frames)
+            blended_tensors.append(self._blend_tensors(previous_tensors[index], tensor, overlap))
+
+        if self._is_nested(previous.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(blended_tensors)
+        else:
+            result["samples"] = blended_tensors[0]
+        result.pop("noise_mask", None)
+        return result
+
+    def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent):
+        if sampler is None:
+            raise ValueError("sampler input is required.")
+        if not isinstance(sigmas, torch.Tensor):
+            raise ValueError("sigmas input must be a SIGMAS tensor.")
+        latent = self._clone_latent(latent)
+        samples = latent["samples"]
+        noise = comfy.sample.prepare_noise(samples, int(seed))
+        sampled = comfy.sample.sample_custom(
+            model,
+            noise,
+            float(cfg),
+            sampler,
+            sigmas,
+            positive,
+            negative,
+            samples,
+            noise_mask=latent.get("noise_mask"),
+            seed=int(seed),
+        )
+        latent["samples"] = sampled
+        latent.pop("noise_mask", None)
+        return latent
+
+    def _scene_text(self, scene_conditioning, index):
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            text = str(scene_conditioning[1].get("funpack_scene_text", "") or "").strip()
+            if text:
+                return text
+        return f"Scene {index + 1}"
+
+    def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
+               num_frames_per_scene, frame_overlap, cfg, max_scenes):
+        if not isinstance(positive, list) or not positive:
+            raise ValueError("positive conditioning must contain at least one scene entry.")
+        if negative is None:
+            negative = []
+
+        max_scene_count = max(1, min(8, int(max_scenes)))
+        scene_conditionings = positive[:max_scene_count]
+        scene_count = len(scene_conditionings)
+        time_scale = self._time_scale(vae)
+        video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale)
+        video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
+
+        output = None
+        report_lines = []
+        for scene_index, scene_cond in enumerate(scene_conditionings):
+            scene_positive = [scene_cond]
+            scene_seed = int(seed) + scene_index
+            if output is None:
+                chunk = self._clone_latent(latent_template)
+            else:
+                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
+            sampled = self._sample_chunk(
+                model, sampler, sigmas, scene_seed, cfg, scene_positive, negative, chunk,
+            )
+            output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
+            report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
+
+        final_frames = self._tensor_frames(self._latent_tensors(output)[0])
+        status = (
+            f"Scene chain complete: {scene_count} scene(s), "
+            f"template={video_frames} latent frames, overlap={video_overlap}, output={final_frames}"
+        )
+        return (output, status, scene_count, "\n".join(report_lines))

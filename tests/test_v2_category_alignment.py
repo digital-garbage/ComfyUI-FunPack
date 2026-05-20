@@ -2276,8 +2276,11 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
         split_by_transitions=True,
     )
 
-    # Single conditioning entry - split mode is a prompt preview only.
-    assert len(cond) == 1
+    assert len(cond) == 3
+    assert cond[0][1]["funpack_scene_index"] == 0
+    assert cond[0][1]["funpack_scene_count"] == 3
+    assert "a woman in a red dress" in cond[1][1]["funpack_scene_text"]
+    assert "Scene chain mode" in status
     assert "Transition split" in status
     assert "Detected scenes" in encoded_prompts
     assert "Scene 1" in encoded_prompts
@@ -2324,3 +2327,24 @@ def test_transition_scene_preview_uses_full_first_segment():
     assert texts[0] == "In this anime video, Hiyuki is a mature woman"
     assert texts[1].startswith("In this anime video, Hiyuki is a mature woman")
     assert "then she walks" in texts[1]
+
+
+def test_split_by_transitions_caps_scene_conditionings_at_eight(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    prompt = "anchor, " + ", ".join(f"then scene {i}" for i in range(1, 12))
+
+    cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
+        prompt,
+        FakeClip(),
+        "Perfect",
+        "transition-cap-test",
+        split_by_transitions=True,
+    )
+
+    assert len(cond) == 8
+    assert cond[-1][1]["funpack_scene_count"] == 8
+    assert "capped at 8 scenes" in status
+    assert "Scene 8" in encoded_prompts
+    assert "Scene 9" not in encoded_prompts
