@@ -21,7 +21,7 @@ if __package__:
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler
-    from .context_transition import FunPackContextTransitionWindows, FunPackSceneCutWindows, FunPackSceneNoise
+    from .context_transition import FunPackSceneCutWindows, FunPackSceneNoise
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
@@ -61,9 +61,8 @@ else:
         FunPackHybridEuler2SSampler = None
         FunPackDistilledFlowSampler = None
     try:
-        from context_transition import FunPackContextTransitionWindows, FunPackSceneCutWindows, FunPackSceneNoise
+        from context_transition import FunPackSceneCutWindows, FunPackSceneNoise
     except Exception:
-        FunPackContextTransitionWindows = None
         FunPackSceneCutWindows = None
         FunPackSceneNoise = None
     try:
@@ -91,7 +90,6 @@ NODE_CLASS_MAPPINGS = {
     "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
     "FunPackDistilledFlowSampler": FunPackDistilledFlowSampler,
-    "FunPackContextTransitionWindows": FunPackContextTransitionWindows,
     "FunPackSceneCutWindows": FunPackSceneCutWindows,
     "FunPackSceneNoise": FunPackSceneNoise,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
@@ -118,7 +116,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
     "FunPackDistilledFlowSampler": "FunPack Distilled Flow Sampler",
-    "FunPackContextTransitionWindows": "FunPack Context Transition Windows",
     "FunPackSceneCutWindows": "FunPack Scene Cut Windows",
     "FunPackSceneNoise": "FunPack Scene Noise",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
