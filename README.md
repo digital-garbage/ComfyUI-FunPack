@@ -2,6 +2,16 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.7.0
+
+Added `FunPack LTXAV Scene Chain Sampler` for split-scene LTXV/LTXAV continuation in one ComfyUI run. Enable `split_by_transitions` in `FunPack Studio` or `FunPack Video Refiner V2`; the existing `modified_positive` output becomes one conditioning entry per detected scene. The sampler consumes those entries in order, samples each scene chunk with seed increments, preserves overlap from the previous chunk, and supports both plain video latents and nested LTXAV video/audio latents.
+
+Scene splitting now uses transition order only. Written labels like `scene ten`, `scene -999999`, or `scene minus infinity` are treated as transition text, not as real scene numbers. The text before the first transition is kept as a character/global anchor and is prepended to every scene for consistency. Standalone `then` is no longer a split trigger; more specific transition phrases remain supported.
+
+Important: the Scene Chain sampler is resource heavy. Long scene chains can create very large final latents, and you may run out of memory during VAE Decode even if sampling itself succeeds. Start with short scenes and modest `max_scenes`, then increase carefully.
+
+Also improved the Studio Scene Builder mode dropdown refresh and expanded the transition phrase list for camera moves, final shots, and scene progression language.
+
 ## Updates in 2.6.0
 
 Added `FunPack Studio` - a single node that combines Refinement Key management, Scene Builder, LoRA loading, Refiner V2, Conditioning Adjust, and sampler configuration into one interface. The node face shows only the rating widget and an Open Studio button. All settings live in a tabbed popup editor.

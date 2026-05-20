@@ -4,6 +4,8 @@
 
 Use it with `FunPack Studio` or `FunPack Video Refiner V2` when `split_by_transitions` is enabled. The refiner returns one positive conditioning entry per detected scene, and this sampler uses each entry for one sequential chunk.
 
+Important: this sampler is resource heavy. Long chains can produce very large final latents. You may run out of memory during VAE Decode even if every sampling chunk completed successfully.
+
 ## Inputs
 
 - `model`: LTXV or LTXAV model.
@@ -17,7 +19,7 @@ Use it with `FunPack Studio` or `FunPack Video Refiner V2` when `split_by_transi
 - `num_frames_per_scene`: Pixel frame count represented by `latent_template`.
 - `frame_overlap`: Pixel frames to preserve and blend between scene chunks.
 - `cfg`: Internal CFG value.
-- `max_scenes`: Maximum scene entries to consume, capped at 8.
+- `max_scenes`: Maximum scene entries to consume. Default is `8`, but it can be raised for longer chains.
 
 ## Behavior
 
@@ -30,3 +32,9 @@ For nested LTXAV latents, video and audio tensors are continued together. Audio 
 ## Notes
 
 Multi-entry conditioning from `split_by_transitions` is meant for this sampler. Connecting it to a normal sampler can mix scene conditionings together instead of routing one scene per chunk.
+
+Scene order is first in, first out. Written labels like `scene ten`, `scene -999999`, or `scene minus infinity` are treated as transition text only. They do not assign scene numbers.
+
+For character consistency, keep the character or subject description before the first transition. Refiner V2 and Studio prepend that prefix to every detected scene conditioning.
+
+VAE Decode memory use grows with the final stitched latent length. If decode fails with OOM, reduce `max_scenes`, lower `num_frames_per_scene`, decode shorter chains, or use a lower-memory decode path if your workflow provides one.

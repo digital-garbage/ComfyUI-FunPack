@@ -71,6 +71,10 @@ The advisor receives four explicit inputs: `ORIGINAL_USER_INTENT` (the user's in
 
 **im_feeling_lucky**: Composes a learned prompt from rated phrase memory and encodes it through the connected CLIP.
 
+**split_by_transitions**: Detects scene transition phrases in `positive_prompt`. When disabled, `modified_positive` is one normal conditioning entry for the full prompt. When enabled, `modified_positive` becomes one conditioning entry per detected scene, intended for `FunPack LTXAV Scene Chain Sampler`.
+
+Scene splitting is order-only. Written labels such as `scene ten`, `scene -999999`, or `scene minus infinity` are treated as transition text, not as real scene numbers. Text before the first transition is used as a shared character/global anchor and prepended to every detected scene.
+
 ## Feedback History
 
 V2 maintains a rolling history of the last ten user-provided `feedback_prompt` entries in session state. Each entry is labelled with its rating, for example:
@@ -85,7 +89,7 @@ Entries from `Only diagnostics` runs are stored as `Advisor note:` and carry for
 
 ## Outputs
 
-**modified_positive**: Refined positive conditioning.
+**modified_positive**: Refined positive conditioning. With `split_by_transitions=True`, this is a multi-entry scene conditioning list for `FunPack LTXAV Scene Chain Sampler`.
 
 **status**: Short runtime summary including mode, advisor status, and repair actions taken.
 
@@ -106,6 +110,8 @@ Pre-advisor prompt: ...
 ```
 
 `Advisor suggestion` is labelled `(applied)` when validation passed and the prompt was changed, or `(rejected)` when validation blocked it. `Pre-advisor prompt` only appears when the suggestion was applied and the prompt changed. `Advisor analysis` only appears when the analysis pass ran (`Full` mode).
+
+When `split_by_transitions=True`, `encoded_prompts` also shows a `Detected scenes` section. Multi-entry conditioning from this mode should go to `FunPack LTXAV Scene Chain Sampler`; normal samplers may mix all scene conditionings together.
 
 ## Appearance Safety
 

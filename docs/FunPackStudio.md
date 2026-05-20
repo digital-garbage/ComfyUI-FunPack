@@ -31,7 +31,7 @@ Only the `rating` widget and the `Open Studio` button are visible on the node. E
 | Output | Type | Notes |
 |---|---|---|
 | `model` | MODEL | Patched model: LoRAs applied, then attn2 direction injection applied on top. |
-| `modified_positive` | CONDITIONING | Refined positive conditioning with session memory applied. |
+| `modified_positive` | CONDITIONING | Refined positive conditioning with session memory applied. When split by transitions is enabled, this becomes one conditioning entry per detected scene for the Scene Chain sampler. |
 | `negative` | CONDITIONING | Negative conditioning passed through or encoded from `negative_prompt`. |
 | `seed` | INT | The seed used this run. Wire to your sampler for a matching generation seed. |
 | `high_pass_sampler` | SAMPLER | Configured high-pass sampler object. |
@@ -72,8 +72,11 @@ All Refiner V2 execution settings:
 - **Negative prompt** - default negative text encoded via CLIP when no conditioning is connected
 - **Feedback** - what was wrong with the previous output; highest priority in the advisor
 - **Intent override** - overrides the `user_intent_prompt` input
+- **Split by transitions** - detects scene transition phrases and outputs one conditioning entry per detected scene through `modified_positive`
 
 Each of the three text inputs (negative prompt, feedback, intent) has an **Override** toggle. When off, a connected node input takes precedence and the popup value is a fallback. When on, the popup value wins regardless.
+
+Split scene conditioning is intended for `FunPack LTXAV Scene Chain Sampler`. Scene labels are order-only: `scene ten` can be the first generated chunk if it is the first detected transition. Keep character description before the first transition so Studio can prepend it to every scene.
 
 ### Advisor
 

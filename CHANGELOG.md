@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.7.0] - 2026-05-21
+
+### Added
+
+Added `FunPack LTXAV Scene Chain Sampler` for split-scene LTXV/LTXAV continuation in one ComfyUI run. It consumes multi-entry positive conditioning from `FunPack Studio` or `FunPack Video Refiner V2`, samples one scene chunk per conditioning entry, increments the seed per scene, preserves overlap from the previous chunk, and blends/appends chunks in latent space.
+
+Added support for plain LTXV video latents and nested LTXAV video/audio latents in the Scene Chain sampler. For nested AV latents, video and audio tensors are continued together, with audio overlap derived from the video/audio latent length ratio.
+
+Added broad order-only scene splitting for `split_by_transitions`. Scene labels such as `scene ten`, `scene -999999`, and `scene minus infinity` are transition cues, but their written labels never affect scene numbering or order.
+
+Expanded transition phrase detection with scene progression, camera shift, zoom, final shot, and final transition phrases.
+
+### Changed
+
+`split_by_transitions=True` now returns one conditioning entry per detected scene through the existing `modified_positive` output. No new Refiner V2 or Studio output sockets were added.
+
+The text before the first transition is treated as a shared character/global anchor and prepended to every detected scene conditioning. This is intended to improve character consistency across generated chunks.
+
+Removed the hard 8-scene cap from Refiner V2 split output and Scene Chain sampler execution. `max_scenes` still defaults to `8`, but users can raise it for longer chains.
+
+Standalone `then` is no longer a transition trigger. More specific phrases such as `and then`, camera transitions, scene labels, and explicit cut/transition language still split scenes.
+
+### Fixed
+
+Fixed Studio's Scene Builder mode dropdown not refreshing the active tab immediately after selecting a new mode.
+
+### Warning
+
+`FunPack LTXAV Scene Chain Sampler` is resource heavy. Long chains create large final latents and may run out of memory during VAE Decode even when sampling succeeds. Start with short scenes and a modest `max_scenes`, then increase carefully.
+
 ## [2.6.0] - 2026-05-16
 
 ### Added
