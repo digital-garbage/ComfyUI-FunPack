@@ -257,6 +257,39 @@ def test_scene_chain_can_append_i2v_template_as_hidden_guide():
     assert "i2v guide tokens=1 latent frame(s)" in status
 
 
+def test_scene_chain_expands_compact_i2v_guide_mask_to_spatial_chunk_mask():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    samples = torch.zeros(1, 2, 5, 24, 3)
+    samples[:, :, 0] = 7.0
+    mask = torch.ones(1, 1, 5, 1, 1)
+    mask[:, :, 0] = 0.0
+    latent_template = {"samples": samples, "noise_mask": mask}
+    positive = [scene_cond(0), scene_cond(1)]
+
+    _, status, scene_count, _ = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=45,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+        carry_i2v_guides=True,
+    )
+
+    second_call = sample_calls[1]
+    assert scene_count == 2
+    assert second_call["noise_mask"].shape == second_call["latent_image"].shape
+    assert torch.all(second_call["noise_mask"][:, :, 5] == 0.0)
+    assert "i2v guide tokens=1 latent frame(s)" in status
+
+
 def test_scene_chain_does_not_carry_i2v_guides_by_default():
     inputs = FunPackLTXAVSceneChainSampler.INPUT_TYPES()["required"]["carry_i2v_guides"][1]
     assert inputs["default"] is False

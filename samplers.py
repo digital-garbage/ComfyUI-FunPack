@@ -901,6 +901,22 @@ class FunPackLTXAVSceneChainSampler:
         tensor[tuple(slices)] = value
         return tensor
 
+    def _expand_mask_like(self, mask, target):
+        if mask.shape[0] != target.shape[0] or mask.shape[2] != target.shape[2]:
+            raise ValueError("Guide mask batch/time dimensions must match target mask.")
+        shape = list(mask.shape)
+        while len(shape) < target.dim():
+            shape.append(1)
+            mask = mask.reshape(shape)
+        expand_shape = list(target.shape)
+        for dim in range(target.dim()):
+            if dim == 2:
+                continue
+            if mask.shape[dim] not in (1, target.shape[dim]):
+                raise ValueError("Guide mask dimensions are not broadcastable to target mask.")
+            expand_shape[dim] = target.shape[dim]
+        return mask.expand(expand_shape)
+
     def _make_mask_tensor(self, tensor, overlap):
         mask = torch.ones_like(tensor)
         if overlap > 0:
@@ -1011,8 +1027,8 @@ class FunPackLTXAVSceneChainSampler:
         if out_masks[0] is None:
             out_masks[0] = torch.ones_like(out_tensors[0])
         out_tensors[0] = torch.cat([out_tensors[0], guide], dim=2)
-        if guide_mask.shape[1] != out_masks[0].shape[1]:
-            guide_mask = guide_mask.expand(-1, out_masks[0].shape[1], -1, -1, -1)
+        target_mask = self._time_slice(out_masks[0], 0, protected).to(guide_mask.device, guide_mask.dtype)
+        guide_mask = self._expand_mask_like(guide_mask, target_mask)
         out_masks[0] = torch.cat([out_masks[0].to(guide_mask.device, guide_mask.dtype), guide_mask], dim=2)
 
         if self._is_nested(chunk.get("samples")):
