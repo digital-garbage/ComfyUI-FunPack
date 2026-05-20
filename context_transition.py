@@ -3,32 +3,25 @@ import logging
 import comfy.context_windows
 
 
-_BASE_SCHEDULE = comfy.context_windows.ContextSchedules.STATIC_STANDARD
-_FUSE_METHOD = comfy.context_windows.ContextFuseMethods.PYRAMID
 _DIM = 2
-_CONTEXT_OVERLAP = 4
 _FALLBACK_CONTEXT_LENGTH = 16
 
 
-def _offset_windows(local_windows, offset, num_frames):
-    shifted = []
-    for window in local_windows:
-        w = [idx + offset for idx in window if 0 <= idx + offset < num_frames]
-        if w:
-            shifted.append(w)
-    return shifted
-
-
 def _make_auto_schedule():
-    """Schedule that reads handler.auto_num_windows at call time to place equal-width boundaries."""
-    base = comfy.context_windows.get_matching_context_schedule(_BASE_SCHEDULE)
+    """One isolated window per scene - no overlap, no stride, no carryover between scenes.
+
+    Each scene segment covers exactly its slice of frames. The character description
+    in the conditioning is what keeps the subject consistent, not temporal bleed.
+    """
+    base = comfy.context_windows.get_matching_context_schedule(
+        comfy.context_windows.ContextSchedules.STATIC_STANDARD
+    )
 
     def auto_schedule(num_frames, handler, model_options):
         num_windows = getattr(handler, "auto_num_windows", 1)
         if num_windows <= 1 or num_frames <= 1:
             return base.func(num_frames, handler, model_options)
 
-        # Equal-width hard cuts between windows
         boundaries = [
             int(round(num_frames * i / num_windows))
             for i in range(1, num_windows)
@@ -38,29 +31,19 @@ def _make_auto_schedule():
             return base.func(num_frames, handler, model_options)
 
         cuts = [0] + boundaries + [num_frames]
-        windows = []
-        seen = set()
-        for i in range(len(cuts) - 1):
-            seg_start, seg_end = cuts[i], cuts[i + 1]
-            seg_len = seg_end - seg_start
-            if seg_len <= 0:
-                continue
-            for w in _offset_windows(base.func(seg_len, handler, model_options), seg_start, num_frames):
-                key = tuple(w)
-                if key not in seen:
-                    seen.add(key)
-                    windows.append(w)
-
-        if not windows:
-            return base.func(num_frames, handler, model_options)
+        windows = [
+            list(range(cuts[i], cuts[i + 1]))
+            for i in range(len(cuts) - 1)
+            if cuts[i + 1] > cuts[i]
+        ]
 
         logging.info(
-            "FunPack context windows: %s segments, boundaries at %s, context_length=%s.",
-            num_windows, boundaries, handler.context_length,
+            "FunPack context windows: %s isolated scenes, frame boundaries at %s.",
+            num_windows, boundaries,
         )
-        return windows
+        return windows or base.func(num_frames, handler, model_options)
 
-    return comfy.context_windows.ContextSchedule("funpack_auto", auto_schedule)
+    return comfy.context_windows.ContextSchedule("funpack_isolated_scenes", auto_schedule)
 
 
 _AUTO_SCHEDULE = _make_auto_schedule()
@@ -70,9 +53,11 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
     def __init__(self, auto_total_frames=0):
         super().__init__(
             context_schedule=_AUTO_SCHEDULE,
-            fuse_method=comfy.context_windows.get_matching_fuse_method(_FUSE_METHOD),
-            context_length=max(1, int(auto_total_frames) // 2) if auto_total_frames else _FALLBACK_CONTEXT_LENGTH,
-            context_overlap=_CONTEXT_OVERLAP,
+            fuse_method=comfy.context_windows.get_matching_fuse_method(
+                comfy.context_windows.ContextFuseMethods.PYRAMID
+            ),
+            context_length=_FALLBACK_CONTEXT_LENGTH,
+            context_overlap=0,   # scenes are fully isolated - no overlap
             context_stride=1,
             closed_loop=False,
             dim=_DIM,
@@ -86,27 +71,25 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
     def _detect_temporal_dim(self, x_in):
         """Return the first dim that looks like a temporal frame axis.
 
-        A temporal dim has a size that is:
-        - greater than context_overlap (otherwise nothing meaningful to window)
-        - at most 4096 (packed flat formats like LTXAV combine all tokens and reach millions)
+        A usable temporal dim has size > 1 and <= 4096.
+        Packed/flat formats like LTXAV combine all tokens into millions of elements
+        and have no single axis that maps to frame count - those return None.
 
         Search order: 2 (standard [B,C,T,H,W]), 1, 0 (LTXAV packs frames at dim 0),
-        then any remaining dims. Returns None when no suitable dim is found.
+        then any remaining dims.
         """
-        min_size = max(2, self.context_overlap + 1)
         ndim = x_in.dim()
         priority = [d for d in [2, 1, 0] if d < ndim]
         rest = [d for d in range(ndim) if d not in priority]
         for d in priority + rest:
             size = int(x_in.size(d))
-            if min_size < size <= 4096:
+            if 1 < size <= 4096:
                 return d
         return None
 
     def should_use_context(self, model, conds, x_in, timestep, model_options):
-        # Detect a usable temporal dimension. Packed flat formats (e.g. LTXAV) have
-        # no suitable dim and must be skipped - windowing over a flat packed sequence
-        # produces sub-tensors that cannot be unpacked by the model.
+        # Detect a usable temporal dimension. Packed flat formats (e.g. LTXAV) produce
+        # sub-tensors that cannot be unpacked by the model - skip windowing entirely.
         detected = self._detect_temporal_dim(x_in)
         if detected is None:
             logging.debug(
@@ -128,7 +111,7 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
             num_windows = 1
         self.auto_num_windows = num_windows
 
-        # Auto-size context_length to fit windows evenly
+        # Set context_length to segment size (total / N) for accurate VRAM estimation
         if num_windows > 1:
             total = self.auto_total_frames if self.auto_total_frames > 0 else int(x_in.size(self.dim))
             self.context_length = max(1, total // num_windows)
@@ -152,9 +135,9 @@ class FunPackContextTransitionWindows:
                     "max": 16384,
                     "step": 1,
                     "tooltip": (
-                        "Latent frame count of your video. When set, window size is "
-                        "auto-computed as total_frames / number_of_conditioning_entries. "
-                        "Leave 0 to derive the count from the actual latent at sampling time."
+                        "Latent frame count of your video. Used for VRAM estimation and to "
+                        "pre-size windows before sampling begins. Leave 0 to auto-detect from "
+                        "the latent at sampling time."
                     ),
                 }),
             },
@@ -166,9 +149,10 @@ class FunPackContextTransitionWindows:
     CATEGORY = "FunPack/Sampling"
     DESCRIPTION = (
         "Wraps a model with per-scene context windows. Connect after Refiner V2 or Studio "
-        "with 'Split by Transitions' enabled. Window count and size are derived automatically "
-        "from the number of conditioning entries at sampling time. Only total_frames needs to "
-        "be set (optional - leave 0 to auto-detect from the latent)."
+        "with 'Split by Transitions' enabled. Window count is derived from the number of "
+        "conditioning entries at sampling time - one fully isolated window per scene, "
+        "no overlap, no temporal carryover. Character consistency is handled by the "
+        "shared character description in each window's conditioning."
     )
 
     def apply(self, model, total_frames=0):
