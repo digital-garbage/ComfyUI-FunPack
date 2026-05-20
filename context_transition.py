@@ -104,9 +104,11 @@ class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHand
             )
             self.dim = detected
 
-        # Detect how many conditioning entries Refiner/Studio produced
+        # Detect how many conditioning entries Refiner/Studio produced.
+        # conds = [uncond_list, cond_list, ...] - we read the MAX across all groups
+        # because conds[0] is the negative conditioning which always has 1 entry.
         try:
-            num_windows = max(1, len(conds[0])) if conds and conds[0] else 1
+            num_windows = max((len(c) for c in conds if c), default=1)
         except Exception:
             num_windows = 1
         self.auto_num_windows = num_windows

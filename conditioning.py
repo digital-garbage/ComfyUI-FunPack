@@ -417,7 +417,7 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     # Ordinal scene markers - let users explicitly label scenes
     "the tenth scene", "the ninth scene", "the eighth scene", "the seventh scene",
     "the sixth scene", "the fifth scene", "the fourth scene", "the third scene",
-    "the second scene", "the first scene",
+    "the second scene", "the first scene", "the final scene", "the last scene",
     "scene ten", "scene nine", "scene eight", "scene seven",
     "scene six", "scene five", "scene four", "scene three", "scene two", "scene one",
     # Multi-word scene-cut language
