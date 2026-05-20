@@ -414,6 +414,12 @@ def latent_from_tensor_bundle(bundle):
 # Transition phrases sorted longest-first so regex alternation picks the most specific match.
 # These mark scene or temporal cuts in video prompts and drive prompt splitting.
 _PROMPT_TRANSITION_PHRASES = sorted([
+    # Ordinal scene markers - let users explicitly label scenes
+    "the tenth scene", "the ninth scene", "the eighth scene", "the seventh scene",
+    "the sixth scene", "the fifth scene", "the fourth scene", "the third scene",
+    "the second scene", "the first scene",
+    "scene ten", "scene nine", "scene eight", "scene seven",
+    "scene six", "scene five", "scene four", "scene three", "scene two", "scene one",
     # Multi-word scene-cut language
     "hard cut to", "smash cut to", "jump cut to", "snap cut to",
     "slow dissolve to", "cross dissolve to", "match cut to",
@@ -6046,14 +6052,39 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return cond, meta, encode_status, "CONDITIONING-owned"
 
     def _v2_split_prompt_by_transitions(self, prompt):
-        """Split prompt at transition words into clean segments. Returns list with >=1 entry."""
+        """Split prompt at transition words, keeping each transition word at the START of its new segment.
+
+        Transition words are valuable conditioning tokens (e.g. 'then', 'suddenly', 'cut to') that
+        signal a scene change to the model. Keeping them in the new-scene text preserves this signal.
+
+        Returns a list with >= 1 entry. Single-entry list means no transitions were found.
+        """
         text = str(prompt or "").strip()
         if not text:
             return [text]
-        parts = _TRANSITION_SPLIT_PATTERN.split(text)
-        segments = [p.strip().strip(",;.").strip() for p in parts]
-        segments = [s for s in segments if s]
-        return segments if segments else [text]
+        # Capturing split keeps the matched transition words as alternating elements:
+        # [pre, trans1, between, trans2, post, ...]
+        capturing_pattern = re.compile(
+            r"(" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
+            re.IGNORECASE,
+        )
+        parts = capturing_pattern.split(text)
+        segments = []
+        # parts[0] = text before first transition; then pairs of (trans_word, following_text)
+        current = parts[0].strip().strip(",;.").strip()
+        i = 1
+        while i < len(parts):
+            trans_word = parts[i].strip()          # the transition word
+            following = parts[i + 1] if i + 1 < len(parts) else ""
+            following = following.strip().lstrip(",;.").strip()
+            if current:
+                segments.append(current)
+            # New segment starts with the transition word (kept as a conditioning signal)
+            current = (trans_word + " " + following).strip().strip(",;.").strip()
+            i += 2
+        if current:
+            segments.append(current)
+        return segments if len(segments) > 1 else [text]
 
     def _v2_split_char_from_scene(self, first_segment):
         """Split the first prompt segment into (character_desc, scene0_context) at the first comma."""
