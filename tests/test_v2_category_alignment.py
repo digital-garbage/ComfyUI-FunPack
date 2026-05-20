@@ -1434,7 +1434,7 @@ def test_refiner_training_info_uses_readable_sections(tmp_path):
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
-    _, _, training_info, _, _, _ = refiner.refine_v2(
+    _, _, training_info, _, _, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         FakeClip(),
         "Perfect",
@@ -1542,7 +1542,7 @@ def test_refiner_v2_advisor_repair_applies_validated_generated_prompt(tmp_path):
         "REPAIRED_PROMPT: person smoking, smoke trails drifting upward"
     )
 
-    _, status, training_info, _, encoded_prompts, _ = refiner.refine_v2(
+    _, status, training_info, _, encoded_prompts, _, _ = refiner.refine_v2(
         "person smoking",
         clip,
         "Missing details",
@@ -1665,7 +1665,7 @@ def test_refiner_v2_advisor_skips_when_no_generation_clip_is_available(tmp_path)
     }), encoding="utf-8")
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
-    _, status, training_info, _, _, _ = refiner.refine_v2(
+    _, status, training_info, _, _, _, _ = refiner.refine_v2(
         "person smoking",
         FakeClip(),
         "Missing details",
@@ -1742,7 +1742,7 @@ def test_refiner_v2_learning_mode_passes_prompt_and_conditioning_through(tmp_pat
     refiner._v2_state_path = lambda refinement_key: str(state_path)
     positive_conditioning = [(torch.arange(12, dtype=torch.float32).reshape(1, 4, 3), {"pooled_output": torch.ones(1, 3)})]
 
-    modified, status, training_info, _, encoded_prompts, _ = refiner.refine_v2(
+    modified, status, training_info, _, encoded_prompts, _, _ = refiner.refine_v2(
         "person smoking",
         None,
         "Missing details",
@@ -1774,7 +1774,7 @@ def test_refiner_v2_accepts_conditioning_without_clip_and_loads_gemma3_tokenizer
     monkeypatch.setattr(refiner, "_get_tokenizer", fake_get_tokenizer)
     positive_conditioning = [(torch.full((1, 4, 3), 2.0), {"pooled_output": torch.ones(1, 3)})]
 
-    modified, status, training_info, _, _, _ = refiner.refine_v2(
+    modified, status, training_info, _, _, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         None,
         "Perfect",
@@ -1793,7 +1793,7 @@ def test_refiner_v2_prefers_clip_when_both_clip_and_conditioning_are_connected(t
     monkeypatch.setattr(refiner, "_get_tokenizer", lambda mode="ltx2": (_ for _ in ()).throw(AssertionError("unexpected tokenizer load")))
     positive_conditioning = [(torch.full((1, 4, 3), 9.0), {"pooled_output": torch.ones(1, 3)})]
 
-    modified, status, training_info, _, _, _ = refiner.refine_v2(
+    modified, status, training_info, _, _, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         FakeClip(),
         "Perfect",
@@ -1810,7 +1810,7 @@ def test_refiner_v2_errors_without_clip_or_conditioning(tmp_path):
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
-    modified, status, training_info, _, encoded_prompts, _ = refiner.refine_v2(
+    modified, status, training_info, _, encoded_prompts, _, _ = refiner.refine_v2(
         "woman walking through neon rain",
         None,
         "Perfect",
@@ -2261,3 +2261,61 @@ def test_refiner_v2_caches_repeated_clip_category_encodes():
     refiner._v2_classify_phrases(clip, phrases, {"phrase_memory": {}}, encode_cache={})
 
     assert clip.calls <= len(refiner.CATEGORY_DESCRIPTIONS) + 1
+
+
+def test_split_by_transitions_returns_multi_entry_conditioning(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    cond, status, _, _, _, _, _ = refiner.refine_v2(
+        "a woman in a red dress, then she runs, suddenly stops",
+        FakeClip(),
+        "Perfect",
+        "transition-test",
+        split_by_transitions=True,
+    )
+
+    assert len(cond) > 1, "Expected multiple conditioning entries from transition split"
+    assert "Transition split" in status
+
+
+def test_split_by_transitions_disabled_returns_single_entry(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    cond, status, _, _, _, _, _ = refiner.refine_v2(
+        "a woman in a red dress, then she runs, suddenly stops",
+        FakeClip(),
+        "Perfect",
+        "transition-test-off",
+        split_by_transitions=False,
+    )
+
+    assert len(cond) == 1, "Expected single conditioning entry when split_by_transitions is False"
+    assert "Transition split" not in status
+
+
+def test_split_prompt_by_transitions_detects_known_phrases():
+    refiner = FunPackVideoRefinerV2()
+
+    segments = refiner._v2_split_prompt_by_transitions(
+        "a dog running in a field, then jumping over a fence, suddenly stopping"
+    )
+    assert len(segments) == 3
+
+    segments_none = refiner._v2_split_prompt_by_transitions("a dog running in a field")
+    assert len(segments_none) == 1
+
+
+def test_split_char_from_scene_extracts_character_at_first_comma():
+    refiner = FunPackVideoRefinerV2()
+
+    char, scene = refiner._v2_split_char_from_scene("a woman in a red dress, walking in a park")
+    assert char == "a woman in a red dress"
+    assert scene == "walking in a park"
+
+    char_only, scene_empty = refiner._v2_split_char_from_scene("a woman in a red dress")
+    assert char_only == "a woman in a red dress"
+    assert scene_empty == ""

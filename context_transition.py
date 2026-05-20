@@ -138,13 +138,34 @@ def _make_segmented_context_schedule(base_schedule_name, transition_options):
 
 
 class FunPackTransitionContextHandler(comfy.context_windows.IndexListContextHandler):
-    def __init__(self, *args, transition_options=None, **kwargs):
+    def __init__(self, *args, transition_options=None, auto_total_frames=0, **kwargs):
         super().__init__(*args, **kwargs)
         self.transition_options = transition_options or _resolve_transition_options(
             "off", 0.30, 0, 0.22, 0.0
         )
+        self.auto_total_frames = int(auto_total_frames or 0)
+
+    def _auto_resize_context_length(self, conds):
+        """When total_frames is set, compute context_length from the number of conditioning entries."""
+        if self.auto_total_frames <= 0 or not self.split_conds_to_windows:
+            return
+        # conds is [[pos_entry1, pos_entry2, ...], [neg_entry1, ...]]
+        try:
+            num_windows = len(conds[0]) if conds and conds[0] else 1
+        except Exception:
+            num_windows = 1
+        if num_windows > 1:
+            self.context_length = max(1, self.auto_total_frames // num_windows)
+            logging.info(
+                "FunPack auto context_length=%s from total_frames=%s / %s windows.",
+                self.context_length,
+                self.auto_total_frames,
+                num_windows,
+            )
 
     def should_use_context(self, model, conds, x_in, timestep, model_options):
+        self._auto_resize_context_length(conds)
+
         if super().should_use_context(model, conds, x_in, timestep, model_options):
             return True
 
@@ -245,13 +266,20 @@ class FunPackContextTransitionWindows:
                     "default": False,
                     "tooltip": "Use Comfy's FreeNoise wrapper for context-window noise shuffling."
                 }),
+                "total_frames": ("INT", {
+                    "default": 0,
+                    "min": 0,
+                    "max": 16384,
+                    "step": 1,
+                    "tooltip": "When > 0 and split_conds_to_windows is enabled, context_length is auto-computed as total_frames divided by the number of conditioning entries from Refiner/Studio. Connect your latent frame count or leave 0 to set context_length manually."
+                }),
                 "cond_retain_index_list": ("STRING", {
                     "default": "",
                     "tooltip": "Comma-separated latent indexes to retain in conditioning tensors for every window. Leave empty for transitions so frame 0 does not over-anchor later segments."
                 }),
                 "split_conds_to_windows": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Split combined conditionings to windows based on each window's region."
+                    "tooltip": "When Refiner or Studio outputs multiple conditioning entries (via Split by Transitions), route each entry to its corresponding context window region."
                 }),
             },
         }
@@ -265,7 +293,7 @@ class FunPackContextTransitionWindows:
     def apply(self, model, transition_mode, context_length, context_overlap,
               context_schedule, fuse_method, dim, transition_start_pct,
               transition_count, transition_spacing_pct, transition_strength,
-              context_stride=1, closed_loop=False, freenoise=False,
+              total_frames=0, context_stride=1, closed_loop=False, freenoise=False,
               cond_retain_index_list="", split_conds_to_windows=False):
         transition_options = _resolve_transition_options(
             transition_mode,
@@ -288,6 +316,7 @@ class FunPackContextTransitionWindows:
             cond_retain_index_list=cond_retain_index_list,
             split_conds_to_windows=split_conds_to_windows,
             transition_options=transition_options,
+            auto_total_frames=total_frames,
         )
         comfy.context_windows.create_prepare_sampling_wrapper(model)
         if freenoise:

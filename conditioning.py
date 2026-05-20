@@ -411,6 +411,46 @@ def latent_from_tensor_bundle(bundle):
     return latent if latent_samples(latent) is not None else None
 
 
+# Transition phrases sorted longest-first so regex alternation picks the most specific match.
+# These mark scene or temporal cuts in video prompts and drive prompt splitting.
+_PROMPT_TRANSITION_PHRASES = sorted([
+    # Multi-word scene-cut language
+    "hard cut to", "smash cut to", "jump cut to", "snap cut to",
+    "slow dissolve to", "cross dissolve to", "match cut to",
+    "fade to black", "fade to white",
+    "zoom out to", "zoom in to",
+    "wipe to", "pan to", "rack focus to",
+    "cut to", "transition to", "dissolve to", "fade to", "zoom to",
+    # Multi-word temporal transitions
+    "and then suddenly", "but then suddenly",
+    "and after that", "after that moment", "after that",
+    "from that moment on", "from that moment", "from that point on", "from that point",
+    "from here on", "from here",
+    "a few moments later", "a few seconds later", "a moment later",
+    "some time later", "some moments later",
+    "shortly after that", "not long after",
+    "at that very moment", "at that exact moment",
+    "in the next moment", "in the next instant",
+    "in the meantime", "in the meanwhile",
+    "at the same time", "at the same moment",
+    "by this point", "at this point", "at that point",
+    "and then", "but then", "and suddenly", "and next",
+    "and finally", "and eventually",
+    # Single-word temporal markers
+    "then", "next", "subsequently", "thereafter",
+    "suddenly", "abruptly", "instantly",
+    "meanwhile", "elsewhere", "simultaneously",
+    "later", "afterwards", "afterward",
+    "eventually", "finally", "ultimately",
+    "soon", "shortly",
+], key=len, reverse=True)
+
+_TRANSITION_SPLIT_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(p) for p in _PROMPT_TRANSITION_PHRASES) + r")\b",
+    re.IGNORECASE,
+)
+
+
 class FunPackVideoRefiner:
     LATENT_OUTPUT_INDEX = 6
     NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
@@ -5783,6 +5823,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "Temporal Style",
                     "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time.",
                 }),
+                "split_by_transitions": ("BOOLEAN", {
+                    "default": False,
+                    "label": "Split by Transitions",
+                    "tooltip": "Detect transition words in the prompt (e.g. 'then', 'suddenly', 'cut to') and encode each scene segment as a separate conditioning entry. The character description (text before the first comma) is prepended to every segment. Designed to work with FunPack Context Transition Windows using split_conds_to_windows.",
+                }),
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
@@ -5999,6 +6044,61 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"({self._get_conditioning_seq_len(cond)} positions); {tokenizer_status}"
         )
         return cond, meta, encode_status, "CONDITIONING-owned"
+
+    def _v2_split_prompt_by_transitions(self, prompt):
+        """Split prompt at transition words into clean segments. Returns list with >=1 entry."""
+        text = str(prompt or "").strip()
+        if not text:
+            return [text]
+        parts = _TRANSITION_SPLIT_PATTERN.split(text)
+        segments = [p.strip().strip(",;.").strip() for p in parts]
+        segments = [s for s in segments if s]
+        return segments if segments else [text]
+
+    def _v2_split_char_from_scene(self, first_segment):
+        """Split the first prompt segment into (character_desc, scene0_context) at the first comma."""
+        first_segment = first_segment.strip()
+        m = re.search(r"[,;]", first_segment)
+        if m:
+            char_part = first_segment[:m.start()].strip()
+            scene_part = first_segment[m.end():].strip()
+            if char_part:
+                return char_part, scene_part
+        return first_segment, ""
+
+    def _v2_encode_per_window_conditionings(self, clip, segments, encode_cache=None):
+        """Encode one conditioning entry per scene window.
+
+        segments[0] is split into character description + first-scene context.
+        Each subsequent segment is combined with the character description to form
+        that window's conditioning. Returns a list of (tensor, meta) pairs, or None
+        on failure.
+        """
+        if not segments or clip is None:
+            return None
+        if len(segments) == 1:
+            cond, meta, _ = self._v2_encode_prompt(clip, segments[0], encode_cache=encode_cache)
+            return [(cond, meta)] if isinstance(cond, torch.Tensor) else None
+
+        char_desc, scene0_context = self._v2_split_char_from_scene(segments[0])
+        conditionings = []
+
+        scene0_text = char_desc + (", " + scene0_context if scene0_context else "")
+        cond0, meta0, _ = self._v2_encode_prompt(clip, scene0_text.strip(), encode_cache=encode_cache)
+        if not isinstance(cond0, torch.Tensor):
+            return None
+        conditionings.append((cond0, meta0))
+
+        for seg in segments[1:]:
+            seg = seg.strip()
+            if not seg:
+                continue
+            combined = char_desc + ", " + seg
+            cond_i, meta_i, _ = self._v2_encode_prompt(clip, combined, encode_cache=encode_cache)
+            conditionings.append((cond_i if isinstance(cond_i, torch.Tensor) else cond0,
+                                   meta_i if isinstance(cond_i, torch.Tensor) else meta0))
+
+        return conditionings if len(conditionings) > 1 else [(cond0, meta0)]
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -10389,7 +10489,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  latent=None, _seed=None):
+                  split_by_transitions=False, latent=None, _seed=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -10704,6 +10804,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 fallback_graph,
                 self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
                 model,
+                latent,
             )
 
         if learning_mode:
@@ -11033,8 +11134,35 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as e:
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
+        # Transition-based prompt splitting: encode one conditioning per scene window.
+        # The character description (before the first comma in segment 0) is prepended
+        # to every subsequent scene so the subject stays consistent across windows.
+        output_conditioning = [(refined, meta)]
+        if split_by_transitions and clip is not None:
+            try:
+                segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
+                if len(segments) > 1:
+                    per_window = self._v2_encode_per_window_conditionings(
+                        clip, segments, encode_cache=encode_cache
+                    )
+                    if per_window and len(per_window) > 1:
+                        output_conditioning = per_window
+                        status_suffix = f"\nTransition split: {len(per_window)} windows from {len(segments)} segments"
+                        status = status + status_suffix + enhancement_status
+                        return (
+                            output_conditioning,
+                            status,
+                            training_info,
+                            loss_graph,
+                            self._v2_encoded_prompts_output(prompt_to_encode, advisor_diagnostic=advisor_diagnostic, pre_advisor_prompt=pre_advisor_prompt, advisor_suggested=advisor_suggested),
+                            patched_model,
+                            video_latent,
+                        )
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] Transition split failed: {e}")
+
         return (
-            [(refined, meta)],
+            output_conditioning,
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12080,6 +12208,7 @@ class FunPackStudio:
         im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
         reset_session = bool(rf.get("reset_session", False))
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
+        split_by_transitions = bool(rf.get("split_by_transitions", False))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -12193,6 +12322,7 @@ class FunPackStudio:
             feedback_prompt=feedback_prompt,
             prompt_repair=prompt_repair,
             temporal_style=temporal_style,
+            split_by_transitions=split_by_transitions,
             latent=latent,
             _seed=seed,
         )
