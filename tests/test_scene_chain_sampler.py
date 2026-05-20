@@ -67,8 +67,18 @@ def fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative, l
         "positive": positive,
         "negative": negative,
         "cfg": cfg,
+        "latent_image": _sample_snapshot(latent_image),
+        "noise_mask": _sample_snapshot(noise_mask),
     })
     return _sample_like(latent_image, noise_mask, seed)
+
+
+def _sample_snapshot(value):
+    if value is None:
+        return None
+    if getattr(value, "is_nested", False):
+        return FakeNestedTensor([tensor.detach().clone() for tensor in value.unbind()])
+    return value.detach().clone()
 
 
 comfy_mod = types.ModuleType("comfy")
@@ -205,3 +215,37 @@ def test_scene_chain_default_max_is_eight_but_allows_more():
     assert latent["samples"].shape[2] == 30
     assert "10 scene(s)" in status
     assert "Scene 10" in report
+
+
+def test_scene_chain_carries_i2v_template_mask_after_overlap():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    samples = torch.zeros(1, 2, 5, 1, 1)
+    samples[:, :, 0] = 7.0
+    mask = torch.ones(1, 1, 5, 1, 1)
+    mask[:, :, 0] = 0.0
+    latent_template = {"samples": samples, "noise_mask": mask}
+    positive = [scene_cond(0), scene_cond(1)]
+
+    _, status, scene_count, _ = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=40,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+        carry_i2v_guides=True,
+    )
+
+    second_call = sample_calls[1]
+    assert scene_count == 2
+    assert torch.all(second_call["latent_image"][:, :, 2] == 7.0)
+    assert torch.all(second_call["noise_mask"][:, :, :3] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, 3:] == 1.0)
+    assert "i2v guide carry=1 latent frame(s)" in status

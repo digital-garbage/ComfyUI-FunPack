@@ -20,12 +20,15 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 - `frame_overlap`: Pixel frames to preserve and blend between scene chunks.
 - `cfg`: Internal CFG value.
 - `max_scenes`: Maximum scene entries to consume. Default is `8`, but it can be raised for longer chains.
+- `carry_i2v_guides`: Reuses protected frames from `latent_template`'s `noise_mask` in each continuation chunk after the overlap. Leave enabled for i2v/keyframe consistency.
 
 ## Behavior
 
 The first scene samples from a fresh copy of `latent_template`.
 
 Each following scene copies the previous output tail into the start of the next chunk, masks that overlap so it is preserved during denoising, samples the new frames with that scene's conditioning, then blends the overlap in latent space.
+
+When `carry_i2v_guides` is enabled, protected source frames from the incoming `latent_template` are carried into later chunks after the preserved overlap. This keeps LTXV's native i2v/keyframe conditioning alive across scene chunks without needing a separate identity latent.
 
 For nested LTXAV latents, video and audio tensors are continued together. Audio overlap is derived from the audio/video latent length ratio.
 
