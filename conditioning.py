@@ -5666,6 +5666,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     V2_STATE_PREFIX = "refine_v2"
     MAX_TRANSITION_SCENES = 8
+    SCENE_COUNT_WORDS = {
+        "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+        "eight": 8, "nine": 9, "ten": 10,
+    }
     ACTION_LORA_TYPES = {"action"}
     AUTO_INJECT_BLOCKED_CATEGORIES = {"appearance", "subject", "environment"}
     AUTO_INJECT_ALLOWED_CATEGORIES = {"action", "camera", "details", "quality", "style"}
@@ -6115,15 +6119,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if len(segments) == 1:
             return [segments[0]]
 
-        # Use the whole first segment as the anchor. Splitting at the first comma
-        # breaks prompts like "In this anime video, Character Name is a...".
         anchor = segments[0].strip()
-        scene_texts = [anchor]
-        for seg in segments[1:]:
+        scene_segments = segments[1:] if self._v2_first_segment_is_scene_prefix(segments) else segments
+        scene_texts = []
+        for index, seg in enumerate(scene_segments):
             seg = seg.strip()
-            if seg:
+            if not seg:
+                continue
+            if index == 0 and seg == anchor:
+                scene_texts.append(anchor)
+            else:
                 scene_texts.append(anchor + ", " + seg)
         return scene_texts
+
+    def _v2_first_segment_is_scene_prefix(self, segments):
+        if len(segments) <= 1:
+            return False
+        expected = self._v2_declared_scene_count(segments[0])
+        if expected is None or expected != len(segments) - 1:
+            return False
+        return all(self._v2_starts_with_explicit_scene_marker(seg) for seg in segments[1:])
+
+    def _v2_declared_scene_count(self, text):
+        match = re.search(
+            r"\b(\d+|two|three|four|five|six|seven|eight|nine|ten)\s+"
+            r"(?:distinct\s+|separate\s+|different\s+)?scenes?\b",
+            str(text or "").lower(),
+        )
+        if not match:
+            return None
+        raw = match.group(1)
+        if raw.isdigit():
+            return int(raw)
+        return self.SCENE_COUNT_WORDS.get(raw)
+
+    def _v2_starts_with_explicit_scene_marker(self, text):
+        clean = str(text or "").strip().lower()
+        return bool(re.match(
+            r"^(?:the\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|final|last)\s+scene\b"
+            r"|^scene\s+(?:one|two|three|four|five|six|seven|eight|nine|ten)\b",
+            clean,
+        ))
 
     def _v2_transition_scene_conditionings(self, clip, scene_texts, encode_cache=None):
         if clip is None:

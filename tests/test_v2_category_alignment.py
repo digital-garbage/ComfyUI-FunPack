@@ -2329,6 +2329,38 @@ def test_transition_scene_preview_uses_full_first_segment():
     assert "then she walks" in texts[1]
 
 
+def test_declared_scene_prefix_is_not_counted_as_scene(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    prompt = (
+        "In this 3D animated video, Kai'Sa from League of Legends is shown in three distinct scenes. "
+        "The first scene shows her walking through a neon corridor, "
+        "the second scene shows her charging her weapons, "
+        "the third scene shows her landing on a rooftop."
+    )
+
+    segments = refiner._v2_split_prompt_by_transitions(prompt)
+    texts = refiner._v2_transition_scene_texts(segments)
+    assert len(texts) == 3
+    assert all("Kai'Sa from League of Legends" in text for text in texts)
+    assert "The first scene shows her walking" in texts[0]
+    assert "shown in three distinct scenes" not in texts[0].split(", ")[-1]
+
+    cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
+        prompt,
+        FakeClip(),
+        "Perfect",
+        "declared-scene-prefix-test",
+        split_by_transitions=True,
+    )
+
+    assert len(cond) == 3
+    assert "Transition split: 3 scenes detected" in status
+    assert "Scene 3" in encoded_prompts
+    assert "Scene 4" not in encoded_prompts
+
+
 def test_split_by_transitions_caps_scene_conditionings_at_eight(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
