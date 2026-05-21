@@ -2,6 +2,12 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.7.1
+
+Studio now learns successful sampler seeds when the `seed` output is connected. `Perfect` and `Loved it` ratings can store concept-matched seeds under the active refinement key, and split-scene mode passes per-scene seed metadata to the Scene Chain sampler. The sampler can either use those unique scene seeds or reuse one seed for every scene with `use_same_seed`.
+
+Scene Chain i2v guide carry is now opt-in and fixed for compact masks. The default path keeps guide carry disabled for cleaner cuts, while the experimental option correctly broadcasts compact i2v masks to full spatial chunk masks.
+
 ## Updates in 2.7.0
 
 Added `FunPack LTXAV Scene Chain Sampler` for split-scene LTXV/LTXAV continuation in one ComfyUI run. Enable `split_by_transitions` in `FunPack Studio` or `FunPack Video Refiner V2`; the existing `modified_positive` output becomes one conditioning entry per detected scene. The sampler consumes those entries in order, samples each scene chunk with seed increments, preserves overlap from the previous chunk, and supports both plain video latents and nested LTXAV video/audio latents.
@@ -11,26 +17,6 @@ Scene splitting now uses transition order only. Written labels like `scene ten`,
 Important: the Scene Chain sampler is resource heavy. Long scene chains can create very large final latents, and you may run out of memory during VAE Decode even if sampling itself succeeds. Start with short scenes and modest `max_scenes`, then increase carefully.
 
 Also improved the Studio Scene Builder mode dropdown refresh and expanded the transition phrase list for camera moves, final shots, and scene progression language.
-
-Studio now learns successful sampler seeds when the `seed` output is connected. `Perfect` and `Loved it` ratings can store concept-matched seeds under the active refinement key, and split-scene mode passes per-scene seed metadata to the Scene Chain sampler. The sampler can either use those unique scene seeds or reuse one seed for every scene with `use_same_seed`.
-
-## Updates in 2.6.0
-
-Added `FunPack Studio` - a single node that combines Refinement Key management, Scene Builder, LoRA loading, Refiner V2, Conditioning Adjust, and sampler configuration into one interface. The node face shows only the rating widget and an Open Studio button. All settings live in a tabbed popup editor.
-
-**Popup tabs:** Session (refinement key, scene builder mode), Scene (prompt composer, phrase bank), Refiner (all V2 settings, negative prompt, feedback, intent), Advisor (internal HuggingFace LLM), LoRA (session weight suggestions + loading with per-block support), Sampler (Hybrid Euler 2S / Distilled Flow / KSampler for high and low pass, sigma schedules as comma-separated floats), Adjustments (phrase-level conditioning shifts with session phrase bank).
-
-Negative prompt is encoded internally via CLIP when no pre-encoded conditioning is connected, removing the need for an external CLIPTextEncode node in the negative path.
-
-The full LoRA pipeline runs inside Studio: session weight suggestions are read first, LoRAs are applied to model and CLIP, and the Refiner direction patch is applied on top. The model output carries everything.
-
-Two sampler outputs (high pass and low pass) sit between the seed and loss graph outputs. Wire sampler and sigmas directly to your LTX or WAN sampling nodes.
-
-Studio popup remembers the last active tab per node across page refreshes. Field values auto-save 600ms after typing stops.
-
-Also added as standalone nodes: `FunPack Conditioning Adjust` (phrase-level conditioning adjustment with CLIP-encoded directions, popup editor with session phrase bank).
-
-Fixed `FunPackAdvisorLLM` crashing with newer transformers versions (`apply_chat_template` returning `BatchEncoding` instead of a plain tensor). Fixed advisor producing empty or garbled output for Qwen3 and other thinking models (thinking tokens stripped correctly, attention mask now explicitly provided). Fixed conditioning adjustments not applying for LTX/Gemma3 workflows (was reading `pooled_output` which is `None` for T5 encoders, now uses sequence mean). Fixed `prompt_repair=False` not preventing phrase injection from perfect-repair memory and emphasis. Removed the advisor gate that blocked repair for Perfect-rated outputs.
 
 ## Dev Branch
 

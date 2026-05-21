@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.7.1] - 2026-05-21
+
+### Added
+
+Added successful seed memory for `FunPack Studio`. When the `seed` output is connected, `Perfect` and `Loved it` ratings store the previous run's sampler seed under the active refinement key. Future runs occasionally reuse concept-matched successful seeds while keeping normal fresh seeds as the default path.
+
+Added per-scene seed metadata for prompt-split mode. Studio and Refiner V2 keep the public `seed` socket as a single integer, while each detected scene conditioning entry can carry its own `funpack_scene_seed` for the Scene Chain sampler.
+
+Added `use_same_seed` to `FunPack LTXAV Scene Chain Sampler`. When enabled, every scene uses the first provided scene seed or the base seed. When disabled, each scene uses scene seed metadata or falls back to `seed + scene_index`.
+
+### Changed
+
+Made Scene Chain i2v guide carry opt-in. The default path no longer appends protected i2v frames as hidden guide tokens, preserving cleaner scene cuts unless the experimental option is deliberately enabled.
+
+### Fixed
+
+Fixed compact i2v guide masks failing to concatenate with full spatial Scene Chain masks by broadcasting guide masks to the chunk mask shape.
+
+Updated README release notes and added the Intent section.
+
 ## [2.7.0] - 2026-05-21
 
 ### Added
