@@ -33,7 +33,7 @@ Only the `rating` widget and the `Open Studio` button are visible on the node. E
 | `model` | MODEL | Patched model: LoRAs applied, then attn2 direction injection applied on top. |
 | `modified_positive` | CONDITIONING | Refined positive conditioning with session memory applied. When split by transitions is enabled, this becomes one conditioning entry per detected scene for the Scene Chain sampler. |
 | `negative` | CONDITIONING | Negative conditioning passed through or encoded from `negative_prompt`. |
-| `seed` | INT | The seed used this run. Wire to your sampler for a matching generation seed. |
+| `seed` | INT | The seed used this run. Wire to your sampler for a matching generation seed. When connected, Studio can learn successful seeds for the active refinement key. |
 | `high_pass_sampler` | SAMPLER | Configured high-pass sampler object. |
 | `high_pass_sigmas` | SIGMAS | Sigma schedule for the high-pass sampler. |
 | `low_pass_sampler` | SAMPLER | Configured low-pass sampler object. |
@@ -77,6 +77,8 @@ All Refiner V2 execution settings:
 Each of the three text inputs (negative prompt, feedback, intent) has an **Override** toggle. When off, a connected node input takes precedence and the popup value is a fallback. When on, the popup value wins regardless.
 
 Split scene conditioning is intended for `FunPack LTXAV Scene Chain Sampler`. Scene labels are order-only: `scene ten` can be the first generated chunk if it is the first detected transition. Keep character description before the first transition so Studio can prepend it to every scene.
+
+When the `seed` output is connected, `Perfect` and `Loved it` ratings store the previous run's seed as a concept-matched successful seed. Studio occasionally reuses matching seeds on future runs. In split mode, per-scene seeds are attached to scene conditioning metadata for the Scene Chain sampler.
 
 ### Advisor
 

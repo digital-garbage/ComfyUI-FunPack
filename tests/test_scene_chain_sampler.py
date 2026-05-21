@@ -155,6 +155,66 @@ def test_scene_chain_detects_scene_count_and_increments_seed():
     assert "Scene 3" in report
 
 
+def test_scene_chain_uses_scene_seed_metadata():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [
+        (torch.ones(1, 2, 3), {"funpack_scene_text": "scene a", "funpack_scene_seed": 101}),
+        (torch.ones(1, 2, 3), {"funpack_scene_text": "scene b", "funpack_scene_seed": 202}),
+        (torch.ones(1, 2, 3), {"funpack_scene_text": "scene c", "funpack_scene_seed": 303}),
+    ]
+
+    _, _, scene_count, report = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=8,
+    )
+
+    assert scene_count == 3
+    assert [call["seed"] for call in sample_calls] == [101, 202, 303]
+    assert "seed=202" in report
+
+
+def test_scene_chain_use_same_seed_forces_first_seed():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [
+        (torch.ones(1, 2, 3), {"funpack_scene_text": "scene a", "funpack_scene_seed": 101}),
+        (torch.ones(1, 2, 3), {"funpack_scene_text": "scene b", "funpack_scene_seed": 202}),
+        (torch.ones(1, 2, 3), {"funpack_scene_text": "scene c"}),
+    ]
+
+    _, _, scene_count, _ = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=10,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=8,
+        use_same_seed=True,
+    )
+
+    assert scene_count == 3
+    assert [call["seed"] for call in sample_calls] == [101, 101, 101]
+
+
 def test_scene_chain_preserves_nested_av_structure_and_audio_length():
     sample_calls.clear()
     node = FunPackLTXAVSceneChainSampler()

@@ -19,6 +19,10 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 import folder_paths
 
+V2_SEED_REUSE_CHANCE = 0.20
+V2_SEED_MEMORY_MAX_CONCEPTS = 128
+V2_SEED_MEMORY_MAX_PER_CONCEPT = 24
+
 LORA_REFINER_TYPE_PROFILES = {
     "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
     "action": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
@@ -5967,6 +5971,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data["global"].setdefault("advisor_feedback_history", [])
             data["global"].setdefault("vision_memory", {})
             data["global"].setdefault("loss_history", [])
+            data["global"].setdefault("successful_seed_memory", {})
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
             return self._v2_empty_state(refinement_key), "reset unreadable"
@@ -6157,6 +6162,184 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_meta["funpack_scene_text"] = scene_text
             conditionings.append((cond, scene_meta))
         return conditionings
+
+    def _v2_scene_seed_values(self, seed, scene_count, provided=None):
+        scene_count = max(0, int(scene_count or 0))
+        provided = list(provided or [])
+        out = []
+        for index in range(scene_count):
+            raw_seed = provided[index] if index < len(provided) else int(seed) + index
+            try:
+                out.append(int(raw_seed))
+            except (TypeError, ValueError):
+                out.append(int(seed) + index)
+        return out
+
+    def _v2_apply_scene_seed_metadata(self, conditioning, scene_seeds, seed_source):
+        out = []
+        for index, item in enumerate(conditioning or []):
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                out.append(item)
+                continue
+            meta = dict(item[1]) if isinstance(item[1], dict) else {}
+            if index < len(scene_seeds):
+                meta["funpack_scene_seed"] = int(scene_seeds[index])
+                meta["funpack_seed_source"] = str(seed_source or "base+index")
+            out.append((item[0], meta))
+        return out
+
+    def _v2_seed_concepts_from_text(self, text, limit=16):
+        stop = {
+            "this", "that", "with", "from", "into", "onto", "then", "scene", "shows",
+            "video", "animated", "camera", "final", "next", "segment", "through",
+            "after", "before", "while", "where", "when", "there", "their", "about",
+            "style", "quality", "cinematic", "distinct", "moments",
+        }
+        concepts = []
+        for word in re.findall(r"[a-z0-9][a-z0-9'_-]{2,}", str(text or "").lower()):
+            word = word.strip("'_-")
+            if len(word) < 3 or word in stop or word.isdigit():
+                continue
+            if word not in concepts:
+                concepts.append(word)
+            if len(concepts) >= limit:
+                break
+        return concepts
+
+    def _v2_seed_concepts_for_run(self, run, limit=16):
+        if not isinstance(run, dict):
+            return []
+        concepts = []
+        for phrase in run.get("phrases", []) or []:
+            if not isinstance(phrase, dict):
+                continue
+            for word in self._v2_seed_concepts_from_text(phrase.get("text", ""), limit=limit):
+                if word not in concepts:
+                    concepts.append(word)
+                if len(concepts) >= limit:
+                    return concepts
+        for source in (run.get("prompt", ""), run.get("encoded_prompt", "")):
+            for word in self._v2_seed_concepts_from_text(source, limit=limit):
+                if word not in concepts:
+                    concepts.append(word)
+                if len(concepts) >= limit:
+                    return concepts
+        return concepts
+
+    def _v2_trim_successful_seed_memory(self, memory):
+        if not isinstance(memory, dict):
+            return {}
+        for entry in memory.values():
+            if not isinstance(entry, dict):
+                continue
+            seeds = [item for item in entry.get("seeds", []) if isinstance(item, dict)]
+            seeds.sort(key=lambda item: (int(item.get("hit_count", 0)), int(item.get("last_iteration", 0))), reverse=True)
+            entry["seeds"] = seeds[:V2_SEED_MEMORY_MAX_PER_CONCEPT]
+        if len(memory) <= V2_SEED_MEMORY_MAX_CONCEPTS:
+            return memory
+        ordered = sorted(
+            memory.items(),
+            key=lambda pair: max(
+                [int(item.get("last_iteration", 0)) for item in pair[1].get("seeds", []) if isinstance(item, dict)] or [0]
+            ),
+            reverse=True,
+        )
+        return dict(ordered[:V2_SEED_MEMORY_MAX_CONCEPTS])
+
+    def _v2_update_successful_seed_memory(self, global_state, last_run, rating_profile, iter_num, seed_output_connected=False):
+        if not seed_output_connected:
+            return "Seed memory: seed output not connected."
+        if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
+            return "Seed memory: no previous sampler seed to learn from."
+        if rating_profile.get("key") not in {"like", "loved_it"}:
+            return "Seed memory: rating not successful."
+        if not last_run.get("seed_output_connected", seed_output_connected):
+            return "Seed memory: previous seed output was not connected."
+        try:
+            seed = int(last_run.get("seed"))
+        except (TypeError, ValueError):
+            return "Seed memory: previous run had no valid seed."
+
+        concepts = self._v2_seed_concepts_for_run(last_run)
+        if not concepts:
+            return "Seed memory: no concepts found for seed."
+
+        memory = global_state.setdefault("successful_seed_memory", {})
+        prompt_preview = re.sub(r"\s+", " ", str(last_run.get("prompt", "") or "")).strip()
+        if len(prompt_preview) > 180:
+            prompt_preview = prompt_preview[:177].rstrip() + "..."
+        scene_seeds = []
+        for item in last_run.get("scene_seeds") or []:
+            try:
+                scene_seeds.append(int(item))
+            except (TypeError, ValueError):
+                pass
+        scene_count = int(last_run.get("scene_count") or len(scene_seeds) or 1)
+        touched = 0
+        for concept in concepts:
+            entry = memory.setdefault(concept, {"concept": concept, "seeds": []})
+            seeds = entry.setdefault("seeds", [])
+            existing = None
+            for item in seeds:
+                if isinstance(item, dict) and int(item.get("seed", -1)) == seed:
+                    existing = item
+                    break
+            if existing is None:
+                existing = {"seed": seed, "hit_count": 0}
+                seeds.append(existing)
+            existing.update({
+                "seed": seed,
+                "rating": rating_profile.get("label", ""),
+                "prompt_preview": prompt_preview,
+                "scene_count": scene_count,
+                "scene_seeds": scene_seeds,
+                "last_iteration": int(iter_num),
+                "hit_count": int(existing.get("hit_count", 0)) + 1,
+            })
+            touched += 1
+        global_state["successful_seed_memory"] = self._v2_trim_successful_seed_memory(memory)
+        return f"Seed memory: stored seed {seed} for {touched} concept(s)."
+
+    def _v2_choose_successful_seed(self, refinement_key, prompt, fallback_seed, seed_output_connected=False, reset_session=False):
+        fallback_seed = int(fallback_seed)
+        if not seed_output_connected:
+            return fallback_seed, "fresh seed; seed output not connected", None
+        if reset_session:
+            return fallback_seed, "fresh seed; session reset", None
+        state, _ = self._v2_load_state(refinement_key, reset_session=False)
+        memory = state.get("global", {}).get("successful_seed_memory", {}) if isinstance(state, dict) else {}
+        if not isinstance(memory, dict) or not memory:
+            return fallback_seed, "fresh seed; no successful seed memory", None
+        concepts = self._v2_seed_concepts_from_text(prompt)
+        candidates = []
+        for concept in concepts:
+            entry = memory.get(concept)
+            if not isinstance(entry, dict):
+                continue
+            for item in entry.get("seeds", []) or []:
+                if isinstance(item, dict):
+                    candidates.append((concept, item))
+        if not candidates:
+            return fallback_seed, "fresh seed; no concept seed match", None
+        if random.random() >= V2_SEED_REUSE_CHANCE:
+            return fallback_seed, "fresh seed; successful seed memory skipped", None
+        candidates.sort(
+            key=lambda pair: (int(pair[1].get("hit_count", 0)), int(pair[1].get("last_iteration", 0))),
+            reverse=True,
+        )
+        concept, item = random.choice(candidates[:min(8, len(candidates))])
+        try:
+            seed = int(item.get("seed"))
+        except (TypeError, ValueError):
+            return fallback_seed, "fresh seed; selected memory seed invalid", None
+        scene_seeds = []
+        for value in item.get("scene_seeds") or []:
+            try:
+                scene_seeds.append(int(value))
+            except (TypeError, ValueError):
+                pass
+        scene_seeds = scene_seeds or None
+        return seed, f"successful seed memory: reused {seed} from '{concept}'", scene_seeds
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:
@@ -10547,7 +10730,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  split_by_transitions=False, latent=None, _seed=None):
+                  split_by_transitions=False, latent=None, seed_output_connected=False,
+                  _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -10582,6 +10766,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("session_source_mean_count", 0)
         global_state.setdefault("liked_dir", {})
         global_state.setdefault("bad_dir", {})
+        global_state.setdefault("successful_seed_memory", {})
         previous_run = state.get("last_run")
         previous_run_refusal = self._v2_run_looks_like_refusal(previous_run)
         has_previous_run = isinstance(previous_run, dict) and not previous_run_refusal
@@ -10605,6 +10790,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             learning_profile,
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
+        )
+        seed_memory_status = self._v2_update_successful_seed_memory(
+            global_state,
+            previous_run,
+            learning_profile,
+            int(global_state.get("total_iterations", 0)) + 1,
+            seed_output_connected=bool(seed_output_connected),
         )
         scene_sync_status = self._v2_sync_scene_builder_memory(
             state,
@@ -10632,7 +10824,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
-        memory_status = f"{memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
+        memory_status = f"{memory_status}\n{seed_memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
@@ -10970,6 +11162,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 },
             })
 
+        split_scene_texts = []
+        current_scene_seeds = []
+        current_scene_seed_source = str(_seed_source or "fresh seed")
+        if split_by_transitions:
+            try:
+                split_segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
+                if len(split_segments) > 1:
+                    split_scene_texts = self._v2_transition_scene_texts(split_segments)
+                    current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
+                    current_scene_seed_source = (
+                        "successful seed memory"
+                        if _scene_seeds else
+                        "base seed + scene index"
+                    )
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] Transition seed prep failed: {e}")
+
         if current_prompt_refusal:
             state["last_run"] = None
         else:
@@ -11002,6 +11211,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 ],
                 "rating_label": "Unrated",
                 "iteration": int(global_state["total_iterations"]),
+                "seed": int(seed),
+                "seed_source": str(_seed_source or "fresh seed"),
+                "seed_output_connected": bool(seed_output_connected),
+                "scene_count": len(split_scene_texts) if split_scene_texts else 1,
+                "scene_seeds": current_scene_seeds,
             }
         self._v2_update_advisor_feedback_history(global_state, feedback_prompt, advisor_rating_label, int(global_state.get("total_iterations", 0)))
         if feedback_prompt and intent_source_prompt and not current_prompt_refusal:
@@ -11041,10 +11255,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         learning_flag = "trained" if has_previous_run and not learning_profile.get("skip_learning") else "not applied"
         refusal_flag = f" | REFUSAL DETECTED" if refusal_status else ""
+        seed_status = f"Seed: {int(seed)} ({str(_seed_source or 'fresh seed')})"
+        if current_scene_seeds:
+            seed_status += f" | scene seeds: {', '.join(str(item) for item in current_scene_seeds[:8])}"
+            if len(current_scene_seeds) > 8:
+                seed_status += f", ... ({len(current_scene_seeds)} total)"
 
         status_lines = [
             f"V2 {state_status} | {execution_mode} | {rating_label} | iter {global_state['total_iterations']} | learning {learning_flag}{refusal_flag}",
             adaptation_status,
+            seed_status,
         ]
         for line in (repair_status, advisor_status, intent_alignment_status, vision_status, lucky_status):
             if _active(line):
@@ -11058,6 +11278,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "Run\n"
                 f"Mode: {execution_mode} | Encoded as: {encoded_role}\n"
                 f"Rating: {rating_label} | Learning: {learning_reason}\n"
+                f"Seed: {int(seed)} ({str(_seed_source or 'fresh seed')})\n"
                 f"Prompt: {prompt_preview}"
             ),
             (
@@ -11195,45 +11416,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         output_conditioning = [(refined, meta)]
         if split_by_transitions:
             try:
-                segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
-                if len(segments) > 1:
-                    scene_texts = self._v2_transition_scene_texts(segments)
-                    if scene_texts:
-                        scene_conditionings = self._v2_transition_scene_conditionings(
-                            clip, scene_texts, encode_cache=encode_cache,
+                scene_texts = split_scene_texts
+                if scene_texts:
+                    scene_conditionings = self._v2_transition_scene_conditionings(
+                        clip, scene_texts, encode_cache=encode_cache,
+                    )
+                    if scene_conditionings is not None:
+                        output_conditioning = self._v2_apply_scene_seed_metadata(
+                            scene_conditionings,
+                            current_scene_seeds,
+                            current_scene_seed_source,
                         )
-                        if scene_conditionings is not None:
-                            output_conditioning = scene_conditionings
-                            scene_mode = (
-                                "Scene chain mode: multi-entry conditioning for "
-                                "FunPack LTXAV Scene Chain Sampler"
-                            )
-                        else:
-                            scene_mode = "Scene chain mode unavailable: CLIP missing, single conditioning returned"
-                        detected_count = len(scene_texts)
-                        status_suffix = f"\nTransition split: {detected_count} scenes detected\n{scene_mode}"
-                        status = status + status_suffix + enhancement_status
-                        scene_lines = "\n".join(
-                            f"  Scene {i + 1}: {t}" for i, t in enumerate(scene_texts)
+                        scene_mode = (
+                            "Scene chain mode: multi-entry conditioning for "
+                            "FunPack LTXAV Scene Chain Sampler"
                         )
-                        split_encoded_prompts = (
-                            self._v2_encoded_prompts_output(
-                                prompt_to_encode,
-                                advisor_diagnostic=advisor_diagnostic,
-                                pre_advisor_prompt=pre_advisor_prompt,
-                                advisor_suggested=advisor_suggested,
-                            )
-                            + f"\n\nDetected scenes:\n{scene_lines}"
+                    else:
+                        scene_mode = "Scene chain mode unavailable: CLIP missing, single conditioning returned"
+                    detected_count = len(scene_texts)
+                    status_suffix = f"\nTransition split: {detected_count} scenes detected\n{scene_mode}"
+                    status = status + status_suffix + enhancement_status
+                    scene_lines = "\n".join(
+                        f"  Scene {i + 1}: {t}" for i, t in enumerate(scene_texts)
+                    )
+                    split_encoded_prompts = (
+                        self._v2_encoded_prompts_output(
+                            prompt_to_encode,
+                            advisor_diagnostic=advisor_diagnostic,
+                            pre_advisor_prompt=pre_advisor_prompt,
+                            advisor_suggested=advisor_suggested,
                         )
-                        return (
-                            output_conditioning,
-                            status,
-                            training_info,
-                            loss_graph,
-                            split_encoded_prompts,
-                            patched_model,
-                            video_latent,
-                        )
+                        + f"\n\nDetected scenes:\n{scene_lines}"
+                    )
+                    return (
+                        output_conditioning,
+                        status,
+                        training_info,
+                        loss_graph,
+                        split_encoded_prompts,
+                        patched_model,
+                        video_latent,
+                    )
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Transition split failed: {e}")
 
@@ -12226,7 +12449,15 @@ class FunPackStudio:
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
             },
+            "hidden": {
+                "prompt": "PROMPT",
+                "unique_id": "UNIQUE_ID",
+            },
         }
+
+    @staticmethod
+    def _is_output_connected(prompt, unique_id, output_index):
+        return FunPackVideoRefiner()._is_output_connected(prompt, unique_id, output_index)
 
     def run(self, rating, studio_settings, adjustments,
             model=None, clip=None, advisor_clip=None,
@@ -12234,14 +12465,12 @@ class FunPackStudio:
             clip_vision_output=None, source_image=None,
             lora_stack=None, positive_prompt=None, negative_prompt=None,
             user_intent_prompt=None, feedback_prompt=None, refinement_key_input="",
-            latent=None):
+            latent=None, prompt=None, unique_id=None):
 
         try:
             settings = json.loads(str(studio_settings or "{}"))
         except Exception:
             settings = {}
-
-        seed = random.randint(1, 0xffffffffffffffff)
 
         # --- Scene Builder ---
         sb = settings.get("scene_builder", {}) if isinstance(settings.get("scene_builder"), dict) else {}
@@ -12307,6 +12536,18 @@ class FunPackStudio:
             refinement_key_input = ""  # suppress external so refine_v2 uses widget key
         else:
             key = popup_key  # refine_v2 uses refinement_key_input when non-empty
+
+        # --- Seed memory ---
+        refiner = FunPackVideoRefinerV2()
+        seed_output_connected = self._is_output_connected(prompt, unique_id, 3)
+        fresh_seed = random.randint(1, 0xffffffffffffffff)
+        seed, seed_source, scene_seed_memory = refiner._v2_choose_successful_seed(
+            refinement_key_input if str(refinement_key_input or "").strip() and not ov.get("refinement_key") else key,
+            active_prompt,
+            fresh_seed,
+            seed_output_connected=seed_output_connected,
+            reset_session=reset_session,
+        )
 
         # --- Advisor LLM: external input takes precedence over popup-configured model ---
         if advisor_clip is None:
@@ -12376,7 +12617,6 @@ class FunPackStudio:
                         print(f"[FunPackStudio] LoRA load failed: {e}")
 
         # --- Refiner V2 ---
-        refiner = FunPackVideoRefinerV2()
         cond, status, training_info, loss_graph, encoded_prompts, out_model, video_latent = refiner.refine_v2(
             active_prompt,
             clip=clip,
@@ -12400,7 +12640,10 @@ class FunPackStudio:
             temporal_style=temporal_style,
             split_by_transitions=split_by_transitions,
             latent=latent,
+            seed_output_connected=seed_output_connected,
             _seed=seed,
+            _seed_source=seed_source,
+            _scene_seeds=scene_seed_memory,
         )
 
         # --- Conditioning Adjust ---

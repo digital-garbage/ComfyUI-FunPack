@@ -9,6 +9,7 @@ sys.modules.setdefault("folder_paths", types.SimpleNamespace(models_dir=""))
 import torch
 
 from conditioning import (
+    FunPackStudio,
     FunPackVideoRefinerV2,
     V2_RATING_LABELS,
     normalize_refiner_v2_rating,
@@ -2443,3 +2444,139 @@ def test_split_by_transitions_has_no_hard_scene_cap(tmp_path):
     assert cond[-1][1]["funpack_scene_count"] == 11
     assert "capped at 8 scenes" not in status
     assert "Scene 11" in encoded_prompts
+
+
+def test_studio_detects_seed_output_links():
+    prompt = {
+        "output": {
+            "10": {"class_type": "FunPackStudio", "inputs": {}},
+            "20": {"class_type": "Sampler", "inputs": {"seed": ["10", 3]}},
+        }
+    }
+
+    assert FunPackStudio._is_output_connected(prompt, "10", 3) is True
+    assert FunPackStudio._is_output_connected(prompt, "10", 4) is False
+
+
+def test_successful_seed_memory_requires_connected_seed_output(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    refiner.refine_v2("KaiSa walking through neon", FakeClip(), "Perfect", "seed-test", _seed=111)
+    refiner.refine_v2(
+        "KaiSa walking through neon",
+        FakeClip(),
+        "Perfect",
+        "seed-test",
+        _seed=222,
+        seed_output_connected=False,
+    )
+
+    state = json.loads(state_path.read_text())
+    assert state["global"]["successful_seed_memory"] == {}
+
+
+def test_successful_seed_memory_stores_previous_seed_not_current(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    refiner.refine_v2(
+        "KaiSa walking through neon",
+        FakeClip(),
+        "Missing action",
+        "seed-test",
+        _seed=111,
+        seed_output_connected=True,
+    )
+    refiner.refine_v2(
+        "KaiSa walking through neon",
+        FakeClip(),
+        "Loved it",
+        "seed-test",
+        _seed=222,
+        seed_output_connected=True,
+    )
+
+    state = json.loads(state_path.read_text())
+    memory = state["global"]["successful_seed_memory"]
+    stored = [item["seed"] for entry in memory.values() for item in entry["seeds"]]
+    assert 111 in stored
+    assert 222 not in stored
+
+
+def test_successful_seed_reuse_matches_concepts(monkeypatch, tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "global": {
+            "successful_seed_memory": {
+                "neon": {
+                    "concept": "neon",
+                    "seeds": [{
+                        "seed": 777,
+                        "hit_count": 2,
+                        "last_iteration": 5,
+                        "scene_seeds": [777, 778, 779],
+                    }],
+                }
+            }
+        },
+        "prompt_histories": {},
+        "last_run": None,
+    }))
+    monkeypatch.setattr("conditioning.random.random", lambda: 0.05)
+    monkeypatch.setattr("conditioning.random.choice", lambda items: items[0])
+
+    seed, source, scene_seeds = refiner._v2_choose_successful_seed(
+        "seed-test",
+        "KaiSa in neon rain",
+        123,
+        seed_output_connected=True,
+    )
+
+    assert seed == 777
+    assert scene_seeds == [777, 778, 779]
+    assert "successful seed memory" in source
+
+
+def test_split_by_transitions_attaches_scene_seeds(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    cond, _, _, _, _, _, _ = refiner.refine_v2(
+        "anchor, scene one she walks, suddenly she turns",
+        FakeClip(),
+        "Perfect",
+        "split-seed-test",
+        split_by_transitions=True,
+        _seed=500,
+        seed_output_connected=True,
+    )
+
+    assert [item[1]["funpack_scene_seed"] for item in cond] == [500, 501]
+    assert all(item[1]["funpack_seed_source"] == "base seed + scene index" for item in cond)
+
+
+def test_split_by_transitions_uses_provided_scene_seeds(tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+
+    cond, _, _, _, _, _, _ = refiner.refine_v2(
+        "anchor, scene one she walks, suddenly she turns",
+        FakeClip(),
+        "Perfect",
+        "split-seed-test",
+        split_by_transitions=True,
+        _seed=500,
+        _scene_seeds=[900, 901],
+        _seed_source="successful seed memory: reused 900 from 'anchor'",
+    )
+
+    assert [item[1]["funpack_scene_seed"] for item in cond] == [900, 901]
+    assert all(item[1]["funpack_seed_source"] == "successful seed memory" for item in cond)

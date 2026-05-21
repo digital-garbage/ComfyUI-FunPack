@@ -12,6 +12,8 @@ Important: the Scene Chain sampler is resource heavy. Long scene chains can crea
 
 Also improved the Studio Scene Builder mode dropdown refresh and expanded the transition phrase list for camera moves, final shots, and scene progression language.
 
+Studio now learns successful sampler seeds when the `seed` output is connected. `Perfect` and `Loved it` ratings can store concept-matched seeds under the active refinement key, and split-scene mode passes per-scene seed metadata to the Scene Chain sampler. The sampler can either use those unique scene seeds or reuse one seed for every scene with `use_same_seed`.
+
 ## Updates in 2.6.0
 
 Added `FunPack Studio` - a single node that combines Refinement Key management, Scene Builder, LoRA loading, Refiner V2, Conditioning Adjust, and sampler configuration into one interface. The node face shows only the rating widget and an Open Studio button. All settings live in a tabbed popup editor.
@@ -29,62 +31,6 @@ Studio popup remembers the last active tab per node across page refreshes. Field
 Also added as standalone nodes: `FunPack Conditioning Adjust` (phrase-level conditioning adjustment with CLIP-encoded directions, popup editor with session phrase bank).
 
 Fixed `FunPackAdvisorLLM` crashing with newer transformers versions (`apply_chat_template` returning `BatchEncoding` instead of a plain tensor). Fixed advisor producing empty or garbled output for Qwen3 and other thinking models (thinking tokens stripped correctly, attention mask now explicitly provided). Fixed conditioning adjustments not applying for LTX/Gemma3 workflows (was reading `pooled_output` which is `None` for T5 encoders, now uses sequence mean). Fixed `prompt_repair=False` not preventing phrase injection from perfect-repair memory and emphasis. Removed the advisor gate that blocked repair for Perfect-rated outputs.
-
-## Updates in 2.5.1
-
-Added `FunPack Advisor LLM` node - loads any HuggingFace CausalLM (sharded or single-file) as an advisor for Refiner V2 or as a drop-in replacement for the built-in `TextGenerate` node. Set a HuggingFace repo ID or local path, pick dtype, connect the output to `advisor_clip`. Model is cached after first load. Compatible with `skip_template`, `min_p`, `presence_penalty`, and any model architecture that `AutoModelForCausalLM.from_pretrained` supports.
-
-Advisor prompt format rewritten to plain natural language so enhancement-type models (Sulphur, Qwen prompt enhancers) produce useful output rather than ignoring structured field-value instructions. System prompt reduced to one sentence.
-
-Training info Adaptation section now shows direction memory in plain language: run count per slot, magnitude, whether each axis is in direction mode or lerp fallback, and what was applied this run. Model patch status shows which directions were injected into cross-attention and which phrase texts are being emphasized.
-
-Fixed several bugs: advisor returning None when tokenization succeeded (generate was inside the wrong branch), session reset not clearing newer memory fields, system prompt bleeding into advisor output, and repetition loops from the 1.05 penalty being too weak for 8B+ models.
-
-Added persistent cross-run encode cache so phrase encodings are not recomputed every run.
-
-## Updates in 2.5.0
-
-Added a two-pass CLIP text-generation advisor to `FunPack Video Refiner V2`. Pass 1 analyses what specifically needs to change in the suggested prompt. Pass 2 applies those findings. The advisor uses a structured input format — `ORIGINAL_USER_INTENT`, `LAST_PROMPT`, `RATING`, and `OPTIONAL_NOTE` — so the model knows exactly what failed and what to fix. Token budget: 1200 tokens for analysis, 1600 for repair.
-
-Added `feedback_prompt` input. When connected, the user's natural-language description of what was wrong is placed first in both advisor passes and the system follows it exactly, overriding axis-based repair logic and validation guards.
-
-Added `Prompt only` execution mode: all prompt shaping runs normally but conditioning vectors pass through unchanged. Added `prompt_repair` boolean to disable the rule-based phrase injection from memory when not enough context has been built yet.
-
-Added `encoded_prompts` STRING output. When the advisor ran it shows up to four sections: `Positive prompt` (what was encoded), `Advisor suggestion (applied/rejected)` (the advisor's generated prompt), `Advisor analysis` (diagnostic from the analysis pass), and `Pre-advisor prompt` (the prompt before the advisor rewrote it).
-
-Added `eta_final` parameter to `FunPack Hybrid Euler 2S Sampler`. When set below `eta`, ancestral noise decays toward this value as sigma approaches the quality phase boundary. The early phase now uses order-2 denoised extrapolation (Adams-Bashforth 2-step) at zero extra model-call cost, and the quality phase uses progressive correction blending to reduce the number of expensive 2S evaluations.
-
-Removed `negative_prompt` input and `modified_negative` conditioning output from Refiner V2. Negative conditioning has no effect at CFG=1.0 and was adding a redundant generation call to every advisor run.
-
-Fixed greedy decoding in the advisor: `do_sample` was `False`, causing the model to always produce its highest-probability default output. Fixed `Only prompt` mode running two generation calls per invocation (positive + the now-removed negative advisor). Fixed `encoded_prompts` always showing only the positive prompt regardless of advisor activity. Also fixed four logic bugs: intent example lookup reading a nonexistent field, streak updates contaminating conditioning strength in Prompt only mode, unfiltered global phrase memory injecting unrelated vocabulary, and the first-run rating label being forwarded when no previous output existed.
-
-## Updates in 2.4.2
-
-Added Refiner V2 `Learning` mode. It observes prompts, conditioning, ratings, phrase memory, and diagnostics while passing positive and negative prompt conditioning through unchanged.
-
-Fixed Scene Builder mode handling so the live Mode control stays independent from the selected saved scene, and fixed prompt editing so the cursor can move past a final phrase chip with the mouse or right arrow key.
-
-## Updates in 2.4.1
-
-Improved Scene Builder database editing: phrase rows now expose the full phrase as a hover hint, and double-click editing opens a wider multiline editor with explicit OK/Cancel buttons.
-
-## Updates in 2.4.0
-
-Added `FunPack Scene Builder`, a replacement for `FunPack Template Manager`. It stores named scenes from editable positive/negative prompt text, takes prompt/intent text through connection-only inputs, passes the current LoRA stack through unchanged, and can auto-apply a scene when its name or alias appears in an intent prompt.
-
-Added Scene Builder `Learning` mode for changing-prompt generations: it collects phrase memory inside the selected refinement key while passing the connected prompt data through unchanged, and Refiner resets preserve that Scene Builder memory.
-
-Redesigned Scene Builder as a compact button-driven node with centered editor menus for scene name, mode, aliases, Positive Prompt, Negative Prompt, and Database controls. First use asks for a scene name before editing, prompt editors preserve freely typed text while phrase chips can be clicked or dragged in from the database, used chips are highlighted in the prompt editor, database words can be double-clicked for inline editing, connected prompts now teach useful words as well as phrase chunks, and wildcard random choice is a simple checkbox.
-
-Added searchable LoRA selection to `FunPack Apply LoRA Weights` while keeping the compact row UI and serialized LoRA stack format.
-
-Added advisory image/CLIP Vision context and repaired negative conditioning to `FunPack Video Refiner V2`. Vision inputs are stored as metadata and diagnostics only; they are not blended into positive conditioning.
-
-Added an opt-in experimental early velocity bias mode to `FunPack Hybrid Euler 2S Sampler` for capturing/applying averaged early denoise directions around normalized sigma 0.9 and 0.8.
-
-## Updates in 2.3.x
-
-Refiner V2 now supports pre-encoded conditioning workflows, original-intent alignment memory, improved prompt repair scoping, and a `Wrong appearance` rating for outputs polluted by remembered appearance concepts. Added `FunPack Refinement Key Loader`.
 
 ## Dev Branch
 
@@ -144,6 +90,21 @@ Version history is available in [CHANGELOG.md](CHANGELOG.md).
 ## Feedback
 
 If you have suggestions, questions, or ideas for new nodes, feel free to open an issue or submit a pull request.
+
+## Intent
+
+FunPack is a hobby project, provided to you by a fellow AI enthusiast who "lives in the trenches" and knows exactly what people seek in video/audio generation workflows.
+
+FunPack is provided under GNU General Public License V3, which gives you broad rights to use, modify and distribute the original/modified version of it as long as the original license text is included. FunPack places no limitations on types of content you can generate by using it, meaning both SFW and NSFW content are fine as long as you don't violate your local laws. GPLv3 does not grant you rights for such violations.
+
+However, I do not endorse using FunPack and/or demonstrating it alongside morally and legally questionable/prohibited content, including:
+- Non-consensual explicit depiction of a real person;
+- Explicit depiction of minors;
+- Depiction of violence and gore targeted at a real person.
+
+I do not provide support to users who use FunPack in such cases, and in case I detect it, any support will be immediately ceased.
+
+Thanks for understanding.
 
 ## Thank you
 

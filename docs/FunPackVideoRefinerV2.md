@@ -57,7 +57,7 @@ The advisor receives four explicit inputs: `ORIGINAL_USER_INTENT` (the user's in
 
 **refinement_key_input**: Optional linked key input, usually from `FunPack Refinement Key Loader`. When connected, overrides the text widget.
 
-**seed**: Optional seed for deterministic exploration paths.
+**seed**: Optional seed for deterministic exploration paths. Studio passes its generated seed here and can store successful sampler seeds when its `seed` output is connected.
 
 **reset_session**: Clears all V2 session state for the selected key. Scene Builder memory is preserved.
 
@@ -74,6 +74,8 @@ The advisor receives four explicit inputs: `ORIGINAL_USER_INTENT` (the user's in
 **split_by_transitions**: Detects scene transition phrases in `positive_prompt`. When disabled, `modified_positive` is one normal conditioning entry for the full prompt. When enabled, `modified_positive` becomes one conditioning entry per detected scene, intended for `FunPack LTXAV Scene Chain Sampler`.
 
 Scene splitting is order-only. Written labels such as `scene ten`, `scene -999999`, or `scene minus infinity` are treated as transition text, not as real scene numbers. Text before the first transition is used as a shared character/global anchor and prepended to every detected scene.
+
+In Studio split mode, each scene conditioning entry also receives `funpack_scene_seed` metadata. Scene Chain uses those seeds when present.
 
 ## Feedback History
 

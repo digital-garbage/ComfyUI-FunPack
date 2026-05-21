@@ -780,6 +780,10 @@ class FunPackLTXAVSceneChainSampler:
                 "frame_overlap": ("INT", {"default": 16, "min": 0, "max": 512, "step": 8}),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1}),
                 "max_scenes": ("INT", {"default": 8, "min": 1, "step": 1}),
+                "use_same_seed": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Use the first provided scene seed for every scene. Off uses per-scene metadata seeds or seed + scene index.",
+                }),
                 "carry_i2v_guides": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
@@ -1134,8 +1138,20 @@ class FunPackLTXAVSceneChainSampler:
                 return text
         return f"Scene {index + 1}"
 
+    def _scene_seed(self, scene_conditioning):
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            try:
+                return int(scene_conditioning[1].get("funpack_scene_seed"))
+            except (TypeError, ValueError):
+                return None
+        return None
+
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
-               num_frames_per_scene, frame_overlap, cfg, max_scenes, carry_i2v_guides=False):
+               num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False, carry_i2v_guides=False):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -1151,10 +1167,17 @@ class FunPackLTXAVSceneChainSampler:
         output = None
         report_lines = []
         carried_guide_frames = 0
+        first_scene_seed = self._scene_seed(scene_conditionings[0])
+        if first_scene_seed is None:
+            first_scene_seed = int(seed)
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
-            scene_seed = int(seed) + scene_index
+            provided_seed = self._scene_seed(scene_cond)
+            if use_same_seed:
+                scene_seed = first_scene_seed
+            else:
+                scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
             if output is None:
                 chunk = self._clone_latent(latent_template)

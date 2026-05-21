@@ -14,12 +14,13 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 - `negative`: Negative conditioning shared by every scene.
 - `sampler`: ComfyUI sampler object, for example from Studio's sampler output.
 - `sigmas`: Sigma schedule for each chunk.
-- `seed`: Base seed. Scene N uses `seed + N`.
+- `seed`: Base seed. Scene N uses `seed + N` unless scene seed metadata is present.
 - `latent_template`: One scene-sized latent template. Plain video and nested AV latents are supported.
 - `num_frames_per_scene`: Pixel frame count represented by `latent_template`.
 - `frame_overlap`: Pixel frames to preserve and blend between scene chunks.
 - `cfg`: Internal CFG value.
 - `max_scenes`: Maximum scene entries to consume. Default is `8`, but it can be raised for longer chains.
+- `use_same_seed`: When off, each scene uses `funpack_scene_seed` metadata from Studio/Refiner split mode, falling back to `seed + scene_index`. When on, every scene uses the first provided scene seed or the base `seed`.
 - `carry_i2v_guides`: Experimental. Appends protected frames from `latent_template`'s `noise_mask` as hidden LTX guide tokens in each continuation chunk. Default is off.
 
 ## Behavior
@@ -27,6 +28,8 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 The first scene samples from a fresh copy of `latent_template`.
 
 Each following scene copies the previous output tail into the start of the next chunk, masks that overlap so it is preserved during denoising, samples the new frames with that scene's conditioning, then blends the overlap in latent space.
+
+When Studio or Refiner V2 split mode provides scene seed metadata, the sampler reports and uses those exact seeds. This lets successful seed memory replay a known-good scene seed set while keeping the public Studio `seed` output as a single integer.
 
 When `carry_i2v_guides` is enabled, protected source frames from the incoming `latent_template` are appended as guide tokens with `keyframe_idxs` and `guide_attention_entries`, then cropped away after sampling. This follows the same broad idea as LTX guide/IC-LoRA conditioning: the reference is extra context, not a visible frame inserted into the generated timeline. Keep it off unless you are testing that behavior deliberately.
 
