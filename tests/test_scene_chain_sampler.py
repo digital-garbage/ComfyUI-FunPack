@@ -155,6 +155,39 @@ def test_scene_chain_detects_scene_count_and_increments_seed():
     assert "Scene 3" in report
 
 
+def test_scene_chain_accepts_manual_combined_conditioning_without_metadata():
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    positive = [
+        (torch.ones(1, 2, 3), {}),
+        (torch.ones(1, 2, 3) * 2.0, {}),
+        (torch.ones(1, 2, 3) * 3.0, {}),
+    ]
+
+    _, status, scene_count, report = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=70,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=8,
+    )
+
+    assert scene_count == 3
+    assert [call["seed"] for call in sample_calls] == [70, 71, 72]
+    assert [call["positive"][0][0].mean().item() for call in sample_calls] == [1.0, 2.0, 3.0]
+    assert "3 scene(s)" in status
+    assert "Scene 1: seed=70, text=Scene 1" in report
+    assert "Scene 3: seed=72, text=Scene 3" in report
+
+
 def test_scene_chain_uses_scene_seed_metadata():
     sample_calls.clear()
     node = FunPackLTXAVSceneChainSampler()

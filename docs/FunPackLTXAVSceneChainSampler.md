@@ -4,6 +4,8 @@
 
 Use it with `FunPack Studio` or `FunPack Video Refiner V2` when `split_by_transitions` is enabled. The refiner returns one positive conditioning entry per detected scene, and this sampler uses each entry for one sequential chunk.
 
+You can also use it without Studio. Encode each scene separately, then combine those conditioning outputs with ComfyUI's `ConditioningCombine`. The sampler treats each conditioning entry in the combined list as one scene.
+
 Important: this sampler is resource heavy. Long chains can produce very large final latents. You may run out of memory during VAE Decode even if every sampling chunk completed successfully.
 
 ## Inputs
@@ -38,6 +40,8 @@ For nested LTXAV latents, video and audio tensors are continued together. Audio 
 ## Notes
 
 Multi-entry conditioning from `split_by_transitions` is meant for this sampler. Connecting it to a normal sampler can mix scene conditionings together instead of routing one scene per chunk.
+
+For manual workflows, use `ConditioningCombine`, not `ConditioningConcat`, when you want multiple scenes. `ConditioningCombine` preserves separate conditioning entries. `ConditioningConcat` merges token tensors into a single conditioning entry, so the sampler correctly sees it as one scene because no scene boundary remains.
 
 Scene order is first in, first out. Written labels like `scene ten`, `scene -999999`, or `scene minus infinity` are treated as transition text only. They do not assign scene numbers.
 
