@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.7.2] - 2026-05-22
+
+### Added
+
+Added **Shortcuts** system. Activation phrases in the prompt are replaced with full cinematic descriptions before encoding. Multiple replacement options are randomly picked per seed. Empty replacement removes the matched phrase entirely. Longer phrases always win over shorter overlapping triggers. Managed in the new Studio Shortcuts tab with Add/Save/Delete/Import/Export.
+
+Added **Transitions** system. User-defined transition phrases extend the built-in split list. Custom entries support a placement override - `start` (transition opens the new segment), `end` (transition closes the previous segment), or `silent` (split happens but the phrase is stripped from output entirely). Managed in the new Studio Transitions tab.
+
+Added global **Transition placement** setting in Studio Refiner tab (`start` / `end` / `silent`), with per-entry override on each custom transition entry.
+
+### Fixed
+
+Removed all single-word temporal markers (`next`, `suddenly`, `later`, `finally`, etc.) from the built-in transition phrase list. They caused false splits on normal prose.
+
+Fixed `_GENERIC_SCENE_LABEL_PATTERN` matching "scene proceeds", "scene features", "scene shows" and similar noun-verb constructions as scene labels.
+
+Fixed dangling trailing transition segments (prompt ending with "...cuts to the") being kept as near-empty scenes.
+
+Fixed stray comma artifacts after article words when transition phrase merging occurs.
+
+Fixed custom transition triggers ending with punctuation (e.g. "Scene cut.") not being detected due to a misplaced word boundary.
+
 ## [2.7.1] - 2026-05-21
 
 ### Added

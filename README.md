@@ -2,6 +2,14 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.7.2
+
+Shortcuts let you write compact activation words that expand into full cinematic descriptions before the prompt is encoded. Empty replacement removes unwanted phrases (e.g. game character tags). Longer phrases always win over shorter overlapping triggers. Managed in the new Studio Shortcuts tab.
+
+Custom transitions extend the built-in scene split list with your own phrases. Each entry supports a placement override: `start` (transition opens the new scene), `end` (transition closes the previous scene), or `silent` (split point only - phrase is stripped from output). A global placement setting lives in the Studio Refiner tab with per-entry override in the Transitions tab.
+
+Several split reliability fixes: removed single-word temporal markers that caused false splits on normal prose, fixed over-broad scene label matching, fixed dangling trailing segments, stray comma artifacts, and custom triggers ending with punctuation.
+
 ## Updates in 2.7.1
 
 Studio now learns successful sampler seeds when the `seed` output is connected. `Perfect` and `Loved it` ratings can store concept-matched seeds under the active refinement key, and split-scene mode passes per-scene seed metadata to the Scene Chain sampler. The sampler can either use those unique scene seeds or reuse one seed for every scene with `use_same_seed`.
