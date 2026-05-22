@@ -627,7 +627,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         if idx < len(block_list):
                             is_anchor = idx in ANCHOR_BLOCKS
                             inj_strength = anchor_strength if is_anchor else identity_strength
-                            inj_gate = (0.2, 0.5) if is_anchor else (0.25, 0.42)
+                            inj_gate = (0.2, 0.5) if is_anchor else (0.35, 0.80)
                             lazy = lazy_injects.get(idx)
 
                             def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state):
@@ -746,7 +746,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     sigma = float(ts.max().item()) if ts is not None else 1.0
                 except Exception:
                     sigma = 1.0
-                if sigma < 0.6 and len(_cap_buf) >= len(_lazy):
+                if sigma < 0.95 and len(_cap_buf) >= len(_lazy):
                     _ref_extracted[0] = True
                     for idx, lazy in _lazy.items():
                         if idx in _cap_buf:
