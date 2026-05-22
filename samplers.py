@@ -805,12 +805,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
                 }),
-                "bridge_shots": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Generate a short transition clip between scenes (Bridge Shots). "
-                               "Pins the last frame of the previous scene and the i2v reference frame as dual anchors, "
-                               "letting the model fill the visual transition. Adds one generation per scene boundary.",
-                }),
             }
         }
 
@@ -1170,7 +1164,7 @@ class FunPackLTXAVSceneChainSampler:
         result.pop("noise_mask", None)
         return result
 
-    def _build_bridge_chunk(self, scene_a, scene_b, latent_template, bridge_video_frames, time_scale):
+    def _build_bridge_chunk_UNUSED(self, scene_a, scene_b, latent_template, bridge_video_frames, time_scale):
         """Build a short first-last-frame latent for bridge shot generation.
 
         First latent frame = last frame of scene_a (where we came from).
@@ -1268,7 +1262,7 @@ class FunPackLTXAVSceneChainSampler:
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
-               carry_i2v_guides=False, bridge_shots=False):
+               carry_i2v_guides=False):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -1280,76 +1274,21 @@ class FunPackLTXAVSceneChainSampler:
         time_scale = self._time_scale(vae)
         video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale)
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
-        bridge_video_frames = 30
 
+        output = None
         report_lines = []
+        carried_guide_frames = 0
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
-
-        if bridge_shots and scene_count > 1:
-            # Two-pass: generate all scenes independently, then bridge between consecutive pairs.
-            # Each scene starts fresh from latent_template so its first frame is a clean anchor.
-            scene_outputs = []
-            carried_guide_frames = 0
-            for scene_index, scene_cond in enumerate(scene_conditionings):
-                scene_positive = [scene_cond]
-                scene_negative = negative
-                provided_seed = self._scene_seed(scene_cond)
-                scene_seed = first_scene_seed if use_same_seed else (
-                    provided_seed if provided_seed is not None else int(seed) + scene_index
-                )
-                chunk = self._clone_latent(latent_template)
-                carried = 0
-                if carry_i2v_guides:
-                    chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
-                        chunk, latent_template, scene_positive, scene_negative, vae,
-                    )
-                    carried_guide_frames = max(carried_guide_frames, carried)
-                sampled = self._sample_chunk(
-                    model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
-                )
-                if carry_i2v_guides and carried > 0:
-                    sampled = self._crop_video_tail(sampled, carried)
-                scene_outputs.append(sampled)
-                report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
-
-            # Second pass: generate bridges between consecutive scene pairs
-            output = scene_outputs[0]
-            for i in range(1, len(scene_outputs)):
-                bridge_seed = int(seed) + 0xBEEF + i
-                bridge_chunk = self._build_bridge_chunk(
-                    scene_outputs[i - 1], scene_outputs[i], latent_template, bridge_video_frames, time_scale,
-                )
-                # Use neutral conditioning for the bridge (average of adjacent scenes' text)
-                bridge_positive = [scene_conditionings[i - 1]]
-                bridge_sampled = self._sample_chunk(
-                    model, sampler, sigmas, bridge_seed, cfg, bridge_positive, negative, bridge_chunk,
-                )
-                report_lines.append(f"  Bridge {i}: seed={bridge_seed}")
-                # Concatenate: output + bridge (1-frame hard join since frames match) + next scene
-                output = self._blend_latents(output, bridge_sampled, 1)
-                output = self._blend_latents(output, scene_outputs[i], 1)
-
-            final_frames = self._tensor_frames(self._latent_tensors(output)[0])
-            status = (
-                f"Scene chain complete: {scene_count} scene(s) + {scene_count - 1} bridge(s), "
-                f"output={final_frames} latent frames"
-            )
-            if carry_i2v_guides and carried_guide_frames > 0:
-                status += f", i2v guide tokens={carried_guide_frames}"
-            return (output, status, scene_count, "\n".join(report_lines))
-
-        # Standard single-pass scene chain (bridge_shots off or single scene)
-        output = None
-        carried_guide_frames = 0
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
             provided_seed = self._scene_seed(scene_cond)
-            scene_seed = first_scene_seed if use_same_seed else (
-                provided_seed if provided_seed is not None else int(seed) + scene_index
-            )
+            if use_same_seed:
+                scene_seed = first_scene_seed
+            else:
+                scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
             if output is None:
                 chunk = self._clone_latent(latent_template)
