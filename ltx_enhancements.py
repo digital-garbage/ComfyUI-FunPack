@@ -639,79 +639,36 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                 else:
                     dit[("double_block", block_idx)] = replacement
 
-    # --- Technique 5 (forward hooks): capture + inject via nn.Module hooks ---
-    # Only register hooks when i2v injection is active. Hooks on large LTXAV hidden
-    # state tensors are expensive - skip entirely when reference_injection is off.
+    # --- Technique 5 (forward hooks): lazy per-step registration ---
+    # Hooks are only registered for the 2-3 steps where they actually fire.
+    # High-sigma steps (1-5 of 8) have zero hook overhead.
+    _block_list = None
+    _hook_block_params = {}  # {idx: (buf, lazy, strength, gate)}
     hook_handles = []
     if capture_buf is not None and has_i2v:
         try:
             diff = getattr(getattr(model, "model", None), "diffusion_model", None)
             if diff is not None:
-                block_list = None
                 for attr in ["transformer_blocks", "blocks", "joint_blocks", "layers"]:
                     candidate = getattr(diff, attr, None)
                     if isinstance(candidate, torch.nn.ModuleList) and len(candidate) >= 28:
-                        block_list = candidate
+                        _block_list = candidate
                         break
-                if block_list is not None:
+                if _block_list is not None:
                     blocks_to_hook = set(lazy_injects.keys()) | (set(ANCHOR_BLOCKS) if not has_i2v else set())
                     for idx in blocks_to_hook:
-                        if idx < len(block_list):
+                        if idx < len(_block_list):
                             is_anchor = idx in ANCHOR_BLOCKS
-                            inj_strength = anchor_strength if is_anchor else identity_strength
-                            inj_gate = (0.2, 0.5) if is_anchor else (0.35, 0.80)
-                            lazy = lazy_injects.get(idx)
-
-                            def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state):
-                                def _extract_tensor(out):
-                                    if isinstance(out, dict):
-                                        return out.get("img") or out.get("hidden_states") or next(iter(out.values()), None), out
-                                    elif isinstance(out, tuple):
-                                        return out[0], out
-                                    return out, out
-
-                                def _hook(module, inp, out):
-                                    # Capture only at mid-sigma - keep on same device as model
-                                    if 0.85 <= s_state[0] <= 0.95:
-                                        try:
-                                            t, _ = _extract_tensor(out)
-                                            if isinstance(t, torch.Tensor):
-                                                buf[block_idx] = t.detach()
-                                        except Exception:
-                                            pass
-                                    # Inject when lazy has a tensor
-                                    if lazy_ref is None or lazy_ref.tensor is None:
-                                        return None
-                                    try:
-                                        sigma = s_state[0]
-                                        effective = _sigma_gated_strength(strength, sigma, gate[1], gate[0])
-                                        if effective <= 0.0:
-                                            return None
-                                        t, _ = _extract_tensor(out)
-                                        if not isinstance(t, torch.Tensor):
-                                            return None
-                                        b = lazy_ref.tensor.to(device=t.device, dtype=t.dtype, non_blocking=True)
-                                        if b.shape != t.shape:
-                                            return None
-                                        injected = t.lerp(b, effective)
-                                        if isinstance(out, dict):
-                                            key = "img" if "img" in out else "hidden_states" if "hidden_states" in out else next(iter(out))
-                                            return {**out, key: injected}
-                                        elif isinstance(out, tuple):
-                                            return (injected,) + out[1:]
-                                        return injected
-                                    except Exception:
-                                        return None
-                                return _hook
-
-                            h = block_list[idx].register_forward_hook(
-                                _make_hook(idx, capture_buf, lazy, inj_strength, inj_gate, sigma_state)
+                            _hook_block_params[idx] = (
+                                capture_buf,
+                                lazy_injects.get(idx),
+                                anchor_strength if is_anchor else identity_strength,
+                                (0.2, 0.5) if is_anchor else (0.35, 0.80),
                             )
-                            hook_handles.append(h)
                 else:
                     print("[FunPackEnhancements] Could not find transformer block list for hooks")
         except Exception as e:
-            print(f"[FunPackEnhancements] Hook registration failed: {e}")
+            print(f"[FunPackEnhancements] Hook setup failed: {e}")
 
     # --- Technique 3: temporal RoPE via model_function_wrapper ---
     if temporal_style != "natural":
@@ -755,28 +712,96 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         _ref_x = ref_x
         _lazy = lazy_injects
 
+        _prev_sigma_track = [1.0]
+        _active_handles = []
+
+        def _register_hooks():
+            if not _block_list or not _hook_block_params:
+                return
+            def _extract_tensor(out):
+                if isinstance(out, dict):
+                    return out.get("img") or out.get("hidden_states") or next(iter(out.values()), None), out
+                elif isinstance(out, tuple):
+                    return out[0], out
+                return out, out
+
+            def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state):
+                def _hook(module, inp, out):
+                    if 0.85 <= s_state[0] <= 0.95:
+                        try:
+                            t, _ = _extract_tensor(out)
+                            if isinstance(t, torch.Tensor):
+                                buf[block_idx] = t.detach()
+                        except Exception:
+                            pass
+                    if lazy_ref is None or lazy_ref.tensor is None:
+                        return None
+                    try:
+                        effective = _sigma_gated_strength(strength, s_state[0], gate[1], gate[0])
+                        if effective <= 0.0:
+                            return None
+                        t, _ = _extract_tensor(out)
+                        if not isinstance(t, torch.Tensor):
+                            return None
+                        b = lazy_ref.tensor.to(device=t.device, dtype=t.dtype, non_blocking=True)
+                        if b.shape != t.shape:
+                            return None
+                        injected = t.lerp(b, effective)
+                        if isinstance(out, dict):
+                            key = "img" if "img" in out else "hidden_states" if "hidden_states" in out else next(iter(out))
+                            return {**out, key: injected}
+                        elif isinstance(out, tuple):
+                            return (injected,) + out[1:]
+                        return injected
+                    except Exception:
+                        return None
+                return _hook
+
+            for idx, (buf, lazy_ref, strength, gate) in _hook_block_params.items():
+                h = _block_list[idx].register_forward_hook(
+                    _make_hook(idx, buf, lazy_ref, strength, gate, _state)
+                )
+                _active_handles.append(h)
+
+        def _remove_hooks():
+            for h in _active_handles:
+                try: h.remove()
+                except Exception: pass
+            _active_handles.clear()
+
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
-                           _lazy=_lazy, _cap_buf=capture_buf):
+                           _lazy=_lazy, _cap_buf=capture_buf,
+                           _prev=_prev_sigma_track, _active=_active_handles,
+                           _reg=_register_hooks, _rem=_remove_hooks):
             ts = args.get("timestep")
             try:
                 sigma = float(ts.max().item()) if ts is not None else 1.0
             except Exception:
                 sigma = 1.0
+
+            # Scene transition: sigma jumped back up → unregister hooks for clean state
+            if sigma > _prev[0] + 0.05 and _active:
+                _rem()
+            _prev[0] = sigma
             _state[0] = sigma
+
+            # Register hooks lazily when sigma enters the active zone
+            if not _active and sigma < 0.95 and _ref_x is not None:
+                _reg()
 
             if _ew is not None:
                 result = _ew(apply_fn, args)
             else:
                 result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
-            # Snapshot capture_buf into lazy injects at first mid-sigma crossing
+            # Snapshot into lazy injects at first mid-sigma crossing
             if _ref_x is not None and not _ref_extracted[0] and _cap_buf and _lazy:
                 if sigma < 0.95 and len(_cap_buf) >= len(_lazy):
                     _ref_extracted[0] = True
                     for idx, lazy in _lazy.items():
                         if idx in _cap_buf:
-                            lazy.set(_cap_buf[idx])  # tensor already on GPU from capture hook
+                            lazy.set(_cap_buf[idx])
 
             return result
 
@@ -818,28 +843,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
         model.model_options["model_function_wrapper"] = _capture_finalizer
 
-    # --- Hook cleanup: remove forward hooks after sampling completes ---
-    if hook_handles:
-        _handles = hook_handles
-        existing_wrapper = model.model_options.get("model_function_wrapper")
-
-        def _hook_remover(apply_fn, args, _ew=existing_wrapper, _handles=_handles,
-                          _removed=[False]):
-            if _ew is not None:
-                result = _ew(apply_fn, args)
-            else:
-                result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
-            ts = args.get("timestep")
-            if ts is not None and not _removed[0]:
-                try:
-                    if float(ts.max().item()) < 0.05:
-                        for h in _handles:
-                            h.remove()
-                        _removed[0] = True
-                except Exception:
-                    pass
-            return result
-
-        model.model_options["model_function_wrapper"] = _hook_remover
+    # Hook cleanup is handled by _sigma_tracker's scene-transition logic.
+    # _active_handles is cleared on each sigma reset and at the end.
 
     return model
