@@ -218,7 +218,9 @@ def _has_i2v_reference(latent):
         mask = tensors[0]
     if not isinstance(mask, torch.Tensor) or mask.dim() < 3:
         return False
-    return float(mask[:, :, 0].float().mean()) < 0.1
+    # LTX i2v sets image frame mask = 1 - strength (e.g. 0.3 at strength=0.7).
+    # Any frame below 1.0 means a reference image is present.
+    return float(mask[:, :, 0].float().mean()) < 0.95
 
 
 def _get_reference_video_tensor(latent):
@@ -521,30 +523,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     }
 
     # --- Technique 5: injection data ---
-    if reference_latent is not None:
-        mask = reference_latent.get("noise_mask")
-        samples = reference_latent.get("samples")
-        mask_nested = getattr(mask, "is_nested", False)
-        samples_nested = getattr(samples, "is_nested", False)
-        mask_shape = list(mask.shape) if isinstance(mask, torch.Tensor) else (
-            [list(t.shape) for t in mask.unbind()] if mask_nested else "None")
-        samples_shape = list(samples.shape) if isinstance(samples, torch.Tensor) else (
-            [list(t.shape) for t in samples.unbind()] if samples_nested else "None")
-        if isinstance(mask, torch.Tensor):
-            frame0_val = float(mask[:, :, 0].float().mean())
-            mask_min = float(mask.float().min())
-            mask_max = float(mask.float().max())
-            print(f"[FunPackEnhancements] reference_latent keys={list(reference_latent.keys())} "
-                  f"samples_shape={samples_shape} mask_shape={mask_shape} "
-                  f"mask_min={mask_min:.3f} mask_max={mask_max:.3f} frame0_mask={frame0_val:.3f}")
-        else:
-            print(f"[FunPackEnhancements] reference_latent keys={list(reference_latent.keys())} "
-                  f"samples_shape={samples_shape} mask_shape={mask_shape}")
-    else:
-        print("[FunPackEnhancements] reference_latent=None")
-
     has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
-    print(f"[FunPackEnhancements] has_i2v={has_i2v}")
     if has_i2v:
         # i2v latent: extract reference maps on first generation step (real conditioning available).
         # Never fall back to blessed maps - they may represent a completely different character.
