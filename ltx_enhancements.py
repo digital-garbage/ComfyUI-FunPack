@@ -645,20 +645,27 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
-                           _lazy=_lazy, _model_ref=_model_ref):
+                           _lazy=_lazy, _cap_buf=capture_buf):
             ts = args.get("timestep")
             if ts is not None:
                 try:
                     _state[0] = float(ts.max().item())
                 except Exception:
                     pass
-            # On first call with i2v: extract reference maps using real conditioning
-            if _ref_x is not None and not _ref_extracted[0] and "input" in args:
-                _ref_extracted[0] = True
-                _run_reference_extraction(_model_ref, apply_fn, _ref_x, _lazy, args)
+            # Run the actual generation step
             if _ew is not None:
-                return _ew(apply_fn, args)
-            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+                result = _ew(apply_fn, args)
+            else:
+                result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            # After first step with i2v: the block capture just ran - snapshot into lazy injects
+            if _ref_x is not None and not _ref_extracted[0] and _cap_buf and _lazy:
+                _ref_extracted[0] = True
+                for idx, lazy in _lazy.items():
+                    if idx in _cap_buf:
+                        lazy.set(_cap_buf[idx])
+                captured = sum(1 for lz in _lazy.values() if lz.tensor is not None)
+                print(f"[FunPackEnhancements] i2v reference maps ready ({captured}/{len(_lazy)} blocks)")
+            return result
 
         model.model_options["model_function_wrapper"] = _sigma_tracker
 
