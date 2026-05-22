@@ -529,11 +529,13 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     if has_i2v:
         # i2v latent: extract reference maps on first generation step (real conditioning available).
         # Never fall back to blessed maps - they may represent a completely different character.
+        # Only inject at identity blocks (21, 26, 31) - anchor blocks (14, 19) encode scene
+        # composition which is scene-specific and must not be overridden from the reference.
         blessed_maps = None
         ref_x = _get_reference_video_tensor(reference_latent)
-        lazy_injects = {idx: _LazyInject() for idx in list(ANCHOR_BLOCKS) + list(IDENTITY_BLOCKS)}
-        anchor_strength = 0.22
-        identity_strength = 0.10
+        lazy_injects = {idx: _LazyInject() for idx in list(IDENTITY_BLOCKS)}
+        anchor_strength = 0.0   # no anchor injection for i2v - would bleed scene content
+        identity_strength = 0.04  # light touch - hidden states encode full scene, not just identity
     else:
         blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
         ref_x = None
@@ -618,7 +620,9 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         block_list = candidate
                         break
                 if block_list is not None:
-                    blocks_to_hook = set(ANCHOR_BLOCKS) | set(IDENTITY_BLOCKS)
+                    # For i2v: only hook identity blocks (anchor blocks encode scene structure).
+                    # For blessed maps: hook all injection blocks for full capture.
+                    blocks_to_hook = set(lazy_injects.keys()) | (set(ANCHOR_BLOCKS) if not has_i2v else set())
                     for idx in blocks_to_hook:
                         if idx < len(block_list):
                             is_anchor = idx in ANCHOR_BLOCKS
