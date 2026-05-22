@@ -31,7 +31,7 @@ ANCHOR_BLOCKS = [14, 19]
 
 # Representative identity blocks from the concept-formation zone (20-35).
 # Spaced evenly across the zone; capture and inject character appearance details.
-IDENTITY_BLOCKS = [14, 21, 30, 33, 34]
+IDENTITY_BLOCKS = [14, 20, 21, 30, 33]
 
 # Block zones for temperature mapping (normalized for 48-block LTXAV)
 _ZONE_EARLY = set(range(0, 14))       # texture / low-level noise
