@@ -304,10 +304,10 @@ def normalize_shortcut_item(item, fallback_name=""):
         return None
     name = normalize_shortcut_name(item.get("name"), fallback_name)
     triggers = shortcut_list(item.get("triggers", item.get("activation_words", item.get("activation", []))))
-    replacements = _shortcut_replacements(item.get("replacements", item.get("replacement", [])))
+    replacements = _shortcut_replacements(item.get("replacements", item.get("replacement", []))) or [""]
     if not name:
         name = triggers[0] if triggers else ""
-    if not name or not triggers or not replacements:
+    if not name or not triggers:
         return None
     created = str(item.get("created_at") or now_iso())
     return {
@@ -376,7 +376,7 @@ def shortcut_items(data=None):
 def save_shortcut_item(payload):
     item = normalize_shortcut_item(payload)
     if item is None:
-        raise ValueError("Shortcut name, activation phrase, and replacement phrase are required.")
+        raise ValueError("Shortcut activation phrase and replacement phrase are required.")
     data = load_shortcut_db()
     shortcuts = data.setdefault("shortcuts", {})
     key = shortcut_key(item["name"])

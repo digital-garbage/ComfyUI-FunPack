@@ -659,7 +659,23 @@ function openPanel(node) {
     }
 
     drafts.forEach((item, index) => {
+      const isSaved = !!item.key;
+      if (!("_expanded" in item)) item._expanded = !isSaved;
+
       const rowEl = el("div", "funpack-studio-shortcut-row");
+
+      if (!item._expanded) {
+        const summary = el("div", "funpack-studio-shortcut-summary");
+        const label = el("span", "funpack-studio-shortcut-label", item.name || "(unnamed)");
+        const badge = el("span", item.enabled !== false ? "funpack-studio-badge-on" : "funpack-studio-badge-off",
+          item.enabled !== false ? "on" : "off");
+        summary.append(label, badge);
+        summary.addEventListener("click", () => { item._expanded = true; renderTab("Shortcuts"); });
+        rowEl.append(summary);
+        list.append(rowEl);
+        return;
+      }
+
       const top = el("div", "funpack-studio-shortcut-top");
       const nameInput = textInput(item.name || "", "Shortcut name");
       nameInput.addEventListener("input", () => { item.name = nameInput.value; });
@@ -693,6 +709,8 @@ function openPanel(node) {
           renderTab("Shortcuts");
         } catch (e) { showError(root, e.message); }
       });
+      const collapseBtn = btn("Collapse");
+      collapseBtn.addEventListener("click", () => { item._expanded = false; renderTab("Shortcuts"); });
       const delBtn = btn("Delete", "danger");
       delBtn.addEventListener("click", async () => {
         try {
@@ -705,7 +723,7 @@ function openPanel(node) {
           renderTab("Shortcuts");
         } catch (e) { showError(root, e.message); }
       });
-      actions.append(saveBtn, delBtn);
+      actions.append(saveBtn, collapseBtn, delBtn);
       rowEl.append(top, triggerArea, replacementArea, actions);
       list.append(rowEl);
     });
@@ -764,7 +782,24 @@ function openPanel(node) {
     }
 
     drafts.forEach((item, index) => {
+      const isSaved = !!item.key;
+      if (!("_expanded" in item)) item._expanded = !isSaved;
+
       const rowEl = el("div", "funpack-studio-shortcut-row");
+
+      if (!item._expanded) {
+        const summary = el("div", "funpack-studio-shortcut-summary");
+        const label = el("span", "funpack-studio-shortcut-label", item.name || item.trigger || "(unnamed)");
+        const trigger = el("span", "funpack-studio-shortcut-trigger", item.trigger || "");
+        const badge = el("span", item.enabled !== false ? "funpack-studio-badge-on" : "funpack-studio-badge-off",
+          item.enabled !== false ? "on" : "off");
+        summary.append(label, trigger, badge);
+        summary.addEventListener("click", () => { item._expanded = true; renderTab("Transitions"); });
+        rowEl.append(summary);
+        list.append(rowEl);
+        return;
+      }
+
       const top = el("div", "funpack-studio-shortcut-top");
       const nameInput = textInput(item.name || "", "Label (display only)");
       nameInput.addEventListener("input", () => { item.name = nameInput.value; });
@@ -790,6 +825,8 @@ function openPanel(node) {
           renderTab("Transitions");
         } catch (e) { showError(root, e.message); }
       });
+      const collapseBtn = btn("Collapse");
+      collapseBtn.addEventListener("click", () => { item._expanded = false; renderTab("Transitions"); });
       const delBtn = btn("Delete", "danger");
       delBtn.addEventListener("click", async () => {
         try {
@@ -802,7 +839,7 @@ function openPanel(node) {
           renderTab("Transitions");
         } catch (e) { showError(root, e.message); }
       });
-      actions.append(saveBtn, delBtn);
+      actions.append(saveBtn, collapseBtn, delBtn);
       rowEl.append(top, triggerInput, actions);
       list.append(rowEl);
     });
@@ -1333,6 +1370,46 @@ function injectStyles() {
       gap: 7px;
       justify-content: flex-end;
       flex-wrap: wrap;
+    }
+    .funpack-studio-shortcut-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      padding: 2px 0;
+    }
+    .funpack-studio-shortcut-summary:hover .funpack-studio-shortcut-label {
+      text-decoration: underline;
+    }
+    .funpack-studio-shortcut-label {
+      font-weight: 500;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .funpack-studio-shortcut-trigger {
+      font-size: 0.82em;
+      color: rgba(255,255,255,0.45);
+      font-style: italic;
+      white-space: nowrap;
+    }
+    .funpack-studio-badge-on {
+      font-size: 0.75em;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: rgba(80,180,100,0.25);
+      color: #7ddb8f;
+      white-space: nowrap;
+    }
+    .funpack-studio-badge-off {
+      font-size: 0.75em;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.07);
+      color: rgba(255,255,255,0.35);
+      white-space: nowrap;
     }
     .lora-name, .lora-type { min-height: 28px; padding: 4px 6px;
       border: 1px solid rgba(180,190,200,0.28); border-radius: 5px;
