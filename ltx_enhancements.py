@@ -521,7 +521,22 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     }
 
     # --- Technique 5: injection data ---
+    if reference_latent is not None:
+        mask = reference_latent.get("noise_mask")
+        samples = reference_latent.get("samples")
+        mask_nested = getattr(mask, "is_nested", False)
+        samples_nested = getattr(samples, "is_nested", False)
+        mask_shape = list(mask.shape) if isinstance(mask, torch.Tensor) else (
+            [list(t.shape) for t in mask.unbind()] if mask_nested else "None")
+        samples_shape = list(samples.shape) if isinstance(samples, torch.Tensor) else (
+            [list(t.shape) for t in samples.unbind()] if samples_nested else "None")
+        print(f"[FunPackEnhancements] reference_latent keys={list(reference_latent.keys())} "
+              f"samples_shape={samples_shape} mask_shape={mask_shape}")
+    else:
+        print("[FunPackEnhancements] reference_latent=None")
+
     has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
+    print(f"[FunPackEnhancements] has_i2v={has_i2v}")
     if has_i2v:
         # i2v latent: extract reference maps on first generation step (real conditioning available).
         # Never fall back to blessed maps - they may represent a completely different character.
