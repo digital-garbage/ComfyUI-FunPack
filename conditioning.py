@@ -460,15 +460,8 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     "in the meantime", "in the meanwhile",
     "at the same time", "at the same moment",
     "by this point", "at this point", "at that point",
-    "and then", "but then", "and suddenly", "and next",
+    "and then", "but then",
     "and finally", "and eventually",
-    # Single-word temporal markers
-    "next", "subsequently", "thereafter",
-    "suddenly", "abruptly", "instantly",
-    "meanwhile", "elsewhere", "simultaneously",
-    "later", "afterwards", "afterward",
-    "eventually", "finally", "ultimately",
-    "soon", "shortly",
 ], key=len, reverse=True)
 
 _GENERIC_SCENE_LABEL_PATTERN = r"\bscene\s+(?:[-+]?\d+|minus\s+[a-z][\w-]*|[a-z][\w-]*)\b"
@@ -6140,7 +6133,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             following = following.strip().lstrip(",;.:").strip()
             if current:
                 segments.append(current)
-            current = (trans_word + " " + following).strip().strip(",;.:").strip()
+            current = re.sub(r"\b(a|an|the),\s*", r"\1 ", (trans_word + " " + following).strip().strip(",;.:").strip(), flags=re.IGNORECASE).strip()
             i += 2
         if current:
             segments.append(current)
