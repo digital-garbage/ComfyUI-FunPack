@@ -523,7 +523,13 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             print(f"[FunPackEnhancements] Reference maps extracted from i2v latent "
                   f"({len(ref_maps)} blocks: {sorted(ref_maps.keys())})")
 
-    blessed_maps = ref_maps if ref_maps else (_load_blessed_maps(refinement_key) if refinement_key else None)
+    has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
+    if has_i2v:
+        # i2v latent provided: use reference maps only, never fall back to blessed maps.
+        # Old blessed maps from prior runs may represent a different character entirely.
+        blessed_maps = ref_maps if ref_maps else None
+    else:
+        blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
     using_reference = bool(ref_maps)
 
     # Reference maps: fixed moderate strength regardless of reward (no prior run needed)
