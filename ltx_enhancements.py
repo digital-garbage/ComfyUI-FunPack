@@ -535,7 +535,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         ref_x = _get_reference_video_tensor(reference_latent)
         lazy_injects = {idx: _LazyInject() for idx in list(IDENTITY_BLOCKS)}
         anchor_strength = 0.0   # no anchor injection for i2v - would bleed scene content
-        identity_strength = 0.04  # light touch - hidden states encode full scene, not just identity
+        identity_strength = 0.02  # very light - hidden states encode full scene context
     else:
         blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
         ref_x = None
@@ -627,7 +627,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         if idx < len(block_list):
                             is_anchor = idx in ANCHOR_BLOCKS
                             inj_strength = anchor_strength if is_anchor else identity_strength
-                            inj_gate = (0.2, 0.5) if is_anchor else (0.2, 0.55)
+                            inj_gate = (0.2, 0.5) if is_anchor else (0.25, 0.42)
                             lazy = lazy_injects.get(idx)
 
                             def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state):
