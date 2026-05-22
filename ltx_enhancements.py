@@ -672,7 +672,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                             inj_gate = (0.2, 0.5) if is_anchor else (0.35, 0.80)
                             lazy = lazy_injects.get(idx)
 
-                            def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state):
+                            def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state, scene_cur=_scene_cur_buf):
                                 def _extract_tensor(out):
                                     if isinstance(out, dict):
                                         return out.get("img") or out.get("hidden_states") or next(iter(out.values()), None), out
@@ -681,13 +681,16 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                     return out, out
 
                                 def _hook(module, inp, out):
-                                    # Capture
-                                    try:
-                                        t, _ = _extract_tensor(out)
-                                        if isinstance(t, torch.Tensor):
-                                            buf[block_idx] = t.detach().cpu()
-                                    except Exception:
-                                        pass
+                                    # Capture only at mid-sigma (avoid per-step tensor copies)
+                                    if 0.85 <= s_state[0] <= 0.95:
+                                        try:
+                                            t, _ = _extract_tensor(out)
+                                            if isinstance(t, torch.Tensor):
+                                                buf[block_idx] = t.detach().cpu()
+                                                if scene_cur is not None:
+                                                    scene_cur[0][block_idx] = buf[block_idx]
+                                        except Exception:
+                                            pass
                                     # Inject (only when lazy has a tensor)
                                     if lazy_ref is None or lazy_ref.tensor is None:
                                         return None
@@ -717,11 +720,15 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                 _make_hook(idx, capture_buf, lazy, inj_strength, inj_gate, sigma_state)
                             )
                             hook_handles.append(h)
-                    # Register capture-only diagnostic hooks on extra candidate blocks
+                    # Register capture-only diagnostic hooks on extra candidate blocks.
+                    # Gate by sigma to avoid capturing (and copying tensors) on every step.
                     for idx in _diag_blocks - blocks_to_hook:
                         if idx < len(block_list):
-                            def _make_diag_hook(block_idx, scene_cur):
+                            def _make_diag_hook(block_idx, scene_cur, s_state):
                                 def _hook(module, inp, out):
+                                    # Only capture in the mid-sigma window once per scene
+                                    if not (0.85 <= s_state[0] <= 0.95):
+                                        return None
                                     try:
                                         if isinstance(out, dict):
                                             t = out.get("img") or out.get("hidden_states") or next(iter(out.values()), None)
@@ -733,8 +740,9 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                             scene_cur[0][block_idx] = t.detach().cpu()
                                     except Exception:
                                         pass
+                                    return None
                                 return _hook
-                            h = block_list[idx].register_forward_hook(_make_diag_hook(idx, _scene_cur_buf))
+                            h = block_list[idx].register_forward_hook(_make_diag_hook(idx, _scene_cur_buf, sigma_state))
                             hook_handles.append(h)
 
                     # Also redirect the main capture hooks to write into scene_cur_buf too
@@ -833,8 +841,14 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
             # Per-scene diagnostic snapshot at mid-sigma
             if scene_cur is not None and not _scene_snapped[0] and sigma < 0.95:
-                _scene_snapped[0] = True
-                scene_cur[0] = {k: v for k, v in scene_cur[0].items()}  # snapshot copy
+                _scene_snapped[0] = True  # hooks already wrote into scene_cur[0] at this sigma
+
+            # Fire similarity report at end of each scene (sigma low) when ≥2 scenes captured
+            if scene_captures is not None and sigma < 0.5 and _scene_snapped[0]:
+                if scene_cur is not None and scene_cur[0] and (not scene_captures or scene_captures[-1] is not scene_cur[0]):
+                    scene_captures.append(dict(scene_cur[0]))
+                if len(scene_captures) >= 2:
+                    _report_block_similarity(scene_captures)
 
             return result
 
