@@ -530,8 +530,16 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             [list(t.shape) for t in mask.unbind()] if mask_nested else "None")
         samples_shape = list(samples.shape) if isinstance(samples, torch.Tensor) else (
             [list(t.shape) for t in samples.unbind()] if samples_nested else "None")
-        print(f"[FunPackEnhancements] reference_latent keys={list(reference_latent.keys())} "
-              f"samples_shape={samples_shape} mask_shape={mask_shape}")
+        if isinstance(mask, torch.Tensor):
+            frame0_val = float(mask[:, :, 0].float().mean())
+            mask_min = float(mask.float().min())
+            mask_max = float(mask.float().max())
+            print(f"[FunPackEnhancements] reference_latent keys={list(reference_latent.keys())} "
+                  f"samples_shape={samples_shape} mask_shape={mask_shape} "
+                  f"mask_min={mask_min:.3f} mask_max={mask_max:.3f} frame0_mask={frame0_val:.3f}")
+        else:
+            print(f"[FunPackEnhancements] reference_latent keys={list(reference_latent.keys())} "
+                  f"samples_shape={samples_shape} mask_shape={mask_shape}")
     else:
         print("[FunPackEnhancements] reference_latent=None")
 
