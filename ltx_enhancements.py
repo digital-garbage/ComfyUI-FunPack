@@ -197,6 +197,13 @@ def _load_blessed_maps(refinement_key):
 # Reference map extraction from i2v latent
 # ---------------------------------------------------------------------------
 
+class _LazyInject:
+    """Placeholder for an inject tensor that gets populated on the first generation step."""
+    __slots__ = ("tensor",)
+    def __init__(self): self.tensor = None
+    def set(self, t): self.tensor = t
+
+
 def _has_i2v_reference(latent):
     """Return True if latent has a protected first frame (i2v reference image)."""
     if not isinstance(latent, dict):
@@ -204,7 +211,6 @@ def _has_i2v_reference(latent):
     mask = latent.get("noise_mask")
     if mask is None:
         return False
-    # Unwrap NestedTensor to get the video mask
     if getattr(mask, "is_nested", False):
         tensors = list(mask.unbind())
         if not tensors:
@@ -212,70 +218,69 @@ def _has_i2v_reference(latent):
         mask = tensors[0]
     if not isinstance(mask, torch.Tensor) or mask.dim() < 3:
         return False
-    # First frame protected = mask[:, :, 0] close to 0
     return float(mask[:, :, 0].float().mean()) < 0.1
 
 
-def _extract_reference_maps(model, latent, blocks):
-    """Single forward pass at near-zero sigma to capture hidden states from the
-    i2v reference frame. Returns {block_idx: tensor} or empty dict on failure.
+def _get_reference_video_tensor(latent):
+    """Extract the video tensor from an i2v latent (index 0 of NestedTensor or flat)."""
+    samples = latent.get("samples") if isinstance(latent, dict) else None
+    if samples is None:
+        return None
+    if getattr(samples, "is_nested", False):
+        tensors = list(samples.unbind())
+        return tensors[0] if tensors else None
+    return samples if isinstance(samples, torch.Tensor) else None
+
+
+def _run_reference_extraction(model, ref_x, lazy_injects, args):
+    """Run one forward pass at sigma=0.03 with real conditioning to populate lazy_injects.
+    Uses model.apply_model directly (bypasses model_function_wrapper chain).
+    Temporarily installs capture-only patches, restores them after.
     """
     try:
-        samples = latent.get("samples")
-        if samples is None:
-            return {}
-        # Get the video tensor (index 0 for NestedTensor, direct for flat)
-        if getattr(samples, "is_nested", False):
-            tensors = list(samples.unbind())
-            x = tensors[0] if tensors else None
-        else:
-            x = samples if isinstance(samples, torch.Tensor) else None
-        if x is None or x.dim() < 3:
-            return {}
+        device = args["input"].device
+        dtype = args["input"].dtype
+        x = ref_x.to(device=device, dtype=dtype)
 
-        capture_buf = {}
-
-        # Temporarily install capture-only patches
         to = model.model_options.setdefault("transformer_options", {})
         pr = to.setdefault("patches_replace", {})
         dit = pr.setdefault("dit", {})
         saved = {}
-        for idx in blocks:
-            saved[idx] = dit.get(("double_block", idx))
-            _buf, _idx = capture_buf, idx
+        ref_cap = {}
 
-            def _cap(args, extra, buf=_buf, block_idx=_idx):
-                out = extra["original_block"](args)
+        for idx in lazy_injects:
+            saved[idx] = dit.get(("double_block", idx))
+            _c, _i = ref_cap, idx
+
+            def _rcap(a, e, c=_c, i=_i):
+                out = e["original_block"](a)
                 try:
-                    buf[block_idx] = out["img"].detach().cpu()
+                    c[i] = out["img"].detach().cpu()
                 except Exception:
                     pass
                 return out
 
-            dit[("double_block", idx)] = _cap
+            dit[("double_block", idx)] = _rcap
 
-        # Forward pass at sigma ≈ 0.03 - model reads input almost as clean
-        device = x.device
-        dtype = x.dtype
-        sigma = torch.full((x.shape[0],), 0.03, device=device, dtype=dtype)
+        ref_sigma = torch.full((x.shape[0],), 0.03, device=device, dtype=dtype)
         with torch.no_grad():
-            try:
-                model.apply_model(x, sigma, {})
-            except Exception:
-                # Some conditioning configs require more; fall back to no-op
-                pass
+            model.apply_model(x, ref_sigma, args.get("c", {}))
 
-        # Restore saved patches
-        for idx in blocks:
-            if saved[idx] is None:
+        for idx, lazy in lazy_injects.items():
+            if idx in ref_cap:
+                lazy.set(ref_cap[idx])
+
+        captured = sum(1 for lz in lazy_injects.values() if lz.tensor is not None)
+        print(f"[FunPackEnhancements] i2v reference maps captured ({captured}/{len(lazy_injects)} blocks)")
+
+    except Exception as e:
+        print(f"[FunPackEnhancements] Reference extraction failed: {e}")
+    finally:
+        for idx in lazy_injects:
+            if saved.get(idx) is None:
                 dit.pop(("double_block", idx), None)
             else:
                 dit[("double_block", idx)] = saved[idx]
-
-        return capture_buf
-    except Exception as e:
-        print(f"[FunPackEnhancements] Reference map extraction failed: {e}")
-        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -438,9 +443,11 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
                 sigma = sigma_state[0] if sigma_state is not None else 1.0
                 effective = _sigma_gated_strength(inject_strength, sigma, sigma_gate[1], sigma_gate[0])
                 if effective > 0.0:
-                    b = inject_tensor.to(device=out["img"].device, dtype=out["img"].dtype)
-                    if b.shape == out["img"].shape:
-                        out = {"img": out["img"].lerp(b, effective)}
+                    b = inject_tensor.tensor if isinstance(inject_tensor, _LazyInject) else inject_tensor
+                    if b is not None:
+                        b = b.to(device=out["img"].device, dtype=out["img"].dtype)
+                        if b.shape == out["img"].shape:
+                            out = {"img": out["img"].lerp(b, effective)}
             except Exception:
                 pass
 
@@ -514,30 +521,19 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     }
 
     # --- Technique 5: injection data ---
-    # Priority: reference maps from i2v latent > blessed maps from prior rated run
-    ref_maps = {}
-    if reference_latent is not None and _has_i2v_reference(reference_latent):
-        all_ref_blocks = list(ANCHOR_BLOCKS) + list(IDENTITY_BLOCKS)
-        ref_maps = _extract_reference_maps(model, reference_latent, all_ref_blocks)
-        if ref_maps:
-            print(f"[FunPackEnhancements] Reference maps extracted from i2v latent "
-                  f"({len(ref_maps)} blocks: {sorted(ref_maps.keys())})")
-
     has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
     if has_i2v:
-        # i2v latent provided: use reference maps only, never fall back to blessed maps.
-        # Old blessed maps from prior runs may represent a different character entirely.
-        blessed_maps = ref_maps if ref_maps else None
-    else:
-        blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
-    using_reference = bool(ref_maps)
-
-    # Reference maps: fixed moderate strength regardless of reward (no prior run needed)
-    # Blessed maps: strength scales with reward from prior rated run
-    if using_reference:
+        # i2v latent: extract reference maps on first generation step (real conditioning available).
+        # Never fall back to blessed maps - they may represent a completely different character.
+        blessed_maps = None
+        ref_x = _get_reference_video_tensor(reference_latent)
+        lazy_injects = {idx: _LazyInject() for idx in list(ANCHOR_BLOCKS) + list(IDENTITY_BLOCKS)}
         anchor_strength = 0.22
         identity_strength = 0.10
     else:
+        blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
+        ref_x = None
+        lazy_injects = {}
         anchor_strength = max(0.05, min(0.28, reward * 0.28)) if blessed_maps else 0.0
         identity_strength = max(0.04, min(0.12, reward * 0.12)) if blessed_maps else 0.0
 
@@ -551,7 +547,8 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     sigma_state = [1.0]
 
     # --- Install per-block patches_replace ---
-    all_blocks = set(temperature_map.keys()) | (all_injection_blocks if (capture_buf is not None or blessed_maps) else set())
+    needs_injection = bool(lazy_injects) or bool(blessed_maps)
+    all_blocks = set(temperature_map.keys()) | (all_injection_blocks if (capture_buf is not None or needs_injection) else set())
 
     if all_blocks:
         to = model.model_options.setdefault("transformer_options", {})
@@ -563,11 +560,11 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             is_anchor = block_idx in ANCHOR_BLOCKS
             is_identity = block_idx in IDENTITY_BLOCKS
             if is_anchor:
-                inj_tensor = blessed_maps.get(block_idx) if blessed_maps else None
+                inj_tensor = lazy_injects.get(block_idx) or (blessed_maps.get(block_idx) if blessed_maps else None)
                 inj_strength = anchor_strength
                 inj_gate = (0.2, 0.5)
             elif is_identity:
-                inj_tensor = blessed_maps.get(block_idx) if blessed_maps else None
+                inj_tensor = lazy_injects.get(block_idx) or (blessed_maps.get(block_idx) if blessed_maps else None)
                 inj_strength = identity_strength
                 inj_gate = (0.2, 0.55)
             else:
@@ -631,19 +628,30 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
         model.model_options["model_function_wrapper"] = _temporal_wrapper
 
-    # --- Technique 5 (sigma tracking): update sigma_state before each model call ---
-    # Runs before block replacements so injection gating has the current timestep.
-    if blessed_maps:
+    # --- Technique 5 (sigma tracking + i2v reference extraction) ---
+    # Updates sigma_state before each model call so injection gating has the current
+    # timestep. Also fires reference map extraction on the first call when i2v is used.
+    if needs_injection or has_i2v:
         _existing_for_sigma = model.model_options.get("model_function_wrapper")
         _state = sigma_state
+        _ref_extracted = [False]
+        _ref_x = ref_x
+        _lazy = lazy_injects
+        _model_ref = model
 
-        def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state):
+        def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
+                           _ref_extracted=_ref_extracted, _ref_x=_ref_x,
+                           _lazy=_lazy, _model_ref=_model_ref):
             ts = args.get("timestep")
             if ts is not None:
                 try:
                     _state[0] = float(ts.max().item())
                 except Exception:
                     pass
+            # On first call with i2v: extract reference maps using real conditioning
+            if _ref_x is not None and not _ref_extracted[0] and "input" in args:
+                _ref_extracted[0] = True
+                _run_reference_extraction(_model_ref, _ref_x, _lazy, args)
             if _ew is not None:
                 return _ew(apply_fn, args)
             return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
