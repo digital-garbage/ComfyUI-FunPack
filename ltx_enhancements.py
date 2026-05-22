@@ -31,7 +31,7 @@ ANCHOR_BLOCKS = [14, 19]
 
 # Representative identity blocks from the concept-formation zone (20-35).
 # Spaced evenly across the zone; capture and inject character appearance details.
-IDENTITY_BLOCKS = [21, 26, 31]
+IDENTITY_BLOCKS = [14, 21, 30, 33, 34]
 
 # Block zones for temperature mapping (normalized for 48-block LTXAV)
 _ZONE_EARLY = set(range(0, 14))       # texture / low-level noise
@@ -815,8 +815,9 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             scene_cur = _cap_buf.get("__scene_cur__") if isinstance(_cap_buf, dict) else None
             scene_captures = _cap_buf.get("__scene_captures__") if isinstance(_cap_buf, dict) else None
             if scene_cur is not None and sigma > _prev_sigma[0] + 0.05:
-                # New scene: save previous scene's snapshot if we have one
-                if scene_cur[0]:
+                # New scene: only save previous scene if it was properly snapped
+                # (filters out phantom scenes from model init passes)
+                if _scene_snapped[0] and scene_cur[0]:
                     scene_captures.append(dict(scene_cur[0]))
                 scene_cur[0] = {}
                 _scene_snapped[0] = False
