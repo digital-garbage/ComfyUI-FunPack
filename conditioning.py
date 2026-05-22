@@ -464,7 +464,7 @@ _PROMPT_TRANSITION_PHRASES = sorted([
     "and finally", "and eventually",
 ], key=len, reverse=True)
 
-_GENERIC_SCENE_LABEL_PATTERN = r"\bscene\s+(?:[-+]?\d+|minus\s+[a-z][\w-]*|[a-z][\w-]*)\b"
+_GENERIC_SCENE_LABEL_PATTERN = r"\bscene\s+(?:[-+]?\d+|minus\s+[a-z][\w-]*)\b"
 _TRANSITION_SPLIT_PATTERN = re.compile(
     r"(?:\b(?:" + "|".join(re.escape(p) for p in _PROMPT_TRANSITION_PHRASES) + r")\b|"
     + _GENERIC_SCENE_LABEL_PATTERN + r")",

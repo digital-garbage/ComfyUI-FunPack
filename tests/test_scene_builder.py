@@ -955,3 +955,18 @@ def test_split_prompt_no_stray_comma_after_article(monkeypatch, tmp_path):
     assert len(segments) == 2
     assert "the, next" not in segments[1]
     assert "the next view" in segments[1]
+
+
+def test_split_prompt_does_not_split_on_scene_as_noun(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    refiner = FunPackVideoRefinerV2()
+
+    # "scene proceeds/features/shows" must NOT trigger a split
+    for phrase in ["scene proceeds", "scene features", "scene shows", "scene begins"]:
+        text = f"Kai'Sa walking. The {phrase} into the next action."
+        segments = refiner._v2_split_prompt_by_transitions(text)
+        assert len(segments) == 1, f"Should not split on '{phrase}', got: {segments}"
+
+    # numbered scene labels must still split
+    segments = refiner._v2_split_prompt_by_transitions("Kai'Sa walking. scene 2 she runs.")
+    assert len(segments) == 2
