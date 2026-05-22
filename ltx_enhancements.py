@@ -543,8 +543,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     all_injection_blocks = set(ANCHOR_BLOCKS) | set(IDENTITY_BLOCKS)
 
-    # Shared capture buffer - populated during sampling, saved at end via wrapper
-    capture_buf = {} if refinement_key else None
+    # Shared capture buffer - always created when i2v reference extraction is active
+    # (so block replacements capture even without a refinement key), also used for
+    # blessed map saving when a refinement key is present.
+    capture_buf = {} if (refinement_key or has_i2v) else None
 
     # Sigma state - updated by wrapper before each model call so block replacements
     # can gate injection strength to the correct sigma window per block type.
@@ -641,7 +643,6 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         _ref_extracted = [False]
         _ref_x = ref_x
         _lazy = lazy_injects
-        _model_ref = model
 
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
