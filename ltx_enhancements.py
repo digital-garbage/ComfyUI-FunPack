@@ -620,6 +620,11 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         block_list = candidate
                         break
                 if block_list is not None:
+                    # Diagnostic: when i2v active, also capture ALL candidate blocks (14,19 + 20-35)
+                    # to measure per-block similarity and find true identity blocks empirically.
+                    _diag_blocks = (set(ANCHOR_BLOCKS) | set(range(20, 36))) if has_i2v else set()
+                    _diag_buf = {}  # separate from capture_buf, never injected
+
                     # For i2v: only hook identity blocks (anchor blocks encode scene structure).
                     # For blessed maps: hook all injection blocks for full capture.
                     blocks_to_hook = set(lazy_injects.keys()) | (set(ANCHOR_BLOCKS) if not has_i2v else set())
@@ -675,8 +680,30 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                 _make_hook(idx, capture_buf, lazy, inj_strength, inj_gate, sigma_state)
                             )
                             hook_handles.append(h)
+                    # Register capture-only diagnostic hooks on extra blocks
+                    for idx in _diag_blocks - blocks_to_hook:
+                        if idx < len(block_list):
+                            def _make_diag_hook(block_idx, dbuf):
+                                def _hook(module, inp, out):
+                                    try:
+                                        if isinstance(out, dict):
+                                            t = out.get("img") or out.get("hidden_states") or next(iter(out.values()), None)
+                                        elif isinstance(out, tuple):
+                                            t = out[0]
+                                        else:
+                                            t = out
+                                        if isinstance(t, torch.Tensor):
+                                            dbuf[block_idx] = t.detach().cpu()
+                                    except Exception:
+                                        pass
+                                return _hook
+                            h = block_list[idx].register_forward_hook(_make_diag_hook(idx, _diag_buf))
+                            hook_handles.append(h)
+
                     if hook_handles:
                         print(f"[FunPackEnhancements] Registered {len(hook_handles)} capture+inject hooks on transformer blocks")
+                        # Store diag_buf reference for similarity reporting in sigma tracker
+                        capture_buf["__diag__"] = _diag_buf
                 else:
                     print("[FunPackEnhancements] Could not find transformer block list for hooks")
         except Exception as e:
@@ -726,7 +753,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
-                           _lazy=_lazy, _cap_buf=capture_buf):
+                           _lazy=_lazy, _cap_buf=capture_buf, _rk=refinement_key):
             ts = args.get("timestep")
             if ts is not None:
                 try:
@@ -753,6 +780,29 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                             lazy.set(_cap_buf[idx])
                     captured = sum(1 for lz in _lazy.values() if lz.tensor is not None)
                     print(f"[FunPackEnhancements] i2v reference maps ready at sigma={sigma:.2f} ({captured}/{len(_lazy)} blocks)")
+
+                    # Diagnostic: compare all candidate blocks against previous run's maps
+                    # to find which blocks are most consistent across scenes of same character.
+                    diag_buf = _cap_buf.get("__diag__", {}) if isinstance(_cap_buf, dict) else {}
+                    all_current = {**{k: v for k, v in _cap_buf.items() if k != "__diag__"}, **diag_buf}
+                    if all_current and _rk:
+                        diag_path = os.path.join(_maps_dir(), f"diag_{_rk}.pt")
+                        try:
+                            if os.path.exists(diag_path):
+                                prev = torch.load(diag_path, map_location="cpu", weights_only=True)
+                                sims = {}
+                                for idx in sorted(set(all_current) & set(prev)):
+                                    a = all_current[idx].float().flatten()
+                                    b = prev[idx].float().flatten()
+                                    if a.shape == b.shape and a.norm() > 0 and b.norm() > 0:
+                                        sims[idx] = float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)))
+                                if sims:
+                                    ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
+                                    lines = "  ".join(f"b{i}:{v:.3f}" for i, v in ranked)
+                                    print(f"[FunPackEnhancements] Block similarity (high=character-consistent, low=scene-specific):\n  {lines}")
+                            torch.save({k: v for k, v in all_current.items()}, diag_path)
+                        except Exception as e:
+                            print(f"[FunPackEnhancements] Diagnostic save/compare failed: {e}")
             return result
 
         model.model_options["model_function_wrapper"] = _sigma_tracker
