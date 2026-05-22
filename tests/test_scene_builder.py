@@ -942,3 +942,16 @@ def test_split_prompt_drops_dangling_trailing_transition(monkeypatch, tmp_path):
     )
     assert len(segments) == 2
     assert "beach" in segments[1]
+
+
+def test_split_prompt_no_stray_comma_after_article(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    refiner = FunPackVideoRefinerV2()
+
+    # "the scene then cuts to" matches, leaving "the, next view" as following - comma must be gone
+    segments = refiner._v2_split_prompt_by_transitions(
+        "Kai'Sa, the scene then cuts to the, next view"
+    )
+    assert len(segments) == 2
+    assert "the, next" not in segments[1]
+    assert "the next view" in segments[1]

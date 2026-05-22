@@ -6159,7 +6159,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 i += 1
                 continue
             if not _real_content(segments[i]) and i + 1 < len(segments):
-                segments[i + 1] = segments[i] + ", " + segments[i + 1]
+                connector = " " if re.search(r"\b(a|an|the)\s*$", segments[i], re.IGNORECASE) else ", "
+                segments[i + 1] = (segments[i] + connector + segments[i + 1]).strip()
                 segments.pop(i)
             else:
                 i += 1
