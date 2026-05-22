@@ -34,6 +34,8 @@ from templates import (
     extract_scene_phrases,
     load_shortcut_db,
     load_scene_db,
+    load_transition_db,
+    load_custom_transition_triggers,
     normalize_scene_text_spacing,
     normalize_scene_memory_items,
     normalize_shortcut_db,
@@ -41,6 +43,9 @@ from templates import (
     remember_scene_phrases,
     save_shortcut_item,
     save_scene_db,
+    save_transition_item,
+    delete_transition_item,
+    transition_items,
 )
 
 
@@ -595,6 +600,77 @@ def test_shortcuts_use_longest_trigger_and_seeded_replacement(monkeypatch, tmp_p
     assert first.endswith(".")
 
 
+def test_longer_phrase_wins_across_different_shortcuts(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Smoke",
+        "triggers": ["smoking"],
+        "replacements": ["pipe smoking"],
+    })
+    save_shortcut_item({
+        "name": "Smoking Fish",
+        "triggers": ["smoking fish"],
+        "replacements": ["cold smoked salmon"],
+    })
+    save_shortcut_item({
+        "name": "Chef Smoking Fish",
+        "triggers": ["chef smoking fish"],
+        "replacements": ["a chef preparing cold smoked salmon"],
+    })
+
+    # "smoking fish" wins over "smoking" alone
+    result, applied = apply_prompt_shortcuts("I want smoking fish for dinner.", seed=1)
+    assert result == "I want cold smoked salmon for dinner."
+    assert len(applied) == 1
+    assert applied[0]["trigger"] == "smoking fish"
+
+    # "chef smoking fish" wins over both "smoking" and "smoking fish"
+    result, applied = apply_prompt_shortcuts("chef smoking fish on a plate.", seed=1)
+    assert result == "a chef preparing cold smoked salmon on a plate."
+    assert len(applied) == 1
+    assert applied[0]["trigger"] == "chef smoking fish"
+
+    # standalone "smoking" not part of a longer phrase still applies
+    result, applied = apply_prompt_shortcuts("smoking is shown on screen.", seed=1)
+    assert result == "pipe smoking is shown on screen."
+    assert len(applied) == 1
+    assert applied[0]["trigger"] == "smoking"
+
+    # mixed: standalone "smoking" and "smoking fish" each match their own shortcut
+    result, applied = apply_prompt_shortcuts("smoking and smoking fish.", seed=1)
+    assert result == "pipe smoking and cold smoked salmon."
+    assert len(applied) == 2
+    triggers = {a["trigger"] for a in applied}
+    assert triggers == {"smoking", "smoking fish"}
+
+
+def test_empty_replacement_removes_phrase_and_cleans_artifacts(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Strip Game Tag",
+        "triggers": ["from Zenless Zone Zero"],
+        "replacements": [""],
+    })
+
+    # trailing removal - space+comma artifact cleaned
+    result, applied = apply_prompt_shortcuts("Nicole from Zenless Zone Zero, fighting stance.", seed=1)
+    assert result == "Nicole, fighting stance."
+    assert len(applied) == 1
+    assert applied[0]["replacement"] == ""
+
+    # leading removal - leading comma+space cleaned
+    result, applied = apply_prompt_shortcuts("from Zenless Zone Zero, Nicole in fighting stance.", seed=1)
+    assert result == "Nicole in fighting stance."
+
+    # middle removal - double space cleaned
+    result, applied = apply_prompt_shortcuts("Nicole from Zenless Zone Zero and a sword.", seed=1)
+    assert result == "Nicole and a sword."
+
+    # end of string - trailing space cleaned
+    result, applied = apply_prompt_shortcuts("Nicole from Zenless Zone Zero", seed=1)
+    assert result == "Nicole"
+
+
 def test_disabled_shortcuts_do_not_expand(monkeypatch, tmp_path):
     use_tmp_scene_store(monkeypatch, tmp_path)
     save_shortcut_item({
@@ -788,3 +864,55 @@ def test_refiner_scene_builder_sync_skips_locked_rows():
     assert item["category"] == "appearance"
     assert item["category_source"] == "user"
     assert item["category_locked"] is True
+
+
+def test_custom_transition_save_load_delete(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_transition_item({"name": "Number One", "trigger": "1"})
+    save_transition_item({"name": "Next Shot", "trigger": "NEXT"})
+
+    db = load_transition_db()
+    assert "number one" in db["transitions"]
+    assert db["transitions"]["number one"]["trigger"] == "1"
+    assert "replacement" not in db["transitions"]["number one"]
+
+    items = transition_items()
+    assert any(i["trigger"] == "1" for i in items)
+
+    delete_transition_item("Number One")
+    assert "number one" not in load_transition_db()["transitions"]
+
+
+def test_custom_transition_triggers_returns_enabled_only(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_transition_item({"name": "Cut", "trigger": "CUT", "enabled": True})
+    save_transition_item({"name": "Disabled", "trigger": "SKIP", "enabled": False})
+
+    triggers = load_custom_transition_triggers()
+    assert "CUT" in triggers
+    assert "SKIP" not in triggers
+
+
+def test_split_prompt_recognizes_custom_trigger(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_transition_item({"name": "1", "trigger": "1"})
+
+    refiner = FunPackVideoRefinerV2()
+    segments = refiner._v2_split_prompt_by_transitions("beach waves, 1, mountain snow")
+
+    assert len(segments) == 2
+    assert segments[0].strip() == "beach waves"
+    assert "mountain snow" in segments[1]
+
+
+def test_split_prompt_custom_trigger_kept_at_segment_start(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_transition_item({"name": "NEXT", "trigger": "NEXT"})
+
+    refiner = FunPackVideoRefinerV2()
+    segments = refiner._v2_split_prompt_by_transitions("beach waves, NEXT, mountain snow")
+
+    assert len(segments) == 2
+    assert "beach waves" in segments[0]
+    assert segments[1].startswith("NEXT")
+    assert "mountain snow" in segments[1]

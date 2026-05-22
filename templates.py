@@ -76,6 +76,10 @@ def shortcut_store_path():
     return os.path.join(template_store_dir(), "shortcuts.json")
 
 
+def transition_store_path():
+    return os.path.join(template_store_dir(), "transitions.json")
+
+
 def refinement_store_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements")
 
@@ -300,7 +304,7 @@ def normalize_shortcut_item(item, fallback_name=""):
         return None
     name = normalize_shortcut_name(item.get("name"), fallback_name)
     triggers = shortcut_list(item.get("triggers", item.get("activation_words", item.get("activation", []))))
-    replacements = shortcut_list(item.get("replacements", item.get("replacement", [])))
+    replacements = _shortcut_replacements(item.get("replacements", item.get("replacement", [])))
     if not name:
         name = triggers[0] if triggers else ""
     if not name or not triggers or not replacements:
@@ -398,12 +402,151 @@ def delete_shortcut_item(name):
     return key, data
 
 
+# --- Custom transition DB --------------------------------------------------
+
+def empty_transition_db():
+    return {"version": 1, "source": "ComfyUI-FunPack", "transitions": {}}
+
+
+def normalize_transition_item(item, fallback_name=""):
+    if not isinstance(item, dict):
+        return None
+    trigger = re.sub(r"\s+", " ", str(item.get("trigger") or "").strip())
+    if not trigger:
+        return None
+    name = re.sub(r"\s+", " ", str(item.get("name") or fallback_name or trigger).strip())
+    return {
+        "name": name,
+        "trigger": trigger,
+        "enabled": bool(item.get("enabled", True)),
+    }
+
+
+def normalize_transition_db(data):
+    if not isinstance(data, dict):
+        data = empty_transition_db()
+    transitions = data.get("transitions", {})
+    if isinstance(transitions, list):
+        transitions = {str(i): item for i, item in enumerate(transitions)}
+    if not isinstance(transitions, dict):
+        transitions = {}
+    normalized = {}
+    for fallback_name, item in transitions.items():
+        entry = normalize_transition_item(item, fallback_name)
+        if not entry:
+            continue
+        key = shortcut_key(entry["name"]) or shortcut_key(fallback_name)
+        if key:
+            normalized[key] = entry
+    data["version"] = 1
+    data["source"] = "ComfyUI-FunPack"
+    data["transitions"] = normalized
+    return data
+
+
+def load_transition_db():
+    path = transition_store_path()
+    if not os.path.exists(path):
+        return empty_transition_db()
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return empty_transition_db()
+    return normalize_transition_db(data)
+
+
+def save_transition_db(data):
+    data = normalize_transition_db(data)
+    os.makedirs(template_store_dir(), exist_ok=True)
+    with open(transition_store_path(), "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+
+
+def transition_items(data=None):
+    data = load_transition_db() if data is None else normalize_transition_db(data)
+    items = []
+    for key, item in data.get("transitions", {}).items():
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["key"] = key
+        items.append(row)
+    return sorted(items, key=lambda item: item.get("name", "").lower())
+
+
+def save_transition_item(payload):
+    entry = normalize_transition_item(payload)
+    if not entry:
+        raise ValueError("Transition trigger phrase is required.")
+    data = load_transition_db()
+    key = shortcut_key(entry["name"])
+    original_key = shortcut_key(str(payload.get("original_name") or ""))
+    transitions = data.setdefault("transitions", {})
+    transitions[key] = entry
+    if original_key and original_key != key:
+        transitions.pop(original_key, None)
+    save_transition_db(data)
+    return key, data
+
+
+def delete_transition_item(name):
+    key = shortcut_key(name)
+    data = load_transition_db()
+    if key:
+        data.setdefault("transitions", {}).pop(key, None)
+        save_transition_db(data)
+    return key, data
+
+
+def load_custom_transition_triggers():
+    """Return list of trigger strings for all enabled custom transitions."""
+    data = load_transition_db()
+    result = []
+    for item in data.get("transitions", {}).values():
+        if not isinstance(item, dict) or not item.get("enabled", True):
+            continue
+        trigger = re.sub(r"\s+", " ", str(item.get("trigger") or "").strip())
+        if trigger:
+            result.append(trigger)
+    return result
+
+
 def _shortcut_trigger_pattern(trigger):
     words = [re.escape(part) for part in re.split(r"\s+", str(trigger or "").strip()) if part]
     if not words:
         return ""
     body = r"\s+".join(words)
-    return rf"(?<![\w'’-])({body})(?![\w'’-])"
+    return rf"(?<![\w’’-])({body})(?![\w’’-])"
+
+
+def _shortcut_replacements(raw):
+    """Parse replacement list, allowing empty string as a valid ‘remove’ replacement."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raw = re.split(r"[,;\n]+", raw)
+    if not isinstance(raw, list):
+        return []
+    seen = set()
+    result = []
+    for item in raw:
+        text = re.sub(r"\s+", " ", str(item if item is not None else "").strip())
+        if text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def _cleanup_removed_phrases(text):
+    """Fix punctuation and spacing artifacts left by empty-replacement removals."""
+    text = re.sub(r"[ \t]+([,;])", r"\1", text)
+    text = re.sub(r"([,;])\s*([,;])+", r"\1", text)
+    text = re.sub(r"^[\s,;]+", "", text)
+    text = re.sub(r"[\s,;]+$", "", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return text
 
 
 def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
@@ -415,7 +558,7 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
     for shortcut in data.get("shortcuts", {}).values():
         if not isinstance(shortcut, dict) or not bool(shortcut.get("enabled", True)):
             continue
-        replacements = [item.strip() for item in shortcut_list(shortcut.get("replacements", [])) if item.strip()]
+        replacements = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
         if not replacements:
             continue
         for trigger in shortcut_list(shortcut.get("triggers", [])):
@@ -437,17 +580,23 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
         rng_seed = int(md5(original.encode("utf-8")).hexdigest()[:12], 16)
     rng = random.Random(rng_seed)
     applied = []
+    removals_happened = False
 
     def replace(match):
+        nonlocal removals_happened
         for index, (trigger, _, replacements, name) in enumerate(candidates):
             if match.group(f"t{index}") is None:
                 continue
-            replacement = rng.choice(replacements).strip()
+            replacement = rng.choice(replacements)
             applied.append({"name": str(name), "trigger": trigger, "replacement": replacement})
+            if not replacement:
+                removals_happened = True
             return replacement
         return match.group(0)
 
     expanded = re.sub(combined, replace, original, flags=re.IGNORECASE | re.UNICODE)
+    if removals_happened:
+        expanded = _cleanup_removed_phrases(expanded)
     return expanded, applied
 
 
@@ -1317,6 +1466,66 @@ async def funpack_shortcuts_import(request):
     save_shortcut_db(data)
     data = load_shortcut_db()
     return web.json_response({"imported": count, "data": data, "shortcuts": shortcut_items(data)})
+
+
+@PromptServer.instance.routes.get("/funpack/transitions")
+async def funpack_transitions(_):
+    data = load_transition_db()
+    return web.json_response(
+        {"path": transition_store_path(), "data": data, "transitions": transition_items(data)},
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@PromptServer.instance.routes.get("/funpack/transitions/export")
+async def funpack_transitions_export(_):
+    data = load_transition_db()
+    return web.json_response(
+        data,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Content-Disposition": "attachment; filename=funpack_transitions.json",
+        },
+    )
+
+
+@PromptServer.instance.routes.post("/funpack/transitions/transition")
+async def funpack_transition_save(request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Transition payload must be an object."}, status=400)
+    action = str(body.get("action") or "save").lower()
+    name = str(body.get("name") or body.get("trigger") or "").strip()
+    if action == "delete":
+        if not name:
+            return web.json_response({"error": "Transition name is required."}, status=400)
+        key, data = delete_transition_item(name)
+        return web.json_response({"deleted": key, "data": data, "transitions": transition_items(data)})
+    try:
+        key, data = save_transition_item(body)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
+    return web.json_response({"saved": key, "data": data, "transitions": transition_items(data)})
+
+
+@PromptServer.instance.routes.post("/funpack/transitions/import")
+async def funpack_transitions_import(request):
+    incoming = await request.json()
+    if not isinstance(incoming, dict):
+        return web.json_response({"error": "Imported file is not a transition database."}, status=400)
+    if "transitions" not in incoming:
+        return web.json_response({"error": "Imported file does not contain transitions."}, status=400)
+    imported_db = normalize_transition_db(incoming)
+    data = load_transition_db()
+    entries = data.setdefault("transitions", {})
+    count = 0
+    for key, item in imported_db.get("transitions", {}).items():
+        if isinstance(item, dict):
+            entries[str(key)] = item
+            count += 1
+    save_transition_db(data)
+    data = load_transition_db()
+    return web.json_response({"imported": count, "data": data, "transitions": transition_items(data)})
 
 
 @PromptServer.instance.routes.get("/funpack/refinement_keys")

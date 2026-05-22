@@ -6103,12 +6103,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         text = str(prompt or "").strip()
         if not text:
             return [text]
+
+        try:
+            from .templates import load_custom_transition_triggers
+        except ImportError:
+            from templates import load_custom_transition_triggers
+        custom_triggers = load_custom_transition_triggers()
+
+        if custom_triggers:
+            custom_parts = "|".join(
+                r"\b" + re.escape(t) + r"\b"
+                for t in sorted(custom_triggers, key=len, reverse=True)
+            )
+            split_pattern = re.compile(
+                r"(?:" + custom_parts + r"|" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
+                re.IGNORECASE,
+            )
+        else:
+            split_pattern = _TRANSITION_SPLIT_PATTERN
+
         # Capturing split keeps the matched transition words as alternating elements:
         # [pre, trans1, between, trans2, post, ...]
-        capturing_pattern = re.compile(
-            r"(" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
-            re.IGNORECASE,
-        )
+        capturing_pattern = re.compile(r"(" + split_pattern.pattern + r")", re.IGNORECASE)
         parts = capturing_pattern.split(text)
         segments = []
         # parts[0] = text before first transition; then pairs of (trans_word, following_text)
@@ -6137,7 +6153,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if segments[i] == "":
                 i += 1
                 continue
-            stripped = _TRANSITION_SPLIT_PATTERN.sub("", segments[i]).strip().strip(",;.: ")
+            stripped = split_pattern.sub("", segments[i]).strip().strip(",;.: ")
             if not stripped and i + 1 < len(segments):
                 segments[i + 1] = segments[i] + ", " + segments[i + 1]
                 segments.pop(i)

@@ -11,7 +11,7 @@ const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
 const TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
-const TABS = ["Session", "Scene", "Shortcuts", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
+const TABS = ["Session", "Scene", "Shortcuts", "Transitions", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
@@ -21,6 +21,7 @@ let activePanel = null;
 let studioSceneData = null;
 let studioSceneKey = null;
 let studioShortcutData = null;
+let studioTransitionData = null;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -206,6 +207,74 @@ function importShortcuts(onDone, onError) {
   input.click();
 }
 
+async function fetchTransitions() {
+  try {
+    const params = new URLSearchParams({ cache_bust: Date.now() });
+    const res = await api.fetchApi(`/funpack/transitions?${params}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    studioTransitionData = await res.json();
+    return studioTransitionData;
+  } catch { return null; }
+}
+
+async function saveTransition(payload) {
+  const res = await api.fetchApi("/funpack/transitions/transition", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "save", ...payload }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+  studioTransitionData = await res.json();
+  return studioTransitionData;
+}
+
+async function deleteTransition(name) {
+  const res = await api.fetchApi("/funpack/transitions/transition", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "delete", name }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+  studioTransitionData = await res.json();
+  return studioTransitionData;
+}
+
+async function exportTransitions() {
+  const params = new URLSearchParams({ cache_bust: Date.now() });
+  const res = await api.fetchApi(`/funpack/transitions/export?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "funpack_transitions.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importTransitions(onDone, onError) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const res = await api.fetchApi("/funpack/transitions/import", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+      studioTransitionData = await res.json();
+      onDone?.();
+    } catch (e) {
+      onError?.(e);
+    }
+  };
+  input.click();
+}
+
 async function fetchLoras() {
   try {
     const res = await api.fetchApi("/funpack/available_loras", { cache: "no-store" });
@@ -362,6 +431,7 @@ function openPanel(node) {
     if (name === "Session") renderSession();
     else if (name === "Scene") renderScene();
     else if (name === "Shortcuts") renderShortcuts();
+    else if (name === "Transitions") renderTransitions();
     else if (name === "Refiner") renderRefiner();
     else if (name === "Advisor") renderAdvisor();
     else if (name === "LoRA") renderLora();
@@ -637,6 +707,103 @@ function openPanel(node) {
       });
       actions.append(saveBtn, delBtn);
       rowEl.append(top, triggerArea, replacementArea, actions);
+      list.append(rowEl);
+    });
+  }
+
+  // TRANSITIONS ──────────────────────────────────────────────────────────────
+  function renderTransitions() {
+    body.append(sectionTitle("Custom Transitions"));
+    body.append(el("div", "funpack-studio-hint",
+      "These extend the built-in transition word list. " +
+      "Any phrase listed here will be recognized as a scene boundary when Split by transitions is enabled. " +
+      "To also substitute the phrase in the prompt text, create a Shortcut with the same trigger."
+    ));
+
+    if (!studioTransitionData) {
+      body.append(el("div", "funpack-studio-empty", "Loading transitions..."));
+      fetchTransitions().then(() => renderTab("Transitions"));
+      return;
+    }
+
+    if (!root.__transitionDrafts) {
+      const rows = Array.isArray(studioTransitionData?.transitions) ? studioTransitionData.transitions : [];
+      root.__transitionDrafts = JSON.parse(JSON.stringify(rows));
+    }
+    const drafts = root.__transitionDrafts;
+
+    const toolbar = el("div", "funpack-studio-footer");
+    const addBtn = btn("+ Add transition", "primary");
+    addBtn.addEventListener("click", () => {
+      drafts.unshift({ name: "", trigger: "", replacement: "", enabled: true });
+      renderTab("Transitions");
+    });
+    const refreshBtn = btn("Refresh");
+    refreshBtn.addEventListener("click", async () => {
+      await fetchTransitions();
+      delete root.__transitionDrafts;
+      renderTab("Transitions");
+    });
+    const importBtn = btn("Import");
+    importBtn.addEventListener("click", () => importTransitions(
+      () => { delete root.__transitionDrafts; renderTab("Transitions"); },
+      (e) => showError(root, e.message),
+    ));
+    const exportBtn = btn("Export");
+    exportBtn.addEventListener("click", async () => {
+      try { await exportTransitions(); }
+      catch (e) { showError(root, e.message); }
+    });
+    toolbar.append(addBtn, refreshBtn, importBtn, exportBtn);
+    body.append(toolbar);
+
+    const list = el("div", "funpack-studio-shortcut-list");
+    body.append(list);
+    if (!drafts.length) {
+      list.append(el("div", "funpack-studio-empty", "No custom transitions configured."));
+    }
+
+    drafts.forEach((item, index) => {
+      const rowEl = el("div", "funpack-studio-shortcut-row");
+      const top = el("div", "funpack-studio-shortcut-top");
+      const nameInput = textInput(item.name || "", "Label (display only)");
+      nameInput.addEventListener("input", () => { item.name = nameInput.value; });
+      const enabled = toggleEl(item.enabled !== false, "Enabled");
+      enabled.inp.addEventListener("change", () => { item.enabled = enabled.inp.checked; });
+      top.append(nameInput, enabled.wrap);
+
+      const triggerInput = textInput(item.trigger || "", "Trigger phrase");
+      triggerInput.addEventListener("input", () => { item.trigger = triggerInput.value; });
+
+      const actions = el("div", "funpack-studio-shortcut-actions");
+      const saveBtn = btn("Save", "primary");
+      saveBtn.addEventListener("click", async () => {
+        try {
+          await saveTransition({
+            original_name: item.key || item.name,
+            name: item.name || item.trigger,
+            trigger: item.trigger,
+            enabled: item.enabled !== false,
+          });
+          await fetchTransitions();
+          delete root.__transitionDrafts;
+          renderTab("Transitions");
+        } catch (e) { showError(root, e.message); }
+      });
+      const delBtn = btn("Delete", "danger");
+      delBtn.addEventListener("click", async () => {
+        try {
+          if (item.key || item.name || item.trigger) {
+            await deleteTransition(item.name || item.trigger || item.key);
+            await fetchTransitions();
+          }
+          drafts.splice(index, 1);
+          delete root.__transitionDrafts;
+          renderTab("Transitions");
+        } catch (e) { showError(root, e.message); }
+      });
+      actions.append(saveBtn, delBtn);
+      rowEl.append(top, triggerInput, actions);
       list.append(rowEl);
     });
   }
