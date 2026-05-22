@@ -2270,7 +2270,7 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
     cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
-        "a woman in a red dress, scene ten she runs, suddenly stops",
+        "a woman in a red dress, scene ten she runs, cut to she stops",
         FakeClip(),
         "Perfect",
         "transition-test",
@@ -2282,7 +2282,7 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
     assert cond[0][1]["funpack_scene_count"] == 2
     assert "a woman in a red dress" in cond[0][1]["funpack_scene_text"]
     assert "scene ten she runs" in cond[0][1]["funpack_scene_text"]
-    assert "suddenly stops" in cond[1][1]["funpack_scene_text"]
+    assert "she stops" in cond[1][1]["funpack_scene_text"]
     assert "Scene chain mode" in status
     assert "Transition split" in status
     assert "Detected scenes" in encoded_prompts
@@ -2310,7 +2310,7 @@ def test_split_prompt_by_transitions_detects_known_phrases():
     refiner = FunPackVideoRefinerV2()
 
     segments = refiner._v2_split_prompt_by_transitions(
-        "a dog running in a field, scene one jumping over a fence, suddenly stopping"
+        "a dog running in a field, scene one jumping over a fence, cut to stopping"
     )
     assert len(segments) == 3
 
@@ -2335,7 +2335,7 @@ def test_transition_scene_preview_uses_full_first_segment():
     refiner = FunPackVideoRefinerV2()
 
     segs = refiner._v2_split_prompt_by_transitions(
-        "In this anime video, Hiyuki is a mature woman, scene one she walks, suddenly she sits"
+        "In this anime video, Hiyuki is a mature woman, scene one she walks, cut to she sits"
     )
     assert len(segs) == 3
     texts = refiner._v2_transition_scene_texts(segs)
@@ -2343,7 +2343,7 @@ def test_transition_scene_preview_uses_full_first_segment():
     assert texts[0].startswith("In this anime video, Hiyuki is a mature woman")
     assert texts[1].startswith("In this anime video, Hiyuki is a mature woman")
     assert "scene one she walks" in texts[0]
-    assert "suddenly she sits" in texts[1]
+    assert "she sits" in texts[1]
 
 
 def test_scene_labels_after_transitions_are_scene_text_not_boundaries(tmp_path):
@@ -2549,7 +2549,7 @@ def test_split_by_transitions_attaches_scene_seeds(tmp_path):
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
     cond, _, _, _, _, _, _ = refiner.refine_v2(
-        "anchor, scene one she walks, suddenly she turns",
+        "anchor, scene one she walks, cut to she turns",
         FakeClip(),
         "Perfect",
         "split-seed-test",
@@ -2568,7 +2568,7 @@ def test_split_by_transitions_uses_provided_scene_seeds(tmp_path):
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
     cond, _, _, _, _, _, _ = refiner.refine_v2(
-        "anchor, scene one she walks, suddenly she turns",
+        "anchor, scene one she walks, cut to she turns",
         FakeClip(),
         "Perfect",
         "split-seed-test",

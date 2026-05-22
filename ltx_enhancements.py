@@ -29,6 +29,10 @@ TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"]
 # Confirmed semantic focal points (PAG default=14, STG defaults=14,19)
 ANCHOR_BLOCKS = [14, 19]
 
+# Representative identity blocks from the concept-formation zone (20-35).
+# Spaced evenly across the zone; capture and inject character appearance details.
+IDENTITY_BLOCKS = [21, 26, 31]
+
 # Block zones for temperature mapping (normalized for 48-block LTXAV)
 _ZONE_EARLY = set(range(0, 14))       # texture / low-level noise
 _ZONE_SEMANTIC = frozenset({14, 19})  # primary semantic anchors
@@ -285,16 +289,17 @@ def build_creativity_mask(latent, rating_profile, reward):
 # Core block replacement builder
 # ---------------------------------------------------------------------------
 
-def _sigma_gated_strength(base_strength, sigma):
-    """Scale inject_strength by current sigma - full above 0.5, fade to 0 below 0.2."""
-    if sigma >= 0.5:
+def _sigma_gated_strength(base_strength, sigma, sigma_high=0.5, sigma_low=0.2):
+    """Scale inject_strength by sigma within [sigma_low, sigma_high] window."""
+    if sigma >= sigma_high:
         return base_strength
-    if sigma <= 0.2:
+    if sigma <= sigma_low:
         return 0.0
-    return base_strength * (sigma - 0.2) / 0.3
+    return base_strength * (sigma - sigma_low) / (sigma_high - sigma_low)
 
 
-def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength, sigma_state=None):
+def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength,
+                              sigma_state=None, sigma_gate=(0.2, 0.5)):
     """
     Builds a single patches_replace["dit"] replacement function that applies:
       - attention temperature (temp_scale != 1.0)
@@ -346,7 +351,7 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
         if do_inject:
             try:
                 sigma = sigma_state[0] if sigma_state is not None else 1.0
-                effective = _sigma_gated_strength(inject_strength, sigma)
+                effective = _sigma_gated_strength(inject_strength, sigma, sigma_gate[1], sigma_gate[0])
                 if effective > 0.0:
                     b = inject_tensor.to(device=out["img"].device, dtype=out["img"].dtype)
                     if b.shape == out["img"].shape:
@@ -425,17 +430,22 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     # --- Technique 5: injection data ---
     blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
-    inject_strength = max(0.05, min(0.28, reward * 0.28)) if blessed_maps else 0.0
+    # Semantic anchor blocks (14, 19): structural/compositional signal, early sigma
+    anchor_strength = max(0.05, min(0.28, reward * 0.28)) if blessed_maps else 0.0
+    # Identity blocks (21, 26, 31): appearance/character details, mid-sigma, lighter touch
+    identity_strength = max(0.04, min(0.12, reward * 0.12)) if blessed_maps else 0.0
+
+    all_injection_blocks = set(ANCHOR_BLOCKS) | set(IDENTITY_BLOCKS)
 
     # Shared capture buffer - populated during sampling, saved at end via wrapper
     capture_buf = {} if refinement_key else None
 
     # Sigma state - updated by wrapper before each model call so block replacements
-    # can gate injection strength to the early high-sigma (anatomy/physics) phase.
+    # can gate injection strength to the correct sigma window per block type.
     sigma_state = [1.0]
 
     # --- Install per-block patches_replace ---
-    all_blocks = set(temperature_map.keys()) | (set(ANCHOR_BLOCKS) if (capture_buf is not None or blessed_maps) else set())
+    all_blocks = set(temperature_map.keys()) | (all_injection_blocks if (capture_buf is not None or blessed_maps) else set())
 
     if all_blocks:
         to = model.model_options.setdefault("transformer_options", {})
@@ -444,12 +454,26 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
         for block_idx in all_blocks:
             t_scale = temp_scales.get(block_idx)
-            inj_tensor = (blessed_maps.get(block_idx) if blessed_maps and block_idx in ANCHOR_BLOCKS else None)
-            cap = capture_buf if (capture_buf is not None and block_idx in ANCHOR_BLOCKS) else None
+            is_anchor = block_idx in ANCHOR_BLOCKS
+            is_identity = block_idx in IDENTITY_BLOCKS
+            if is_anchor:
+                inj_tensor = blessed_maps.get(block_idx) if blessed_maps else None
+                inj_strength = anchor_strength
+                inj_gate = (0.2, 0.5)
+            elif is_identity:
+                inj_tensor = blessed_maps.get(block_idx) if blessed_maps else None
+                inj_strength = identity_strength
+                inj_gate = (0.2, 0.55)
+            else:
+                inj_tensor = None
+                inj_strength = 0.0
+                inj_gate = (0.2, 0.5)
+            cap = capture_buf if (capture_buf is not None and (is_anchor or is_identity)) else None
 
             replacement = _build_block_replacement(
-                block_idx, t_scale, cap, inj_tensor, inject_strength,
+                block_idx, t_scale, cap, inj_tensor, inj_strength,
                 sigma_state=sigma_state if inj_tensor is not None else None,
+                sigma_gate=inj_gate,
             )
             if replacement is not None:
                 # Compose with any existing replacement (e.g. from STG/PAG)
