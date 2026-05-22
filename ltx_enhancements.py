@@ -383,6 +383,41 @@ def build_creativity_mask(latent, rating_profile, reward):
 # Core block replacement builder
 # ---------------------------------------------------------------------------
 
+def _report_block_similarity(scene_captures):
+    """Compare per-block hidden states across scenes and rank by consistency.
+    High similarity = block encodes stable character features.
+    Low similarity = block encodes scene-specific composition.
+    """
+    try:
+        import torch.nn.functional as F
+        all_blocks = sorted(set().union(*[s.keys() for s in scene_captures]))
+        sims = {}
+        for idx in all_blocks:
+            tensors = [s[idx].float().flatten() for s in scene_captures if idx in s]
+            if len(tensors) < 2:
+                continue
+            pair_sims = []
+            for i in range(len(tensors)):
+                for j in range(i + 1, len(tensors)):
+                    a, b = tensors[i], tensors[j]
+                    if a.shape == b.shape and a.norm() > 0 and b.norm() > 0:
+                        pair_sims.append(float(F.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0))))
+            if pair_sims:
+                sims[idx] = sum(pair_sims) / len(pair_sims)
+        if sims:
+            ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
+            lines = "  ".join(f"b{i}:{v:.3f}" for i, v in ranked)
+            print(f"[FunPackEnhancements] Cross-scene block consistency ({len(scene_captures)} scenes):\n  {lines}")
+            top = [i for i, v in ranked if v >= 0.70]
+            low = [i for i, v in ranked if v <= 0.40]
+            if top:
+                print(f"  -> Candidate identity blocks (sim>=0.70): {top}")
+            if low:
+                print(f"  -> Scene-specific blocks (sim<=0.40): {low}")
+    except Exception as e:
+        print(f"[FunPackEnhancements] Similarity report failed: {e}")
+
+
 def _sigma_gated_strength(base_strength, sigma, sigma_high=0.5, sigma_low=0.2):
     """Scale inject_strength by sigma within [sigma_low, sigma_high] window."""
     if sigma >= sigma_high:
@@ -620,10 +655,12 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         block_list = candidate
                         break
                 if block_list is not None:
-                    # Diagnostic: when i2v active, also capture ALL candidate blocks (14,19 + 20-35)
-                    # to measure per-block similarity and find true identity blocks empirically.
-                    _diag_blocks = (set(ANCHOR_BLOCKS) | set(range(20, 36))) if has_i2v else set()
-                    _diag_buf = {}  # separate from capture_buf, never injected
+                    # Diagnostic: when i2v active, capture ALL candidate blocks (14,19 + 20-35)
+                    # in a per-scene buffer so we can compare consistency across scenes.
+                    _diag_active = has_i2v
+                    _diag_blocks = (set(ANCHOR_BLOCKS) | set(range(20, 36))) if _diag_active else set()
+                    _scene_cur_buf = [{}]    # hooks write here; redirected per scene
+                    _scene_captures = []     # list of dicts, one per scene snapshot
 
                     # For i2v: only hook identity blocks (anchor blocks encode scene structure).
                     # For blessed maps: hook all injection blocks for full capture.
@@ -680,10 +717,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                 _make_hook(idx, capture_buf, lazy, inj_strength, inj_gate, sigma_state)
                             )
                             hook_handles.append(h)
-                    # Register capture-only diagnostic hooks on extra blocks
+                    # Register capture-only diagnostic hooks on extra candidate blocks
                     for idx in _diag_blocks - blocks_to_hook:
                         if idx < len(block_list):
-                            def _make_diag_hook(block_idx, dbuf):
+                            def _make_diag_hook(block_idx, scene_cur):
                                 def _hook(module, inp, out):
                                     try:
                                         if isinstance(out, dict):
@@ -693,17 +730,19 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                         else:
                                             t = out
                                         if isinstance(t, torch.Tensor):
-                                            dbuf[block_idx] = t.detach().cpu()
+                                            scene_cur[0][block_idx] = t.detach().cpu()
                                     except Exception:
                                         pass
                                 return _hook
-                            h = block_list[idx].register_forward_hook(_make_diag_hook(idx, _diag_buf))
+                            h = block_list[idx].register_forward_hook(_make_diag_hook(idx, _scene_cur_buf))
                             hook_handles.append(h)
+
+                    # Also redirect the main capture hooks to write into scene_cur_buf too
+                    capture_buf["__scene_cur__"] = _scene_cur_buf
+                    capture_buf["__scene_captures__"] = _scene_captures
 
                     if hook_handles:
                         print(f"[FunPackEnhancements] Registered {len(hook_handles)} capture+inject hooks on transformer blocks")
-                        # Store diag_buf reference for similarity reporting in sigma tracker
-                        capture_buf["__diag__"] = _diag_buf
                 else:
                     print("[FunPackEnhancements] Could not find transformer block list for hooks")
         except Exception as e:
@@ -751,29 +790,40 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         _ref_x = ref_x
         _lazy = lazy_injects
 
+        _prev_sigma = [1.0]
+        _scene_snapped = [False]
+
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
-                           _lazy=_lazy, _cap_buf=capture_buf, _rk=refinement_key):
+                           _lazy=_lazy, _cap_buf=capture_buf,
+                           _prev_sigma=_prev_sigma, _scene_snapped=_scene_snapped):
             ts = args.get("timestep")
-            if ts is not None:
-                try:
-                    _state[0] = float(ts.max().item())
-                except Exception:
-                    pass
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                sigma = 1.0
+
+            # Detect scene transition: sigma jumped back up = new scene started
+            scene_cur = _cap_buf.get("__scene_cur__") if isinstance(_cap_buf, dict) else None
+            scene_captures = _cap_buf.get("__scene_captures__") if isinstance(_cap_buf, dict) else None
+            if scene_cur is not None and sigma > _prev_sigma[0] + 0.05:
+                # New scene: save previous scene's snapshot if we have one
+                if scene_cur[0]:
+                    scene_captures.append(dict(scene_cur[0]))
+                scene_cur[0] = {}
+                _scene_snapped[0] = False
+            _prev_sigma[0] = sigma
+            _state[0] = sigma
+
             # Run the actual generation step
             if _ew is not None:
                 result = _ew(apply_fn, args)
             else:
                 result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
-            # Snapshot capture_buf into lazy injects once sigma crosses below 0.6.
-            # Mid-sigma gives cleaner reference maps than step 1 (sigma_max ≈ 1.0)
-            # while still covering the identity-formation phase.
+
+            # Snapshot for injection: first time sigma < 0.95
             if _ref_x is not None and not _ref_extracted[0] and _cap_buf and _lazy:
-                try:
-                    sigma = float(ts.max().item()) if ts is not None else 1.0
-                except Exception:
-                    sigma = 1.0
-                if sigma < 0.95 and len(_cap_buf) >= len(_lazy):
+                if sigma < 0.95 and len({k: v for k, v in _cap_buf.items() if not isinstance(k, str)}) >= len(_lazy):
                     _ref_extracted[0] = True
                     for idx, lazy in _lazy.items():
                         if idx in _cap_buf:
@@ -781,28 +831,11 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     captured = sum(1 for lz in _lazy.values() if lz.tensor is not None)
                     print(f"[FunPackEnhancements] i2v reference maps ready at sigma={sigma:.2f} ({captured}/{len(_lazy)} blocks)")
 
-                    # Diagnostic: compare all candidate blocks against previous run's maps
-                    # to find which blocks are most consistent across scenes of same character.
-                    diag_buf = _cap_buf.get("__diag__", {}) if isinstance(_cap_buf, dict) else {}
-                    all_current = {**{k: v for k, v in _cap_buf.items() if k != "__diag__"}, **diag_buf}
-                    if all_current and _rk:
-                        diag_path = os.path.join(_maps_dir(), f"diag_{_rk}.pt")
-                        try:
-                            if os.path.exists(diag_path):
-                                prev = torch.load(diag_path, map_location="cpu", weights_only=True)
-                                sims = {}
-                                for idx in sorted(set(all_current) & set(prev)):
-                                    a = all_current[idx].float().flatten()
-                                    b = prev[idx].float().flatten()
-                                    if a.shape == b.shape and a.norm() > 0 and b.norm() > 0:
-                                        sims[idx] = float(torch.nn.functional.cosine_similarity(a.unsqueeze(0), b.unsqueeze(0)))
-                                if sims:
-                                    ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
-                                    lines = "  ".join(f"b{i}:{v:.3f}" for i, v in ranked)
-                                    print(f"[FunPackEnhancements] Block similarity (high=character-consistent, low=scene-specific):\n  {lines}")
-                            torch.save({k: v for k, v in all_current.items()}, diag_path)
-                        except Exception as e:
-                            print(f"[FunPackEnhancements] Diagnostic save/compare failed: {e}")
+            # Per-scene diagnostic snapshot at mid-sigma
+            if scene_cur is not None and not _scene_snapped[0] and sigma < 0.95:
+                _scene_snapped[0] = True
+                scene_cur[0] = {k: v for k, v in scene_cur[0].items()}  # snapshot copy
+
             return result
 
         model.model_options["model_function_wrapper"] = _sigma_tracker
@@ -848,8 +881,11 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         _handles = hook_handles
         existing_wrapper = model.model_options.get("model_function_wrapper")
 
+        _scene_cur_ref = capture_buf.get("__scene_cur__") if isinstance(capture_buf, dict) else None
+        _scene_cap_ref = capture_buf.get("__scene_captures__") if isinstance(capture_buf, dict) else None
+
         def _hook_remover(apply_fn, args, _ew=existing_wrapper, _handles=_handles,
-                          _removed=[False]):
+                          _removed=[False], _sc=_scene_cur_ref, _sca=_scene_cap_ref):
             if _ew is not None:
                 result = _ew(apply_fn, args)
             else:
@@ -861,6 +897,12 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         for h in _handles:
                             h.remove()
                         _removed[0] = True
+                        # Save last scene and report cross-scene block similarity
+                        if _sc is not None and _sca is not None:
+                            if _sc[0]:
+                                _sca.append(dict(_sc[0]))
+                            if len(_sca) >= 2:
+                                _report_block_similarity(_sca)
                 except Exception:
                     pass
             return result
