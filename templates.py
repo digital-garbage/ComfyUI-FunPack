@@ -415,9 +415,13 @@ def normalize_transition_item(item, fallback_name=""):
     if not trigger:
         return None
     name = re.sub(r"\s+", " ", str(item.get("name") or fallback_name or trigger).strip())
+    placement = str(item.get("placement") or "global").strip().lower()
+    if placement not in ("global", "start", "end"):
+        placement = "global"
     return {
         "name": name,
         "trigger": trigger,
+        "placement": placement,
         "enabled": bool(item.get("enabled", True)),
     }
 
@@ -500,15 +504,19 @@ def delete_transition_item(name):
 
 
 def load_custom_transition_triggers():
-    """Return list of trigger strings for all enabled custom transitions."""
+    """Return {trigger: placement_override} for enabled custom transitions.
+    placement_override is 'start', 'end', or None (use global setting).
+    """
     data = load_transition_db()
-    result = []
+    result = {}
     for item in data.get("transitions", {}).values():
         if not isinstance(item, dict) or not item.get("enabled", True):
             continue
         trigger = re.sub(r"\s+", " ", str(item.get("trigger") or "").strip())
-        if trigger:
-            result.append(trigger)
+        if not trigger:
+            continue
+        placement = str(item.get("placement") or "global").strip().lower()
+        result[trigger.lower()] = placement if placement in ("start", "end") else None
     return result
 
 

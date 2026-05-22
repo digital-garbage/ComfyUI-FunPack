@@ -69,7 +69,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start" },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -810,6 +810,9 @@ function openPanel(node) {
       const triggerInput = textInput(item.trigger || "", "Trigger phrase");
       triggerInput.addEventListener("input", () => { item.trigger = triggerInput.value; });
 
+      const placementSel = selectEl(["global", "start", "end"], item.placement || "global");
+      placementSel.addEventListener("change", () => { item.placement = placementSel.value; });
+
       const actions = el("div", "funpack-studio-shortcut-actions");
       const saveBtn = btn("Save", "primary");
       saveBtn.addEventListener("click", async () => {
@@ -818,6 +821,7 @@ function openPanel(node) {
             original_name: item.key || item.name,
             name: item.name || item.trigger,
             trigger: item.trigger,
+            placement: item.placement || "global",
             enabled: item.enabled !== false,
           });
           await fetchTransitions();
@@ -840,7 +844,7 @@ function openPanel(node) {
         } catch (e) { showError(root, e.message); }
       });
       actions.append(saveBtn, collapseBtn, delBtn);
-      rowEl.append(top, triggerInput, actions);
+      rowEl.append(top, triggerInput, row("Placement override", placementSel), actions);
       list.append(rowEl);
     });
   }
@@ -895,6 +899,15 @@ function openPanel(node) {
       "Detect transition words and output one conditioning entry per scene for FunPack LTXAV Scene Chain Sampler. " +
       "Leave off for normal single-conditioning workflows."));
     body.append(row("Split by transitions", splitToggle.wrap));
+
+    if (!settings.refiner.split_transition_placement) settings.refiner.split_transition_placement = "start";
+    const placementSelect = selectEl(["start", "end"], settings.refiner.split_transition_placement);
+    placementSelect.addEventListener("change", () => { settings.refiner.split_transition_placement = placementSelect.value; });
+    body.append(el("div", "funpack-studio-hint",
+      "start: transition phrase opens the new scene (\"cut to — she runs\"). " +
+      "end: transition phrase closes the previous scene (\"she walks — cut to\"). " +
+      "Custom transitions can override this per-entry in the Transitions tab."));
+    body.append(row("Transition placement", placementSelect));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",

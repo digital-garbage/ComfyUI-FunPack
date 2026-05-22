@@ -6085,11 +6085,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         return cond, meta, encode_status, "CONDITIONING-owned"
 
-    def _v2_split_prompt_by_transitions(self, prompt):
-        """Split prompt at transition words, keeping each transition word at the START of its new segment.
+    def _v2_split_prompt_by_transitions(self, prompt, placement="start"):
+        """Split prompt at transition words.
 
-        Transition words are valuable conditioning tokens (e.g. 'then', 'suddenly', 'cut to') that
-        signal a scene change to the model. Keeping them in the new-scene text preserves this signal.
+        placement='start': transition word goes to the START of the new segment (default).
+        placement='end':   transition word goes to the END of the previous segment.
+
+        Custom transitions can override placement per-entry regardless of the global setting.
 
         Returns a list with >= 1 entry. Single-entry list means no transitions were found.
         """
@@ -6101,7 +6103,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             from .templates import load_custom_transition_triggers
         except ImportError:
             from templates import load_custom_transition_triggers
-        custom_triggers = load_custom_transition_triggers()
+        custom_map = load_custom_transition_triggers()  # {trigger: placement_override|None}
+        custom_triggers = list(custom_map.keys())
 
         if custom_triggers:
             custom_parts = "|".join(
@@ -6131,9 +6134,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             trans_word = parts[i].strip()
             following = parts[i + 1] if i + 1 < len(parts) else ""
             following = following.strip().lstrip(",;.:").strip()
-            if current:
-                segments.append(current)
-            current = re.sub(r"\b(a|an|the),\s*", r"\1 ", (trans_word + " " + following).strip().strip(",;.:").strip(), flags=re.IGNORECASE).strip()
+            # per-trigger placement override takes priority over global setting
+            trans_placement = custom_map.get(trans_word.lower()) or placement
+            if trans_placement == "end":
+                segments.append((current + " " + trans_word).strip().strip(",;.:").strip() if current else trans_word)
+                current = following
+            else:
+                if current:
+                    segments.append(current)
+                current = re.sub(r"\b(a|an|the),\s*", r"\1 ", (trans_word + " " + following).strip().strip(",;.:").strip(), flags=re.IGNORECASE).strip()
             i += 2
         if current:
             segments.append(current)
@@ -10767,7 +10776,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  split_by_transitions=False, latent=None, seed_output_connected=False,
+                  split_by_transitions=False, split_transition_placement="start", latent=None, seed_output_connected=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11212,7 +11221,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         current_scene_seed_source = str(_seed_source or "fresh seed")
         if split_by_transitions:
             try:
-                split_segments = self._v2_split_prompt_by_transitions(prompt_to_encode)
+                split_segments = self._v2_split_prompt_by_transitions(prompt_to_encode, placement=split_transition_placement)
                 if len(split_segments) > 1:
                     split_scene_texts = self._v2_transition_scene_texts(split_segments)
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
@@ -12561,6 +12570,9 @@ class FunPackStudio:
         reset_session = bool(rf.get("reset_session", False))
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
         split_by_transitions = bool(rf.get("split_by_transitions", False))
+        split_transition_placement = str(rf.get("split_transition_placement", "start") or "start").strip().lower()
+        if split_transition_placement not in ("start", "end"):
+            split_transition_placement = "start"
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -12686,6 +12698,7 @@ class FunPackStudio:
             prompt_repair=prompt_repair,
             temporal_style=temporal_style,
             split_by_transitions=split_by_transitions,
+            split_transition_placement=split_transition_placement,
             latent=latent,
             seed_output_connected=seed_output_connected,
             _seed=seed,

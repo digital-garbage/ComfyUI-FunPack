@@ -889,8 +889,8 @@ def test_custom_transition_triggers_returns_enabled_only(monkeypatch, tmp_path):
     save_transition_item({"name": "Disabled", "trigger": "SKIP", "enabled": False})
 
     triggers = load_custom_transition_triggers()
-    assert "CUT" in triggers
-    assert "SKIP" not in triggers
+    assert "cut" in triggers      # keys are lowercased for case-insensitive lookup
+    assert "skip" not in triggers
 
 
 def test_split_prompt_recognizes_custom_trigger(monkeypatch, tmp_path):
@@ -970,3 +970,35 @@ def test_split_prompt_does_not_split_on_scene_as_noun(monkeypatch, tmp_path):
     # numbered scene labels must still split
     segments = refiner._v2_split_prompt_by_transitions("Kai'Sa walking. scene 2 she runs.")
     assert len(segments) == 2
+
+
+def test_split_transition_placement_end(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    refiner = FunPackVideoRefinerV2()
+
+    # placement=end: transition phrase closes the previous segment
+    segments = refiner._v2_split_prompt_by_transitions(
+        "Kai'Sa walks confidently. cut to the next action",
+        placement="end",
+    )
+    assert len(segments) == 2
+    assert "cut to" in segments[0]
+    assert "Kai'Sa walks" in segments[0]
+    assert "the next action" in segments[1]
+    assert "cut to" not in segments[1]
+
+
+def test_split_custom_transition_placement_override(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    # custom transition with explicit "end" placement overrides global "start"
+    save_transition_item({"name": "CUT", "trigger": "CUT", "placement": "end"})
+
+    refiner = FunPackVideoRefinerV2()
+    segments = refiner._v2_split_prompt_by_transitions(
+        "Kai'Sa walks. CUT she runs.",
+        placement="start",  # global is start, but custom says end
+    )
+    assert len(segments) == 2
+    assert "CUT" in segments[0]
+    assert "she runs" in segments[1]
+    assert "CUT" not in segments[1]
