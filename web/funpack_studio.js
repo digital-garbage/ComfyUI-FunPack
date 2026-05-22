@@ -69,7 +69,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start" },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -909,6 +909,14 @@ function openPanel(node) {
       "silent: split happens but the transition phrase is removed entirely from the output. " +
       "Custom transitions can override this per-entry in the Transitions tab."));
     body.append(row("Transition placement", placementSelect));
+
+    if (settings.refiner.reference_injection === undefined) settings.refiner.reference_injection = false;
+    const refInjToggle = toggleEl(!!settings.refiner.reference_injection, "Reference injection");
+    refInjToggle.inp.addEventListener("change", () => { settings.refiner.reference_injection = refInjToggle.inp.checked; });
+    body.append(el("div", "funpack-studio-hint",
+      "Injects hidden state maps from the i2v reference frame into subsequent scenes to reduce character drift. " +
+      "Only meaningful when carry_i2v_guides is also enabled in the Scene Chain Sampler - without it the injection has no reliable reference to anchor from."));
+    body.append(row("Reference injection", refInjToggle.wrap));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",

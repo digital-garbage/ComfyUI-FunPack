@@ -10783,7 +10783,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  split_by_transitions=False, split_transition_placement="start", latent=None, seed_output_connected=False,
+                  split_by_transitions=False, split_transition_placement="start", reference_injection=False, latent=None, seed_output_connected=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11454,7 +11454,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     temporal_style=temporal_style,
                     refinement_key=eff_key,
                     reward=prev_reward,
-                    reference_latent=latent,
+                    reference_latent=latent if reference_injection else None,
                 )
                 enhancement_status = f"\nLTX enhancements: temporal={temporal_style}, reward={prev_reward:+.2f}"
             except Exception as e:
@@ -12581,6 +12581,7 @@ class FunPackStudio:
         split_transition_placement = str(rf.get("split_transition_placement", "start") or "start").strip().lower()
         if split_transition_placement not in ("start", "end", "silent"):
             split_transition_placement = "start"
+        reference_injection = bool(rf.get("reference_injection", False))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -12707,6 +12708,7 @@ class FunPackStudio:
             temporal_style=temporal_style,
             split_by_transitions=split_by_transitions,
             split_transition_placement=split_transition_placement,
+            reference_injection=reference_injection,
             latent=latent,
             seed_output_connected=seed_output_connected,
             _seed=seed,
