@@ -234,11 +234,13 @@ def _get_reference_video_tensor(latent):
     return samples if isinstance(samples, torch.Tensor) else None
 
 
-def _run_reference_extraction(model, ref_x, lazy_injects, args):
+def _run_reference_extraction(model, apply_fn, ref_x, lazy_injects, args):
     """Run one forward pass at sigma=0.03 with real conditioning to populate lazy_injects.
-    Uses model.apply_model directly (bypasses model_function_wrapper chain).
+    Uses apply_fn directly (the base model function, works with ModelPatcherDynamic).
     Temporarily installs capture-only patches, restores them after.
     """
+    saved = {}
+    dit = None
     try:
         device = args["input"].device
         dtype = args["input"].dtype
@@ -247,7 +249,6 @@ def _run_reference_extraction(model, ref_x, lazy_injects, args):
         to = model.model_options.setdefault("transformer_options", {})
         pr = to.setdefault("patches_replace", {})
         dit = pr.setdefault("dit", {})
-        saved = {}
         ref_cap = {}
 
         for idx in lazy_injects:
@@ -266,7 +267,7 @@ def _run_reference_extraction(model, ref_x, lazy_injects, args):
 
         ref_sigma = torch.full((x.shape[0],), 0.03, device=device, dtype=dtype)
         with torch.no_grad():
-            model.apply_model(x, ref_sigma, args.get("c", {}))
+            apply_fn(x, ref_sigma, **args.get("c", {}))
 
         for idx, lazy in lazy_injects.items():
             if idx in ref_cap:
@@ -278,11 +279,12 @@ def _run_reference_extraction(model, ref_x, lazy_injects, args):
     except Exception as e:
         print(f"[FunPackEnhancements] Reference extraction failed: {e}")
     finally:
-        for idx in lazy_injects:
-            if saved.get(idx) is None:
-                dit.pop(("double_block", idx), None)
-            else:
-                dit[("double_block", idx)] = saved[idx]
+        if dit is not None:
+            for idx in lazy_injects:
+                if saved.get(idx) is None:
+                    dit.pop(("double_block", idx), None)
+                else:
+                    dit[("double_block", idx)] = saved[idx]
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +655,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             # On first call with i2v: extract reference maps using real conditioning
             if _ref_x is not None and not _ref_extracted[0] and "input" in args:
                 _ref_extracted[0] = True
-                _run_reference_extraction(_model_ref, _ref_x, _lazy, args)
+                _run_reference_extraction(_model_ref, apply_fn, _ref_x, _lazy, args)
             if _ew is not None:
                 return _ew(apply_fn, args)
             return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
