@@ -3,6 +3,8 @@ import sys
 import types
 from pathlib import Path
 
+import torch
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
@@ -27,12 +29,17 @@ import templates
 from conditioning import FunPackVideoRefinerV2
 from templates import (
     FunPackSceneBuilder,
+    apply_prompt_shortcuts,
     apply_scene_database_authority,
     extract_scene_phrases,
+    load_shortcut_db,
     load_scene_db,
     normalize_scene_text_spacing,
     normalize_scene_memory_items,
+    normalize_shortcut_db,
+    save_shortcut_db,
     remember_scene_phrases,
+    save_shortcut_item,
     save_scene_db,
 )
 
@@ -513,6 +520,161 @@ def test_scene_builder_database_items_keep_categories_and_wildcards():
     assert memory["blue dress"]["wildcard"] is True
     assert memory["bad hands"]["wildcard"] is False
     assert memory["bad hands"]["source"] == "negative"
+
+
+def test_shortcuts_are_global_and_independent_from_refinement_keys(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+
+    save_shortcut_item({
+        "name": "Run",
+        "triggers": ["running"],
+        "replacements": ["running freely"],
+    })
+
+    data = load_scene_db("some_key")
+    assert data["scenes"] == {}
+    shortcuts = load_shortcut_db()["shortcuts"]
+    assert "run" in shortcuts
+    assert shortcuts["run"]["triggers"] == ["running"]
+
+
+def test_refiner_reset_session_does_not_clear_global_shortcuts(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Run",
+        "triggers": ["running"],
+        "replacements": ["running freely"],
+    })
+
+    FunPackVideoRefinerV2()._v2_load_state("reset_key", reset_session=True)
+
+    assert "run" in load_shortcut_db()["shortcuts"]
+
+
+def test_shortcuts_match_boundaries_and_preserve_surrounding_spacing(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Run",
+        "triggers": ["running"],
+        "replacements": ["running freely"],
+    })
+
+    expanded, applied = apply_prompt_shortcuts(
+        "A video of man running in the park, running.",
+        seed=1,
+    )
+
+    assert expanded == "A video of man running freely in the park, running freely."
+    assert "manrunning" not in expanded
+    assert "parkfreely" not in expanded
+    assert len(applied) == 2
+
+    unchanged, applied = apply_prompt_shortcuts("A video of over-running shoes", seed=1)
+    assert unchanged == "A video of over-running shoes"
+    assert applied == []
+
+
+def test_shortcuts_use_longest_trigger_and_seeded_replacement(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Look",
+        "triggers": ["camera", "looks into camera"],
+        "replacements": [
+            "a man is facing the camera and looking into it",
+            "a man's gaze is directed at the viewer",
+        ],
+    })
+
+    first, first_applied = apply_prompt_shortcuts("He looks into camera.", seed=77)
+    second, second_applied = apply_prompt_shortcuts("He looks into camera.", seed=77)
+
+    assert first == second
+    assert first_applied == second_applied
+    assert first_applied[0]["trigger"] == "looks into camera"
+    assert "He " in first
+    assert first.endswith(".")
+
+
+def test_disabled_shortcuts_do_not_expand(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Run",
+        "enabled": False,
+        "triggers": ["running"],
+        "replacements": ["running freely"],
+    })
+
+    expanded, applied = apply_prompt_shortcuts("running", seed=1)
+
+    assert expanded == "running"
+    assert applied == []
+
+
+def test_shortcut_only_import_export_shape_round_trips(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    exported = normalize_shortcut_db({
+        "shortcuts": {
+            "look": {
+                "name": "Look",
+                "enabled": True,
+                "triggers": ["looks into camera"],
+                "replacements": ["a man is facing the camera and looking into it"],
+            }
+        }
+    })
+
+    save_shortcut_db(exported)
+
+    loaded = load_shortcut_db()
+    assert loaded["shortcuts"]["look"]["name"] == "Look"
+    assert loaded["shortcuts"]["look"]["triggers"] == ["looks into camera"]
+
+
+def test_scene_builder_expands_shortcuts_only_in_positive_prompt(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Run",
+        "triggers": ["running"],
+        "replacements": ["running freely"],
+    })
+
+    positive, negative, _, status = FunPackSceneBuilder().build_scene(
+        scene="-None-",
+        scene_name="Shortcut Scene",
+        aliases="",
+        action="load",
+        mode="Manual",
+        scene_positive="A video of man running in the park",
+        scene_negative="running",
+        refinement_key="shortcut_key",
+    )
+
+    assert positive == "A video of man running freely in the park"
+    assert negative == "running"
+    assert "Shortcuts: expanded" in status
+
+
+def test_refiner_expands_positive_and_intent_shortcuts_before_encoding(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_shortcut_item({
+        "name": "Run",
+        "triggers": ["running"],
+        "replacements": ["running freely"],
+    })
+
+    cond = [(torch.ones(1, 2, 4), {"pooled_output": torch.ones(1, 4)})]
+    _, status, _, _, encoded_prompts, _, _ = FunPackVideoRefinerV2().refine_v2(
+        "A video of man running",
+        clip=None,
+        rating="Missing action",
+        refinement_key="refiner_shortcut_key",
+        positive_conditioning=cond,
+        user_intent_prompt="running",
+        reset_session=True,
+    )
+
+    assert "A video of man running freely" in encoded_prompts
+    assert "Shortcuts: expanded" in status
 
 
 def test_scene_builder_wildcard_outputs_one_adjacent_matching_phrase(monkeypatch, tmp_path):

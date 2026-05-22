@@ -11,7 +11,7 @@ const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
 const TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
-const TABS = ["Session", "Scene", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
+const TABS = ["Session", "Scene", "Shortcuts", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
@@ -19,6 +19,8 @@ const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", 
 
 let activePanel = null;
 let studioSceneData = null;
+let studioSceneKey = null;
+let studioShortcutData = null;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -122,6 +124,7 @@ async function fetchScenes(key = "") {
     const res = await api.fetchApi(`/funpack/scenes?${params}`, { cache: "no-store" });
     if (!res.ok) return null;
     studioSceneData = await res.json();
+    studioSceneKey = key || "";
     return studioSceneData;
   } catch { return null; }
 }
@@ -133,6 +136,74 @@ async function saveScene(key, payload) {
     body: JSON.stringify({ action: "save", ...payload }),
   });
   if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+}
+
+async function fetchShortcuts() {
+  try {
+    const params = new URLSearchParams({ cache_bust: Date.now() });
+    const res = await api.fetchApi(`/funpack/shortcuts?${params}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    studioShortcutData = await res.json();
+    return studioShortcutData;
+  } catch { return null; }
+}
+
+async function saveShortcut(payload) {
+  const res = await api.fetchApi("/funpack/shortcuts/shortcut", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "save", ...payload }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+  studioShortcutData = await res.json();
+  return studioShortcutData;
+}
+
+async function deleteShortcut(name) {
+  const res = await api.fetchApi("/funpack/shortcuts/shortcut", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "delete", name }),
+  });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+  studioShortcutData = await res.json();
+  return studioShortcutData;
+}
+
+async function exportShortcuts() {
+  const params = new URLSearchParams({ cache_bust: Date.now() });
+  const res = await api.fetchApi(`/funpack/shortcuts/export?${params}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "funpack_shortcuts.json";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importShortcuts(onDone, onError) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const res = await api.fetchApi("/funpack/shortcuts/import", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+      studioShortcutData = await res.json();
+      onDone?.();
+    } catch (e) {
+      onError?.(e);
+    }
+  };
+  input.click();
 }
 
 async function fetchLoras() {
@@ -215,6 +286,13 @@ function row(label, control, cls = "") {
 
 function sectionTitle(text) { return el("div", "funpack-studio-section-title", text); }
 
+function splitLines(value) {
+  return String(value || "")
+    .split(/\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 // ─── Panel ────────────────────────────────────────────────────────────────────
 
 function closePanel() { activePanel?.remove(); activePanel = null; }
@@ -283,6 +361,7 @@ function openPanel(node) {
     errorEl.textContent = "";
     if (name === "Session") renderSession();
     else if (name === "Scene") renderScene();
+    else if (name === "Shortcuts") renderShortcuts();
     else if (name === "Refiner") renderRefiner();
     else if (name === "Advisor") renderAdvisor();
     else if (name === "LoRA") renderLora();
@@ -295,7 +374,11 @@ function openPanel(node) {
     body.append(sectionTitle("Refinement Session"));
 
     const keyInput = textInput(settings.refinement_key, "session key name");
-    keyInput.addEventListener("input", () => { settings.refinement_key = keyInput.value.trim(); });
+    keyInput.addEventListener("input", () => {
+      settings.refinement_key = keyInput.value.trim();
+      studioSceneData = null;
+      studioSceneKey = null;
+    });
 
     const linkedKey = linkedRefinementKey(node);
     if (linkedKey) {
@@ -317,6 +400,7 @@ function openPanel(node) {
       settings.scene_builder.mode = modeSelect.value;
       saveSettings(node, settings);
       studioSceneData = null;
+      studioSceneKey = null;
       if (settings.scene_builder.mode !== "Pass-through") {
         await fetchScenes(settings.refinement_key || linkedRefinementKey(node));
       }
@@ -428,12 +512,14 @@ function openPanel(node) {
     const footer = el("div", "funpack-studio-footer");
     const refreshBtn = btn("Refresh");
     refreshBtn.addEventListener("click", async () => {
+      saveSettings(node, settings);
       await fetchScenes(key);
       renderScene();
     });
     const saveBtn = btn("Save scene", "primary");
     saveBtn.addEventListener("click", async () => {
       try {
+        saveSettings(node, settings);
         await saveScene(key, {
           name: settings.scene_builder.scene_name,
           aliases: settings.scene_builder.aliases,
@@ -442,6 +528,8 @@ function openPanel(node) {
           negative_text: settings.scene_builder.scene_negative,
         });
         await fetchScenes(key);
+        settings.scene_builder.scene = settings.scene_builder.scene_name || settings.scene_builder.scene || NONE_SENTINEL;
+        saveSettings(node, settings);
         renderScene();
       } catch (e) { showError(root, e.message); }
     });
@@ -449,9 +537,108 @@ function openPanel(node) {
     body.append(footer);
 
     // Fetch scenes if not loaded
-    if (!studioSceneData) {
+    if (!studioSceneData || studioSceneKey !== (key || "")) {
       fetchScenes(key).then(() => renderScene());
     }
+  }
+
+  // SHORTCUTS ────────────────────────────────────────────────────────────────
+  function renderShortcuts() {
+    body.append(sectionTitle("Shortcuts"));
+    if (!studioShortcutData) {
+      body.append(el("div", "funpack-studio-empty", "Loading shortcuts..."));
+      fetchShortcuts().then(() => renderTab("Shortcuts"));
+      return;
+    }
+
+    if (!root.__shortcutDrafts) {
+      const rows = Array.isArray(studioShortcutData?.shortcuts) ? studioShortcutData.shortcuts : [];
+      root.__shortcutDrafts = JSON.parse(JSON.stringify(rows));
+    }
+    const drafts = root.__shortcutDrafts;
+
+    const toolbar = el("div", "funpack-studio-footer");
+    const addBtn = btn("+ Add shortcut", "primary");
+    addBtn.addEventListener("click", () => {
+      drafts.unshift({ name: "", enabled: true, triggers: [], replacements: [] });
+      renderTab("Shortcuts");
+    });
+    const refreshBtn = btn("Refresh");
+    refreshBtn.addEventListener("click", async () => {
+      await fetchShortcuts();
+      delete root.__shortcutDrafts;
+      renderTab("Shortcuts");
+    });
+    const importBtn = btn("Import");
+    importBtn.addEventListener("click", () => importShortcuts(
+      () => { delete root.__shortcutDrafts; renderTab("Shortcuts"); },
+      (e) => showError(root, e.message),
+    ));
+    const exportBtn = btn("Export");
+    exportBtn.addEventListener("click", async () => {
+      try { await exportShortcuts(); }
+      catch (e) { showError(root, e.message); }
+    });
+    toolbar.append(addBtn, refreshBtn, importBtn, exportBtn);
+    body.append(toolbar);
+
+    const list = el("div", "funpack-studio-shortcut-list");
+    body.append(list);
+    if (!drafts.length) {
+      list.append(el("div", "funpack-studio-empty", "No shortcuts configured."));
+    }
+
+    drafts.forEach((item, index) => {
+      const rowEl = el("div", "funpack-studio-shortcut-row");
+      const top = el("div", "funpack-studio-shortcut-top");
+      const nameInput = textInput(item.name || "", "Shortcut name");
+      nameInput.addEventListener("input", () => { item.name = nameInput.value; });
+      const enabled = toggleEl(item.enabled !== false, "Enabled");
+      enabled.inp.addEventListener("change", () => { item.enabled = enabled.inp.checked; });
+      top.append(nameInput, enabled.wrap);
+
+      const triggerArea = el("textarea", "funpack-studio-textarea short");
+      triggerArea.placeholder = "Activation phrases, one per line";
+      triggerArea.value = (item.triggers || []).join("\n");
+      triggerArea.addEventListener("input", () => { item.triggers = splitLines(triggerArea.value); });
+
+      const replacementArea = el("textarea", "funpack-studio-textarea short");
+      replacementArea.placeholder = "Replacement phrases, one per line";
+      replacementArea.value = (item.replacements || []).join("\n");
+      replacementArea.addEventListener("input", () => { item.replacements = splitLines(replacementArea.value); });
+
+      const actions = el("div", "funpack-studio-shortcut-actions");
+      const saveBtn = btn("Save", "primary");
+      saveBtn.addEventListener("click", async () => {
+        try {
+          await saveShortcut({
+            original_name: item.key || item.name,
+            name: item.name,
+            enabled: item.enabled !== false,
+            triggers: splitLines(triggerArea.value),
+            replacements: splitLines(replacementArea.value),
+          });
+          await fetchShortcuts();
+          delete root.__shortcutDrafts;
+          renderTab("Shortcuts");
+        } catch (e) { showError(root, e.message); }
+      });
+      const delBtn = btn("Delete", "danger");
+      delBtn.addEventListener("click", async () => {
+        try {
+          if (item.key || item.name) {
+            await deleteShortcut(item.name || item.key);
+            await fetchShortcuts();
+          }
+          drafts.splice(index, 1);
+          delete root.__shortcutDrafts;
+          renderTab("Shortcuts");
+        } catch (e) { showError(root, e.message); }
+      });
+      actions.append(saveBtn, delBtn);
+      rowEl.append(top, triggerArea, replacementArea, actions);
+      list.append(rowEl);
+    });
   }
 
   // REFINER ──────────────────────────────────────────────────────────────────
@@ -955,6 +1142,30 @@ function injectStyles() {
     .funpack-studio-lora-row {
       display: grid; grid-template-columns: minmax(0,1.8fr) 80px 54px 54px 28px;
       gap: 5px; align-items: center;
+    }
+    .funpack-studio-shortcut-list {
+      display: grid;
+      gap: 10px;
+    }
+    .funpack-studio-shortcut-row {
+      display: grid;
+      gap: 7px;
+      padding: 8px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.035);
+    }
+    .funpack-studio-shortcut-top {
+      display: grid;
+      grid-template-columns: minmax(0,1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .funpack-studio-shortcut-actions {
+      display: flex;
+      gap: 7px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
     }
     .lora-name, .lora-type { min-height: 28px; padding: 4px 6px;
       border: 1px solid rgba(180,190,200,0.28); border-radius: 5px;

@@ -18,6 +18,8 @@ If no scene exists yet, opening the editor, prompt editor, or database first ask
 
 **Database**: Add, edit, delete, search, categorize, and mark universal words and phrases as wildcards. Double-click a word or phrase to edit it inline, then use **OK** or **Cancel**.
 
+**Shortcuts**: Add global activation phrases that expand into longer positive prompt text. Shortcuts are shared across refinement keys, can be imported/exported separately, and are not cleared by Refiner reset. Activation phrases replace only the matched word or phrase and preserve surrounding spaces and punctuation.
+
 The editor refreshes the selected scene database before opening. When `refinement_key_input` is connected to a Refinement Key Loader, the editor reads that linked key so prompt memory appears in the same database where queue runs stored it.
 
 Each editor menu has **Back**, **Cancel**, and **Confirm** controls. Back always returns to the main editor. Cancel restores the menu snapshot; if the prompt/database editor was opened directly from the node, Cancel closes the dialog instead.
@@ -29,6 +31,8 @@ Each editor menu has **Back**, **Cancel**, and **Confirm** controls. Back always
 **Auto** scans `intent_prompt` for a saved scene name or alias. Exact matches are preferred, then a conservative word-match fallback is used. If nothing matches, the node falls back to Manual output.
 
 **Learning** saves connected positive and negative prompt phrases and useful words into Scene Builder universal memory, then passes the connected positive prompt, negative prompt, and LoRA stack through unchanged.
+
+Shortcuts apply to positive prompt output in all modes, including Learning pass-through. Negative prompts are never expanded.
 
 ## Connection-Only Inputs
 

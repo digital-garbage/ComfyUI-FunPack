@@ -18,6 +18,7 @@ const HIDDEN_WIDGETS = new Set([
 const GROUP_ORDER = ["subject", "appearance", "action", "camera", "environment", "style", "quality", "details", "negative"];
 
 let sceneData = null;
+let shortcutData = null;
 let activePanel = null;
 const trackedNodes = new Set();
 
@@ -185,6 +186,10 @@ function memoryItems() {
   return Array.isArray(sceneData?.memory) ? sceneData.memory : [];
 }
 
+function shortcutItems() {
+  return Array.isArray(shortcutData?.shortcuts) ? shortcutData.shortcuts : [];
+}
+
 function normalizeMemoryMap(items) {
   const output = {};
   for (const item of items || []) {
@@ -225,6 +230,20 @@ async function fetchScenes(refinementKey = "") {
   return sceneData;
 }
 
+async function fetchShortcuts() {
+  try {
+    const params = new URLSearchParams({ cache_bust: String(Date.now()) });
+    const response = await api.fetchApi(`/funpack/shortcuts?${params.toString()}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    shortcutData = await response.json();
+  } catch (error) {
+    console.warn("FunPack: failed to refresh shortcuts", error);
+  }
+  return shortcutData;
+}
+
 function updateSceneCombo(node) {
   const widget = widgetByName(node, "scene");
   if (!widget) {
@@ -239,7 +258,7 @@ function updateSceneCombo(node) {
 }
 
 async function refreshNode(node) {
-  await fetchScenes(currentRefinementKey(node));
+  await Promise.all([fetchScenes(currentRefinementKey(node)), fetchShortcuts()]);
   updateSceneCombo(node);
   setDirty(node);
 }
@@ -344,6 +363,80 @@ async function saveDatabase(node, items) {
     throw new Error(error.error || `Database save failed with HTTP ${response.status}`);
   }
   await refreshNode(node);
+}
+
+async function saveShortcut(item) {
+  const response = await api.fetchApi("/funpack/shortcuts/shortcut", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "save", ...item }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Shortcut save failed with HTTP ${response.status}`);
+  }
+  shortcutData = await response.json();
+  return shortcutData;
+}
+
+async function deleteShortcut(name) {
+  const response = await api.fetchApi("/funpack/shortcuts/shortcut", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "delete", name }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.error || `Shortcut delete failed with HTTP ${response.status}`);
+  }
+  shortcutData = await response.json();
+  return shortcutData;
+}
+
+async function exportShortcuts() {
+  const params = new URLSearchParams({ cache_bust: String(Date.now()) });
+  const response = await api.fetchApi(`/funpack/shortcuts/export?${params.toString()}`, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Shortcut export failed with HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "funpack_shortcuts.json";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importShortcuts(onDone) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    try {
+      const data = JSON.parse(await file.text());
+      const response = await api.fetchApi("/funpack/shortcuts/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `Shortcut import failed with HTTP ${response.status}`);
+      }
+      shortcutData = await response.json();
+      onDone?.();
+    } catch (error) {
+      showPanelError(error);
+    }
+  };
+  input.click();
 }
 
 async function exportScenes(node) {
@@ -1104,6 +1197,8 @@ function renderPanel(panel, node, view, options = {}) {
     renderPromptEditor(panel, node, view);
   } else if (view === "database") {
     renderDatabaseEditor(panel, node);
+  } else if (view === "shortcuts") {
+    renderShortcutEditor(panel, node);
   } else if (view === "create") {
     renderCreateScene(panel, node, options.nextView || "menu");
   } else {
@@ -1243,7 +1338,7 @@ function renderMenu(panel, node) {
 
   const menu = document.createElement("div");
   menu.className = "funpack-scene-menu-buttons";
-  for (const [label, target] of [["Positive prompt", "positive"], ["Negative prompt", "negative"], ["Database", "database"]]) {
+  for (const [label, target] of [["Positive prompt", "positive"], ["Negative prompt", "negative"], ["Database", "database"], ["Shortcuts", "shortcuts"]]) {
     const item = panelButton(label, "large");
     item.addEventListener("click", () => navigatePanel(panel, node, target, { cancelTarget: "menu" }));
     menu.append(item);
@@ -1682,6 +1777,141 @@ function renderDatabaseEditor(panel, node) {
   body.append(footer);
 }
 
+function splitLines(value) {
+  return String(value || "")
+    .split(/\n+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderShortcutEditor(panel, node) {
+  const body = shell(panel.root, "Shortcuts", "shortcuts");
+
+  const tools = document.createElement("div");
+  tools.className = "funpack-scene-shortcut-tools";
+  const add = panelButton("Add shortcut", "primary");
+  add.addEventListener("click", () => {
+    panel.shortcutDrafts = panel.shortcutDrafts || JSON.parse(JSON.stringify(shortcutItems()));
+    panel.shortcutDrafts.unshift({
+      name: "",
+      enabled: true,
+      triggers: [],
+      replacements: [],
+    });
+    renderPanel(panel, node, "shortcuts");
+  });
+  const refresh = panelButton("Refresh");
+  refresh.addEventListener("click", async () => {
+    await fetchShortcuts();
+    delete panel.shortcutDrafts;
+    renderPanel(panel, node, "shortcuts");
+  });
+  const imp = panelButton("Import");
+  imp.addEventListener("click", () => importShortcuts(() => {
+    delete panel.shortcutDrafts;
+    renderPanel(panel, node, "shortcuts");
+  }));
+  const exp = panelButton("Export");
+  exp.addEventListener("click", async () => {
+    try {
+      await exportShortcuts();
+    } catch (error) {
+      showPanelError(error);
+    }
+  });
+  tools.append(add, refresh, imp, exp);
+  body.append(tools);
+
+  if (!panel.shortcutDrafts) {
+    panel.shortcutDrafts = JSON.parse(JSON.stringify(shortcutItems()));
+  }
+
+  const list = document.createElement("div");
+  list.className = "funpack-scene-shortcut-list";
+  body.append(list);
+
+  const drafts = panel.shortcutDrafts;
+  if (!drafts.length) {
+    const empty = document.createElement("div");
+    empty.className = "funpack-scene-muted";
+    empty.textContent = "No shortcuts yet.";
+    list.append(empty);
+  }
+
+  drafts.forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "funpack-scene-shortcut-row";
+
+    const top = document.createElement("div");
+    top.className = "funpack-scene-shortcut-top";
+    const name = panelTextInput(item.name || "", "Shortcut name");
+    name.addEventListener("input", () => { item.name = name.value; });
+    const enabled = panelCheckbox(item.enabled !== false, "Enabled");
+    enabled.input.addEventListener("change", () => { item.enabled = enabled.input.checked; });
+    top.append(name, enabled.wrapper);
+
+    const triggers = document.createElement("textarea");
+    triggers.className = "funpack-scene-edit-textarea";
+    triggers.placeholder = "Activation phrases, one per line";
+    triggers.value = (item.triggers || []).join("\n");
+    triggers.addEventListener("input", () => { item.triggers = splitLines(triggers.value); });
+
+    const replacements = document.createElement("textarea");
+    replacements.className = "funpack-scene-edit-textarea";
+    replacements.placeholder = "Replacement phrases, one per line";
+    replacements.value = (item.replacements || []).join("\n");
+    replacements.addEventListener("input", () => { item.replacements = splitLines(replacements.value); });
+
+    const actions = document.createElement("div");
+    actions.className = "funpack-scene-shortcut-actions";
+    const save = panelButton("Save", "primary");
+    save.addEventListener("click", async () => {
+      try {
+        await saveShortcut({
+          original_name: item.key || item.name,
+          name: item.name,
+          enabled: item.enabled !== false,
+          triggers: splitLines(triggers.value),
+          replacements: splitLines(replacements.value),
+        });
+        await fetchShortcuts();
+        delete panel.shortcutDrafts;
+        renderPanel(panel, node, "shortcuts");
+      } catch (error) {
+        showPanelError(error);
+      }
+    });
+    const del = panelButton("Delete", "danger");
+    del.addEventListener("click", async () => {
+      try {
+        if (item.key || item.name) {
+          await deleteShortcut(item.name || item.key);
+          await fetchShortcuts();
+        }
+        drafts.splice(index, 1);
+        delete panel.shortcutDrafts;
+        renderPanel(panel, node, "shortcuts");
+      } catch (error) {
+        showPanelError(error);
+      }
+    });
+    actions.append(save, del);
+
+    row.append(top, triggers, replacements, actions);
+    list.append(row);
+  });
+
+  const footer = document.createElement("div");
+  footer.className = "funpack-scene-footer";
+  const back = panelButton("Back");
+  back.addEventListener("click", () => {
+    delete panel.shortcutDrafts;
+    renderPanel(panel, node, "menu");
+  });
+  footer.append(back);
+  body.append(footer);
+}
+
 function openPanel(node, view = "menu") {
   closePanel();
   injectStyles();
@@ -2052,6 +2282,35 @@ function injectStyles() {
       align-items: center;
       padding: 5px 0;
       border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .funpack-scene-shortcut-tools,
+    .funpack-scene-shortcut-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      margin-bottom: 8px;
+    }
+    .funpack-scene-shortcut-list {
+      display: grid;
+      gap: 10px;
+      max-height: 430px;
+      overflow: auto;
+      padding-right: 3px;
+    }
+    .funpack-scene-shortcut-row {
+      display: grid;
+      gap: 7px;
+      padding: 8px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.035);
+    }
+    .funpack-scene-shortcut-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
     }
     .funpack-scene-footer {
       margin-top: 10px;

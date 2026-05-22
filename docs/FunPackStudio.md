@@ -59,6 +59,12 @@ Available when Scene Builder mode is not Pass-through. Save and load named scene
 
 When Scene Builder is active the Refiner tab shows a notice and the intent override field is disabled, since intent derives from the scene prompt.
 
+### Shortcuts
+
+Shortcuts are global positive-prompt expansions shared by Scene Builder, Studio, and Refiner V2. Each shortcut has one or more activation phrases and one or more replacement phrases. Matching uses exact word or phrase boundaries, preserves surrounding spaces and punctuation, and chooses among replacements with the run seed.
+
+Shortcuts are stored outside refinement keys, can be imported/exported separately, and are not cleared by **Reset session**.
+
 ### Refiner
 
 All Refiner V2 execution settings:

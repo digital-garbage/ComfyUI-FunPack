@@ -5994,6 +5994,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_prompt_key(self, prompt):
         return re.sub(r"\s+", " ", str(prompt or "").strip())
 
+    def _v2_apply_global_shortcuts(self, text, seed=0):
+        try:
+            try:
+                from .templates import apply_prompt_shortcuts
+            except ImportError:
+                from templates import apply_prompt_shortcuts
+            expanded, applied = apply_prompt_shortcuts(text, seed=seed)
+        except Exception as error:
+            return str(text or ""), f"Shortcuts: unavailable ({error}).", []
+        if not applied:
+            return str(text or ""), "Shortcuts: none.", []
+        labels = [
+            f"{item.get('trigger', '')}->{item.get('replacement', '')}"
+            for item in applied[:8]
+        ]
+        suffix = f", ... ({len(applied)} total)" if len(applied) > 8 else ""
+        return expanded, f"Shortcuts: expanded {len(applied)} activation(s): {', '.join(labels)}{suffix}.", applied
+
     def _v2_extract_conditioning(self, encoded):
         if not isinstance(encoded, list) or not encoded:
             return None, {"pooled_output": None}
@@ -10737,6 +10755,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         linked_refinement_key = str(refinement_key_input or "").strip()
         if linked_refinement_key:
             refinement_key = linked_refinement_key
+        positive_prompt, shortcut_status, shortcut_applied = self._v2_apply_global_shortcuts(positive_prompt, seed=seed)
+        user_intent_prompt, intent_shortcut_status, intent_shortcut_applied = self._v2_apply_global_shortcuts(user_intent_prompt, seed=seed)
+        if intent_shortcut_applied:
+            shortcut_status = (
+                f"{shortcut_status}\nIntent {intent_shortcut_status}"
+                if shortcut_applied else
+                f"Intent {intent_shortcut_status}"
+            )
 
         rating_profile = normalize_refiner_v2_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
@@ -11266,7 +11292,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             adaptation_status,
             seed_status,
         ]
-        for line in (repair_status, advisor_status, intent_alignment_status, vision_status, lucky_status):
+        for line in (shortcut_status, repair_status, advisor_status, intent_alignment_status, vision_status, lucky_status):
             if _active(line):
                 status_lines.append(line)
         if perfect_freeze:
@@ -11302,6 +11328,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     _active(intent_alignment_status),
                     _active(perfect_repair_status),
                     _active(repair_status),
+                    _active(shortcut_status),
                     _active(advisor_status),
                     _active(lucky_status),
                     _active(wildcard_status),
@@ -11312,6 +11339,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     _active(intent_alignment_status),
                     _active(perfect_repair_status),
                     _active(repair_status),
+                    _active(shortcut_status),
                     _active(advisor_status),
                     _active(lucky_status),
                     _active(wildcard_status),

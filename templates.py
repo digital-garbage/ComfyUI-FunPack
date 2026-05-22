@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+from hashlib import md5
 from datetime import datetime, timezone
 
 import folder_paths
@@ -69,6 +70,10 @@ def template_store_path():
 
 def scene_store_path():
     return os.path.join(template_store_dir(), "scenes.json")
+
+
+def shortcut_store_path():
+    return os.path.join(template_store_dir(), "shortcuts.json")
 
 
 def refinement_store_dir():
@@ -237,6 +242,14 @@ def empty_scene_db():
     }
 
 
+def empty_shortcut_db():
+    return {
+        "version": 1,
+        "source": "ComfyUI-FunPack",
+        "shortcuts": {},
+    }
+
+
 def normalize_scene_db(data):
     if not isinstance(data, dict):
         data = empty_scene_db()
@@ -247,6 +260,195 @@ def normalize_scene_db(data):
     if not isinstance(data.get("scenes"), dict):
         data["scenes"] = {}
     return data
+
+
+def shortcut_key(value):
+    value = re.sub(r"[^\w'’.-]+", " ", str(value or "").strip().lower(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def shortcut_list(value):
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            value = parsed
+        except (json.JSONDecodeError, TypeError, ValueError):
+            value = re.split(r"[,;\n]+", value)
+    if not isinstance(value, list):
+        return []
+    result = []
+    seen = set()
+    for item in value:
+        text = re.sub(r"\s+", " ", str(item or "").strip())
+        key = shortcut_key(text)
+        if text and key and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
+
+
+def normalize_shortcut_name(value, fallback=""):
+    value = re.sub(r"\s+", " ", str(value or "").strip())
+    if value:
+        return value
+    fallback = re.sub(r"\s+", " ", str(fallback or "").strip())
+    return fallback
+
+
+def normalize_shortcut_item(item, fallback_name=""):
+    if not isinstance(item, dict):
+        return None
+    name = normalize_shortcut_name(item.get("name"), fallback_name)
+    triggers = shortcut_list(item.get("triggers", item.get("activation_words", item.get("activation", []))))
+    replacements = shortcut_list(item.get("replacements", item.get("replacement", [])))
+    if not name:
+        name = triggers[0] if triggers else ""
+    if not name or not triggers or not replacements:
+        return None
+    created = str(item.get("created_at") or now_iso())
+    return {
+        "name": name,
+        "enabled": bool(item.get("enabled", True)),
+        "triggers": triggers,
+        "replacements": replacements,
+        "created_at": created,
+        "updated_at": str(item.get("updated_at") or now_iso()),
+    }
+
+
+def normalize_shortcut_db(data):
+    if not isinstance(data, dict):
+        data = empty_shortcut_db()
+    shortcuts = data.get("shortcuts", {})
+    if isinstance(shortcuts, list):
+        shortcuts = {str(index): item for index, item in enumerate(shortcuts)}
+    if not isinstance(shortcuts, dict):
+        shortcuts = {}
+    normalized = {}
+    for fallback_name, item in shortcuts.items():
+        shortcut = normalize_shortcut_item(item, fallback_name)
+        if not shortcut:
+            continue
+        key = shortcut_key(shortcut["name"]) or shortcut_key(fallback_name)
+        if key:
+            normalized[key] = shortcut
+    data["version"] = 1
+    data["source"] = "ComfyUI-FunPack"
+    data["shortcuts"] = normalized
+    return data
+
+
+def load_shortcut_db():
+    path = shortcut_store_path()
+    if not os.path.exists(path):
+        return empty_shortcut_db()
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return empty_shortcut_db()
+    return normalize_shortcut_db(data)
+
+
+def save_shortcut_db(data):
+    data = normalize_shortcut_db(data)
+    os.makedirs(template_store_dir(), exist_ok=True)
+    with open(shortcut_store_path(), "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+
+
+def shortcut_items(data=None):
+    data = load_shortcut_db() if data is None else normalize_shortcut_db(data)
+    items = []
+    for key, item in data.get("shortcuts", {}).items():
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["key"] = key
+        items.append(row)
+    return sorted(items, key=lambda item: item.get("name", "").lower())
+
+
+def save_shortcut_item(payload):
+    item = normalize_shortcut_item(payload)
+    if item is None:
+        raise ValueError("Shortcut name, activation phrase, and replacement phrase are required.")
+    data = load_shortcut_db()
+    shortcuts = data.setdefault("shortcuts", {})
+    key = shortcut_key(item["name"])
+    original_key = shortcut_key(payload.get("original_name", ""))
+    previous = shortcuts.get(key, {}) if isinstance(shortcuts.get(key), dict) else {}
+    if not previous and original_key:
+        previous = shortcuts.get(original_key, {}) if isinstance(shortcuts.get(original_key), dict) else {}
+    item["created_at"] = str(previous.get("created_at") or item["created_at"])
+    item["updated_at"] = now_iso()
+    shortcuts[key] = item
+    if original_key and original_key != key:
+        shortcuts.pop(original_key, None)
+    save_shortcut_db(data)
+    return key, data
+
+
+def delete_shortcut_item(name):
+    key = shortcut_key(name)
+    data = load_shortcut_db()
+    if key:
+        data.setdefault("shortcuts", {}).pop(key, None)
+        save_shortcut_db(data)
+    return key, data
+
+
+def _shortcut_trigger_pattern(trigger):
+    words = [re.escape(part) for part in re.split(r"\s+", str(trigger or "").strip()) if part]
+    if not words:
+        return ""
+    body = r"\s+".join(words)
+    return rf"(?<![\w'’-])({body})(?![\w'’-])"
+
+
+def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
+    original = str(text or "")
+    if not original:
+        return original, []
+    data = load_shortcut_db() if shortcut_db is None else normalize_shortcut_db(shortcut_db)
+    candidates = []
+    for shortcut in data.get("shortcuts", {}).values():
+        if not isinstance(shortcut, dict) or not bool(shortcut.get("enabled", True)):
+            continue
+        replacements = [item.strip() for item in shortcut_list(shortcut.get("replacements", [])) if item.strip()]
+        if not replacements:
+            continue
+        for trigger in shortcut_list(shortcut.get("triggers", [])):
+            pattern = _shortcut_trigger_pattern(trigger)
+            if pattern:
+                candidates.append((trigger, pattern, replacements, shortcut.get("name", trigger)))
+    if not candidates:
+        return original, []
+
+    candidates.sort(key=lambda item: len(shortcut_key(item[0])), reverse=True)
+    combined = "|".join(f"(?P<t{index}>{pattern})" for index, (_, pattern, _, _) in enumerate(candidates))
+    if not combined:
+        return original, []
+    try:
+        rng_seed = int(seed or 0)
+    except (TypeError, ValueError):
+        rng_seed = 0
+    if rng_seed == 0:
+        rng_seed = int(md5(original.encode("utf-8")).hexdigest()[:12], 16)
+    rng = random.Random(rng_seed)
+    applied = []
+
+    def replace(match):
+        for index, (trigger, _, replacements, name) in enumerate(candidates):
+            if match.group(f"t{index}") is None:
+                continue
+            replacement = rng.choice(replacements).strip()
+            applied.append({"name": str(name), "trigger": trigger, "replacement": replacement})
+            return replacement
+        return match.group(0)
+
+    expanded = re.sub(combined, replace, original, flags=re.IGNORECASE | re.UNICODE)
+    return expanded, applied
 
 
 def load_scene_db(refinement_key=""):
@@ -1051,6 +1253,72 @@ async def funpack_scenes_import(request):
     return web.json_response({"imported": imported, "scenes": scene_names(key), "refinement_key": key})
 
 
+@PromptServer.instance.routes.get("/funpack/shortcuts")
+async def funpack_shortcuts(_):
+    data = load_shortcut_db()
+    return web.json_response(
+        {
+            "path": shortcut_store_path(),
+            "data": data,
+            "shortcuts": shortcut_items(data),
+        },
+        headers={"Cache-Control": "no-store, max-age=0"},
+    )
+
+
+@PromptServer.instance.routes.get("/funpack/shortcuts/export")
+async def funpack_shortcuts_export(_):
+    data = load_shortcut_db()
+    return web.json_response(
+        data,
+        headers={
+            "Cache-Control": "no-store, max-age=0",
+            "Content-Disposition": "attachment; filename=funpack_shortcuts.json",
+        },
+    )
+
+
+@PromptServer.instance.routes.post("/funpack/shortcuts/shortcut")
+async def funpack_shortcut_save(request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        return web.json_response({"error": "Shortcut payload must be an object."}, status=400)
+
+    action = str(body.get("action") or "save").lower()
+    name = normalize_shortcut_name(body.get("name"))
+    if action == "delete":
+        if not name:
+            return web.json_response({"error": "Shortcut name is required."}, status=400)
+        key, data = delete_shortcut_item(name)
+        return web.json_response({"deleted": key, "data": data, "shortcuts": shortcut_items(data)})
+
+    try:
+        key, data = save_shortcut_item(body)
+    except ValueError as error:
+        return web.json_response({"error": str(error)}, status=400)
+    return web.json_response({"saved": key, "data": data, "shortcuts": shortcut_items(data)})
+
+
+@PromptServer.instance.routes.post("/funpack/shortcuts/import")
+async def funpack_shortcuts_import(request):
+    incoming = await request.json()
+    if not isinstance(incoming, dict):
+        return web.json_response({"error": "Imported file is not a shortcut database."}, status=400)
+    if "shortcuts" not in incoming:
+        return web.json_response({"error": "Imported file does not contain shortcuts."}, status=400)
+    imported = normalize_shortcut_db(incoming)
+    data = load_shortcut_db()
+    shortcuts = data.setdefault("shortcuts", {})
+    count = 0
+    for key, item in imported.get("shortcuts", {}).items():
+        if isinstance(item, dict):
+            shortcuts[str(key)] = item
+            count += 1
+    save_shortcut_db(data)
+    data = load_shortcut_db()
+    return web.json_response({"imported": count, "data": data, "shortcuts": shortcut_items(data)})
+
+
 @PromptServer.instance.routes.get("/funpack/refinement_keys")
 async def funpack_refinement_keys(_):
     return web.json_response(
@@ -1246,9 +1514,26 @@ class FunPackSceneBuilder:
         negative_text = scene_text_or_payload(scene_negative, payload["negative_phrases"])
         return scene_from_texts(target_name, aliases, mode, positive_text, negative_text, refinement_key)
 
+    def _shortcut_seed(self, refinement_key, prompt):
+        key = f"{normalize_refinement_key(refinement_key)}::{str(prompt or '')}"
+        return int(md5(key.encode("utf-8")).hexdigest()[:12], 16)
+
+    def _shortcut_status(self, applied):
+        if not applied:
+            return "Shortcuts: none."
+        labels = []
+        for item in applied[:8]:
+            labels.append(f"{item.get('trigger', '')}->{item.get('replacement', '')}")
+        suffix = f", ... ({len(applied)} total)" if len(applied) > 8 else ""
+        return f"Shortcuts: expanded {len(applied)} activation(s): {', '.join(labels)}{suffix}."
+
     def _outputs_for_scene(self, name, scene, scene_db=None, lora_stack=None, source="Manual"):
         positive = scene_prompt_text(scene, "positive_text", "positive_phrases")
         negative = scene_prompt_text(scene, "negative_text", "negative_phrases")
+        positive, shortcut_applied = apply_prompt_shortcuts(
+            positive,
+            seed=self._shortcut_seed(scene.get("refinement_key", "") if isinstance(scene, dict) else "", positive),
+        )
         positive = resolve_scene_database_wildcards(positive, scene_db)
         negative = resolve_scene_database_wildcards(negative, scene_db)
         lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
@@ -1257,19 +1542,24 @@ class FunPackSceneBuilder:
             f"Stored fields: {scene_field_summary(scene)}.\n"
             f"Positive phrases: {len(scene.get('positive_phrases', []) or [])}. "
             f"Negative phrases: {len(scene.get('negative_phrases', []) or [])}. "
-            f"LoRA stack pass-through: {lora_count} LoRA(s)."
+            f"LoRA stack pass-through: {lora_count} LoRA(s).\n"
+            f"{self._shortcut_status(shortcut_applied)}"
         )
         return (positive, negative, lora_stack, status)
 
-    def _learning_outputs(self, positive_prompt, negative_prompt, lora_stack=None):
-        positive = str(positive_prompt or "")
+    def _learning_outputs(self, positive_prompt, negative_prompt, lora_stack=None, refinement_key=""):
+        positive, shortcut_applied = apply_prompt_shortcuts(
+            str(positive_prompt or ""),
+            seed=self._shortcut_seed(refinement_key, positive_prompt),
+        )
         negative = str(negative_prompt or "")
         lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
         status = (
             "Scene Builder Learning: pass-through active. "
             f"Collected positive source: {'yes' if positive else 'no'}. "
             f"Collected negative source: {'yes' if negative else 'no'}. "
-            f"LoRA stack pass-through: {lora_count} LoRA(s)."
+            f"LoRA stack pass-through: {lora_count} LoRA(s).\n"
+            f"{self._shortcut_status(shortcut_applied)}"
         )
         return (positive, negative, lora_stack, status)
 
@@ -1375,7 +1665,7 @@ class FunPackSceneBuilder:
         if mode == "Learning":
             if memory_changed:
                 save_scene_db(data, refinement_key)
-            return self._learning_outputs(positive_prompt, negative_prompt, lora_stack)
+            return self._learning_outputs(positive_prompt, negative_prompt, lora_stack, refinement_key)
 
         if mode == "Auto":
             matched_name, matched_scene, match_type = find_scene_for_intent(intent_prompt, scenes)
