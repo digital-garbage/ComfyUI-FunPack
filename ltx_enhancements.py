@@ -640,10 +640,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     dit[("double_block", block_idx)] = replacement
 
     # --- Technique 5 (forward hooks): capture + inject via nn.Module hooks ---
-    # patches_replace["dit"] reaches transformer_options but LTXAV blocks never call it.
-    # Forward hooks on the actual nn.Modules are the only reliable mechanism.
+    # Only register hooks when i2v injection is active. Hooks on large LTXAV hidden
+    # state tensors are expensive - skip entirely when reference_injection is off.
     hook_handles = []
-    if capture_buf is not None:
+    if capture_buf is not None and has_i2v:
         try:
             diff = getattr(getattr(model, "model", None), "diffusion_model", None)
             if diff is not None:
@@ -671,12 +671,12 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                     return out, out
 
                                 def _hook(module, inp, out):
-                                    # Capture only at mid-sigma
+                                    # Capture only at mid-sigma - keep on same device as model
                                     if 0.85 <= s_state[0] <= 0.95:
                                         try:
                                             t, _ = _extract_tensor(out)
                                             if isinstance(t, torch.Tensor):
-                                                buf[block_idx] = t.detach().cpu()
+                                                buf[block_idx] = t.detach()
                                         except Exception:
                                             pass
                                     # Inject when lazy has a tensor
@@ -690,7 +690,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                                         t, _ = _extract_tensor(out)
                                         if not isinstance(t, torch.Tensor):
                                             return None
-                                        b = lazy_ref.tensor.to(device=t.device, dtype=t.dtype)
+                                        b = lazy_ref.tensor.to(device=t.device, dtype=t.dtype, non_blocking=True)
                                         if b.shape != t.shape:
                                             return None
                                         injected = t.lerp(b, effective)
@@ -776,7 +776,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     _ref_extracted[0] = True
                     for idx, lazy in _lazy.items():
                         if idx in _cap_buf:
-                            lazy.set(_cap_buf[idx])
+                            lazy.set(_cap_buf[idx])  # tensor already on GPU from capture hook
 
             return result
 
