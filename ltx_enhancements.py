@@ -13,8 +13,9 @@ Technique 4: Denoise creativity mask
 
 Technique 5: Attention anchor transfer
   Capture hidden states at semantic anchor blocks (14, 19) during every run.
-  When a run is rated Perfect, bless those maps. Inject them into subsequent runs
-  to transfer semantic structure from good outputs onto future generations.
+  When a run is rated Perfect or Loved it, bless those maps. Inject them into
+  subsequent runs concentrated in the early high-sigma phase (sigma > 0.5) where
+  anatomy and physics are formed, fading to zero by sigma 0.2.
 """
 
 import math
@@ -284,12 +285,21 @@ def build_creativity_mask(latent, rating_profile, reward):
 # Core block replacement builder
 # ---------------------------------------------------------------------------
 
-def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength):
+def _sigma_gated_strength(base_strength, sigma):
+    """Scale inject_strength by current sigma - full above 0.5, fade to 0 below 0.2."""
+    if sigma >= 0.5:
+        return base_strength
+    if sigma <= 0.2:
+        return 0.0
+    return base_strength * (sigma - 0.2) / 0.3
+
+
+def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength, sigma_state=None):
     """
     Builds a single patches_replace["dit"] replacement function that applies:
       - attention temperature (temp_scale != 1.0)
       - hidden state capture (capture_buf is not None)
-      - hidden state injection (inject_tensor is not None)
+      - hidden state injection (inject_tensor is not None), sigma-gated when sigma_state provided
     All in one pass through the block.
     """
     import comfy.ldm.modules.attention as attn_mod
@@ -335,9 +345,12 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
         # --- Inject ---
         if do_inject:
             try:
-                b = inject_tensor.to(device=out["img"].device, dtype=out["img"].dtype)
-                if b.shape == out["img"].shape:
-                    out = {"img": out["img"].lerp(b, inject_strength)}
+                sigma = sigma_state[0] if sigma_state is not None else 1.0
+                effective = _sigma_gated_strength(inject_strength, sigma)
+                if effective > 0.0:
+                    b = inject_tensor.to(device=out["img"].device, dtype=out["img"].dtype)
+                    if b.shape == out["img"].shape:
+                        out = {"img": out["img"].lerp(b, effective)}
             except Exception:
                 pass
 
@@ -417,6 +430,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     # Shared capture buffer - populated during sampling, saved at end via wrapper
     capture_buf = {} if refinement_key else None
 
+    # Sigma state - updated by wrapper before each model call so block replacements
+    # can gate injection strength to the early high-sigma (anatomy/physics) phase.
+    sigma_state = [1.0]
+
     # --- Install per-block patches_replace ---
     all_blocks = set(temperature_map.keys()) | (set(ANCHOR_BLOCKS) if (capture_buf is not None or blessed_maps) else set())
 
@@ -430,7 +447,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             inj_tensor = (blessed_maps.get(block_idx) if blessed_maps and block_idx in ANCHOR_BLOCKS else None)
             cap = capture_buf if (capture_buf is not None and block_idx in ANCHOR_BLOCKS) else None
 
-            replacement = _build_block_replacement(block_idx, t_scale, cap, inj_tensor, inject_strength)
+            replacement = _build_block_replacement(
+                block_idx, t_scale, cap, inj_tensor, inject_strength,
+                sigma_state=sigma_state if inj_tensor is not None else None,
+            )
             if replacement is not None:
                 # Compose with any existing replacement (e.g. from STG/PAG)
                 existing = dit.get(("double_block", block_idx))
@@ -480,6 +500,25 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
         model.model_options["model_function_wrapper"] = _temporal_wrapper
+
+    # --- Technique 5 (sigma tracking): update sigma_state before each model call ---
+    # Runs before block replacements so injection gating has the current timestep.
+    if blessed_maps:
+        _existing_for_sigma = model.model_options.get("model_function_wrapper")
+        _state = sigma_state
+
+        def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state):
+            ts = args.get("timestep")
+            if ts is not None:
+                try:
+                    _state[0] = float(ts.max().item())
+                except Exception:
+                    pass
+            if _ew is not None:
+                return _ew(apply_fn, args)
+            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+        model.model_options["model_function_wrapper"] = _sigma_tracker
 
     # --- Technique 5 (capture side): save capture_buf to disk after sampling ---
     # We wrap model_function_wrapper to finalize capture on the last call.
