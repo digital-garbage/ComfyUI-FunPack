@@ -6107,8 +6107,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         custom_triggers = list(custom_map.keys())
 
         if custom_triggers:
+            def _custom_trigger_pat(t):
+                end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+                return r"\b" + re.escape(t) + end
             custom_parts = "|".join(
-                r"\b" + re.escape(t) + r"\b"
+                _custom_trigger_pat(t)
                 for t in sorted(custom_triggers, key=len, reverse=True)
             )
             split_pattern = re.compile(

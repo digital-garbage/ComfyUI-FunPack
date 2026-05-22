@@ -1002,3 +1002,16 @@ def test_split_custom_transition_placement_override(monkeypatch, tmp_path):
     assert "CUT" in segments[0]
     assert "she runs" in segments[1]
     assert "CUT" not in segments[1]
+
+
+def test_custom_transition_trigger_ending_with_punctuation(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_transition_item({"name": "Scene cut", "trigger": "Scene cut."})
+
+    refiner = FunPackVideoRefinerV2()
+    segments = refiner._v2_split_prompt_by_transitions(
+        "Kai'Sa walks confidently. Scene cut. She looks into camera."
+    )
+    assert len(segments) == 2
+    assert "Kai'Sa walks" in segments[0]
+    assert "She looks" in segments[1]
