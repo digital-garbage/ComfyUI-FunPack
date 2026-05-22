@@ -602,9 +602,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                 else:
                     dit[("double_block", block_idx)] = replacement
 
-    # --- Technique 5 (forward hooks): capture hidden states via nn.Module hooks ---
-    # patches_replace["dit"] is set but LTXAV blocks never check it.
-    # Forward hooks on the actual nn.Modules are the only reliable mechanism.
+    # --- Technique 5 (forward hooks): capture + inject via nn.Module hooks ---
+    # patches_replace["dit"] reaches transformer_options but LTXAV blocks never call it.
+    # Forward hooks on the actual nn.Modules are the only reliable mechanism for both
+    # capturing hidden states AND injecting reference maps.
     hook_handles = []
     if capture_buf is not None:
         try:
@@ -620,24 +621,58 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     blocks_to_hook = set(ANCHOR_BLOCKS) | set(IDENTITY_BLOCKS)
                     for idx in blocks_to_hook:
                         if idx < len(block_list):
-                            def _make_hook(block_idx, buf):
+                            is_anchor = idx in ANCHOR_BLOCKS
+                            inj_strength = anchor_strength if is_anchor else identity_strength
+                            inj_gate = (0.2, 0.5) if is_anchor else (0.2, 0.55)
+                            lazy = lazy_injects.get(idx)
+
+                            def _make_hook(block_idx, buf, lazy_ref, strength, gate, s_state):
+                                def _extract_tensor(out):
+                                    if isinstance(out, dict):
+                                        return out.get("img") or out.get("hidden_states") or next(iter(out.values()), None), out
+                                    elif isinstance(out, tuple):
+                                        return out[0], out
+                                    return out, out
+
                                 def _hook(module, inp, out):
+                                    # Capture
                                     try:
-                                        if isinstance(out, dict):
-                                            t = out.get("img") or out.get("hidden_states") or next(iter(out.values()), None)
-                                        elif isinstance(out, tuple):
-                                            t = out[0]
-                                        else:
-                                            t = out
+                                        t, _ = _extract_tensor(out)
                                         if isinstance(t, torch.Tensor):
                                             buf[block_idx] = t.detach().cpu()
                                     except Exception:
                                         pass
+                                    # Inject (only when lazy has a tensor)
+                                    if lazy_ref is None or lazy_ref.tensor is None:
+                                        return None
+                                    try:
+                                        sigma = s_state[0]
+                                        effective = _sigma_gated_strength(strength, sigma, gate[1], gate[0])
+                                        if effective <= 0.0:
+                                            return None
+                                        t, _ = _extract_tensor(out)
+                                        if not isinstance(t, torch.Tensor):
+                                            return None
+                                        b = lazy_ref.tensor.to(device=t.device, dtype=t.dtype)
+                                        if b.shape != t.shape:
+                                            return None
+                                        injected = t.lerp(b, effective)
+                                        if isinstance(out, dict):
+                                            key = "img" if "img" in out else "hidden_states" if "hidden_states" in out else next(iter(out))
+                                            return {**out, key: injected}
+                                        elif isinstance(out, tuple):
+                                            return (injected,) + out[1:]
+                                        return injected
+                                    except Exception:
+                                        return None
                                 return _hook
-                            h = block_list[idx].register_forward_hook(_make_hook(idx, capture_buf))
+
+                            h = block_list[idx].register_forward_hook(
+                                _make_hook(idx, capture_buf, lazy, inj_strength, inj_gate, sigma_state)
+                            )
                             hook_handles.append(h)
                     if hook_handles:
-                        print(f"[FunPackEnhancements] Registered {len(hook_handles)} forward hooks on transformer blocks")
+                        print(f"[FunPackEnhancements] Registered {len(hook_handles)} capture+inject hooks on transformer blocks")
                 else:
                     print("[FunPackEnhancements] Could not find transformer block list for hooks")
         except Exception as e:
@@ -699,14 +734,21 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                 result = _ew(apply_fn, args)
             else:
                 result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
-            # After first step with i2v: the block capture just ran - snapshot into lazy injects
+            # Snapshot capture_buf into lazy injects once sigma crosses below 0.6.
+            # Mid-sigma gives cleaner reference maps than step 1 (sigma_max ≈ 1.0)
+            # while still covering the identity-formation phase.
             if _ref_x is not None and not _ref_extracted[0] and _cap_buf and _lazy:
-                _ref_extracted[0] = True
-                for idx, lazy in _lazy.items():
-                    if idx in _cap_buf:
-                        lazy.set(_cap_buf[idx])
-                captured = sum(1 for lz in _lazy.values() if lz.tensor is not None)
-                print(f"[FunPackEnhancements] i2v reference maps ready ({captured}/{len(_lazy)} blocks)")
+                try:
+                    sigma = float(ts.max().item()) if ts is not None else 1.0
+                except Exception:
+                    sigma = 1.0
+                if sigma < 0.6 and len(_cap_buf) >= len(_lazy):
+                    _ref_extracted[0] = True
+                    for idx, lazy in _lazy.items():
+                        if idx in _cap_buf:
+                            lazy.set(_cap_buf[idx])
+                    captured = sum(1 for lz in _lazy.values() if lz.tensor is not None)
+                    print(f"[FunPackEnhancements] i2v reference maps ready at sigma={sigma:.2f} ({captured}/{len(_lazy)} blocks)")
             return result
 
         model.model_options["model_function_wrapper"] = _sigma_tracker
