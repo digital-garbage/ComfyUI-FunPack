@@ -194,6 +194,91 @@ def _load_blessed_maps(refinement_key):
 
 
 # ---------------------------------------------------------------------------
+# Reference map extraction from i2v latent
+# ---------------------------------------------------------------------------
+
+def _has_i2v_reference(latent):
+    """Return True if latent has a protected first frame (i2v reference image)."""
+    if not isinstance(latent, dict):
+        return False
+    mask = latent.get("noise_mask")
+    if mask is None:
+        return False
+    # Unwrap NestedTensor to get the video mask
+    if getattr(mask, "is_nested", False):
+        tensors = list(mask.unbind())
+        if not tensors:
+            return False
+        mask = tensors[0]
+    if not isinstance(mask, torch.Tensor) or mask.dim() < 3:
+        return False
+    # First frame protected = mask[:, :, 0] close to 0
+    return float(mask[:, :, 0].float().mean()) < 0.1
+
+
+def _extract_reference_maps(model, latent, blocks):
+    """Single forward pass at near-zero sigma to capture hidden states from the
+    i2v reference frame. Returns {block_idx: tensor} or empty dict on failure.
+    """
+    try:
+        samples = latent.get("samples")
+        if samples is None:
+            return {}
+        # Get the video tensor (index 0 for NestedTensor, direct for flat)
+        if getattr(samples, "is_nested", False):
+            tensors = list(samples.unbind())
+            x = tensors[0] if tensors else None
+        else:
+            x = samples if isinstance(samples, torch.Tensor) else None
+        if x is None or x.dim() < 3:
+            return {}
+
+        capture_buf = {}
+
+        # Temporarily install capture-only patches
+        to = model.model_options.setdefault("transformer_options", {})
+        pr = to.setdefault("patches_replace", {})
+        dit = pr.setdefault("dit", {})
+        saved = {}
+        for idx in blocks:
+            saved[idx] = dit.get(("double_block", idx))
+            _buf, _idx = capture_buf, idx
+
+            def _cap(args, extra, buf=_buf, block_idx=_idx):
+                out = extra["original_block"](args)
+                try:
+                    buf[block_idx] = out["img"].detach().cpu()
+                except Exception:
+                    pass
+                return out
+
+            dit[("double_block", idx)] = _cap
+
+        # Forward pass at sigma ≈ 0.03 - model reads input almost as clean
+        device = x.device
+        dtype = x.dtype
+        sigma = torch.full((x.shape[0],), 0.03, device=device, dtype=dtype)
+        with torch.no_grad():
+            try:
+                model.apply_model(x, sigma, {})
+            except Exception:
+                # Some conditioning configs require more; fall back to no-op
+                pass
+
+        # Restore saved patches
+        for idx in blocks:
+            if saved[idx] is None:
+                dit.pop(("double_block", idx), None)
+            else:
+                dit[("double_block", idx)] = saved[idx]
+
+        return capture_buf
+    except Exception as e:
+        print(f"[FunPackEnhancements] Reference map extraction failed: {e}")
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Temperature map
 # ---------------------------------------------------------------------------
 
@@ -399,7 +484,7 @@ def _is_ltx_model(model):
 # Main enhancement builder
 # ---------------------------------------------------------------------------
 
-def build_enhancements(model, rating_profile, temporal_style, refinement_key, reward):
+def build_enhancements(model, rating_profile, temporal_style, refinement_key, reward, reference_latent=None):
     """
     Apply all active LTX enhancements to the model based on rating.
     Returns patched model (already cloned).
@@ -429,11 +514,26 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     }
 
     # --- Technique 5: injection data ---
-    blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
-    # Semantic anchor blocks (14, 19): structural/compositional signal, early sigma
-    anchor_strength = max(0.05, min(0.28, reward * 0.28)) if blessed_maps else 0.0
-    # Identity blocks (21, 26, 31): appearance/character details, mid-sigma, lighter touch
-    identity_strength = max(0.04, min(0.12, reward * 0.12)) if blessed_maps else 0.0
+    # Priority: reference maps from i2v latent > blessed maps from prior rated run
+    ref_maps = {}
+    if reference_latent is not None and _has_i2v_reference(reference_latent):
+        all_ref_blocks = list(ANCHOR_BLOCKS) + list(IDENTITY_BLOCKS)
+        ref_maps = _extract_reference_maps(model, reference_latent, all_ref_blocks)
+        if ref_maps:
+            print(f"[FunPackEnhancements] Reference maps extracted from i2v latent "
+                  f"({len(ref_maps)} blocks: {sorted(ref_maps.keys())})")
+
+    blessed_maps = ref_maps if ref_maps else (_load_blessed_maps(refinement_key) if refinement_key else None)
+    using_reference = bool(ref_maps)
+
+    # Reference maps: fixed moderate strength regardless of reward (no prior run needed)
+    # Blessed maps: strength scales with reward from prior rated run
+    if using_reference:
+        anchor_strength = 0.22
+        identity_strength = 0.10
+    else:
+        anchor_strength = max(0.05, min(0.28, reward * 0.28)) if blessed_maps else 0.0
+        identity_strength = max(0.04, min(0.12, reward * 0.12)) if blessed_maps else 0.0
 
     all_injection_blocks = set(ANCHOR_BLOCKS) | set(IDENTITY_BLOCKS)
 

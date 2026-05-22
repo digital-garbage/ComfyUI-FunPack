@@ -11454,6 +11454,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     temporal_style=temporal_style,
                     refinement_key=eff_key,
                     reward=prev_reward,
+                    reference_latent=latent,
                 )
                 enhancement_status = f"\nLTX enhancements: temporal={temporal_style}, reward={prev_reward:+.2f}"
             except Exception as e:
