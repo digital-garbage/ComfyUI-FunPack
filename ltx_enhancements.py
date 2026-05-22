@@ -20,6 +20,7 @@ Technique 5: Attention anchor transfer
 
 import math
 import os
+import weakref
 from hashlib import md5
 
 import torch
@@ -655,9 +656,11 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         _block_list = candidate
                         break
                 if _block_list is not None:
+                    _block_list = weakref.ref(_block_list)  # avoid strong ref cycle through wrapper
                     blocks_to_hook = set(lazy_injects.keys()) | (set(ANCHOR_BLOCKS) if not has_i2v else set())
+                    _bl = _block_list()
                     for idx in blocks_to_hook:
-                        if idx < len(_block_list):
+                        if _bl is not None and idx < len(_bl):
                             is_anchor = idx in ANCHOR_BLOCKS
                             _hook_block_params[idx] = (
                                 capture_buf,
@@ -716,7 +719,8 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         _active_handles = []
 
         def _register_hooks():
-            if not _block_list or not _hook_block_params:
+            bl = _block_list() if _block_list is not None else None
+            if not bl or not _hook_block_params:
                 return
             def _extract_tensor(out):
                 if isinstance(out, dict):
@@ -758,7 +762,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                 return _hook
 
             for idx, (buf, lazy_ref, strength, gate) in _hook_block_params.items():
-                h = _block_list[idx].register_forward_hook(
+                h = bl[idx].register_forward_hook(
                     _make_hook(idx, buf, lazy_ref, strength, gate, _state)
                 )
                 _active_handles.append(h)
