@@ -6142,6 +6142,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if trans_placement == "end":
                 segments.append((current + " " + trans_word).strip().strip(",;.:").strip() if current else trans_word)
                 current = following
+            elif trans_placement == "silent":
+                if current:
+                    segments.append(current)
+                current = following
             else:
                 if current:
                     segments.append(current)
@@ -12574,7 +12578,7 @@ class FunPackStudio:
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
         split_by_transitions = bool(rf.get("split_by_transitions", False))
         split_transition_placement = str(rf.get("split_transition_placement", "start") or "start").strip().lower()
-        if split_transition_placement not in ("start", "end"):
+        if split_transition_placement not in ("start", "end", "silent"):
             split_transition_placement = "start"
 
         # feedback_prompt: popup wins if override is on, else external wins

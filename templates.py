@@ -416,7 +416,7 @@ def normalize_transition_item(item, fallback_name=""):
         return None
     name = re.sub(r"\s+", " ", str(item.get("name") or fallback_name or trigger).strip())
     placement = str(item.get("placement") or "global").strip().lower()
-    if placement not in ("global", "start", "end"):
+    if placement not in ("global", "start", "end", "silent"):
         placement = "global"
     return {
         "name": name,
@@ -516,7 +516,7 @@ def load_custom_transition_triggers():
         if not trigger:
             continue
         placement = str(item.get("placement") or "global").strip().lower()
-        result[trigger.lower()] = placement if placement in ("start", "end") else None
+        result[trigger.lower()] = placement if placement in ("start", "end", "silent") else None
     return result
 
 

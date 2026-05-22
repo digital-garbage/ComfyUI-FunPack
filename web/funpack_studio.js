@@ -810,7 +810,7 @@ function openPanel(node) {
       const triggerInput = textInput(item.trigger || "", "Trigger phrase");
       triggerInput.addEventListener("input", () => { item.trigger = triggerInput.value; });
 
-      const placementSel = selectEl(["global", "start", "end"], item.placement || "global");
+      const placementSel = selectEl(["global", "start", "end", "silent"], item.placement || "global");
       placementSel.addEventListener("change", () => { item.placement = placementSel.value; });
 
       const actions = el("div", "funpack-studio-shortcut-actions");
@@ -901,11 +901,12 @@ function openPanel(node) {
     body.append(row("Split by transitions", splitToggle.wrap));
 
     if (!settings.refiner.split_transition_placement) settings.refiner.split_transition_placement = "start";
-    const placementSelect = selectEl(["start", "end"], settings.refiner.split_transition_placement);
+    const placementSelect = selectEl(["start", "end", "silent"], settings.refiner.split_transition_placement);
     placementSelect.addEventListener("change", () => { settings.refiner.split_transition_placement = placementSelect.value; });
     body.append(el("div", "funpack-studio-hint",
       "start: transition phrase opens the new scene (\"cut to — she runs\"). " +
       "end: transition phrase closes the previous scene (\"she walks — cut to\"). " +
+      "silent: split happens but the transition phrase is removed entirely from the output. " +
       "Custom transitions can override this per-entry in the Transitions tab."));
     body.append(row("Transition placement", placementSelect));
 

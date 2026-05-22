@@ -1015,3 +1015,34 @@ def test_custom_transition_trigger_ending_with_punctuation(monkeypatch, tmp_path
     assert len(segments) == 2
     assert "Kai'Sa walks" in segments[0]
     assert "She looks" in segments[1]
+
+
+def test_split_transition_placement_silent(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    refiner = FunPackVideoRefinerV2()
+
+    segments = refiner._v2_split_prompt_by_transitions(
+        "Kai'Sa walks confidently. cut to she looks into camera.",
+        placement="silent",
+    )
+    assert len(segments) == 2
+    assert "cut to" not in segments[0]
+    assert "cut to" not in segments[1]
+    assert "Kai'Sa walks" in segments[0]
+    assert "she looks into camera" in segments[1]
+
+
+def test_custom_transition_silent_overrides_global_start(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    save_transition_item({"name": "Scene cut", "trigger": "Scene cut.", "placement": "silent"})
+
+    refiner = FunPackVideoRefinerV2()
+    segments = refiner._v2_split_prompt_by_transitions(
+        "Kai'Sa walks. Scene cut. She looks into camera.",
+        placement="start",
+    )
+    assert len(segments) == 2
+    assert "Scene cut" not in segments[0]
+    assert "Scene cut" not in segments[1]
+    assert "Kai'Sa walks" in segments[0]
+    assert "She looks" in segments[1]
