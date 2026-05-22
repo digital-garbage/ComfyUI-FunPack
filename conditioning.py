@@ -6148,17 +6148,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Stacking fix: if a segment consists entirely of transition markers with no real content,
         # two transition phrases were adjacent ("after a brief scene cut, in the next scene ...").
         # Prepend the pure-transition segment to the FOLLOWING segment so they read as one unit.
+        def _real_content(seg):
+            s = split_pattern.sub("", seg).strip().strip(",;.: ")
+            # lone articles ("a", "an", "the") left behind by a dangling transition are not real content
+            return re.sub(r"^(a|an|the)\s*$", "", s, flags=re.IGNORECASE).strip()
+
         i = 0
         while i < len(segments):
             if segments[i] == "":
                 i += 1
                 continue
-            stripped = split_pattern.sub("", segments[i]).strip().strip(",;.: ")
-            if not stripped and i + 1 < len(segments):
+            if not _real_content(segments[i]) and i + 1 < len(segments):
                 segments[i + 1] = segments[i] + ", " + segments[i + 1]
                 segments.pop(i)
             else:
                 i += 1
+
+        # Drop a trailing segment that is only a transition phrase plus an article - it means
+        # the prompt ended with a dangling transition ("...cuts to the") with no scene after it.
+        if len(segments) > 1 and not _real_content(segments[-1]):
+            segments.pop()
 
         return segments if len(segments) > 1 else [text]
 

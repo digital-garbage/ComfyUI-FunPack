@@ -916,3 +916,29 @@ def test_split_prompt_custom_trigger_kept_at_segment_start(monkeypatch, tmp_path
     assert "beach waves" in segments[0]
     assert segments[1].startswith("NEXT")
     assert "mountain snow" in segments[1]
+
+
+def test_split_prompt_drops_dangling_trailing_transition(monkeypatch, tmp_path):
+    use_tmp_scene_store(monkeypatch, tmp_path)
+    refiner = FunPackVideoRefinerV2()
+
+    # transition at the end with no real content after it
+    segments = refiner._v2_split_prompt_by_transitions(
+        "female character Kai'Sa, the scene then cuts to"
+    )
+    assert len(segments) == 1
+    assert "Kai'Sa" in segments[0]
+
+    # transition + lone article is still dangling - should also be dropped
+    segments = refiner._v2_split_prompt_by_transitions(
+        "female character Kai'Sa, the scene then cuts to the"
+    )
+    assert len(segments) == 1
+    assert "Kai'Sa" in segments[0]
+
+    # transition + real content after it must NOT be dropped
+    segments = refiner._v2_split_prompt_by_transitions(
+        "female character Kai'Sa, the scene then cuts to the beach"
+    )
+    assert len(segments) == 2
+    assert "beach" in segments[1]
