@@ -646,11 +646,17 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         _ref_extracted = [False]
         _ref_x = ref_x
         _lazy = lazy_injects
+        _model_to = model.model_options.get("transformer_options", {})
 
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
-                           _lazy=_lazy, _cap_buf=capture_buf):
-            print(f"[FunPackEnhancements] sigma_tracker called: ref_x={'set' if _ref_x is not None else 'None'} extracted={_ref_extracted[0]} cap_buf_len={len(_cap_buf) if _cap_buf is not None else 'None'} lazy_len={len(_lazy)}")
+                           _lazy=_lazy, _cap_buf=capture_buf, _model_to=_model_to):
+            if not _ref_extracted[0]:
+                c = args.get("c", {})
+                to = c.get("transformer_options", {})
+                our_patches = to.get("patches_replace", {}).get("dit", {})
+                model_to = _model_to.get("patches_replace", {}).get("dit", {}) if _model_to else {}
+                print(f"[FunPackEnhancements] sigma_tracker: args.keys={list(args.keys())} c.keys={list(c.keys())} to_patches={len(our_patches)} model_to_patches={len(model_to)}")
             ts = args.get("timestep")
             if ts is not None:
                 try:
