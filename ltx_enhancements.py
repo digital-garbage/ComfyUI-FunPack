@@ -526,7 +526,6 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     # --- Technique 5: injection data ---
     has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
-    print(f"[FunPackEnhancements] build_enhancements: has_i2v={has_i2v} refinement_key={repr(refinement_key)} reward={reward:.2f}")
     if has_i2v:
         # i2v latent: extract reference maps on first generation step (real conditioning available).
         # Never fall back to blessed maps - they may represent a completely different character.
@@ -603,6 +602,47 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                 else:
                     dit[("double_block", block_idx)] = replacement
 
+    # --- Technique 5 (forward hooks): capture hidden states via nn.Module hooks ---
+    # patches_replace["dit"] is set but LTXAV blocks never check it.
+    # Forward hooks on the actual nn.Modules are the only reliable mechanism.
+    hook_handles = []
+    if capture_buf is not None:
+        try:
+            diff = getattr(getattr(model, "model", None), "diffusion_model", None)
+            if diff is not None:
+                block_list = None
+                for attr in ["transformer_blocks", "blocks", "joint_blocks", "layers"]:
+                    candidate = getattr(diff, attr, None)
+                    if isinstance(candidate, torch.nn.ModuleList) and len(candidate) >= 28:
+                        block_list = candidate
+                        break
+                if block_list is not None:
+                    blocks_to_hook = set(ANCHOR_BLOCKS) | set(IDENTITY_BLOCKS)
+                    for idx in blocks_to_hook:
+                        if idx < len(block_list):
+                            def _make_hook(block_idx, buf):
+                                def _hook(module, inp, out):
+                                    try:
+                                        if isinstance(out, dict):
+                                            t = out.get("img") or out.get("hidden_states") or next(iter(out.values()), None)
+                                        elif isinstance(out, tuple):
+                                            t = out[0]
+                                        else:
+                                            t = out
+                                        if isinstance(t, torch.Tensor):
+                                            buf[block_idx] = t.detach().cpu()
+                                    except Exception:
+                                        pass
+                                return _hook
+                            h = block_list[idx].register_forward_hook(_make_hook(idx, capture_buf))
+                            hook_handles.append(h)
+                    if hook_handles:
+                        print(f"[FunPackEnhancements] Registered {len(hook_handles)} forward hooks on transformer blocks")
+                else:
+                    print("[FunPackEnhancements] Could not find transformer block list for hooks")
+        except Exception as e:
+            print(f"[FunPackEnhancements] Hook registration failed: {e}")
+
     # --- Technique 3: temporal RoPE via model_function_wrapper ---
     if temporal_style != "natural":
         fps_multiplier = {
@@ -638,25 +678,16 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     # --- Technique 5 (sigma tracking + i2v reference extraction) ---
     # Updates sigma_state before each model call so injection gating has the current
     # timestep. Also fires reference map extraction on the first call when i2v is used.
-    print(f"[FunPackEnhancements] needs_injection={needs_injection} has_i2v={has_i2v} capture_buf={'set' if capture_buf is not None else 'None'} lazy_injects={len(lazy_injects)}")
     if needs_injection or has_i2v:
         _existing_for_sigma = model.model_options.get("model_function_wrapper")
-        print(f"[FunPackEnhancements] installing sigma tracker, existing_wrapper={type(_existing_for_sigma).__name__ if _existing_for_sigma else None}")
         _state = sigma_state
         _ref_extracted = [False]
         _ref_x = ref_x
         _lazy = lazy_injects
-        _model_to = model.model_options.get("transformer_options", {})
 
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
-                           _lazy=_lazy, _cap_buf=capture_buf, _model_to=_model_to):
-            if not _ref_extracted[0]:
-                c = args.get("c", {})
-                to = c.get("transformer_options", {})
-                our_patches = to.get("patches_replace", {}).get("dit", {})
-                model_to = _model_to.get("patches_replace", {}).get("dit", {}) if _model_to else {}
-                print(f"[FunPackEnhancements] sigma_tracker: args.keys={list(args.keys())} c.keys={list(c.keys())} to_patches={len(our_patches)} model_to_patches={len(model_to)}")
+                           _lazy=_lazy, _cap_buf=capture_buf):
             ts = args.get("timestep")
             if ts is not None:
                 try:
@@ -715,5 +746,29 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             return result
 
         model.model_options["model_function_wrapper"] = _capture_finalizer
+
+    # --- Hook cleanup: remove forward hooks after sampling completes ---
+    if hook_handles:
+        _handles = hook_handles
+        existing_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _hook_remover(apply_fn, args, _ew=existing_wrapper, _handles=_handles,
+                          _removed=[False]):
+            if _ew is not None:
+                result = _ew(apply_fn, args)
+            else:
+                result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            ts = args.get("timestep")
+            if ts is not None and not _removed[0]:
+                try:
+                    if float(ts.max().item()) < 0.05:
+                        for h in _handles:
+                            h.remove()
+                        _removed[0] = True
+                except Exception:
+                    pass
+            return result
+
+        model.model_options["model_function_wrapper"] = _hook_remover
 
     return model
