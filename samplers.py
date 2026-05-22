@@ -1170,43 +1170,39 @@ class FunPackLTXAVSceneChainSampler:
         result.pop("noise_mask", None)
         return result
 
-    def _build_bridge_chunk(self, scene_output, latent_template, bridge_video_frames, time_scale):
+    def _build_bridge_chunk(self, scene_a, scene_b, latent_template, bridge_video_frames, time_scale):
         """Build a short first-last-frame latent for bridge shot generation.
 
-        First latent frame = last frame of scene_output (where we came from).
-        Last latent frame  = first protected frame of latent_template (the i2v reference).
-        Middle frames      = noise to be denoised.
+        First latent frame = last frame of scene_a (where we came from).
+        Last latent frame  = first frame of scene_b (where we are going).
+        Middle frames      = noise to be denoised by the model.
         """
         bridge_latent_frames = self._expected_latent_frames(bridge_video_frames, time_scale)
-        bridge_latent_frames = max(3, bridge_latent_frames)  # need at least first + 1 middle + last
+        bridge_latent_frames = max(3, bridge_latent_frames)
 
-        output_tensors = self._latent_tensors(scene_output)
+        tensors_a = self._latent_tensors(scene_a)
+        tensors_b = self._latent_tensors(scene_b)
         template_tensors = self._latent_tensors(latent_template)
 
         out_tensors = []
         mask_tensors = []
         for index, tmpl in enumerate(template_tensors):
             tmpl_frames = self._tensor_frames(tmpl)
-            # Scale bridge length proportionally for non-video tensors (e.g. audio)
             t_bridge_frames = bridge_latent_frames if index == 0 else self._derived_overlap(
                 bridge_latent_frames, bridge_latent_frames, tmpl_frames
             )
             t_bridge_frames = max(3, t_bridge_frames)
 
-            # Create bridge tensor filled with template noise
             bridge = tmpl[:, :, :t_bridge_frames].clone()
 
-            # Pin first frame = last frame of previous scene output
-            if index < len(output_tensors):
-                src = output_tensors[index]
-                src_last = src[:, :, -1:]
-                bridge[:, :, :1] = src_last.to(device=bridge.device, dtype=bridge.dtype)
+            # Pin first frame = last frame of scene A
+            if index < len(tensors_a):
+                bridge[:, :, :1] = tensors_a[index][:, :, -1:].to(device=bridge.device, dtype=bridge.dtype)
 
-            # Pin last frame = first protected frame of i2v latent template
-            tmpl_frame0 = tmpl[:, :, :1]
-            bridge[:, :, -1:] = tmpl_frame0.to(device=bridge.device, dtype=bridge.dtype)
+            # Pin last frame = first frame of scene B
+            if index < len(tensors_b):
+                bridge[:, :, -1:] = tensors_b[index][:, :, :1].to(device=bridge.device, dtype=bridge.dtype)
 
-            # Mask: 0=pinned for first and last frames, 1=generate for middle
             mask = torch.ones_like(bridge)
             mask[:, :, :1] = 0.0
             mask[:, :, -1:] = 0.0
@@ -1284,40 +1280,80 @@ class FunPackLTXAVSceneChainSampler:
         time_scale = self._time_scale(vae)
         video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale)
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
-        # Bridge shot target: 30 video frames (~1 second at 30fps)
         bridge_video_frames = 30
-        has_i2v_reference = _has_i2v_reference_latent(latent_template)
 
-        output = None
         report_lines = []
-        carried_guide_frames = 0
-        bridge_count = 0
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
+
+        if bridge_shots and scene_count > 1:
+            # Two-pass: generate all scenes independently, then bridge between consecutive pairs.
+            # Each scene starts fresh from latent_template so its first frame is a clean anchor.
+            scene_outputs = []
+            carried_guide_frames = 0
+            for scene_index, scene_cond in enumerate(scene_conditionings):
+                scene_positive = [scene_cond]
+                scene_negative = negative
+                provided_seed = self._scene_seed(scene_cond)
+                scene_seed = first_scene_seed if use_same_seed else (
+                    provided_seed if provided_seed is not None else int(seed) + scene_index
+                )
+                chunk = self._clone_latent(latent_template)
+                carried = 0
+                if carry_i2v_guides:
+                    chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
+                        chunk, latent_template, scene_positive, scene_negative, vae,
+                    )
+                    carried_guide_frames = max(carried_guide_frames, carried)
+                sampled = self._sample_chunk(
+                    model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
+                )
+                if carry_i2v_guides and carried > 0:
+                    sampled = self._crop_video_tail(sampled, carried)
+                scene_outputs.append(sampled)
+                report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
+
+            # Second pass: generate bridges between consecutive scene pairs
+            output = scene_outputs[0]
+            for i in range(1, len(scene_outputs)):
+                bridge_seed = int(seed) + 0xBEEF + i
+                bridge_chunk = self._build_bridge_chunk(
+                    scene_outputs[i - 1], scene_outputs[i], latent_template, bridge_video_frames, time_scale,
+                )
+                # Use neutral conditioning for the bridge (average of adjacent scenes' text)
+                bridge_positive = [scene_conditionings[i - 1]]
+                bridge_sampled = self._sample_chunk(
+                    model, sampler, sigmas, bridge_seed, cfg, bridge_positive, negative, bridge_chunk,
+                )
+                report_lines.append(f"  Bridge {i}: seed={bridge_seed}")
+                # Concatenate: output + bridge (1-frame hard join since frames match) + next scene
+                output = self._blend_latents(output, bridge_sampled, 1)
+                output = self._blend_latents(output, scene_outputs[i], 1)
+
+            final_frames = self._tensor_frames(self._latent_tensors(output)[0])
+            status = (
+                f"Scene chain complete: {scene_count} scene(s) + {scene_count - 1} bridge(s), "
+                f"output={final_frames} latent frames"
+            )
+            if carry_i2v_guides and carried_guide_frames > 0:
+                status += f", i2v guide tokens={carried_guide_frames}"
+            return (output, status, scene_count, "\n".join(report_lines))
+
+        # Standard single-pass scene chain (bridge_shots off or single scene)
+        output = None
+        carried_guide_frames = 0
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
             provided_seed = self._scene_seed(scene_cond)
-            if use_same_seed:
-                scene_seed = first_scene_seed
-            else:
-                scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
+            scene_seed = first_scene_seed if use_same_seed else (
+                provided_seed if provided_seed is not None else int(seed) + scene_index
+            )
             carried = 0
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
-                # Bridge shot: generate a short first-last-frame transition before the next scene
-                if bridge_shots and has_i2v_reference:
-                    bridge_chunk = self._build_bridge_chunk(output, latent_template, bridge_video_frames, time_scale)
-                    bridge_seed = scene_seed + 0xBEEF
-                    bridge_sampled = self._sample_chunk(
-                        model, sampler, sigmas, bridge_seed, cfg, scene_positive, scene_negative, bridge_chunk,
-                    )
-                    output = self._blend_latents(output, bridge_sampled, 1)
-                    bridge_count += 1
-                    report_lines.append(f"  Bridge {bridge_count}: seed={bridge_seed}")
-
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
@@ -1339,8 +1375,6 @@ class FunPackLTXAVSceneChainSampler:
             f"Scene chain complete: {scene_count} scene(s), "
             f"template={video_frames} latent frames, overlap={video_overlap}, output={final_frames}"
         )
-        if bridge_shots and bridge_count:
-            status += f", bridge shots={bridge_count}"
         if carry_i2v_guides and carried_guide_frames > 0:
             status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
         return (output, status, scene_count, "\n".join(report_lines))
