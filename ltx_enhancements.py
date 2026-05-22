@@ -526,6 +526,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     # --- Technique 5: injection data ---
     has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
+    print(f"[FunPackEnhancements] build_enhancements: has_i2v={has_i2v} refinement_key={repr(refinement_key)} reward={reward:.2f}")
     if has_i2v:
         # i2v latent: extract reference maps on first generation step (real conditioning available).
         # Never fall back to blessed maps - they may represent a completely different character.
@@ -637,8 +638,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     # --- Technique 5 (sigma tracking + i2v reference extraction) ---
     # Updates sigma_state before each model call so injection gating has the current
     # timestep. Also fires reference map extraction on the first call when i2v is used.
+    print(f"[FunPackEnhancements] needs_injection={needs_injection} has_i2v={has_i2v} capture_buf={'set' if capture_buf is not None else 'None'} lazy_injects={len(lazy_injects)}")
     if needs_injection or has_i2v:
         _existing_for_sigma = model.model_options.get("model_function_wrapper")
+        print(f"[FunPackEnhancements] installing sigma tracker, existing_wrapper={type(_existing_for_sigma).__name__ if _existing_for_sigma else None}")
         _state = sigma_state
         _ref_extracted = [False]
         _ref_x = ref_x
@@ -647,6 +650,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         def _sigma_tracker(apply_fn, args, _ew=_existing_for_sigma, _state=_state,
                            _ref_extracted=_ref_extracted, _ref_x=_ref_x,
                            _lazy=_lazy, _cap_buf=capture_buf):
+            print(f"[FunPackEnhancements] sigma_tracker called: ref_x={'set' if _ref_x is not None else 'None'} extracted={_ref_extracted[0]} cap_buf_len={len(_cap_buf) if _cap_buf is not None else 'None'} lazy_len={len(_lazy)}")
             ts = args.get("timestep")
             if ts is not None:
                 try:
