@@ -1274,10 +1274,15 @@ class FunPackLTXAVSceneChainSampler:
 
             window = self._time_slice(video_tensor, start_l, end_l)
             try:
-                decoded = vae.decode(window)  # [N, H, W, C]
+                decoded = vae.decode(window)
             except Exception as exc:
                 print(f"[FunPackSceneChain] {effect} decode failed: {exc}")
                 continue
+
+            # Video VAEs may return [B, T, H, W, C] — flatten to [N, H, W, C]
+            if decoded.dim() == 5:
+                b, t, h, w, c = decoded.shape
+                decoded = decoded.reshape(b * t, h, w, c)
 
             decoded = decoded.clone().float()
             n = decoded.shape[0]
