@@ -566,6 +566,18 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     }
 
     # --- Technique 5: injection data ---
+    # Clear the temp maps file so this generation's capture starts fresh.
+    # Without this, maps from previous runs merge in and compound across
+    # sessions — each "loved it" cycle injects tainted states from the
+    # previous round, producing progressively worse color bias.
+    if refinement_key:
+        temp_path = _temp_maps_path(refinement_key)
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+
     has_i2v = reference_latent is not None and _has_i2v_reference(reference_latent)
     if has_i2v:
         # i2v latent: extract reference maps on first generation step (real conditioning available).

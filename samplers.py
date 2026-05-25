@@ -1467,7 +1467,10 @@ class FunPackLTXAVSceneChainSampler:
                 # Record boundary (center of the overlap region) before blending
                 effect = self._scene_transition_effect(scene_cond)
                 if effect and transition_duration > 0:
-                    boundary_latent = max(0, cumulative_latent_frames - video_overlap // 2)
+                    # Seam is at cumulative_latent_frames: overlap frames are pinned
+                    # (mask=0) so the latent blend is a no-op — the actual content
+                    # boundary is exactly here, not offset by overlap//2.
+                    boundary_latent = cumulative_latent_frames
                     boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
                     blend_half_latent = max(1, video_overlap // 2)
                     blend_half_pixels = blend_half_latent * time_scale
