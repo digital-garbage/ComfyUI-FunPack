@@ -1499,10 +1499,11 @@ class FunPackLTXAVSceneChainSampler:
         want_latent = self._output_connected(prompt, unique_id, 0)
         want_image = self._output_connected(prompt, unique_id, 1)
 
-        # Release generation-side references so ComfyUI can unload the diffusion
-        # model and text encoder before VAE decode runs. Without this, they stay
-        # live as function parameters and trigger the "memory leak" warning.
-        del model, positive, negative
+        # Release all generation-side references so ComfyUI can unload the diffusion
+        # model and text encoder before VAE decode runs. scene_conditionings is a
+        # slice of positive; scene_positive/negative are loop-scoped conditioning
+        # copies — all keep the LTXAVTEModel alive through their embedding tensors.
+        del model, positive, negative, scene_conditionings, scene_positive, scene_negative, chunk, sampled
 
         images = None
         if boundary_entries:
