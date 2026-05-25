@@ -1305,26 +1305,44 @@ class FunPackLTXAVSceneChainSampler:
                 if sigma > 0:
                     frames[i] = self._blur_pixel_frame(frames[i], sigma)
 
-    def _decode_video(self, output, vae, tile_size=0):
-        """Decode latent to [N, H, W, C] pixel frames.
-
-        Must pass the full samples (NestedTensor for LTXAV) to vae.decode —
-        stripping audio before decode loses the audio conditioning that LTXAV's
-        video decoder uses, causing gradual quality degradation across scenes.
-        """
-        samples = output.get("samples")
+    def _decode_tensor(self, video_tensor, vae, tile_size=0):
+        """Decode a single video tensor to [N, H, W, C] pixel frames."""
         if tile_size > 0:
-            video_tensor = self._latent_tensors(output)[0]
             try:
                 decoded = vae.decode_tiled(video_tensor, tile_x=tile_size // 8, tile_y=tile_size // 8)
             except Exception:
-                decoded = vae.decode(samples)
+                decoded = vae.decode(video_tensor)
         else:
-            decoded = vae.decode(samples)
+            decoded = vae.decode(video_tensor)
         if decoded.dim() == 5:
             b, t, h, w, c = decoded.shape
             decoded = decoded.reshape(b * t, h, w, c)
         return decoded
+
+    def _decode_video(self, output, vae, tile_size=0, scene_boundaries=None):
+        """Decode video latent to [N, H, W, C] pixel frames.
+
+        When scene_boundaries is provided (list of latent frame positions where
+        each new scene starts), each scene slice is decoded independently.
+        Decoding the full concatenated latent in one pass lets the VAE's temporal
+        attention spread seam artifacts forward across scenes — per-scene decode
+        eliminates that cross-contamination.
+        """
+        video_tensor = self._latent_tensors(output)[0]
+        if not scene_boundaries:
+            return self._decode_tensor(video_tensor, vae, tile_size)
+        # Build scene segments: [0, b0, b1, ..., total]
+        total = self._tensor_frames(video_tensor)
+        edges = [0] + list(scene_boundaries) + [total]
+        parts = []
+        for start, end in zip(edges, edges[1:]):
+            if start >= end:
+                continue
+            sliced = self._time_slice(video_tensor, start, end)
+            parts.append(self._decode_tensor(sliced, vae, tile_size))
+        if not parts:
+            return self._decode_tensor(video_tensor, vae, tile_size)
+        return torch.cat(parts, dim=0)
 
     def _apply_transitions_pixel(self, decoded, boundary_entries, transition_duration):
         """Apply visual transitions on a full decoded [N, H, W, C] frame tensor."""
@@ -1452,17 +1470,20 @@ class FunPackLTXAVSceneChainSampler:
         # copies — all keep the LTXAVTEModel alive through their embedding tensors.
         del model, positive, negative, scene_conditionings, scene_positive, scene_negative, chunk, sampled
 
-        images = None
-        if boundary_entries and want_image:
-            # Transitions are post-process: decode the finished latent to pixels,
-            # apply effects, done. LATENT output is always the raw generated latent —
-            # it is never modified or re-encoded for transitions.
-            decoded = self._decode_video(output, vae, decode_tile_size)
-            images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
+        # Scene boundaries for per-scene decode: each entry's boundary_latent is
+        # where the next scene's new content starts in the concatenated latent.
+        scene_boundaries = [int(e["boundary_latent"]) for e in boundary_entries] if boundary_entries else None
 
-        if want_image and images is None:
-            # Image requested but no transitions — plain decode
-            images = self._decode_video(output, vae, decode_tile_size)
+        images = None
+        if want_image:
+            # Decode each scene slice independently so the VAE's temporal attention
+            # never crosses a seam — full-video decode spreads seam artifacts forward.
+            # Transitions are pure post-process on the concatenated pixel frames.
+            decoded = self._decode_video(output, vae, decode_tile_size, scene_boundaries)
+            if boundary_entries:
+                images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
+            else:
+                images = decoded
 
         if images is None:
             images = torch.zeros(1, 8, 8, 3)  # placeholder when IMAGE not connected
