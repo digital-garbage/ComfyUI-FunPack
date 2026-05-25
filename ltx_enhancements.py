@@ -134,6 +134,11 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
         latent_std = float(samples.std().clamp_min(1e-8).item())
         noise = torch.randn_like(samples)
         noise_scale = (mask * latent_std).unsqueeze(1)  # broadcast over channel dim
+        # Gate by noise_mask so i2v reference frames (mask≈0.3) aren't perturbed
+        if explicit_latent is not None:
+            nm = explicit_latent.get("noise_mask")
+            if isinstance(nm, torch.Tensor) and nm.shape[2] == noise_scale.shape[2]:
+                noise_scale = noise_scale * nm.float().to(noise_scale.device)
         modified = samples + noise * noise_scale
 
         # Preserve all original keys from the source latent; only replace samples.
