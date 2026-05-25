@@ -1267,17 +1267,27 @@ class FunPackLTXAVSceneChainSampler:
         if sigma <= 0:
             return frame
         k = max(3, int(sigma * 3) | 1)
+        pad = k // 2
         x = frame.permute(2, 0, 1).unsqueeze(0).float()
-        x = torch.nn.functional.avg_pool2d(x, k, stride=1, padding=k // 2)
+        x = torch.nn.functional.pad(x, (pad, pad, pad, pad), mode="reflect")
+        x = torch.nn.functional.avg_pool2d(x, k, stride=1, padding=0)
         return x.squeeze(0).permute(1, 2, 0).to(dtype=frame.dtype)
 
-    def _apply_effect_on_pixels(self, frames, effect, center, half):
-        """Apply one visual transition effect in-place on a [N, H, W, C] float tensor."""
+    def _apply_effect_on_pixels(self, frames, effect, center, half, blend_half=0):
+        """Apply one visual transition effect in-place on a [N, H, W, C] float tensor.
+
+        blend_half: number of frames on each side of center that are blended-latent
+        content and must be fully processed (zero brightness / max blur) regardless
+        of transition_duration.  extra frames beyond blend_half fade/ramp back to
+        full brightness over the remaining (half - blend_half) range.
+        """
         n = frames.shape[0]
         center = max(half, min(n - half - 1, center))
+        extra_half = max(1, half - blend_half)
         if effect == "fade_to_black":
             for i in range(max(0, center - half), min(n, center + half)):
-                brightness = min(1.0, abs(i - center) / max(1, half))
+                dist = abs(i - center)
+                brightness = min(1.0, max(0.0, (dist - blend_half) / extra_half))
                 frames[i] = frames[i] * brightness
         elif effect == "crossfade":
             orig = frames.clone()
@@ -1289,7 +1299,9 @@ class FunPackLTXAVSceneChainSampler:
                     frames[post_i] = (1 - alpha) * orig[post_i] + alpha * orig[pre_i]
         elif effect == "blur_out_in":
             for i in range(max(0, center - half), min(n, center + half)):
-                sigma = 8.0 * (1.0 - abs(i - center) / max(1, half))
+                dist = abs(i - center)
+                ramp = max(0.0, (dist - blend_half) / extra_half)
+                sigma = 8.0 * (1.0 - ramp)
                 if sigma > 0:
                     frames[i] = self._blur_pixel_frame(frames[i], sigma)
 
@@ -1315,9 +1327,10 @@ class FunPackLTXAVSceneChainSampler:
             return decoded
         frames = decoded.clone().float()
         for entry in active:
-            blend_half = entry.get("blend_half_pixels", 1)
-            half = blend_half + max(0, transition_duration // 2)
-            self._apply_effect_on_pixels(frames, entry["effect"], int(entry["pixel_frame"]), half)
+            blend_half = entry.get("blend_half_pixels", 0)
+            extra = max(1, transition_duration // 2)
+            half = blend_half + extra
+            self._apply_effect_on_pixels(frames, entry["effect"], int(entry["pixel_frame"]), half, blend_half=blend_half)
         return frames.clamp(0.0, 1.0).to(dtype=decoded.dtype)
 
     def _apply_transitions_latent(self, output, boundary_entries, vae, time_scale, transition_duration):
@@ -1432,7 +1445,6 @@ class FunPackLTXAVSceneChainSampler:
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
 
         output = None
-        prev_sampled = None
         report_lines = []
         carried_guide_frames = 0
         boundary_entries = []
@@ -1449,7 +1461,7 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
-            if prev_sampled is None:
+            if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
                 # Record boundary (center of the overlap region) before blending
@@ -1466,11 +1478,7 @@ class FunPackLTXAVSceneChainSampler:
                         "blend_half_latent": blend_half_latent,
                         "blend_half_pixels": blend_half_pixels,
                     })
-                # Use the previous scene's raw sampled output as the anchor, not the
-                # blended cumulative output. The blended tail contains interpolated
-                # latent frames (mix of two scenes) that decode with color artifacts
-                # and would corrupt the anchor context for this scene.
-                chunk = self._build_continuation_chunk(latent_template, prev_sampled, video_overlap)
+                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative, vae,
@@ -1484,7 +1492,6 @@ class FunPackLTXAVSceneChainSampler:
             if output is not None:
                 sampled = self._match_audio_amplitude(sampled, video_overlap, video_frames)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
-            prev_sampled = sampled
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
 
