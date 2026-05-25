@@ -1336,49 +1336,6 @@ class FunPackLTXAVSceneChainSampler:
             self._apply_effect_on_pixels(frames, entry["effect"], int(entry["pixel_frame"]), half, blend_half=blend_half)
         return frames.clamp(0.0, 1.0).to(dtype=decoded.dtype)
 
-    def _apply_transitions_latent(self, output, boundary_entries, vae, time_scale, transition_duration):
-        """Decode full video, apply pixel transitions, re-encode full video.
-
-        Window-decode-then-splice was the previous approach and caused VAE color
-        corruption at window edges (wrong temporal context). Decoding the full
-        video once gives the VAE complete temporal context everywhere, so the
-        pixel-space transition is applied on clean frames before the single
-        re-encode. Slower but correct.
-        """
-        active = [e for e in boundary_entries if e.get("effect") and e["effect"] != "none"]
-        if not active:
-            return output
-
-        try:
-            decoded = self._decode_video(output, vae)
-        except Exception as exc:
-            print(f"[FunPackSceneChain] latent transition decode failed: {exc}")
-            return output
-
-        frames = self._apply_transitions_pixel(decoded, active, transition_duration)
-
-        try:
-            re_encoded = vae.encode(frames)
-        except Exception as exc:
-            print(f"[FunPackSceneChain] latent transition encode failed: {exc}")
-            return output
-
-        new_samples = re_encoded.get("samples") if isinstance(re_encoded, dict) else re_encoded
-        if not isinstance(new_samples, torch.Tensor):
-            return output
-
-        result = self._clone_latent(output)
-        if self._is_nested(output.get("samples")):
-            result_tensors = list(self._latent_tensors(output))
-            result_tensors[0] = new_samples.to(device=result_tensors[0].device, dtype=result_tensors[0].dtype)
-            result["samples"] = comfy.nested_tensor.NestedTensor(result_tensors)
-        else:
-            result["samples"] = new_samples.to(
-                device=self._latent_tensors(output)[0].device,
-                dtype=self._latent_tensors(output)[0].dtype,
-            )
-        return result
-
     def _scene_text(self, scene_conditioning, index):
         if (
             isinstance(scene_conditioning, (list, tuple))
@@ -1493,14 +1450,12 @@ class FunPackLTXAVSceneChainSampler:
         del model, positive, negative, scene_conditionings, scene_positive, scene_negative, chunk, sampled
 
         images = None
-        if boundary_entries:
-            if want_image:
-                # Decode once, apply transitions on pixels — no re-encode
-                decoded = self._decode_video(output, vae, decode_tile_size)
-                images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
-            elif want_latent:
-                # Latent-only path: window decode → effect → re-encode → splice
-                output = self._apply_transitions_latent(output, boundary_entries, vae, time_scale, transition_duration)
+        if boundary_entries and want_image:
+            # Transitions are post-process: decode the finished latent to pixels,
+            # apply effects, done. LATENT output is always the raw generated latent —
+            # it is never modified or re-encoded for transitions.
+            decoded = self._decode_video(output, vae, decode_tile_size)
+            images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
 
         if want_image and images is None:
             # Image requested but no transitions — plain decode
