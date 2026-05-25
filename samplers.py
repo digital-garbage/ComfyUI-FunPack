@@ -1432,6 +1432,7 @@ class FunPackLTXAVSceneChainSampler:
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
 
         output = None
+        prev_sampled = None
         report_lines = []
         carried_guide_frames = 0
         boundary_entries = []
@@ -1448,7 +1449,7 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
-            if output is None:
+            if prev_sampled is None:
                 chunk = self._clone_latent(latent_template)
             else:
                 # Record boundary (center of the overlap region) before blending
@@ -1465,7 +1466,11 @@ class FunPackLTXAVSceneChainSampler:
                         "blend_half_latent": blend_half_latent,
                         "blend_half_pixels": blend_half_pixels,
                     })
-                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
+                # Use the previous scene's raw sampled output as the anchor, not the
+                # blended cumulative output. The blended tail contains interpolated
+                # latent frames (mix of two scenes) that decode with color artifacts
+                # and would corrupt the anchor context for this scene.
+                chunk = self._build_continuation_chunk(latent_template, prev_sampled, video_overlap)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative, vae,
@@ -1479,6 +1484,7 @@ class FunPackLTXAVSceneChainSampler:
             if output is not None:
                 sampled = self._match_audio_amplitude(sampled, video_overlap, video_frames)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
+            prev_sampled = sampled
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
 
