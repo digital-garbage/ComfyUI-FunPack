@@ -1306,15 +1306,21 @@ class FunPackLTXAVSceneChainSampler:
                     frames[i] = self._blur_pixel_frame(frames[i], sigma)
 
     def _decode_video(self, output, vae, tile_size=0):
-        """Decode the video component of a latent to [N, H, W, C] pixel frames."""
-        video_tensor = self._latent_tensors(output)[0]
+        """Decode latent to [N, H, W, C] pixel frames.
+
+        Must pass the full samples (NestedTensor for LTXAV) to vae.decode —
+        stripping audio before decode loses the audio conditioning that LTXAV's
+        video decoder uses, causing gradual quality degradation across scenes.
+        """
+        samples = output.get("samples")
         if tile_size > 0:
+            video_tensor = self._latent_tensors(output)[0]
             try:
                 decoded = vae.decode_tiled(video_tensor, tile_x=tile_size // 8, tile_y=tile_size // 8)
             except Exception:
-                decoded = vae.decode(video_tensor)
+                decoded = vae.decode(samples)
         else:
-            decoded = vae.decode(video_tensor)
+            decoded = vae.decode(samples)
         if decoded.dim() == 5:
             b, t, h, w, c = decoded.shape
             decoded = decoded.reshape(b * t, h, w, c)
