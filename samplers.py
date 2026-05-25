@@ -806,8 +806,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
                 }),
                 "transition_duration": ("INT", {
-                    "default": 16, "min": 2, "max": 128, "step": 2,
-                    "tooltip": "Pixel frames affected per visual transition (split evenly before/after each scene boundary).",
+                    "default": 16, "min": 0, "max": 128, "step": 2,
+                    "tooltip": "Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. 0 = disable all transition effects.",
                 }),
             },
             "optional": {
@@ -1314,8 +1314,9 @@ class FunPackLTXAVSceneChainSampler:
         if not active:
             return decoded
         frames = decoded.clone().float()
-        half = max(1, transition_duration // 2)
         for entry in active:
+            blend_half = entry.get("blend_half_pixels", 1)
+            half = blend_half + max(0, transition_duration // 2)
             self._apply_effect_on_pixels(frames, entry["effect"], int(entry["pixel_frame"]), half)
         return frames.clamp(0.0, 1.0).to(dtype=decoded.dtype)
 
@@ -1328,11 +1329,13 @@ class FunPackLTXAVSceneChainSampler:
         result_tensors = list(self._latent_tensors(output))
         video_tensor = result_tensors[0].clone()
         total_latent_frames = self._tensor_frames(video_tensor)
-        half_lat = max(2, (max(1, transition_duration // 2) + time_scale - 1) // time_scale)
 
         for entry in active:
             effect = entry["effect"]
             boundary_latent = int(entry["boundary_latent"])
+            blend_half_lat = entry.get("blend_half_latent", 2)
+            extra_lat = max(0, (max(0, transition_duration // 2) + time_scale - 1) // time_scale)
+            half_lat = blend_half_lat + extra_lat
             start_l = max(0, boundary_latent - half_lat)
             end_l = min(total_latent_frames, boundary_latent + half_lat)
             if start_l >= end_l:
@@ -1350,8 +1353,8 @@ class FunPackLTXAVSceneChainSampler:
                 decoded = decoded.reshape(b * t, h, w, c)
 
             frames = decoded.clone().float()
-            half_pix = max(1, transition_duration // 2)
             center = frames.shape[0] // 2
+            half_pix = max(1, center)
             self._apply_effect_on_pixels(frames, effect, center, half_pix)
             frames = frames.clamp(0.0, 1.0)
 
@@ -1450,13 +1453,17 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 # Record boundary (center of the overlap region) before blending
                 effect = self._scene_transition_effect(scene_cond)
-                if effect:
+                if effect and transition_duration > 0:
                     boundary_latent = max(0, cumulative_latent_frames - video_overlap // 2)
                     boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
+                    blend_half_latent = max(1, video_overlap // 2)
+                    blend_half_pixels = blend_half_latent * time_scale
                     boundary_entries.append({
                         "boundary_latent": boundary_latent,
                         "pixel_frame": max(0, boundary_pixel),
                         "effect": effect,
+                        "blend_half_latent": blend_half_latent,
+                        "blend_half_pixels": blend_half_pixels,
                     })
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if carry_i2v_guides:
