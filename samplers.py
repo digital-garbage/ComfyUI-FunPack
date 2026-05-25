@@ -1302,11 +1302,8 @@ class FunPackLTXAVSceneChainSampler:
                 dist = abs(i - center)
                 ramp = max(0.0, (dist - blend_half) / extra_half)
                 sigma = 8.0 * (1.0 - ramp)
-                # Also dim to 0 at center, same as fade_to_black — without this
-                # the yellow decode artifact at the seam is blurry but fully visible.
-                brightness = min(1.0, max(0.0, (dist - blend_half) / extra_half))
-                frame = self._blur_pixel_frame(frames[i], sigma) if sigma > 0 else frames[i]
-                frames[i] = frame * brightness
+                if sigma > 0:
+                    frames[i] = self._blur_pixel_frame(frames[i], sigma)
 
     def _decode_video(self, output, vae, tile_size=0):
         """Decode the video component of a latent to [N, H, W, C] pixel frames."""
