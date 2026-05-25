@@ -6093,17 +6093,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         Custom transitions can override placement per-entry regardless of the global setting.
 
-        Returns a list with >= 1 entry. Single-entry list means no transitions were found.
+        Returns a list of (text, visual_effect) tuples with >= 1 entry.
+        visual_effect is the effect that fires BEFORE this segment (None for first segment).
+        Single-entry list means no transitions were found.
         """
         text = str(prompt or "").strip()
         if not text:
-            return [text]
+            return [(text, None)]
 
         try:
             from .templates import load_custom_transition_triggers
         except ImportError:
             from templates import load_custom_transition_triggers
-        custom_map = load_custom_transition_triggers()  # {trigger: placement_override|None}
+        custom_map = load_custom_transition_triggers()  # {trigger: {"placement": ..., "visual_effect": ...}}
         custom_triggers = list(custom_map.keys())
 
         if custom_triggers:
@@ -6125,34 +6127,48 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # [pre, trans1, between, trans2, post, ...]
         capturing_pattern = re.compile(r"(" + split_pattern.pattern + r")", re.IGNORECASE)
         parts = capturing_pattern.split(text)
-        segments = []
+        segments = []   # list of segment text strings
+        effects = []    # parallel list: visual_effect that started each segment (None for segment 0)
         # parts[0] = text before first transition; then pairs of (trans_word, following_text)
         first_segment = parts[0].strip().strip(",;.:").strip()
         starts_with_transition = not first_segment
         if starts_with_transition:
             segments.append("")
+            effects.append(None)
         current = first_segment
+        current_effect = None  # effect that triggered the current pending segment
         i = 1
         while i < len(parts):
             trans_word = parts[i].strip()
             following = parts[i + 1] if i + 1 < len(parts) else ""
             following = following.strip().lstrip(",;.:").strip()
             # per-trigger placement override takes priority over global setting
-            trans_placement = custom_map.get(trans_word.lower()) or placement
+            entry = custom_map.get(trans_word.lower()) or {}
+            trans_placement = entry.get("placement") or placement if isinstance(entry, dict) else placement
+            trans_visual_effect = entry.get("visual_effect", "none") if isinstance(entry, dict) else "none"
+            if trans_visual_effect == "none":
+                trans_visual_effect = None
             if trans_placement == "end":
                 segments.append((current + " " + trans_word).strip().strip(",;.:").strip() if current else trans_word)
+                effects.append(current_effect)
                 current = following
+                current_effect = trans_visual_effect
             elif trans_placement == "silent":
                 if current:
                     segments.append(current)
+                    effects.append(current_effect)
                 current = following
+                current_effect = trans_visual_effect
             else:
                 if current:
                     segments.append(current)
+                    effects.append(current_effect)
                 current = re.sub(r"\b(a|an|the),\s*", r"\1 ", (trans_word + " " + following).strip().strip(",;.:").strip(), flags=re.IGNORECASE).strip()
+                current_effect = trans_visual_effect
             i += 2
         if current:
             segments.append(current)
+            effects.append(current_effect)
 
         # Stacking fix: if a segment consists entirely of transition markers with no real content,
         # two transition phrases were adjacent ("after a brief scene cut, in the next scene ...").
@@ -6170,7 +6186,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if not _real_content(segments[i]) and i + 1 < len(segments):
                 connector = " " if re.search(r"\b(a|an|the)\s*$", segments[i], re.IGNORECASE) else ", "
                 segments[i + 1] = (segments[i] + connector + segments[i + 1]).strip()
+                # keep the effect of the segment with real content (i+1), discard i's effect
                 segments.pop(i)
+                effects.pop(i)
             else:
                 i += 1
 
@@ -6178,30 +6196,39 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # the prompt ended with a dangling transition ("...cuts to the") with no scene after it.
         if len(segments) > 1 and not _real_content(segments[-1]):
             segments.pop()
+            effects.pop()
 
-        return segments if len(segments) > 1 else [text]
+        if len(segments) > 1:
+            return list(zip(segments, effects))
+        return [(text, None)]
 
     def _v2_transition_scene_texts(self, segments):
+        """Accept list of (text, effect) tuples. Return (scene_texts, scene_effects)."""
         if not segments:
-            return []
+            return [], []
         if len(segments) == 1:
-            return [segments[0]]
+            text = segments[0][0] if isinstance(segments[0], tuple) else segments[0]
+            return [text], [None]
 
-        anchor = segments[0].strip()
+        anchor_text = (segments[0][0] if isinstance(segments[0], tuple) else segments[0]).strip()
         scene_texts = []
-        for seg in segments[1:]:
+        scene_effects = []
+        for item in segments[1:]:
+            seg, effect = item if isinstance(item, tuple) else (item, None)
             seg = seg.strip()
             if not seg:
                 continue
-            scene_texts.append(anchor + ", " + seg if anchor else seg)
-        return scene_texts
+            scene_texts.append((anchor_text + ", " + seg if anchor_text else seg))
+            scene_effects.append(effect)
+        return scene_texts, scene_effects
 
-    def _v2_transition_scene_conditionings(self, clip, scene_texts, encode_cache=None):
+    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None):
         if clip is None:
             return None
         scene_texts = list(scene_texts or [])
         if not scene_texts:
             return None
+        scene_effects = list(scene_effects or [])
 
         conditionings = []
         scene_count = len(scene_texts)
@@ -6213,6 +6240,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_meta["funpack_scene_index"] = scene_index
             scene_meta["funpack_scene_count"] = scene_count
             scene_meta["funpack_scene_text"] = scene_text
+            effect = scene_effects[scene_index] if scene_index < len(scene_effects) else None
+            if effect and effect != "none":
+                scene_meta["funpack_transition_effect"] = effect
             conditionings.append((cond, scene_meta))
         return conditionings
 
@@ -11224,13 +11254,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             })
 
         split_scene_texts = []
+        split_scene_effects = []
         current_scene_seeds = []
         current_scene_seed_source = str(_seed_source or "fresh seed")
         if split_by_transitions:
             try:
                 split_segments = self._v2_split_prompt_by_transitions(prompt_to_encode, placement=split_transition_placement)
                 if len(split_segments) > 1:
-                    split_scene_texts = self._v2_transition_scene_texts(split_segments)
+                    split_scene_texts, split_scene_effects = self._v2_transition_scene_texts(split_segments)
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
                     current_scene_seed_source = (
                         "successful seed memory"
@@ -11483,7 +11514,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 scene_texts = split_scene_texts
                 if scene_texts:
                     scene_conditionings = self._v2_transition_scene_conditionings(
-                        clip, scene_texts, encode_cache=encode_cache,
+                        clip, scene_texts, scene_effects=split_scene_effects, encode_cache=encode_cache,
                     )
                     if scene_conditionings is not None:
                         output_conditioning = self._v2_apply_scene_seed_metadata(

@@ -805,11 +805,15 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
                 }),
+                "transition_duration": ("INT", {
+                    "default": 16, "min": 2, "max": 128, "step": 2,
+                    "tooltip": "Pixel frames affected per visual transition (split evenly before/after each scene boundary).",
+                }),
             }
         }
 
-    RETURN_TYPES = ("LATENT", "STRING", "INT", "STRING")
-    RETURN_NAMES = ("latent", "status", "scene_count", "scene_report")
+    RETURN_TYPES = ("LATENT", "STRING", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("latent", "status", "scene_count", "scene_report", "scene_boundaries")
     FUNCTION = "sample"
     CATEGORY = "FunPack/Sampling"
     DESCRIPTION = (
@@ -1237,6 +1241,97 @@ class FunPackLTXAVSceneChainSampler:
         latent.pop("noise_mask", None)
         return latent
 
+    def _blur_pixel_frame(self, frame, sigma):
+        """Box-blur approximation on a single [H, W, C] pixel frame."""
+        if sigma <= 0:
+            return frame
+        k = max(3, int(sigma * 3) | 1)
+        x = frame.permute(2, 0, 1).unsqueeze(0).float()
+        x = torch.nn.functional.avg_pool2d(x, k, stride=1, padding=k // 2)
+        return x.squeeze(0).permute(1, 2, 0).to(dtype=frame.dtype)
+
+    def _apply_pixel_transitions(self, output, boundary_entries, vae, time_scale, transition_duration):
+        """Decode a latent window around each boundary, apply pixel effect, re-encode and splice."""
+        active = [e for e in boundary_entries if e.get("effect") and e["effect"] != "none"]
+        if not active:
+            return output
+
+        result_tensors = list(self._latent_tensors(output))
+        video_tensor = result_tensors[0].clone()
+        total_latent_frames = self._tensor_frames(video_tensor)
+
+        half_pix = max(1, transition_duration // 2)
+        # Convert pixel half-window to latent frames (ceiling to ensure coverage)
+        half_lat = max(2, (half_pix + time_scale - 1) // time_scale)
+
+        for entry in active:
+            effect = entry["effect"]
+            boundary_latent = int(entry["boundary_latent"])
+            start_l = max(0, boundary_latent - half_lat)
+            end_l = min(total_latent_frames, boundary_latent + half_lat)
+            if start_l >= end_l:
+                continue
+
+            window = self._time_slice(video_tensor, start_l, end_l)
+            try:
+                decoded = vae.decode(window)  # [N, H, W, C]
+            except Exception as exc:
+                print(f"[FunPackSceneChain] {effect} decode failed: {exc}")
+                continue
+
+            decoded = decoded.clone().float()
+            n = decoded.shape[0]
+            center = n // 2
+
+            if effect == "fade_to_black":
+                for i in range(n):
+                    dist = abs(i - center)
+                    brightness = min(1.0, dist / max(1, center))
+                    decoded[i] = decoded[i] * brightness
+
+            elif effect == "crossfade":
+                orig = decoded.clone()
+                for k in range(1, center + 1):
+                    alpha = k / (center + 1)
+                    pre_i = center - k
+                    post_i = center + k - 1
+                    if 0 <= pre_i < n and 0 <= post_i < n:
+                        decoded[pre_i] = (1 - alpha) * orig[pre_i] + alpha * orig[post_i]
+                        decoded[post_i] = (1 - alpha) * orig[post_i] + alpha * orig[pre_i]
+
+            elif effect == "blur_out_in":
+                max_sigma = 8.0
+                for i in range(n):
+                    dist = abs(i - center)
+                    sigma = max_sigma * (1.0 - min(1.0, dist / max(1, center)))
+                    if sigma > 0:
+                        decoded[i] = self._blur_pixel_frame(decoded[i], sigma)
+
+            decoded = decoded.clamp(0.0, 1.0).to(dtype=torch.float32)
+            try:
+                re_encoded = vae.encode(decoded)
+            except Exception as exc:
+                print(f"[FunPackSceneChain] {effect} encode failed: {exc}")
+                continue
+
+            new_window = re_encoded.get("samples") if isinstance(re_encoded, dict) else re_encoded
+            if not isinstance(new_window, torch.Tensor):
+                continue
+            if self._tensor_frames(new_window) != (end_l - start_l):
+                print(f"[FunPackSceneChain] {effect} encode shape mismatch, skipping")
+                continue
+
+            self._set_time_slice(video_tensor, start_l, end_l,
+                                 new_window.to(device=video_tensor.device, dtype=video_tensor.dtype))
+
+        result_tensors[0] = video_tensor
+        result = self._clone_latent(output)
+        if self._is_nested(output.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(result_tensors)
+        else:
+            result["samples"] = result_tensors[0]
+        return result
+
     def _scene_text(self, scene_conditioning, index):
         if (
             isinstance(scene_conditioning, (list, tuple))
@@ -1260,9 +1355,19 @@ class FunPackLTXAVSceneChainSampler:
                 return None
         return None
 
+    def _scene_transition_effect(self, scene_conditioning):
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            effect = str(scene_conditioning[1].get("funpack_transition_effect") or "none")
+            return None if effect == "none" else effect
+        return None
+
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
-               carry_i2v_guides=False):
+               carry_i2v_guides=False, transition_duration=16):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -1278,6 +1383,8 @@ class FunPackLTXAVSceneChainSampler:
         output = None
         report_lines = []
         carried_guide_frames = 0
+        boundary_entries = []
+        cumulative_latent_frames = 0
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
@@ -1293,6 +1400,16 @@ class FunPackLTXAVSceneChainSampler:
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
+                # Record boundary (center of the overlap region) before blending
+                effect = self._scene_transition_effect(scene_cond)
+                if effect:
+                    boundary_latent = max(0, cumulative_latent_frames - video_overlap // 2)
+                    boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
+                    boundary_entries.append({
+                        "boundary_latent": boundary_latent,
+                        "pixel_frame": max(0, boundary_pixel),
+                        "effect": effect,
+                    })
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
@@ -1307,8 +1424,12 @@ class FunPackLTXAVSceneChainSampler:
             if output is not None:
                 sampled = self._match_audio_amplitude(sampled, video_overlap, video_frames)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
+            cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
 
+        output = self._apply_pixel_transitions(output, boundary_entries, vae, time_scale, transition_duration)
+
+        import json as _json
         final_frames = self._tensor_frames(self._latent_tensors(output)[0])
         status = (
             f"Scene chain complete: {scene_count} scene(s), "
@@ -1316,4 +1437,5 @@ class FunPackLTXAVSceneChainSampler:
         )
         if carry_i2v_guides and carried_guide_frames > 0:
             status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
-        return (output, status, scene_count, "\n".join(report_lines))
+        boundaries_out = [{"pixel_frame": e["pixel_frame"], "effect": e["effect"]} for e in boundary_entries]
+        return (output, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))

@@ -753,7 +753,7 @@ function openPanel(node) {
     const toolbar = el("div", "funpack-studio-footer");
     const addBtn = btn("+ Add transition", "primary");
     addBtn.addEventListener("click", () => {
-      drafts.unshift({ name: "", trigger: "", replacement: "", enabled: true });
+      drafts.unshift({ name: "", trigger: "", replacement: "", visual_effect: "none", enabled: true });
       renderTab("Transitions");
     });
     const refreshBtn = btn("Refresh");
@@ -791,9 +791,11 @@ function openPanel(node) {
         const summary = el("div", "funpack-studio-shortcut-summary");
         const label = el("span", "funpack-studio-shortcut-label", item.name || item.trigger || "(unnamed)");
         const trigger = el("span", "funpack-studio-shortcut-trigger", item.trigger || "");
+        const effectLabels = { fade_to_black: "Fade to Black", crossfade: "Crossfade", blur_out_in: "Blur Out → In" };
+        const effectLabel = effectLabels[item.visual_effect] ? el("span", "funpack-studio-shortcut-trigger", effectLabels[item.visual_effect]) : null;
         const badge = el("span", item.enabled !== false ? "funpack-studio-badge-on" : "funpack-studio-badge-off",
           item.enabled !== false ? "on" : "off");
-        summary.append(label, trigger, badge);
+        summary.append(label, trigger, ...(effectLabel ? [effectLabel] : []), badge);
         summary.addEventListener("click", () => { item._expanded = true; renderTab("Transitions"); });
         rowEl.append(summary);
         list.append(rowEl);
@@ -813,6 +815,11 @@ function openPanel(node) {
       const placementSel = selectEl(["global", "start", "end", "silent"], item.placement || "global");
       placementSel.addEventListener("change", () => { item.placement = placementSel.value; });
 
+      const visualEffectSel = selectEl(["none", "fade_to_black", "crossfade", "blur_out_in"], item.visual_effect || "none");
+      const visualEffectLabels = { none: "None (cut)", fade_to_black: "Fade to Black", crossfade: "Crossfade", blur_out_in: "Blur Out → In" };
+      Array.from(visualEffectSel.options).forEach(opt => { opt.text = visualEffectLabels[opt.value] || opt.value; });
+      visualEffectSel.addEventListener("change", () => { item.visual_effect = visualEffectSel.value; });;
+
       const actions = el("div", "funpack-studio-shortcut-actions");
       const saveBtn = btn("Save", "primary");
       saveBtn.addEventListener("click", async () => {
@@ -822,6 +829,7 @@ function openPanel(node) {
             name: item.name || item.trigger,
             trigger: item.trigger,
             placement: item.placement || "global",
+            visual_effect: item.visual_effect || "none",
             enabled: item.enabled !== false,
           });
           await fetchTransitions();
@@ -844,7 +852,7 @@ function openPanel(node) {
         } catch (e) { showError(root, e.message); }
       });
       actions.append(saveBtn, collapseBtn, delBtn);
-      rowEl.append(top, triggerInput, row("Placement override", placementSel), actions);
+      rowEl.append(top, triggerInput, row("Placement override", placementSel), row("Visual effect", visualEffectSel), actions);
       list.append(rowEl);
     });
   }

@@ -408,6 +408,9 @@ def empty_transition_db():
     return {"version": 1, "source": "ComfyUI-FunPack", "transitions": {}}
 
 
+_VISUAL_EFFECTS = ("none", "fade_to_black", "crossfade", "blur_out_in")
+
+
 def normalize_transition_item(item, fallback_name=""):
     if not isinstance(item, dict):
         return None
@@ -418,11 +421,15 @@ def normalize_transition_item(item, fallback_name=""):
     placement = str(item.get("placement") or "global").strip().lower()
     if placement not in ("global", "start", "end", "silent"):
         placement = "global"
+    visual_effect = str(item.get("visual_effect") or "none").strip().lower()
+    if visual_effect not in _VISUAL_EFFECTS:
+        visual_effect = "none"
     return {
         "name": name,
         "trigger": trigger,
         "placement": placement,
         "enabled": bool(item.get("enabled", True)),
+        "visual_effect": visual_effect,
     }
 
 
@@ -504,8 +511,10 @@ def delete_transition_item(name):
 
 
 def load_custom_transition_triggers():
-    """Return {trigger: placement_override} for enabled custom transitions.
-    placement_override is 'start', 'end', or None (use global setting).
+    """Return {trigger: {"placement": override_or_None, "visual_effect": effect}} for enabled custom transitions.
+
+    placement is 'start', 'end', 'silent', or None (use global setting).
+    visual_effect is one of 'none', 'fade_to_black', 'crossfade', 'blur_out_in'.
     """
     data = load_transition_db()
     result = {}
@@ -516,7 +525,13 @@ def load_custom_transition_triggers():
         if not trigger:
             continue
         placement = str(item.get("placement") or "global").strip().lower()
-        result[trigger.lower()] = placement if placement in ("start", "end", "silent") else None
+        visual_effect = str(item.get("visual_effect") or "none").strip().lower()
+        if visual_effect not in _VISUAL_EFFECTS:
+            visual_effect = "none"
+        result[trigger.lower()] = {
+            "placement": placement if placement in ("start", "end", "silent") else None,
+            "visual_effect": visual_effect,
+        }
     return result
 
 
