@@ -1302,8 +1302,11 @@ class FunPackLTXAVSceneChainSampler:
                 dist = abs(i - center)
                 ramp = max(0.0, (dist - blend_half) / extra_half)
                 sigma = 8.0 * (1.0 - ramp)
-                if sigma > 0:
-                    frames[i] = self._blur_pixel_frame(frames[i], sigma)
+                # Also dim to 0 at center, same as fade_to_black — without this
+                # the yellow decode artifact at the seam is blurry but fully visible.
+                brightness = min(1.0, max(0.0, (dist - blend_half) / extra_half))
+                frame = self._blur_pixel_frame(frames[i], sigma) if sigma > 0 else frames[i]
+                frames[i] = frame * brightness
 
     def _decode_video(self, output, vae, tile_size=0):
         """Decode the video component of a latent to [N, H, W, C] pixel frames."""
@@ -1334,65 +1337,46 @@ class FunPackLTXAVSceneChainSampler:
         return frames.clamp(0.0, 1.0).to(dtype=decoded.dtype)
 
     def _apply_transitions_latent(self, output, boundary_entries, vae, time_scale, transition_duration):
-        """Decode each boundary window, apply effect, re-encode and splice back into latent."""
+        """Decode full video, apply pixel transitions, re-encode full video.
+
+        Window-decode-then-splice was the previous approach and caused VAE color
+        corruption at window edges (wrong temporal context). Decoding the full
+        video once gives the VAE complete temporal context everywhere, so the
+        pixel-space transition is applied on clean frames before the single
+        re-encode. Slower but correct.
+        """
         active = [e for e in boundary_entries if e.get("effect") and e["effect"] != "none"]
         if not active:
             return output
 
-        result_tensors = list(self._latent_tensors(output))
-        video_tensor = result_tensors[0].clone()
-        total_latent_frames = self._tensor_frames(video_tensor)
+        try:
+            decoded = self._decode_video(output, vae)
+        except Exception as exc:
+            print(f"[FunPackSceneChain] latent transition decode failed: {exc}")
+            return output
 
-        for entry in active:
-            effect = entry["effect"]
-            boundary_latent = int(entry["boundary_latent"])
-            blend_half_lat = entry.get("blend_half_latent", 2)
-            extra_lat = max(0, (max(0, transition_duration // 2) + time_scale - 1) // time_scale)
-            half_lat = blend_half_lat + extra_lat
-            start_l = max(0, boundary_latent - half_lat)
-            end_l = min(total_latent_frames, boundary_latent + half_lat)
-            if start_l >= end_l:
-                continue
+        frames = self._apply_transitions_pixel(decoded, active, transition_duration)
 
-            window = self._time_slice(video_tensor, start_l, end_l)
-            try:
-                decoded = vae.decode(window)
-            except Exception as exc:
-                print(f"[FunPackSceneChain] {effect} decode failed: {exc}")
-                continue
+        try:
+            re_encoded = vae.encode(frames)
+        except Exception as exc:
+            print(f"[FunPackSceneChain] latent transition encode failed: {exc}")
+            return output
 
-            if decoded.dim() == 5:
-                b, t, h, w, c = decoded.shape
-                decoded = decoded.reshape(b * t, h, w, c)
+        new_samples = re_encoded.get("samples") if isinstance(re_encoded, dict) else re_encoded
+        if not isinstance(new_samples, torch.Tensor):
+            return output
 
-            frames = decoded.clone().float()
-            center = frames.shape[0] // 2
-            half_pix = max(1, center)
-            self._apply_effect_on_pixels(frames, effect, center, half_pix)
-            frames = frames.clamp(0.0, 1.0)
-
-            try:
-                re_encoded = vae.encode(frames)
-            except Exception as exc:
-                print(f"[FunPackSceneChain] {effect} encode failed: {exc}")
-                continue
-
-            new_window = re_encoded.get("samples") if isinstance(re_encoded, dict) else re_encoded
-            if not isinstance(new_window, torch.Tensor):
-                continue
-            if self._tensor_frames(new_window) != (end_l - start_l):
-                print(f"[FunPackSceneChain] {effect} encode shape mismatch, skipping")
-                continue
-
-            self._set_time_slice(video_tensor, start_l, end_l,
-                                 new_window.to(device=video_tensor.device, dtype=video_tensor.dtype))
-
-        result_tensors[0] = video_tensor
         result = self._clone_latent(output)
         if self._is_nested(output.get("samples")):
+            result_tensors = list(self._latent_tensors(output))
+            result_tensors[0] = new_samples.to(device=result_tensors[0].device, dtype=result_tensors[0].dtype)
             result["samples"] = comfy.nested_tensor.NestedTensor(result_tensors)
         else:
-            result["samples"] = result_tensors[0]
+            result["samples"] = new_samples.to(
+                device=self._latent_tensors(output)[0].device,
+                dtype=self._latent_tensors(output)[0].dtype,
+            )
         return result
 
     def _scene_text(self, scene_conditioning, index):
