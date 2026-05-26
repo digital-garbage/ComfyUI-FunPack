@@ -1027,7 +1027,7 @@ class FunPackLTXAVSceneChainSampler:
             "guide_attention_entries": entries,
         })
 
-    def _append_i2v_guides(self, chunk, template, positive, negative, vae):
+    def _append_i2v_guides(self, chunk, template, positive, negative):
         chunk_tensors = self._latent_tensors(chunk)
         template_tensors = self._latent_tensors(template)
         template_masks = self._latent_masks(template, len(template_tensors))
@@ -1050,11 +1050,11 @@ class FunPackLTXAVSceneChainSampler:
         out_masks = self._latent_masks(chunk, len(out_tensors))
         if out_masks[0] is None:
             out_masks[0] = torch.ones_like(out_tensors[0])
-        chunk_latent_frames = self._tensor_frames(out_tensors[0])
-        out_tensors[0] = torch.cat([out_tensors[0], guide], dim=2)
         target_mask = self._time_slice(out_masks[0], 0, protected).to(guide_mask.device, guide_mask.dtype)
         guide_mask = self._expand_mask_like(guide_mask, target_mask)
-        out_masks[0] = torch.cat([out_masks[0].to(guide_mask.device, guide_mask.dtype), guide_mask], dim=2)
+        # Prepend so guide is temporal pos 0, overlap frames follow at 1, 9, 17... — no conflict.
+        out_tensors[0] = torch.cat([guide, out_tensors[0]], dim=2)
+        out_masks[0] = torch.cat([guide_mask, out_masks[0].to(guide_mask.device, guide_mask.dtype)], dim=2)
 
         if self._is_nested(chunk.get("samples")):
             chunk["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
@@ -1063,21 +1063,7 @@ class FunPackLTXAVSceneChainSampler:
             chunk["samples"] = out_tensors[0]
             chunk["noise_mask"] = out_masks[0]
 
-        scale_factors = getattr(vae, "downscale_index_formula", (1, 1, 1))
-        keyframe_idxs = self._guide_keyframe_idxs(guide, chunk_latent_frames, scale_factors)
-        guide_strength = max(0.0, min(1.0, 1.0 - float(guide_mask.float().mean().item())))
-        guide_entry = {
-            "pre_filter_count": guide.shape[2] * guide.shape[3] * guide.shape[4],
-            "strength": guide_strength,
-            "pixel_mask": None,
-            "latent_shape": list(guide.shape[2:]),
-        }
-        return (
-            chunk,
-            self._append_guide_conditioning(positive, keyframe_idxs, guide_entry),
-            self._append_guide_conditioning(negative, keyframe_idxs, guide_entry),
-            protected,
-        )
+        return chunk, positive, negative, protected
 
     def _crop_video_tail(self, latent, count):
         if count <= 0:
@@ -1085,6 +1071,18 @@ class FunPackLTXAVSceneChainSampler:
         result = self._clone_latent(latent)
         tensors = self._latent_tensors(result)
         tensors[0] = tensors[0][:, :, :-count]
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        return result
+
+    def _crop_video_head(self, latent, count):
+        if count <= 0:
+            return latent
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        tensors[0] = tensors[0][:, :, count:]
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
@@ -1293,14 +1291,14 @@ class FunPackLTXAVSceneChainSampler:
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
-                        chunk, latent_template, scene_positive, scene_negative, vae,
+                        chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
             if carry_i2v_guides and carried > 0:
-                sampled = self._crop_video_tail(sampled, carried)
+                sampled = self._crop_video_head(sampled, carried)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
