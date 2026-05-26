@@ -1002,12 +1002,15 @@ class FunPackLTXAVSceneChainSampler:
                 return item[1][key]
         return None
 
-    def _guide_keyframe_idxs(self, guiding_latent, scale_factors):
+    def _guide_keyframe_idxs(self, guiding_latent, chunk_latent_frames, scale_factors):
         try:
             from comfy.ldm.lightricks.symmetric_patchifier import SymmetricPatchifier, latent_to_pixel_coords
             patchifier = SymmetricPatchifier(1, start_end=True)
             _, latent_coords = patchifier.patchify(guiding_latent)
-            return latent_to_pixel_coords(latent_coords, scale_factors, causal_fix=True)
+            pixel_coords = latent_to_pixel_coords(latent_coords, scale_factors, causal_fix=True)
+            # Offset to end of chunk: position 0 conflicts with the overlap frames already there.
+            pixel_coords[:, 0] += chunk_latent_frames * scale_factors[0]
+            return pixel_coords
         except Exception:
             b, _, f, h, w = guiding_latent.shape
             return torch.zeros((b, 3, f * h * w, 2), dtype=torch.float32, device=guiding_latent.device)
@@ -1047,6 +1050,7 @@ class FunPackLTXAVSceneChainSampler:
         out_masks = self._latent_masks(chunk, len(out_tensors))
         if out_masks[0] is None:
             out_masks[0] = torch.ones_like(out_tensors[0])
+        chunk_latent_frames = self._tensor_frames(out_tensors[0])
         out_tensors[0] = torch.cat([out_tensors[0], guide], dim=2)
         target_mask = self._time_slice(out_masks[0], 0, protected).to(guide_mask.device, guide_mask.dtype)
         guide_mask = self._expand_mask_like(guide_mask, target_mask)
@@ -1060,7 +1064,7 @@ class FunPackLTXAVSceneChainSampler:
             chunk["noise_mask"] = out_masks[0]
 
         scale_factors = getattr(vae, "downscale_index_formula", (1, 1, 1))
-        keyframe_idxs = self._guide_keyframe_idxs(guide, scale_factors)
+        keyframe_idxs = self._guide_keyframe_idxs(guide, chunk_latent_frames, scale_factors)
         guide_strength = max(0.0, min(1.0, 1.0 - float(guide_mask.float().mean().item())))
         guide_entry = {
             "pre_filter_count": guide.shape[2] * guide.shape[3] * guide.shape[4],
