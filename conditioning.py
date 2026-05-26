@@ -502,6 +502,10 @@ def parse_timeline_segments(prompt, custom_map=None):
     def clean(s):
         return s.strip().strip(",;.: ").strip()
 
+    def real_content(s):
+        s = split_pat.sub("", s).strip().strip(",;.: ")
+        return re.sub(r"^(a|an|the)\s*$", "", s, flags=re.IGNORECASE).strip()
+
     scenes = []
     transitions = []
 
@@ -524,10 +528,32 @@ def parse_timeline_segments(prompt, custom_map=None):
         scenes.append({"index": len(scenes), "text": following})
         i += 2
 
+    # Stacking fix: adjacent transition phrases leave a phantom segment with no real
+    # content (e.g. shortcut expansion starts with a built-in transition phrase).
+    # Merge the phantom into the following segment, keep the following segment's transition.
+    i = 0
+    while i < len(scenes):
+        if scenes[i]["text"] and not real_content(scenes[i]["text"]) and i + 1 < len(scenes):
+            connector = " " if re.search(r"\b(a|an|the)\s*$", scenes[i]["text"], re.IGNORECASE) else ", "
+            scenes[i + 1]["text"] = (scenes[i]["text"] + connector + scenes[i + 1]["text"]).strip()
+            scenes.pop(i)
+            if i > 0:
+                transitions.pop(i - 1)
+            else:
+                transitions.pop(0)
+            for j in range(i, len(scenes)):
+                scenes[j]["index"] = j
+            for t in transitions:
+                if t["after_scene"] >= i:
+                    t["after_scene"] -= 1
+        else:
+            i += 1
+
     # Drop dangling trailing scene from a prompt ending with a transition phrase
     if len(scenes) > 1 and not scenes[-1]["text"]:
         scenes.pop()
-        transitions.pop()
+        if transitions:
+            transitions.pop()
 
     return {"scenes": scenes, "transitions": transitions}
 
