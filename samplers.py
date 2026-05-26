@@ -13,21 +13,7 @@ import comfy.utils
 MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
 
 
-def _has_i2v_reference_latent(latent):
-    """Return True if the latent has a protected first frame (i2v reference image)."""
-    if not isinstance(latent, dict):
-        return False
-    mask = latent.get("noise_mask")
-    if mask is None:
-        return False
-    if getattr(mask, "is_nested", False):
-        tensors = list(mask.unbind())
-        if not tensors:
-            return False
-        mask = tensors[0]
-    if not isinstance(mask, torch.Tensor) or mask.dim() < 3:
-        return False
-    return float(mask[:, :, 0].float().mean()) < 0.95
+
 VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"]
 VELOCITY_BIAS_TARGETS = (0.90, 0.80)
 VELOCITY_BIAS_MEMORY = {}
@@ -1124,50 +1110,6 @@ class FunPackLTXAVSceneChainSampler:
         blended = alpha * left[:, :, -overlap:] + (1.0 - alpha) * right[:, :, :overlap].to(left.device, left.dtype)
         return torch.cat([left[:, :, :-overlap], blended, right[:, :, overlap:].to(left.device, left.dtype)], dim=2)
 
-    def _match_audio_amplitude(self, sampled, video_overlap, video_frames):
-        """Rescale non-overlap audio frames to match the RMS of the overlap context.
-
-        Continuation chunks have their audio overlap frames copied from the previous
-        scene (real latents, typically low std). The model denoises new frames with
-        this context visible, generating audio at the context's lower amplitude.
-        Rescaling the new frames to match the overlap RMS restores consistent volume.
-        """
-        if not self._is_nested(sampled.get("samples")):
-            return sampled
-        tensors = self._latent_tensors(sampled)
-        if len(tensors) < 2:
-            return sampled
-
-        # Audio tensor is index 1 in LTXAV nested structure (3-dim: B, C, T)
-        audio = tensors[1]
-        if audio.dim() != 3:
-            return sampled
-
-        audio_frames = self._tensor_frames(audio)
-        audio_overlap = self._derived_overlap(video_overlap, video_frames, audio_frames)
-        if audio_overlap <= 0 or audio_overlap >= audio_frames:
-            return sampled
-
-        overlap_rms = float(audio[:, :, :audio_overlap].float().pow(2).mean().sqrt())
-        new_rms = float(audio[:, :, audio_overlap:].float().pow(2).mean().sqrt())
-        if overlap_rms < 1e-6 or new_rms < 1e-6:
-            return sampled
-
-        scale = overlap_rms / new_rms
-        # Only apply if there's a meaningful discrepancy (>10% difference)
-        if abs(scale - 1.0) < 0.1:
-            return sampled
-
-        audio_fixed = audio.clone()
-        audio_fixed[:, :, audio_overlap:] = (
-            audio[:, :, audio_overlap:].float().mul(scale).to(dtype=audio.dtype)
-        )
-        result = self._clone_latent(sampled)
-        tensors_fixed = list(tensors)
-        tensors_fixed[1] = audio_fixed
-        result["samples"] = comfy.nested_tensor.NestedTensor(tensors_fixed)
-        return result
-
     def _blend_latents(self, previous, current, video_overlap):
         result = self._clone_latent(previous)
         previous_tensors = self._latent_tensors(previous)
@@ -1187,55 +1129,6 @@ class FunPackLTXAVSceneChainSampler:
         else:
             result["samples"] = blended_tensors[0]
         result.pop("noise_mask", None)
-        return result
-
-    def _build_bridge_chunk_UNUSED(self, scene_a, scene_b, latent_template, bridge_video_frames, time_scale):
-        """Build a short first-last-frame latent for bridge shot generation.
-
-        First latent frame = last frame of scene_a (where we came from).
-        Last latent frame  = first frame of scene_b (where we are going).
-        Middle frames      = noise to be denoised by the model.
-        """
-        bridge_latent_frames = self._expected_latent_frames(bridge_video_frames, time_scale)
-        bridge_latent_frames = max(3, bridge_latent_frames)
-
-        tensors_a = self._latent_tensors(scene_a)
-        tensors_b = self._latent_tensors(scene_b)
-        template_tensors = self._latent_tensors(latent_template)
-
-        out_tensors = []
-        mask_tensors = []
-        for index, tmpl in enumerate(template_tensors):
-            tmpl_frames = self._tensor_frames(tmpl)
-            t_bridge_frames = bridge_latent_frames if index == 0 else self._derived_overlap(
-                bridge_latent_frames, bridge_latent_frames, tmpl_frames
-            )
-            t_bridge_frames = max(3, t_bridge_frames)
-
-            bridge = tmpl[:, :, :t_bridge_frames].clone()
-
-            # Pin first frame = last frame of scene A
-            if index < len(tensors_a):
-                bridge[:, :, :1] = tensors_a[index][:, :, -1:].to(device=bridge.device, dtype=bridge.dtype)
-
-            # Pin last frame = first frame of scene B
-            if index < len(tensors_b):
-                bridge[:, :, -1:] = tensors_b[index][:, :, :1].to(device=bridge.device, dtype=bridge.dtype)
-
-            mask = torch.ones_like(bridge)
-            mask[:, :, :1] = 0.0
-            mask[:, :, -1:] = 0.0
-
-            out_tensors.append(bridge)
-            mask_tensors.append(mask)
-
-        result = self._clone_latent(latent_template)
-        if self._is_nested(latent_template.get("samples")):
-            result["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
-            result["noise_mask"] = comfy.nested_tensor.NestedTensor(mask_tensors)
-        else:
-            result["samples"] = out_tensors[0]
-            result["noise_mask"] = mask_tensors[0]
         return result
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent):
@@ -1465,14 +1358,11 @@ class FunPackLTXAVSceneChainSampler:
             )
             if carry_i2v_guides and carried > 0:
                 sampled = self._crop_video_tail(sampled, carried)
-            if output is not None:
-                sampled = self._match_audio_amplitude(sampled, video_overlap, video_frames)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
 
         # RETURN_TYPES slot indices: 0=latent, 1=images
-        want_latent = self._output_connected(prompt, unique_id, 0)
         want_image = self._output_connected(prompt, unique_id, 1)
 
         # Release all generation-side references so ComfyUI can unload the diffusion
