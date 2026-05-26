@@ -780,7 +780,10 @@ class FunPackLTXAVSceneChainSampler:
                 "seed": ("INT", {"default": 1, "min": 0, "max": 0xffffffffffffffff}),
                 "latent_template": ("LATENT",),
                 "num_frames_per_scene": ("INT", {"default": 97, "min": 1, "max": 4096, "step": 8}),
-                "frame_overlap": ("INT", {"default": 16, "min": 0, "max": 512, "step": 8}),
+                "frame_overlap": ("INT", {
+                    "default": 16, "min": 0, "max": 512, "step": 8,
+                    "tooltip": "Pixel frames copied from the previous scene into the next chunk and preserved during denoising. 0 disables overlap blending entirely. WARNING: combining frame_overlap=0 with carry_i2v_guides=True is confirmed to produce bad results — use only for testing.",
+                }),
                 "cfg": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 100.0, "step": 0.1}),
                 "max_scenes": ("INT", {"default": 8, "min": 1, "step": 1}),
                 "use_same_seed": ("BOOLEAN", {
@@ -789,7 +792,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "carry_i2v_guides": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap.",
+                    "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap. WARNING: using this with frame_overlap=0 is confirmed to produce bad results — enable only for testing.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
@@ -1328,6 +1331,8 @@ class FunPackLTXAVSceneChainSampler:
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
+
+        del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
 
         # RETURN_TYPES slot indices: 0=latent, 1=images
         # Sampling is fully complete. Latent is untouched and returned as-is.

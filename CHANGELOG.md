@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.7.3] - 2026-05-27
+
+### Fixed
+
+Fixed `carry_i2v_guides` soft continuation when `frame_overlap=0`: the anchor mask is now fully pinned (0.0) to prevent denoising from disturbing guide tokens.
+
+### Notes
+
+Using `frame_overlap=0` together with `carry_i2v_guides=True` is confirmed to produce bad results and is not recommended. Both parameters now warn about this in their tooltips and in the sampler documentation. Use this combination only for deliberate testing.
+
 ## [2.7.2] - 2026-05-22
 
 ### Added

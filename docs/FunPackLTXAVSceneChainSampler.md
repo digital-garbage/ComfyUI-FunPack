@@ -19,11 +19,11 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 - `seed`: Base seed. Scene N uses `seed + N` unless scene seed metadata is present.
 - `latent_template`: One scene-sized latent template. Plain video and nested AV latents are supported.
 - `num_frames_per_scene`: Pixel frame count represented by `latent_template`.
-- `frame_overlap`: Pixel frames to preserve and blend between scene chunks.
+- `frame_overlap`: Pixel frames to preserve and blend between scene chunks. Set to 0 to disable overlap entirely. **Warning:** combining `frame_overlap=0` with `carry_i2v_guides=True` is confirmed to produce bad results — use only for testing.
 - `cfg`: Internal CFG value.
 - `max_scenes`: Maximum scene entries to consume. Default is `8`, but it can be raised for longer chains.
 - `use_same_seed`: When off, each scene uses `funpack_scene_seed` metadata from Studio/Refiner split mode, falling back to `seed + scene_index`. When on, every scene uses the first provided scene seed or the base `seed`.
-- `carry_i2v_guides`: Experimental. Appends protected frames from `latent_template`'s `noise_mask` as hidden LTX guide tokens in each continuation chunk. Default is off.
+- `carry_i2v_guides`: Experimental. Appends protected frames from `latent_template`'s `noise_mask` as hidden LTX guide tokens in each continuation chunk. Default is off. **Warning:** using this with `frame_overlap=0` is confirmed to produce bad results — enable only for testing.
 
 ## Behavior
 
@@ -33,7 +33,7 @@ Each following scene copies the previous output tail into the start of the next 
 
 When Studio or Refiner V2 split mode provides scene seed metadata, the sampler reports and uses those exact seeds. This lets successful seed memory replay a known-good scene seed set while keeping the public Studio `seed` output as a single integer.
 
-When `carry_i2v_guides` is enabled, protected source frames from the incoming `latent_template` are appended as guide tokens with `keyframe_idxs` and `guide_attention_entries`, then cropped away after sampling. This follows the same broad idea as LTX guide/IC-LoRA conditioning: the reference is extra context, not a visible frame inserted into the generated timeline. Keep it off unless you are testing that behavior deliberately.
+When `carry_i2v_guides` is enabled, protected source frames from the incoming `latent_template` are appended as guide tokens with `keyframe_idxs` and `guide_attention_entries`, then cropped away after sampling. This follows the same broad idea as LTX guide/IC-LoRA conditioning: the reference is extra context, not a visible frame inserted into the generated timeline. Keep it off unless you are testing that behavior deliberately. **Combining `carry_i2v_guides=True` with `frame_overlap=0` is confirmed to produce bad results and is not recommended for normal use.**
 
 For nested LTXAV latents, video and audio tensors are continued together. Audio overlap is derived from the audio/video latent length ratio.
 
