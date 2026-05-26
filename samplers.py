@@ -1027,7 +1027,7 @@ class FunPackLTXAVSceneChainSampler:
             "guide_attention_entries": entries,
         })
 
-    def _prepend_soft_continuation(self, chunk, previous, mask_value=0.5):
+    def _prepend_soft_continuation(self, chunk, previous, mask_value=0.0):
         chunk_tensors = self._latent_tensors(chunk)
         previous_tensors = self._latent_tensors(previous)
         if not chunk_tensors or not previous_tensors:
