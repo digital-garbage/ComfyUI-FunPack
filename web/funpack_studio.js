@@ -1278,6 +1278,11 @@ function openPanel(node) {
       return;
     }
     body.replaceChildren();
+    const refreshBtn = btn("Refresh", "secondary");
+    refreshBtn.style.cssText = "align-self:flex-start;margin-bottom:4px;";
+    refreshBtn.addEventListener("click", () => { body.replaceChildren(); renderTimeline(); });
+    body.append(refreshBtn);
+
     const { scenes, transitions } = data;
     const trByScene = {};
     for (const t of transitions) trByScene[t.after_scene] = t;

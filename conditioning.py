@@ -533,7 +533,7 @@ def parse_timeline_segments(prompt, custom_map=None):
     # Merge the phantom into the following segment, keep the following segment's transition.
     i = 0
     while i < len(scenes):
-        if scenes[i]["text"] and not real_content(scenes[i]["text"]) and i + 1 < len(scenes):
+        if not real_content(scenes[i]["text"]) and i + 1 < len(scenes):
             connector = " " if re.search(r"\b(a|an|the)\s*$", scenes[i]["text"], re.IGNORECASE) else ", "
             scenes[i + 1]["text"] = (scenes[i]["text"] + connector + scenes[i + 1]["text"]).strip()
             scenes.pop(i)
