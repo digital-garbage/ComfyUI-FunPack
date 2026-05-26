@@ -1027,6 +1027,29 @@ class FunPackLTXAVSceneChainSampler:
             "guide_attention_entries": entries,
         })
 
+    def _prepend_soft_continuation(self, chunk, previous, mask_value=0.5):
+        chunk_tensors = self._latent_tensors(chunk)
+        previous_tensors = self._latent_tensors(previous)
+        if not chunk_tensors or not previous_tensors:
+            return chunk, 0
+        soft_frame = self._tail(previous_tensors[0], 1).to(
+            device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype,
+        )
+        out_tensors = list(chunk_tensors)
+        out_masks = self._latent_masks(chunk, len(out_tensors))
+        if out_masks[0] is None:
+            out_masks[0] = torch.ones_like(out_tensors[0])
+        soft_mask = torch.full_like(soft_frame, mask_value)
+        out_tensors[0] = torch.cat([soft_frame, out_tensors[0]], dim=2)
+        out_masks[0] = torch.cat([soft_mask, out_masks[0].to(soft_mask.device, soft_mask.dtype)], dim=2)
+        if self._is_nested(chunk.get("samples")):
+            chunk["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
+            chunk["noise_mask"] = comfy.nested_tensor.NestedTensor(out_masks)
+        else:
+            chunk["samples"] = out_tensors[0]
+            chunk["noise_mask"] = out_masks[0]
+        return chunk, 1
+
     def _append_i2v_guides(self, chunk, template, positive, negative):
         chunk_tensors = self._latent_tensors(chunk)
         template_tensors = self._latent_tensors(template)
@@ -1272,6 +1295,7 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
+            soft_carried = 0
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
@@ -1289,6 +1313,8 @@ class FunPackLTXAVSceneChainSampler:
                         "effect": effect,
                     })
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
+                if video_overlap == 0:
+                    chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative,
@@ -1297,8 +1323,8 @@ class FunPackLTXAVSceneChainSampler:
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
-            if carry_i2v_guides and carried > 0:
-                sampled = self._crop_video_head(sampled, carried)
+            if carried + soft_carried > 0:
+                sampled = self._crop_video_head(sampled, carried + soft_carried)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
