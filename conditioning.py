@@ -573,20 +573,27 @@ def split_prompt_by_transitions(prompt, placement="start"):
 
 
 def parse_timeline_segments(prompt):
-    """Return {"scenes": [...], "transitions": [...]} for timeline preview.
+    """Return {"anchor": str, "scenes": [...], "transitions": [...]} for timeline preview.
 
-    Uses split_prompt_by_transitions — the same code path as Studio generation.
-    scenes: list of {"index": int, "text": str}
-    transitions: list of {"after_scene": int, "visual_effect": str|None}
+    Mirrors _v2_transition_scene_texts: segments[0] is the character anchor prepended
+    to every scene, segments[1:] are the actual generated scenes.
+    If no transitions found, the single segment is treated as scene 1 with no anchor.
     """
     segments = split_prompt_by_transitions(prompt, placement="silent")
-    scenes = [{"index": i, "text": text} for i, (text, _) in enumerate(segments)]
+    if len(segments) == 1:
+        return {
+            "anchor": "",
+            "scenes": [{"index": 0, "text": segments[0][0]}],
+            "transitions": [],
+        }
+    anchor = segments[0][0].strip()
+    scenes = [{"index": i, "text": text.strip()} for i, (text, _) in enumerate(segments[1:])]
     transitions = [
         {"after_scene": i - 1, "visual_effect": effect}
-        for i, (_, effect) in enumerate(segments)
+        for i, (_, effect) in enumerate(segments[1:])
         if i > 0
     ]
-    return {"scenes": scenes, "transitions": transitions}
+    return {"anchor": anchor, "scenes": scenes, "transitions": transitions}
 
 
 class FunPackVideoRefiner:

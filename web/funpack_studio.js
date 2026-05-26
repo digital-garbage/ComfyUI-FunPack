@@ -1283,12 +1283,19 @@ function openPanel(node) {
     refreshBtn.addEventListener("click", () => { body.replaceChildren(); renderTimeline(); });
     body.append(refreshBtn);
 
-    const { scenes, transitions } = data;
+    const { anchor, scenes, transitions } = data;
     const trByScene = {};
     for (const t of transitions) trByScene[t.after_scene] = t;
 
     body.append(el("div", "funpack-studio-hint",
       scenes.length === 1 ? "1 scene — no transitions found." : `${scenes.length} scenes detected.`));
+
+    if (anchor) {
+      const anchorBox = el("div", "funpack-timeline-anchor");
+      anchorBox.append(el("div", "funpack-timeline-badge", "Anchor (all scenes)"));
+      anchorBox.append(el("div", "funpack-timeline-text", anchor));
+      body.append(anchorBox);
+    }
 
     const rail = el("div", "funpack-timeline-rail");
     for (const scene of scenes) {
@@ -1553,6 +1560,10 @@ function injectStyles() {
     }
     .funpack-studio-tab-link { color: #58a6d6; text-decoration: underline; cursor: pointer; }
     .funpack-studio-tab-link:hover { color: #8dcff5; }
+    .funpack-timeline-anchor {
+      border: 1px solid rgba(88,166,214,0.35); border-radius: 6px;
+      background: rgba(22,45,62,0.5); padding: 8px; margin-bottom: 6px;
+    }
     .funpack-timeline-rail {
       display: flex; flex-direction: row; align-items: flex-start;
       gap: 0; overflow-x: auto; padding-bottom: 6px;
