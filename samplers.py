@@ -1080,19 +1080,8 @@ class FunPackLTXAVSceneChainSampler:
             return latent
         result = self._clone_latent(latent)
         tensors = self._latent_tensors(result)
-        video_frames = self._tensor_frames(tensors[0])
         tensors[0] = tensors[0][:, :, :-count]
         if self._is_nested(result.get("samples")):
-            # Crop non-video tensors (audio) proportionally. Without this,
-            # _blend_latents sees a shorter video but full-length audio and
-            # computes audio overlap from the wrong ratio — more audio frames
-            # are removed per seam than video frames, so audio drifts shorter
-            # and plays back faster with each additional scene.
-            for i in range(1, len(tensors)):
-                t_frames = self._tensor_frames(tensors[i])
-                t_crop = self._derived_overlap(count, video_frames, t_frames)
-                if 0 < t_crop < t_frames:
-                    tensors[i] = tensors[i][:, :, :-t_crop]
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
             result["samples"] = tensors[0]
