@@ -1239,8 +1239,22 @@ function openPanel(node) {
   }
 
   // ── Timeline ───────────────────────────────────────────────────────────────
+  function resolveInputValue(n, inputName) {
+    const w = widgetByName(n, inputName);
+    if (w) return String(w.value || "");
+    const idx = (n.inputs || []).findIndex(i => i.name === inputName);
+    if (idx === -1) return "";
+    const linkId = n.inputs[idx].link;
+    if (!linkId) return "";
+    const link = app.graph?.links?.[linkId];
+    if (!link) return "";
+    const src = app.graph.getNodeById(link.origin_id);
+    if (!src) return "";
+    return String(src.widgets?.[0]?.value || "");
+  }
+
   async function renderTimeline() {
-    const prompt = String(widgetByName(node, "positive_prompt")?.value || "").trim();
+    const prompt = resolveInputValue(node, "positive_prompt").trim();
     if (!prompt) {
       body.append(el("div", "funpack-studio-hint", "No prompt — type or connect a positive_prompt to preview the timeline."));
       return;

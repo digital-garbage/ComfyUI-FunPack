@@ -1556,7 +1556,7 @@ async def funpack_parse_timeline(request):
     data = await request.json()
     prompt = str(data.get("prompt") or "")
     refinement_key = str(data.get("refinement_key") or "")
-    custom_map = load_custom_transition_triggers() if not refinement_key else {}
+    custom_map = load_custom_transition_triggers()
     try:
         from .conditioning import parse_timeline_segments
     except ImportError:
