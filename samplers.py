@@ -1166,21 +1166,17 @@ class FunPackLTXAVSceneChainSampler:
         x = torch.nn.functional.avg_pool2d(x, k, stride=1, padding=0)
         return x.squeeze(0).permute(1, 2, 0).to(dtype=frame.dtype)
 
-    def _apply_effect_on_pixels(self, frames, effect, center, half, blend_half=0):
+    def _apply_effect_on_pixels(self, frames, effect, center, half):
         """Apply one visual transition effect in-place on a [N, H, W, C] float tensor.
 
-        blend_half: number of frames on each side of center that are blended-latent
-        content and must be fully processed (zero brightness / max blur) regardless
-        of transition_duration.  extra frames beyond blend_half fade/ramp back to
-        full brightness over the remaining (half - blend_half) range.
+        Simple V-ramp centered at the seam: full effect at center, linear ramp
+        back to no-effect at ±half frames. transition_duration controls half.
         """
         n = frames.shape[0]
         center = max(half, min(n - half - 1, center))
-        extra_half = max(1, half - blend_half)
         if effect == "fade_to_black":
             for i in range(max(0, center - half), min(n, center + half)):
-                dist = abs(i - center)
-                brightness = min(1.0, max(0.0, (dist - blend_half) / extra_half))
+                brightness = abs(i - center) / max(1, half)
                 frames[i] = frames[i] * brightness
         elif effect == "crossfade":
             orig = frames.clone()
@@ -1192,8 +1188,7 @@ class FunPackLTXAVSceneChainSampler:
                     frames[post_i] = (1 - alpha) * orig[post_i] + alpha * orig[pre_i]
         elif effect == "blur_out_in":
             for i in range(max(0, center - half), min(n, center + half)):
-                dist = abs(i - center)
-                ramp = max(0.0, (dist - blend_half) / extra_half)
+                ramp = abs(i - center) / max(1, half)
                 sigma = 8.0 * (1.0 - ramp)
                 if sigma > 0:
                     frames[i] = self._blur_pixel_frame(frames[i], sigma)
@@ -1243,11 +1238,9 @@ class FunPackLTXAVSceneChainSampler:
         if not active:
             return decoded
         frames = decoded.clone().float()
+        half = max(1, transition_duration // 2)
         for entry in active:
-            blend_half = entry.get("blend_half_pixels", 0)
-            extra = max(1, transition_duration // 2)
-            half = blend_half + extra
-            self._apply_effect_on_pixels(frames, entry["effect"], int(entry["pixel_frame"]), half, blend_half=blend_half)
+            self._apply_effect_on_pixels(frames, entry["effect"], int(entry["pixel_frame"]), half)
         return frames.clamp(0.0, 1.0).to(dtype=decoded.dtype)
 
     def _scene_text(self, scene_conditioning, index):
@@ -1323,18 +1316,14 @@ class FunPackLTXAVSceneChainSampler:
                 effect = self._scene_transition_effect(scene_cond)
                 if effect and transition_duration > 0:
                     # Seam is at cumulative_latent_frames: overlap frames are pinned
-                    # (mask=0) so the latent blend is a no-op — the actual content
-                    # boundary is exactly here, not offset by overlap//2.
+                    # (mask=0) so the latent blend is a no-op — actual content
+                    # boundary is exactly here.
                     boundary_latent = cumulative_latent_frames
                     boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
-                    blend_half_latent = max(1, video_overlap // 2)
-                    blend_half_pixels = blend_half_latent * time_scale
                     boundary_entries.append({
                         "boundary_latent": boundary_latent,
                         "pixel_frame": max(0, boundary_pixel),
                         "effect": effect,
-                        "blend_half_latent": blend_half_latent,
-                        "blend_half_pixels": blend_half_pixels,
                     })
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if carry_i2v_guides:
@@ -1358,7 +1347,7 @@ class FunPackLTXAVSceneChainSampler:
         # model and text encoder before VAE decode runs. scene_conditionings is a
         # slice of positive; scene_positive/negative are loop-scoped conditioning
         # copies — all keep the LTXAVTEModel alive through their embedding tensors.
-        del model, positive, negative, scene_conditionings, scene_positive, scene_negative, chunk, sampled
+        del model, positive, negative, scene_conditionings, scene_cond, scene_positive, scene_negative, chunk, sampled
 
         # Scene boundaries for per-scene decode: each entry's boundary_latent is
         # where the next scene's new content starts in the concatenated latent.
