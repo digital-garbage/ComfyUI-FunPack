@@ -1300,11 +1300,8 @@ function openPanel(node) {
       if (tr) {
         const conn = el("div", "funpack-timeline-connector");
         conn.append(el("div", "funpack-timeline-arrow", "→"));
-        const lbl = el("div", "funpack-timeline-phrase", tr.phrase);
-        if (tr.visual_effect) {
-          lbl.append(el("span", "funpack-timeline-effect", tr.visual_effect.replace(/_/g, " ")));
-        }
-        conn.append(lbl);
+        const label = tr.visual_effect ? tr.visual_effect.replace(/_/g, " ") : "cut";
+        conn.append(el("div", "funpack-timeline-phrase", label));
         rail.append(conn);
       }
     }

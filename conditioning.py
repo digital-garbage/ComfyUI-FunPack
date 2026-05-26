@@ -472,89 +472,120 @@ _TRANSITION_SPLIT_PATTERN = re.compile(
 )
 
 
-def parse_timeline_segments(prompt, custom_map=None):
-    """Return {"scenes": [...], "transitions": [...]} for timeline preview.
+def split_prompt_by_transitions(prompt, placement="start"):
+    """Module-level extraction of FunPackStudio._v2_split_prompt_by_transitions.
 
-    scenes: list of {"index": int, "text": str}
-    transitions: list of {"after_scene": int, "phrase": str, "visual_effect": str|None}
+    Returns [(text, visual_effect), ...] with >= 1 entry, same semantics as the method.
+    visual_effect is the effect that fires BEFORE this segment (None for segment 0).
     """
+    try:
+        from .templates import load_custom_transition_triggers
+    except ImportError:
+        from templates import load_custom_transition_triggers
+
     text = str(prompt or "").strip()
     if not text:
-        return {"scenes": [{"index": 0, "text": ""}], "transitions": []}
+        return [(text, None)]
 
-    if custom_map:
-        def _pat(t):
+    custom_map = load_custom_transition_triggers()
+    custom_triggers = list(custom_map.keys())
+
+    if custom_triggers:
+        def _custom_trigger_pat(t):
             end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
             return r"\b" + re.escape(t) + end
         custom_parts = "|".join(
-            _pat(t) for t in sorted(custom_map.keys(), key=len, reverse=True)
+            _custom_trigger_pat(t) for t in sorted(custom_triggers, key=len, reverse=True)
         )
-        split_pat = re.compile(
+        split_pattern = re.compile(
             r"(?:" + custom_parts + r"|" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
             re.IGNORECASE,
         )
     else:
-        split_pat = _TRANSITION_SPLIT_PATTERN
+        split_pattern = _TRANSITION_SPLIT_PATTERN
 
-    capturing = re.compile(r"(" + split_pat.pattern + r")", re.IGNORECASE)
-    parts = capturing.split(text)
-
-    def clean(s):
-        return s.strip().strip(",;.: ").strip()
-
-    def real_content(s):
-        s = split_pat.sub("", s).strip().strip(",;.: ")
-        return re.sub(r"^(a|an|the)\s*$", "", s, flags=re.IGNORECASE).strip()
-
-    scenes = []
-    transitions = []
-
-    first = clean(parts[0])
-    scenes.append({"index": 0, "text": first})
-
+    capturing_pattern = re.compile(r"(" + split_pattern.pattern + r")", re.IGNORECASE)
+    parts = capturing_pattern.split(text)
+    segments = []
+    effects = []
+    first_segment = parts[0].strip().strip(",;.:").strip()
+    if not first_segment:
+        segments.append("")
+        effects.append(None)
+    current = first_segment
+    current_effect = None
     i = 1
     while i < len(parts):
-        phrase = parts[i].strip() if i < len(parts) else ""
-        following = clean(parts[i + 1]) if i + 1 < len(parts) else ""
-        entry = (custom_map or {}).get(phrase.lower()) or {}
-        visual_effect = entry.get("visual_effect") if isinstance(entry, dict) else None
-        if not visual_effect or visual_effect == "none":
-            visual_effect = None
-        transitions.append({
-            "after_scene": len(scenes) - 1,
-            "phrase": phrase,
-            "visual_effect": visual_effect,
-        })
-        scenes.append({"index": len(scenes), "text": following})
+        trans_word = parts[i].strip()
+        following = parts[i + 1] if i + 1 < len(parts) else ""
+        following = following.strip().lstrip(",;.:").strip()
+        entry = custom_map.get(trans_word.lower()) or {}
+        trans_placement = entry.get("placement") or placement if isinstance(entry, dict) else placement
+        trans_visual_effect = entry.get("visual_effect", "none") if isinstance(entry, dict) else "none"
+        if trans_visual_effect == "none":
+            trans_visual_effect = None
+        if trans_placement == "end":
+            segments.append((current + " " + trans_word).strip().strip(",;.:").strip() if current else trans_word)
+            effects.append(current_effect)
+            current = following
+            current_effect = trans_visual_effect
+        elif trans_placement == "silent":
+            if current:
+                segments.append(current)
+                effects.append(current_effect)
+            current = following
+            current_effect = trans_visual_effect
+        else:
+            if current:
+                segments.append(current)
+                effects.append(current_effect)
+            current = re.sub(r"\b(a|an|the),\s*", r"\1 ", (trans_word + " " + following).strip().strip(",;.:").strip(), flags=re.IGNORECASE).strip()
+            current_effect = trans_visual_effect
         i += 2
+    if current:
+        segments.append(current)
+        effects.append(current_effect)
 
-    # Stacking fix: adjacent transition phrases leave a phantom segment with no real
-    # content (e.g. shortcut expansion starts with a built-in transition phrase).
-    # Merge the phantom into the following segment, keep the following segment's transition.
+    def _real_content(seg):
+        s = split_pattern.sub("", seg).strip().strip(",;.: ")
+        return re.sub(r"^(a|an|the)\s*$", "", s, flags=re.IGNORECASE).strip()
+
     i = 0
-    while i < len(scenes):
-        if not real_content(scenes[i]["text"]) and i + 1 < len(scenes):
-            connector = " " if re.search(r"\b(a|an|the)\s*$", scenes[i]["text"], re.IGNORECASE) else ", "
-            scenes[i + 1]["text"] = (scenes[i]["text"] + connector + scenes[i + 1]["text"]).strip()
-            scenes.pop(i)
-            if i > 0:
-                transitions.pop(i - 1)
-            else:
-                transitions.pop(0)
-            for j in range(i, len(scenes)):
-                scenes[j]["index"] = j
-            for t in transitions:
-                if t["after_scene"] >= i:
-                    t["after_scene"] -= 1
+    while i < len(segments):
+        if segments[i] == "":
+            i += 1
+            continue
+        if not _real_content(segments[i]) and i + 1 < len(segments):
+            connector = " " if re.search(r"\b(a|an|the)\s*$", segments[i], re.IGNORECASE) else ", "
+            segments[i + 1] = (segments[i] + connector + segments[i + 1]).strip()
+            segments.pop(i)
+            effects.pop(i)
         else:
             i += 1
 
-    # Drop dangling trailing scene from a prompt ending with a transition phrase
-    if len(scenes) > 1 and not scenes[-1]["text"]:
-        scenes.pop()
-        if transitions:
-            transitions.pop()
+    if len(segments) > 1 and not _real_content(segments[-1]):
+        segments.pop()
+        effects.pop()
 
+    if len(segments) > 1:
+        return list(zip(segments, effects))
+    return [(text, None)]
+
+
+def parse_timeline_segments(prompt):
+    """Return {"scenes": [...], "transitions": [...]} for timeline preview.
+
+    Uses split_prompt_by_transitions — the same code path as Studio generation.
+    scenes: list of {"index": int, "text": str}
+    transitions: list of {"after_scene": int, "visual_effect": str|None}
+    """
+    segments = split_prompt_by_transitions(prompt, placement="silent")
+    scenes = [{"index": i, "text": text} for i, (text, _) in enumerate(segments)]
+    transitions = [
+        {"after_scene": i - 1, "visual_effect": effect}
+        for i, (_, effect) in enumerate(segments)
+        if i > 0
+    ]
     return {"scenes": scenes, "transitions": transitions}
 
 
