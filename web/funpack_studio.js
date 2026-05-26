@@ -11,7 +11,7 @@ const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
 const TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
-const TABS = ["Session", "Scene", "Shortcuts", "Transitions", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments"];
+const TABS = ["Session", "Scene", "Shortcuts", "Transitions", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
@@ -437,6 +437,7 @@ function openPanel(node) {
     else if (name === "LoRA") renderLora();
     else if (name === "Sampler") renderSampler();
     else if (name === "Adjustments") renderAdjustments();
+    else if (name === "Timeline") renderTimeline();
   }
 
   // SESSION ──────────────────────────────────────────────────────────────────
@@ -1237,6 +1238,59 @@ function openPanel(node) {
     }
   }
 
+  // ── Timeline ───────────────────────────────────────────────────────────────
+  async function renderTimeline() {
+    const prompt = String(widgetByName(node, "positive_prompt")?.value || "").trim();
+    if (!prompt) {
+      body.append(el("div", "funpack-studio-hint", "No prompt — type or connect a positive_prompt to preview the timeline."));
+      return;
+    }
+    const loading = el("div", "funpack-studio-hint", "Parsing…");
+    body.append(loading);
+    let data;
+    try {
+      const res = await api.fetchApi("/funpack/parse_timeline", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          refinement_key: settings.refinement_key || linkedRefinementKey(node) || "",
+        }),
+      });
+      data = await res.json();
+    } catch (e) {
+      loading.textContent = "Error: " + (e.message || e);
+      return;
+    }
+    body.replaceChildren();
+    const { scenes, transitions } = data;
+    const trByScene = {};
+    for (const t of transitions) trByScene[t.after_scene] = t;
+
+    body.append(el("div", "funpack-studio-hint",
+      scenes.length === 1 ? "1 scene — no transitions found." : `${scenes.length} scenes detected.`));
+
+    const rail = el("div", "funpack-timeline-rail");
+    for (const scene of scenes) {
+      const box = el("div", "funpack-timeline-box");
+      box.append(el("div", "funpack-timeline-badge", `Scene ${scene.index + 1}`));
+      box.append(el("div", "funpack-timeline-text", scene.text || "(empty)"));
+      rail.append(box);
+      const tr = trByScene[scene.index];
+      if (tr) {
+        const conn = el("div", "funpack-timeline-connector");
+        conn.append(el("div", "funpack-timeline-arrow", "→"));
+        const lbl = el("div", "funpack-timeline-phrase", tr.phrase);
+        if (tr.visual_effect) {
+          lbl.append(el("span", "funpack-timeline-effect", tr.visual_effect.replace(/_/g, " ")));
+        }
+        conn.append(lbl);
+        rail.append(conn);
+      }
+    }
+    body.append(rail);
+  }
+
   // ── auto-save on any field change ─────────────────────────────────────────
   let autoSaveTimer = null;
   const scheduleAutoSave = () => {
@@ -1482,6 +1536,40 @@ function injectStyles() {
     }
     .funpack-studio-tab-link { color: #58a6d6; text-decoration: underline; cursor: pointer; }
     .funpack-studio-tab-link:hover { color: #8dcff5; }
+    .funpack-timeline-rail {
+      display: flex; flex-direction: row; align-items: flex-start;
+      gap: 0; overflow-x: auto; padding-bottom: 6px;
+    }
+    .funpack-timeline-box {
+      flex: 0 0 150px; min-height: 90px;
+      border: 1px solid rgba(100,210,140,0.35); border-radius: 6px;
+      background: rgba(36,72,50,0.35); padding: 8px;
+      display: flex; flex-direction: column; gap: 5px;
+    }
+    .funpack-timeline-badge {
+      font-size: 9px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.5px; color: #7ddb8f;
+    }
+    .funpack-timeline-text {
+      font-size: 10px; color: #cdd5df; line-height: 1.4;
+      overflow: hidden; display: -webkit-box;
+      -webkit-line-clamp: 6; -webkit-box-orient: vertical;
+    }
+    .funpack-timeline-connector {
+      flex: 0 0 auto; display: flex; flex-direction: column;
+      align-items: center; justify-content: flex-start;
+      padding: 10px 4px 0; gap: 3px; min-width: 52px; max-width: 80px;
+    }
+    .funpack-timeline-arrow { color: #58a6d6; font-size: 14px; }
+    .funpack-timeline-phrase {
+      font-size: 9px; color: #9da6b0; text-align: center; line-height: 1.3;
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+    }
+    .funpack-timeline-effect {
+      font-size: 8px; padding: 1px 5px; border-radius: 8px;
+      background: rgba(88,166,214,0.18); color: #8dcff5;
+      border: 1px solid rgba(88,166,214,0.3); white-space: nowrap;
+    }
   `;
   document.head.append(style);
 }

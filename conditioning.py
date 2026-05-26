@@ -472,6 +472,66 @@ _TRANSITION_SPLIT_PATTERN = re.compile(
 )
 
 
+def parse_timeline_segments(prompt, custom_map=None):
+    """Return {"scenes": [...], "transitions": [...]} for timeline preview.
+
+    scenes: list of {"index": int, "text": str}
+    transitions: list of {"after_scene": int, "phrase": str, "visual_effect": str|None}
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return {"scenes": [{"index": 0, "text": ""}], "transitions": []}
+
+    if custom_map:
+        def _pat(t):
+            end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+            return r"\b" + re.escape(t) + end
+        custom_parts = "|".join(
+            _pat(t) for t in sorted(custom_map.keys(), key=len, reverse=True)
+        )
+        split_pat = re.compile(
+            r"(?:" + custom_parts + r"|" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
+            re.IGNORECASE,
+        )
+    else:
+        split_pat = _TRANSITION_SPLIT_PATTERN
+
+    capturing = re.compile(r"(" + split_pat.pattern + r")", re.IGNORECASE)
+    parts = capturing.split(text)
+
+    def clean(s):
+        return s.strip().strip(",;.: ").strip()
+
+    scenes = []
+    transitions = []
+
+    first = clean(parts[0])
+    scenes.append({"index": 0, "text": first})
+
+    i = 1
+    while i < len(parts):
+        phrase = parts[i].strip() if i < len(parts) else ""
+        following = clean(parts[i + 1]) if i + 1 < len(parts) else ""
+        entry = (custom_map or {}).get(phrase.lower()) or {}
+        visual_effect = entry.get("visual_effect") if isinstance(entry, dict) else None
+        if not visual_effect or visual_effect == "none":
+            visual_effect = None
+        transitions.append({
+            "after_scene": len(scenes) - 1,
+            "phrase": phrase,
+            "visual_effect": visual_effect,
+        })
+        scenes.append({"index": len(scenes), "text": following})
+        i += 2
+
+    # Drop dangling trailing scene from a prompt ending with a transition phrase
+    if len(scenes) > 1 and not scenes[-1]["text"]:
+        scenes.pop()
+        transitions.pop()
+
+    return {"scenes": scenes, "transitions": transitions}
+
+
 class FunPackVideoRefiner:
     LATENT_OUTPUT_INDEX = 6
     NO_LATENT_REFERENCE_ERROR = "No available latent to operate. Please connect reference latent to input of Video Refiner."
