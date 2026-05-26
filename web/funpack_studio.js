@@ -1268,6 +1268,7 @@ function openPanel(node) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt,
+          seed: widgetByName(node, "seed")?.value ?? 0,
           refinement_key: settings.refinement_key || linkedRefinementKey(node) || "",
         }),
       });

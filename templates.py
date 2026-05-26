@@ -1555,13 +1555,14 @@ async def funpack_transitions_import(request):
 async def funpack_parse_timeline(request):
     data = await request.json()
     prompt = str(data.get("prompt") or "")
-    refinement_key = str(data.get("refinement_key") or "")
-    custom_map = load_custom_transition_triggers()
+    seed = int(data.get("seed") or 0)
     try:
         from .conditioning import parse_timeline_segments
     except ImportError:
         from conditioning import parse_timeline_segments
-    return web.json_response(parse_timeline_segments(prompt, custom_map=custom_map or None))
+    expanded, _ = apply_prompt_shortcuts(prompt, seed=seed)
+    custom_map = load_custom_transition_triggers()
+    return web.json_response(parse_timeline_segments(expanded, custom_map=custom_map or None))
 
 
 @PromptServer.instance.routes.get("/funpack/refinement_keys")
