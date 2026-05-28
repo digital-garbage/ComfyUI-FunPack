@@ -1023,24 +1023,37 @@ class FunPackLTXAVSceneChainSampler:
         return None
 
 
+    def _i2i_sigmas(self, sigmas, strength):
+        """Truncate sigmas so i2i starts at the sigma matching strength, not from the top."""
+        if strength >= 1.0:
+            return sigmas
+        positive_sigmas = sigmas[sigmas > 0]
+        if not positive_sigmas.numel():
+            return sigmas
+        max_sigma = float(positive_sigmas.max())
+        cutoff = float(strength) * max_sigma
+        above = (sigmas >= cutoff).nonzero(as_tuple=False).squeeze(-1)
+        start = int(above[-1].item()) if above.numel() > 0 else len(sigmas) - 1
+        return sigmas[start:]
+
     def _generate_i2i_anchor(self, model, sampler, sigmas, seed, cfg,
                               positive, negative, reference_latent, strength):
-        """Denoise the reference frame (template frame 0) into a new scene starting frame."""
+        """Denoise template frame 0 with truncated sigmas to get a new scene starting frame."""
         ref_tensors = self._latent_tensors(reference_latent)
         if not ref_tensors:
             return None
-        last_frame = self._time_slice(ref_tensors[0], 0, 1)
-        noise_mask = torch.full(
-            (last_frame.shape[0], 1, 1, 1, 1),
-            float(strength),
+        ref_frame = self._time_slice(ref_tensors[0], 0, 1)
+        noise_mask = torch.ones(
+            (ref_frame.shape[0], 1, 1, 1, 1),
             dtype=torch.float32,
-            device=last_frame.device,
+            device=ref_frame.device,
         )
-        anchor_latent = {"samples": last_frame, "noise_mask": noise_mask}
-        return self._sample_chunk(model, sampler, sigmas, seed, cfg, positive, negative, anchor_latent)
+        anchor_latent = {"samples": ref_frame, "noise_mask": noise_mask}
+        i2i_sigmas = self._i2i_sigmas(sigmas, strength)
+        return self._sample_chunk(model, sampler, i2i_sigmas, seed, cfg, positive, negative, anchor_latent)
 
-    def _apply_i2v_anchor(self, chunk, anchor_latent):
-        """Pin the anchor's single frame as frame 0 of the chunk (mask=0, i2v style)."""
+    def _apply_i2v_anchor(self, chunk, anchor_latent, offset=0):
+        """Pin the anchor's single frame at position offset in the chunk (mask=0, i2v style)."""
         anchor_tensors = self._latent_tensors(anchor_latent)
         if not anchor_tensors:
             return chunk
@@ -1048,12 +1061,12 @@ class FunPackLTXAVSceneChainSampler:
         tensors = self._latent_tensors(result)
         masks = self._latent_masks(result, len(tensors))
         anchor_frame = anchor_tensors[0].to(device=tensors[0].device, dtype=tensors[0].dtype)
-        tensors[0][:, :, :1] = anchor_frame
+        tensors[0][:, :, offset:offset + 1] = anchor_frame
         if masks[0] is None:
             masks[0] = torch.ones_like(tensors[0])
         else:
             masks[0] = masks[0].clone()
-        masks[0][:, :, :1] = 0.0
+        masks[0][:, :, offset:offset + 1] = 0.0
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
             result["noise_mask"] = comfy.nested_tensor.NestedTensor(masks)
@@ -1386,7 +1399,6 @@ class FunPackLTXAVSceneChainSampler:
                 scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
             soft_carried = 0
-            used_i2i = False
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
@@ -1400,22 +1412,22 @@ class FunPackLTXAVSceneChainSampler:
                         "pixel_frame": max(0, boundary_pixel),
                         "effect": effect,
                     })
+                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if i2i_scene_cut:
-                    chunk = self._clone_latent(latent_template)
+                    # Place i2i anchor right after the overlap region.
+                    # Overlap frames (0..video_overlap-1) are identical to previous output
+                    # so the latent blend remains a no-op; the anchor starts the new content.
                     anchor = self._generate_i2i_anchor(
                         model, sampler, sigmas, scene_seed, cfg,
                         scene_positive, scene_negative, latent_template, i2i_strength,
                     )
                     if anchor is not None:
-                        chunk = self._apply_i2v_anchor(chunk, anchor)
+                        chunk = self._apply_i2v_anchor(chunk, anchor, offset=video_overlap)
                         anchor_decoded = self._decode_last_frame(anchor, vae)
                         if anchor_decoded is not None:
                             reference_frames.append(anchor_decoded)
-                        used_i2i = True
-                else:
-                    chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
-                    if video_overlap == 0:
-                        chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
+                elif video_overlap == 0:
+                    chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative,
@@ -1426,8 +1438,7 @@ class FunPackLTXAVSceneChainSampler:
             )
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
-            seam_overlap = 0 if used_i2i else video_overlap
-            output = sampled if output is None else self._blend_latents(output, sampled, seam_overlap)
+            output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
             if clip is not None and scene_index + 1 < scene_count:
