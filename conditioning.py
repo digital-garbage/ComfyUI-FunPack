@@ -347,6 +347,27 @@ def render_refinement_loss_graph(refinement_key, scheduler_mode, mode, total_ite
     return _to_image_tensor(image.convert("RGB"))
 
 
+def update_refinement_sampler_context(refinement_key, sampler_context):
+    """Write sampler settings into the V2 refinement state so the Refiner can read them next run."""
+    if not refinement_key or not isinstance(sampler_context, dict):
+        return
+    path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    state = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                state = json.load(f)
+        except Exception:
+            pass
+    state["last_sampler_context"] = sampler_context
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"[FunPack] update_refinement_sampler_context: failed to save state: {e}")
+
+
 def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     refinements_dir = os.path.join(base_dir, "refinements")
@@ -5974,7 +5995,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "tooltip": "Detect transition words and return one conditioning entry per scene for FunPack LTXAV Scene Chain Sampler. Leave off for normal single-conditioning workflows.",
                 }),
                 "latent": ("LATENT", {
-                    "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here. When connected from FunPack LTXAV Scene Chain Sampler, carry_i2v_guides, frame_overlap, and transitions_enabled are read automatically for context tracking.",
+                    "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
             },
         }
@@ -10628,12 +10649,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         memory["last_context"] = current
         return current, f"{image_status} {clip_status}"
 
-    def _v2_gen_context_snapshot(self, lora_stack, latent, vision_context):
+    def _v2_gen_context_snapshot(self, lora_stack, sampler_context, vision_context):
         """Build a compact, serializable snapshot of the generation context for this run.
 
-        Sampler settings (carry_i2v_guides, frame_overlap, transitions_enabled) are read
-        from funpack_sampler_context embedded in the latent by FunPack LTXAV Scene Chain
-        Sampler. All three are None when the latent is not from the chain sampler.
+        sampler_context is read from state["last_sampler_context"], written there by
+        FunPack LTXAV Scene Chain Sampler when a refinement_key is connected.
+        All sampler fields are None when the sampler has no refinement_key wired.
         """
         loras = []
         if isinstance(lora_stack, dict):
@@ -10644,17 +10665,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         "type": str(entry.get("type", "general")),
                         "weight": round(float(entry.get("weight", 1.0)), 4),
                     })
-        sampler_ctx = {}
-        if isinstance(latent, dict):
-            sampler_ctx = latent.get("funpack_sampler_context") or {}
+        sc = sampler_context if isinstance(sampler_context, dict) else {}
         image_fp = ""
         if isinstance(vision_context, dict):
             image_fp = str(vision_context.get("image", {}).get("fingerprint", "") or "")
         return {
             "loras": loras,
-            "carry_i2v_guides": sampler_ctx.get("carry_i2v_guides"),
-            "frame_overlap": sampler_ctx.get("frame_overlap"),
-            "transitions_enabled": sampler_ctx.get("transitions_enabled"),
+            "carry_i2v_guides": sc.get("carry_i2v_guides"),
+            "frame_overlap": sc.get("frame_overlap"),
+            "transitions_enabled": sc.get("transitions_enabled"),
             "image_fp": image_fp,
         }
 
@@ -11183,7 +11202,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             clip_vision_output=clip_vision_output,
             source_image=source_image,
         )
-        current_gen_context = self._v2_gen_context_snapshot(lora_stack, latent, vision_context)
+        current_gen_context = self._v2_gen_context_snapshot(lora_stack, state.get("last_sampler_context"), vision_context)
         previous_gen_context = previous_run.get("gen_context") if isinstance(previous_run, dict) else None
         context_insight = self._v2_gen_context_insight(previous_gen_context, current_gen_context, rating_label, has_previous_run)
         analysis_prompt = self._v2_prompt_key(positive_prompt)

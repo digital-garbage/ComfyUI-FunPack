@@ -804,6 +804,12 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0, "min": 0, "max": 4096, "step": 64,
                     "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
                 }),
+                "refinement_key_input": ("STRING", {
+                    "default": "",
+                    "multiline": False,
+                    "forceInput": True,
+                    "tooltip": "Connect to the same refinement key as your V2 Refiner. When wired, the sampler writes carry_i2v_guides, frame_overlap, and scene count into the refinement state so the Refiner can reason about what changed between rated runs.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -1268,7 +1274,7 @@ class FunPackLTXAVSceneChainSampler:
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False, transition_duration=16, decode_tile_size=0,
-               unique_id=None, prompt=None):
+               refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -1366,9 +1372,17 @@ class FunPackLTXAVSceneChainSampler:
         if carry_i2v_guides and carried_guide_frames > 0:
             status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
         boundaries_out = [{"pixel_frame": e["pixel_frame"], "effect": e["effect"]} for e in boundary_entries]
-        output["funpack_sampler_context"] = {
-            "carry_i2v_guides": bool(carry_i2v_guides),
-            "frame_overlap": int(frame_overlap),
-            "transitions_enabled": scene_count > 1,
-        }
+        if refinement_key_input:
+            try:
+                try:
+                    from .conditioning import update_refinement_sampler_context
+                except ImportError:
+                    from conditioning import update_refinement_sampler_context
+                update_refinement_sampler_context(refinement_key_input, {
+                    "carry_i2v_guides": bool(carry_i2v_guides),
+                    "frame_overlap": int(frame_overlap),
+                    "transitions_enabled": scene_count > 1,
+                })
+            except Exception as e:
+                print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
