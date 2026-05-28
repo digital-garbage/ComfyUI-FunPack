@@ -197,7 +197,7 @@ def _load_gemma3_vision_weights(clip, path):
     try:
         sd = comfy.utils.load_torch_file(path, safe_load=True)
     except Exception as e:
-        print(f"[FunPackGemmaLoader] Could not open checkpoint for vision weights: {e}")
+        print(f"[FunPackGemmaVision] Could not open checkpoint for vision weights: {e}")
         return
 
     vision_sd = {}
@@ -208,18 +208,21 @@ def _load_gemma3_vision_weights(clip, path):
             vision_sd[k[len("model."):]] = v
 
     if not vision_sd:
-        print("[FunPackGemmaLoader] No vision_tower / multi_modal_projector keys found — vision prompting unavailable")
+        prefixes = sorted({k.split(".")[0] for k in sd})
+        print(f"[FunPackGemmaVision] No vision_tower / multi_modal_projector keys found in checkpoint.")
+        print(f"[FunPackGemmaVision] Top-level key prefixes present: {prefixes}")
+        print(f"[FunPackGemmaVision] This file likely has vision weights stripped. Vision prompting unavailable.")
         return
 
     try:
         transformer = clip.cond_stage_model.gemma3_12b.transformer
         missing, unexpected = transformer.load_state_dict(vision_sd, strict=False)
         loaded = len(vision_sd) - len(unexpected)
-        print(f"[FunPackGemmaLoader] Vision weights loaded: {loaded}/{len(vision_sd)} tensors "
+        print(f"[FunPackGemmaVision] Vision weights loaded: {loaded}/{len(vision_sd)} tensors "
               f"({len(missing)} missing, {len(unexpected)} unexpected)")
         transformer._vision_loaded = True
     except Exception as e:
-        print(f"[FunPackGemmaLoader] Vision weight injection failed: {e}")
+        print(f"[FunPackGemmaVision] Vision weight injection failed: {e}")
 
 
 
