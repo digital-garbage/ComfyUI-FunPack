@@ -794,6 +794,18 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Carry protected frames from latent_template noise_mask into each continuation chunk as a style guide.",
                 }),
+                "reference_conditioning": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Re-encode every scene's conditioning with the original reference image as visual context (requires CLIP). Gives the model character identity information directly in the text conditioning for every scene.",
+                }),
+                "self_consistency": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Experimental: capture hidden states from the middle of the video at an early denoising step and inject them back in later steps to reduce within-scene character drift.",
+                }),
+                "self_consistency_strength": ("FLOAT", {
+                    "default": 0.05, "min": 0.01, "max": 0.5, "step": 0.01,
+                    "tooltip": "Injection strength for self-consistency. Small values (0.02–0.1) add a soft constraint; larger values lock anatomy more aggressively.",
+                }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
                     "tooltip": "Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. 0 = disable all transition effects.",
@@ -801,7 +813,7 @@ class FunPackLTXAVSceneChainSampler:
             },
             "optional": {
                 "clip": ("CLIP", {
-                    "tooltip": "Connect the same CLIP as your Studio node. When provided, each scene's conditioning is re-encoded using the previous scene's last decoded frame as vision context, helping the model distinguish identical scenes.",
+                    "tooltip": "Connect the same CLIP as your Studio node. Enables reference_conditioning and per-scene vision re-encoding from the previous frame.",
                 }),
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
@@ -1274,6 +1286,109 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _reference_reencoded_conditioning(self, clip, ref_pixel, scene_cond, scene_index):
+        """Re-encode scene conditioning with the pre-decoded reference image as visual context."""
+        try:
+            t = clip.cond_stage_model.gemma3_12b.transformer
+            if not (hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector")):
+                return None
+            existing_meta = scene_cond[1] if isinstance(scene_cond, (list, tuple)) and len(scene_cond) >= 2 and isinstance(scene_cond[1], dict) else {}
+            text = existing_meta.get("funpack_encode_text") or self._scene_text(scene_cond, scene_index)
+            if not text:
+                return None
+            tokens = clip.tokenize(text, image=ref_pixel, skip_template=False)
+            encoded = clip.encode_from_tokens_scheduled(tokens)
+            if not isinstance(encoded, list) or not encoded:
+                return None
+            item = encoded[0]
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                return None
+            new_cond = item[0]
+            new_meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
+            if not isinstance(new_cond, torch.Tensor):
+                return None
+            merged = {**new_meta, **{k: v for k, v in existing_meta.items() if k.startswith("funpack_")}}
+            return (new_cond, merged)
+        except Exception:
+            return None
+
+    def _build_self_consistency_hooks(self, model, video_shape, strength):
+        """Register hooks that capture middle-frame hidden states at early sigma
+        and inject them back in later steps to reduce within-scene drift."""
+        try:
+            dm = model.model.diffusion_model
+            blocks = None
+            for attr in ("transformer_blocks", "blocks", "joint_blocks", "layers"):
+                candidate = getattr(dm, attr, None)
+                if candidate is not None and hasattr(candidate, "__len__") and len(candidate) >= 28:
+                    blocks = candidate
+                    break
+            if blocks is None:
+                return [], None
+        except Exception:
+            return [], None
+
+        _, _, F, H, W = video_shape
+        tokens_per_frame = H * W
+        mid_start = (F // 3) * tokens_per_frame
+        mid_end = (2 * F // 3) * tokens_per_frame
+        if mid_start >= mid_end or mid_end > F * tokens_per_frame:
+            return [], None
+
+        IDENTITY_BLOCKS = [14, 20, 21, 30, 33]
+        CAPTURE_SIGMA = 0.95
+        INJECT_LOW, INJECT_HIGH = 0.35, 0.85
+
+        state = {"sigma": 1.0, "cap": {}}
+
+        def _make_hook(block_idx):
+            def _hook(module, input, output):
+                sigma = state["sigma"]
+                if isinstance(output, dict) and "img" in output:
+                    x, is_dict = output["img"], True
+                elif isinstance(output, tuple):
+                    x, is_dict = output[0], False
+                else:
+                    x, is_dict = output, False
+                if x is None or x.dim() < 2 or x.shape[1] < mid_end:
+                    return
+                cap = state["cap"]
+                if block_idx not in cap and sigma < CAPTURE_SIGMA:
+                    cap[block_idx] = x[:, mid_start:mid_end, :].detach()
+                    return
+                if block_idx in cap and INJECT_LOW < sigma < INJECT_HIGH:
+                    src = cap[block_idx].to(x.device, x.dtype)
+                    if src.shape == x[:, mid_start:mid_end, :].shape:
+                        out = x.clone()
+                        out[:, mid_start:mid_end, :] = (1.0 - strength) * out[:, mid_start:mid_end, :] + strength * src
+                        if is_dict:
+                            return {**output, "img": out}
+                        elif isinstance(output, tuple):
+                            return (out,) + output[1:]
+                        return out
+            return _hook
+
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _sigma_wrapper(apply_fn, args, _ew=old_wrapper, _state=state):
+            ts = args.get("timestep")
+            try:
+                _state["sigma"] = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                pass
+            if _ew is not None:
+                return _ew(apply_fn, args)
+            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+        model.model_options["model_function_wrapper"] = _sigma_wrapper
+
+        handles = []
+        for idx in IDENTITY_BLOCKS:
+            if idx < len(blocks):
+                handles.append(blocks[idx].register_forward_hook(_make_hook(idx)))
+
+        return handles, old_wrapper
+
     def _vision_reencoded_conditioning(self, clip, vae, output, next_cond, next_index):
         try:
             t = clip.cond_stage_model.gemma3_12b.transformer
@@ -1305,7 +1420,9 @@ class FunPackLTXAVSceneChainSampler:
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
-               carry_i2v_guides=False, transition_duration=16, decode_tile_size=0,
+               carry_i2v_guides=False, reference_conditioning=False,
+               self_consistency=False, self_consistency_strength=0.05,
+               transition_duration=16, decode_tile_size=0,
                refinement_key_input="", clip=None, unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -1324,12 +1441,37 @@ class FunPackLTXAVSceneChainSampler:
         carried_guide_frames = 0
         boundary_entries = []
         cumulative_latent_frames = 0
+
+        # Decode reference frame once for reference_conditioning
+        _ref_pixel = None
+        if reference_conditioning and clip is not None:
+            try:
+                ref_tensors = self._latent_tensors(latent_template)
+                if ref_tensors:
+                    ref_lat = self._time_slice(ref_tensors[0], 0, 1)
+                    decoded = vae.decode(ref_lat)
+                    if decoded is not None:
+                        if decoded.dim() == 5:
+                            decoded = decoded[:, 0]
+                        _ref_pixel = decoded.clamp(0.0, 1.0)
+            except Exception:
+                pass
+
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
+
+            # Apply reference image to this scene's conditioning
+            if _ref_pixel is not None:
+                updated = self._reference_reencoded_conditioning(
+                    clip, _ref_pixel, scene_cond, scene_index
+                )
+                if updated is not None:
+                    scene_positive = [updated]
+
             provided_seed = self._scene_seed(scene_cond)
             if use_same_seed:
                 scene_seed = first_scene_seed
@@ -1358,9 +1500,26 @@ class FunPackLTXAVSceneChainSampler:
                         chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
+
+            # Self-consistency: register within-scene hooks, sample, then clean up
+            if self_consistency:
+                chunk_tensors = self._latent_tensors(chunk)
+                sc_shape = chunk_tensors[0].shape if chunk_tensors else None
+                sc_handles, sc_old_wrapper = (
+                    self._build_self_consistency_hooks(model, sc_shape, self_consistency_strength)
+                    if sc_shape is not None else ([], None)
+                )
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
+            if self_consistency:
+                for h in sc_handles:
+                    try: h.remove()
+                    except Exception: pass
+                if sc_old_wrapper is not None:
+                    model.model_options["model_function_wrapper"] = sc_old_wrapper
+                elif "model_function_wrapper" in model.model_options:
+                    del model.model_options["model_function_wrapper"]
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
