@@ -16,6 +16,9 @@ from aiohttp import web
 from server import PromptServer
 
 
+import comfy.model_management
+import comfy.clip_model
+
 LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
 TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
@@ -182,6 +185,70 @@ def patch_energy(value):
         return sum(patch_energy(item) for item in value)
 
     return 0.0
+
+
+def _load_gemma3_vision_weights(clip, path):
+    """Load vision_tower and multi_modal_projector from a Google Gemma3-12B-IT checkpoint.
+
+    Google's HuggingFace keys:
+      model.vision_tower.*          → vision_model.*   (into Gemma3_12B.vision_model)
+      model.multi_modal_projector.* → multi_modal_projector.*   (into Gemma3_12B.multi_modal_projector)
+    """
+    try:
+        sd = comfy.utils.load_torch_file(path, safe_load=True)
+    except Exception as e:
+        print(f"[FunPackGemmaLoader] Could not open checkpoint for vision weights: {e}")
+        return
+
+    vision_sd = {}
+    for k, v in sd.items():
+        if k.startswith("model.vision_tower."):
+            vision_sd[k[len("model.vision_tower."):]] = v
+        elif k.startswith("model.multi_modal_projector."):
+            vision_sd[k[len("model."):]] = v
+
+    if not vision_sd:
+        print("[FunPackGemmaLoader] No vision_tower / multi_modal_projector keys found — vision prompting unavailable")
+        return
+
+    try:
+        transformer = clip.cond_stage_model.gemma3_12b.transformer
+        missing, unexpected = transformer.load_state_dict(vision_sd, strict=False)
+        loaded = len(vision_sd) - len(unexpected)
+        print(f"[FunPackGemmaLoader] Vision weights loaded: {loaded}/{len(vision_sd)} tensors "
+              f"({len(missing)} missing, {len(unexpected)} unexpected)")
+        transformer._vision_loaded = True
+    except Exception as e:
+        print(f"[FunPackGemmaLoader] Vision weight injection failed: {e}")
+
+
+class FunPackGemmaLoader:
+    """Drop-in replacement for 'Load CLIP Model' that also loads the SigLIP vision tower
+    bundled in Google's Gemma3-12B-IT checkpoint, enabling reference-image vision prompting
+    inside Studio without a separate CLIP Vision model.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_name": (folder_paths.get_filename_list("text_encoders"),),
+            }
+        }
+
+    RETURN_TYPES = ("CLIP",)
+    RETURN_NAMES = ("clip",)
+    FUNCTION = "load"
+    CATEGORY = "FunPack"
+
+    def load(self, model_name):
+        path = folder_paths.get_full_path("text_encoders", model_name)
+        clip = comfy.sd.load_clip(
+            ckpt_paths=[path],
+            clip_type=comfy.sd.CLIPType.LTXV,
+        )
+        _load_gemma3_vision_weights(clip, path)
+        return (clip,)
 
 
 class FunPackApplyLoraWeights:

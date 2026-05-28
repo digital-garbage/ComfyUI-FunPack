@@ -433,6 +433,38 @@ def _sigma_gated_strength(base_strength, sigma, sigma_high=0.5, sigma_low=0.2):
     return base_strength * (sigma - sigma_low) / (sigma_high - sigma_low)
 
 
+def _extend_v_pe(kwargs, n_ref):
+    """Extend v_pe in kwargs by prepending n_ref neutral-rotation entries (cos=1, sin=0)."""
+    v_pe = kwargs.get("v_pe")
+    if v_pe is None:
+        return kwargs
+    try:
+        cos, sin = v_pe[0], v_pe[1]
+        dev, dt = cos.device, cos.dtype
+        ndim = cos.ndim
+        if ndim == 4:        # [B, H, T, d]
+            r = (cos.shape[0], cos.shape[1], n_ref, cos.shape[3])
+            dim = 2
+        elif ndim == 3:      # [B, T, d]
+            r = (cos.shape[0], n_ref, cos.shape[2])
+            dim = 1
+        elif ndim == 2:      # [T, d]
+            r = (n_ref, cos.shape[1])
+            dim = 0
+        else:
+            return kwargs
+        ref_cos = torch.ones(r, device=dev, dtype=dt)
+        ref_sin = torch.zeros(r, device=dev, dtype=dt)
+        ext_cos = torch.cat([ref_cos, cos], dim=dim)
+        ext_sin = torch.cat([ref_sin, sin], dim=dim)
+        tail = tuple(v_pe[2:]) if len(v_pe) > 2 else ()
+        new_kwargs = dict(kwargs)
+        new_kwargs["v_pe"] = (ext_cos, ext_sin) + tail
+        return new_kwargs
+    except Exception:
+        return kwargs
+
+
 def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength,
                               sigma_state=None, sigma_gate=(0.2, 0.5)):
     """
@@ -588,7 +620,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
         ref_x = _get_reference_video_tensor(reference_latent)
         lazy_injects = {idx: _LazyInject() for idx in list(IDENTITY_BLOCKS)}
         anchor_strength = 0.0   # no anchor injection for i2v - would bleed scene content
-        identity_strength = 0.02  # very light - hidden states encode full scene context
+        identity_strength = 1.0  # in-context gate: inject when sigma in gate range
     else:
         blessed_maps = _load_blessed_maps(refinement_key) if refinement_key else None
         ref_x = None
@@ -739,6 +771,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             bl = _block_list() if _block_list is not None else None
             if not bl or not _hook_block_params:
                 return
+
             def _extract_tensor(out):
                 if isinstance(out, dict):
                     return out.get("img") or out.get("hidden_states") or next(iter(out.values()), None), out
@@ -778,11 +811,71 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         return None
                 return _hook
 
+            def _make_incontext_hooks(block_idx, buf, lazy_ref, strength, gate, s_state):
+                """Pre+post hook pair for in-context conditioning.
+
+                Pre-hook: captures block input at sigma (0.85-0.95); prepends ref tokens
+                          to vx and extends v_pe with neutral-rotation entries.
+                Post-hook: crops the ref-token prefix from the block output's vx.
+                """
+                _n_prepended = [0]
+
+                def _pre(module, args, kwargs):
+                    sigma = s_state[0]
+                    # Capture block INPUT during mid-sigma window
+                    if 0.85 <= sigma <= 0.95:
+                        try:
+                            vx = args[0][0]
+                            buf[block_idx] = vx.detach().cpu()
+                        except Exception:
+                            pass
+                    # Inject: prepend ref tokens to extend self-attention context
+                    if lazy_ref is None or lazy_ref.tensor is None:
+                        _n_prepended[0] = 0
+                        return None
+                    effective = _sigma_gated_strength(strength, sigma, gate[1], gate[0])
+                    if effective <= 0.0:
+                        _n_prepended[0] = 0
+                        return None
+                    try:
+                        vx, ax = args[0]
+                        ref = lazy_ref.tensor.to(vx.device, vx.dtype)
+                        ref_exp = ref.expand(vx.shape[0], -1, -1)
+                        new_vx = torch.cat([ref_exp, vx], dim=1)
+                        n_ref = ref.shape[1]
+                        _n_prepended[0] = n_ref
+                        new_kwargs = _extend_v_pe(kwargs, n_ref)
+                        return ((new_vx, ax),) + args[1:], new_kwargs
+                    except Exception:
+                        _n_prepended[0] = 0
+                        return None
+
+                def _post(module, inp, out):
+                    n = _n_prepended[0]
+                    if n == 0:
+                        return None
+                    try:
+                        vx, ax = out
+                        return (vx[:, n:], ax)
+                    except Exception:
+                        return None
+
+                return _pre, _post
+
             for idx, (buf, lazy_ref, strength, gate) in _hook_block_params.items():
-                h = bl[idx].register_forward_hook(
-                    _make_hook(idx, buf, lazy_ref, strength, gate, _state)
-                )
-                _active_handles.append(h)
+                is_identity = idx in IDENTITY_BLOCKS
+                if is_identity and has_i2v:
+                    # In-context conditioning: video tokens attend to reference tokens
+                    pre, post = _make_incontext_hooks(idx, buf, lazy_ref, strength, gate, _state)
+                    h1 = bl[idx].register_forward_pre_hook(pre, with_kwargs=True)
+                    h2 = bl[idx].register_forward_hook(post)
+                    _active_handles.append(h1)
+                    _active_handles.append(h2)
+                else:
+                    h = bl[idx].register_forward_hook(
+                        _make_hook(idx, buf, lazy_ref, strength, gate, _state)
+                    )
+                    _active_handles.append(h)
 
         def _remove_hooks():
             for h in _active_handles:

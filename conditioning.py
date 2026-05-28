@@ -6154,13 +6154,32 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             meta = {"pooled_output": None}
         return cond, meta
 
-    def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None):
+    @staticmethod
+    def _gemma3_has_vision(clip):
+        try:
+            return getattr(clip.cond_stage_model.gemma3_12b.transformer, "_vision_loaded", False)
+        except AttributeError:
+            return False
+
+    @staticmethod
+    def _image_fingerprint(image):
+        try:
+            flat = image.float().reshape(-1)[:16]
+            return hash(tuple(flat.tolist()))
+        except Exception:
+            return None
+
+    def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None, reference_image=None):
         if clip is None:
             return None, {"pooled_output": None}, "CLIP missing"
         prompt_text = str(prompt_text or "").strip()
         if not prompt_text:
             return None, {"pooled_output": None}, "prompt empty"
-        cache_key = (id(clip), prompt_text)
+
+        use_vision = reference_image is not None and self._gemma3_has_vision(clip)
+        img_fp = self._image_fingerprint(reference_image) if use_vision else None
+
+        cache_key = (id(clip), prompt_text, img_fp)
         if isinstance(encode_cache, dict):
             cached = encode_cache.get(cache_key)
             if cached is not None:
@@ -6171,13 +6190,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 encode_cache[cache_key] = cached
             return cached
         try:
-            encoded = clip.encode_from_tokens_scheduled(clip.tokenize(prompt_text))
+            if use_vision:
+                tokens = clip.tokenize(prompt_text, image=reference_image, skip_template=False)
+            else:
+                tokens = clip.tokenize(prompt_text)
+            encoded = clip.encode_from_tokens_scheduled(tokens)
         except Exception as error:
             return None, {"pooled_output": None}, f"encode failed: {error}"
         cond, meta = self._v2_extract_conditioning(encoded)
         if not isinstance(cond, torch.Tensor):
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
-        result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions")
+        vision_tag = " +vision" if use_vision else ""
+        result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions{vision_tag}")
         if isinstance(encode_cache, dict):
             encode_cache[cache_key] = result
         if len(_V2_PERSISTENT_ENCODE_CACHE) < _V2_PERSISTENT_CACHE_MAX:
@@ -6193,9 +6217,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return f"Gemma3 tokenizer loaded: {source}"
         return "Gemma3 tokenizer loaded"
 
-    def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None):
+    def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None, reference_image=None):
         if clip is not None:
-            cond, meta, encode_status = self._v2_encode_prompt(clip, prompt_text, encode_cache=encode_cache)
+            cond, meta, encode_status = self._v2_encode_prompt(
+                clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image
+            )
             return cond, meta, encode_status, "CLIP-owned"
 
         if positive_conditioning is None:
@@ -11408,6 +11434,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             prompt_to_encode,
             positive_conditioning,
             encode_cache=encode_cache,
+            reference_image=source_image,
         )
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
