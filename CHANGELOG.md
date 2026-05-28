@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.7.4] - 2026-05-28
+
+### Added
+
+Added **K/V in-context conditioning** for LTXAV identity blocks during i2v generation. Reference hidden states are captured at the start of each scene's denoising pass and prepended as extra attention tokens to the identity-formation blocks ([14, 20, 21, 30, 33]). This forces the model to attend to the reference character's appearance during every self-attention step in those blocks. Result: strong character consistency across scene cuts, view changes, and orientation changes with no LoRAs required.
+
+Added **Gemma3 vision prompting**. When `source_image` is connected to Studio and the CLIP was loaded with a Gemma3-12B checkpoint via `DualCLIPLoader`, Studio automatically encodes the reference image through the built-in SigLIP vision encoder and feeds the resulting vision tokens into the text conditioning. This means the model conditions on both the prompt text and the actual pixel content of the reference frame. No extra node is required — `DualCLIPLoader` already loads the vision weights when present in the checkpoint.
+
+Added **per-scene vision re-encoding** to `FunPack LTXAV Scene Chain Sampler`. Connect an optional `clip` input. After each scene is sampled, the next scene's conditioning is re-encoded using the previous scene's decoded last frame as vision context. This gives identical scene texts genuinely different conditioning based on runtime-generated content, so the model knows what state it came from when building the next scene.
+
+Added **duplicate scene text differentiation**. When two or more scenes share identical text, the second and subsequent occurrences are encoded with a `"Returning to an earlier scene: "` prefix. The original text is preserved in metadata for logging. This breaks the shared conditioning cache entry so the model receives distinct input for each occurrence.
+
+### Improved
+
+Reworked `frame_overlap=0` soft continuation: the previous scene's last **4 frames** are now prepended with **mask 0.4** (partial denoising) instead of 1 frame at mask 0.0 (fully pinned). The model receives temporal context from the previous scene while retaining enough denoising freedom to commit to orientation and pose changes directed by the text prompt.
+
+### Fixed
+
+Fixed anchor text punctuation when joining scene segments. If the character description ends with `.`, `!`, `?`, or `,`, a plain space is used as the separator instead of injecting a redundant `, `. Previously a description ending with a full stop produced `"description., scene text"`.
+
+### Removed
+
+Removed `FunPackGemmaVision` node. It was redundant: `DualCLIPLoader` with a Gemma3-12B checkpoint already loads `vision_model` and `multi_modal_projector` weights through the normal `load_state_dict` path, so the manual weight injection the node performed was a second load of the same file. The vision capability check now detects the attributes directly instead of relying on an injected flag.
+
 ## [2.7.3] - 2026-05-27
 
 ### Fixed

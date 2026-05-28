@@ -2,6 +2,18 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.7.4
+
+**K/V in-context conditioning** keeps character identity across scene cuts. Reference hidden states captured at the start of each scene are prepended as attention tokens to the model's identity-formation blocks during every denoising step. Strong character consistency across view changes, orientation flips, and hard cuts — no LoRAs required.
+
+**Gemma3 vision prompting** activates automatically when `source_image` is connected to Studio and the CLIP was loaded from a Gemma3-12B checkpoint. The reference image is encoded through the built-in SigLIP vision encoder and fused with text conditioning. No extra node needed.
+
+**Per-scene vision re-encoding** in the Scene Chain Sampler. Connect the optional `clip` input and the sampler re-encodes each scene's conditioning using the previous scene's decoded last frame as visual context. Identical scene texts produce genuinely distinct conditioning based on what was actually generated before them.
+
+**Soft continuation rework**: `frame_overlap=0` now carries 4 partially-denoised frames (mask 0.4) from the previous scene instead of 1 fully-pinned frame. Temporal context without pose lock.
+
+Also: duplicate scene text now gets a "Returning to an earlier scene" prefix to break shared conditioning; anchor text punctuation is respected when joining scene segments (no stray comma after a full stop); `FunPackGemmaVision` node removed as redundant.
+
 ## Updates in 2.7.2
 
 Shortcuts let you write compact activation words that expand into full cinematic descriptions before the prompt is encoded. Empty replacement removes unwanted phrases (e.g. game character tags). Longer phrases always win over shorter overlapping triggers. Managed in the new Studio Shortcuts tab.

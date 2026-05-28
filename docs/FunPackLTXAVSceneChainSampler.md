@@ -24,6 +24,7 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 - `max_scenes`: Maximum scene entries to consume. Default is `8`, but it can be raised for longer chains.
 - `use_same_seed`: When off, each scene uses `funpack_scene_seed` metadata from Studio/Refiner split mode, falling back to `seed + scene_index`. When on, every scene uses the first provided scene seed or the base `seed`.
 - `carry_i2v_guides`: Experimental. Appends protected frames from `latent_template`'s `noise_mask` as hidden LTX guide tokens in each continuation chunk. Default is off. **Warning:** using this with `frame_overlap=0` is confirmed to produce bad results — enable only for testing.
+- `clip` *(optional)*: Connect the same CLIP as your Studio node. When provided, the sampler re-encodes each scene's conditioning after the previous scene finishes sampling, using the decoded last frame as visual context via Gemma3 vision. This gives identical scene texts genuinely different conditioning and lets the model reason about what state it came from when entering each new scene. Only active when the CLIP has vision capability (Gemma3-12B checkpoint with SigLIP weights). Safe to leave disconnected — behaviour is unchanged without it.
 
 ## Behavior
 

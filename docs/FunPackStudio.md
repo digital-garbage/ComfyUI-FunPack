@@ -121,6 +121,14 @@ Configure two independent sampler outputs: **High Pass** and **Low Pass**. Each 
 
 Sampler type changes refresh the settings section immediately. All settings auto-save as you type.
 
+### Vision
+
+When `source_image` is connected and the `clip` input was loaded from a Gemma3-12B checkpoint via `DualCLIPLoader`, Studio automatically encodes the reference image through the built-in SigLIP vision encoder. The resulting vision tokens are fused with the text conditioning so the model conditions on both the prompt and the actual pixel content of the reference frame.
+
+No extra node or configuration is required. The capability is detected at runtime by checking whether the CLIP's Gemma3 transformer has `vision_model` and `multi_modal_projector` attributes. The console logs `[FunPackStudio] Processing input image with Gemma3 vision...` when active and reports the token count on completion.
+
+Vision encoding encodes the full frame including background. For character consistency across varied environments keep the reference image background neutral or ensure the scene prompts are explicit enough to override the environmental bias from the vision tokens.
+
 ### Adjustments
 
 Manually adjust the encoded conditioning by blending specific phrase directions. Bypasses V2's category classification - the direction is computed directly from the phrase you type, not inferred from which axis it belongs to.
