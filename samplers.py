@@ -796,7 +796,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "i2i_scene_cut": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Hard cut mode: before each continuation scene, generate a new starting frame by denoising the previous scene's last frame with the new scene's prompt. Ignores frame_overlap — always starts fresh. Replaces overlap continuation.",
+                    "tooltip": "Hard cut mode: before each continuation scene, generate a new starting frame by denoising the reference image (latent_template frame 0) with the new scene's prompt. Ignores frame_overlap — always starts fresh. Replaces overlap continuation.",
                 }),
                 "i2i_strength": ("FLOAT", {
                     "default": 0.75, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -1024,12 +1024,12 @@ class FunPackLTXAVSceneChainSampler:
 
 
     def _generate_i2i_anchor(self, model, sampler, sigmas, seed, cfg,
-                              positive, negative, previous_output, strength):
-        """Denoise the last frame of the previous scene into a new starting frame."""
-        prev_tensors = self._latent_tensors(previous_output)
-        if not prev_tensors:
+                              positive, negative, reference_latent, strength):
+        """Denoise the reference frame (template frame 0) into a new scene starting frame."""
+        ref_tensors = self._latent_tensors(reference_latent)
+        if not ref_tensors:
             return None
-        last_frame = self._tail(prev_tensors[0], 1)
+        last_frame = self._time_slice(ref_tensors[0], 0, 1)
         noise_mask = torch.full(
             (last_frame.shape[0], 1, 1, 1, 1),
             float(strength),
@@ -1404,7 +1404,7 @@ class FunPackLTXAVSceneChainSampler:
                     chunk = self._clone_latent(latent_template)
                     anchor = self._generate_i2i_anchor(
                         model, sampler, sigmas, scene_seed, cfg,
-                        scene_positive, scene_negative, output, i2i_strength,
+                        scene_positive, scene_negative, latent_template, i2i_strength,
                     )
                     if anchor is not None:
                         chunk = self._apply_i2v_anchor(chunk, anchor)
