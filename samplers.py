@@ -794,13 +794,13 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Carry protected frames from latent_template noise_mask into each continuation chunk as a style guide.",
                 }),
-                "self_consistency": ("BOOLEAN", {
+                "mid_scene_guide": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Experimental: capture hidden states from the middle of the video at an early denoising step and inject them back in later steps to reduce within-scene character drift.",
+                    "tooltip": "Experimental: append the middle frame of the previous scene as a guide for the current scene via LTX guide attention. Helps maintain character positioning across scenes.",
                 }),
-                "self_consistency_strength": ("FLOAT", {
-                    "default": 0.05, "min": 0.01, "max": 0.05, "step": 0.01,
-                    "tooltip": "Injection strength for self-consistency. Soft constraint on surrounding frames — keep at 0.05.",
+                "mid_scene_guide_strength": ("FLOAT", {
+                    "default": 0.4, "min": 0.1, "max": 0.8, "step": 0.05,
+                    "tooltip": "Guide attention strength for mid-scene anchor. Higher = stronger constraint from previous scene's middle frame.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
@@ -1279,92 +1279,81 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
-    def _build_self_consistency_hooks(self, model, video_shape, strength):
-        """Register hooks that capture middle-frame hidden states at early sigma
-        and inject them back in later steps to reduce within-scene drift."""
+    def _append_mid_scene_guide(self, chunk, previous_output, positive, negative, vae, strength):
+        """Append the middle frame of the previous scene as a guide for the current chunk
+        using LTX's guide attention mechanism (keyframe_idxs + guide_attention_entries).
+        Audio-safe: appends only to the video tensor, guide tokens influence denoising
+        through attention weights rather than overwriting hidden states."""
         try:
-            dm = model.model.diffusion_model
-            blocks = None
-            for attr in ("transformer_blocks", "blocks", "joint_blocks", "layers"):
-                candidate = getattr(dm, attr, None)
-                if candidate is not None and hasattr(candidate, "__len__") and len(candidate) >= 28:
-                    blocks = candidate
-                    break
-            if blocks is None:
-                return [], None
-        except Exception:
-            return [], None
+            from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
+        except ImportError:
+            return chunk, positive, negative, 0
 
-        _, _, F, H, W = video_shape
-        tokens_per_frame = H * W
-        mid_frame = F // 2
-        anchor_start = mid_frame * tokens_per_frame
-        anchor_end = anchor_start + tokens_per_frame
-        if anchor_end > F * tokens_per_frame or tokens_per_frame == 0:
-            return [], None
+        prev_tensors = self._latent_tensors(previous_output)
+        chunk_tensors = self._latent_tensors(chunk)
+        if not prev_tensors or not chunk_tensors:
+            return chunk, positive, negative, 0
 
-        IDENTITY_BLOCKS = [14, 20, 21, 30, 33]
-        ACTIVE_BELOW = 0.75
+        # Middle frame of previous scene as guide source
+        F_prev = self._tensor_frames(prev_tensors[0])
+        guide_frame = self._time_slice(prev_tensors[0], F_prev // 2, F_prev // 2 + 1)
+        guide_frame = guide_frame.to(device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype)
 
-        state = {"sigma": 1.0}
+        # Target temporal position: middle of current chunk in pixel space
+        F_chunk = self._tensor_frames(chunk_tensors[0])
+        mid_chunk = F_chunk // 2
+        scale_factors = getattr(vae, 'downscale_index_formula', [8, 8, 8])
+        time_scale = int(scale_factors[0]) if hasattr(scale_factors, '__getitem__') else 8
+        causal_fix = (mid_chunk == 0)
+        pixel_frame_idx = 0 if causal_fix else 1 + (mid_chunk - 1) * time_scale
 
-        def _make_hook(block_idx):
-            def _hook(module, input, output):
-                if state["sigma"] >= ACTIVE_BELOW:
-                    return
-                if isinstance(output, dict) and "img" in output:
-                    x, is_dict = output["img"], True
-                elif isinstance(output, tuple):
-                    x, is_dict = output[0], False
-                else:
-                    x, is_dict = output, False
-                if x is None or x.dim() < 2 or x.shape[1] < anchor_end:
-                    return
-                # Spatial token map of the middle frame — inject position-for-position
-                # into every other frame so character layout stays consistent.
-                # Anchor frame itself is left untouched.
-                anchor = x[:, anchor_start:anchor_end, :]  # [B, H*W, D]
-                out = x.clone()
-                pos = 0
-                while pos + tokens_per_frame <= x.shape[1]:
-                    if pos != anchor_start:
-                        out[:, pos:pos + tokens_per_frame, :] = (
-                            (1.0 - strength) * x[:, pos:pos + tokens_per_frame, :] + strength * anchor
-                        )
-                    pos += tokens_per_frame
-                if is_dict:
-                    return {**output, "img": out}
-                elif isinstance(output, tuple):
-                    return (out,) + output[1:]
-                return out
-            return _hook
+        # Add keyframe positional indices to conditioning
+        positive = LTXVAddGuide.add_keyframe_index(
+            positive, pixel_frame_idx, guide_frame, scale_factors, causal_fix=causal_fix
+        )
+        negative = LTXVAddGuide.add_keyframe_index(
+            negative, pixel_frame_idx, guide_frame, scale_factors, causal_fix=causal_fix
+        )
 
-        old_wrapper = model.model_options.get("model_function_wrapper")
+        # Register guide attention entry (strength controls how strongly noisy frames
+        # attend to the guide tokens vs. ignoring them)
+        guide_latent_shape = [guide_frame.shape[2], guide_frame.shape[3], guide_frame.shape[4]]
+        pre_filter_count = guide_frame.shape[2] * guide_frame.shape[3] * guide_frame.shape[4]
+        positive, negative = _append_guide_attention_entry(
+            positive, negative, pre_filter_count, guide_latent_shape, strength=float(strength)
+        )
 
-        def _sigma_wrapper(apply_fn, args, _ew=old_wrapper, _state=state):
-            ts = args.get("timestep")
-            try:
-                _state["sigma"] = float(ts.max().item()) if ts is not None else 1.0
-            except Exception:
-                pass
-            if _ew is not None:
-                return _ew(apply_fn, args)
-            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+        # Append guide frame to video tensor (mask = 1-strength, partially pinned)
+        result = self._clone_latent(chunk)
+        tensors = self._latent_tensors(result)
+        masks = self._latent_masks(result, len(tensors))
+        if masks[0] is None:
+            masks[0] = torch.ones(
+                tensors[0].shape[0], 1, tensors[0].shape[2], 1, 1,
+                dtype=torch.float32, device=tensors[0].device,
+            )
+        guide_mask = torch.full(
+            (guide_frame.shape[0], 1, 1, 1, 1),
+            max(0.0, 1.0 - float(strength)),
+            dtype=torch.float32, device=guide_frame.device,
+        )
+        tensors[0] = torch.cat([tensors[0], guide_frame], dim=2)
+        masks[0] = torch.cat([masks[0], guide_mask], dim=2)
 
-        model.model_options["model_function_wrapper"] = _sigma_wrapper
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+            result["noise_mask"] = comfy.nested_tensor.NestedTensor(masks)
+        else:
+            result["samples"] = tensors[0]
+            result["noise_mask"] = masks[0]
 
-        handles = []
-        for idx in IDENTITY_BLOCKS:
-            if idx < len(blocks):
-                handles.append(blocks[idx].register_forward_hook(_make_hook(idx)))
-
-        return handles, old_wrapper
+        return result, positive, negative, 1
 
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
-               self_consistency=False, self_consistency_strength=0.05,
+               mid_scene_guide=False, mid_scene_guide_strength=0.4,
                transition_duration=16, decode_tile_size=0,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -1399,6 +1388,7 @@ class FunPackLTXAVSceneChainSampler:
                 scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
             soft_carried = 0
+            guide_tail = 0
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
@@ -1420,28 +1410,20 @@ class FunPackLTXAVSceneChainSampler:
                         chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
+                if mid_scene_guide:
+                    chunk, scene_positive, scene_negative, guide_tail = self._append_mid_scene_guide(
+                        chunk, output, scene_positive, scene_negative, vae, mid_scene_guide_strength,
+                    )
+                else:
+                    guide_tail = 0
 
-            # Self-consistency: register within-scene hooks, sample, then clean up
-            if self_consistency:
-                chunk_tensors = self._latent_tensors(chunk)
-                sc_shape = chunk_tensors[0].shape if chunk_tensors else None
-                sc_handles, sc_old_wrapper = (
-                    self._build_self_consistency_hooks(model, sc_shape, self_consistency_strength)
-                    if sc_shape is not None else ([], None)
-                )
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
-            if self_consistency:
-                for h in sc_handles:
-                    try: h.remove()
-                    except Exception: pass
-                if sc_old_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = sc_old_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
+            if guide_tail > 0:
+                sampled = self._crop_video_tail(sampled, guide_tail)
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
