@@ -6157,7 +6157,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     @staticmethod
     def _gemma3_has_vision(clip):
         try:
-            return getattr(clip.cond_stage_model.gemma3_12b.transformer, "_vision_loaded", False)
+            t = clip.cond_stage_model.gemma3_12b.transformer
+            return hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector")
         except AttributeError:
             return False
 

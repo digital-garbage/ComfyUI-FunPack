@@ -15,10 +15,6 @@ import torch
 from aiohttp import web
 from server import PromptServer
 
-
-import comfy.model_management
-import comfy.clip_model
-
 LORA_TYPES = ["general", "action", "style", "quality", "character"]
 LORA_STACK_TYPE = "FUNPACK_LORA_STACK"
 TRANSFORMER_BLOCK_PATTERN = re.compile(r"(?:^|\.)transformer_blocks\.(\d+)\.")
@@ -185,74 +181,6 @@ def patch_energy(value):
         return sum(patch_energy(item) for item in value)
 
     return 0.0
-
-
-def _load_gemma3_vision_weights(clip, path):
-    """Load vision_tower and multi_modal_projector from a Google Gemma3-12B-IT checkpoint.
-
-    Google's HuggingFace keys:
-      model.vision_tower.*          → vision_model.*   (into Gemma3_12B.vision_model)
-      model.multi_modal_projector.* → multi_modal_projector.*   (into Gemma3_12B.multi_modal_projector)
-    """
-    try:
-        sd = comfy.utils.load_torch_file(path, safe_load=True)
-    except Exception as e:
-        print(f"[FunPackGemmaVision] Could not open checkpoint for vision weights: {e}")
-        return
-
-    vision_sd = {}
-    for k, v in sd.items():
-        if k.startswith("vision_model.") or k.startswith("multi_modal_projector."):
-            vision_sd[k] = v
-        elif k.startswith("model.vision_tower."):
-            vision_sd[k[len("model.vision_tower."):]] = v
-        elif k.startswith("model.multi_modal_projector."):
-            vision_sd[k[len("model."):]] = v
-
-    if not vision_sd:
-        prefixes = sorted({k.split(".")[0] for k in sd})
-        print(f"[FunPackGemmaVision] No vision_tower / multi_modal_projector keys found in checkpoint.")
-        print(f"[FunPackGemmaVision] Top-level key prefixes present: {prefixes}")
-        print(f"[FunPackGemmaVision] This file likely has vision weights stripped. Vision prompting unavailable.")
-        return
-
-    try:
-        transformer = clip.cond_stage_model.gemma3_12b.transformer
-        missing, unexpected = transformer.load_state_dict(vision_sd, strict=False)
-        loaded = len(vision_sd) - len(unexpected)
-        print(f"[FunPackGemmaVision] Vision weights loaded: {loaded}/{len(vision_sd)} tensors "
-              f"({len(missing)} missing, {len(unexpected)} unexpected)")
-        transformer._vision_loaded = True
-    except Exception as e:
-        print(f"[FunPackGemmaVision] Vision weight injection failed: {e}")
-
-
-
-class FunPackGemmaVision:
-    """Injects the SigLIP vision tower from a Gemma3-12B-IT checkpoint into an
-    existing CLIP (e.g. one built by DualCLIPLoader).  Pass-through: returns the
-    same CLIP object with _vision_loaded = True so Studio can use the reference
-    image for Gemma3 vision prompting.
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "clip": ("CLIP",),
-                "model_name": (folder_paths.get_filename_list("text_encoders"),),
-            }
-        }
-
-    RETURN_TYPES = ("CLIP",)
-    RETURN_NAMES = ("clip",)
-    FUNCTION = "load_vision"
-    CATEGORY = "FunPack"
-
-    def load_vision(self, clip, model_name):
-        path = folder_paths.get_full_path("text_encoders", model_name)
-        _load_gemma3_vision_weights(clip, path)
-        return (clip,)
 
 
 class FunPackApplyLoraWeights:
