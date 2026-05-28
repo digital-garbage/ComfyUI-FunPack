@@ -808,9 +808,6 @@ class FunPackLTXAVSceneChainSampler:
                 }),
             },
             "optional": {
-                "clip": ("CLIP", {
-                    "tooltip": "Connect the same CLIP as your Studio node. Enables per-scene vision re-encoding from the previous frame.",
-                }),
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
                     "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
@@ -1358,41 +1355,13 @@ class FunPackLTXAVSceneChainSampler:
 
         return handles, old_wrapper
 
-    def _vision_reencoded_conditioning(self, clip, vae, output, next_cond, next_index):
-        try:
-            t = clip.cond_stage_model.gemma3_12b.transformer
-            if not (hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector")):
-                return None
-            pixel_frame = self._decode_last_frame(output, vae)
-            if pixel_frame is None:
-                return None
-            existing_meta = next_cond[1] if isinstance(next_cond, (list, tuple)) and len(next_cond) >= 2 and isinstance(next_cond[1], dict) else {}
-            text = existing_meta.get("funpack_encode_text") or self._scene_text(next_cond, next_index)
-            if not text:
-                return None
-            tokens = clip.tokenize(text, image=pixel_frame, skip_template=False)
-            encoded = clip.encode_from_tokens_scheduled(tokens)
-            if not isinstance(encoded, list) or not encoded:
-                return None
-            item = encoded[0]
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                return None
-            new_cond = item[0]
-            new_meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
-            if not isinstance(new_cond, torch.Tensor):
-                return None
-            merged = {**new_meta, **{k: v for k, v in existing_meta.items() if k.startswith("funpack_")}}
-            print(f"[FunPackSceneChain] Vision re-encoded scene {next_index + 1} from previous frame")
-            return (new_cond, merged)
-        except Exception:
-            return None
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
                self_consistency=False, self_consistency_strength=0.05,
                transition_duration=16, decode_tile_size=0,
-               refinement_key_input="", clip=None, unique_id=None, prompt=None):
+               refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -1471,12 +1440,6 @@ class FunPackLTXAVSceneChainSampler:
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
-            if clip is not None and scene_index + 1 < scene_count:
-                updated = self._vision_reencoded_conditioning(
-                    clip, vae, output, scene_conditionings[scene_index + 1], scene_index + 1,
-                )
-                if updated is not None:
-                    scene_conditionings[scene_index + 1] = updated
 
         del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
 
