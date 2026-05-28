@@ -1297,9 +1297,10 @@ class FunPackLTXAVSceneChainSampler:
 
         _, _, F, H, W = video_shape
         tokens_per_frame = H * W
-        mid_start = (F // 3) * tokens_per_frame
-        mid_end = (2 * F // 3) * tokens_per_frame
-        if mid_start >= mid_end or mid_end > F * tokens_per_frame:
+        mid_frame = F // 2
+        anchor_start = mid_frame * tokens_per_frame
+        anchor_end = anchor_start + tokens_per_frame
+        if anchor_end > F * tokens_per_frame or tokens_per_frame == 0:
             return [], None
 
         IDENTITY_BLOCKS = [14, 20, 21, 30, 33]
@@ -1317,16 +1318,20 @@ class FunPackLTXAVSceneChainSampler:
                     x, is_dict = output[0], False
                 else:
                     x, is_dict = output, False
-                if x is None or x.dim() < 2 or x.shape[1] < mid_end:
+                if x is None or x.dim() < 2 or x.shape[1] < anchor_end:
                     return
-                # Mean of current step's middle-frame tokens → spread to surrounding frames.
-                # Middle-frame tokens are left untouched (they are the anchor, not targets).
-                mid_mean = x[:, mid_start:mid_end, :].mean(dim=1, keepdim=True)
+                # Spatial token map of the middle frame — inject position-for-position
+                # into every other frame so character layout stays consistent.
+                # Anchor frame itself is left untouched.
+                anchor = x[:, anchor_start:anchor_end, :]  # [B, H*W, D]
                 out = x.clone()
-                if mid_start > 0:
-                    out[:, :mid_start, :] = (1.0 - strength) * x[:, :mid_start, :] + strength * mid_mean
-                if mid_end < x.shape[1]:
-                    out[:, mid_end:, :] = (1.0 - strength) * x[:, mid_end:, :] + strength * mid_mean
+                pos = 0
+                while pos + tokens_per_frame <= x.shape[1]:
+                    if pos != anchor_start:
+                        out[:, pos:pos + tokens_per_frame, :] = (
+                            (1.0 - strength) * x[:, pos:pos + tokens_per_frame, :] + strength * anchor
+                        )
+                    pos += tokens_per_frame
                 if is_dict:
                     return {**output, "img": out}
                 elif isinstance(output, tuple):
