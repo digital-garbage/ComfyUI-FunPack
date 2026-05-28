@@ -1014,30 +1014,6 @@ class FunPackLTXAVSceneChainSampler:
                 return item[1][key]
         return None
 
-    def _guide_keyframe_idxs(self, guiding_latent, chunk_latent_frames, scale_factors):
-        try:
-            from comfy.ldm.lightricks.symmetric_patchifier import SymmetricPatchifier, latent_to_pixel_coords
-            patchifier = SymmetricPatchifier(1, start_end=True)
-            _, latent_coords = patchifier.patchify(guiding_latent)
-            pixel_coords = latent_to_pixel_coords(latent_coords, scale_factors, causal_fix=True)
-            # Offset to end of chunk: position 0 conflicts with the overlap frames already there.
-            pixel_coords[:, 0] += chunk_latent_frames * scale_factors[0]
-            return pixel_coords
-        except Exception:
-            b, _, f, h, w = guiding_latent.shape
-            return torch.zeros((b, 3, f * h * w, 2), dtype=torch.float32, device=guiding_latent.device)
-
-    def _append_guide_conditioning(self, conditioning, keyframe_idxs, guide_entry):
-        existing_idxs = self._conditioning_value(conditioning, "keyframe_idxs")
-        if isinstance(existing_idxs, torch.Tensor):
-            keyframe_idxs = torch.cat([existing_idxs.to(keyframe_idxs.device, keyframe_idxs.dtype), keyframe_idxs], dim=2)
-        existing_entries = self._conditioning_value(conditioning, "guide_attention_entries")
-        entries = list(existing_entries or [])
-        entries.append(guide_entry)
-        return self._condition_with_values(conditioning, {
-            "keyframe_idxs": keyframe_idxs,
-            "guide_attention_entries": entries,
-        })
 
     def _prepend_soft_continuation(self, chunk, previous, mask_value=0.4, n_frames=4):
         chunk_tensors = self._latent_tensors(chunk)
