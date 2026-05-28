@@ -799,8 +799,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Experimental: capture hidden states from the middle of the video at an early denoising step and inject them back in later steps to reduce within-scene character drift.",
                 }),
                 "self_consistency_strength": ("FLOAT", {
-                    "default": 0.05, "min": 0.01, "max": 0.5, "step": 0.01,
-                    "tooltip": "Injection strength for self-consistency. Small values (0.02–0.1) add a soft constraint. Above 0.5 output degrades significantly — stay low.",
+                    "default": 0.05, "min": 0.01, "max": 0.05, "step": 0.01,
+                    "tooltip": "Injection strength for self-consistency. Soft constraint on surrounding frames — keep at 0.05.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
