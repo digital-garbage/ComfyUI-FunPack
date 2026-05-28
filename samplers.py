@@ -1366,7 +1366,7 @@ class FunPackLTXAVSceneChainSampler:
             text = existing_meta.get("funpack_encode_text") or self._scene_text(next_cond, next_index)
             if not text:
                 return None
-            tokens = clip.tokenize(text, image=pixel_frame, skip_template=False)
+            tokens = clip.tokenize(f"Continuing from this scene: {text}", image=pixel_frame, skip_template=False)
             encoded = clip.encode_from_tokens_scheduled(tokens)
             if not isinstance(encoded, list) or not encoded:
                 return None
