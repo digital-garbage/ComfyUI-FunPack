@@ -12937,6 +12937,7 @@ class FunPackStudio:
         if split_transition_placement not in ("start", "end", "silent"):
             split_transition_placement = "start"
         reference_injection = bool(rf.get("reference_injection", False))
+        vision_conditioning = bool(rf.get("vision_conditioning", True))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -13052,7 +13053,7 @@ class FunPackStudio:
             refinement_key_input=refinement_key_input,
             positive_conditioning=positive_conditioning,
             clip_vision_output=clip_vision_output,
-            source_image=source_image,
+            source_image=source_image if vision_conditioning else None,
             model=model,
             mode=mode,
             advisor_mode=advisor_mode,
