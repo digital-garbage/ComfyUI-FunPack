@@ -202,7 +202,9 @@ def _load_gemma3_vision_weights(clip, path):
 
     vision_sd = {}
     for k, v in sd.items():
-        if k.startswith("model.vision_tower."):
+        if k.startswith("vision_model.") or k.startswith("multi_modal_projector."):
+            vision_sd[k] = v
+        elif k.startswith("model.vision_tower."):
             vision_sd[k[len("model.vision_tower."):]] = v
         elif k.startswith("model.multi_modal_projector."):
             vision_sd[k[len("model."):]] = v
