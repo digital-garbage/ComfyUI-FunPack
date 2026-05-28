@@ -1306,14 +1306,14 @@ class FunPackLTXAVSceneChainSampler:
             return [], None
 
         IDENTITY_BLOCKS = [14, 20, 21, 30, 33]
-        CAPTURE_SIGMA = 0.95
-        INJECT_LOW, INJECT_HIGH = 0.35, 0.85
+        ACTIVE_BELOW = 0.95
 
-        state = {"sigma": 1.0, "cap": {}}
+        state = {"sigma": 1.0}
 
         def _make_hook(block_idx):
             def _hook(module, input, output):
-                sigma = state["sigma"]
+                if state["sigma"] >= ACTIVE_BELOW:
+                    return
                 if isinstance(output, dict) and "img" in output:
                     x, is_dict = output["img"], True
                 elif isinstance(output, tuple):
@@ -1322,20 +1322,15 @@ class FunPackLTXAVSceneChainSampler:
                     x, is_dict = output, False
                 if x is None or x.dim() < 2 or x.shape[1] < mid_end:
                     return
-                cap = state["cap"]
-                if block_idx not in cap and sigma < CAPTURE_SIGMA:
-                    cap[block_idx] = x[:, mid_start:mid_end, :].detach()
-                    return
-                if block_idx in cap and INJECT_LOW < sigma < INJECT_HIGH:
-                    src = cap[block_idx].to(x.device, x.dtype)
-                    if src.shape == x[:, mid_start:mid_end, :].shape:
-                        out = x.clone()
-                        out[:, mid_start:mid_end, :] = (1.0 - strength) * out[:, mid_start:mid_end, :] + strength * src
-                        if is_dict:
-                            return {**output, "img": out}
-                        elif isinstance(output, tuple):
-                            return (out,) + output[1:]
-                        return out
+                # Mean of current step's middle-frame tokens → spread to all positions.
+                # Anchor updates every step so high-sigma noise never persists.
+                mid_mean = x[:, mid_start:mid_end, :].mean(dim=1, keepdim=True)
+                out = (1.0 - strength) * x + strength * mid_mean.expand_as(x)
+                if is_dict:
+                    return {**output, "img": out}
+                elif isinstance(output, tuple):
+                    return (out,) + output[1:]
+                return out
             return _hook
 
         old_wrapper = model.model_options.get("model_function_wrapper")
