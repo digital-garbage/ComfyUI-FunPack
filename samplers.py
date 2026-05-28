@@ -794,10 +794,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Carry protected frames from latent_template noise_mask into each continuation chunk as a style guide.",
                 }),
-                "reference_conditioning": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Re-encode every scene's conditioning with the original reference image as visual context (requires CLIP). Gives the model character identity information directly in the text conditioning for every scene.",
-                }),
                 "self_consistency": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Experimental: capture hidden states from the middle of the video at an early denoising step and inject them back in later steps to reduce within-scene character drift.",
@@ -813,7 +809,7 @@ class FunPackLTXAVSceneChainSampler:
             },
             "optional": {
                 "clip": ("CLIP", {
-                    "tooltip": "Connect the same CLIP as your Studio node. Enables reference_conditioning and per-scene vision re-encoding from the previous frame.",
+                    "tooltip": "Connect the same CLIP as your Studio node. Enables per-scene vision re-encoding from the previous frame.",
                 }),
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
@@ -1286,32 +1282,6 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
-    def _reference_reencoded_conditioning(self, clip, ref_pixel, scene_cond, scene_index):
-        """Re-encode scene conditioning with the pre-decoded reference image as visual context."""
-        try:
-            t = clip.cond_stage_model.gemma3_12b.transformer
-            if not (hasattr(t, "vision_model") and hasattr(t, "multi_modal_projector")):
-                return None
-            existing_meta = scene_cond[1] if isinstance(scene_cond, (list, tuple)) and len(scene_cond) >= 2 and isinstance(scene_cond[1], dict) else {}
-            text = existing_meta.get("funpack_encode_text") or self._scene_text(scene_cond, scene_index)
-            if not text:
-                return None
-            tokens = clip.tokenize(text, image=ref_pixel, skip_template=False)
-            encoded = clip.encode_from_tokens_scheduled(tokens)
-            if not isinstance(encoded, list) or not encoded:
-                return None
-            item = encoded[0]
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                return None
-            new_cond = item[0]
-            new_meta = item[1] if isinstance(item[1], dict) else {"pooled_output": None}
-            if not isinstance(new_cond, torch.Tensor):
-                return None
-            merged = {**new_meta, **{k: v for k, v in existing_meta.items() if k.startswith("funpack_")}}
-            return (new_cond, merged)
-        except Exception:
-            return None
-
     def _build_self_consistency_hooks(self, model, video_shape, strength):
         """Register hooks that capture middle-frame hidden states at early sigma
         and inject them back in later steps to reduce within-scene drift."""
@@ -1420,7 +1390,7 @@ class FunPackLTXAVSceneChainSampler:
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
-               carry_i2v_guides=False, reference_conditioning=False,
+               carry_i2v_guides=False,
                self_consistency=False, self_consistency_strength=0.05,
                transition_duration=16, decode_tile_size=0,
                refinement_key_input="", clip=None, unique_id=None, prompt=None):
@@ -1442,35 +1412,12 @@ class FunPackLTXAVSceneChainSampler:
         boundary_entries = []
         cumulative_latent_frames = 0
 
-        # Decode reference frame once for reference_conditioning
-        _ref_pixel = None
-        if reference_conditioning and clip is not None:
-            try:
-                ref_tensors = self._latent_tensors(latent_template)
-                if ref_tensors:
-                    ref_lat = self._time_slice(ref_tensors[0], 0, 1)
-                    decoded = vae.decode(ref_lat)
-                    if decoded is not None:
-                        if decoded.dim() == 5:
-                            decoded = decoded[:, 0]
-                        _ref_pixel = decoded.clamp(0.0, 1.0)
-            except Exception:
-                pass
-
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
-
-            # Apply reference image to this scene's conditioning
-            if _ref_pixel is not None:
-                updated = self._reference_reencoded_conditioning(
-                    clip, _ref_pixel, scene_cond, scene_index
-                )
-                if updated is not None:
-                    scene_positive = [updated]
 
             provided_seed = self._scene_seed(scene_cond)
             if use_same_seed:
