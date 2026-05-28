@@ -6389,7 +6389,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seg = seg.strip()
             if not seg:
                 continue
-            scene_texts.append((anchor_text + ", " + seg if anchor_text else seg))
+            if anchor_text:
+                sep = " " if anchor_text[-1] in ".!?," else ", "
+                scene_texts.append(anchor_text + sep + seg)
+            else:
+                scene_texts.append(seg)
             scene_effects.append(effect)
         return scene_texts, scene_effects
 
