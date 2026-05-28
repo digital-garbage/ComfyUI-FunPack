@@ -1332,13 +1332,9 @@ class FunPackLTXAVSceneChainSampler:
                 tensors[0].shape[0], 1, tensors[0].shape[2], 1, 1,
                 dtype=torch.float32, device=tensors[0].device,
             )
-        guide_mask = torch.full(
-            (guide_frame.shape[0], 1, 1, masks[0].shape[3], masks[0].shape[4]),
-            max(0.0, 1.0 - float(strength)),
-            dtype=torch.float32, device=guide_frame.device,
-        )
+        guide_mask = torch.full_like(masks[0][:, :, :1], max(0.0, 1.0 - float(strength)))
         tensors[0] = torch.cat([tensors[0], guide_frame], dim=2)
-        masks[0] = torch.cat([masks[0].to(guide_mask.device, guide_mask.dtype), guide_mask], dim=2)
+        masks[0] = torch.cat([masks[0], guide_mask.to(masks[0].device, masks[0].dtype)], dim=2)
 
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
