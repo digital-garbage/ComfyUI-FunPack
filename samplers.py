@@ -796,7 +796,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "i2i_scene_cut": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Hard cut mode: before each continuation scene, generate a new starting frame by denoising the previous scene's last frame with the new scene's prompt. Only active when frame_overlap=0. Replaces soft continuation.",
+                    "tooltip": "Hard cut mode: before each continuation scene, generate a new starting frame by denoising the previous scene's last frame with the new scene's prompt. Ignores frame_overlap — always starts fresh. Replaces overlap continuation.",
                 }),
                 "i2i_strength": ("FLOAT", {
                     "default": 0.75, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -1402,19 +1402,20 @@ class FunPackLTXAVSceneChainSampler:
                         "pixel_frame": max(0, boundary_pixel),
                         "effect": effect,
                     })
-                chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
-                if video_overlap == 0:
-                    if i2i_scene_cut:
-                        anchor = self._generate_i2i_anchor(
-                            model, sampler, sigmas, scene_seed, cfg,
-                            scene_positive, scene_negative, output, i2i_strength,
-                        )
-                        if anchor is not None:
-                            chunk = self._apply_i2v_anchor(chunk, anchor)
-                            anchor_decoded = self._decode_last_frame(anchor, vae)
-                            if anchor_decoded is not None:
-                                reference_frames.append(anchor_decoded)
-                    else:
+                if i2i_scene_cut:
+                    chunk = self._clone_latent(latent_template)
+                    anchor = self._generate_i2i_anchor(
+                        model, sampler, sigmas, scene_seed, cfg,
+                        scene_positive, scene_negative, output, i2i_strength,
+                    )
+                    if anchor is not None:
+                        chunk = self._apply_i2v_anchor(chunk, anchor)
+                        anchor_decoded = self._decode_last_frame(anchor, vae)
+                        if anchor_decoded is not None:
+                            reference_frames.append(anchor_decoded)
+                else:
+                    chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
+                    if video_overlap == 0:
                         chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
