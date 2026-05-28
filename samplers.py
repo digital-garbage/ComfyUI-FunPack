@@ -799,8 +799,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Hard cut mode: before each continuation scene, generate a new starting frame by denoising the reference image (latent_template frame 0) with the new scene's prompt. Ignores frame_overlap — always starts fresh. Replaces overlap continuation.",
                 }),
                 "i2i_strength": ("FLOAT", {
-                    "default": 0.75, "min": 0.0, "max": 1.0, "step": 0.05,
-                    "tooltip": "How much to transform the reference frame during i2i anchor generation. 0.0 = no change, 1.0 = ignore reference. 0.6–0.85 is typical for a new scene while preserving character.",
+                    "default": 0.3, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Controls how tightly the reference image anchors the generated frame. 0.0 = reference fully pinned (strongest character preservation). 1.0 = reference ignored (free generation from prompt only). Start around 0.2–0.4.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
@@ -1023,34 +1023,30 @@ class FunPackLTXAVSceneChainSampler:
         return None
 
 
-    def _i2i_sigmas(self, sigmas, strength):
-        """Truncate sigmas so i2i starts at the sigma matching strength, not from the top."""
-        if strength >= 1.0:
-            return sigmas
-        positive_sigmas = sigmas[sigmas > 0]
-        if not positive_sigmas.numel():
-            return sigmas
-        max_sigma = float(positive_sigmas.max())
-        cutoff = float(strength) * max_sigma
-        above = (sigmas >= cutoff).nonzero(as_tuple=False).squeeze(-1)
-        start = int(above[-1].item()) if above.numel() > 0 else len(sigmas) - 1
-        return sigmas[start:]
-
     def _generate_i2i_anchor(self, model, sampler, sigmas, seed, cfg,
                               positive, negative, reference_latent, strength):
-        """Denoise template frame 0 with truncated sigmas to get a new scene starting frame."""
+        """Generate a new scene starting frame using the reference as an i2v anchor.
+
+        Pins frame 0 (the character reference) at mask=strength and generates
+        frame 1 freely from the new scene prompt. Returns only frame 1.
+        strength=0.0 tightly enforces the reference; 1.0 ignores it.
+        """
         ref_tensors = self._latent_tensors(reference_latent)
         if not ref_tensors:
             return None
         ref_frame = self._time_slice(ref_tensors[0], 0, 1)
-        noise_mask = torch.ones(
-            (ref_frame.shape[0], 1, 1, 1, 1),
-            dtype=torch.float32,
-            device=ref_frame.device,
-        )
-        anchor_latent = {"samples": ref_frame, "noise_mask": noise_mask}
-        i2i_sigmas = self._i2i_sigmas(sigmas, strength)
-        return self._sample_chunk(model, sampler, i2i_sigmas, seed, cfg, positive, negative, anchor_latent)
+        blank = torch.zeros_like(ref_frame)
+        two_frame = torch.cat([ref_frame, blank], dim=2)
+        b = ref_frame.shape[0]
+        noise_mask = torch.ones((b, 1, 2, 1, 1), dtype=torch.float32, device=ref_frame.device)
+        noise_mask[:, :, 0] = float(strength)
+        anchor_latent = {"samples": two_frame, "noise_mask": noise_mask}
+        sampled = self._sample_chunk(model, sampler, sigmas, seed, cfg, positive, negative, anchor_latent)
+        sampled_tensors = self._latent_tensors(sampled)
+        if not sampled_tensors:
+            return None
+        result_frame = self._time_slice(sampled_tensors[0], 1, 2)
+        return {"samples": result_frame}
 
     def _apply_i2v_anchor(self, chunk, anchor_latent, offset=0):
         """Pin the anchor's single frame at position offset in the chunk (mask=0, i2v style)."""
@@ -1365,7 +1361,7 @@ class FunPackLTXAVSceneChainSampler:
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
-               carry_i2v_guides=False, i2i_scene_cut=False, i2i_strength=0.75,
+               carry_i2v_guides=False, i2i_scene_cut=False, i2i_strength=0.3,
                transition_duration=16, decode_tile_size=0,
                refinement_key_input="", clip=None, unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
