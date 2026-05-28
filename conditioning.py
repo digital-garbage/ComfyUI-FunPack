@@ -348,24 +348,16 @@ def render_refinement_loss_graph(refinement_key, scheduler_mode, mode, total_ite
 
 
 def update_refinement_sampler_context(refinement_key, sampler_context):
-    """Write sampler settings into the V2 refinement state so the Refiner can read them next run."""
+    """Write sampler settings to a separate lightweight file (no conditioning data, safe to call during sampling)."""
     if not refinement_key or not isinstance(sampler_context, dict):
         return
-    path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
+    path = refinement_state_path(refinement_key, "sampler_ctx", prefix="refine_v2")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    state = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                state = json.load(f)
-        except Exception:
-            pass
-    state["last_sampler_context"] = sampler_context
     try:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(state, f)
+            json.dump(sampler_context, f)
     except Exception as e:
-        print(f"[FunPack] update_refinement_sampler_context: failed to save state: {e}")
+        print(f"[FunPack] update_refinement_sampler_context: failed to save context: {e}")
 
 
 def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
@@ -11202,7 +11194,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             clip_vision_output=clip_vision_output,
             source_image=source_image,
         )
-        current_gen_context = self._v2_gen_context_snapshot(lora_stack, state.get("last_sampler_context"), vision_context)
+        _sc_path = refinement_state_path(refinement_key, "sampler_ctx", prefix=self.V2_STATE_PREFIX)
+        _last_sampler_context = {}
+        if os.path.exists(_sc_path):
+            try:
+                with open(_sc_path, "r", encoding="utf-8") as _scf:
+                    _last_sampler_context = json.load(_scf)
+            except Exception:
+                pass
+        current_gen_context = self._v2_gen_context_snapshot(lora_stack, _last_sampler_context, vision_context)
         previous_gen_context = previous_run.get("gen_context") if isinstance(previous_run, dict) else None
         context_insight = self._v2_gen_context_insight(previous_gen_context, current_gen_context, rating_label, has_previous_run)
         analysis_prompt = self._v2_prompt_key(positive_prompt)
