@@ -1386,15 +1386,13 @@ class FunPackLTXAVSceneChainSampler:
                 scene_seed = provided_seed if provided_seed is not None else int(seed) + scene_index
             carried = 0
             soft_carried = 0
+            used_i2i = False
             if output is None:
                 chunk = self._clone_latent(latent_template)
             else:
-                # Record boundary (center of the overlap region) before blending
+                # Record boundary before blending
                 effect = self._scene_transition_effect(scene_cond)
                 if effect and transition_duration > 0:
-                    # Seam is at cumulative_latent_frames: overlap frames are pinned
-                    # (mask=0) so the latent blend is a no-op — actual content
-                    # boundary is exactly here.
                     boundary_latent = cumulative_latent_frames
                     boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
                     boundary_entries.append({
@@ -1413,6 +1411,7 @@ class FunPackLTXAVSceneChainSampler:
                         anchor_decoded = self._decode_last_frame(anchor, vae)
                         if anchor_decoded is not None:
                             reference_frames.append(anchor_decoded)
+                        used_i2i = True
                 else:
                     chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                     if video_overlap == 0:
@@ -1427,7 +1426,8 @@ class FunPackLTXAVSceneChainSampler:
             )
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
-            output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
+            seam_overlap = 0 if used_i2i else video_overlap
+            output = sampled if output is None else self._blend_latents(output, sampled, seam_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
             if clip is not None and scene_index + 1 < scene_count:
