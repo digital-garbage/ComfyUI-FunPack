@@ -6397,7 +6397,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_effects.append(effect)
         return scene_texts, scene_effects
 
-    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None, reference_image=None):
+    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None):
         if clip is None:
             return None
         scene_texts = list(scene_texts or [])
@@ -6412,8 +6412,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seen_count = seen_texts.get(scene_text, 0)
             seen_texts[scene_text] = seen_count + 1
             encode_text = f"Returning to an earlier scene: {scene_text}" if seen_count > 0 else scene_text
-            vision_text = f"The character shown performs the following: {encode_text}" if reference_image is not None else encode_text
-            cond, meta, _ = self._v2_encode_prompt(clip, vision_text, encode_cache=encode_cache, reference_image=reference_image)
+            cond, meta, _ = self._v2_encode_prompt(clip, encode_text, encode_cache=encode_cache)
             if not isinstance(cond, torch.Tensor):
                 return None
             scene_meta = dict(meta) if isinstance(meta, dict) else {"pooled_output": None}
@@ -11840,7 +11839,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if scene_texts:
                     scene_conditionings = self._v2_transition_scene_conditionings(
                         clip, scene_texts, scene_effects=split_scene_effects, encode_cache=encode_cache,
-                        reference_image=source_image,
                     )
                     if scene_conditionings is not None:
                         output_conditioning = self._v2_apply_scene_seed_metadata(

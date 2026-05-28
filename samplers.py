@@ -1306,7 +1306,7 @@ class FunPackLTXAVSceneChainSampler:
             return [], None
 
         IDENTITY_BLOCKS = [14, 20, 21, 30, 33]
-        ACTIVE_BELOW = 0.95
+        ACTIVE_BELOW = 0.75
 
         state = {"sigma": 1.0}
 
@@ -1370,7 +1370,7 @@ class FunPackLTXAVSceneChainSampler:
             text = existing_meta.get("funpack_encode_text") or self._scene_text(next_cond, next_index)
             if not text:
                 return None
-            tokens = clip.tokenize(f"Continuing from this scene: {text}", image=pixel_frame, skip_template=False)
+            tokens = clip.tokenize(text, image=pixel_frame, skip_template=False)
             encoded = clip.encode_from_tokens_scheduled(tokens)
             if not isinstance(encoded, list) or not encoded:
                 return None
