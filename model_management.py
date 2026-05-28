@@ -222,34 +222,6 @@ def _load_gemma3_vision_weights(clip, path):
         print(f"[FunPackGemmaLoader] Vision weight injection failed: {e}")
 
 
-class FunPackGemmaLoader:
-    """Drop-in replacement for 'Load CLIP Model' that also loads the SigLIP vision tower
-    bundled in Google's Gemma3-12B-IT checkpoint, enabling reference-image vision prompting
-    inside Studio without a separate CLIP Vision model.
-    """
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model_name": (folder_paths.get_filename_list("text_encoders"),),
-            }
-        }
-
-    RETURN_TYPES = ("CLIP",)
-    RETURN_NAMES = ("clip",)
-    FUNCTION = "load"
-    CATEGORY = "FunPack"
-
-    def load(self, model_name):
-        path = folder_paths.get_full_path("text_encoders", model_name)
-        clip = comfy.sd.load_clip(
-            ckpt_paths=[path],
-            clip_type=comfy.sd.CLIPType.LTXV,
-        )
-        _load_gemma3_vision_weights(clip, path)
-        return (clip,)
-
 
 class FunPackGemmaVision:
     """Injects the SigLIP vision tower from a Gemma3-12B-IT checkpoint into an

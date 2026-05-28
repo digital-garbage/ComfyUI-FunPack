@@ -19,7 +19,7 @@ if __package__:
         FunPackStoryMemLastFrameExtractor,
         FunPackVideoStitch,
     )
-    from .model_management import FunPackApplyLoraWeights, FunPackGemmaLoader, FunPackGemmaVision, FunPackLoraLoader
+    from .model_management import FunPackApplyLoraWeights, FunPackGemmaVision, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
 else:
@@ -50,10 +50,9 @@ else:
         FunPackStoryMemLastFrameExtractor = None
         FunPackVideoStitch = None
     try:
-        from model_management import FunPackApplyLoraWeights, FunPackGemmaLoader, FunPackGemmaVision, FunPackLoraLoader
+        from model_management import FunPackApplyLoraWeights, FunPackGemmaVision, FunPackLoraLoader
     except Exception:
         FunPackApplyLoraWeights = None
-        FunPackGemmaLoader = None
         FunPackGemmaVision = None
         FunPackLoraLoader = None
     try:
@@ -89,7 +88,6 @@ NODE_CLASS_MAPPINGS = {
     "FunPackDistilledFlowSampler": FunPackDistilledFlowSampler,
     "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
-    "FunPackGemmaLoader": FunPackGemmaLoader,
     "FunPackGemmaVision": FunPackGemmaVision,
     "FunPackLoraLoader": FunPackLoraLoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
@@ -116,7 +114,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackDistilledFlowSampler": "FunPack Distilled Flow Sampler",
     "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
-    "FunPackGemmaLoader": "FunPack Gemma Loader",
     "FunPackGemmaVision": "FunPack Gemma Vision",
     "FunPackLoraLoader": "FunPack LoRA Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
