@@ -5974,19 +5974,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "tooltip": "Detect transition words and return one conditioning entry per scene for FunPack LTXAV Scene Chain Sampler. Leave off for normal single-conditioning workflows.",
                 }),
                 "latent": ("LATENT", {
-                    "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
-                }),
-                "carry_i2v_guides": ("BOOLEAN", {
-                    "forceInput": True,
-                    "tooltip": "Wire from your scene chain sampler's carry_i2v_guides setting. Tracked per-run so the Refiner can reason: if guides were off and appearance changed, the guides are the likely cause, not the prompt.",
-                }),
-                "frame_overlap": ("INT", {
-                    "forceInput": True,
-                    "tooltip": "Wire from your scene chain sampler's frame_overlap setting. Tracked per-run to note when overlap changed between generations.",
-                }),
-                "transitions_enabled": ("BOOLEAN", {
-                    "forceInput": True,
-                    "tooltip": "Wire from whatever controls whether scene transitions are active. Tracked per-run to note when transition behavior changed.",
+                    "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here. When connected from FunPack LTXAV Scene Chain Sampler, carry_i2v_guides, frame_overlap, and transitions_enabled are read automatically for context tracking.",
                 }),
             },
         }
@@ -10640,8 +10628,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         memory["last_context"] = current
         return current, f"{image_status} {clip_status}"
 
-    def _v2_gen_context_snapshot(self, lora_stack, carry_i2v_guides, frame_overlap, transitions_enabled, vision_context):
-        """Build a compact, serializable snapshot of the generation context for this run."""
+    def _v2_gen_context_snapshot(self, lora_stack, latent, vision_context):
+        """Build a compact, serializable snapshot of the generation context for this run.
+
+        Sampler settings (carry_i2v_guides, frame_overlap, transitions_enabled) are read
+        from funpack_sampler_context embedded in the latent by FunPack LTXAV Scene Chain
+        Sampler. All three are None when the latent is not from the chain sampler.
+        """
         loras = []
         if isinstance(lora_stack, dict):
             for entry in lora_stack.get("loras", []):
@@ -10651,14 +10644,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         "type": str(entry.get("type", "general")),
                         "weight": round(float(entry.get("weight", 1.0)), 4),
                     })
+        sampler_ctx = {}
+        if isinstance(latent, dict):
+            sampler_ctx = latent.get("funpack_sampler_context") or {}
         image_fp = ""
         if isinstance(vision_context, dict):
             image_fp = str(vision_context.get("image", {}).get("fingerprint", "") or "")
         return {
             "loras": loras,
-            "carry_i2v_guides": carry_i2v_guides,
-            "frame_overlap": frame_overlap,
-            "transitions_enabled": transitions_enabled,
+            "carry_i2v_guides": sampler_ctx.get("carry_i2v_guides"),
+            "frame_overlap": sampler_ctx.get("frame_overlap"),
+            "transitions_enabled": sampler_ctx.get("transitions_enabled"),
             "image_fp": image_fp,
         }
 
@@ -11071,7 +11067,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False, latent=None, seed_output_connected=False,
-                  carry_i2v_guides=None, frame_overlap=None, transitions_enabled=None,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11188,9 +11183,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             clip_vision_output=clip_vision_output,
             source_image=source_image,
         )
-        current_gen_context = self._v2_gen_context_snapshot(
-            lora_stack, carry_i2v_guides, frame_overlap, transitions_enabled, vision_context
-        )
+        current_gen_context = self._v2_gen_context_snapshot(lora_stack, latent, vision_context)
         previous_gen_context = previous_run.get("gen_context") if isinstance(previous_run, dict) else None
         context_insight = self._v2_gen_context_insight(previous_gen_context, current_gen_context, rating_label, has_previous_run)
         analysis_prompt = self._v2_prompt_key(positive_prompt)

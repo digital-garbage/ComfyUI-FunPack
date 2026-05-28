@@ -1366,4 +1366,9 @@ class FunPackLTXAVSceneChainSampler:
         if carry_i2v_guides and carried_guide_frames > 0:
             status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
         boundaries_out = [{"pixel_frame": e["pixel_frame"], "effect": e["effect"]} for e in boundary_entries]
+        output["funpack_sampler_context"] = {
+            "carry_i2v_guides": bool(carry_i2v_guides),
+            "frame_overlap": int(frame_overlap),
+            "transitions_enabled": scene_count > 1,
+        }
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
