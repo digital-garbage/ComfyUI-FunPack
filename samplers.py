@@ -802,6 +802,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.25, "min": 0.25, "max": 0.5, "step": 0.05,
                     "tooltip": "Guide attention strength for mid-scene anchor. 0.25 is the minimum — below that audio degrades and character appearance drifts. Above 0.35 causes spatial conflicts when scene composition shifts.",
                 }),
+                "embed_guidance": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Apply the Refiner's learned quality direction at each denoising step, not just once before sampling. Requires refinement_key_input and enough liked generations to have a direction. Adds ~20-30% inference overhead.",
+                }),
+                "embed_guidance_strength": ("FLOAT", {
+                    "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
+                    "tooltip": "Per-step nudge strength toward the liked conditioning direction. Keep small — the direction is applied at every step so it compounds. 0.01-0.03 is typical.",
+                }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
                     "tooltip": "Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. 0 = disable all transition effects.",
@@ -1279,6 +1287,60 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _load_liked_direction(self, refinement_key):
+        """Read the liked conditioning direction from the Refiner's state file."""
+        try:
+            try:
+                from .conditioning import refinement_state_path, serializable_to_tensor
+            except ImportError:
+                from conditioning import refinement_state_path, serializable_to_tensor
+            import json as _json
+            path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
+            with open(path, "r", encoding="utf-8") as f:
+                state = _json.load(f)
+            liked_dir_slot = state.get("liked_dir", {})
+            if int(liked_dir_slot.get("direction_count", 0)) < 3:
+                return None
+            raw = liked_dir_slot.get("direction")
+            if raw is None:
+                return None
+            return serializable_to_tensor(raw)
+        except Exception:
+            return None
+
+    def _build_embed_guidance_wrapper(self, model, liked_dir, strength):
+        """Register a model_function_wrapper that nudges conditioning toward the
+        liked quality direction at each denoising step, scaling with sigma so
+        the effect is stronger during detail refinement (low sigma) than structure
+        formation (high sigma)."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+        direction = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
+
+        def _embed_wrapper(apply_fn, args, _ew=old_wrapper, _dir=direction, _s=strength):
+            c = args.get("c") or {}
+            cond = c.get("c_crossattn")
+            if cond is not None:
+                ts = args.get("timestep")
+                try:
+                    sigma = float(ts.max().item()) if ts is not None else 1.0
+                except Exception:
+                    sigma = 1.0
+                # Scale: no effect at sigma=1 (pure noise), full effect below sigma=0.5
+                scale = max(0.0, 1.0 - sigma * 2.0)
+                if scale > 0:
+                    d = _dir.to(cond.device, cond.dtype)
+                    new_cond = cond + (_s * scale) * d.expand_as(cond)
+                    new_c = dict(c)
+                    new_c["c_crossattn"] = new_cond
+                    args = dict(args)
+                    args["c"] = new_c
+            if _ew is not None:
+                return _ew(apply_fn, args)
+            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+        model.model_options["model_function_wrapper"] = _embed_wrapper
+        return old_wrapper
+
     def _append_mid_scene_guide(self, chunk, previous_output, positive, negative, vae, strength):
         """Append the middle frame of the previous scene as a guide for the current chunk
         using LTX's guide attention mechanism (keyframe_idxs + guide_attention_entries).
@@ -1350,6 +1412,7 @@ class FunPackLTXAVSceneChainSampler:
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
+               embed_guidance=False, embed_guidance_strength=0.02,
                transition_duration=16, decode_tile_size=0,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -1369,6 +1432,13 @@ class FunPackLTXAVSceneChainSampler:
         carried_guide_frames = 0
         boundary_entries = []
         cumulative_latent_frames = 0
+
+        # Load liked direction once for embed_guidance
+        _liked_dir = None
+        if embed_guidance and refinement_key_input:
+            _liked_dir = self._load_liked_direction(refinement_key_input)
+            if _liked_dir is None:
+                print("[FunPackSceneChain] embed_guidance: no liked direction found (need 3+ liked generations)")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -1413,9 +1483,16 @@ class FunPackLTXAVSceneChainSampler:
                 else:
                     guide_tail = 0
 
+            if embed_guidance and _liked_dir is not None:
+                _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength)
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
+            if embed_guidance and _liked_dir is not None:
+                if _eg_old_wrapper is not None:
+                    model.model_options["model_function_wrapper"] = _eg_old_wrapper
+                elif "model_function_wrapper" in model.model_options:
+                    del model.model_options["model_function_wrapper"]
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
