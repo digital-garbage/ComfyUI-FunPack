@@ -792,7 +792,15 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "carry_i2v_guides": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Experimental: carry protected frames from latent_template noise_mask into each continuation chunk after the overlap. WARNING: using this with frame_overlap=0 is confirmed to produce bad results — enable only for testing.",
+                    "tooltip": "Carry the i2v anchor frame from latent_template into each continuation chunk as a style guide. Works best with frame_overlap > 0 or combined with i2i_scene_cut.",
+                }),
+                "i2i_scene_cut": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Hard cut mode: before each continuation scene, generate a new starting frame by denoising the previous scene's last frame with the new scene's prompt. Only active when frame_overlap=0. Replaces soft continuation.",
+                }),
+                "i2i_strength": ("FLOAT", {
+                    "default": 0.75, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "How much to transform the reference frame during i2i anchor generation. 0.0 = no change, 1.0 = ignore reference. 0.6–0.85 is typical for a new scene while preserving character.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
@@ -820,8 +828,8 @@ class FunPackLTXAVSceneChainSampler:
             },
         }
 
-    RETURN_TYPES = ("LATENT", "IMAGE", "STRING", "INT", "STRING", "STRING")
-    RETURN_NAMES = ("latent", "images", "status", "scene_count", "scene_report", "scene_boundaries")
+    RETURN_TYPES = ("LATENT", "IMAGE", "IMAGE", "STRING", "INT", "STRING", "STRING")
+    RETURN_NAMES = ("latent", "images", "reference_frames", "status", "scene_count", "scene_report", "scene_boundaries")
     FUNCTION = "sample"
     CATEGORY = "FunPack/Sampling"
     DESCRIPTION = (
@@ -1014,6 +1022,45 @@ class FunPackLTXAVSceneChainSampler:
                 return item[1][key]
         return None
 
+
+    def _generate_i2i_anchor(self, model, sampler, sigmas, seed, cfg,
+                              positive, negative, previous_output, strength):
+        """Denoise the last frame of the previous scene into a new starting frame."""
+        prev_tensors = self._latent_tensors(previous_output)
+        if not prev_tensors:
+            return None
+        last_frame = self._tail(prev_tensors[0], 1)
+        noise_mask = torch.full(
+            (last_frame.shape[0], 1, 1, 1, 1),
+            float(strength),
+            dtype=torch.float32,
+            device=last_frame.device,
+        )
+        anchor_latent = {"samples": last_frame, "noise_mask": noise_mask}
+        return self._sample_chunk(model, sampler, sigmas, seed, cfg, positive, negative, anchor_latent)
+
+    def _apply_i2v_anchor(self, chunk, anchor_latent):
+        """Pin the anchor's single frame as frame 0 of the chunk (mask=0, i2v style)."""
+        anchor_tensors = self._latent_tensors(anchor_latent)
+        if not anchor_tensors:
+            return chunk
+        result = self._clone_latent(chunk)
+        tensors = self._latent_tensors(result)
+        masks = self._latent_masks(result, len(tensors))
+        anchor_frame = anchor_tensors[0].to(device=tensors[0].device, dtype=tensors[0].dtype)
+        tensors[0][:, :, :1] = anchor_frame
+        if masks[0] is None:
+            masks[0] = torch.ones_like(tensors[0])
+        else:
+            masks[0] = masks[0].clone()
+        masks[0][:, :, :1] = 0.0
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+            result["noise_mask"] = comfy.nested_tensor.NestedTensor(masks)
+        else:
+            result["samples"] = tensors[0]
+            result["noise_mask"] = masks[0]
+        return result
 
     def _prepend_soft_continuation(self, chunk, previous, mask_value=0.4, n_frames=4):
         chunk_tensors = self._latent_tensors(chunk)
@@ -1305,7 +1352,8 @@ class FunPackLTXAVSceneChainSampler:
 
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
-               carry_i2v_guides=False, transition_duration=16, decode_tile_size=0,
+               carry_i2v_guides=False, i2i_scene_cut=False, i2i_strength=0.75,
+               transition_duration=16, decode_tile_size=0,
                refinement_key_input="", clip=None, unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -1324,6 +1372,7 @@ class FunPackLTXAVSceneChainSampler:
         carried_guide_frames = 0
         boundary_entries = []
         cumulative_latent_frames = 0
+        reference_frames = []
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
@@ -1355,7 +1404,18 @@ class FunPackLTXAVSceneChainSampler:
                     })
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if video_overlap == 0:
-                    chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
+                    if i2i_scene_cut:
+                        anchor = self._generate_i2i_anchor(
+                            model, sampler, sigmas, scene_seed, cfg,
+                            scene_positive, scene_negative, output, i2i_strength,
+                        )
+                        if anchor is not None:
+                            chunk = self._apply_i2v_anchor(chunk, anchor)
+                            anchor_decoded = self._decode_last_frame(anchor, vae)
+                            if anchor_decoded is not None:
+                                reference_frames.append(anchor_decoded)
+                    else:
+                        chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
                 if carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative,
@@ -1378,7 +1438,7 @@ class FunPackLTXAVSceneChainSampler:
 
         del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
 
-        # RETURN_TYPES slot indices: 0=latent, 1=images
+        # RETURN_TYPES slot indices: 0=latent, 1=images, 2=reference_frames, 3=status...
         # Sampling is fully complete. Latent is untouched and returned as-is.
         # IMAGES: decode the whole latent in one pass, then apply transition effects.
         want_image = self._output_connected(prompt, unique_id, 1)
@@ -1409,6 +1469,8 @@ class FunPackLTXAVSceneChainSampler:
         )
         if carry_i2v_guides and carried_guide_frames > 0:
             status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
+        if reference_frames:
+            status += f", i2i anchors={len(reference_frames)}"
         boundaries_out = [{"pixel_frame": e["pixel_frame"], "effect": e["effect"]} for e in boundary_entries]
         if refinement_key_input:
             try:
@@ -1423,4 +1485,10 @@ class FunPackLTXAVSceneChainSampler:
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
-        return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
+
+        if reference_frames:
+            refs_out = torch.cat(reference_frames, dim=0)
+        else:
+            refs_out = torch.zeros(1, 8, 8, 3)
+
+        return (output, images, refs_out, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
