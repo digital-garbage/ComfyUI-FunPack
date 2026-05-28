@@ -251,6 +251,33 @@ class FunPackGemmaLoader:
         return (clip,)
 
 
+class FunPackGemmaVision:
+    """Injects the SigLIP vision tower from a Gemma3-12B-IT checkpoint into an
+    existing CLIP (e.g. one built by DualCLIPLoader).  Pass-through: returns the
+    same CLIP object with _vision_loaded = True so Studio can use the reference
+    image for Gemma3 vision prompting.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "clip": ("CLIP",),
+                "model_name": (folder_paths.get_filename_list("text_encoders"),),
+            }
+        }
+
+    RETURN_TYPES = ("CLIP",)
+    RETURN_NAMES = ("clip",)
+    FUNCTION = "load_vision"
+    CATEGORY = "FunPack"
+
+    def load_vision(self, clip, model_name):
+        path = folder_paths.get_full_path("text_encoders", model_name)
+        _load_gemma3_vision_weights(clip, path)
+        return (clip,)
+
+
 class FunPackApplyLoraWeights:
     """
     Builds a LoRA stack from user base weights, then applies prompt-specific
