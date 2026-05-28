@@ -1036,20 +1036,24 @@ class FunPackLTXAVSceneChainSampler:
             "guide_attention_entries": entries,
         })
 
-    def _prepend_soft_continuation(self, chunk, previous, mask_value=0.0):
+    def _prepend_soft_continuation(self, chunk, previous, mask_value=0.4, n_frames=4):
         chunk_tensors = self._latent_tensors(chunk)
         previous_tensors = self._latent_tensors(previous)
         if not chunk_tensors or not previous_tensors:
             return chunk, 0
-        soft_frame = self._tail(previous_tensors[0], 1).to(
+        prev_len = self._tensor_frames(previous_tensors[0])
+        count = min(n_frames, prev_len)
+        if count <= 0:
+            return chunk, 0
+        soft_frames = self._tail(previous_tensors[0], count).to(
             device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype,
         )
         out_tensors = list(chunk_tensors)
         out_masks = self._latent_masks(chunk, len(out_tensors))
         if out_masks[0] is None:
             out_masks[0] = torch.ones_like(out_tensors[0])
-        soft_mask = torch.full_like(soft_frame, mask_value)
-        out_tensors[0] = torch.cat([soft_frame, out_tensors[0]], dim=2)
+        soft_mask = torch.full_like(soft_frames, mask_value)
+        out_tensors[0] = torch.cat([soft_frames, out_tensors[0]], dim=2)
         out_masks[0] = torch.cat([soft_mask, out_masks[0].to(soft_mask.device, soft_mask.dtype)], dim=2)
         if self._is_nested(chunk.get("samples")):
             chunk["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
@@ -1057,7 +1061,7 @@ class FunPackLTXAVSceneChainSampler:
         else:
             chunk["samples"] = out_tensors[0]
             chunk["noise_mask"] = out_masks[0]
-        return chunk, 1
+        return chunk, count
 
     def _append_i2v_guides(self, chunk, template, positive, negative):
         chunk_tensors = self._latent_tensors(chunk)
