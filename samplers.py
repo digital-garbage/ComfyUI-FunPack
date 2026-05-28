@@ -799,8 +799,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Experimental: append the middle frame of the previous scene as a guide for the current scene via LTX guide attention. Helps maintain character positioning across scenes.",
                 }),
                 "mid_scene_guide_strength": ("FLOAT", {
-                    "default": 0.25, "min": 0.05, "max": 0.5, "step": 0.05,
-                    "tooltip": "Guide attention strength for mid-scene anchor. 0.25 preserves character positioning while allowing background to adapt. Above 0.35 can cause character-space conflicts when scene shifts.",
+                    "default": 0.25, "min": 0.25, "max": 0.5, "step": 0.05,
+                    "tooltip": "Guide attention strength for mid-scene anchor. 0.25 is the minimum — below that audio degrades and character appearance drifts. Above 0.35 causes spatial conflicts when scene composition shifts.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
