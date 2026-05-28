@@ -5976,6 +5976,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
+                "carry_i2v_guides": ("BOOLEAN", {
+                    "forceInput": True,
+                    "tooltip": "Wire from your scene chain sampler's carry_i2v_guides setting. Tracked per-run so the Refiner can reason: if guides were off and appearance changed, the guides are the likely cause, not the prompt.",
+                }),
+                "frame_overlap": ("INT", {
+                    "forceInput": True,
+                    "tooltip": "Wire from your scene chain sampler's frame_overlap setting. Tracked per-run to note when overlap changed between generations.",
+                }),
+                "transitions_enabled": ("BOOLEAN", {
+                    "forceInput": True,
+                    "tooltip": "Wire from whatever controls whether scene transitions are active. Tracked per-run to note when transition behavior changed.",
+                }),
             },
         }
 
@@ -10628,6 +10640,127 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         memory["last_context"] = current
         return current, f"{image_status} {clip_status}"
 
+    def _v2_gen_context_snapshot(self, lora_stack, carry_i2v_guides, frame_overlap, transitions_enabled, vision_context):
+        """Build a compact, serializable snapshot of the generation context for this run."""
+        loras = []
+        if isinstance(lora_stack, dict):
+            for entry in lora_stack.get("loras", []):
+                if isinstance(entry, dict) and entry.get("name"):
+                    loras.append({
+                        "name": str(entry["name"]),
+                        "type": str(entry.get("type", "general")),
+                        "weight": round(float(entry.get("weight", 1.0)), 4),
+                    })
+        image_fp = ""
+        if isinstance(vision_context, dict):
+            image_fp = str(vision_context.get("image", {}).get("fingerprint", "") or "")
+        return {
+            "loras": loras,
+            "carry_i2v_guides": carry_i2v_guides,
+            "frame_overlap": frame_overlap,
+            "transitions_enabled": transitions_enabled,
+            "image_fp": image_fp,
+        }
+
+    def _v2_gen_context_diff(self, previous_ctx, current_ctx):
+        """Return a list of change dicts describing what differed between two gen context snapshots."""
+        if not isinstance(previous_ctx, dict) or not isinstance(current_ctx, dict):
+            return []
+        changes = []
+        prev_fp = str(previous_ctx.get("image_fp") or "")
+        curr_fp = str(current_ctx.get("image_fp") or "")
+        if prev_fp and curr_fp and prev_fp != curr_fp:
+            changes.append({"field": "image_fp"})
+        for flag in ("carry_i2v_guides", "transitions_enabled"):
+            pv = previous_ctx.get(flag)
+            cv = current_ctx.get(flag)
+            if pv is not None and cv is not None and pv != cv:
+                changes.append({"field": flag, "prev": pv, "curr": cv})
+        pov = previous_ctx.get("frame_overlap")
+        cov = current_ctx.get("frame_overlap")
+        if pov is not None and cov is not None and pov != cov:
+            changes.append({"field": "frame_overlap", "prev": pov, "curr": cov})
+        prev_loras = {e["name"]: e for e in (previous_ctx.get("loras") or []) if isinstance(e, dict) and e.get("name")}
+        curr_loras = {e["name"]: e for e in (current_ctx.get("loras") or []) if isinstance(e, dict) and e.get("name")}
+        for name, entry in prev_loras.items():
+            if name not in curr_loras:
+                changes.append({"field": "lora_removed", "name": name, "type": entry.get("type", "general"), "weight": entry.get("weight", 1.0)})
+            else:
+                pw = float(entry.get("weight", 1.0))
+                cw = float(curr_loras[name].get("weight", 1.0))
+                if abs(pw - cw) > 0.01:
+                    changes.append({"field": "lora_weight", "name": name, "type": entry.get("type", "general"), "prev": pw, "curr": cw})
+        for name, entry in curr_loras.items():
+            if name not in prev_loras:
+                changes.append({"field": "lora_added", "name": name, "type": entry.get("type", "general"), "weight": entry.get("weight", 1.0)})
+        return changes
+
+    def _v2_gen_context_insight(self, previous_ctx, current_ctx, rating_label, has_previous_run):
+        """Generate a human-readable insight connecting context changes to the current rating."""
+        if not has_previous_run or not isinstance(previous_ctx, dict) or not isinstance(current_ctx, dict):
+            return ""
+        diff = self._v2_gen_context_diff(previous_ctx, current_ctx)
+        if not diff:
+            return ""
+        profile = V2_RATING_PROFILES.get(rating_label) or V2_RATING_PROFILES.get(V2_RATING_ALIASES.get(str(rating_label), ""), {})
+        rating_key = profile.get("key", "")
+        appearance_wrong = rating_key == "wrong_appearance"
+        positive = rating_key in {"like", "loved_it"}
+        negative = float(profile.get("reward", 0.5)) < 0.3
+        lines = []
+        for ch in diff:
+            field = ch["field"]
+            if field == "image_fp":
+                if appearance_wrong:
+                    lines.append("Source image changed — appearance baseline shifted; this rating may reflect the new reference, not a prompt problem.")
+                elif negative:
+                    lines.append("Source image changed since the last rated run.")
+                else:
+                    lines.append("Source image changed since the last rated run.")
+            elif field == "carry_i2v_guides":
+                if not ch["curr"] and appearance_wrong:
+                    lines.append("carry_i2v_guides is now OFF — appearance drift is likely from missing i2v guides, not the prompt itself.")
+                elif not ch["curr"] and negative:
+                    lines.append("carry_i2v_guides turned off — character/scene consistency guides are no longer active.")
+                elif ch["curr"] and positive:
+                    lines.append("carry_i2v_guides turned on — guides may be contributing to this improvement.")
+                elif ch["curr"] and not ch["prev"]:
+                    lines.append("carry_i2v_guides turned on since the last run.")
+                else:
+                    lines.append("carry_i2v_guides turned off since the last run.")
+            elif field == "transitions_enabled":
+                if ch["curr"] and not ch["prev"]:
+                    lines.append("Transitions turned on since the last run.")
+                else:
+                    lines.append("Transitions turned off since the last run.")
+            elif field == "frame_overlap":
+                lines.append(f"Frame overlap changed: {ch['prev']} → {ch['curr']}.")
+            elif field == "lora_added":
+                stem = os.path.splitext(os.path.basename(str(ch["name"])))[0][:40]
+                ltype = ch.get("type", "general")
+                wt = ch.get("weight", 1.0)
+                if appearance_wrong:
+                    lines.append(f"LoRA added: '{stem}' ({ltype}, w={wt:.2f}) — may be changing appearance.")
+                elif positive:
+                    lines.append(f"LoRA added: '{stem}' ({ltype}, w={wt:.2f}) — may be contributing to this improvement.")
+                else:
+                    lines.append(f"LoRA added: '{stem}' ({ltype}, w={wt:.2f}).")
+            elif field == "lora_removed":
+                stem = os.path.splitext(os.path.basename(str(ch["name"])))[0][:40]
+                ltype = ch.get("type", "general")
+                wt = ch.get("weight", 1.0)
+                if appearance_wrong:
+                    lines.append(f"LoRA removed: '{stem}' ({ltype}, was w={wt:.2f}) — may explain appearance change.")
+                else:
+                    lines.append(f"LoRA removed: '{stem}' ({ltype}, was w={wt:.2f}).")
+            elif field == "lora_weight":
+                stem = os.path.splitext(os.path.basename(str(ch["name"])))[0][:40]
+                ltype = ch.get("type", "general")
+                lines.append(f"LoRA '{stem}' ({ltype}) weight changed: {ch['prev']:.2f} → {ch['curr']:.2f}.")
+        if not lines:
+            return ""
+        return "Context changes since last rated run:\n" + "\n".join(f"  • {ln}" for ln in lines)
+
     def _v2_update_negative_prompt_memory(self, global_state, previous_run, rating_profile, axis_feedback=None):
         memory = global_state.setdefault("negative_prompt_memory", {})
         tags = memory.setdefault("tags", {})
@@ -10938,6 +11071,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False, latent=None, seed_output_connected=False,
+                  carry_i2v_guides=None, frame_overlap=None, transitions_enabled=None,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11054,6 +11188,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             clip_vision_output=clip_vision_output,
             source_image=source_image,
         )
+        current_gen_context = self._v2_gen_context_snapshot(
+            lora_stack, carry_i2v_guides, frame_overlap, transitions_enabled, vision_context
+        )
+        previous_gen_context = previous_run.get("gen_context") if isinstance(previous_run, dict) else None
+        context_insight = self._v2_gen_context_insight(previous_gen_context, current_gen_context, rating_label, has_previous_run)
         analysis_prompt = self._v2_prompt_key(positive_prompt)
         intent_prompt = self._v2_prompt_key(user_intent_prompt)
         intent_prompt_is_vague = self._v2_user_intent_prompt_is_vague(intent_prompt)
@@ -11432,6 +11571,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "seed_output_connected": bool(seed_output_connected),
                 "scene_count": len(split_scene_texts) if split_scene_texts else 1,
                 "scene_seeds": current_scene_seeds,
+                "gen_context": current_gen_context,
             }
         self._v2_update_advisor_feedback_history(global_state, feedback_prompt, advisor_rating_label, int(global_state.get("total_iterations", 0)))
         if feedback_prompt and intent_source_prompt and not current_prompt_refusal:
@@ -11538,6 +11678,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     refusal_status if refusal_status else "",
                 ])) else "")
             ),
+            (
+                "Context\n"
+                f"{context_insight}"
+            ) if context_insight else "",
             (
                 "Guidance\n"
                 f"{training_guidance}"
