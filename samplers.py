@@ -800,7 +800,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "self_consistency_strength": ("FLOAT", {
                     "default": 0.05, "min": 0.01, "max": 0.5, "step": 0.01,
-                    "tooltip": "Injection strength for self-consistency. Small values (0.02–0.1) add a soft constraint; larger values lock anatomy more aggressively.",
+                    "tooltip": "Injection strength for self-consistency. Small values (0.02–0.1) add a soft constraint. Above 0.5 output degrades significantly — stay low.",
                 }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
@@ -1322,10 +1322,14 @@ class FunPackLTXAVSceneChainSampler:
                     x, is_dict = output, False
                 if x is None or x.dim() < 2 or x.shape[1] < mid_end:
                     return
-                # Mean of current step's middle-frame tokens → spread to all positions.
-                # Anchor updates every step so high-sigma noise never persists.
+                # Mean of current step's middle-frame tokens → spread to surrounding frames.
+                # Middle-frame tokens are left untouched (they are the anchor, not targets).
                 mid_mean = x[:, mid_start:mid_end, :].mean(dim=1, keepdim=True)
-                out = (1.0 - strength) * x + strength * mid_mean.expand_as(x)
+                out = x.clone()
+                if mid_start > 0:
+                    out[:, :mid_start, :] = (1.0 - strength) * x[:, :mid_start, :] + strength * mid_mean
+                if mid_end < x.shape[1]:
+                    out[:, mid_end:, :] = (1.0 - strength) * x[:, mid_end:, :] + strength * mid_mean
                 if is_dict:
                     return {**output, "img": out}
                 elif isinstance(output, tuple):
