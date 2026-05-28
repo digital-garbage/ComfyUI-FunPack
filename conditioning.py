@@ -6198,11 +6198,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 tokens = clip.tokenize(prompt_text)
             encoded = clip.encode_from_tokens_scheduled(tokens)
         except Exception as error:
+            if use_vision:
+                print(f"[FunPackStudio] Vision encoding failed: {error}")
             return None, {"pooled_output": None}, f"encode failed: {error}"
         cond, meta = self._v2_extract_conditioning(encoded)
         if not isinstance(cond, torch.Tensor):
+            if use_vision:
+                print("[FunPackStudio] Vision encoding returned invalid conditioning")
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         vision_tag = " +vision" if use_vision else ""
+        if use_vision:
+            print(f"[FunPackStudio] Vision encoding done — {self._get_conditioning_seq_len(cond)} positions")
         result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions{vision_tag}")
         if isinstance(encode_cache, dict):
             encode_cache[cache_key] = result
