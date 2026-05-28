@@ -6191,6 +6191,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return cached
         try:
             if use_vision:
+                print("[FunPackStudio] Processing input image with Gemma3 vision...")
                 tokens = clip.tokenize(prompt_text, image=reference_image, skip_template=False)
             else:
                 tokens = clip.tokenize(prompt_text)
