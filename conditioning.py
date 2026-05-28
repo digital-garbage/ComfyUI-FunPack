@@ -6403,14 +6403,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         conditionings = []
         scene_count = len(scene_texts)
+        seen_texts = {}
         for scene_index, scene_text in enumerate(scene_texts):
-            cond, meta, _ = self._v2_encode_prompt(clip, scene_text, encode_cache=encode_cache)
+            seen_count = seen_texts.get(scene_text, 0)
+            seen_texts[scene_text] = seen_count + 1
+            encode_text = f"Returning to an earlier scene: {scene_text}" if seen_count > 0 else scene_text
+            cond, meta, _ = self._v2_encode_prompt(clip, encode_text, encode_cache=encode_cache)
             if not isinstance(cond, torch.Tensor):
                 return None
             scene_meta = dict(meta) if isinstance(meta, dict) else {"pooled_output": None}
             scene_meta["funpack_scene_index"] = scene_index
             scene_meta["funpack_scene_count"] = scene_count
             scene_meta["funpack_scene_text"] = scene_text
+            scene_meta["funpack_encode_text"] = encode_text
             effect = scene_effects[scene_index] if scene_index < len(scene_effects) else None
             if effect and effect != "none":
                 scene_meta["funpack_transition_effect"] = effect
