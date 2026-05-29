@@ -1440,6 +1440,8 @@ class FunPackLTXAVSceneChainSampler:
             _liked_dir = self._load_liked_direction(refinement_key_input)
             if _liked_dir is None:
                 print("[FunPackSceneChain] embed_guidance: no liked direction found (need 3+ liked generations)")
+            else:
+                print(f"[FunPackSceneChain] embed_guidance: active, strength={embed_guidance_strength}, direction shape={list(_liked_dir.shape)}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
