@@ -11227,20 +11227,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
         if value_guidance and has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
             try:
+                import torch as _torch
                 try:
                     from .value_function import OnlineValueFunction
                 except ImportError:
                     from value_function import OnlineValueFunction
                 payload = (previous_run or {}).get("conditioning")
                 if isinstance(payload, dict):
-                    cond_tensor = serializable_to_tensor(payload)
-                    reward = float(learning_profile.get("reward", 0.0))
-                    vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
-                    vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
-                    if vf is not None:
-                        vf.train_on(cond_tensor, reward)
-                        vf.save(vf_path)
-                        print(f"[FunPackRefiner] Value function updated — {vf.n_trained} samples, buffer={len(vf.buffer_c)}")
+                    with _torch.inference_mode(False), _torch.enable_grad():
+                        cond_tensor = serializable_to_tensor(payload).clone()
+                        reward = float(learning_profile.get("reward", 0.0))
+                        vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+                        vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
+                        if vf is not None:
+                            vf.train_on(cond_tensor, reward)
+                            vf.save(vf_path)
+                            print(f"[FunPackRefiner] Value function updated — {vf.n_trained} samples, buffer={len(vf.buffer_c)}")
             except Exception as e:
                 print(f"[FunPackRefiner] Value function training failed: {e}")
         if has_previous_run and not learning_profile.get("skip_learning"):
