@@ -61,10 +61,10 @@ class OnlineValueFunction(nn.Module):
         if len(self.buffer_c) < 2:
             return
         device = next(self.parameters()).device
-        with torch.enable_grad():
+        with torch.inference_mode(False), torch.enable_grad():
             for _ in range(self.TRAIN_STEPS):
                 idx = random.sample(range(len(self.buffer_c)), min(self.BATCH_SIZE, len(self.buffer_c)))
-                c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device)
+                c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device).clone()
                 r_b = torch.tensor([self.buffer_r[i] for i in idx], device=device).unsqueeze(1)
                 self.optimizer.zero_grad()
                 F.mse_loss(self.forward(c_b), r_b).backward()
@@ -73,8 +73,8 @@ class OnlineValueFunction(nn.Module):
 
     def gradient(self, conditioning):
         """∂reward/∂conditioning — same shape as input."""
-        with torch.enable_grad():
-            c_in = conditioning.detach().float().requires_grad_(True)
+        with torch.inference_mode(False), torch.enable_grad():
+            c_in = conditioning.detach().clone().float().requires_grad_(True)
             reward = self.forward(self.compress(c_in).unsqueeze(0))
             reward.backward()
         return c_in.grad.to(conditioning.dtype)
