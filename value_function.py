@@ -52,19 +52,19 @@ class OnlineValueFunction(nn.Module):
 
     def train_on(self, conditioning, reward):
         """Add a new (conditioning, reward) sample and do a few training steps."""
-        c = self.compress(conditioning).detach().cpu()
-        self.buffer_c.append(c)
-        self.buffer_r.append(float(reward))
-        if len(self.buffer_c) > self.BUFFER_SIZE:
-            self.buffer_c = self.buffer_c[-self.BUFFER_SIZE:]
-            self.buffer_r = self.buffer_r[-self.BUFFER_SIZE:]
-        if len(self.buffer_c) < 2:
-            return
-        device = next(self.parameters()).device
         with torch.inference_mode(False), torch.enable_grad():
+            c = self.compress(conditioning.clone()).detach().cpu()
+            self.buffer_c.append(c)
+            self.buffer_r.append(float(reward))
+            if len(self.buffer_c) > self.BUFFER_SIZE:
+                self.buffer_c = self.buffer_c[-self.BUFFER_SIZE:]
+                self.buffer_r = self.buffer_r[-self.BUFFER_SIZE:]
+            if len(self.buffer_c) < 2:
+                return
+            device = next(self.parameters()).device
             for _ in range(self.TRAIN_STEPS):
                 idx = random.sample(range(len(self.buffer_c)), min(self.BATCH_SIZE, len(self.buffer_c)))
-                c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device).clone()
+                c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device)
                 r_b = torch.tensor([self.buffer_r[i] for i in idx], device=device).unsqueeze(1)
                 self.optimizer.zero_grad()
                 F.mse_loss(self.forward(c_b), r_b).backward()
