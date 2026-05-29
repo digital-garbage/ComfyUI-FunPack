@@ -1298,7 +1298,8 @@ class FunPackLTXAVSceneChainSampler:
             path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
             with open(path, "r", encoding="utf-8") as f:
                 state = _json.load(f)
-            liked_dir_slot = state.get("liked_dir", {})
+            global_state = state.get("global", state)  # liked_dir lives under state["global"]
+            liked_dir_slot = global_state.get("liked_dir", {})
             if int(liked_dir_slot.get("direction_count", 0)) < 3:
                 return None
             raw = liked_dir_slot.get("direction")
