@@ -61,20 +61,22 @@ class OnlineValueFunction(nn.Module):
         if len(self.buffer_c) < 2:
             return
         device = next(self.parameters()).device
-        for _ in range(self.TRAIN_STEPS):
-            idx = random.sample(range(len(self.buffer_c)), min(self.BATCH_SIZE, len(self.buffer_c)))
-            c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device)
-            r_b = torch.tensor([self.buffer_r[i] for i in idx], device=device).unsqueeze(1)
-            self.optimizer.zero_grad()
-            F.mse_loss(self.forward(c_b), r_b).backward()
-            self.optimizer.step()
+        with torch.enable_grad():
+            for _ in range(self.TRAIN_STEPS):
+                idx = random.sample(range(len(self.buffer_c)), min(self.BATCH_SIZE, len(self.buffer_c)))
+                c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device)
+                r_b = torch.tensor([self.buffer_r[i] for i in idx], device=device).unsqueeze(1)
+                self.optimizer.zero_grad()
+                F.mse_loss(self.forward(c_b), r_b).backward()
+                self.optimizer.step()
         self.n_trained += 1
 
     def gradient(self, conditioning):
         """∂reward/∂conditioning — same shape as input."""
-        c_in = conditioning.detach().float().requires_grad_(True)
-        reward = self.forward(self.compress(c_in).unsqueeze(0))
-        reward.backward()
+        with torch.enable_grad():
+            c_in = conditioning.detach().float().requires_grad_(True)
+            reward = self.forward(self.compress(c_in).unsqueeze(0))
+            reward.backward()
         return c_in.grad.to(conditioning.dtype)
 
     def is_ready(self):
