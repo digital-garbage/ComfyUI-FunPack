@@ -1296,10 +1296,12 @@ class FunPackLTXAVSceneChainSampler:
             except ImportError:
                 from value_function import OnlineValueFunction
                 from conditioning import refinement_state_path
+            import os as _os
             path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
-            if not __import__("os").path.exists(path):
+            if not _os.path.exists(path):
                 return None
-            vf = OnlineValueFunction.load(path)
+            with torch.inference_mode(False):
+                vf = OnlineValueFunction.load(path)
             return vf if vf.is_ready() else None
         except Exception:
             return None
