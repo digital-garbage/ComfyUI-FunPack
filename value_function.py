@@ -73,11 +73,12 @@ class OnlineValueFunction(nn.Module):
 
     def gradient(self, conditioning):
         """∂reward/∂conditioning — same shape as input."""
+        mlp_device = next(self.parameters()).device
         with torch.inference_mode(False), torch.enable_grad():
-            c_in = conditioning.detach().clone().float().requires_grad_(True)
+            c_in = conditioning.detach().clone().float().to(mlp_device).requires_grad_(True)
             reward = self.forward(self.compress(c_in).unsqueeze(0))
             reward.backward()
-        return c_in.grad.to(conditioning.dtype)
+        return c_in.grad.to(conditioning.device, conditioning.dtype)
 
     def is_ready(self):
         return len(self.buffer_c) >= self.MIN_SAMPLES

@@ -1348,7 +1348,8 @@ class FunPackLTXAVSceneChainSampler:
                         try:
                             grad = _vf.gradient(cond)
                             d = torch.nn.functional.normalize(grad.float(), dim=-1).to(cond.dtype)
-                        except Exception:
+                        except Exception as _e:
+                            print(f"[FunPackSceneChain] embed_guidance: value function gradient failed ({_e}), using fixed direction")
                             d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
                     else:
                         d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
