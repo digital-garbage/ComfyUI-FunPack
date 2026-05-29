@@ -1,0 +1,112 @@
+"""Online value function for reward-guided sampling.
+
+Trains a small MLP incrementally on user-rated generations.
+At inference, provides ∂reward/∂conditioning as a per-step steering gradient.
+"""
+
+import os
+import random
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class OnlineValueFunction(nn.Module):
+    MIN_SAMPLES = 5
+    BUFFER_SIZE = 100
+    BATCH_SIZE = 16
+    TRAIN_STEPS = 20
+
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        mid = min(256, hidden_dim // 4)
+        self.net = nn.Sequential(
+            nn.Linear(hidden_dim, mid),
+            nn.SiLU(),
+            nn.Linear(mid, 64),
+            nn.SiLU(),
+            nn.Linear(64, 1),
+        )
+        self._optimizer = None
+        self.buffer_c = []  # compressed conditioning tensors [hidden_dim]
+        self.buffer_r = []  # reward floats
+        self.n_trained = 0
+
+    @property
+    def optimizer(self):
+        if self._optimizer is None:
+            self._optimizer = torch.optim.Adam(self.parameters(), lr=2e-3)
+        return self._optimizer
+
+    @staticmethod
+    def compress(conditioning):
+        """[1, seq, D] or [seq, D] → [D] mean vector."""
+        c = conditioning.float()
+        if c.dim() == 3:
+            c = c.squeeze(0)
+        return c.mean(dim=0)
+
+    def forward(self, c):
+        return self.net(c)
+
+    def train_on(self, conditioning, reward):
+        """Add a new (conditioning, reward) sample and do a few training steps."""
+        c = self.compress(conditioning).detach().cpu()
+        self.buffer_c.append(c)
+        self.buffer_r.append(float(reward))
+        if len(self.buffer_c) > self.BUFFER_SIZE:
+            self.buffer_c = self.buffer_c[-self.BUFFER_SIZE:]
+            self.buffer_r = self.buffer_r[-self.BUFFER_SIZE:]
+        if len(self.buffer_c) < 2:
+            return
+        device = next(self.parameters()).device
+        for _ in range(self.TRAIN_STEPS):
+            idx = random.sample(range(len(self.buffer_c)), min(self.BATCH_SIZE, len(self.buffer_c)))
+            c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device)
+            r_b = torch.tensor([self.buffer_r[i] for i in idx], device=device).unsqueeze(1)
+            self.optimizer.zero_grad()
+            F.mse_loss(self.forward(c_b), r_b).backward()
+            self.optimizer.step()
+        self.n_trained += 1
+
+    def gradient(self, conditioning):
+        """∂reward/∂conditioning — same shape as input."""
+        c_in = conditioning.detach().float().requires_grad_(True)
+        reward = self.forward(self.compress(c_in).unsqueeze(0))
+        reward.backward()
+        return c_in.grad.to(conditioning.dtype)
+
+    def is_ready(self):
+        return len(self.buffer_c) >= self.MIN_SAMPLES
+
+    def save(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        buf = torch.stack(self.buffer_c) if self.buffer_c else torch.zeros(0, self.hidden_dim)
+        torch.save({
+            "hidden_dim": self.hidden_dim,
+            "state_dict": self.state_dict(),
+            "buffer_c": buf,
+            "buffer_r": list(self.buffer_r),
+            "n_trained": self.n_trained,
+        }, path)
+
+    @classmethod
+    def load(cls, path):
+        data = torch.load(path, map_location="cpu", weights_only=False)
+        vf = cls(hidden_dim=data["hidden_dim"])
+        vf.load_state_dict(data["state_dict"])
+        buf = data["buffer_c"]
+        vf.buffer_c = [buf[i] for i in range(len(buf))]
+        vf.buffer_r = list(data["buffer_r"])
+        vf.n_trained = data.get("n_trained", 0)
+        return vf
+
+    @classmethod
+    def load_or_create(cls, path, hidden_dim=None):
+        if os.path.exists(path):
+            try:
+                return cls.load(path)
+            except Exception:
+                pass
+        return cls(hidden_dim=hidden_dim) if hidden_dim is not None else None

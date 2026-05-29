@@ -69,7 +69,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -932,6 +932,12 @@ function openPanel(node) {
     visCondToggle.inp.addEventListener("change", () => { settings.refiner.vision_conditioning = visCondToggle.inp.checked; });
     body.append(el("div", "funpack-studio-hint", "Use the reference image as visual context when encoding the prompt with Gemma3. Disable to test without vision conditioning."));
     body.append(row("Vision conditioning", visCondToggle.wrap));
+
+    if (settings.refiner.value_guidance === undefined) settings.refiner.value_guidance = false;
+    const valueGuidanceToggle = toggleEl(!!settings.refiner.value_guidance, "Value guidance training");
+    valueGuidanceToggle.inp.addEventListener("change", () => { settings.refiner.value_guidance = valueGuidanceToggle.inp.checked; });
+    body.append(el("div", "funpack-studio-hint", "Train an online value function on rated generations. After 5+ ratings (good and bad), the chain sampler can use it for per-step gradient steering. Enable 'embed_guidance' in the sampler to use."));
+    body.append(row("Value guidance", valueGuidanceToggle.wrap));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",

@@ -11120,7 +11120,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
-                  split_by_transitions=False, split_transition_placement="start", reference_injection=False, latent=None, seed_output_connected=False,
+                  split_by_transitions=False, split_transition_placement="start", reference_injection=False,
+                  value_guidance=False, latent=None, seed_output_connected=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11224,6 +11225,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         memory_status = f"{memory_status}\n{seed_memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
+        if value_guidance and has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+            try:
+                try:
+                    from .value_function import OnlineValueFunction
+                except ImportError:
+                    from value_function import OnlineValueFunction
+                payload = (previous_run or {}).get("conditioning")
+                if isinstance(payload, dict):
+                    cond_tensor = serializable_to_tensor(payload)
+                    reward = float(learning_profile.get("reward", 0.0))
+                    vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+                    vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
+                    if vf is not None:
+                        vf.train_on(cond_tensor, reward)
+                        vf.save(vf_path)
+                        print(f"[FunPackRefiner] Value function updated — {vf.n_trained} samples, buffer={len(vf.buffer_c)}")
+            except Exception as e:
+                print(f"[FunPackRefiner] Value function training failed: {e}")
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
         repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
@@ -12938,6 +12957,7 @@ class FunPackStudio:
             split_transition_placement = "start"
         reference_injection = bool(rf.get("reference_injection", False))
         vision_conditioning = bool(rf.get("vision_conditioning", True))
+        value_guidance = bool(rf.get("value_guidance", False))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -13065,6 +13085,7 @@ class FunPackStudio:
             split_by_transitions=split_by_transitions,
             split_transition_placement=split_transition_placement,
             reference_injection=reference_injection,
+            value_guidance=value_guidance,
             latent=latent,
             seed_output_connected=seed_output_connected,
             _seed=seed,

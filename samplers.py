@@ -1287,6 +1287,23 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _load_value_function(self, refinement_key):
+        """Load the online value function if trained and ready."""
+        try:
+            try:
+                from .value_function import OnlineValueFunction
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import OnlineValueFunction
+                from conditioning import refinement_state_path
+            path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+            if not __import__("os").path.exists(path):
+                return None
+            vf = OnlineValueFunction.load(path)
+            return vf if vf.is_ready() else None
+        except Exception:
+            return None
+
     def _load_liked_direction(self, refinement_key):
         """Read the liked conditioning direction from the Refiner's state file."""
         try:
@@ -1309,15 +1326,14 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
-    def _build_embed_guidance_wrapper(self, model, liked_dir, strength):
+    def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None):
         """Register a model_function_wrapper that nudges conditioning toward the
-        liked quality direction at each denoising step, scaling with sigma so
-        the effect is stronger during detail refinement (low sigma) than structure
-        formation (high sigma)."""
+        liked quality direction at each denoising step. Uses value function gradient
+        when available, falls back to the fixed liked direction otherwise."""
         old_wrapper = model.model_options.get("model_function_wrapper")
-        direction = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
+        fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
 
-        def _embed_wrapper(apply_fn, args, _ew=old_wrapper, _dir=direction, _s=strength):
+        def _embed_wrapper(apply_fn, args, _ew=old_wrapper, _fixed=fixed_dir, _vf=value_fn, _s=strength):
             c = args.get("c") or {}
             cond = c.get("c_crossattn")
             if cond is not None:
@@ -1326,13 +1342,18 @@ class FunPackLTXAVSceneChainSampler:
                     sigma = float(ts.max().item()) if ts is not None else 1.0
                 except Exception:
                     sigma = 1.0
-                # Scale: no effect at sigma=1 (pure noise), full effect below sigma=0.5
                 scale = max(0.0, 1.0 - sigma * 2.0)
                 if scale > 0:
-                    d = _dir.to(cond.device, cond.dtype)
-                    new_cond = cond + (_s * scale) * d.expand_as(cond)
+                    if _vf is not None:
+                        try:
+                            grad = _vf.gradient(cond)
+                            d = torch.nn.functional.normalize(grad.float(), dim=-1).to(cond.dtype)
+                        except Exception:
+                            d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
+                    else:
+                        d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
                     new_c = dict(c)
-                    new_c["c_crossattn"] = new_cond
+                    new_c["c_crossattn"] = cond + (_s * scale) * d
                     args = dict(args)
                     args["c"] = new_c
             if _ew is not None:
@@ -1436,12 +1457,15 @@ class FunPackLTXAVSceneChainSampler:
 
         # Load liked direction once for embed_guidance
         _liked_dir = None
+        _value_fn = None
         if embed_guidance and refinement_key_input:
             _liked_dir = self._load_liked_direction(refinement_key_input)
             if _liked_dir is None:
                 print("[FunPackSceneChain] embed_guidance: no liked direction found (need 3+ liked generations)")
             else:
-                print(f"[FunPackSceneChain] embed_guidance: active, strength={embed_guidance_strength}, direction shape={list(_liked_dir.shape)}")
+                _value_fn = self._load_value_function(refinement_key_input)
+                mode = f"value function ({_value_fn.n_trained} samples)" if _value_fn else "fixed direction"
+                print(f"[FunPackSceneChain] embed_guidance: active via {mode}, strength={embed_guidance_strength}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -1487,7 +1511,7 @@ class FunPackLTXAVSceneChainSampler:
                     guide_tail = 0
 
             if embed_guidance and _liked_dir is not None:
-                _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength)
+                _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
