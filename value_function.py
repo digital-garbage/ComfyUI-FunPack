@@ -74,11 +74,16 @@ class OnlineValueFunction(nn.Module):
     def gradient(self, conditioning):
         """∂reward/∂conditioning — same shape as input."""
         mlp_device = next(self.parameters()).device
+        orig_device = conditioning.device
         with torch.inference_mode(False), torch.enable_grad():
-            c_in = conditioning.detach().clone().float().to(mlp_device).requires_grad_(True)
-            reward = self.forward(self.compress(c_in).unsqueeze(0))
+            # new_empty inside inference_mode(False) creates a normal (non-inference) tensor.
+            # copy_ fills it from the inference tensor without inheriting the flag.
+            c_fresh = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
+            c_fresh.copy_(conditioning)
+            c_fresh.requires_grad_(True)
+            reward = self.forward(self.compress(c_fresh).unsqueeze(0))
             reward.backward()
-        return c_in.grad.to(conditioning.device, conditioning.dtype)
+        return c_fresh.grad.to(orig_device, conditioning.dtype)
 
     def is_ready(self):
         return len(self.buffer_c) >= self.MIN_SAMPLES
