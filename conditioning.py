@@ -428,61 +428,7 @@ def latent_from_tensor_bundle(bundle):
     return latent if latent_samples(latent) is not None else None
 
 
-# Transition phrases sorted longest-first so regex alternation picks the most specific match.
-# These mark scene or temporal cuts in video prompts and drive prompt splitting.
-_PROMPT_TRANSITION_PHRASES = sorted([
-    # Ordinal and narrative scene markers
-    "the tenth scene", "the ninth scene", "the eighth scene", "the seventh scene",
-    "the sixth scene", "the fifth scene", "the fourth scene", "the third scene",
-    "the second scene", "the first scene", "the final scene", "the last scene",
-    "scene ten", "scene nine", "scene eight", "scene seven",
-    "scene six", "scene five", "scene four", "scene three", "scene two", "scene one",
-    # Explicit scene-boundary phrases
-    "after a brief scene cut", "as the scene transitions",
-    "the scene begins with", "in the next scene",
-    "as the action continues", "as the video progresses",
-    "the final sequence shows", "the final shot returns",
-    "in the final moments", "a final shot zooms out",
-    "the camera then shifts", "the camera then pulls back",
-    "the camera shifts to", "the camera zooms in",
-    "the scene shifts to", "in the next segment",
-    "later, another scene shows", "another scene shows",
-    "the video concludes",
-    # Multi-word scene-cut language
-    "the scene then cuts to", "the scene cuts to", "the scene then transitions to",
-    "finally, the scene transitions",
-    "the scene transitions to", "the scene then fades to", "the scene fades to",
-    "the scene then dissolves to", "the scene dissolves to",
-    "the scene then cuts", "the scene cuts",
-    "hard cut to", "smash cut to", "jump cut to", "snap cut to",
-    "slow dissolve to", "cross dissolve to", "match cut to",
-    "fade to black", "fade to white",
-    "zoom out to", "zoom in to",
-    "wipe to", "pan to", "rack focus to",
-    "cut to", "transition to", "dissolve to", "fade to", "zoom to",
-    # Multi-word temporal transitions
-    "and then suddenly", "but then suddenly",
-    "and after that", "after that moment", "after that",
-    "from that moment on", "from that moment", "from that point on", "from that point",
-    "from here on", "from here",
-    "a few moments later", "a few seconds later", "a moment later",
-    "some time later", "some moments later",
-    "shortly after that", "not long after",
-    "at that very moment", "at that exact moment",
-    "in the next moment", "in the next instant",
-    "in the meantime", "in the meanwhile",
-    "at the same time", "at the same moment",
-    "by this point", "at this point", "at that point",
-    "and then", "but then",
-    "and finally", "and eventually",
-], key=len, reverse=True)
-
 _GENERIC_SCENE_LABEL_PATTERN = r"\bscene\s+(?:[-+]?\d+|minus\s+[a-z][\w-]*)\b"
-_TRANSITION_SPLIT_PATTERN = re.compile(
-    r"(?:\b(?:" + "|".join(re.escape(p) for p in _PROMPT_TRANSITION_PHRASES) + r")\b|"
-    + _GENERIC_SCENE_LABEL_PATTERN + r")",
-    re.IGNORECASE,
-)
 
 
 def split_prompt_by_transitions(prompt, placement="start"):
@@ -511,11 +457,11 @@ def split_prompt_by_transitions(prompt, placement="start"):
             _custom_trigger_pat(t) for t in sorted(custom_triggers, key=len, reverse=True)
         )
         split_pattern = re.compile(
-            r"(?:" + custom_parts + r"|" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
+            r"(?:" + custom_parts + r"|" + _GENERIC_SCENE_LABEL_PATTERN + r")",
             re.IGNORECASE,
         )
     else:
-        split_pattern = _TRANSITION_SPLIT_PATTERN
+        split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
 
     capturing_pattern = re.compile(r"(" + split_pattern.pattern + r")", re.IGNORECASE)
     parts = capturing_pattern.split(text)
@@ -6288,11 +6234,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 for t in sorted(custom_triggers, key=len, reverse=True)
             )
             split_pattern = re.compile(
-                r"(?:" + custom_parts + r"|" + _TRANSITION_SPLIT_PATTERN.pattern + r")",
+                r"(?:" + custom_parts + r"|" + _GENERIC_SCENE_LABEL_PATTERN + r")",
                 re.IGNORECASE,
             )
         else:
-            split_pattern = _TRANSITION_SPLIT_PATTERN
+            split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
 
         # Capturing split keeps the matched transition words as alternating elements:
         # [pre, trans1, between, trans2, post, ...]
