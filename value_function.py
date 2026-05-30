@@ -85,6 +85,30 @@ class OnlineValueFunction(nn.Module):
             reward.backward()
         return c_fresh.grad.to(orig_device, conditioning.dtype)
 
+    def ascend(self, conditioning):
+        """Gradient ascent on conditioning until reward plateaus. Self-terminating, no user params."""
+        if not self.is_ready():
+            return conditioning
+        mlp_device = next(self.parameters()).device
+        orig_device = conditioning.device
+        orig_dtype = conditioning.dtype
+        step_size = conditioning.float().norm().item() * 0.005
+        prev_reward = -float("inf")
+        with torch.inference_mode(False), torch.enable_grad():
+            c = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
+            c.copy_(conditioning)
+            for _ in range(50):
+                c = c.detach().requires_grad_(True)
+                reward = self.forward(self.compress(c).unsqueeze(0))
+                reward.backward()
+                reward_val = reward.item()
+                grad = F.normalize(c.grad.float(), dim=-1)
+                c = c.detach() + step_size * grad
+                if reward_val - prev_reward < 1e-3:
+                    break
+                prev_reward = reward_val
+        return c.detach().to(orig_device, orig_dtype)
+
     def is_ready(self):
         return len(self.buffer_c) >= self.MIN_SAMPLES
 
