@@ -262,6 +262,7 @@ function setupRatingPicker(node) {
       ratingWidget.callback?.(label);
       pickerWidget.name = getLabel();
       node.setDirtyCanvas?.(true, true);
+      closePicker();
     });
   }, { serialize: false });
 
