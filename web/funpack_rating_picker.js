@@ -136,10 +136,13 @@ function rewardColor(reward) {
 // ─── Picker popup ─────────────────────────────────────────────────────────────
 
 let activePickerEl = null;
+let activePickerCleanup = null;
 
 function closePicker() {
   activePickerEl?.remove();
   activePickerEl = null;
+  activePickerCleanup?.();
+  activePickerCleanup = null;
 }
 
 function makeOption(r, accent, onPick, allOptions) {
@@ -269,11 +272,9 @@ function openPicker(ratingWidget, event, onPick) {
 
   // Close on outside click
   const onOutside = (e) => {
-    if (!picker.contains(e.target)) {
-      closePicker();
-      document.removeEventListener("mousedown", onOutside, true);
-    }
+    if (!picker.contains(e.target)) closePicker();
   };
+  activePickerCleanup = () => document.removeEventListener("mousedown", onOutside, true);
   setTimeout(() => document.addEventListener("mousedown", onOutside, true), 0);
 }
 
