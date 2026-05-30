@@ -11539,13 +11539,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         # Load value function for conditioning memory modulation (confidence + gradient boost)
         _vf_for_memory = None
-        if not learning_mode and not prompt_only_mode and eff_key:
+        _eff_key_early = str(refinement_key_input or refinement_key or "").strip()
+        if not learning_mode and not prompt_only_mode and _eff_key_early:
             try:
                 try:
                     from .value_function import OnlineValueFunction as _OVF
                 except ImportError:
                     from value_function import OnlineValueFunction as _OVF
-                _vf_path = refinement_state_path(eff_key, "value_fn", prefix="refine_v2", extension="pt")
+                _vf_path = refinement_state_path(_eff_key_early, "value_fn", prefix="refine_v2", extension="pt")
                 if os.path.exists(_vf_path):
                     import torch as _torch
                     with _torch.inference_mode(False):
