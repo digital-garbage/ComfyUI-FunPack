@@ -1194,6 +1194,7 @@ class FunPackLTXAVSceneChainSampler:
                                 deviation.float().reshape(x.shape[0], -1), dim=-1
                             ).reshape(x.shape)
                             x.add_((latent_vf_strength * scale * d_norm).to(x.device, x.dtype))
+                            print(f"[FunPackSceneChain] motion floor: step={step}, σ={sigma:.3f}, temporal_var/overall={temporal_var/overall_var:.4f}")
                 except Exception:
                     pass
 
