@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 
 class OnlineValueFunction(nn.Module):
-    MIN_SAMPLES = 5
+    MIN_SAMPLES = 10
     BUFFER_SIZE = 100
     BATCH_SIZE = 16
     TRAIN_STEPS = 20
@@ -93,10 +93,13 @@ class OnlineValueFunction(nn.Module):
         orig_device = conditioning.device
         orig_dtype = conditioning.dtype
         step_size = conditioning.float().norm().item() * 0.005
+        # Cap total displacement at 8% of original norm — prevents stripping action/content
+        max_displacement = conditioning.float().norm().item() * 0.08
         prev_reward = -float("inf")
         with torch.inference_mode(False), torch.enable_grad():
-            c = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
-            c.copy_(conditioning)
+            c_orig = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
+            c_orig.copy_(conditioning)
+            c = c_orig.clone()
             for _ in range(50):
                 c = c.detach().requires_grad_(True)
                 reward = self.forward(self.compress(c).unsqueeze(0))
@@ -104,6 +107,11 @@ class OnlineValueFunction(nn.Module):
                 reward_val = reward.item()
                 grad = F.normalize(c.grad.float(), dim=-1)
                 c = c.detach() + step_size * grad
+                # Project back if displacement exceeds cap
+                delta = c - c_orig
+                disp = delta.norm()
+                if disp > max_displacement:
+                    c = c_orig + delta * (max_displacement / disp)
                 if reward_val - prev_reward < 1e-3:
                     break
                 prev_reward = reward_val
