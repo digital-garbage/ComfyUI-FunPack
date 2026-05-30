@@ -108,16 +108,17 @@ function injectStyles() {
     .fp-picker-opt-reward { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .fp-picker-opt-hint { font-size: 9px; color: #888; line-height: 1.3; }
     .fp-picker-opt:hover .fp-picker-opt-hint { color: #aaa; }
-    .fp-picker-nuclear { padding: 8px 10px 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-    .fp-picker-loved-row { padding: 6px 10px 8px; border-top: 1px solid rgba(255,255,255,0.06); }
-    .fp-picker-loved-toggle {
-      width: 100%; padding: 7px 10px; border-radius: 6px; cursor: pointer;
-      font: 11px sans-serif; font-weight: 600; text-align: left;
-      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,120,180,0.25); color: #aaa;
-      transition: background 0.1s, border-color 0.1s, color 0.1s;
+    .fp-picker-nuclear { padding: 8px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .fp-picker-opt-wrap { display: flex; gap: 3px; align-items: stretch; }
+    .fp-picker-opt-wrap .fp-picker-opt { flex: 1; }
+    .fp-picker-heart {
+      flex-shrink: 0; width: 26px; padding: 0;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,120,180,0.2);
+      border-radius: 6px; color: rgba(255,120,180,0.5); cursor: pointer;
+      font-size: 13px; transition: background 0.1s, border-color 0.1s, color 0.1s;
     }
-    .fp-picker-loved-toggle:hover { background: rgba(255,120,180,0.10); border-color: rgba(255,120,180,0.5); color: #eee; }
-    .fp-picker-loved-toggle.active { background: rgba(255,120,180,0.18); border-color: rgba(255,120,180,0.75); color: #ffb3d4; }
+    .fp-picker-heart:hover { background: rgba(255,120,180,0.12); border-color: rgba(255,120,180,0.6); color: #ffb3d4; }
+    .fp-picker-heart.active { background: rgba(255,120,180,0.20); border-color: rgba(255,120,180,0.8); color: #ffb3d4; }
   `;
   document.head.append(s);
 }
@@ -142,10 +143,17 @@ function closePicker() {
   activePickerEl = null;
 }
 
-function makeOption(r, currentValue, accent, onPick) {
+function makeOption(r, currentBase, currentLoved, accent, onPick) {
+  const isActive     = currentBase === r.label && !currentLoved;
+  const isLovedActive = currentBase === r.label && currentLoved;
+  const canLove = !NO_LOVED_LABELS.has(r.label);
+
+  const wrap = document.createElement("div");
+  wrap.className = "fp-picker-opt-wrap";
+  wrap.style.setProperty("--accent", accent);
+
   const btn = document.createElement("button");
-  btn.className = "fp-picker-opt" + (currentValue === r.label ? " active" : "");
-  btn.style.setProperty("--accent", accent);
+  btn.className = "fp-picker-opt" + (isActive ? " active" : "");
   btn.title = r.hint;
 
   const labelEl = document.createElement("div");
@@ -163,7 +171,18 @@ function makeOption(r, currentValue, accent, onPick) {
 
   btn.append(labelEl, rewardEl, hintEl);
   btn.addEventListener("click", () => onPick(r.label));
-  return btn;
+  wrap.append(btn);
+
+  if (canLove) {
+    const heartBtn = document.createElement("button");
+    heartBtn.className = "fp-picker-heart" + (isLovedActive ? " active" : "");
+    heartBtn.textContent = "♥";
+    heartBtn.title = `${r.label} — loved it`;
+    heartBtn.addEventListener("click", () => onPick(r.label + "|loved"));
+    wrap.append(heartBtn);
+  }
+
+  return wrap;
 }
 
 const NO_LOVED_LABELS = new Set(["Perfect", FORGET_LABEL]);
@@ -189,11 +208,7 @@ function openPicker(ratingWidget, event, onPick) {
 
   const rawCurrent = ratingWidget.value || "";
   const currentLoved = rawCurrent.endsWith("|loved");
-  const currentBase = currentLoved ? rawCurrent.slice(0, -6) : rawCurrent;
-
-  let lovedOn = currentLoved;
-
-  const buildLabel = (base) => NO_LOVED_LABELS.has(base) ? base : (lovedOn ? base + "|loved" : base);
+  const currentBase  = currentLoved ? rawCurrent.slice(0, -6) : rawCurrent;
 
   // Category sections
   for (const cat of CATEGORIES) {
@@ -208,7 +223,7 @@ function openPicker(ratingWidget, event, onPick) {
 
     const grid = document.createElement("div");
     grid.className = cat.id === "positive" ? "fp-picker-positive-grid" : "fp-picker-grid";
-    for (const r of cat.ratings) grid.append(makeOption(r, currentBase, cat.accent, (base) => onPick(buildLabel(base))));
+    for (const r of cat.ratings) grid.append(makeOption(r, currentBase, currentLoved, cat.accent, onPick));
     section.append(grid);
     picker.append(section);
   }
@@ -217,21 +232,8 @@ function openPicker(ratingWidget, event, onPick) {
   const nuclearSection = document.createElement("div");
   nuclearSection.className = "fp-picker-nuclear";
   nuclearSection.style.setProperty("--accent", "140,100,100");
-  for (const r of NUCLEAR) nuclearSection.append(makeOption(r, currentBase, "140,100,100", (base) => onPick(buildLabel(base))));
+  for (const r of NUCLEAR) nuclearSection.append(makeOption(r, currentBase, currentLoved, "140,100,100", onPick));
   picker.append(nuclearSection);
-
-  // Loved it toggle
-  const lovedRow = document.createElement("div");
-  lovedRow.className = "fp-picker-loved-row";
-  const lovedToggle = document.createElement("button");
-  lovedToggle.className = "fp-picker-loved-toggle" + (lovedOn ? " active" : "");
-  lovedToggle.textContent = "♥  Loved it — great output regardless of prompt adherence";
-  lovedToggle.addEventListener("click", () => {
-    lovedOn = !lovedOn;
-    lovedToggle.classList.toggle("active", lovedOn);
-  });
-  lovedRow.append(lovedToggle);
-  picker.append(lovedRow);
 
   document.body.append(picker);
 
