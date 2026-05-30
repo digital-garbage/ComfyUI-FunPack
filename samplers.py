@@ -1170,34 +1170,36 @@ class FunPackLTXAVSceneChainSampler:
 
             def callback(step, x0, x, total_steps):
                 try:
-                    is_tensor = isinstance(x, torch.Tensor)
-                    dims = x.dim() if is_tensor else -1
-                    sigma = float(sigmas[min(step, len(sigmas) - 2)])
-                    scale = max(0.0, min(1.0, (0.5 - sigma) / 0.5))
-                    print(f"[FunPackSceneChain] callback: step={step}, tensor={is_tensor}, dim={dims}, σ={sigma:.3f}, scale={scale:.3f}")
-                    if not is_tensor or dims != 5:
+                    if not isinstance(x, torch.Tensor) or x.dim() not in (3, 5):
                         return
+                    sigma = float(sigmas[min(step, len(sigmas) - 2)])
+                    # scale = 1 - sigma: grows naturally as denoising progresses,
+                    # works for any sigma schedule including LTX's high-sigma distilled flow
+                    scale = max(0.0, 1.0 - sigma)
                     if scale <= 0:
                         return
-                    # Latent value function drift
-                    if latent_vf is not None and latent_vf_strength > 0:
+                    # Latent value function drift (5D only — spatial format)
+                    if latent_vf is not None and latent_vf_strength > 0 and x.dim() == 5:
                         compressed = _compress_latent(x)
                         grad = latent_vf.gradient(compressed.unsqueeze(0).unsqueeze(0))
                         grad = torch.nn.functional.normalize(grad.squeeze(0).squeeze(0).float(), dim=-1)
                         drift = grad[None, :, None, None, None].expand_as(x).to(x.device, x.dtype)
                         x.add_(latent_vf_strength * scale * drift)
-                    # Motion floor — push toward temporal variance when video is static
-                    if motion_floor and x.shape[2] > 1:
-                        mean_t = x.mean(dim=2, keepdim=True)
-                        deviation = x - mean_t
-                        temporal_var = deviation.pow(2).mean().item()
-                        overall_var = x.pow(2).mean().item()
-                        if overall_var > 1e-8 and temporal_var / overall_var < 0.05:
-                            d_norm = torch.nn.functional.normalize(
-                                deviation.float().reshape(x.shape[0], -1), dim=-1
-                            ).reshape(x.shape)
-                            x.add_((latent_vf_strength * scale * d_norm).to(x.device, x.dtype))
-                            print(f"[FunPackSceneChain] motion floor: step={step}, σ={sigma:.3f}, temporal_var/overall={temporal_var/overall_var:.4f}")
+                    # Motion floor — sequence variance proxy works for both 3D [B,seq,C]
+                    # and 5D [B,C,T,H,W] token formats
+                    if motion_floor:
+                        seq_dim = 1 if x.dim() == 3 else 2
+                        if x.shape[seq_dim] > 1:
+                            mean_s = x.mean(dim=seq_dim, keepdim=True)
+                            deviation = x - mean_s
+                            seq_var = deviation.pow(2).mean().item()
+                            overall_var = x.pow(2).mean().item()
+                            if overall_var > 1e-8 and seq_var / overall_var < 0.05:
+                                d_norm = torch.nn.functional.normalize(
+                                    deviation.float().reshape(x.shape[0], -1), dim=-1
+                                ).reshape(x.shape)
+                                x.add_((latent_vf_strength * scale * d_norm).to(x.device, x.dtype))
+                                print(f"[FunPackSceneChain] motion floor: step={step}, σ={sigma:.3f}, ratio={seq_var/overall_var:.4f}")
                 except Exception:
                     pass
 
