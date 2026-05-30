@@ -1170,10 +1170,13 @@ class FunPackLTXAVSceneChainSampler:
 
             def callback(step, x0, x, total_steps):
                 try:
-                    if not isinstance(x, torch.Tensor) or x.dim() != 5:
-                        return
+                    is_tensor = isinstance(x, torch.Tensor)
+                    dims = x.dim() if is_tensor else -1
                     sigma = float(sigmas[min(step, len(sigmas) - 2)])
                     scale = max(0.0, min(1.0, (0.5 - sigma) / 0.5))
+                    print(f"[FunPackSceneChain] callback: step={step}, tensor={is_tensor}, dim={dims}, σ={sigma:.3f}, scale={scale:.3f}")
+                    if not is_tensor or dims != 5:
+                        return
                     if scale <= 0:
                         return
                     # Latent value function drift
