@@ -1643,6 +1643,51 @@ async def funpack_phrase_memory(request):
     )
 
 
+@PromptServer.instance.routes.get("/funpack/value_function/export")
+async def funpack_vf_export(request):
+    from conditioning import refinement_state_path
+    key = normalize_refinement_key(request.query.get("key", ""))
+    if not key:
+        return web.json_response({"error": "No refinement key provided."}, status=400)
+    path = refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
+    if not os.path.exists(path):
+        return web.json_response({"error": "No value function found for this key."}, status=404)
+    with open(path, "rb") as f:
+        data = f.read()
+    safe_key = re.sub(r"[^\w\-]", "_", key)[:64]
+    return web.Response(
+        body=data,
+        content_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="funpack_vf_{safe_key}.pt"'},
+    )
+
+
+@PromptServer.instance.routes.post("/funpack/value_function/import")
+async def funpack_vf_import(request):
+    from conditioning import refinement_state_path
+    try:
+        from value_function import OnlineValueFunction
+    except ImportError:
+        return web.json_response({"error": "value_function module not available."}, status=500)
+    key = normalize_refinement_key(request.query.get("key", ""))
+    if not key:
+        return web.json_response({"error": "No refinement key provided."}, status=400)
+    raw = await request.read()
+    if not raw:
+        return web.json_response({"error": "Empty file."}, status=400)
+    import io
+    try:
+        with torch.inference_mode(False):
+            vf = OnlineValueFunction.load(io.BytesIO(raw))
+    except Exception as e:
+        return web.json_response({"error": f"Invalid value function file: {e}"}, status=400)
+    dest = refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as f:
+        f.write(raw)
+    return web.json_response({"ok": True, "n_trained": vf.n_trained, "buffer": len(vf.buffer_c)})
+
+
 class FunPackRefinementKeyLoader:
     CATEGORY = "FunPack/Refinement"
     RETURN_TYPES = ("STRING", "STRING")

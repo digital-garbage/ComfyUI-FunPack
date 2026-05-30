@@ -275,6 +275,48 @@ function importTransitions(onDone, onError) {
   input.click();
 }
 
+async function exportValueFunction(key) {
+  if (!key) throw new Error("No refinement key set.");
+  const params = new URLSearchParams({ key, cache_bust: Date.now() });
+  const res = await api.fetchApi(`/funpack/value_function/export?${params}`, { cache: "no-store" });
+  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `funpack_vf_${key}.pt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function importValueFunction(key, onDone, onError) {
+  if (!key) { onError?.(new Error("No refinement key set.")); return; }
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".pt";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const params = new URLSearchParams({ key });
+      const res = await api.fetchApi(`/funpack/value_function/import?${params}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: buf,
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+      const data = await res.json();
+      onDone?.(data);
+    } catch (e) {
+      onError?.(e);
+    }
+  };
+  input.click();
+}
+
 async function fetchLoras() {
   try {
     const res = await api.fetchApi("/funpack/available_loras", { cache: "no-store" });
@@ -938,6 +980,23 @@ function openPanel(node) {
     valueGuidanceToggle.inp.addEventListener("change", () => { settings.refiner.value_guidance = valueGuidanceToggle.inp.checked; });
     body.append(el("div", "funpack-studio-hint", "Train an online value function on rated generations. After 5+ ratings (good and bad), the chain sampler can use it for per-step gradient steering. Enable 'embed_guidance' in the sampler to use."));
     body.append(row("Value guidance", valueGuidanceToggle.wrap));
+    const vfActiveKey = () => settings.refinement_key || linkedRefinementKey(node);
+    const vfExportBtn = btn("Export", "secondary");
+    const vfImportBtn = btn("Import", "secondary");
+    vfExportBtn.addEventListener("click", async () => {
+      try { await exportValueFunction(vfActiveKey()); }
+      catch (e) { showError(root, `Value function export failed: ${e.message}`); }
+    });
+    vfImportBtn.addEventListener("click", () => {
+      importValueFunction(vfActiveKey(),
+        (data) => showError(root, `Value function imported (${data.n_trained} samples, buffer ${data.buffer}).`),
+        (e) => showError(root, `Value function import failed: ${e.message}`),
+      );
+    });
+    const vfBtnWrap = el("div", "");
+    vfBtnWrap.style.cssText = "display:flex;gap:6px;";
+    vfBtnWrap.append(vfExportBtn, vfImportBtn);
+    body.append(row("Value function", vfBtnWrap));
 
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",
