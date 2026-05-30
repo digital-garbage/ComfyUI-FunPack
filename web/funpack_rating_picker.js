@@ -83,7 +83,7 @@ function injectStyles() {
       display: grid; grid-template-columns: 1fr 1fr; gap: 5px;
     }
     .fp-picker-positive-grid {
-      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 5px;
     }
     .fp-picker-opt {
       background: rgba(255,255,255,0.04);
@@ -188,7 +188,7 @@ function makeOption(r, accent, onPick, allOptions) {
   return wrap;
 }
 
-const NO_LOVED_LABELS = new Set(["Perfect", "Awful", FORGET_LABEL, "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality"]);
+const NO_LOVED_LABELS = new Set(["Perfect", "Nailed it", "Awful", FORGET_LABEL, "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality"]);
 
 function openPicker(ratingWidget, event, onPick) {
   closePicker();

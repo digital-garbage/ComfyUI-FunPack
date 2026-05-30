@@ -8222,7 +8222,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 delta = -0.10
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
             elif rating_profile.get("loved_modifier"):
-                delta *= 0.5  # soften axis pressure — quality was good, still try to fix it
+                pass  # loved_modifier: full axis pressure still applies — fix the issue, quality signal comes from reward/conditioning
             elif rating_key == "loved_it":
                 continue  # axis-blind quality endorsement — don't learn prompt adherence
             elif rating_key == "awful":
