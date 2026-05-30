@@ -1584,7 +1584,7 @@ class FunPackLTXAVSceneChainSampler:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
-                latent_vf=_latent_vf, latent_vf_strength=embed_guidance_strength if _latent_vf else 0.0,
+                latent_vf=_latent_vf, latent_vf_strength=embed_guidance_strength,
                 motion_floor=embed_guidance and bool(refinement_key_input),
             )
             if embed_guidance and _liked_dir is not None:
