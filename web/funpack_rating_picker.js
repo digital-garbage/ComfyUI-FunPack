@@ -12,7 +12,6 @@ const CATEGORIES = [
     ratings: [
       { label: "Perfect",   reward: "+1.0",  hint: "Exact match — full prompt adherence reinforcement" },
       { label: "Nailed it", reward: "+0.75", hint: "Good adherence, weaker reinforcement" },
-      { label: "Loved it",  reward: "+0.85", hint: "Great output — prompt adherence ignored" },
     ],
   },
   {

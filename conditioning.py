@@ -5634,7 +5634,6 @@ _BASE_RATING_LABELS = [
     "-Just forget it-",
     "Perfect",
     "Nailed it",
-    "Loved it",
     "Missing details",
     "Missing action",
     "Missing quality",
