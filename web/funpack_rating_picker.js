@@ -109,14 +109,6 @@ function injectStyles() {
     .fp-picker-opt-hint { font-size: 9px; color: #888; line-height: 1.3; }
     .fp-picker-opt:hover .fp-picker-opt-hint { color: #aaa; }
     .fp-picker-nuclear { padding: 8px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-    .fp-picker-btn-label {
-      text-align: left; width: 100%; padding: 4px 8px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 5px; color: #bbb; cursor: pointer;
-      font: 11px sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-    .fp-picker-btn-label:hover { background: rgba(255,255,255,0.09); color: #eee; }
   `;
   document.head.append(s);
 }
@@ -165,7 +157,7 @@ function makeOption(r, currentValue, accent, onPick) {
   return btn;
 }
 
-function openPicker(ratingWidget, buttonEl, onPick) {
+function openPicker(ratingWidget, event, onPick) {
   closePicker();
   injectStyles();
 
@@ -213,20 +205,18 @@ function openPicker(ratingWidget, buttonEl, onPick) {
 
   document.body.append(picker);
 
-  // Position: below the button, clamped to viewport
-  const rect = buttonEl.getBoundingClientRect();
+  // Position at mouse, clamped to viewport
+  const cx = event?.clientX ?? window.innerWidth / 2;
+  const cy = event?.clientY ?? window.innerHeight / 2;
   requestAnimationFrame(() => {
     const ph = picker.offsetHeight, pw = picker.offsetWidth;
-    let top = rect.bottom + 4, left = rect.left;
-    if (top + ph > window.innerHeight - 8) top = rect.top - ph - 4;
-    if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
-    picker.style.top = Math.max(8, top) + "px";
-    picker.style.left = Math.max(8, left) + "px";
+    picker.style.left = Math.max(8, Math.min(cx, window.innerWidth  - pw - 8)) + "px";
+    picker.style.top  = Math.max(8, Math.min(cy, window.innerHeight - ph - 8)) + "px";
   });
 
   // Close on outside click
   const onOutside = (e) => {
-    if (!picker.contains(e.target) && e.target !== buttonEl) {
+    if (!picker.contains(e.target)) {
       closePicker();
       document.removeEventListener("mousedown", onOutside, true);
     }
@@ -251,7 +241,6 @@ function hideWidget(widget) {
 }
 
 function setupRatingPicker(node) {
-  // Avoid double-setup
   if (node.__fpPickerSetup) return;
   node.__fpPickerSetup = true;
 
@@ -260,40 +249,24 @@ function setupRatingPicker(node) {
 
   hideWidget(ratingWidget);
 
-  // DOM button that lives outside the canvas
-  let buttonEl = node.__fpPickerBtn;
-  if (!buttonEl) {
-    buttonEl = document.createElement("button");
-    buttonEl.className = "fp-picker-btn-label";
-    node.__fpPickerBtn = buttonEl;
-  }
-
-  const updateBtn = (label) => {
-    const current = label || ratingWidget.value || FORGET_LABEL;
-    const waiting = current === FORGET_LABEL;
-    buttonEl.textContent = waiting ? "Waiting for rating..." : `Rating: ${current}`;
-    buttonEl.style.opacity = waiting ? "0.5" : "1";
+  const getLabel = () => {
+    const v = ratingWidget.value;
+    return (!v || v === FORGET_LABEL) ? "Waiting for rating..." : `Rating: ${v}`;
   };
-  updateBtn(ratingWidget.value);
 
-  buttonEl.addEventListener("click", () => {
-    openPicker(ratingWidget, buttonEl, (label) => {
+  node.widgets = (node.widgets || []).filter((w) => w.__fpPickerWidget !== true);
+
+  const pickerWidget = node.addWidget("button", getLabel(), null, (value, canvas, n, pos, event) => {
+    openPicker(ratingWidget, event, (label) => {
       ratingWidget.value = label;
       ratingWidget.callback?.(label);
-      updateBtn(label);
-      closePicker();
+      pickerWidget.name = getLabel();
+      node.setDirtyCanvas?.(true, true);
     });
-  });
+  }, { serialize: false });
 
-  // Attach button below the node using a custom DOM widget
-  node.widgets = (node.widgets || []).filter((w) => w.__fpPickerWidget !== true);
-  const domWidget = node.addDOMWidget("fp_rating_picker", "div", buttonEl, {
-    getValue: () => ratingWidget.value,
-    setValue: (v) => { ratingWidget.value = v; updateBtn(v); },
-    serialize: false,
-  });
-  if (domWidget) domWidget.__fpPickerWidget = true;
-
+  pickerWidget.__fpPickerWidget = true;
+  node.__fpPickerWidgetRef = pickerWidget;
   node.setDirtyCanvas?.(true, true);
 }
 
@@ -302,9 +275,9 @@ function resetRating(node) {
   if (!ratingWidget) return;
   ratingWidget.value = FORGET_LABEL;
   ratingWidget.callback?.(FORGET_LABEL);
-  if (node.__fpPickerBtn) {
-    node.__fpPickerBtn.textContent = "Waiting for rating...";
-    node.__fpPickerBtn.style.opacity = "0.5";
+  if (node.__fpPickerWidgetRef) {
+    node.__fpPickerWidgetRef.name = "Waiting for rating...";
+    node.setDirtyCanvas?.(true, true);
   }
 }
 
