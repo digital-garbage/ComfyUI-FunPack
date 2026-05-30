@@ -143,9 +143,7 @@ function closePicker() {
   activePickerEl = null;
 }
 
-function makeOption(r, currentBase, currentLoved, accent, onPick) {
-  const isActive     = currentBase === r.label && !currentLoved;
-  const isLovedActive = currentBase === r.label && currentLoved;
+function makeOption(r, accent, onPick, allOptions) {
   const canLove = !NO_LOVED_LABELS.has(r.label);
 
   const wrap = document.createElement("div");
@@ -153,8 +151,10 @@ function makeOption(r, currentBase, currentLoved, accent, onPick) {
   wrap.style.setProperty("--accent", accent);
 
   const btn = document.createElement("button");
-  btn.className = "fp-picker-opt" + (isActive ? " active" : "");
+  btn.className = "fp-picker-opt";
   btn.title = r.hint;
+  btn._fpBase = r.label;
+  btn._fpLoved = false;
 
   const labelEl = document.createElement("div");
   labelEl.className = "fp-picker-opt-label";
@@ -172,14 +172,18 @@ function makeOption(r, currentBase, currentLoved, accent, onPick) {
   btn.append(labelEl, rewardEl, hintEl);
   btn.addEventListener("click", () => onPick(r.label));
   wrap.append(btn);
+  allOptions.push(btn);
 
   if (canLove) {
     const heartBtn = document.createElement("button");
-    heartBtn.className = "fp-picker-heart" + (isLovedActive ? " active" : "");
+    heartBtn.className = "fp-picker-heart";
     heartBtn.textContent = "♥";
     heartBtn.title = `${r.label} — loved it`;
+    heartBtn._fpBase = r.label;
+    heartBtn._fpLoved = true;
     heartBtn.addEventListener("click", () => onPick(r.label + "|loved"));
     wrap.append(heartBtn);
+    allOptions.push(heartBtn);
   }
 
   return wrap;
@@ -210,6 +214,21 @@ function openPicker(ratingWidget, event, onPick) {
   const currentLoved = rawCurrent.endsWith("|loved");
   const currentBase  = currentLoved ? rawCurrent.slice(0, -6) : rawCurrent;
 
+  const allOptions = [];
+
+  const setActive = (base, loved) => {
+    for (const el of allOptions) {
+      el.classList.toggle("active", el._fpBase === base && el._fpLoved === loved);
+    }
+  };
+
+  const handlePick = (value) => {
+    const isLoved = value.endsWith("|loved");
+    const base = isLoved ? value.slice(0, -6) : value;
+    setActive(base, isLoved);
+    onPick(value);
+  };
+
   // Category sections
   for (const cat of CATEGORIES) {
     const section = document.createElement("div");
@@ -223,7 +242,7 @@ function openPicker(ratingWidget, event, onPick) {
 
     const grid = document.createElement("div");
     grid.className = cat.id === "positive" ? "fp-picker-positive-grid" : "fp-picker-grid";
-    for (const r of cat.ratings) grid.append(makeOption(r, currentBase, currentLoved, cat.accent, onPick));
+    for (const r of cat.ratings) grid.append(makeOption(r, cat.accent, handlePick, allOptions));
     section.append(grid);
     picker.append(section);
   }
@@ -232,8 +251,11 @@ function openPicker(ratingWidget, event, onPick) {
   const nuclearSection = document.createElement("div");
   nuclearSection.className = "fp-picker-nuclear";
   nuclearSection.style.setProperty("--accent", "140,100,100");
-  for (const r of NUCLEAR) nuclearSection.append(makeOption(r, currentBase, currentLoved, "140,100,100", onPick));
+  for (const r of NUCLEAR) nuclearSection.append(makeOption(r, "140,100,100", handlePick, allOptions));
   picker.append(nuclearSection);
+
+  // Set initial active state
+  setActive(currentBase, currentLoved);
 
   document.body.append(picker);
 
