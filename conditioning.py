@@ -11874,7 +11874,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except ImportError:
                 from value_function import OnlineValueFunction
             vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
-            vf = OnlineValueFunction.load_or_create(vf_path)
+            import torch as _torch
+            with _torch.inference_mode(False):
+                vf = OnlineValueFunction.load_or_create(vf_path)
             if vf is None or not vf.is_ready():
                 return conditioning_list
             ascended = []
