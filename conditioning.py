@@ -9187,12 +9187,56 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return mixed
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None):
+    def _vf_direction_boost(self, slot, vf_grad_dir, alpha=0.5):
+        """Cosine similarity between a direction slot and VF gradient → boost factor in [0.5, 1.5].
+        Phrases pointing with the reward gradient get amplified; against get dampened."""
+        if vf_grad_dir is None:
+            return 1.0
+        try:
+            direction = slot.get("direction")
+            if direction is None:
+                return 1.0
+            d = serializable_to_tensor(direction).float()
+            d_mean = d.mean(dim=-2) if d.dim() > 1 else d
+            d_dir = torch.nn.functional.normalize(d_mean.flatten(), dim=0)
+            vf_dir = vf_grad_dir.flatten().to(d_dir.device)
+            sim = float(torch.dot(d_dir, vf_dir).clamp(-1.0, 1.0).item())
+            return max(0.5, min(1.5, 1.0 + alpha * sim))
+        except Exception:
+            return 1.0
+
+    def _vf_gradient_direction(self, conditioning, vf):
+        """Unit vector of ∂reward/∂conditioning, mean-pooled across sequence. Returns None on failure."""
+        try:
+            grad = vf.gradient(conditioning)  # same shape as conditioning
+            dir_vec = grad.float().mean(dim=1).squeeze(0)  # [C]
+            return torch.nn.functional.normalize(dir_vec, dim=-1)
+        except Exception:
+            return None
+
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
         mixed = conditioning.clone()
         strength = self._v2_auto_strength(global_state)
+
+        # --- Value function: global confidence + gradient direction ---
+        vf_score = None
+        vf_grad_dir = None
+        if vf is not None:
+            try:
+                with torch.inference_mode(False), torch.no_grad():
+                    vf_score = float(vf.forward(vf.compress(original.float()).unsqueeze(0)).item())
+                # Global confidence: scale all memory modifications by VF predicted reward
+                # High score → full strength (conditioning direction is good)
+                # Low score → reduced (be cautious, current direction looks bad)
+                confidence_scale = max(0.40, (vf_score + 1.0) * 0.50)  # [-1,1] → [0.4, 1.0]
+                strength = strength * confidence_scale
+                # Gradient direction for phrase-level alignment
+                vf_grad_dir = self._vf_gradient_direction(original, vf)
+            except Exception:
+                pass
         axis_feedback = axis_feedback or self._v2_axis_feedback(
             rating_profile,
             global_state.get("last_missing_axes", []),
@@ -9202,8 +9246,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # otherwise legacy lerp toward averaged full tensor.
         liked_dir_slot = global_state.get("liked_dir", {})
         liked_payload = global_state.get("liked_conditioning")
+        liked_boost = self._vf_direction_boost(liked_dir_slot, vf_grad_dir)
         if int(liked_dir_slot.get("direction_count", 0)) >= 3:
-            mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength)
+            mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength * liked_boost)
         elif self._v2_shape_compatible(liked_payload, mixed):
             try:
                 liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
@@ -9226,9 +9271,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             pos_dir_ready = int(positive_slot.get("direction_count", 0)) >= 3
             neg_dir_ready = int(negative_slot.get("direction_count", 0)) >= 3
             if axis in missing_axes:
+                boost = self._vf_direction_boost(positive_slot, vf_grad_dir)
                 before = mixed
                 if pos_dir_ready:
-                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.070, strength * 1.10))
+                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.070, strength * 1.10 * boost))
                 else:
                     mixed = self._v2_apply_conditioning_payload(
                         mixed, positive_slot.get("conditioning"), min(0.070, strength * 1.10))
@@ -9238,16 +9284,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mixed = self._v2_repel_conditioning_payload(
                         mixed, negative_slot.get("conditioning"), min(0.055, strength * 0.82))
                 if not torch.equal(mixed, before):
-                    axis_actions.append(f"{axis}:repair({'dir' if pos_dir_ready else 'lerp'})")
+                    axis_actions.append(f"{axis}:repair({'dir' if pos_dir_ready else 'lerp'}, boost={boost:.2f})")
             elif axis in satisfied_axes:
+                boost = self._vf_direction_boost(positive_slot, vf_grad_dir)
                 before = mixed
                 if pos_dir_ready:
-                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.026, strength * 0.34))
+                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.026, strength * 0.34 * boost))
                 else:
                     mixed = self._v2_apply_conditioning_payload(
                         mixed, positive_slot.get("conditioning"), min(0.026, strength * 0.34))
                 if not torch.equal(mixed, before):
-                    axis_actions.append(f"{axis}:preserve({'dir' if pos_dir_ready else 'lerp'})")
+                    axis_actions.append(f"{axis}:preserve({'dir' if pos_dir_ready else 'lerp'}, boost={boost:.2f})")
 
         # Bad conditioning repulsion: direction-based or legacy.
         bad_dir_slot = global_state.get("bad_dir", {})
@@ -9279,8 +9326,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         bad_s = int(global_state.get("bad_streak", 0))
         streak_str = f"good streak {good_s}" if good_s > 0 else (f"bad streak {bad_s}" if bad_s > 0 else "no streak")
         axis_str = ", ".join(axis_actions) if axis_actions else "none"
+        vf_str = f" | VF score {vf_score:+.3f}" if vf_score is not None else ""
         return mixed, (
-            f"Strength {strength:.3f} | reward trend {ema:+.3f} | {streak_str}\n"
+            f"Strength {strength:.3f}{vf_str} | reward trend {ema:+.3f} | {streak_str}\n"
             f"  Liked conditioning: {liked_mode}\n"
             f"  Bad conditioning: {'direction' if bad_count >= 3 else f'lerp fallback ({bad_count}/3 runs)'}\n"
             f"  Axis adjustments: {axis_str}\n"
@@ -11489,6 +11537,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 latent,
             )
 
+        # Load value function for conditioning memory modulation (confidence + gradient boost)
+        _vf_for_memory = None
+        if not learning_mode and not prompt_only_mode and eff_key:
+            try:
+                try:
+                    from .value_function import OnlineValueFunction as _OVF
+                except ImportError:
+                    from value_function import OnlineValueFunction as _OVF
+                _vf_path = refinement_state_path(eff_key, "value_fn", prefix="refine_v2", extension="pt")
+                if os.path.exists(_vf_path):
+                    import torch as _torch
+                    with _torch.inference_mode(False):
+                        _vf_for_memory = _OVF.load(_vf_path)
+                    if not _vf_for_memory.is_ready():
+                        _vf_for_memory = None
+            except Exception:
+                _vf_for_memory = None
+
         if learning_mode:
             refined = cond
             adaptation_status = "Adaptation: Learning mode; conditioning vectors passed through unchanged."
@@ -11502,6 +11568,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 learning_profile,
                 repair_feedback,
                 intent_family_slot=current_family_slot,
+                vf=_vf_for_memory,
             )
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = None
