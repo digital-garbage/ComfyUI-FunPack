@@ -6010,6 +6010,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clear_refinement_data(refinement_key)
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Enhancement cleanup failed: {e}")
+            vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+            try:
+                if os.path.exists(vf_path):
+                    os.remove(vf_path)
+                    print(f"[FunPackVideoRefinerV2] Value function cleared for key '{refinement_key}'")
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] Value function cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
             preserved_scene_builder = None
             if reset_session and os.path.exists(path):
