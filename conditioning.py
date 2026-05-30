@@ -5641,6 +5641,7 @@ V2_RATING_LABELS = [
     "Missing details + action",
     "Wrong details",
     "Wrong action",
+    "Wrong action + quality",
     "Wrong details + action",
     "Wrong appearance",
     "Missing details + quality",
@@ -5659,7 +5660,8 @@ V2_RATING_PROFILES = {
     "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
     "Missing details + action": {"key": "missing_details_action", "reward": -0.10, "level": 3, "missing_axes": ["details", "action"]},
     "Wrong details": {"key": "wrong_details", "reward": 0.20, "level": 5, "missing_axes": ["details"], "wrong_axes": ["details"]},
-    "Wrong action": {"key": "wrong_action", "reward": 0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"]},
+    "Wrong action": {"key": "wrong_action", "reward": -0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"]},
+    "Wrong action + quality": {"key": "wrong_action_quality", "reward": -0.40, "level": 3, "missing_axes": ["quality"], "wrong_axes": ["action"]},
     "Wrong details + action": {"key": "wrong_details_action", "reward": 0.00, "level": 3, "missing_axes": ["details", "action"], "wrong_axes": ["details", "action"]},
     "Wrong appearance": {
         "key": "wrong_appearance",
