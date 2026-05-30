@@ -270,8 +270,9 @@ function setupRatingPicker(node) {
 
   const updateBtn = (label) => {
     const current = label || ratingWidget.value || FORGET_LABEL;
-    buttonEl.textContent = `Rating: ${current}`;
-    buttonEl.style.opacity = current === FORGET_LABEL ? "0.5" : "1";
+    const waiting = current === FORGET_LABEL;
+    buttonEl.textContent = waiting ? "Waiting for rating..." : `Rating: ${current}`;
+    buttonEl.style.opacity = waiting ? "0.5" : "1";
   };
   updateBtn(ratingWidget.value);
 
@@ -302,7 +303,7 @@ function resetRating(node) {
   ratingWidget.value = FORGET_LABEL;
   ratingWidget.callback?.(FORGET_LABEL);
   if (node.__fpPickerBtn) {
-    node.__fpPickerBtn.textContent = `Rating: ${FORGET_LABEL}`;
+    node.__fpPickerBtn.textContent = "Waiting for rating...";
     node.__fpPickerBtn.style.opacity = "0.5";
   }
 }
