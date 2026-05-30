@@ -1151,7 +1151,7 @@ class FunPackLTXAVSceneChainSampler:
         return result
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
-                      latent_vf=None, latent_vf_strength=0.0):
+                      latent_vf=None, latent_vf_strength=0.0, motion_floor=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -1160,8 +1160,9 @@ class FunPackLTXAVSceneChainSampler:
         samples = latent["samples"]
         noise = comfy.sample.prepare_noise(samples, int(seed))
 
+        _needs_callback = (latent_vf is not None and latent_vf_strength > 0) or motion_floor
         callback = None
-        if latent_vf is not None and latent_vf_strength > 0:
+        if _needs_callback:
             try:
                 from .value_function import compress_latent as _compress_latent
             except ImportError:
@@ -1175,11 +1176,24 @@ class FunPackLTXAVSceneChainSampler:
                     scale = max(0.0, min(1.0, (0.5 - sigma) / 0.5))
                     if scale <= 0:
                         return
-                    compressed = _compress_latent(x)
-                    grad = latent_vf.gradient(compressed.unsqueeze(0).unsqueeze(0))
-                    grad = torch.nn.functional.normalize(grad.squeeze(0).squeeze(0).float(), dim=-1)
-                    drift = grad[None, :, None, None, None].expand_as(x).to(x.device, x.dtype)
-                    x.add_(latent_vf_strength * scale * drift)
+                    # Latent value function drift
+                    if latent_vf is not None and latent_vf_strength > 0:
+                        compressed = _compress_latent(x)
+                        grad = latent_vf.gradient(compressed.unsqueeze(0).unsqueeze(0))
+                        grad = torch.nn.functional.normalize(grad.squeeze(0).squeeze(0).float(), dim=-1)
+                        drift = grad[None, :, None, None, None].expand_as(x).to(x.device, x.dtype)
+                        x.add_(latent_vf_strength * scale * drift)
+                    # Motion floor — push toward temporal variance when video is static
+                    if motion_floor and x.shape[2] > 1:
+                        mean_t = x.mean(dim=2, keepdim=True)
+                        deviation = x - mean_t
+                        temporal_var = deviation.pow(2).mean().item()
+                        overall_var = x.pow(2).mean().item()
+                        if overall_var > 1e-8 and temporal_var / overall_var < 0.05:
+                            d_norm = torch.nn.functional.normalize(
+                                deviation.float().reshape(x.shape[0], -1), dim=-1
+                            ).reshape(x.shape)
+                            x.add_((latent_vf_strength * scale * d_norm).to(x.device, x.dtype))
                 except Exception:
                     pass
 
@@ -1565,6 +1579,7 @@ class FunPackLTXAVSceneChainSampler:
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                 latent_vf=_latent_vf, latent_vf_strength=embed_guidance_strength if _latent_vf else 0.0,
+                motion_floor=embed_guidance and _liked_dir is not None,
             )
             if embed_guidance and _liked_dir is not None:
                 if _eg_old_wrapper is not None:
