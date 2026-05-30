@@ -5633,6 +5633,7 @@ _V2_PERSISTENT_CACHE_MAX = 4096
 V2_RATING_LABELS = [
     "-Just forget it-",
     "Perfect",
+    "Nailed it",
     "Loved it",
     "Missing details",
     "Missing action",
@@ -5651,6 +5652,7 @@ V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
     "Initial discovery": {"key": "discover", "reward": 0.0, "level": 4, "missing_axes": []},
     "Perfect": {"key": "like", "reward": 1.0, "level": 8, "missing_axes": []},
+    "Nailed it": {"key": "nailed_it", "reward": 0.75, "level": 7, "missing_axes": []},
     "Loved it": {"key": "loved_it", "reward": 0.85, "level": 7, "missing_axes": []},
     "Missing details": {"key": "missing_details", "reward": 0.35, "level": 6, "missing_axes": ["details"]},
     "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
@@ -6467,7 +6469,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return "Seed memory: seed output not connected."
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return "Seed memory: no previous sampler seed to learn from."
-        if rating_profile.get("key") not in {"like", "loved_it"}:
+        if rating_profile.get("key") not in {"like", "loved_it", "nailed_it"}:
             return "Seed memory: rating not successful."
         if not last_run.get("seed_output_connected", seed_output_connected):
             return "Seed memory: previous seed output was not connected."
@@ -7285,7 +7287,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         wrong_axes = set(rating_profile.get("wrong_axes", [])) & all_axes
         if key == "awful":
             missing_axes = set(all_axes)
-        elif key in {"like", "loved_it"}:
+        elif key in {"like", "loved_it", "nailed_it"}:
             missing_axes = set()
             wrong_axes = set()
 
@@ -7324,7 +7326,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return axis_feedback, "Repair persistence: unavailable."
         active = set(global_state.get("active_repair_axes", []) or []) & set(V2_FEEDBACK_AXES)
         key = learning_profile.get("key", "") if isinstance(learning_profile, dict) else ""
-        if key in {"like", "loved_it"}:
+        if key in {"like", "loved_it", "nailed_it"}:
             active = set()
             global_state["active_repair_axes"] = []
             feedback = dict(axis_feedback or {})
@@ -8151,12 +8153,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 entry["phrases"] = phrases_for_token[-12:]
                 if token in intent_token_set:
                     entry["intent_count"] = int(entry.get("intent_count", 0)) + 1
-                    delta = 0.06 if rating_key == "like" else 0.0
+                    delta = 0.06 if rating_key == "like" else (0.03 if rating_key == "nailed_it" else 0.0)
                 else:
                     entry["enhancer_only_count"] = int(entry.get("enhancer_only_count", 0)) + 1
                     if rating_key == "like":
                         delta = 0.12
                         entry["accepted_count"] = int(entry.get("accepted_count", 0)) + 1
+                    elif rating_key == "nailed_it":
+                        delta = 0.07
                     elif rating_key == "loved_it":
                         delta = 0.07
                     elif phrase_is_bad_extra:
@@ -8200,6 +8204,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             })
             if rating_key == "like":
                 delta = -0.18
+                entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
+            elif rating_key == "nailed_it":
+                delta = -0.10
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
             elif rating_key == "loved_it":
                 continue  # axis-blind quality endorsement — don't learn prompt adherence
@@ -8409,6 +8416,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if rating_profile.get("key") == "like":
             positive_axes = {"action", "details"}
             base_delta = 1.0
+        elif rating_profile.get("key") == "nailed_it":
+            positive_axes = {"action", "details"}
+            base_delta = 0.65
         elif rating_profile.get("key") == "loved_it":
             return "Preferred context: skipped for axis-blind quality endorsement."
         else:
@@ -8600,6 +8610,18 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 else:
                     delta = 0.0
                     count_category_evidence = False
+            elif rating_profile.get("key") == "nailed_it":
+                delta = 0.35 * kind_scale
+                entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+                rating_evidence["liked"] = int(rating_evidence.get("liked", 0)) + 1
+                entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+                satisfied_axis_counts = entry.setdefault("satisfied_axes", {})
+                for axis in V2_FEEDBACK_AXES:
+                    satisfied_axis_counts[axis] = int(satisfied_axis_counts.get(axis, 0)) + 1
+                bump_evidence("satisfied_axes", V2_FEEDBACK_AXES)
+                for category, score in effective_before.items():
+                    if float(score) >= 0.28:
+                        weights[category] = float(weights.get(category, 0.0)) + 0.08 * kind_scale
             elif rating_profile.get("key") == "loved_it":
                 delta = 0.35 * kind_scale
                 entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
@@ -9062,7 +9084,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         self._v2_update_axis_conditioning_memory(global_state, payload, axis_feedback,
                                                   session_mean_payload=session_mean)
-        if key in {"like", "loved_it"}:
+        if key in {"like", "loved_it", "nailed_it"}:
             liked_dir_slot = global_state.setdefault("liked_dir", {})
             self._v2_store_direction(liked_dir_slot, payload, session_mean)
             count = int(global_state.get("liked_conditioning_count", 0))
@@ -9095,7 +9117,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             avg = float(global_state.get("avg_reward_ema", 0.0))
             avg = 0.86 * avg + 0.14 * reward
             global_state["avg_reward_ema"] = round(avg, 6)
-            if rating_profile.get("key") in {"like", "loved_it"}:
+            if rating_profile.get("key") in {"like", "loved_it", "nailed_it"}:
                 global_state["good_streak"] = int(global_state.get("good_streak", 0)) + 1
                 global_state["bad_streak"] = 0
             elif reward < -0.25:
@@ -10706,7 +10728,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         profile = V2_RATING_PROFILES.get(rating_label) or V2_RATING_PROFILES.get(V2_RATING_ALIASES.get(str(rating_label), ""), {})
         rating_key = profile.get("key", "")
         appearance_wrong = rating_key == "wrong_appearance"
-        positive = rating_key in {"like", "loved_it"}
+        positive = rating_key in {"like", "loved_it", "nailed_it"}
         negative = float(profile.get("reward", 0.5)) < 0.3
         lines = []
         for ch in diff:
@@ -11015,6 +11037,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lora_axes = self._v2_lora_feedback_axes(lora_type)
             if rating_profile.get("key") == "like":
                 offset += step * max(0.18, relation) * 0.55
+            elif rating_profile.get("key") == "nailed_it":
+                quality_type = lora_type in {"quality", "style"}
+                offset += step * max(0.18, relation) * (0.44 if quality_type else 0.24)
             elif rating_profile.get("key") == "loved_it":
                 quality_type = lora_type in {"quality", "style"}
                 offset += step * max(0.18, relation) * (0.55 if quality_type else 0.30)
@@ -11772,7 +11797,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     from ltx_enhancements import build_enhancements, bless_attention_maps
 
                 # Bless attention maps when the previous run was rated Perfect or Loved it
-                if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it"}:
+                if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it", "nailed_it"}:
                     bless_attention_maps(eff_key)
 
                 patched_model = build_enhancements(
