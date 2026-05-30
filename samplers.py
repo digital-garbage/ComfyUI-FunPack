@@ -1170,8 +1170,12 @@ class FunPackLTXAVSceneChainSampler:
 
             def callback(step, x0, x, total_steps):
                 try:
-                    print(f"[FunPackSceneChain] cb step={step} x_type={type(x).__name__} x0_type={type(x0).__name__}")
-                    if not isinstance(x, torch.Tensor) or x.dim() not in (3, 5):
+                    try:
+                        _dim = x.dim()
+                    except Exception as _de:
+                        _dim = f"err:{_de}"
+                    print(f"[FunPackSceneChain] cb step={step} dim={_dim} shape={tuple(x.shape) if isinstance(x, torch.Tensor) else '?'}")
+                    if not isinstance(x, torch.Tensor) or not isinstance(_dim, int) or _dim not in (3, 5):
                         return
                     sigma = float(sigmas[min(step, len(sigmas) - 2)])
                     # scale = 1 - sigma: grows naturally as denoising progresses,
