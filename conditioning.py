@@ -11835,7 +11835,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         + f"\n\nDetected scenes:\n{scene_lines}"
                     )
                     return (
-                        output_conditioning,
+                        self._v2_ascend_conditioning(output_conditioning, refinement_key),
                         status,
                         training_info,
                         loss_graph,
@@ -11847,7 +11847,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print(f"[FunPackVideoRefinerV2] Transition split failed: {e}")
 
         return (
-            output_conditioning,
+            self._v2_ascend_conditioning(output_conditioning, refinement_key),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -11855,6 +11855,30 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             patched_model,
             video_latent,
         )
+
+    def _v2_ascend_conditioning(self, conditioning_list, refinement_key):
+        """Gradient-ascend each conditioning tensor toward higher predicted reward.
+        No-op if value function is missing or not yet ready (< MIN_SAMPLES ratings)."""
+        if not conditioning_list or not refinement_key:
+            return conditioning_list
+        try:
+            try:
+                from .value_function import OnlineValueFunction
+            except ImportError:
+                from value_function import OnlineValueFunction
+            vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+            vf = OnlineValueFunction.load_or_create(vf_path)
+            if vf is None or not vf.is_ready():
+                return conditioning_list
+            ascended = []
+            for entry in conditioning_list:
+                tensor, extra = entry[0], entry[1]
+                ascended.append((vf.ascend(tensor), extra))
+            print(f"[FunPackRefiner] Conditioning ascent applied ({vf.n_trained} samples, {len(ascended)} scene(s))")
+            return ascended
+        except Exception as e:
+            print(f"[FunPackRefiner] Conditioning ascent failed: {e}")
+            return conditioning_list
 
 
 class FunPackSaveRefinementLatent:
