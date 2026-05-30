@@ -11966,6 +11966,7 @@ class FunPackSaveRefinementLatent:
     CATEGORY = "FunPack/Refinement"
     RETURN_TYPES = ("LATENT", "STRING")
     RETURN_NAMES = ("latent", "status")
+    OUTPUT_NODE = True
     FUNCTION = "save_latent"
     DESCRIPTION = (
         "Saves a video latent under a refinement key so Studio and Refiner V2 can compute "
