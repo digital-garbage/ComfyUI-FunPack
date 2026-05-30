@@ -5648,7 +5648,7 @@ _BASE_RATING_LABELS = [
     "Missing action + quality",
     "Awful",
 ]
-_NO_LOVED_LABELS = {"-Just forget it-", "Perfect", "Awful"}
+_NO_LOVED_LABELS = {"-Just forget it-", "Perfect", "Awful", "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality"}
 V2_RATING_LABELS = _BASE_RATING_LABELS + [
     l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
 ]

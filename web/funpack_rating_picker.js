@@ -185,7 +185,7 @@ function makeOption(r, currentBase, currentLoved, accent, onPick) {
   return wrap;
 }
 
-const NO_LOVED_LABELS = new Set(["Perfect", "Awful", FORGET_LABEL]);
+const NO_LOVED_LABELS = new Set(["Perfect", "Awful", FORGET_LABEL, "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality"]);
 
 function openPicker(ratingWidget, event, onPick) {
   closePicker();
