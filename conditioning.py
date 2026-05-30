@@ -9397,7 +9397,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if not torch.equal(mixed, before):
                     axis_actions.append(f"{axis}:preserve({'dir' if pos_dir_ready else 'lerp'}, boost={boost:.2f})")
 
-        # Bad conditioning repulsion: direction-based or legacy.
+        # --- POSITIVE SIGNALS: specific (new phrase delta) ---
+        # Applied after broad/context positives so specific phrase knowledge
+        # layers on top rather than being overwritten by broader signals.
+        if concept_delta_dir is not None and concept_delta_strength > 0:
+            try:
+                d = concept_delta_dir.to(device=mixed.device, dtype=mixed.dtype)
+                mixed = mixed + concept_delta_strength * d.reshape(mixed.shape[-1]).unsqueeze(0).unsqueeze(0).expand_as(mixed)
+                axis_actions.append(f"concept-delta:{concept_delta_strength:.3f}")
+            except Exception:
+                pass
+
+        # --- NEGATIVE SIGNALS: broad bad direction ---
+        # Applied after all positive signals so we remove bad directions
+        # from the fully built-up positive state.
         bad_dir_slot = global_state.get("bad_dir", {})
         bad_payload = global_state.get("bad_conditioning")
         if float(rating_profile.get("reward", 0.0)) < 0.0:
@@ -9410,7 +9423,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 except Exception:
                     pass
 
-        # Concept-pair repulsion: steer away from known bad phrase combinations
+        # --- NEGATIVE SIGNALS: specific pair repulsion ---
+        # Applied last among negatives — most targeted, has final say on
+        # known-bad concept combinations.
         if current_final_texts:
             pair_dirs = global_state.get("concept_pair_dirs", {})
             if pair_dirs:
@@ -9430,17 +9445,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if applied:
                     axis_actions.append(f"pair-repulsion:{applied}")
 
-        # Concept-in-context: nudge toward phrases new to this final prompt that have positive delta history
-        if concept_delta_dir is not None and concept_delta_strength > 0:
-            try:
-                d = concept_delta_dir.to(device=mixed.device, dtype=mixed.dtype)
-                if d.dim() < mixed.dim():
-                    d = d.unsqueeze(0).expand_as(mixed[..., :d.shape[-1]])
-                mixed = mixed + concept_delta_strength * d.reshape(mixed.shape[-1]).unsqueeze(0).unsqueeze(0).expand_as(mixed)
-                axis_actions.append(f"concept-delta:{concept_delta_strength:.3f}")
-            except Exception:
-                pass
-
+        # --- Delta cap (7.5% of conditioning norm) ---
         delta = mixed - original
         original_norm = original.norm(dim=-1, keepdim=True).clamp_min(1e-8)
         max_delta = original_norm * 0.075
@@ -9449,6 +9454,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mixed = original + delta * scale
         mixed = torch.clamp(mixed, min=-60.0, max=60.0)
         mixed = mixed / mixed.norm(dim=-1, keepdim=True).clamp_min(1e-8) * original_norm
+
+        # --- VF final gate: roll back if net effect lowered predicted reward ---
+        # Catches cases where patches collectively moved conditioning in a
+        # worse direction despite each being individually well-intentioned.
+        if vf is not None and vf_score is not None:
+            try:
+                with torch.inference_mode(False), torch.no_grad():
+                    new_score = float(vf.forward(vf.compress(mixed.float()).unsqueeze(0)).item())
+                if new_score < vf_score - 0.05:
+                    rollback = min(0.75, (vf_score - new_score) / max(0.1, abs(vf_score) + 0.1))
+                    mixed = mixed.lerp(original, rollback)
+                    axis_actions.append(f"vf-rollback:{rollback:.2f}")
+            except Exception:
+                pass
 
         liked_count = int(liked_dir_slot.get("direction_count", 0))
         liked_mode = f"direction ({liked_count} runs)" if liked_count >= 3 else f"lerp fallback ({liked_count}/3 runs)"
