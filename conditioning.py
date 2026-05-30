@@ -5630,7 +5630,7 @@ FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 _V2_PERSISTENT_ENCODE_CACHE = {}
 _V2_PERSISTENT_CACHE_MAX = 4096
 
-V2_RATING_LABELS = [
+_BASE_RATING_LABELS = [
     "-Just forget it-",
     "Perfect",
     "Nailed it",
@@ -5647,6 +5647,10 @@ V2_RATING_LABELS = [
     "Missing details + quality",
     "Missing action + quality",
     "Awful",
+]
+_NO_LOVED_LABELS = {"-Just forget it-", "Perfect", "Awful"}
+V2_RATING_LABELS = _BASE_RATING_LABELS + [
+    l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
 ]
 
 V2_RATING_PROFILES = {
