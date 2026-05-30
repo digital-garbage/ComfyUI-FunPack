@@ -1170,6 +1170,7 @@ class FunPackLTXAVSceneChainSampler:
 
             def callback(step, x0, x, total_steps):
                 try:
+                    print(f"[FunPackSceneChain] cb step={step} x_type={type(x).__name__} x0_type={type(x0).__name__}")
                     if not isinstance(x, torch.Tensor) or x.dim() not in (3, 5):
                         return
                     sigma = float(sigmas[min(step, len(sigmas) - 2)])
@@ -1203,6 +1204,7 @@ class FunPackLTXAVSceneChainSampler:
                 except Exception:
                     pass
 
+        print(f"[FunPackSceneChain] sample_custom callback={'set' if callback is not None else 'None'}")
         sampled = comfy.sample.sample_custom(
             model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
             noise_mask=latent.get("noise_mask"), seed=int(seed), callback=callback,
