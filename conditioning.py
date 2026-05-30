@@ -6001,6 +6001,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "variant_evidence": {},
                 "intent_preference_phrases": {},
                 "conditioning_deltas": {},
+                "concept_delta_memory": {},
                 "active_repair_axes": [],
                 "advisor_feedback_history": [],
                 "intent_expansion_memory": {},
@@ -9154,6 +9155,72 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state["last_rating_label"] = rating_profile.get("label", "")
         global_state["last_missing_axes"] = list(rating_profile.get("missing_axes", []))
 
+    def _v2_update_concept_delta_memory(self, global_state, previous_run, learning_profile):
+        """Learn which final-prompt phrases correlate with reward changes when added/removed."""
+        if not isinstance(previous_run, dict) or learning_profile.get("skip_learning"):
+            return "Concept delta: skipped."
+        reward = float(learning_profile.get("reward", 0.0))
+        current_texts = set(previous_run.get("final_phrase_texts", []) or [])
+        prev_texts = set(previous_run.get("prev_final_phrase_texts", []) or [])
+        if not current_texts or not prev_texts:
+            return "Concept delta: need 2 consecutive final prompts."
+        added = current_texts - prev_texts
+        removed = prev_texts - current_texts
+        if not added and not removed:
+            return "Concept delta: no changes between final prompts."
+        memory = global_state.setdefault("concept_delta_memory", {})
+        for text in added:
+            e = memory.setdefault(text, {"add_sum": 0.0, "add_count": 0, "remove_sum": 0.0, "remove_count": 0})
+            e["add_sum"] = round(e["add_sum"] + reward, 6)
+            e["add_count"] += 1
+        for text in removed:
+            e = memory.setdefault(text, {"add_sum": 0.0, "add_count": 0, "remove_sum": 0.0, "remove_count": 0})
+            e["remove_sum"] = round(e["remove_sum"] + reward, 6)
+            e["remove_count"] += 1
+        return f"Concept delta: +{len(added)} -{len(removed)} phrases tracked (reward={reward:+.2f})."
+
+    def _v2_concept_delta_direction(self, global_state, current_final_texts, prev_final_texts):
+        """Weighted conditioning direction from concept delta memory for new phrases in this run."""
+        delta_memory = global_state.get("concept_delta_memory", {})
+        phrase_memory = global_state.get("phrase_memory", {})
+        if not delta_memory or not phrase_memory:
+            return None, 0.0
+        added = set(current_final_texts) - set(prev_final_texts)
+        if not added:
+            return None, 0.0
+        MIN_COUNT = 3
+        directions, weights = [], []
+        for text in added:
+            entry = delta_memory.get(text)
+            if not entry or entry.get("add_count", 0) < MIN_COUNT:
+                continue
+            avg_reward = entry["add_sum"] / entry["add_count"]
+            if abs(avg_reward) < 0.10:
+                continue
+            # Find embedding — match by phrase text or individual tokens
+            pm_entry = phrase_memory.get(text) or next(
+                (phrase_memory[k] for k in phrase_memory if text in k or k in text), None
+            )
+            if not pm_entry or "embedding" not in pm_entry:
+                continue
+            try:
+                emb = serializable_to_tensor(pm_entry["embedding"]).float()
+                directions.append(emb)
+                weights.append(float(avg_reward))
+            except Exception:
+                continue
+        if not directions:
+            return None, 0.0
+        total = torch.zeros_like(directions[0])
+        for d, w in zip(directions, weights):
+            total = total + d.to(total.device) * w
+        norm = total.norm()
+        if norm < 1e-8:
+            return None, 0.0
+        avg_signal = sum(abs(w) for w in weights) / len(weights)
+        strength = min(0.035, avg_signal * 0.035 * len(weights))
+        return torch.nn.functional.normalize(total, dim=-1), strength
+
     def _v2_auto_strength(self, global_state):
         avg = float(global_state.get("avg_reward_ema", 0.0))
         good = int(global_state.get("good_streak", 0))
@@ -9214,7 +9281,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None):
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None, concept_delta_dir=None, concept_delta_strength=0.0):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
@@ -9308,6 +9375,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mixed = mixed + (mixed - bad) * min(0.055, strength * 0.72)
                 except Exception:
                     pass
+
+        # Concept-in-context: nudge toward phrases new to this final prompt that have positive delta history
+        if concept_delta_dir is not None and concept_delta_strength > 0:
+            try:
+                d = concept_delta_dir.to(device=mixed.device, dtype=mixed.dtype)
+                if d.dim() < mixed.dim():
+                    d = d.unsqueeze(0).expand_as(mixed[..., :d.shape[-1]])
+                mixed = mixed + concept_delta_strength * d.reshape(mixed.shape[-1]).unsqueeze(0).unsqueeze(0).expand_as(mixed)
+                axis_actions.append(f"concept-delta:{concept_delta_strength:.3f}")
+            except Exception:
+                pass
 
         delta = mixed - original
         original_norm = original.norm(dim=-1, keepdim=True).clamp_min(1e-8)
@@ -11239,6 +11317,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
+        self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
         seed_memory_status = self._v2_update_successful_seed_memory(
             global_state,
             previous_run,
@@ -11563,6 +11642,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             refined = cond
             adaptation_status = "Adaptation: Prompt only mode; conditioning vectors passed through unchanged."
         else:
+            _current_final = [t for t in (prompt_to_encode or "").split(",") if len(t.strip()) > 1]
+            _prev_final = previous_run.get("final_phrase_texts", []) if isinstance(previous_run, dict) else []
+            _concept_dir, _concept_strength = self._v2_concept_delta_direction(
+                global_state, _current_final, _prev_final
+            )
             refined, adaptation_status = self._v2_apply_conditioning_memory(
                 cond,
                 global_state,
@@ -11570,6 +11654,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback,
                 intent_family_slot=current_family_slot,
                 vf=_vf_for_memory,
+                concept_delta_dir=_concept_dir,
+                concept_delta_strength=_concept_strength,
             )
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = None
@@ -11689,6 +11775,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
                 "source_conditioning": tensor_to_serializable(cond.detach().cpu()),
                 "phrases": phrases,
+                "final_phrase_texts": [t for t in (p.strip().lower() for p in (prompt_to_encode or "").split(",")) if len(t) > 1],
+                "prev_final_phrase_texts": previous_run.get("final_phrase_texts", []) if isinstance(previous_run, dict) else [],
                 "intent_prompt": intent_prompt,
                 "intent_phrases": intent_phrases,
                 "intent_prompt_is_vague": bool(intent_prompt_is_vague),
