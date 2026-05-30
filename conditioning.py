@@ -5630,34 +5630,41 @@ FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 _V2_PERSISTENT_ENCODE_CACHE = {}
 _V2_PERSISTENT_CACHE_MAX = 4096
 
-V2_RATING_LABELS = [
+_BASE_RATING_LABELS = [
     "-Just forget it-",
     "Perfect",
-    "Loved it",
+    "Nailed it",
     "Missing details",
     "Missing action",
     "Missing quality",
     "Missing details + action",
     "Wrong details",
     "Wrong action",
+    "Wrong action + quality",
     "Wrong details + action",
     "Wrong appearance",
     "Missing details + quality",
     "Missing action + quality",
     "Awful",
 ]
+_NO_LOVED_LABELS = {"-Just forget it-", "Perfect", "Awful", "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality"}
+V2_RATING_LABELS = _BASE_RATING_LABELS + [
+    l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
+]
 
 V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
     "Initial discovery": {"key": "discover", "reward": 0.0, "level": 4, "missing_axes": []},
     "Perfect": {"key": "like", "reward": 1.0, "level": 8, "missing_axes": []},
-    "Loved it": {"key": "loved_it", "reward": 0.75, "level": 7, "missing_axes": []},
+    "Nailed it": {"key": "nailed_it", "reward": 0.75, "level": 7, "missing_axes": []},
+    "Loved it": {"key": "loved_it", "reward": 0.85, "level": 7, "missing_axes": []},
     "Missing details": {"key": "missing_details", "reward": 0.35, "level": 6, "missing_axes": ["details"]},
     "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
     "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
     "Missing details + action": {"key": "missing_details_action", "reward": -0.10, "level": 3, "missing_axes": ["details", "action"]},
     "Wrong details": {"key": "wrong_details", "reward": 0.20, "level": 5, "missing_axes": ["details"], "wrong_axes": ["details"]},
-    "Wrong action": {"key": "wrong_action", "reward": 0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"]},
+    "Wrong action": {"key": "wrong_action", "reward": -0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"]},
+    "Wrong action + quality": {"key": "wrong_action_quality", "reward": -0.40, "level": 3, "missing_axes": ["quality"], "wrong_axes": ["action"]},
     "Wrong details + action": {"key": "wrong_details_action", "reward": 0.00, "level": 3, "missing_axes": ["details", "action"], "wrong_axes": ["details", "action"]},
     "Wrong appearance": {
         "key": "wrong_appearance",
@@ -5715,10 +5722,18 @@ V2_RATING_ALIASES = {
 
 
 def normalize_refiner_v2_rating(value):
+    loved_modifier = False
+    if isinstance(value, str) and value.endswith("|loved"):
+        value = value[:-6]
+        loved_modifier = True
     if isinstance(value, str):
         cleaned = V2_RATING_ALIASES.get(value.strip(), value.strip())
         if cleaned in V2_RATING_PROFILES:
-            return dict(V2_RATING_PROFILES[cleaned], label=cleaned)
+            profile = dict(V2_RATING_PROFILES[cleaned], label=cleaned)
+            if loved_modifier:
+                profile["loved_modifier"] = True
+                profile["reward"] = max(float(profile.get("reward", 0.0)), 0.85)
+            return profile
         try:
             value = int(float(cleaned))
         except (TypeError, ValueError):
@@ -5986,6 +6001,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "variant_evidence": {},
                 "intent_preference_phrases": {},
                 "conditioning_deltas": {},
+                "concept_delta_memory": {},
+                "concept_pair_dirs": {},
                 "active_repair_axes": [],
                 "advisor_feedback_history": [],
                 "intent_expansion_memory": {},
@@ -6010,6 +6027,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clear_refinement_data(refinement_key)
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Enhancement cleanup failed: {e}")
+            vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+            try:
+                if os.path.exists(vf_path):
+                    os.remove(vf_path)
+                    print(f"[FunPackVideoRefinerV2] Value function cleared for key '{refinement_key}'")
+            except Exception as e:
+                print(f"[FunPackVideoRefinerV2] Value function cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
             preserved_scene_builder = None
             if reset_session and os.path.exists(path):
@@ -6460,7 +6484,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return "Seed memory: seed output not connected."
         if not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
             return "Seed memory: no previous sampler seed to learn from."
-        if rating_profile.get("key") not in {"like", "loved_it"}:
+        if rating_profile.get("key") not in {"like", "loved_it", "nailed_it"}:
             return "Seed memory: rating not successful."
         if not last_run.get("seed_output_connected", seed_output_connected):
             return "Seed memory: previous seed output was not connected."
@@ -7278,7 +7302,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         wrong_axes = set(rating_profile.get("wrong_axes", [])) & all_axes
         if key == "awful":
             missing_axes = set(all_axes)
-        elif key in {"like", "loved_it"}:
+        elif key in {"like", "loved_it", "nailed_it"}:
             missing_axes = set()
             wrong_axes = set()
 
@@ -7317,7 +7341,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return axis_feedback, "Repair persistence: unavailable."
         active = set(global_state.get("active_repair_axes", []) or []) & set(V2_FEEDBACK_AXES)
         key = learning_profile.get("key", "") if isinstance(learning_profile, dict) else ""
-        if key in {"like", "loved_it"}:
+        if key in {"like", "loved_it", "nailed_it"}:
             active = set()
             global_state["active_repair_axes"] = []
             feedback = dict(axis_feedback or {})
@@ -8144,12 +8168,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 entry["phrases"] = phrases_for_token[-12:]
                 if token in intent_token_set:
                     entry["intent_count"] = int(entry.get("intent_count", 0)) + 1
-                    delta = 0.06 if rating_key == "like" else (0.03 if rating_key == "loved_it" else 0.0)
+                    delta = 0.06 if rating_key == "like" else (0.03 if rating_key == "nailed_it" else 0.0)
                 else:
                     entry["enhancer_only_count"] = int(entry.get("enhancer_only_count", 0)) + 1
                     if rating_key == "like":
                         delta = 0.12
                         entry["accepted_count"] = int(entry.get("accepted_count", 0)) + 1
+                    elif rating_key == "nailed_it":
+                        delta = 0.07
                     elif rating_key == "loved_it":
                         delta = 0.07
                     elif phrase_is_bad_extra:
@@ -8194,9 +8220,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if rating_key == "like":
                 delta = -0.18
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
-            elif rating_key == "loved_it":
+            elif rating_key == "nailed_it":
                 delta = -0.10
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
+            elif rating_profile.get("loved_modifier"):
+                pass  # loved_modifier: full axis pressure still applies — fix the issue, quality signal comes from reward/conditioning
+            elif rating_key == "loved_it":
+                continue  # axis-blind quality endorsement — don't learn prompt adherence
             elif rating_key == "awful":
                 delta = 0.70 if has_perfect_anchor else 0.44
                 entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
@@ -8403,9 +8433,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if rating_profile.get("key") == "like":
             positive_axes = {"action", "details"}
             base_delta = 1.0
-        elif rating_profile.get("key") == "loved_it":
+        elif rating_profile.get("key") == "nailed_it":
             positive_axes = {"action", "details"}
             base_delta = 0.65
+        elif rating_profile.get("loved_modifier"):
+            positive_axes = {"action", "details"}
+            base_delta = 0.30
+        elif rating_profile.get("key") == "loved_it":
+            return "Preferred context: skipped for axis-blind quality endorsement."
         else:
             positive_axes = (set(axis_feedback.get("satisfied_axes", [])) | set(axis_feedback.get("resolved_axes", []))) & {"action", "details"}
             base_delta = 0.38
@@ -8595,6 +8630,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 else:
                     delta = 0.0
                     count_category_evidence = False
+            elif rating_profile.get("loved_modifier"):
+                delta = 0.45 * kind_scale
+                entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+                rating_evidence["liked"] = int(rating_evidence.get("liked", 0)) + 1
+                for category, score in effective_before.items():
+                    if float(score) >= 0.28:
+                        weights[category] = float(weights.get(category, 0.0)) + 0.10 * kind_scale
+            elif rating_profile.get("key") == "nailed_it":
+                delta = 0.35 * kind_scale
+                entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+                rating_evidence["liked"] = int(rating_evidence.get("liked", 0)) + 1
+                entry["satisfied_count"] = int(entry.get("satisfied_count", 0)) + 1
+                satisfied_axis_counts = entry.setdefault("satisfied_axes", {})
+                for axis in V2_FEEDBACK_AXES:
+                    satisfied_axis_counts[axis] = int(satisfied_axis_counts.get(axis, 0)) + 1
+                bump_evidence("satisfied_axes", V2_FEEDBACK_AXES)
+                for category, score in effective_before.items():
+                    if float(score) >= 0.28:
+                        weights[category] = float(weights.get(category, 0.0)) + 0.08 * kind_scale
             elif rating_profile.get("key") == "loved_it":
                 delta = 0.35 * kind_scale
                 entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
@@ -9057,7 +9111,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         self._v2_update_axis_conditioning_memory(global_state, payload, axis_feedback,
                                                   session_mean_payload=session_mean)
-        if key in {"like", "loved_it"}:
+        if key in {"like", "loved_it", "nailed_it"}:
             liked_dir_slot = global_state.setdefault("liked_dir", {})
             self._v2_store_direction(liked_dir_slot, payload, session_mean)
             count = int(global_state.get("liked_conditioning_count", 0))
@@ -9090,7 +9144,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             avg = float(global_state.get("avg_reward_ema", 0.0))
             avg = 0.86 * avg + 0.14 * reward
             global_state["avg_reward_ema"] = round(avg, 6)
-            if rating_profile.get("key") in {"like", "loved_it"}:
+            if rating_profile.get("key") in {"like", "loved_it", "nailed_it"}:
                 global_state["good_streak"] = int(global_state.get("good_streak", 0)) + 1
                 global_state["bad_streak"] = 0
             elif reward < -0.25:
@@ -9101,6 +9155,105 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 global_state["bad_streak"] = 0
         global_state["last_rating_label"] = rating_profile.get("label", "")
         global_state["last_missing_axes"] = list(rating_profile.get("missing_axes", []))
+
+    def _v2_update_concept_delta_memory(self, global_state, previous_run, learning_profile):
+        """Learn which final-prompt phrases correlate with reward changes when added/removed."""
+        if not isinstance(previous_run, dict) or learning_profile.get("skip_learning"):
+            return "Concept delta: skipped."
+        reward = float(learning_profile.get("reward", 0.0))
+        current_texts = set(previous_run.get("final_phrase_texts", []) or [])
+        prev_texts = set(previous_run.get("prev_final_phrase_texts", []) or [])
+        if not current_texts or not prev_texts:
+            return "Concept delta: need 2 consecutive final prompts."
+        added = current_texts - prev_texts
+        removed = prev_texts - current_texts
+        if not added and not removed:
+            return "Concept delta: no changes between final prompts."
+        memory = global_state.setdefault("concept_delta_memory", {})
+        for text in added:
+            e = memory.setdefault(text, {"add_sum": 0.0, "add_count": 0, "remove_sum": 0.0, "remove_count": 0})
+            e["add_sum"] = round(e["add_sum"] + reward, 6)
+            e["add_count"] += 1
+        for text in removed:
+            e = memory.setdefault(text, {"add_sum": 0.0, "add_count": 0, "remove_sum": 0.0, "remove_count": 0})
+            e["remove_sum"] = round(e["remove_sum"] + reward, 6)
+            e["remove_count"] += 1
+        return f"Concept delta: +{len(added)} -{len(removed)} phrases tracked (reward={reward:+.2f})."
+
+    def _v2_concept_delta_direction(self, global_state, current_final_texts, prev_final_texts):
+        """Weighted conditioning direction from concept delta memory for new phrases in this run."""
+        delta_memory = global_state.get("concept_delta_memory", {})
+        phrase_memory = global_state.get("phrase_memory", {})
+        if not delta_memory or not phrase_memory:
+            return None, 0.0
+        added = set(current_final_texts) - set(prev_final_texts)
+        if not added:
+            return None, 0.0
+        MIN_COUNT = 3
+        directions, weights = [], []
+        for text in added:
+            entry = delta_memory.get(text)
+            if not entry or entry.get("add_count", 0) < MIN_COUNT:
+                continue
+            avg_reward = entry["add_sum"] / entry["add_count"]
+            if abs(avg_reward) < 0.10:
+                continue
+            # Find embedding — match by phrase text or individual tokens
+            pm_entry = phrase_memory.get(text) or next(
+                (phrase_memory[k] for k in phrase_memory if text in k or k in text), None
+            )
+            if not pm_entry or "embedding" not in pm_entry:
+                continue
+            try:
+                emb = serializable_to_tensor(pm_entry["embedding"]).float()
+                directions.append(emb)
+                weights.append(float(avg_reward))
+            except Exception:
+                continue
+        if not directions:
+            return None, 0.0
+        total = torch.zeros_like(directions[0])
+        for d, w in zip(directions, weights):
+            total = total + d.to(total.device) * w
+        norm = total.norm()
+        if norm < 1e-8:
+            return None, 0.0
+        avg_signal = sum(abs(w) for w in weights) / len(weights)
+        strength = min(0.035, avg_signal * 0.035 * len(weights))
+        return torch.nn.functional.normalize(total, dim=-1), strength
+
+    def _v2_update_concept_pair_dirs(self, global_state, previous_run, learning_profile):
+        """Store bad conditioning direction for each phrase pair present in a bad generation."""
+        if not isinstance(previous_run, dict) or learning_profile.get("skip_learning"):
+            return
+        if learning_profile.get("loved_modifier"):
+            return  # Loved despite issues — don't penalize this combination
+        reward = float(learning_profile.get("reward", 0.0))
+        key = learning_profile.get("key", "")
+        # Learn from anatomy/quality failures — wrong_appearance explicitly included
+        # as it signals anatomy artifacts even though reward=0.0
+        bad_anatomy = reward < -0.10 or key in {"wrong_appearance", "wrong_action_quality"}
+        if not bad_anatomy:
+            return
+        payload = previous_run.get("conditioning")
+        if not isinstance(payload, dict):
+            return
+        final_texts = previous_run.get("final_phrase_texts", []) or []
+        if len(final_texts) < 2:
+            return
+        session_mean = global_state.get("session_source_mean")
+        pair_dirs = global_state.setdefault("concept_pair_dirs", {})
+        top = final_texts[:8]  # Cap to avoid O(n²) explosion
+        for i, a in enumerate(top):
+            for b in top[i + 1:]:
+                key = md5(f"{min(a,b)}|{max(a,b)}".encode()).hexdigest()[:12]
+                slot = pair_dirs.setdefault(key, {"phrases": [min(a, b), max(a, b)]})
+                self._v2_store_direction(slot, payload, session_mean)
+        # Prune if too large — remove pairs with fewest observations
+        if len(pair_dirs) > 300:
+            pruned = sorted(pair_dirs, key=lambda k: int(pair_dirs[k].get("direction_count", 0)))
+            for k in pruned[:len(pair_dirs) - 200]:
+                del pair_dirs[k]
 
     def _v2_auto_strength(self, global_state):
         avg = float(global_state.get("avg_reward_ema", 0.0))
@@ -9135,12 +9288,56 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return mixed
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None):
+    def _vf_direction_boost(self, slot, vf_grad_dir, alpha=0.5):
+        """Cosine similarity between a direction slot and VF gradient → boost factor in [0.5, 1.5].
+        Phrases pointing with the reward gradient get amplified; against get dampened."""
+        if vf_grad_dir is None:
+            return 1.0
+        try:
+            direction = slot.get("direction")
+            if direction is None:
+                return 1.0
+            d = serializable_to_tensor(direction).float()
+            d_mean = d.mean(dim=-2) if d.dim() > 1 else d
+            d_dir = torch.nn.functional.normalize(d_mean.flatten(), dim=0)
+            vf_dir = vf_grad_dir.flatten().to(d_dir.device)
+            sim = float(torch.dot(d_dir, vf_dir).clamp(-1.0, 1.0).item())
+            return max(0.5, min(1.5, 1.0 + alpha * sim))
+        except Exception:
+            return 1.0
+
+    def _vf_gradient_direction(self, conditioning, vf):
+        """Unit vector of ∂reward/∂conditioning, mean-pooled across sequence. Returns None on failure."""
+        try:
+            grad = vf.gradient(conditioning)  # same shape as conditioning
+            dir_vec = grad.float().mean(dim=1).squeeze(0)  # [C]
+            return torch.nn.functional.normalize(dir_vec, dim=-1)
+        except Exception:
+            return None
+
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None, concept_delta_dir=None, concept_delta_strength=0.0, current_final_texts=None):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
         mixed = conditioning.clone()
         strength = self._v2_auto_strength(global_state)
+
+        # --- Value function: global confidence + gradient direction ---
+        vf_score = None
+        vf_grad_dir = None
+        if vf is not None:
+            try:
+                with torch.inference_mode(False), torch.no_grad():
+                    vf_score = float(vf.forward(vf.compress(original.float()).unsqueeze(0)).item())
+                # Global confidence: scale all memory modifications by VF predicted reward
+                # High score → full strength (conditioning direction is good)
+                # Low score → reduced (be cautious, current direction looks bad)
+                confidence_scale = max(0.40, (vf_score + 1.0) * 0.50)  # [-1,1] → [0.4, 1.0]
+                strength = strength * confidence_scale
+                # Gradient direction for phrase-level alignment
+                vf_grad_dir = self._vf_gradient_direction(original, vf)
+            except Exception:
+                pass
         axis_feedback = axis_feedback or self._v2_axis_feedback(
             rating_profile,
             global_state.get("last_missing_axes", []),
@@ -9150,8 +9347,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # otherwise legacy lerp toward averaged full tensor.
         liked_dir_slot = global_state.get("liked_dir", {})
         liked_payload = global_state.get("liked_conditioning")
+        liked_boost = self._vf_direction_boost(liked_dir_slot, vf_grad_dir)
         if int(liked_dir_slot.get("direction_count", 0)) >= 3:
-            mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength)
+            mixed = self._v2_apply_direction(mixed, liked_dir_slot, strength * liked_boost)
         elif self._v2_shape_compatible(liked_payload, mixed):
             try:
                 liked = serializable_to_tensor(liked_payload).to(device=mixed.device, dtype=mixed.dtype)
@@ -9174,9 +9372,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             pos_dir_ready = int(positive_slot.get("direction_count", 0)) >= 3
             neg_dir_ready = int(negative_slot.get("direction_count", 0)) >= 3
             if axis in missing_axes:
+                boost = self._vf_direction_boost(positive_slot, vf_grad_dir)
                 before = mixed
                 if pos_dir_ready:
-                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.070, strength * 1.10))
+                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.070, strength * 1.10 * boost))
                 else:
                     mixed = self._v2_apply_conditioning_payload(
                         mixed, positive_slot.get("conditioning"), min(0.070, strength * 1.10))
@@ -9186,16 +9385,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mixed = self._v2_repel_conditioning_payload(
                         mixed, negative_slot.get("conditioning"), min(0.055, strength * 0.82))
                 if not torch.equal(mixed, before):
-                    axis_actions.append(f"{axis}:repair({'dir' if pos_dir_ready else 'lerp'})")
+                    axis_actions.append(f"{axis}:repair({'dir' if pos_dir_ready else 'lerp'}, boost={boost:.2f})")
             elif axis in satisfied_axes:
+                boost = self._vf_direction_boost(positive_slot, vf_grad_dir)
                 before = mixed
                 if pos_dir_ready:
-                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.026, strength * 0.34))
+                    mixed = self._v2_apply_direction(mixed, positive_slot, min(0.026, strength * 0.34 * boost))
                 else:
                     mixed = self._v2_apply_conditioning_payload(
                         mixed, positive_slot.get("conditioning"), min(0.026, strength * 0.34))
                 if not torch.equal(mixed, before):
-                    axis_actions.append(f"{axis}:preserve({'dir' if pos_dir_ready else 'lerp'})")
+                    axis_actions.append(f"{axis}:preserve({'dir' if pos_dir_ready else 'lerp'}, boost={boost:.2f})")
 
         # Bad conditioning repulsion: direction-based or legacy.
         bad_dir_slot = global_state.get("bad_dir", {})
@@ -9209,6 +9409,37 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mixed = mixed + (mixed - bad) * min(0.055, strength * 0.72)
                 except Exception:
                     pass
+
+        # Concept-pair repulsion: steer away from known bad phrase combinations
+        if current_final_texts:
+            pair_dirs = global_state.get("concept_pair_dirs", {})
+            if pair_dirs:
+                top = current_final_texts[:8]
+                applied = 0
+                for i, a in enumerate(top):
+                    for b in top[i + 1:]:
+                        key = md5(f"{min(a,b)}|{max(a,b)}".encode()).hexdigest()[:12]
+                        slot = pair_dirs.get(key)
+                        if slot and int(slot.get("direction_count", 0)) >= 3:
+                            mixed = self._v2_apply_direction(mixed, slot, min(0.030, strength * 0.40), negate=True)
+                            applied += 1
+                            if applied >= 3:
+                                break
+                    if applied >= 3:
+                        break
+                if applied:
+                    axis_actions.append(f"pair-repulsion:{applied}")
+
+        # Concept-in-context: nudge toward phrases new to this final prompt that have positive delta history
+        if concept_delta_dir is not None and concept_delta_strength > 0:
+            try:
+                d = concept_delta_dir.to(device=mixed.device, dtype=mixed.dtype)
+                if d.dim() < mixed.dim():
+                    d = d.unsqueeze(0).expand_as(mixed[..., :d.shape[-1]])
+                mixed = mixed + concept_delta_strength * d.reshape(mixed.shape[-1]).unsqueeze(0).unsqueeze(0).expand_as(mixed)
+                axis_actions.append(f"concept-delta:{concept_delta_strength:.3f}")
+            except Exception:
+                pass
 
         delta = mixed - original
         original_norm = original.norm(dim=-1, keepdim=True).clamp_min(1e-8)
@@ -9227,8 +9458,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         bad_s = int(global_state.get("bad_streak", 0))
         streak_str = f"good streak {good_s}" if good_s > 0 else (f"bad streak {bad_s}" if bad_s > 0 else "no streak")
         axis_str = ", ".join(axis_actions) if axis_actions else "none"
+        vf_str = f" | VF score {vf_score:+.3f}" if vf_score is not None else ""
         return mixed, (
-            f"Strength {strength:.3f} | reward trend {ema:+.3f} | {streak_str}\n"
+            f"Strength {strength:.3f}{vf_str} | reward trend {ema:+.3f} | {streak_str}\n"
             f"  Liked conditioning: {liked_mode}\n"
             f"  Bad conditioning: {'direction' if bad_count >= 3 else f'lerp fallback ({bad_count}/3 runs)'}\n"
             f"  Axis adjustments: {axis_str}\n"
@@ -10701,7 +10933,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         profile = V2_RATING_PROFILES.get(rating_label) or V2_RATING_PROFILES.get(V2_RATING_ALIASES.get(str(rating_label), ""), {})
         rating_key = profile.get("key", "")
         appearance_wrong = rating_key == "wrong_appearance"
-        positive = rating_key in {"like", "loved_it"}
+        positive = rating_key in {"like", "loved_it", "nailed_it"}
         negative = float(profile.get("reward", 0.5)) < 0.3
         lines = []
         for ch in diff:
@@ -11010,9 +11242,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             lora_axes = self._v2_lora_feedback_axes(lora_type)
             if rating_profile.get("key") == "like":
                 offset += step * max(0.18, relation) * 0.55
-            elif rating_profile.get("key") == "loved_it":
+            elif rating_profile.get("key") == "nailed_it":
                 quality_type = lora_type in {"quality", "style"}
                 offset += step * max(0.18, relation) * (0.44 if quality_type else 0.24)
+            elif rating_profile.get("key") == "loved_it":
+                quality_type = lora_type in {"quality", "style"}
+                offset += step * max(0.18, relation) * (0.55 if quality_type else 0.30)
             elif rating_profile.get("key") == "awful":
                 offset -= step * max(0.22, relation) * 1.20
             elif lora_axes & missing_axes:
@@ -11136,6 +11371,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             int(global_state.get("total_iterations", 0)) + 1,
             axis_feedback,
         )
+        self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
+        self._v2_update_concept_pair_dirs(global_state, previous_run, learning_profile)
         seed_memory_status = self._v2_update_successful_seed_memory(
             global_state,
             previous_run,
@@ -11275,14 +11512,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._v2_prompt_body_similarity(prev_intent_key, intent_source_prompt) < 0.50
         )
         image_changed = bool(isinstance(vision_context, dict) and vision_context.get("changed_from_previous", False))
-        perfect_freeze = (
-            is_perfect_rating
-            and not str(feedback_prompt or "").strip()
-            and not intent_drifted
-            and not image_changed
-            and not learning_mode
-            and not current_prompt_refusal
-        )
+        perfect_freeze = False  # Disabled: conditioning memory + VF maintain quality direction
+        # without freezing the prompt, which blocked intentional prompt changes after a Perfect.
 
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
@@ -11434,6 +11665,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 latent,
             )
 
+        # Load value function for conditioning memory modulation (confidence + gradient boost)
+        _vf_for_memory = None
+        _eff_key_early = str(refinement_key_input or refinement_key or "").strip()
+        if not learning_mode and not prompt_only_mode and _eff_key_early:
+            try:
+                try:
+                    from .value_function import OnlineValueFunction as _OVF
+                except ImportError:
+                    from value_function import OnlineValueFunction as _OVF
+                _vf_path = refinement_state_path(_eff_key_early, "value_fn", prefix="refine_v2", extension="pt")
+                if os.path.exists(_vf_path):
+                    import torch as _torch
+                    with _torch.inference_mode(False):
+                        _vf_for_memory = _OVF.load(_vf_path)
+                    if not _vf_for_memory.is_ready():
+                        _vf_for_memory = None
+            except Exception:
+                _vf_for_memory = None
+
         if learning_mode:
             refined = cond
             adaptation_status = "Adaptation: Learning mode; conditioning vectors passed through unchanged."
@@ -11441,12 +11691,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             refined = cond
             adaptation_status = "Adaptation: Prompt only mode; conditioning vectors passed through unchanged."
         else:
+            _current_final = [t for t in (prompt_to_encode or "").split(",") if len(t.strip()) > 1]
+            _prev_final = previous_run.get("final_phrase_texts", []) if isinstance(previous_run, dict) else []
+            _concept_dir, _concept_strength = self._v2_concept_delta_direction(
+                global_state, _current_final, _prev_final
+            )
             refined, adaptation_status = self._v2_apply_conditioning_memory(
                 cond,
                 global_state,
                 learning_profile,
                 repair_feedback,
                 intent_family_slot=current_family_slot,
+                vf=_vf_for_memory,
+                concept_delta_dir=_concept_dir,
+                concept_delta_strength=_concept_strength,
+                current_final_texts=_current_final,
             )
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = None
@@ -11566,6 +11825,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "conditioning": tensor_to_serializable(refined.detach().cpu()),
                 "source_conditioning": tensor_to_serializable(cond.detach().cpu()),
                 "phrases": phrases,
+                "final_phrase_texts": [t for t in (p.strip().lower() for p in (prompt_to_encode or "").split(",")) if len(t) > 1],
+                "prev_final_phrase_texts": previous_run.get("final_phrase_texts", []) if isinstance(previous_run, dict) else [],
                 "intent_prompt": intent_prompt,
                 "intent_phrases": intent_phrases,
                 "intent_prompt_is_vague": bool(intent_prompt_is_vague),
@@ -11767,8 +12028,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     from ltx_enhancements import build_enhancements, bless_attention_maps
 
                 # Bless attention maps when the previous run was rated Perfect or Loved it
-                if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it"}:
+                if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it", "nailed_it"}:
                     bless_attention_maps(eff_key)
+                    try:
+                        from .ltx_enhancements import bless_attn_weights
+                    except ImportError:
+                        from ltx_enhancements import bless_attn_weights
+                    bless_attn_weights(eff_key)
 
                 patched_model = build_enhancements(
                     patched_model,
@@ -11777,6 +12043,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     refinement_key=eff_key,
                     reward=prev_reward,
                     reference_latent=latent if reference_injection else None,
+                    conditioning=refined,
                 )
                 enhancement_status = f"\nLTX enhancements: temporal={temporal_style}, reward={prev_reward:+.2f}"
             except Exception as e:
@@ -11835,7 +12102,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         + f"\n\nDetected scenes:\n{scene_lines}"
                     )
                     return (
-                        output_conditioning,
+                        self._v2_ascend_conditioning(output_conditioning, refinement_key),
                         status,
                         training_info,
                         loss_graph,
@@ -11847,7 +12114,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print(f"[FunPackVideoRefinerV2] Transition split failed: {e}")
 
         return (
-            output_conditioning,
+            self._v2_ascend_conditioning(output_conditioning, refinement_key),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -11856,11 +12123,38 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             video_latent,
         )
 
+    def _v2_ascend_conditioning(self, conditioning_list, refinement_key):
+        """Gradient-ascend each conditioning tensor toward higher predicted reward.
+        No-op if value function is missing or not yet ready (< MIN_SAMPLES ratings)."""
+        if not conditioning_list or not refinement_key:
+            return conditioning_list
+        try:
+            try:
+                from .value_function import OnlineValueFunction
+            except ImportError:
+                from value_function import OnlineValueFunction
+            vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+            import torch as _torch
+            with _torch.inference_mode(False):
+                vf = OnlineValueFunction.load_or_create(vf_path)
+            if vf is None or not vf.is_ready():
+                return conditioning_list
+            ascended = []
+            for entry in conditioning_list:
+                tensor, extra = entry[0], entry[1]
+                ascended.append((vf.ascend(tensor), extra))
+            print(f"[FunPackRefiner] Conditioning ascent applied ({vf.n_trained} samples, {len(ascended)} scene(s))")
+            return ascended
+        except Exception as e:
+            print(f"[FunPackRefiner] Conditioning ascent failed: {e}")
+            return conditioning_list
+
 
 class FunPackSaveRefinementLatent:
     CATEGORY = "FunPack/Refinement"
     RETURN_TYPES = ("LATENT", "STRING")
     RETURN_NAMES = ("latent", "status")
+    OUTPUT_NODE = True
     FUNCTION = "save_latent"
     DESCRIPTION = (
         "Saves a video latent under a refinement key so Studio and Refiner V2 can compute "

@@ -1159,16 +1159,8 @@ class FunPackLTXAVSceneChainSampler:
         samples = latent["samples"]
         noise = comfy.sample.prepare_noise(samples, int(seed))
         sampled = comfy.sample.sample_custom(
-            model,
-            noise,
-            float(cfg),
-            sampler,
-            sigmas,
-            positive,
-            negative,
-            samples,
-            noise_mask=latent.get("noise_mask"),
-            seed=int(seed),
+            model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
+            noise_mask=latent.get("noise_mask"), seed=int(seed),
         )
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
@@ -1467,7 +1459,11 @@ class FunPackLTXAVSceneChainSampler:
                 print("[FunPackSceneChain] embed_guidance: no liked direction found (need 3+ liked generations)")
             else:
                 _value_fn = self._load_value_function(refinement_key_input)
-                mode = f"value function ({_value_fn.n_trained} samples)" if _value_fn else "fixed direction"
+                if _value_fn:
+                    ready = _value_fn.is_ready()
+                    mode = f"value function ({_value_fn.n_trained} samples, ascent {'on' if ready else 'pending'})"
+                else:
+                    mode = "fixed direction"
                 print(f"[FunPackSceneChain] embed_guidance: active via {mode}, strength={embed_guidance_strength}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
@@ -1513,6 +1509,10 @@ class FunPackLTXAVSceneChainSampler:
                 else:
                     guide_tail = 0
 
+            if embed_guidance and _value_fn is not None and _value_fn.is_ready():
+                orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
+                ascended = _value_fn.ascend(orig_cond)
+                scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
             if embed_guidance and _liked_dir is not None:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             sampled = self._sample_chunk(
