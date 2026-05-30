@@ -1150,8 +1150,7 @@ class FunPackLTXAVSceneChainSampler:
         result.pop("noise_mask", None)
         return result
 
-    def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
-                      latent_vf=None, latent_vf_strength=0.0, motion_floor=False):
+    def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -1159,59 +1158,9 @@ class FunPackLTXAVSceneChainSampler:
         latent = self._clone_latent(latent)
         samples = latent["samples"]
         noise = comfy.sample.prepare_noise(samples, int(seed))
-
-        _needs_callback = (latent_vf is not None and latent_vf_strength > 0) or motion_floor
-        callback = None
-        if _needs_callback:
-            try:
-                from .value_function import compress_latent as _compress_latent
-            except ImportError:
-                from value_function import compress_latent as _compress_latent
-
-            def callback(step, x0, x, total_steps):
-                try:
-                    try:
-                        _dim = x.dim()
-                    except Exception as _de:
-                        _dim = f"err:{_de}"
-                    print(f"[FunPackSceneChain] cb step={step} dim={_dim} shape={tuple(x.shape) if isinstance(x, torch.Tensor) else '?'}")
-                    if not isinstance(x, torch.Tensor) or not isinstance(_dim, int) or _dim not in (3, 5):
-                        return
-                    sigma = float(sigmas[min(step, len(sigmas) - 2)])
-                    # scale = 1 - sigma: grows naturally as denoising progresses,
-                    # works for any sigma schedule including LTX's high-sigma distilled flow
-                    scale = max(0.0, 1.0 - sigma)
-                    if scale <= 0:
-                        return
-                    # Latent value function drift (5D only — spatial format)
-                    if latent_vf is not None and latent_vf_strength > 0 and x.dim() == 5:
-                        compressed = _compress_latent(x)
-                        grad = latent_vf.gradient(compressed.unsqueeze(0).unsqueeze(0))
-                        grad = torch.nn.functional.normalize(grad.squeeze(0).squeeze(0).float(), dim=-1)
-                        drift = grad[None, :, None, None, None].expand_as(x).to(x.device, x.dtype)
-                        x.add_(latent_vf_strength * scale * drift)
-                    # Motion floor — sequence variance proxy works for both 3D [B,seq,C]
-                    # and 5D [B,C,T,H,W] token formats
-                    if motion_floor:
-                        seq_dim = 1 if x.dim() == 3 else 2
-                        if x.shape[seq_dim] > 1:
-                            mean_s = x.mean(dim=seq_dim, keepdim=True)
-                            deviation = x - mean_s
-                            seq_var = deviation.pow(2).mean().item()
-                            overall_var = x.pow(2).mean().item()
-                            if overall_var > 1e-8 and seq_var / overall_var < 0.05:
-                                d_norm = torch.nn.functional.normalize(
-                                    deviation.float().reshape(x.shape[0], -1), dim=-1
-                                ).reshape(x.shape)
-                                x.add_((latent_vf_strength * scale * d_norm).to(x.device, x.dtype))
-                                print(f"[FunPackSceneChain] motion floor: step={step}, σ={sigma:.3f}, ratio={seq_var/overall_var:.4f}")
-                except Exception:
-                    pass
-
-        print(f"[FunPackSceneChain] sample_custom callback={'set' if callback is not None else 'None'}")
         sampled = comfy.sample.sample_custom(
             model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
-            noise_mask=latent.get("noise_mask"), seed=int(seed), callback=callback,
+            noise_mask=latent.get("noise_mask"), seed=int(seed),
         )
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
@@ -1346,24 +1295,6 @@ class FunPackLTXAVSceneChainSampler:
             with torch.inference_mode(False):
                 vf = OnlineValueFunction.load(path)
             return vf if vf.is_ready() else None
-        except Exception:
-            return None
-
-    def _load_latent_value_function(self, refinement_key):
-        try:
-            try:
-                from .value_function import OnlineValueFunction
-                from .conditioning import refinement_state_path
-            except ImportError:
-                from value_function import OnlineValueFunction
-                from conditioning import refinement_state_path
-            import os as _os
-            path = refinement_state_path(refinement_key, "value_fn_latent", prefix="refine_v2", extension="pt")
-            if not _os.path.exists(path):
-                return None
-            with torch.inference_mode(False):
-                lvf = OnlineValueFunction.load(path)
-            return lvf if lvf.is_ready() else None
         except Exception:
             return None
 
@@ -1522,7 +1453,6 @@ class FunPackLTXAVSceneChainSampler:
         # Load liked direction once for embed_guidance
         _liked_dir = None
         _value_fn = None
-        _latent_vf = None
         if embed_guidance and refinement_key_input:
             _liked_dir = self._load_liked_direction(refinement_key_input)
             if _liked_dir is None:
@@ -1535,9 +1465,6 @@ class FunPackLTXAVSceneChainSampler:
                 else:
                     mode = "fixed direction"
                 print(f"[FunPackSceneChain] embed_guidance: active via {mode}, strength={embed_guidance_strength}")
-            _latent_vf = self._load_latent_value_function(refinement_key_input)
-            if _latent_vf:
-                print(f"[FunPackSceneChain] latent guidance: active ({_latent_vf.n_trained} samples), strength={embed_guidance_strength}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -1590,8 +1517,6 @@ class FunPackLTXAVSceneChainSampler:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
-                latent_vf=_latent_vf, latent_vf_strength=embed_guidance_strength,
-                motion_floor=embed_guidance and bool(refinement_key_input),
             )
             if embed_guidance and _liked_dir is not None:
                 if _eg_old_wrapper is not None:

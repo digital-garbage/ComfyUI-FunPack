@@ -152,11 +152,3 @@ class OnlineValueFunction(nn.Module):
         return cls(hidden_dim=hidden_dim) if hidden_dim is not None else None
 
 
-def compress_latent(latent):
-    """[B, C, T, H, W] or [C, T, H, W] → [C] mean over spatial/temporal dims."""
-    x = latent.float()
-    if x.dim() == 5:
-        x = x[0]  # [C, T, H, W]
-    if x.dim() == 4:
-        return x.mean(dim=[1, 2, 3])  # [C]
-    return x
