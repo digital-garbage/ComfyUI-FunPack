@@ -5719,10 +5719,18 @@ V2_RATING_ALIASES = {
 
 
 def normalize_refiner_v2_rating(value):
+    loved_modifier = False
+    if isinstance(value, str) and value.endswith("|loved"):
+        value = value[:-6]
+        loved_modifier = True
     if isinstance(value, str):
         cleaned = V2_RATING_ALIASES.get(value.strip(), value.strip())
         if cleaned in V2_RATING_PROFILES:
-            return dict(V2_RATING_PROFILES[cleaned], label=cleaned)
+            profile = dict(V2_RATING_PROFILES[cleaned], label=cleaned)
+            if loved_modifier:
+                profile["loved_modifier"] = True
+                profile["reward"] = max(float(profile.get("reward", 0.0)), 0.85)
+            return profile
         try:
             value = int(float(cleaned))
         except (TypeError, ValueError):
@@ -8210,6 +8218,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             elif rating_key == "nailed_it":
                 delta = -0.10
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
+            elif rating_profile.get("loved_modifier"):
+                delta *= 0.5  # soften axis pressure — quality was good, still try to fix it
             elif rating_key == "loved_it":
                 continue  # axis-blind quality endorsement — don't learn prompt adherence
             elif rating_key == "awful":
@@ -8421,6 +8431,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         elif rating_profile.get("key") == "nailed_it":
             positive_axes = {"action", "details"}
             base_delta = 0.65
+        elif rating_profile.get("loved_modifier"):
+            positive_axes = {"action", "details"}
+            base_delta = 0.30
         elif rating_profile.get("key") == "loved_it":
             return "Preferred context: skipped for axis-blind quality endorsement."
         else:
@@ -8612,6 +8625,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 else:
                     delta = 0.0
                     count_category_evidence = False
+            elif rating_profile.get("loved_modifier"):
+                delta = 0.45 * kind_scale
+                entry["liked_count"] = int(entry.get("liked_count", 0)) + 1
+                rating_evidence["liked"] = int(rating_evidence.get("liked", 0)) + 1
+                for category, score in effective_before.items():
+                    if float(score) >= 0.28:
+                        weights[category] = float(weights.get(category, 0.0)) + 0.10 * kind_scale
             elif rating_profile.get("key") == "nailed_it":
                 delta = 0.35 * kind_scale
                 entry["liked_count"] = int(entry.get("liked_count", 0)) + 1

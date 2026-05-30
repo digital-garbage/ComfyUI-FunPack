@@ -108,7 +108,16 @@ function injectStyles() {
     .fp-picker-opt-reward { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .fp-picker-opt-hint { font-size: 9px; color: #888; line-height: 1.3; }
     .fp-picker-opt:hover .fp-picker-opt-hint { color: #aaa; }
-    .fp-picker-nuclear { padding: 8px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .fp-picker-nuclear { padding: 8px 10px 4px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .fp-picker-loved-row { padding: 6px 10px 8px; border-top: 1px solid rgba(255,255,255,0.06); }
+    .fp-picker-loved-toggle {
+      width: 100%; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+      font: 11px sans-serif; font-weight: 600; text-align: left;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,120,180,0.25); color: #aaa;
+      transition: background 0.1s, border-color 0.1s, color 0.1s;
+    }
+    .fp-picker-loved-toggle:hover { background: rgba(255,120,180,0.10); border-color: rgba(255,120,180,0.5); color: #eee; }
+    .fp-picker-loved-toggle.active { background: rgba(255,120,180,0.18); border-color: rgba(255,120,180,0.75); color: #ffb3d4; }
   `;
   document.head.append(s);
 }
@@ -157,6 +166,8 @@ function makeOption(r, currentValue, accent, onPick) {
   return btn;
 }
 
+const NO_LOVED_LABELS = new Set(["Perfect", FORGET_LABEL]);
+
 function openPicker(ratingWidget, event, onPick) {
   closePicker();
   injectStyles();
@@ -176,7 +187,13 @@ function openPicker(ratingWidget, event, onPick) {
   header.append(closeBtn);
   picker.append(header);
 
-  const current = ratingWidget.value;
+  const rawCurrent = ratingWidget.value || "";
+  const currentLoved = rawCurrent.endsWith("|loved");
+  const currentBase = currentLoved ? rawCurrent.slice(0, -6) : rawCurrent;
+
+  let lovedOn = currentLoved;
+
+  const buildLabel = (base) => NO_LOVED_LABELS.has(base) ? base : (lovedOn ? base + "|loved" : base);
 
   // Category sections
   for (const cat of CATEGORIES) {
@@ -191,7 +208,7 @@ function openPicker(ratingWidget, event, onPick) {
 
     const grid = document.createElement("div");
     grid.className = cat.id === "positive" ? "fp-picker-positive-grid" : "fp-picker-grid";
-    for (const r of cat.ratings) grid.append(makeOption(r, current, cat.accent, onPick));
+    for (const r of cat.ratings) grid.append(makeOption(r, currentBase, cat.accent, (base) => onPick(buildLabel(base))));
     section.append(grid);
     picker.append(section);
   }
@@ -200,8 +217,21 @@ function openPicker(ratingWidget, event, onPick) {
   const nuclearSection = document.createElement("div");
   nuclearSection.className = "fp-picker-nuclear";
   nuclearSection.style.setProperty("--accent", "140,100,100");
-  for (const r of NUCLEAR) nuclearSection.append(makeOption(r, current, "140,100,100", onPick));
+  for (const r of NUCLEAR) nuclearSection.append(makeOption(r, currentBase, "140,100,100", (base) => onPick(buildLabel(base))));
   picker.append(nuclearSection);
+
+  // Loved it toggle
+  const lovedRow = document.createElement("div");
+  lovedRow.className = "fp-picker-loved-row";
+  const lovedToggle = document.createElement("button");
+  lovedToggle.className = "fp-picker-loved-toggle" + (lovedOn ? " active" : "");
+  lovedToggle.textContent = "♥  Loved it — great output regardless of prompt adherence";
+  lovedToggle.addEventListener("click", () => {
+    lovedOn = !lovedOn;
+    lovedToggle.classList.toggle("active", lovedOn);
+  });
+  lovedRow.append(lovedToggle);
+  picker.append(lovedRow);
 
   document.body.append(picker);
 
@@ -250,8 +280,10 @@ function setupRatingPicker(node) {
   hideWidget(ratingWidget);
 
   const getLabel = () => {
-    const v = ratingWidget.value;
-    return (!v || v === FORGET_LABEL) ? "Waiting for rating..." : `Rating: ${v}`;
+    const v = ratingWidget.value || "";
+    if (!v || v === FORGET_LABEL) return "Waiting for rating...";
+    if (v.endsWith("|loved")) return `Rating: ${v.slice(0, -6)} ♥`;
+    return `Rating: ${v}`;
   };
 
   node.widgets = (node.widgets || []).filter((w) => w.__fpPickerWidget !== true);
@@ -280,6 +312,7 @@ function resetRating(node) {
     node.__fpPickerWidgetRef.name = "Waiting for rating...";
     node.setDirtyCanvas?.(true, true);
   }
+  closePicker();
 }
 
 // ─── Extension ────────────────────────────────────────────────────────────────
