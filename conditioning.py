@@ -5651,7 +5651,7 @@ V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
     "Initial discovery": {"key": "discover", "reward": 0.0, "level": 4, "missing_axes": []},
     "Perfect": {"key": "like", "reward": 1.0, "level": 8, "missing_axes": []},
-    "Loved it": {"key": "loved_it", "reward": 0.75, "level": 7, "missing_axes": []},
+    "Loved it": {"key": "loved_it", "reward": 0.85, "level": 7, "missing_axes": []},
     "Missing details": {"key": "missing_details", "reward": 0.35, "level": 6, "missing_axes": ["details"]},
     "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
     "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
@@ -8151,7 +8151,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 entry["phrases"] = phrases_for_token[-12:]
                 if token in intent_token_set:
                     entry["intent_count"] = int(entry.get("intent_count", 0)) + 1
-                    delta = 0.06 if rating_key == "like" else (0.03 if rating_key == "loved_it" else 0.0)
+                    delta = 0.06 if rating_key == "like" else 0.0
                 else:
                     entry["enhancer_only_count"] = int(entry.get("enhancer_only_count", 0)) + 1
                     if rating_key == "like":
@@ -8202,8 +8202,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 delta = -0.18
                 entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
             elif rating_key == "loved_it":
-                delta = -0.10
-                entry["forgiven_count"] = int(entry.get("forgiven_count", 0)) + 1
+                continue  # axis-blind quality endorsement — don't learn prompt adherence
             elif rating_key == "awful":
                 delta = 0.70 if has_perfect_anchor else 0.44
                 entry["missing_count"] = int(entry.get("missing_count", 0)) + 1
@@ -8411,8 +8410,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             positive_axes = {"action", "details"}
             base_delta = 1.0
         elif rating_profile.get("key") == "loved_it":
-            positive_axes = {"action", "details"}
-            base_delta = 0.65
+            return "Preferred context: skipped for axis-blind quality endorsement."
         else:
             positive_axes = (set(axis_feedback.get("satisfied_axes", [])) | set(axis_feedback.get("resolved_axes", []))) & {"action", "details"}
             base_delta = 0.38
@@ -11019,7 +11017,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 offset += step * max(0.18, relation) * 0.55
             elif rating_profile.get("key") == "loved_it":
                 quality_type = lora_type in {"quality", "style"}
-                offset += step * max(0.18, relation) * (0.44 if quality_type else 0.24)
+                offset += step * max(0.18, relation) * (0.55 if quality_type else 0.30)
             elif rating_profile.get("key") == "awful":
                 offset -= step * max(0.22, relation) * 1.20
             elif lora_axes & missing_axes:
