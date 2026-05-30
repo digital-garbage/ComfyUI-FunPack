@@ -6002,6 +6002,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "intent_preference_phrases": {},
                 "conditioning_deltas": {},
                 "concept_delta_memory": {},
+                "concept_pair_dirs": {},
                 "active_repair_axes": [],
                 "advisor_feedback_history": [],
                 "intent_expansion_memory": {},
@@ -9221,6 +9222,39 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         strength = min(0.035, avg_signal * 0.035 * len(weights))
         return torch.nn.functional.normalize(total, dim=-1), strength
 
+    def _v2_update_concept_pair_dirs(self, global_state, previous_run, learning_profile):
+        """Store bad conditioning direction for each phrase pair present in a bad generation."""
+        if not isinstance(previous_run, dict) or learning_profile.get("skip_learning"):
+            return
+        if learning_profile.get("loved_modifier"):
+            return  # Loved despite issues — don't penalize this combination
+        reward = float(learning_profile.get("reward", 0.0))
+        key = learning_profile.get("key", "")
+        # Learn from anatomy/quality failures — wrong_appearance explicitly included
+        # as it signals anatomy artifacts even though reward=0.0
+        bad_anatomy = reward < -0.10 or key in {"wrong_appearance", "wrong_action_quality"}
+        if not bad_anatomy:
+            return
+        payload = previous_run.get("conditioning")
+        if not isinstance(payload, dict):
+            return
+        final_texts = previous_run.get("final_phrase_texts", []) or []
+        if len(final_texts) < 2:
+            return
+        session_mean = global_state.get("session_source_mean")
+        pair_dirs = global_state.setdefault("concept_pair_dirs", {})
+        top = final_texts[:8]  # Cap to avoid O(n²) explosion
+        for i, a in enumerate(top):
+            for b in top[i + 1:]:
+                key = md5(f"{min(a,b)}|{max(a,b)}".encode()).hexdigest()[:12]
+                slot = pair_dirs.setdefault(key, {"phrases": [min(a, b), max(a, b)]})
+                self._v2_store_direction(slot, payload, session_mean)
+        # Prune if too large — remove pairs with fewest observations
+        if len(pair_dirs) > 300:
+            pruned = sorted(pair_dirs, key=lambda k: int(pair_dirs[k].get("direction_count", 0)))
+            for k in pruned[:len(pair_dirs) - 200]:
+                del pair_dirs[k]
+
     def _v2_auto_strength(self, global_state):
         avg = float(global_state.get("avg_reward_ema", 0.0))
         good = int(global_state.get("good_streak", 0))
@@ -9281,7 +9315,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None, concept_delta_dir=None, concept_delta_strength=0.0):
+    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None, concept_delta_dir=None, concept_delta_strength=0.0, current_final_texts=None):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
@@ -9375,6 +9409,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mixed = mixed + (mixed - bad) * min(0.055, strength * 0.72)
                 except Exception:
                     pass
+
+        # Concept-pair repulsion: steer away from known bad phrase combinations
+        if current_final_texts:
+            pair_dirs = global_state.get("concept_pair_dirs", {})
+            if pair_dirs:
+                top = current_final_texts[:8]
+                applied = 0
+                for i, a in enumerate(top):
+                    for b in top[i + 1:]:
+                        key = md5(f"{min(a,b)}|{max(a,b)}".encode()).hexdigest()[:12]
+                        slot = pair_dirs.get(key)
+                        if slot and int(slot.get("direction_count", 0)) >= 3:
+                            mixed = self._v2_apply_direction(mixed, slot, min(0.030, strength * 0.40), negate=True)
+                            applied += 1
+                            if applied >= 3:
+                                break
+                    if applied >= 3:
+                        break
+                if applied:
+                    axis_actions.append(f"pair-repulsion:{applied}")
 
         # Concept-in-context: nudge toward phrases new to this final prompt that have positive delta history
         if concept_delta_dir is not None and concept_delta_strength > 0:
@@ -11318,6 +11372,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             axis_feedback,
         )
         self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
+        self._v2_update_concept_pair_dirs(global_state, previous_run, learning_profile)
         seed_memory_status = self._v2_update_successful_seed_memory(
             global_state,
             previous_run,
@@ -11650,6 +11705,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 vf=_vf_for_memory,
                 concept_delta_dir=_concept_dir,
                 concept_delta_strength=_concept_strength,
+                current_final_texts=_current_final,
             )
         prompt_key = self._v2_prompt_key(analysis_prompt)
         prompt_history = None
