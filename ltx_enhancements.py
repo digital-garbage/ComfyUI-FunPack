@@ -68,6 +68,51 @@ def _creativity_latent_path(refinement_key):
     return os.path.join(_maps_dir(), f"creativity_latent_{_safe_key(refinement_key)}.pt")
 
 
+def _attn_weights_temp_path(refinement_key):
+    return os.path.join(_maps_dir(), f"attn_weights_temp_{_safe_key(refinement_key)}.pt")
+
+
+def _attn_weights_blessed_path(refinement_key):
+    return os.path.join(_maps_dir(), f"attn_weights_blessed_{_safe_key(refinement_key)}.pt")
+
+
+def _load_blessed_attn_weights(refinement_key):
+    path = _attn_weights_blessed_path(refinement_key)
+    if not os.path.exists(path):
+        return None
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except Exception:
+        return None
+
+
+def bless_attn_weights(refinement_key):
+    """EMA-merge temp attention weights into blessed. Call on liked ratings."""
+    src = _attn_weights_temp_path(refinement_key)
+    dst = _attn_weights_blessed_path(refinement_key)
+    if not os.path.exists(src):
+        return False
+    try:
+        new_data = torch.load(src, map_location="cpu", weights_only=True)
+        if os.path.exists(dst):
+            old_data = torch.load(dst, map_location="cpu", weights_only=True)
+            merged = {}
+            for k in set(old_data) | set(new_data):
+                o, n = old_data.get(k), new_data.get(k)
+                if o is not None and n is not None and o.shape == n.shape:
+                    merged[k] = (0.8 * o.float() + 0.2 * n.float()).half()
+                else:
+                    merged[k] = (n if n is not None else o)
+            torch.save(merged, dst)
+        else:
+            torch.save({k: v.half() for k, v in new_data.items()}, dst)
+        print(f"[FunPackEnhancements] Blessed attention weights for key '{refinement_key}'")
+        return True
+    except Exception as e:
+        print(f"[FunPackEnhancements] Attn weights bless failed: {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Creativity latent save / load
 # ---------------------------------------------------------------------------
@@ -164,6 +209,8 @@ def clear_refinement_data(refinement_key):
         _temp_maps_path(refinement_key),
         _blessed_maps_path(refinement_key),
         _creativity_latent_path(refinement_key),
+        _attn_weights_temp_path(refinement_key),
+        _attn_weights_blessed_path(refinement_key),
     ):
         try:
             if os.path.exists(path):
@@ -297,42 +344,60 @@ def _run_reference_extraction(model, apply_fn, ref_x, lazy_injects, args):
 # Temperature map
 # ---------------------------------------------------------------------------
 
-def _derive_temperature_map(rating_profile, reward):
+def _derive_temperature_map(rating_profile, reward, vf_score=None):
     """
     Returns {block_idx: temperature} for blocks that should deviate from 1.0.
       temperature < 1.0  sharper/colder - confident, focused decisions
       temperature > 1.0  softer/warmer  - more varied, exploratory
-    Returns {} when previous output was good (reward >= 0.8).
-    """
-    if reward >= 0.8:
-        return {}
 
+    When vf_score is provided (value function predicted reward for current conditioning),
+    it continuously modulates temperature independent of the rating signal:
+      vf_score near +1 → sharpen (model is confident this direction is good)
+      vf_score near -1 → warm (explore more, current direction looks bad)
+    """
     quality = float(rating_profile.get("quality_signal", 0.0))
     concept = float(rating_profile.get("concept_signal", 0.0))
     detail = float(rating_profile.get("detail_signal", 0.0))
 
     temps = {}
 
-    # Semantic anchors: sharpen when quality or concept missing
-    if quality < 0 or concept < 0:
-        worst = min(quality, concept)
-        anchor_temp = max(0.72, 1.0 + worst * 0.22)
-        for b in ANCHOR_BLOCKS:
-            temps[b] = anchor_temp
+    # Rating-driven temperatures (only when previous result was poor)
+    if reward < 0.8:
+        # Semantic anchors: sharpen when quality or concept missing
+        if quality < 0 or concept < 0:
+            worst = min(quality, concept)
+            anchor_temp = max(0.72, 1.0 + worst * 0.22)
+            for b in ANCHOR_BLOCKS:
+                temps[b] = anchor_temp
 
-    # Concept zone: sharpen when concept is clearly missing
-    if concept < -0.3:
-        concept_temp = max(0.78, 1.0 + concept * 0.18)
-        for b in _ZONE_CONCEPT:
-            if b not in temps:
-                temps[b] = concept_temp
+        # Concept zone: sharpen when concept is clearly missing
+        if concept < -0.3:
+            concept_temp = max(0.78, 1.0 + concept * 0.18)
+            for b in _ZONE_CONCEPT:
+                if b not in temps:
+                    temps[b] = concept_temp
 
-    # Early zone: loosen when details missing - more variety in texture exploration
-    if detail < -0.5:
-        detail_temp = min(1.22, 1.0 + abs(detail) * 0.18)
-        for b in _ZONE_EARLY:
-            if b not in temps:
-                temps[b] = detail_temp
+        # Early zone: loosen when details missing - more variety in texture exploration
+        if detail < -0.5:
+            detail_temp = min(1.22, 1.0 + abs(detail) * 0.18)
+            for b in _ZONE_EARLY:
+                if b not in temps:
+                    temps[b] = detail_temp
+
+    # Value-function-driven temperature: continuous, score-based modulation
+    # Runs on every generation when VF is ready, regardless of rating
+    if vf_score is not None:
+        # vf_score ∈ [-1, 1]: map to temperature factor
+        # +1 → 0.80 (sharpen — VF predicts this is a good direction)
+        # 0  → 1.00 (neutral)
+        # -1 → 1.20 (warm — VF predicts poor outcome, explore more)
+        vf_temp = max(0.80, min(1.20, 1.0 - vf_score * 0.20))
+        for b in list(ANCHOR_BLOCKS) + list(_ZONE_CONCEPT):
+            if b in temps:
+                # Blend: rating temp × VF temp, weighted toward VF
+                temps[b] = temps[b] * 0.5 + vf_temp * 0.5
+            else:
+                temps[b] = vf_temp
 
     return temps
 
@@ -466,12 +531,16 @@ def _extend_v_pe(kwargs, n_ref):
 
 
 def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength,
-                              sigma_state=None, sigma_gate=(0.2, 0.5)):
+                              sigma_state=None, sigma_gate=(0.2, 0.5),
+                              attn_capture_buf=None, attn_inject=None, attn_inject_strength=0.0,
+                              attn_sigma_gate=(0.35, 0.85)):
     """
     Builds a single patches_replace["dit"] replacement function that applies:
       - attention temperature (temp_scale != 1.0)
-      - hidden state capture (capture_buf is not None)
-      - hidden state injection (inject_tensor is not None), sigma-gated when sigma_state provided
+      - attention weight capture (attn_capture_buf) — output norm proxy per token position
+      - attention weight inject (attn_inject) — V scaling by accumulated importance
+      - hidden state capture (capture_buf)
+      - hidden state injection (inject_tensor), sigma-gated
     All in one pass through the block.
     """
     import comfy.ldm.modules.attention as attn_mod
@@ -479,22 +548,46 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
     do_temperature = temp_scale is not None and abs(temp_scale - 1.0) > 0.001
     do_capture = capture_buf is not None
     do_inject = inject_tensor is not None
+    do_attn_capture = attn_capture_buf is not None
+    do_attn_inject = attn_inject is not None and attn_inject_strength > 0
+    do_attn_patch = do_temperature or do_attn_capture or do_attn_inject
 
-    if not do_temperature and not do_capture and not do_inject:
+    if not do_temperature and not do_capture and not do_inject and not do_attn_patch:
         return None
 
     def replacement(args, extra):
-        # --- Temperature ---
-        if do_temperature:
-            s = temp_scale
+        # --- Attention patch (temperature + attn capture + attn inject) ---
+        if do_attn_patch:
+            s = temp_scale if do_temperature else 1.0
             orig_attn = attn_mod.optimized_attention
             orig_attn_masked = attn_mod.optimized_attention_masked
 
+            def _attn_body(q, k, v, orig_fn, extra_args, extra_kwargs):
+                v_use = v
+                if do_attn_inject and attn_inject.shape[0] == v.shape[1]:
+                    sigma = sigma_state[0] if sigma_state is not None else 0.0
+                    if attn_sigma_gate[0] <= sigma <= attn_sigma_gate[1]:
+                        imp = attn_inject.to(device=v.device, dtype=torch.float32)
+                        imp = imp / imp.mean().clamp(min=1e-6)
+                        scale = (1.0 + attn_inject_strength * (imp - 1.0)).to(v.dtype)
+                        v_use = v * scale.unsqueeze(0).unsqueeze(-1)
+                result = orig_fn(q * s, k * s, v_use, *extra_args, **extra_kwargs)
+                if do_attn_capture:
+                    try:
+                        imp_cap = result.detach().float().norm(dim=-1).mean(dim=0).cpu()
+                        if block_idx in attn_capture_buf:
+                            attn_capture_buf[block_idx] = 0.7 * attn_capture_buf[block_idx] + 0.3 * imp_cap
+                        else:
+                            attn_capture_buf[block_idx] = imp_cap
+                    except Exception:
+                        pass
+                return result
+
             def _scaled(q, k, v, heads, *a, **kw):
-                return orig_attn(q * s, k * s, v, heads, *a, **kw)
+                return _attn_body(q, k, v, lambda q_, k_, v_, *a_, **kw_: orig_attn(q_, k_, v_, heads, *a_, **kw_), a, kw)
 
             def _scaled_masked(q, k, v, heads, mask, *a, **kw):
-                return orig_attn_masked(q * s, k * s, v, heads, mask, *a, **kw)
+                return _attn_body(q, k, v, lambda q_, k_, v_, *a_, **kw_: orig_attn_masked(q_, k_, v_, heads, mask, *a_, **kw_), a, kw)
 
             attn_mod.optimized_attention = _scaled
             attn_mod.optimized_attention_masked = _scaled_masked
@@ -506,7 +599,7 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
         else:
             out = extra["original_block"](args)
 
-        # --- Capture ---
+        # --- Hidden state capture ---
         if do_capture:
             try:
                 hidden = out["img"].detach().cpu()
@@ -514,7 +607,7 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
             except Exception:
                 pass
 
-        # --- Inject ---
+        # --- Hidden state inject ---
         if do_inject:
             try:
                 sigma = sigma_state[0] if sigma_state is not None else 1.0
@@ -568,7 +661,7 @@ def _is_ltx_model(model):
 # Main enhancement builder
 # ---------------------------------------------------------------------------
 
-def build_enhancements(model, rating_profile, temporal_style, refinement_key, reward, reference_latent=None):
+def build_enhancements(model, rating_profile, temporal_style, refinement_key, reward, reference_latent=None, conditioning=None):
     """
     Apply all active LTX enhancements to the model based on rating.
     Returns patched model (already cloned).
@@ -589,8 +682,35 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     model = model.clone()
 
+    # --- VF score for temperature modulation ---
+    vf_score = None
+    if conditioning is not None and refinement_key:
+        try:
+            try:
+                from .value_function import OnlineValueFunction
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import OnlineValueFunction
+                from conditioning import refinement_state_path
+            _vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
+            if os.path.exists(_vf_path):
+                with torch.inference_mode(False):
+                    _vf = OnlineValueFunction.load(_vf_path)
+                if _vf.is_ready():
+                    _cond = conditioning[0][0] if isinstance(conditioning, (list, tuple)) else conditioning
+                    if isinstance(_cond, torch.Tensor):
+                        with torch.inference_mode(False), torch.no_grad():
+                            vf_score = float(_vf.forward(_vf.compress(_cond.float()).unsqueeze(0)).item())
+        except Exception:
+            pass
+
+    # --- Attention weight accumulation ---
+    attn_capture_buf = {} if refinement_key else None
+    blessed_attn = _load_blessed_attn_weights(refinement_key) if refinement_key else None
+    attn_inject_strength = max(0.04, min(0.18, reward * 0.18)) if blessed_attn else 0.0
+
     # --- Technique 2: temperature map ---
-    temperature_map = _derive_temperature_map(rating_profile, reward)
+    temperature_map = _derive_temperature_map(rating_profile, reward, vf_score=vf_score)
     # temperature → q/k scale: scale = 1/sqrt(temp)
     temp_scales = {
         b: (1.0 / math.sqrt(max(0.1, t))) if abs(t - 1.0) > 0.01 else None
@@ -641,7 +761,8 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     # --- Install per-block patches_replace ---
     needs_injection = bool(lazy_injects) or bool(blessed_maps)
-    all_blocks = set(temperature_map.keys()) | (all_injection_blocks if (capture_buf is not None or needs_injection) else set())
+    attn_active_blocks = set(IDENTITY_BLOCKS) if attn_capture_buf is not None or blessed_attn else set()
+    all_blocks = set(temperature_map.keys()) | (all_injection_blocks if (capture_buf is not None or needs_injection) else set()) | attn_active_blocks
 
     if all_blocks:
         to = model.model_options.setdefault("transformer_options", {})
@@ -666,10 +787,14 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                 inj_gate = (0.2, 0.5)
             cap = capture_buf if (capture_buf is not None and (is_anchor or is_identity)) else None
 
+            attn_inj = blessed_attn.get(block_idx) if blessed_attn else None
             replacement = _build_block_replacement(
                 block_idx, t_scale, cap, inj_tensor, inj_strength,
-                sigma_state=sigma_state if inj_tensor is not None else None,
+                sigma_state=sigma_state if (inj_tensor is not None or attn_inj is not None) else None,
                 sigma_gate=inj_gate,
+                attn_capture_buf=attn_capture_buf,
+                attn_inject=attn_inj,
+                attn_inject_strength=attn_inject_strength,
             )
             if replacement is not None:
                 # Compose with any existing replacement (e.g. from STG/PAG)
@@ -956,6 +1081,30 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             return result
 
         model.model_options["model_function_wrapper"] = _capture_finalizer
+
+    # --- Attn weight capture finalizer: save attn_capture_buf to temp file ---
+    if attn_capture_buf is not None and refinement_key:
+        _attn_buf = attn_capture_buf
+        _attn_rk = refinement_key
+        _attn_saved = [False]
+        existing_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _attn_finalizer(apply_fn, args, _ew=existing_wrapper, _buf=_attn_buf,
+                             _rk=_attn_rk, _saved=_attn_saved):
+            if _ew is not None:
+                result = _ew(apply_fn, args)
+            else:
+                result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            if not _saved[0] and len(_buf) >= len(IDENTITY_BLOCKS):
+                try:
+                    torch.save({k: v.half() for k, v in _buf.items()},
+                               _attn_weights_temp_path(_rk))
+                    _saved[0] = True
+                except Exception as e:
+                    print(f"[FunPackEnhancements] Attn weights save failed: {e}")
+            return result
+
+        model.model_options["model_function_wrapper"] = _attn_finalizer
 
     # Hook cleanup is handled by _sigma_tracker's scene-transition logic.
     # _active_handles is cleared on each sigma reset and at the end.

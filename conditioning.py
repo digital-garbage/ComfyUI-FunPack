@@ -11824,6 +11824,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # Bless attention maps when the previous run was rated Perfect or Loved it
                 if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it", "nailed_it"}:
                     bless_attention_maps(eff_key)
+                    try:
+                        from .ltx_enhancements import bless_attn_weights
+                    except ImportError:
+                        from ltx_enhancements import bless_attn_weights
+                    bless_attn_weights(eff_key)
 
                 patched_model = build_enhancements(
                     patched_model,
@@ -11832,6 +11837,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     refinement_key=eff_key,
                     reward=prev_reward,
                     reference_latent=latent if reference_injection else None,
+                    conditioning=refined,
                 )
                 enhancement_status = f"\nLTX enhancements: temporal={temporal_style}, reward={prev_reward:+.2f}"
             except Exception as e:
