@@ -11457,14 +11457,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             self._v2_prompt_body_similarity(prev_intent_key, intent_source_prompt) < 0.50
         )
         image_changed = bool(isinstance(vision_context, dict) and vision_context.get("changed_from_previous", False))
-        perfect_freeze = (
-            is_perfect_rating
-            and not str(feedback_prompt or "").strip()
-            and not intent_drifted
-            and not image_changed
-            and not learning_mode
-            and not current_prompt_refusal
-        )
+        perfect_freeze = False  # Disabled: conditioning memory + VF maintain quality direction
+        # without freezing the prompt, which blocked intentional prompt changes after a Perfect.
 
         if current_prompt_refusal:
             prompt_to_encode = analysis_prompt
