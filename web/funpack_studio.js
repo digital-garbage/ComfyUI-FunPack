@@ -69,7 +69,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: false },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: false, latent_value_guidance: false },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -980,6 +980,11 @@ function openPanel(node) {
     valueGuidanceToggle.inp.addEventListener("change", () => { settings.refiner.value_guidance = valueGuidanceToggle.inp.checked; });
     body.append(el("div", "funpack-studio-hint", "Train an online value function on rated generations. After 5+ ratings (good and bad), the chain sampler can use it for per-step gradient steering. Enable 'embed_guidance' in the sampler to use."));
     body.append(row("Value guidance", valueGuidanceToggle.wrap));
+    if (settings.refiner.latent_value_guidance === undefined) settings.refiner.latent_value_guidance = false;
+    const latentVGToggle = toggleEl(!!settings.refiner.latent_value_guidance, "Latent value guidance training");
+    latentVGToggle.inp.addEventListener("change", () => { settings.refiner.latent_value_guidance = latentVGToggle.inp.checked; });
+    body.append(el("div", "funpack-studio-hint", "Train a second value function on rated video latents. Enables per-step latent drift toward higher-reward regions. Requires saved latents (FunPack Save Latent node) and embed_guidance in the sampler."));
+    body.append(row("Latent guidance", latentVGToggle.wrap));
     const vfActiveKey = () => settings.refinement_key || linkedRefinementKey(node);
     const vfExportBtn = btn("Export", "secondary");
     const vfImportBtn = btn("Import", "secondary");

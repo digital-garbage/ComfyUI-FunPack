@@ -6025,13 +6025,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 clear_refinement_data(refinement_key)
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Enhancement cleanup failed: {e}")
-            vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
-            try:
-                if os.path.exists(vf_path):
-                    os.remove(vf_path)
-                    print(f"[FunPackVideoRefinerV2] Value function cleared for key '{refinement_key}'")
-            except Exception as e:
-                print(f"[FunPackVideoRefinerV2] Value function cleanup failed: {e}")
+            for vf_key, label in [("value_fn", "Value function"), ("value_fn_latent", "Latent value function")]:
+                vf_path = refinement_state_path(refinement_key, vf_key, prefix="refine_v2", extension="pt")
+                try:
+                    if os.path.exists(vf_path):
+                        os.remove(vf_path)
+                        print(f"[FunPackVideoRefinerV2] {label} cleared for key '{refinement_key}'")
+                except Exception as e:
+                    print(f"[FunPackVideoRefinerV2] {label} cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
             preserved_scene_builder = None
             if reset_session and os.path.exists(path):
@@ -11122,7 +11123,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
-                  value_guidance=False, latent=None, seed_output_connected=False,
+                  value_guidance=False, latent_value_guidance=False, latent=None, seed_output_connected=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11246,6 +11247,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             print(f"[FunPackRefiner] Value function updated — {vf.n_trained} samples, buffer={len(vf.buffer_c)}")
             except Exception as e:
                 print(f"[FunPackRefiner] Value function training failed: {e}")
+        if latent_value_guidance and has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+            try:
+                import torch as _torch
+                try:
+                    from .value_function import OnlineValueFunction, compress_latent as _compress_latent
+                except ImportError:
+                    from value_function import OnlineValueFunction, compress_latent as _compress_latent
+                saved_bundle, _ = self._load_saved_latent(refinement_key, "video")
+                if saved_bundle is not None:
+                    lat = saved_bundle.get("samples")
+                    if isinstance(lat, _torch.Tensor) and lat.dim() >= 4:
+                        reward = float(learning_profile.get("reward", 0.0))
+                        lvf_path = refinement_state_path(refinement_key, "value_fn_latent", prefix="refine_v2", extension="pt")
+                        channels = lat.shape[-4] if lat.dim() == 5 else lat.shape[0]
+                        with _torch.inference_mode(False):
+                            lvf = OnlineValueFunction.load_or_create(lvf_path, hidden_dim=channels)
+                        if lvf is not None:
+                            compressed = _compress_latent(lat)
+                            lvf.train_on(compressed.unsqueeze(0).unsqueeze(0), reward)
+                            lvf.save(lvf_path)
+                            print(f"[FunPackRefiner] Latent value function updated — {lvf.n_trained} samples")
+            except Exception as e:
+                print(f"[FunPackRefiner] Latent value function training failed: {e}")
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
         repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
@@ -12987,6 +13011,7 @@ class FunPackStudio:
         reference_injection = bool(rf.get("reference_injection", False))
         vision_conditioning = bool(rf.get("vision_conditioning", True))
         value_guidance = bool(rf.get("value_guidance", False))
+        latent_value_guidance = bool(rf.get("latent_value_guidance", False))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
@@ -13115,6 +13140,7 @@ class FunPackStudio:
             split_transition_placement=split_transition_placement,
             reference_injection=reference_injection,
             value_guidance=value_guidance,
+            latent_value_guidance=latent_value_guidance,
             latent=latent,
             seed_output_connected=seed_output_connected,
             _seed=seed,
