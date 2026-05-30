@@ -12142,8 +12142,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             ascended = []
             for entry in conditioning_list:
                 tensor, extra = entry[0], entry[1]
-                ascended.append((vf.ascend(tensor), extra))
-            print(f"[FunPackRefiner] Conditioning ascent applied ({vf.n_trained} samples, {len(ascended)} scene(s))")
+                # Gradient ascent first (exploit known gradient direction)
+                c = vf.ascend(tensor)
+                # Monte Carlo search around ascended point (explore neighbourhood)
+                c = vf.search(c)
+                ascended.append((c, extra))
+            print(f"[FunPackRefiner] Conditioning ascent+search applied ({vf.n_trained} samples, {len(ascended)} scene(s))")
             return ascended
         except Exception as e:
             print(f"[FunPackRefiner] Conditioning ascent failed: {e}")

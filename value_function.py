@@ -117,6 +117,28 @@ class OnlineValueFunction(nn.Module):
                 prev_reward = reward_val
         return c.detach().to(orig_device, orig_dtype)
 
+    def search(self, conditioning, n=16):
+        """Monte Carlo conditioning search: score N random perturbations, return the best."""
+        if not self.is_ready():
+            return conditioning
+        mlp_device = next(self.parameters()).device
+        orig_device = conditioning.device
+        orig_dtype = conditioning.dtype
+        eps = conditioning.float().norm().item() * 0.025
+        with torch.inference_mode(False), torch.no_grad():
+            c_base = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
+            c_base.copy_(conditioning)
+            best = c_base
+            best_score = float(self.forward(self.compress(c_base).unsqueeze(0)).item())
+            for _ in range(n):
+                noise = F.normalize(torch.randn_like(c_base).flatten(), dim=0).reshape(c_base.shape)
+                candidate = c_base + eps * noise
+                score = float(self.forward(self.compress(candidate).unsqueeze(0)).item())
+                if score > best_score:
+                    best_score = score
+                    best = candidate
+        return best.detach().to(orig_device, orig_dtype)
+
     def is_ready(self):
         return len(self.buffer_c) >= self.MIN_SAMPLES
 
