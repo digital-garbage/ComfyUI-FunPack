@@ -438,6 +438,56 @@ def _order2_ancestral_denoised(denoised, prev_denoised, h, prev_h):
         return denoised
 
 
+def _sample_const_rf_with_rescue(model, x, sigmas, extra_args, callback, disable,
+                                 eta, s_noise,
+                                 velocity_bias_mode, velocity_bias_strength,
+                                 velocity_refinement_key, velocity_aspect_bucket,
+                                 rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig):
+    """Rectified-flow Euler-ancestral sampler for CONST models (LTXAV), mirroring
+    comfy.k_diffusion.sampling.sample_euler_ancestral_RF, with velocity-bias
+    capture/apply and reactive rescue inserted around the model eval. With velocity
+    and rescue both off, this reproduces the stock RF sampler step-for-step."""
+    extra_args = {} if extra_args is None else extra_args
+    seed = extra_args.get("seed", None)
+    noise_sampler = k_diffusion_sampling.default_noise_sampler(x, seed=seed)
+    try:
+        s_noise = s_noise * getattr(
+            model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
+    except Exception:
+        pass
+    s_in = x.new_ones([x.shape[0]])
+    total_steps = max(0, len(sigmas) - 1)
+    for i in comfy.utils.model_trange(total_steps, disable=disable):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        velocity_target = _velocity_bias_target(sigmas, sigma)
+        if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
+        denoised = model(x, sigma * s_in, **extra_args)
+        if _velocity_bias_enabled(velocity_bias_mode, "capture"):
+            _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+        if rescue_mode and velocity_target is not None:
+            denoised = _rescue_denoised(
+                denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
+                velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+            )
+        if callback is not None:
+            callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
+        if sigma_next == 0:
+            x = denoised
+        else:
+            downstep_ratio = 1 + (sigma_next / sigma - 1) * eta
+            sigma_down = sigma_next * downstep_ratio
+            alpha_ip1 = 1 - sigma_next
+            alpha_down = 1 - sigma_down
+            renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
+            sigma_down_i_ratio = sigma_down / sigma
+            x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised
+            if eta > 0:
+                x = (alpha_ip1 / alpha_down) * x + noise_sampler(sigma, sigma_next) * s_noise * renoise_coeff
+    return x
+
+
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, eta=1.0, s_noise=1.0,
                                    high_quality_pct=0.35, correction_blend=1.0,
@@ -474,6 +524,21 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
       transition into deterministic refinement.
     - Motion pulses: optional monotonic noise kicks before the late quality phase.
     """
+    # Normalize velocity/rescue params up front — both the CONST (rectified-flow)
+    # branch and the main hybrid loop rely on them.
+    velocity_bias_mode = (velocity_bias_mode or "off").lower()
+    if velocity_bias_mode not in VELOCITY_BIAS_MODES:
+        velocity_bias_mode = "off"
+    velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
+    rescue_mode = bool(rescue_mode)
+    rescue_threshold = max(0.0, min(1.0, float(rescue_threshold or 0.0)))
+    rescue_strength = max(0.0, min(0.5, float(rescue_strength or 0.0)))
+    rescue_prompt_sig = _normalize_sig(rescue_prompt_sig)  # capture also uses this
+    if rescue_mode:
+        _RESCUE_LOG["warned_no_memory"] = False
+        _RESCUE_LOG["warned_no_prompt_match"] = False
+        _RESCUE_LOG["fired"] = 0
+
     if bool(rescue_mode):
         # One-shot startup diagnostic so it is unambiguous why rescue does or does
         # not fire: confirms the option reached the sampler, whether this model
@@ -493,16 +558,20 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
               f"prompt_sig={'yes' if isinstance(rescue_prompt_sig, torch.Tensor) else 'no'}, "
               f"model_is_CONST={_is_const}, eligible_steps={_elig}")
         if _is_const is True:
-            print("[FunPack rescue] WARNING: model uses CONST sampling -> hybrid sampler falls back "
-                  "to plain euler_ancestral; velocity/rescue do NOT run.")
-        elif not _elig:
+            print("[FunPack rescue] CONST model -> using rectified-flow rescue path (velocity/rescue active).")
+        if not _elig:
             print("[FunPack rescue] WARNING: no sigma step matches a velocity target "
                   "(normalized ~0.90/0.80 +/-0.065) -> rescue/capture cannot fire on this schedule.")
 
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
-        return k_diffusion_sampling.sample_euler_ancestral(
-            model, x, sigmas, extra_args=extra_args, callback=callback,
-            disable=disable, eta=eta, s_noise=s_noise
+        # CONST (rectified-flow, e.g. LTXAV): stock comfy routes to euler_ancestral_RF,
+        # which can't host our hooks. Use a faithful RF mirror that does, so velocity
+        # bias and rescue actually run. With both off it reproduces the stock RF result.
+        return _sample_const_rf_with_rescue(
+            model, x, sigmas, extra_args, callback, disable, eta, s_noise,
+            velocity_bias_mode, velocity_bias_strength,
+            velocity_refinement_key, velocity_aspect_bucket,
+            rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
         )
 
     extra_args = {} if extra_args is None else extra_args
@@ -516,19 +585,6 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
     eta_final = max(0.0, min(float(eta), float(eta_final)))
-    velocity_bias_mode = (velocity_bias_mode or "off").lower()
-    if velocity_bias_mode not in VELOCITY_BIAS_MODES:
-        velocity_bias_mode = "off"
-    velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
-    rescue_mode = bool(rescue_mode)
-    rescue_threshold = max(0.0, min(1.0, float(rescue_threshold or 0.0)))
-    rescue_strength = max(0.0, min(0.5, float(rescue_strength or 0.0)))
-    # Normalize regardless of rescue_mode: capture also uses it to build clusters.
-    rescue_prompt_sig = _normalize_sig(rescue_prompt_sig)
-    if rescue_mode:
-        _RESCUE_LOG["warned_no_memory"] = False
-        _RESCUE_LOG["warned_no_prompt_match"] = False
-        _RESCUE_LOG["fired"] = 0
 
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, computed_motion_pulse_noise = _prepare_dynamic_sigmas(
