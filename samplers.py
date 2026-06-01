@@ -1,4 +1,6 @@
+import hashlib
 import math
+import os
 
 import torch
 
@@ -24,6 +26,97 @@ VELOCITY_BIAS_BAD_MEMORY = {}
 # capture stages here; the refiner commits it to the good or bad bank (or drops it)
 # once the user rates that generation — so neither bank is rating-blind.
 VELOCITY_BIAS_PENDING = {}
+# Refinement keys whose banks have been loaded from disk this process (load-once).
+_VELOCITY_LOADED = set()
+
+
+def _velocity_store_path(refinement_key):
+    """On-disk store for a key's velocity/rescue banks, alongside the other per-key
+    refinement data. Persisted so the learned good/bad trajectories survive restarts."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    d = os.path.join(base, "refinements", "attn_maps")
+    os.makedirs(d, exist_ok=True)
+    norm = str(refinement_key or "default").strip() or "default"
+    h = hashlib.md5(f"velocity::{norm}".encode()).hexdigest()[:16]
+    return os.path.join(d, f"velocity_{h}.pt")
+
+
+def _serialize_velocity_bank(bank, norm):
+    """weights_only-safe representation (lists/dicts/str/int + tensors; no tuple keys)."""
+    out = []
+    for key, slot in bank.items():
+        if not (isinstance(key, tuple) and len(key) == 4 and key[0] == norm):
+            continue
+        direction = slot.get("direction")
+        out.append({
+            "refkey": str(key[0]), "aspect": str(key[1]), "target": str(key[2]),
+            "shape": [int(v) for v in key[3]],
+            "count": int(slot.get("count", 0)),
+            "direction": direction.half() if isinstance(direction, torch.Tensor) else None,
+            "clusters": [
+                {"sig": c["sig"].half() if isinstance(c.get("sig"), torch.Tensor) else None,
+                 "direction": c["direction"].half() if isinstance(c.get("direction"), torch.Tensor) else None,
+                 "count": int(c.get("count", 0))}
+                for c in slot.get("clusters", []) if isinstance(c, dict)
+            ],
+        })
+    return out
+
+
+def _deserialize_velocity_into(bank, entries):
+    for e in entries or []:
+        try:
+            key = (str(e["refkey"]), str(e["aspect"]), str(e["target"]),
+                   tuple(int(v) for v in e["shape"]))
+            d = e.get("direction")
+            bank[key] = {
+                "count": int(e.get("count", 0)),
+                "direction": d.float() if isinstance(d, torch.Tensor) else None,
+                "clusters": [
+                    {"sig": c["sig"].float() if isinstance(c.get("sig"), torch.Tensor) else None,
+                     "direction": c["direction"].float() if isinstance(c.get("direction"), torch.Tensor) else None,
+                     "count": int(c.get("count", 0))}
+                    for c in e.get("clusters", []) if isinstance(c, dict)
+                ],
+            }
+        except Exception:
+            continue
+
+
+def _ensure_velocity_loaded(refinement_key):
+    """Load a key's persisted banks into memory once per process."""
+    norm = str(refinement_key or "default").strip() or "default"
+    if norm in _VELOCITY_LOADED:
+        return
+    _VELOCITY_LOADED.add(norm)
+    path = _velocity_store_path(norm)
+    if not os.path.exists(path):
+        return
+    try:
+        data = torch.load(path, map_location="cpu", weights_only=True)
+        _deserialize_velocity_into(VELOCITY_BIAS_MEMORY, data.get("good", []))
+        _deserialize_velocity_into(VELOCITY_BIAS_BAD_MEMORY, data.get("bad", []))
+        ng = sum(1 for k in VELOCITY_BIAS_MEMORY if isinstance(k, tuple) and k[0] == norm)
+        nb = sum(1 for k in VELOCITY_BIAS_BAD_MEMORY if isinstance(k, tuple) and k[0] == norm)
+        print(f"[FunPack rescue] loaded persisted velocity memory for '{norm}': {ng} good, {nb} bad bucket(s)")
+    except Exception as e:
+        print(f"[FunPack rescue] load failed: {e}")
+
+
+def _save_velocity_store(refinement_key):
+    """Persist a key's good+bad banks to disk (called after a commit changes them)."""
+    norm = str(refinement_key or "default").strip() or "default"
+    path = _velocity_store_path(norm)
+    try:
+        good = _serialize_velocity_bank(VELOCITY_BIAS_MEMORY, norm)
+        bad = _serialize_velocity_bank(VELOCITY_BIAS_BAD_MEMORY, norm)
+        if not good and not bad:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        torch.save({"good": good, "bad": bad}, path)
+    except Exception as e:
+        print(f"[FunPack rescue] save failed: {e}")
 
 # Prompt-conditioned rescue clustering. The good-trajectory memory keeps, per
 # velocity key, a set of clusters each tagged with a pooled+normalized prompt
@@ -160,12 +253,22 @@ def clear_velocity_bias_memory(refinement_key):
     prompt clusters) for a key. Called on Studio session reset so rescue and velocity
     bias start from a clean slate instead of steering toward last session's content."""
     norm = str(refinement_key or "default").strip() or "default"
+    # Make sure persisted buckets are in memory first, so the on-disk store is rewritten
+    # empty (deleted) rather than left behind.
+    _ensure_velocity_loaded(norm)
     removed = 0
     for bank in (VELOCITY_BIAS_MEMORY, VELOCITY_BIAS_BAD_MEMORY):
         for k in [k for k in list(bank) if isinstance(k, tuple) and k and k[0] == norm]:
             bank.pop(k, None)
             removed += 1
     VELOCITY_BIAS_PENDING.pop(norm, None)
+    # Delete the on-disk store too (this is the deliberate Session-reset path).
+    try:
+        path = _velocity_store_path(norm)
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception as e:
+        print(f"[FunPack rescue] disk clear failed: {e}")
     if removed:
         print(f"[FunPack rescue] cleared {removed} velocity-bias memory bucket(s) "
               f"(good+bad) for key '{norm}' (session reset)")
@@ -245,6 +348,7 @@ def commit_staged_velocity(refinement_key, verdict):
     staged = VELOCITY_BIAS_PENDING.pop(norm, None)
     if not staged or verdict == "drop":
         return 0
+    _ensure_velocity_loaded(norm)  # merge on top of any persisted buckets
     bank = VELOCITY_BIAS_MEMORY if verdict == "good" else VELOCITY_BIAS_BAD_MEMORY
     n = 0
     for key, entry in staged.items():
@@ -253,14 +357,16 @@ def commit_staged_velocity(refinement_key, verdict):
             _merge_into_bank(bank, key, d, entry.get("sig"))
             n += 1
     if n:
+        _save_velocity_store(norm)  # persist so it survives restarts
         print(f"[FunPack rescue] committed {n} staged trajectory bucket(s) to "
-              f"'{verdict}' bank for key '{norm}'")
+              f"'{verdict}' bank for key '{norm}' (persisted)")
     return n
 
 
 def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
     if target is None or strength <= 0.0:
         return x
+    _ensure_velocity_loaded(refinement_key)
     key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
     slot = VELOCITY_BIAS_MEMORY.get(key)
     if not isinstance(slot, dict) or not isinstance(slot.get("direction"), torch.Tensor):
@@ -309,6 +415,7 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, 
     sig = float(sigma.item()) if isinstance(sigma, torch.Tensor) else float(sigma)
     if sig <= 1e-6:
         return denoised
+    _ensure_velocity_loaded(refinement_key)
     key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
     good = _rescue_reference(VELOCITY_BIAS_MEMORY, key, prompt_sig, x.shape)
     bad = _rescue_reference(VELOCITY_BIAS_BAD_MEMORY, key, prompt_sig, x.shape)
