@@ -474,6 +474,31 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
       transition into deterministic refinement.
     - Motion pulses: optional monotonic noise kicks before the late quality phase.
     """
+    if bool(rescue_mode):
+        # One-shot startup diagnostic so it is unambiguous why rescue does or does
+        # not fire: confirms the option reached the sampler, whether this model
+        # bypasses the custom loop (CONST), and which steps are eligible.
+        try:
+            _is_const = isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST)
+        except Exception:
+            _is_const = "unknown"
+        try:
+            _ts = max(0, len(sigmas) - 1)
+            _elig = [(i, round(float(sigmas[i].item()), 4)) for i in range(_ts)
+                     if _velocity_bias_target(sigmas, sigmas[i]) is not None]
+        except Exception:
+            _elig = []
+        print(f"[FunPack rescue] requested — strength={float(rescue_strength)}, "
+              f"threshold={float(rescue_threshold)}, "
+              f"prompt_sig={'yes' if isinstance(rescue_prompt_sig, torch.Tensor) else 'no'}, "
+              f"model_is_CONST={_is_const}, eligible_steps={_elig}")
+        if _is_const is True:
+            print("[FunPack rescue] WARNING: model uses CONST sampling -> hybrid sampler falls back "
+                  "to plain euler_ancestral; velocity/rescue do NOT run.")
+        elif not _elig:
+            print("[FunPack rescue] WARNING: no sigma step matches a velocity target "
+                  "(normalized ~0.90/0.80 +/-0.065) -> rescue/capture cannot fire on this schedule.")
+
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
         return k_diffusion_sampling.sample_euler_ancestral(
             model, x, sigmas, extra_args=extra_args, callback=callback,
