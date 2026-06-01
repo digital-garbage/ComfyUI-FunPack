@@ -12039,6 +12039,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         enhancement_status = ""
         eff_key = refinement_key or ""
         prev_reward = float(learning_profile.get("reward", 0.0)) if isinstance(learning_profile, dict) else 0.0
+
+        # Rating-gated commit of the previous gen's staged rescue trajectory: a positive
+        # rating teaches rescue what to steer toward, Awful what to steer away from,
+        # everything else is dropped (never lets an unrated/awful run pollute the banks).
+        if eff_key and isinstance(learning_profile, dict):
+            _rk = learning_profile.get("key")
+            _verdict = "good" if _rk in {"like", "loved_it", "nailed_it"} else ("bad" if _rk == "awful" else "drop")
+            try:
+                try:
+                    from .samplers import commit_staged_velocity
+                except ImportError:
+                    from samplers import commit_staged_velocity
+                commit_staged_velocity(eff_key, _verdict)
+            except Exception as _e:
+                print(f"[FunPackVideoRefinerV2] velocity commit failed: {_e}")
         if patched_model is not None:
             try:
                 try:

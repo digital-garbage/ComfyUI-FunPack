@@ -1206,12 +1206,10 @@ function openPanel(node) {
           const rss = numInput(hc.rescue_strength, 0, 0.5, 0.01);
           rss.addEventListener("input", () => { hc.rescue_strength = parseFloat(rss.value); });
           body.append(row("rescue strength", rss));
-          if ((hc.velocity_bias_mode || "off") === "off") {
-            const note = document.createElement("div");
-            note.style.cssText = "font-size:11px;opacity:0.7;margin:2px 0 4px 0;";
-            note.textContent = "Rescue reads the velocity-bias memory. Run velocity bias mode = capture first under the same key/aspect to build it, or rescue is a no-op.";
-            body.append(note);
-          }
+          const note = document.createElement("div");
+          note.style.cssText = "font-size:11px;opacity:0.7;margin:2px 0 4px 0;";
+          note.textContent = "Rating-gated: learns automatically from your ratings while on (good = steer toward, Awful = steer away). No-op until a few gens for this prompt are rated. Session reset clears it.";
+          body.append(note);
         }
       } else if (cfg.type === "Distilled Flow") {
         const dc = cfg.distilled;

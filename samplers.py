@@ -16,7 +16,14 @@ MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
 
 VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"]
 VELOCITY_BIAS_TARGETS = (0.90, 0.80)
+# Good-trajectory bank (rating-promoted). Also read by velocity-bias "apply".
 VELOCITY_BIAS_MEMORY = {}
+# Bad-trajectory bank (promoted from Awful/dislike), used by rescue to steer away.
+VELOCITY_BIAS_BAD_MEMORY = {}
+# Per-key staging of the most recently captured trajectory, awaiting its rating.
+# capture stages here; the refiner commits it to the good or bad bank (or drops it)
+# once the user rates that generation — so neither bank is rating-blind.
+VELOCITY_BIAS_PENDING = {}
 
 # Prompt-conditioned rescue clustering. The good-trajectory memory keeps, per
 # velocity key, a set of clusters each tagged with a pooled+normalized prompt
@@ -153,14 +160,16 @@ def clear_velocity_bias_memory(refinement_key):
     prompt clusters) for a key. Called on Studio session reset so rescue and velocity
     bias start from a clean slate instead of steering toward last session's content."""
     norm = str(refinement_key or "default").strip() or "default"
-    removed = [k for k in list(VELOCITY_BIAS_MEMORY)
-               if isinstance(k, tuple) and k and k[0] == norm]
-    for k in removed:
-        VELOCITY_BIAS_MEMORY.pop(k, None)
+    removed = 0
+    for bank in (VELOCITY_BIAS_MEMORY, VELOCITY_BIAS_BAD_MEMORY):
+        for k in [k for k in list(bank) if isinstance(k, tuple) and k and k[0] == norm]:
+            bank.pop(k, None)
+            removed += 1
+    VELOCITY_BIAS_PENDING.pop(norm, None)
     if removed:
-        print(f"[FunPack rescue] cleared {len(removed)} velocity-bias memory bucket(s) "
-              f"for key '{norm}' (session reset)")
-    return len(removed)
+        print(f"[FunPack rescue] cleared {removed} velocity-bias memory bucket(s) "
+              f"(good+bad) for key '{norm}' (session reset)")
+    return removed
 
 
 def _velocity_bias_enabled(mode, action):
@@ -197,6 +206,10 @@ def _velocity_bias_target(sigmas, sigma):
 
 
 def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, denoised, prompt_sig=None):
+    """Stage this step's trajectory for the current generation. It is NOT committed to
+    any bank here — the refiner commits it to good or bad once the gen is rated, so the
+    banks never absorb unrated (possibly awful) runs. Staging overwrites per (key, shape,
+    target) so only the latest generation for a key is pending."""
     if target is None:
         return
     try:
@@ -204,7 +217,15 @@ def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, deno
     except Exception:
         return
     key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
-    slot = VELOCITY_BIAS_MEMORY.setdefault(key, {"count": 0, "direction": None})
+    norm = key[0]
+    staged = VELOCITY_BIAS_PENDING.setdefault(norm, {})
+    staged[key] = {"direction": direction,
+                   "sig": prompt_sig.clone() if isinstance(prompt_sig, torch.Tensor) else None}
+
+
+def _merge_into_bank(bank, key, direction, prompt_sig):
+    """Fold one staged trajectory into a bank's global average + prompt clusters."""
+    slot = bank.setdefault(key, {"count": 0, "direction": None})
     count = int(slot.get("count", 0))
     previous = slot.get("direction")
     if count <= 0 or not isinstance(previous, torch.Tensor) or tuple(previous.shape) != tuple(direction.shape):
@@ -213,9 +234,28 @@ def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, deno
     else:
         slot["direction"] = (previous * count + direction) / float(count + 1)
         slot["count"] = min(count + 1, 256)
-    # Prompt-conditioned clusters (used by rescue); global average above stays
-    # intact for velocity-bias apply.
     _update_prompt_clusters(slot, prompt_sig, direction)
+
+
+def commit_staged_velocity(refinement_key, verdict):
+    """Commit the staged trajectory for a key to the good or bad bank based on the
+    generation's rating. verdict: 'good' | 'bad' | 'drop'. Called by the refiner when
+    it processes the previous gen's rating. Always clears the staging slot."""
+    norm = str(refinement_key or "default").strip() or "default"
+    staged = VELOCITY_BIAS_PENDING.pop(norm, None)
+    if not staged or verdict == "drop":
+        return 0
+    bank = VELOCITY_BIAS_MEMORY if verdict == "good" else VELOCITY_BIAS_BAD_MEMORY
+    n = 0
+    for key, entry in staged.items():
+        d = entry.get("direction")
+        if isinstance(d, torch.Tensor):
+            _merge_into_bank(bank, key, d, entry.get("sig"))
+            n += 1
+    if n:
+        print(f"[FunPack rescue] committed {n} staged trajectory bucket(s) to "
+              f"'{verdict}' bank for key '{norm}'")
+    return n
 
 
 def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
@@ -244,15 +284,25 @@ def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
 _RESCUE_LOG = {"warned_no_memory": False, "warned_no_prompt_match": False, "fired": 0}
 
 
-def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength, prompt_sig=None):
-    """Reactive in-flight rescue.
+def _rescue_reference(bank, key, prompt_sig, x_shape):
+    """Resolve a steering direction from a bank: prompt-matched cluster when a prompt
+    signature is available, else the prompt-blind global average. None if absent."""
+    slot = bank.get(key)
+    if not isinstance(slot, dict):
+        return None
+    if prompt_sig is not None:
+        return _select_prompt_direction(slot, prompt_sig, x_shape)
+    g = slot.get("direction")
+    return g if isinstance(g, torch.Tensor) and tuple(g.shape) == tuple(x_shape) else None
 
-    Detects when this step's trajectory direction has diverged from the learned
-    good-trajectory memory (the same averaged ``to_d`` captured by velocity bias) by
-    more than ``threshold`` (divergence = 1 - cosine). When it has, the denoised
-    prediction is rotated back toward the good direction by ``strength``, preserving
-    its magnitude (no energy injected). Read-only on the memory. Returns ``denoised``
-    unchanged when there is no reference yet or the trajectory is still on-manifold.
+
+def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength, prompt_sig=None):
+    """Reactive in-flight rescue, rating-aware.
+
+    Pulls this step's trajectory toward the GOOD bank (rating-promoted likes) and away
+    from the BAD bank (Awful/dislike). Fires when the trajectory has diverged from good
+    beyond ``threshold`` OR aligned with bad beyond ``threshold``. Magnitude preserved
+    (no energy injected). No matching reference in either bank -> no-op.
     """
     if target is None or strength <= 0.0:
         return denoised
@@ -260,48 +310,53 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, 
     if sig <= 1e-6:
         return denoised
     key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
-    slot = VELOCITY_BIAS_MEMORY.get(key)
-    if not isinstance(slot, dict) or not isinstance(slot.get("direction"), torch.Tensor):
-        if not _RESCUE_LOG["warned_no_memory"]:
-            print("[FunPack rescue] no good-trajectory memory for this key/aspect yet — "
-                  "run with velocity_bias_mode=capture first. Rescue is a no-op until then.")
-            _RESCUE_LOG["warned_no_memory"] = True
-        return denoised
-    if prompt_sig is not None:
-        # Prompt-aware: steer only toward good trajectories captured for similar
-        # prompts. No confident prompt match -> skip (don't fall back to the
-        # prompt-blind average, which could fight a legitimately different prompt).
-        g = _select_prompt_direction(slot, prompt_sig, x.shape)
-        if g is None:
-            if not _RESCUE_LOG["warned_no_prompt_match"]:
-                print("[FunPack rescue] no prompt-matching good trajectory yet for this prompt — "
-                      "capture a few good runs with a similar prompt. Skipping (prompt-aware mode).")
-                _RESCUE_LOG["warned_no_prompt_match"] = True
-            return denoised
-    else:
-        # No prompt signature available (e.g. standalone sampler node): fall back
-        # to the prompt-blind global average.
-        g = slot["direction"]
-    if tuple(g.shape) != tuple(x.shape):
+    good = _rescue_reference(VELOCITY_BIAS_MEMORY, key, prompt_sig, x.shape)
+    bad = _rescue_reference(VELOCITY_BIAS_BAD_MEMORY, key, prompt_sig, x.shape)
+    if good is None and bad is None:
+        if not _RESCUE_LOG["warned_no_prompt_match"]:
+            print("[FunPack rescue] no rated trajectory for this prompt yet — rate a few gens "
+                  "(good builds the target, awful builds what to avoid). Skipping until then.")
+            _RESCUE_LOG["warned_no_prompt_match"] = True
         return denoised
     try:
-        g = g.to(device=x.device, dtype=torch.float32)
+        thr = float(threshold)
         d = k_diffusion_sampling.to_d(x, sigma, denoised).detach().float()
         d_norm = d.norm().clamp_min(1e-8)
-        g_norm = g.norm().clamp_min(1e-8)
-        cos = float((d.flatten() @ g.flatten()) / (d_norm * g_norm))
-        divergence = 1.0 - cos
-        if divergence <= float(threshold):
-            return denoised
+        d_unit = d / d_norm
+
+        cos_good = cos_bad = None
+        c = d_unit.clone()
+        fired_reason = []
         w = max(0.0, min(0.5, float(strength)))
-        target_unit = (1.0 - w) * (d / d_norm) + w * (g / g_norm)
-        tu_norm = target_unit.norm().clamp_min(1e-8)
-        d_corr = d_norm * (target_unit / tu_norm)
+
+        if good is not None:
+            g = good.to(device=x.device, dtype=torch.float32)
+            g_unit = g / g.norm().clamp_min(1e-8)
+            cos_good = float(d_unit.flatten() @ g_unit.flatten())
+            if (1.0 - cos_good) > thr:
+                c = c + w * (g_unit - d_unit)            # pull toward good
+                fired_reason.append(f"div_good={1.0 - cos_good:.3f}")
+
+        if bad is not None:
+            b = bad.to(device=x.device, dtype=torch.float32)
+            b_unit = b / b.norm().clamp_min(1e-8)
+            cu = c / c.norm().clamp_min(1e-8)
+            cos_bad = float(cu.flatten() @ b_unit.flatten())
+            if cos_bad > thr:
+                c = c - w * cos_bad * b_unit             # remove bad-aligned component
+                fired_reason.append(f"sim_bad={cos_bad:.3f}")
+
+        if not fired_reason:
+            return denoised  # on-manifold w.r.t. good and clear of bad
+
+        c_norm = c.norm().clamp_min(1e-8)
+        d_corr = d_norm * (c / c_norm)
         denoised_corr = (x.float() - sig * d_corr).to(dtype=denoised.dtype, device=denoised.device)
         _RESCUE_LOG["fired"] += 1
         if _RESCUE_LOG["fired"] <= 8:
-            print(f"[FunPack rescue] sigma~{sig:.3f} divergence={divergence:.3f} > "
-                  f"thr={float(threshold):.3f} -> steered toward good trajectory (w={w:.2f})")
+            refs = f"good={'y' if good is not None else 'n'},bad={'y' if bad is not None else 'n'}"
+            print(f"[FunPack rescue] sigma~{sig:.3f} {' '.join(fired_reason)} > thr={thr:.3f} "
+                  f"[{refs}] -> steered (w={w:.2f})")
         return denoised_corr
     except Exception as e:
         print(f"[FunPack rescue] skipped: {e}")
@@ -528,7 +583,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
 
         denoised = model(x, sigma * s_in, **extra_args)
 
-        if _velocity_bias_enabled(velocity_bias_mode, "capture"):
+        if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
             _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
         if rescue_mode and velocity_target is not None:
             denoised = _rescue_denoised(
@@ -771,7 +826,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
                 x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
             denoised = model(x, sigma * s_in, **extra_args)
-            if _velocity_bias_enabled(velocity_bias_mode, "capture"):
+            if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
                 denoised = _rescue_denoised(
@@ -820,7 +875,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
                 x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
             denoised = model(x, sigma * s_in, **extra_args)
-            if _velocity_bias_enabled(velocity_bias_mode, "capture"):
+            if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
                 denoised = _rescue_denoised(
@@ -948,15 +1003,15 @@ class FunPackHybridEuler2SSampler:
                 }),
                 "rescue_mode": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Reactive in-flight rescue. When a step's trajectory diverges from the learned good-trajectory memory (the same memory velocity_bias captures), steer the prediction back toward it on that step only. Requires that memory to exist first: run with velocity_bias_mode=capture under the same velocity_refinement_key/aspect to build it. Read-only on the memory; a no-op until it exists."
+                    "tooltip": "Reactive in-flight rescue, rating-gated. Steers each eligible step toward trajectories you rated good and away from ones you rated Awful (matched to the current prompt). Learns automatically from ratings while on — no separate capture step needed. A no-op until you've rated a few gens for this prompt/key (a positive rating builds the target, an Awful builds what to avoid)."
                 }),
                 "rescue_threshold": ("FLOAT", {
                     "default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "Divergence (1 - cosine to the good direction) above which rescue fires for that step. Lower = corrects more eagerly. 0.10-0.20 typical; raise toward 0.4+ to only catch severe drift."
+                    "tooltip": "Fires when the step has diverged from the good trajectory by more than this (1 - cosine) OR aligned with a bad trajectory by more than this (cosine). Lower = corrects more eagerly. 0.10-0.20 typical; raise toward 0.4+ for only severe cases."
                 }),
                 "rescue_strength": ("FLOAT", {
                     "default": 0.2, "min": 0.0, "max": 0.5, "step": 0.01,
-                    "tooltip": "How far to rotate the diverging trajectory back toward the good direction when triggered (magnitude preserved, no energy injected). Keep moderate; 0.5 fully snaps to the good direction."
+                    "tooltip": "How hard to pull toward good / push away from bad when triggered (magnitude preserved, no energy injected). Keep moderate; 0.5 is a strong correction."
                 }),
             },
             "optional": {
