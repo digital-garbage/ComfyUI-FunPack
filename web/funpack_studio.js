@@ -1188,6 +1188,10 @@ function openPanel(node) {
           const vrk = textInput(hc.velocity_refinement_key, "default");
           vrk.addEventListener("input", () => { hc.velocity_refinement_key = vrk.value; });
           body.append(row("velocity key", vrk));
+          const vrkNote = document.createElement("div");
+          vrkNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+          vrkNote.textContent = "Blank or 'default' = follow the refinement key wired into Studio (capture and rescue then share one bucket).";
+          body.append(vrkNote);
           const vab = textInput(hc.velocity_aspect_bucket, "any");
           vab.addEventListener("input", () => { hc.velocity_aspect_bucket = vab.value; });
           body.append(row("aspect bucket", vab));

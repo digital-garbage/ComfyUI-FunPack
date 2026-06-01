@@ -13379,8 +13379,17 @@ class FunPackStudio:
         except Exception as e:
             print(f"[FunPackStudio] prompt signature failed: {e}")
             prompt_sig = None
+        # Effective refinement key (same resolution as seed memory / refine_v2),
+        # used to default the velocity/rescue memory namespace so it follows the
+        # wired refinement key instead of a separate field the user must keep in sync.
+        effective_refinement_key = (
+            refinement_key_input
+            if str(refinement_key_input or "").strip() and not ov.get("refinement_key")
+            else key
+        )
         high_sampler, high_sigmas, low_sampler, low_sigmas = self._build_samplers(
-            settings.get("samplers", {}), prompt_sig=prompt_sig
+            settings.get("samplers", {}), prompt_sig=prompt_sig,
+            refinement_key=effective_refinement_key,
         )
 
         return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
@@ -13396,7 +13405,7 @@ class FunPackStudio:
         return None
 
     @classmethod
-    def _build_one_sampler(cls, cfg, prompt_sig=None):
+    def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key=""):
         sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
         sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
 
@@ -13425,6 +13434,12 @@ class FunPackStudio:
                 except ImportError:
                     from samplers import FunPackHybridEuler2SSampler
                 hc = cfg.get("hybrid", {}) if isinstance(cfg.get("hybrid"), dict) else {}
+                # Velocity/rescue memory namespace: if left blank or at the "default"
+                # placeholder, follow the wired refinement key so capture and rescue
+                # share a bucket without the user maintaining a separate field.
+                vkey = str(hc.get("velocity_refinement_key", "") or "").strip()
+                if not vkey or vkey == "default":
+                    vkey = str(refinement_key or "").strip() or "default"
                 node = FunPackHybridEuler2SSampler()
                 sampler, out_sigmas = node.get_sampler(
                     eta=float(hc.get("eta", 1.0)),
@@ -13439,7 +13454,7 @@ class FunPackStudio:
                     motion_pulse_strength=float(hc.get("motion_pulse_strength", 0.85)),
                     velocity_bias_mode=str(hc.get("velocity_bias_mode", "off")),
                     velocity_bias_strength=float(hc.get("velocity_bias_strength", 0.0)),
-                    velocity_refinement_key=str(hc.get("velocity_refinement_key", "default")),
+                    velocity_refinement_key=vkey,
                     velocity_aspect_bucket=str(hc.get("velocity_aspect_bucket", "any")),
                     rescue_mode=bool(hc.get("rescue_mode", False)),
                     rescue_threshold=float(hc.get("rescue_threshold", 0.15)),
@@ -13455,9 +13470,9 @@ class FunPackStudio:
             return None, sigmas_raw
 
     @classmethod
-    def _build_samplers(cls, samplers_cfg, prompt_sig=None):
+    def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key=""):
         if not isinstance(samplers_cfg, dict):
             samplers_cfg = {}
-        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig)
-        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig)
+        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key)
+        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key)
         return high_sampler, high_sigmas, low_sampler, low_sigmas
