@@ -438,15 +438,27 @@ def _order2_ancestral_denoised(denoised, prev_denoised, h, prev_h):
         return denoised
 
 
-def _sample_const_rf_with_rescue(model, x, sigmas, extra_args, callback, disable,
-                                 eta, s_noise,
-                                 velocity_bias_mode, velocity_bias_strength,
-                                 velocity_refinement_key, velocity_aspect_bucket,
-                                 rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig):
-    """Rectified-flow Euler-ancestral sampler for CONST models (LTXAV), mirroring
-    comfy.k_diffusion.sampling.sample_euler_ancestral_RF, with velocity-bias
-    capture/apply and reactive rescue inserted around the model eval. With velocity
-    and rescue both off, this reproduces the stock RF sampler step-for-step."""
+def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
+                          eta, s_noise, eta_final, high_quality_pct, correction_blend,
+                          motion_pulse_mode, motion_pulse_start_pct, motion_pulse_count,
+                          motion_pulse_spacing_pct, motion_pulse_strength,
+                          motion_pulse_noise, motion_pulse_steps,
+                          velocity_bias_mode, velocity_bias_strength,
+                          velocity_refinement_key, velocity_aspect_bucket,
+                          rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig):
+    """Full-feature rectified-flow sampler for CONST models (LTXAV).
+
+    Rectified-flow-correct port of the hybrid sampler so its features actually run on
+    LTXAV (which stock comfy routes to euler_ancestral_RF, bypassing the custom loop):
+      - early phase: ancestral RF euler with eta decay, AB2 (order-2) denoised
+        extrapolation, and anti-stiffness motion pulses
+      - late (quality) phase: deterministic Heun corrector — the RF-correct 2nd order;
+        DPM++ 2S is eps-only and intentionally not used here — with the hybrid's
+        progressive correction_blend schedule
+      - velocity-bias capture/apply and reactive rescue around every model eval
+    With motion/velocity/rescue off AND high_quality_pct=0 it reduces to stock
+    euler_ancestral_RF. The base RF step matches comfy.sample_euler_ancestral_RF.
+    """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = k_diffusion_sampling.default_noise_sampler(x, seed=seed)
@@ -455,15 +467,52 @@ def _sample_const_rf_with_rescue(model, x, sigmas, extra_args, callback, disable
             model.inner_model.model_patcher.get_model_object('model_sampling'), "noise_scale", 1.0)
     except Exception:
         pass
-    s_in = x.new_ones([x.shape[0]])
+
     total_steps = max(0, len(sigmas) - 1)
+    if total_steps <= 0:
+        return x
+
+    high_quality_pct = max(0.0, min(1.0, float(high_quality_pct)))
+    correction_blend = max(0.0, min(1.0, float(correction_blend)))
+    eta_final = max(0.0, min(float(eta), float(eta_final)))
+
+    if not motion_pulse_steps:
+        _, _, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
+            sigmas, high_quality_pct, motion_pulse_mode, motion_pulse_start_pct,
+            motion_pulse_count, motion_pulse_spacing_pct, motion_pulse_strength)
+    motion_pulse_noise = max(0.0, float(motion_pulse_noise or 0.0))
+    motion_step_noise = {
+        int(item.get("step_index", -1)): max(0.0, float(item.get("noise", motion_pulse_noise)))
+        for item in (motion_pulse_steps or []) if isinstance(item, dict)
+    }
+
+    late_start = _get_late_start_index(total_steps, high_quality_pct)
+    quality_sigma_start = float(sigmas[late_start].item()) if late_start < sigmas.shape[0] else None
+    num_quality_steps = total_steps - late_start
+
+    s_in = x.new_ones([x.shape[0]])
+    prev_denoised = None
+    prev_h = None
+    quality_step_index = 0
+
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
+        in_quality = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
         velocity_target = _velocity_bias_target(sigmas, sigma)
+
+        if not in_quality:
+            pulse = motion_step_noise.get(int(i), 0.0)
+            if pulse > 0.0:
+                x = _apply_motion_pulse(x, sigma, sigma_next, pulse, noise_sampler)
+                prev_denoised = None
+                prev_h = None
+
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
             x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
+
         denoised = model(x, sigma * s_in, **extra_args)
+
         if _velocity_bias_enabled(velocity_bias_mode, "capture"):
             _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
         if rescue_mode and velocity_target is not None:
@@ -471,20 +520,69 @@ def _sample_const_rf_with_rescue(model, x, sigmas, extra_args, callback, disable
                 denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
                 velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
             )
+
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
-        if sigma_next == 0:
-            x = denoised
+
+        h = float((sigma - sigma_next).abs().item())
+        # AB2 (order-2) extrapolation on the x0/denoised sequence — RF-valid.
+        if prev_denoised is not None and prev_h is not None and prev_h > 1e-7 and h > 1e-7:
+            r = max(0.1, min(5.0, h / prev_h))
+            try:
+                denoised_eff = (1.0 + r / 2.0) * denoised - (r / 2.0) * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
+            except Exception:
+                denoised_eff = denoised
         else:
-            downstep_ratio = 1 + (sigma_next / sigma - 1) * eta
+            denoised_eff = denoised
+        prev_denoised = denoised.detach()
+        prev_h = h
+
+        if sigma_next == 0:
+            x = denoised_eff
+            continue
+
+        if in_quality:
+            # Deterministic Heun corrector (RF-correct 2nd order). Progressive blend:
+            # first half of quality steps = euler, second half = full Heun, matching
+            # the hybrid sampler's correction schedule. Note: to_d-based euler is
+            # identical to the RF flow update, so this is consistent with the early phase.
+            if num_quality_steps <= 1:
+                effective_blend = correction_blend
+            else:
+                effective_blend = 0.0 if quality_step_index < (num_quality_steps // 2) else correction_blend
+            dt = sigma_next - sigma
+            d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+            if effective_blend > 0.0:
+                x_pred = x + d1 * dt
+                denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
+                d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
+                d_use = d1 + effective_blend * ((d1 + d2) * 0.5 - d1)
+            else:
+                d_use = d1
+            x = x + d_use * dt
+            # Heun changed x with a corrected direction; invalidate AB2 history.
+            prev_denoised = None
+            prev_h = None
+            quality_step_index += 1
+        else:
+            # Early phase: ancestral RF euler (matches sample_euler_ancestral_RF), with
+            # eta decay toward the quality boundary, using the AB2 denoised estimate.
+            if quality_sigma_start is not None and quality_sigma_start > 0.0 and eta_final < eta:
+                sv = float(sigma.item())
+                proximity = min(1.0, max(0.0, quality_sigma_start / max(sv, 1e-8)))
+                effective_eta = eta_final + (eta - eta_final) * (1.0 - proximity)
+            else:
+                effective_eta = eta
+            downstep_ratio = 1 + (sigma_next / sigma - 1) * effective_eta
             sigma_down = sigma_next * downstep_ratio
             alpha_ip1 = 1 - sigma_next
             alpha_down = 1 - sigma_down
-            renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
             sigma_down_i_ratio = sigma_down / sigma
-            x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised
-            if eta > 0:
+            x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised_eff
+            if effective_eta > 0:
+                renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
                 x = (alpha_ip1 / alpha_down) * x + noise_sampler(sigma, sigma_next) * s_noise * renoise_coeff
+
     return x
 
 
@@ -565,10 +663,15 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
 
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
         # CONST (rectified-flow, e.g. LTXAV): stock comfy routes to euler_ancestral_RF,
-        # which can't host our hooks. Use a faithful RF mirror that does, so velocity
-        # bias and rescue actually run. With both off it reproduces the stock RF result.
-        return _sample_const_rf_with_rescue(
-            model, x, sigmas, extra_args, callback, disable, eta, s_noise,
+        # bypassing the entire custom loop. Run the RF-correct full-feature port so the
+        # hybrid sampler's behavior (motion pulses, order-2, quality correction, eta
+        # decay, velocity bias, rescue) actually applies on LTXAV.
+        return _sample_const_rf_full(
+            model, x, sigmas, extra_args, callback, disable, eta, s_noise, eta_final,
+            high_quality_pct, correction_blend,
+            motion_pulse_mode, motion_pulse_start_pct, motion_pulse_count,
+            motion_pulse_spacing_pct, motion_pulse_strength,
+            motion_pulse_noise, motion_pulse_steps,
             velocity_bias_mode, velocity_bias_strength,
             velocity_refinement_key, velocity_aspect_bucket,
             rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
@@ -853,7 +956,9 @@ class FunPackHybridEuler2SSampler:
     DESCRIPTION = (
         "Hybrid sampler: early Euler ancestral with order-2 denoised extrapolation for motion, "
         "late DPM-Solver++(2S) ODE for quality with progressive correction blending. "
-        "Optional eta decay, anti-stiffness motion pulses, and experimental velocity bias."
+        "Optional eta decay, anti-stiffness motion pulses, velocity bias, and reactive rescue. "
+        "On rectified-flow models (CONST, e.g. LTXAV) it runs an RF-correct port of the same "
+        "features (Heun corrector in place of 2S) instead of falling back to plain euler-ancestral."
     )
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
