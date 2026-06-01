@@ -13369,8 +13369,18 @@ class FunPackStudio:
                 status = f"{status}\nConditioning adjust failed: {e}"
 
         # --- Samplers ---
+        # Pooled prompt signature so rescue can steer toward good trajectories
+        # captured for similar prompts (prompt-aware), not a prompt-blind average.
+        prompt_sig = None
+        try:
+            if isinstance(cond, list) and cond and isinstance(cond[0][0], torch.Tensor):
+                ct = cond[0][0].detach().float()
+                prompt_sig = ct.mean(dim=(0, 1)) if ct.dim() == 3 else ct.mean(dim=0)
+        except Exception as e:
+            print(f"[FunPackStudio] prompt signature failed: {e}")
+            prompt_sig = None
         high_sampler, high_sigmas, low_sampler, low_sigmas = self._build_samplers(
-            settings.get("samplers", {})
+            settings.get("samplers", {}), prompt_sig=prompt_sig
         )
 
         return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
@@ -13386,7 +13396,7 @@ class FunPackStudio:
         return None
 
     @classmethod
-    def _build_one_sampler(cls, cfg):
+    def _build_one_sampler(cls, cfg, prompt_sig=None):
         sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
         sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
 
@@ -13434,6 +13444,7 @@ class FunPackStudio:
                     rescue_mode=bool(hc.get("rescue_mode", False)),
                     rescue_threshold=float(hc.get("rescue_threshold", 0.15)),
                     rescue_strength=float(hc.get("rescue_strength", 0.2)),
+                    rescue_prompt_sig=prompt_sig,
                     sigmas=sigmas_raw,
                 )
             if out_sigmas is None:
@@ -13444,9 +13455,9 @@ class FunPackStudio:
             return None, sigmas_raw
 
     @classmethod
-    def _build_samplers(cls, samplers_cfg):
+    def _build_samplers(cls, samplers_cfg, prompt_sig=None):
         if not isinstance(samplers_cfg, dict):
             samplers_cfg = {}
-        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}))
-        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}))
+        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig)
+        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig)
         return high_sampler, high_sigmas, low_sampler, low_sigmas

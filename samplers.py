@@ -18,6 +18,86 @@ VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"]
 VELOCITY_BIAS_TARGETS = (0.90, 0.80)
 VELOCITY_BIAS_MEMORY = {}
 
+# Prompt-conditioned rescue clustering. The good-trajectory memory keeps, per
+# velocity key, a set of clusters each tagged with a pooled+normalized prompt
+# signature. Capture merges into the nearest cluster (or starts a new one);
+# rescue builds its reference from clusters whose prompt is similar enough to the
+# current run, so it steers toward what was good *for this kind of prompt* rather
+# than a prompt-blind global average.
+RESCUE_CLUSTER_MERGE_SIM = 0.92   # capture: merge into a cluster at/above this cosine
+RESCUE_CLUSTER_MAX = 8            # cap clusters per key (evict lowest-count); each holds a full-shape direction
+RESCUE_USE_SIM = 0.5              # rescue: only use clusters at/above this cosine
+RESCUE_MIN_COUNT = 2              # rescue: need this many matched captures to act
+
+
+def _normalize_sig(sig):
+    """Pooled prompt vector -> CPU float unit vector, or None."""
+    if not isinstance(sig, torch.Tensor) or sig.numel() == 0:
+        return None
+    s = sig.detach().float().reshape(-1).cpu()
+    n = s.norm()
+    if not torch.isfinite(n) or float(n) <= 1e-8:
+        return None
+    return s / n
+
+
+def _update_prompt_clusters(slot, prompt_sig, direction):
+    """Capture-side: fold (prompt_sig, direction) into the slot's prompt clusters."""
+    if prompt_sig is None:
+        return
+    clusters = slot.setdefault("clusters", [])
+    best_i, best_cos = -1, -1.0
+    for i, c in enumerate(clusters):
+        cs = c.get("sig")
+        if not isinstance(cs, torch.Tensor) or cs.shape != prompt_sig.shape:
+            continue
+        cos = float(cs @ prompt_sig)
+        if cos > best_cos:
+            best_cos, best_i = cos, i
+    if best_i >= 0 and best_cos >= RESCUE_CLUSTER_MERGE_SIM:
+        c = clusters[best_i]
+        n = int(c.get("count", 1))
+        if isinstance(c.get("direction"), torch.Tensor) and c["direction"].shape == direction.shape:
+            c["direction"] = (c["direction"] * n + direction) / float(n + 1)
+        merged = c["sig"] * n + prompt_sig
+        mn = merged.norm().clamp_min(1e-8)
+        c["sig"] = merged / mn
+        c["count"] = min(n + 1, 256)
+    else:
+        clusters.append({"sig": prompt_sig.clone(), "direction": direction.clone(), "count": 1})
+        if len(clusters) > RESCUE_CLUSTER_MAX:
+            clusters.sort(key=lambda c: int(c.get("count", 0)), reverse=True)
+            del clusters[RESCUE_CLUSTER_MAX:]
+
+
+def _select_prompt_direction(slot, prompt_sig, x_shape):
+    """Rescue-side: similarity-weighted good direction over prompt-relevant clusters.
+    Returns None when there is no confident prompt-matching reference (caller then
+    skips rescue rather than steering toward a prompt-blind average)."""
+    clusters = slot.get("clusters") if isinstance(slot, dict) else None
+    if not clusters or prompt_sig is None:
+        return None
+    num = None
+    total_w = 0.0
+    matched = 0
+    for c in clusters:
+        cs = c.get("sig")
+        d = c.get("direction")
+        if not isinstance(cs, torch.Tensor) or cs.shape != prompt_sig.shape:
+            continue
+        if not isinstance(d, torch.Tensor) or tuple(d.shape) != tuple(x_shape):
+            continue
+        cos = float(cs @ prompt_sig)
+        if cos < RESCUE_USE_SIM:
+            continue
+        contrib = d * cos
+        num = contrib if num is None else num + contrib
+        total_w += cos
+        matched += int(c.get("count", 1))
+    if num is None or total_w <= 0.0 or matched < RESCUE_MIN_COUNT:
+        return None
+    return num / total_w
+
 
 def _sigma_fn(t):
     return t.neg().exp()
@@ -101,7 +181,7 @@ def _velocity_bias_target(sigmas, sigma):
     return target if abs(float(target) - ratio) <= 0.065 else None
 
 
-def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, denoised):
+def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, denoised, prompt_sig=None):
     if target is None:
         return
     try:
@@ -115,9 +195,12 @@ def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, deno
     if count <= 0 or not isinstance(previous, torch.Tensor) or tuple(previous.shape) != tuple(direction.shape):
         slot["direction"] = direction
         slot["count"] = 1
-        return
-    slot["direction"] = (previous * count + direction) / float(count + 1)
-    slot["count"] = min(count + 1, 256)
+    else:
+        slot["direction"] = (previous * count + direction) / float(count + 1)
+        slot["count"] = min(count + 1, 256)
+    # Prompt-conditioned clusters (used by rescue); global average above stays
+    # intact for velocity-bias apply.
+    _update_prompt_clusters(slot, prompt_sig, direction)
 
 
 def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
@@ -143,10 +226,10 @@ def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
 
 
 # Per-run rescue logging state, reset at the start of each sampler call.
-_RESCUE_LOG = {"warned_no_memory": False, "fired": 0}
+_RESCUE_LOG = {"warned_no_memory": False, "warned_no_prompt_match": False, "fired": 0}
 
 
-def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength):
+def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength, prompt_sig=None):
     """Reactive in-flight rescue.
 
     Detects when this step's trajectory direction has diverged from the learned
@@ -169,7 +252,21 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, 
                   "run with velocity_bias_mode=capture first. Rescue is a no-op until then.")
             _RESCUE_LOG["warned_no_memory"] = True
         return denoised
-    g = slot["direction"]
+    if prompt_sig is not None:
+        # Prompt-aware: steer only toward good trajectories captured for similar
+        # prompts. No confident prompt match -> skip (don't fall back to the
+        # prompt-blind average, which could fight a legitimately different prompt).
+        g = _select_prompt_direction(slot, prompt_sig, x.shape)
+        if g is None:
+            if not _RESCUE_LOG["warned_no_prompt_match"]:
+                print("[FunPack rescue] no prompt-matching good trajectory yet for this prompt — "
+                      "capture a few good runs with a similar prompt. Skipping (prompt-aware mode).")
+                _RESCUE_LOG["warned_no_prompt_match"] = True
+            return denoised
+    else:
+        # No prompt signature available (e.g. standalone sampler node): fall back
+        # to the prompt-blind global average.
+        g = slot["direction"]
     if tuple(g.shape) != tuple(x.shape):
         return denoised
     try:
@@ -359,6 +456,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    rescue_mode=False,
                                    rescue_threshold=0.15,
                                    rescue_strength=0.2,
+                                   rescue_prompt_sig=None,
                                    eta_final=1.0):
     """
     Hybrid sampler:
@@ -400,8 +498,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     rescue_mode = bool(rescue_mode)
     rescue_threshold = max(0.0, min(1.0, float(rescue_threshold or 0.0)))
     rescue_strength = max(0.0, min(0.5, float(rescue_strength or 0.0)))
+    # Normalize regardless of rescue_mode: capture also uses it to build clusters.
+    rescue_prompt_sig = _normalize_sig(rescue_prompt_sig)
     if rescue_mode:
         _RESCUE_LOG["warned_no_memory"] = False
+        _RESCUE_LOG["warned_no_prompt_match"] = False
         _RESCUE_LOG["fired"] = 0
 
     if not motion_pulse_steps:
@@ -468,11 +569,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
             denoised = model(x, sigma * s_in, **extra_args)
             if _velocity_bias_enabled(velocity_bias_mode, "capture"):
-                _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised)
+                _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
                 denoised = _rescue_denoised(
                     denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
-                    velocity_target, rescue_threshold, rescue_strength,
+                    velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                 )
 
             if callback is not None:
@@ -667,7 +768,7 @@ class FunPackHybridEuler2SSampler:
                     motion_pulse_strength=0.85, velocity_bias_mode="off",
                     velocity_bias_strength=0.0, velocity_refinement_key="default",
                     velocity_aspect_bucket="any", rescue_mode=False,
-                    rescue_threshold=0.15, rescue_strength=0.2,
+                    rescue_threshold=0.15, rescue_strength=0.2, rescue_prompt_sig=None,
                     sigmas=None, eta_final=1.0):
         prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
@@ -700,6 +801,7 @@ class FunPackHybridEuler2SSampler:
                 "rescue_mode": rescue_mode,
                 "rescue_threshold": rescue_threshold,
                 "rescue_strength": rescue_strength,
+                "rescue_prompt_sig": rescue_prompt_sig,
                 "eta_final": eta_final,
             }
         )
