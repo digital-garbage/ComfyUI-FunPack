@@ -217,6 +217,17 @@ def clear_refinement_data(refinement_key):
                 os.remove(path)
         except Exception as e:
             print(f"[FunPackEnhancements] Cleanup failed for {path}: {e}")
+    # Velocity-bias / rescue trajectory memory is in-process (not a file), so clear
+    # it here too — otherwise a session reset leaves stale good-trajectory memory that
+    # rescue and velocity bias would keep steering toward.
+    try:
+        try:
+            from .samplers import clear_velocity_bias_memory
+        except ImportError:
+            from samplers import clear_velocity_bias_memory
+        clear_velocity_bias_memory(refinement_key)
+    except Exception as e:
+        print(f"[FunPackEnhancements] Velocity memory cleanup failed: {e}")
 
 
 def bless_attention_maps(refinement_key):

@@ -148,6 +148,21 @@ def _apply_motion_pulse(x, sigma, sigma_next, pulse_noise, noise_sampler):
     return x + noise_sampler(sigma, sigma_next) * (pulse_noise * sigma_delta)
 
 
+def clear_velocity_bias_memory(refinement_key):
+    """Drop all stored velocity-bias / rescue trajectory memory (global averages and
+    prompt clusters) for a key. Called on Studio session reset so rescue and velocity
+    bias start from a clean slate instead of steering toward last session's content."""
+    norm = str(refinement_key or "default").strip() or "default"
+    removed = [k for k in list(VELOCITY_BIAS_MEMORY)
+               if isinstance(k, tuple) and k and k[0] == norm]
+    for k in removed:
+        VELOCITY_BIAS_MEMORY.pop(k, None)
+    if removed:
+        print(f"[FunPack rescue] cleared {len(removed)} velocity-bias memory bucket(s) "
+              f"for key '{norm}' (session reset)")
+    return len(removed)
+
+
 def _velocity_bias_enabled(mode, action):
     mode = (mode or "off").lower()
     if mode == "capture_and_apply":
