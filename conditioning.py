@@ -13431,6 +13431,9 @@ class FunPackStudio:
                     velocity_bias_strength=float(hc.get("velocity_bias_strength", 0.0)),
                     velocity_refinement_key=str(hc.get("velocity_refinement_key", "default")),
                     velocity_aspect_bucket=str(hc.get("velocity_aspect_bucket", "any")),
+                    rescue_mode=bool(hc.get("rescue_mode", False)),
+                    rescue_threshold=float(hc.get("rescue_threshold", 0.15)),
+                    rescue_strength=float(hc.get("rescue_strength", 0.2)),
                     sigmas=sigmas_raw,
                 )
             if out_sigmas is None:

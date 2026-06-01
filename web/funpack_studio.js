@@ -74,8 +74,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any" }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any" }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
     },
   };
 }
@@ -1191,6 +1191,23 @@ function openPanel(node) {
           const vab = textInput(hc.velocity_aspect_bucket, "any");
           vab.addEventListener("input", () => { hc.velocity_aspect_bucket = vab.value; });
           body.append(row("aspect bucket", vab));
+        }
+        const rsm = selectEl(["off", "on"], hc.rescue_mode ? "on" : "off");
+        rsm.addEventListener("change", () => { hc.rescue_mode = (rsm.value === "on"); renderSampler(); });
+        body.append(row("rescue mode", rsm));
+        if (hc.rescue_mode) {
+          const rst = numInput(hc.rescue_threshold, 0, 1, 0.01);
+          rst.addEventListener("input", () => { hc.rescue_threshold = parseFloat(rst.value); });
+          body.append(row("rescue threshold", rst));
+          const rss = numInput(hc.rescue_strength, 0, 0.5, 0.01);
+          rss.addEventListener("input", () => { hc.rescue_strength = parseFloat(rss.value); });
+          body.append(row("rescue strength", rss));
+          if ((hc.velocity_bias_mode || "off") === "off") {
+            const note = document.createElement("div");
+            note.style.cssText = "font-size:11px;opacity:0.7;margin:2px 0 4px 0;";
+            note.textContent = "Rescue reads the velocity-bias memory. Run velocity bias mode = capture first under the same key/aspect to build it, or rescue is a no-op.";
+            body.append(note);
+          }
         }
       } else if (cfg.type === "Distilled Flow") {
         const dc = cfg.distilled;
