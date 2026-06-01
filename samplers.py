@@ -142,6 +142,60 @@ def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
         return x
 
 
+# Per-run rescue logging state, reset at the start of each sampler call.
+_RESCUE_LOG = {"warned_no_memory": False, "fired": 0}
+
+
+def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength):
+    """Reactive in-flight rescue.
+
+    Detects when this step's trajectory direction has diverged from the learned
+    good-trajectory memory (the same averaged ``to_d`` captured by velocity bias) by
+    more than ``threshold`` (divergence = 1 - cosine). When it has, the denoised
+    prediction is rotated back toward the good direction by ``strength``, preserving
+    its magnitude (no energy injected). Read-only on the memory. Returns ``denoised``
+    unchanged when there is no reference yet or the trajectory is still on-manifold.
+    """
+    if target is None or strength <= 0.0:
+        return denoised
+    sig = float(sigma.item()) if isinstance(sigma, torch.Tensor) else float(sigma)
+    if sig <= 1e-6:
+        return denoised
+    key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
+    slot = VELOCITY_BIAS_MEMORY.get(key)
+    if not isinstance(slot, dict) or not isinstance(slot.get("direction"), torch.Tensor):
+        if not _RESCUE_LOG["warned_no_memory"]:
+            print("[FunPack rescue] no good-trajectory memory for this key/aspect yet — "
+                  "run with velocity_bias_mode=capture first. Rescue is a no-op until then.")
+            _RESCUE_LOG["warned_no_memory"] = True
+        return denoised
+    g = slot["direction"]
+    if tuple(g.shape) != tuple(x.shape):
+        return denoised
+    try:
+        g = g.to(device=x.device, dtype=torch.float32)
+        d = k_diffusion_sampling.to_d(x, sigma, denoised).detach().float()
+        d_norm = d.norm().clamp_min(1e-8)
+        g_norm = g.norm().clamp_min(1e-8)
+        cos = float((d.flatten() @ g.flatten()) / (d_norm * g_norm))
+        divergence = 1.0 - cos
+        if divergence <= float(threshold):
+            return denoised
+        w = max(0.0, min(0.5, float(strength)))
+        target_unit = (1.0 - w) * (d / d_norm) + w * (g / g_norm)
+        tu_norm = target_unit.norm().clamp_min(1e-8)
+        d_corr = d_norm * (target_unit / tu_norm)
+        denoised_corr = (x.float() - sig * d_corr).to(dtype=denoised.dtype, device=denoised.device)
+        _RESCUE_LOG["fired"] += 1
+        if _RESCUE_LOG["fired"] <= 8:
+            print(f"[FunPack rescue] sigma~{sig:.3f} divergence={divergence:.3f} > "
+                  f"thr={float(threshold):.3f} -> steered toward good trajectory (w={w:.2f})")
+        return denoised_corr
+    except Exception as e:
+        print(f"[FunPack rescue] skipped: {e}")
+        return denoised
+
+
 def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
     if sigmas is None or total_steps <= 1:
         return 0
@@ -302,6 +356,9 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    velocity_bias_strength=0.0,
                                    velocity_refinement_key="default",
                                    velocity_aspect_bucket="any",
+                                   rescue_mode=False,
+                                   rescue_threshold=0.15,
+                                   rescue_strength=0.2,
                                    eta_final=1.0):
     """
     Hybrid sampler:
@@ -340,6 +397,12 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     if velocity_bias_mode not in VELOCITY_BIAS_MODES:
         velocity_bias_mode = "off"
     velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
+    rescue_mode = bool(rescue_mode)
+    rescue_threshold = max(0.0, min(1.0, float(rescue_threshold or 0.0)))
+    rescue_strength = max(0.0, min(0.5, float(rescue_strength or 0.0)))
+    if rescue_mode:
+        _RESCUE_LOG["warned_no_memory"] = False
+        _RESCUE_LOG["fired"] = 0
 
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, computed_motion_pulse_noise = _prepare_dynamic_sigmas(
@@ -406,6 +469,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             denoised = model(x, sigma * s_in, **extra_args)
             if _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised)
+            if rescue_mode and velocity_target is not None:
+                denoised = _rescue_denoised(
+                    denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
+                    velocity_target, rescue_threshold, rescue_strength,
+                )
 
             if callback is not None:
                 callback({
@@ -565,6 +633,18 @@ class FunPackHybridEuler2SSampler:
                     "multiline": False,
                     "tooltip": "Optional aspect bucket such as landscape, portrait, square, ultrawide, or vertical."
                 }),
+                "rescue_mode": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Reactive in-flight rescue. When a step's trajectory diverges from the learned good-trajectory memory (the same memory velocity_bias captures), steer the prediction back toward it on that step only. Requires that memory to exist first: run with velocity_bias_mode=capture under the same velocity_refinement_key/aspect to build it. Read-only on the memory; a no-op until it exists."
+                }),
+                "rescue_threshold": ("FLOAT", {
+                    "default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Divergence (1 - cosine to the good direction) above which rescue fires for that step. Lower = corrects more eagerly. 0.10-0.20 typical; raise toward 0.4+ to only catch severe drift."
+                }),
+                "rescue_strength": ("FLOAT", {
+                    "default": 0.2, "min": 0.0, "max": 0.5, "step": 0.01,
+                    "tooltip": "How far to rotate the diverging trajectory back toward the good direction when triggered (magnitude preserved, no energy injected). Keep moderate; 0.5 fully snaps to the good direction."
+                }),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -586,7 +666,9 @@ class FunPackHybridEuler2SSampler:
                     motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
                     motion_pulse_strength=0.85, velocity_bias_mode="off",
                     velocity_bias_strength=0.0, velocity_refinement_key="default",
-                    velocity_aspect_bucket="any", sigmas=None, eta_final=1.0):
+                    velocity_aspect_bucket="any", rescue_mode=False,
+                    rescue_threshold=0.15, rescue_strength=0.2,
+                    sigmas=None, eta_final=1.0):
         prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
@@ -615,6 +697,9 @@ class FunPackHybridEuler2SSampler:
                 "velocity_bias_strength": velocity_bias_strength,
                 "velocity_refinement_key": velocity_refinement_key,
                 "velocity_aspect_bucket": velocity_aspect_bucket,
+                "rescue_mode": rescue_mode,
+                "rescue_threshold": rescue_threshold,
+                "rescue_strength": rescue_strength,
                 "eta_final": eta_final,
             }
         )
