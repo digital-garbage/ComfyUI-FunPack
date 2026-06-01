@@ -545,6 +545,11 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
         in_quality_phase = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
+        # Velocity-bias capture and rescue must run wherever a velocity target lands,
+        # regardless of phase. With short distilled schedules the only target step
+        # (norm sigma ~0.9) often falls inside the quality phase, so gating these to
+        # the early branch alone would silently disable them.
+        velocity_target = _velocity_bias_target(sigmas, sigma)
 
         if not in_quality_phase:
             # Adaptive eta: decay from eta toward eta_final as sigma
@@ -564,7 +569,6 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 prev_denoised = None
                 prev_h = None
 
-            velocity_target = _velocity_bias_target(sigmas, sigma)
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
                 x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
             denoised = model(x, sigma * s_in, **extra_args)
@@ -614,7 +618,16 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 mid_quality = num_quality_steps // 2
                 effective_blend = 0.0 if quality_step_index < mid_quality else correction_blend
 
+            if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
             denoised = model(x, sigma * s_in, **extra_args)
+            if _velocity_bias_enabled(velocity_bias_mode, "capture"):
+                _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+            if rescue_mode and velocity_target is not None:
+                denoised = _rescue_denoised(
+                    denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
+                    velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                )
 
             if callback is not None:
                 callback({
