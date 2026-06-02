@@ -9138,6 +9138,55 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             global_state["bad_conditioning"] = payload
             global_state["bad_conditioning_count"] = int(global_state.get("bad_conditioning_count", 0)) + 1
 
+    def _v2_learn_from_batch(self, refinement_key, rated_items):
+        """Phase 3b: learn from a controlled batch. Every entry shared frozen tokens, so axes
+        rated missing/wrong across many entries are a HIGH-CONFIDENCE signal (not seed luck).
+        Feeds each rated entry's conditioning into the per-axis direction memory (same machinery
+        as a normal rated run) AND records axes that are consistently bad as a persistent repair
+        bias the next generation consumes. rated_items: [{"rating": label, "conditioning": payload}]."""
+        try:
+            state, _ = self._v2_load_state(refinement_key)
+        except Exception as e:
+            return f"batch axis learning skipped: state load failed ({e})"
+        global_state = state.setdefault("global", {})
+        rated = 0
+        missing_votes, wrong_votes = {}, {}
+        for it in rated_items or []:
+            label = it.get("rating")
+            profile = normalize_refiner_v2_rating(label) if label else None
+            if not profile or profile.get("skip_learning"):
+                continue
+            rated += 1
+            payload = it.get("conditioning")
+            if isinstance(payload, dict):
+                try:
+                    axis_feedback = self._v2_axis_feedback(profile, global_state.get("last_missing_axes", []))
+                    self._v2_update_conditioning_memory(global_state, {"conditioning": payload}, profile, axis_feedback)
+                except Exception as e:
+                    print(f"[FunPackVideoRefinerV2] batch cond-memory update failed: {e}")
+            for ax in profile.get("missing_axes", []):
+                missing_votes[ax] = missing_votes.get(ax, 0) + 1
+            for ax in profile.get("wrong_axes", []):
+                wrong_votes[ax] = wrong_votes.get(ax, 0) + 1
+        if rated == 0:
+            return "batch axis learning: no rated entries."
+        threshold = max(2, (rated + 1) // 2)
+        consistent = [ax for ax, c in missing_votes.items() if c >= threshold]
+        consistent += [ax for ax, c in wrong_votes.items() if c >= threshold and ax not in consistent]
+        consistent = [ax for ax in consistent if ax in V2_FEEDBACK_AXES]
+        if consistent:
+            repair = set(global_state.get("active_repair_axes", []) or []) | set(consistent)
+            global_state["active_repair_axes"] = self._v2_order_axes(repair & set(V2_FEEDBACK_AXES))
+        global_state["last_batch_insight"] = {
+            "rated": rated, "missing": missing_votes, "wrong": wrong_votes, "consistent": consistent,
+        }
+        try:
+            self._v2_save_state(state, refinement_key)
+        except Exception as e:
+            return f"batch axis learning: state save failed ({e})"
+        return (f"batch axis learning: {rated} rated; consistent problem axes = "
+                f"{', '.join(consistent) if consistent else 'none (results varied by seed)'}.")
+
     def _v2_update_streaks(self, global_state, rating_profile, update_conditioning_strength=True):
         reward = float(rating_profile.get("reward", 0.0))
         if update_conditioning_strength:

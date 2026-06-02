@@ -1134,7 +1134,7 @@ function openPanel(node) {
           });
           const out = await res.json();
           if (out.error) throw new Error(out.error);
-          showError(root, `Batch submitted — trained on ${out.trained} rating(s)${out.warning ? ` (${out.warning})` : ""}.`);
+          showError(root, `Batch submitted — trained on ${out.trained} rating(s).${out.info ? " " + out.info : ""}${out.warning ? ` (${out.warning})` : ""}`);
           loadBatch();
         } catch (e) { showError(root, `Batch submit failed: ${e.message}`); submitBtn.disabled = false; }
       });

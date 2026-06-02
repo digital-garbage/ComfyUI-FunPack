@@ -87,15 +87,16 @@ def _train_batch(key, manifest, batch_dir, ratings):
     try:
         try:
             from .value_function import OnlineValueFunction
-            from .conditioning import refinement_state_path
+            from .conditioning import refinement_state_path, tensor_to_serializable, FunPackVideoRefinerV2
         except ImportError:
             from value_function import OnlineValueFunction
-            from conditioning import refinement_state_path
+            from conditioning import refinement_state_path, tensor_to_serializable, FunPackVideoRefinerV2
     except Exception as e:
         return 0, f"learning modules unavailable: {e}"
 
     vf_path = refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
     trained = 0
+    rated_items = []   # for Phase 3b axis/direction learning
     with torch.inference_mode(False):
         vf = None
         for item in manifest.get("items", []):
@@ -119,13 +120,25 @@ def _train_batch(key, manifest, batch_dir, ratings):
                 if vf is None:
                     return 0, "could not create value function"
             reward = float(profile.get("reward", 0.0))
-            vf.train_on(cond.clone(), reward)
+            vf.train_on(cond.clone(), reward)            # 3a: value function
+            try:
+                rated_items.append({"rating": label, "conditioning": tensor_to_serializable(cond)})
+            except Exception:
+                pass
             trained += 1
         if trained and vf is not None:
             vf.save(vf_path)
     if trained == 0:
         return 0, "no rated entries with saved conditioning"
-    return trained, None
+    # 3b: feed the per-axis direction memory + persistent repair bias (axes consistently rated
+    # missing/wrong across the frozen batch = high-confidence signal for the next generation).
+    axis_note = None
+    try:
+        axis_note = FunPackVideoRefinerV2()._v2_learn_from_batch(key, rated_items)
+        print(f"[FunPack batch] {axis_note}")
+    except Exception as e:
+        axis_note = f"axis learning skipped: {e}"
+    return trained, axis_note
 
 
 if PromptServer is not None and web is not None:
@@ -150,6 +163,8 @@ if PromptServer is not None and web is not None:
             "index": it.get("index"),
             "seed": it.get("seed"),
             "preview": it.get("preview"),
+            "variant": it.get("variant"),
+            "prompt": it.get("prompt"),
             "rating": it.get("rating"),
         } for it in manifest.get("items", [])]
         return web.json_response({
@@ -178,15 +193,15 @@ if PromptServer is not None and web is not None:
         if not os.path.exists(os.path.join(batch_dir, "batch.json")):
             return web.json_response({"error": "batch not found"}, status=404)
         manifest = _load_manifest(batch_dir)
-        trained, err = _train_batch(key, manifest, batch_dir, {str(k): v for k, v in ratings.items()})
+        trained, note = _train_batch(key, manifest, batch_dir, {str(k): v for k, v in ratings.items()})
         # Submit clears the batch regardless (rated material is consumed).
         try:
             shutil.rmtree(batch_dir, ignore_errors=True)
         except Exception:
             pass
-        if err and trained == 0:
-            return web.json_response({"ok": True, "trained": 0, "warning": err})
-        return web.json_response({"ok": True, "trained": trained})
+        if trained == 0:
+            return web.json_response({"ok": True, "trained": 0, "warning": note or "nothing trained"})
+        return web.json_response({"ok": True, "trained": trained, "info": note})
 
     @PromptServer.instance.routes.post("/funpack/batch/forget")
     async def funpack_batch_forget(request):
