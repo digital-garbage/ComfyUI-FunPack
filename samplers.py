@@ -2246,11 +2246,11 @@ class FunPackLTXAVSceneChainSampler:
         if negative is None:
             negative = []
 
-        # Batch Training: run the whole chain N times, frozen except the seed, persisting each
-        # result for rating in Studio. Uses sample() itself as the per-generation primitive
-        # (only the seed differs), so the conditioning/settings are provably identical.
+        # Batch Training: run the whole chain N times, persisting each result for rating in
+        # Studio. Triggered by batch_iterations > 1 (seed-only) OR by Studio packing variant
+        # conditionings into positive (the 'funpack_batch_variant' markers — variant count wins).
         batch_n = max(1, int(batch_iterations or 1))
-        if batch_n > 1:
+        if batch_n > 1 or self._split_batch_variants(positive) is not None:
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,

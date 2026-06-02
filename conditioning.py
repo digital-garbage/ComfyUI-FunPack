@@ -11322,12 +11322,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
-                  _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None):
+                  _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
+                  batch_variants=1):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
         if linked_refinement_key:
             refinement_key = linked_refinement_key
+        # Pre-shortcut prompt, kept so Batch Training can re-resolve shortcuts with different
+        # seeds to build N variant conditionings (Studio owns conditioning production).
+        _raw_positive_prompt = str(positive_prompt or "")
         positive_prompt, shortcut_status, shortcut_applied = self._v2_apply_global_shortcuts(positive_prompt, seed=seed)
         user_intent_prompt, intent_shortcut_status, intent_shortcut_applied = self._v2_apply_global_shortcuts(user_intent_prompt, seed=seed)
         if intent_shortcut_applied:
@@ -12111,6 +12115,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
         output_conditioning = [(refined, meta)]
+        # Batch Training: when Studio requests N variants, pack N conditioning entries into the
+        # single positive wire, each tagged 'funpack_batch_variant' so the Chain Sampler samples
+        # one chain per entry. If the prompt has shortcut variability the entries differ (random
+        # option per entry); otherwise they are identical and the sampler varies only the seed.
+        # (Not combined with split_by_transitions — batch variants are single-scene by design.)
+        if int(batch_variants or 1) > 1 and not split_by_transitions and not learning_mode and not prompt_only_mode:
+            packed = self._v2_build_batch_variants(
+                _raw_positive_prompt, int(batch_variants), seed, clip, encode_cache, source_image,
+                base_entry=(refined, meta), base_prompt=prompt_to_encode,
+                global_state=global_state, learning_profile=learning_profile,
+                repair_feedback=repair_feedback, intent_family_slot=current_family_slot,
+                vf=_vf_for_memory, concept_dir=_concept_dir, concept_strength=_concept_strength,
+                current_final_texts=_current_final,
+            )
+            if packed:
+                output_conditioning = packed
         if split_by_transitions:
             try:
                 scene_texts = split_scene_texts
@@ -12166,6 +12186,58 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             patched_model,
             video_latent,
         )
+
+    def _v2_build_batch_variants(self, raw_prompt, n, seed, clip, encode_cache, source_image,
+                                 base_entry, base_prompt, global_state, learning_profile,
+                                 repair_feedback, intent_family_slot, vf, concept_dir,
+                                 concept_strength, current_final_texts):
+        """Build N conditioning entries for Batch Training, each tagged 'funpack_batch_variant'.
+        Variant 0 is the fully-processed base; variants 1..N-1 re-resolve shortcuts with seed+i
+        (random option per entry) and get the same conditioning-memory treatment. When the prompt
+        has no shortcut variability, every variant resolves to the same text and reuses the base
+        cond — so the batch becomes seed-only (the Chain Sampler varies the seed per entry)."""
+        n = max(1, min(64, int(n or 1)))
+
+        def tagged(entry, i, text):
+            cond_i, meta_i = entry
+            m = dict(meta_i) if isinstance(meta_i, dict) else {}
+            m["funpack_batch_variant"] = i
+            if text:
+                m["funpack_scene_text"] = str(text)
+            return (cond_i, m)
+
+        try:
+            base_expansion = self._v2_apply_global_shortcuts(str(raw_prompt or ""), seed=seed)[0]
+        except Exception:
+            base_expansion = str(raw_prompt or "")
+        out = [tagged(base_entry, 0, base_prompt)]
+        cache = {base_expansion: base_entry}
+        for i in range(1, n):
+            try:
+                exp_i = self._v2_apply_global_shortcuts(str(raw_prompt or ""), seed=seed + i)[0]
+            except Exception:
+                exp_i = base_expansion
+            entry = cache.get(exp_i)
+            if entry is None:
+                cond_i, meta_i, _, _ = self._v2_conditioning_source(
+                    clip, exp_i, None, encode_cache=encode_cache, reference_image=source_image)
+                if not isinstance(cond_i, torch.Tensor):
+                    entry = base_entry  # encode failed -> fall back to the base conditioning
+                else:
+                    try:
+                        refined_i, _ = self._v2_apply_conditioning_memory(
+                            cond_i, global_state, learning_profile, repair_feedback,
+                            intent_family_slot=intent_family_slot, vf=vf,
+                            concept_delta_dir=concept_dir, concept_delta_strength=concept_strength,
+                            current_final_texts=current_final_texts)
+                    except Exception:
+                        refined_i = cond_i
+                    entry = (refined_i, meta_i)
+                cache[exp_i] = entry
+            out.append(tagged(entry, i, exp_i))
+        print(f"[FunPackVideoRefinerV2] Batch Training: packed {len(out)} variant conditioning(s) "
+              f"({len(cache)} distinct prompt expansion(s)).")
+        return out
 
     def _v2_ascend_conditioning(self, conditioning_list, refinement_key, apply=True):
         """Gradient-ascend each conditioning tensor toward higher predicted reward.
@@ -13375,6 +13447,7 @@ class FunPackStudio:
             rating=rating,
             refinement_key=key,
             _velocity_keys=_vel_commit_keys,
+            batch_variants=int(rf.get("batch_variants", 1) or 1),
             reset_session=reset_session,
             lora_stack=active_lora_stack,
             im_feeling_lucky=im_feeling_lucky,

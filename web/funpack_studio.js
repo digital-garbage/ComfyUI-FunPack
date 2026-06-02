@@ -1062,7 +1062,7 @@ function openPanel(node) {
     // --- Batch Training rating panel ---
     body.append(sectionTitle("Batch Training"));
     body.append(el("div", "funpack-studio-hint",
-      "Rate every generation from a frozen batch (Scene Chain sampler → batch_iterations > 1). Submit teaches the value function from all of them at once — same conditioning, your ratings are the signal. Forget discards the batch. Batches are cleared on ComfyUI restart."));
+      "Press the 'Batch Training' button on the Studio node to generate a batch, then rate each one here. Submit teaches the value function from all of them at once — your ratings are the signal. Forget discards the batch. Batches are cleared on ComfyUI restart."));
     const batchContainer = el("div", "");
     const batchRefresh = btn("Refresh", "secondary");
     batchRefresh.addEventListener("click", () => loadBatch());
@@ -1085,7 +1085,7 @@ function openPanel(node) {
         return;
       }
       if (!data.found) {
-        batchContainer.append(el("div", "funpack-studio-hint", "No pending batch for this key. Run the Scene Chain sampler with batch_iterations > 1."));
+        batchContainer.append(el("div", "funpack-studio-hint", "No pending batch for this key. Press 'Batch Training' on the Studio node to make one."));
         return;
       }
       const labels = data.labels || [];
@@ -1659,6 +1659,31 @@ function setupNode(node) {
   node.widgets = (node.widgets || []).filter((w) => w.name !== "funpack_studio_open");
   node.addWidget("button", "Open Studio", "funpack_studio_open", () => {
     openPanel(node);
+  }, { serialize: false });
+
+  // Batch Training: one-shot — produce N generations (variants if the prompt has shortcut
+  // options, else seed-only), then auto-revert so the next queue is a normal single run.
+  node.widgets = (node.widgets || []).filter((w) => w.name !== "funpack_studio_batch");
+  node.addWidget("button", "Batch Training", "funpack_studio_batch", async () => {
+    const raw = window.prompt(
+      "Batch Training — how many generations?\n(Different shortcut variants if your prompt has options; otherwise the same prompt with different seeds. Rate them in Studio afterwards.)",
+      "10",
+    );
+    if (raw == null) return;
+    const n = Math.max(2, Math.min(64, parseInt(raw, 10) || 0));
+    if (n < 2) return;
+    const settings = getSettings(node);
+    settings.refiner = settings.refiner || {};
+    settings.refiner.batch_variants = n;
+    saveSettings(node, settings);
+    try {
+      await app.queuePrompt(0, 1);
+    } finally {
+      const s2 = getSettings(node);
+      s2.refiner = s2.refiner || {};
+      s2.refiner.batch_variants = 1;
+      saveSettings(node, s2);
+    }
   }, { serialize: false });
 
   node.setDirtyCanvas?.(true, true);
