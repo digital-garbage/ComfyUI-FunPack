@@ -2419,6 +2419,24 @@ class FunPackLTXAVSceneChainSampler:
         os.makedirs(d, exist_ok=True)
         return d, safe, rel
 
+    def _split_batch_variants(self, positive):
+        """If Studio packed shortcut variants into positive (each scene entry tagged with
+        'funpack_batch_variant' = variant index), return a list of per-variant positive lists in
+        variant order. None when there are no markers or only one variant (= normal seed-only)."""
+        groups = {}
+        for entry in positive:
+            meta = entry[1] if isinstance(entry, (list, tuple)) and len(entry) > 1 and isinstance(entry[1], dict) else None
+            vi = meta.get("funpack_batch_variant") if isinstance(meta, dict) else None
+            if vi is None:
+                return None
+            try:
+                groups.setdefault(int(vi), []).append(entry)
+            except (TypeError, ValueError):
+                return None
+        if len(groups) <= 1:
+            return None
+        return [groups[k] for k in sorted(groups)]
+
     def _save_batch_preview(self, decoded, path, max_frames=16, width=256):
         """Save a decoded video tensor [T,H,W,C] in 0..1 as a downscaled animated webp."""
         try:
@@ -2488,24 +2506,28 @@ class FunPackLTXAVSceneChainSampler:
         stamp = _time.strftime("%Y-%m-%d_%H-%M-%S")
         batch_dir, safe, rel = self._batch_dir(key, stamp)
         scene_prompts = [self._scene_text(c, i) for i, c in enumerate(positive[:max(1, int(max_scenes))])]
-        manifest = {"key": key, "created": stamp, "iterations": int(batch_n),
+        manifest = {"key": key, "created": stamp,
                     "subfolder": rel.replace(os.sep, "/"), "scene_prompts": scene_prompts, "items": []}
-        # Save the (frozen) conditioning that produced this batch so Submit can train the value
-        # function on (cond, rating) for every entry — same cond, N rewards = variance reduction.
-        try:
-            cond0 = positive[0][0] if isinstance(positive[0], (list, tuple)) else None
-            if isinstance(cond0, torch.Tensor):
-                torch.save(cond0.detach().cpu(), os.path.join(batch_dir, "cond.pt"))
-                manifest["cond"] = "cond.pt"
-        except Exception as e:
-            print(f"[FunPackSceneChain] batch cond save failed: {e}")
+        # Studio (the hub) owns conditioning. If it packed N shortcut VARIANTS into positive
+        # (each scene entry tagged 'funpack_batch_variant'), sample one chain per variant and the
+        # variant count wins. Otherwise this is a seed-only batch: one frozen conditioning sampled
+        # batch_n times. Either way each entry's conditioning is saved so Submit trains per entry.
+        variants = self._split_batch_variants(positive)
+        if variants is not None:
+            entries = list(enumerate(variants))   # [(idx, variant_positive_list), ...]
+            mode = "variant"
+        else:
+            entries = [(i, positive) for i in range(batch_n)]
+            mode = "seed-only"
+        manifest["iterations"] = len(entries)
+        manifest["mode"] = mode
         last = None
         base_seed = int(seed)
-        for i in range(batch_n):
-            iter_seed = base_seed + i
-            print(f"[FunPackSceneChain] Batch Training {i + 1}/{batch_n} (seed={iter_seed})")
+        for idx, pos_i in entries:
+            iter_seed = base_seed + idx
+            print(f"[FunPackSceneChain] Batch Training {idx + 1}/{len(entries)} ({mode}, seed={iter_seed})")
             out = self.sample(
-                model, vae, positive, negative, sampler, sigmas, iter_seed, latent_template,
+                model, vae, pos_i, negative, sampler, sigmas, iter_seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
                 carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
@@ -2515,9 +2537,17 @@ class FunPackLTXAVSceneChainSampler:
             )
             last = out
             out_latent = out[0]
-            iid = f"{safe}_{stamp}_{i:02d}"
+            iid = f"{safe}_{stamp}_{idx:02d}"
             latent_path = os.path.join(batch_dir, f"{iid}.latent.pt")
             preview_path = os.path.join(batch_dir, f"{iid}.webp")
+            cond_name = None
+            try:
+                cond_i = pos_i[0][0] if pos_i and isinstance(pos_i[0], (list, tuple)) else None
+                if isinstance(cond_i, torch.Tensor):
+                    cond_name = f"{iid}.cond.pt"
+                    torch.save(cond_i.detach().cpu(), os.path.join(batch_dir, cond_name))
+            except Exception as e:
+                print(f"[FunPackSceneChain] batch cond save failed: {e}")
             try:
                 torch.save({"samples": self._latent_tensors(out_latent)[0].detach().cpu()}, latent_path)
             except Exception as e:
@@ -2531,9 +2561,12 @@ class FunPackLTXAVSceneChainSampler:
             except Exception as e:
                 print(f"[FunPackSceneChain] batch decode failed: {e}")
             manifest["items"].append({
-                "index": i, "id": iid, "seed": iter_seed,
+                "index": idx, "id": iid, "seed": iter_seed,
+                "variant": idx if mode == "variant" else None,
+                "prompt": self._scene_text(pos_i[0], 0) if pos_i else None,
                 "latent": os.path.basename(latent_path) if latent_path else None,
                 "preview": os.path.basename(preview_path) if has_preview else None,
+                "cond": cond_name,
                 "rating": None,
             })
         try:
@@ -2541,8 +2574,8 @@ class FunPackLTXAVSceneChainSampler:
                 _json.dump(manifest, f, indent=2)
         except Exception as e:
             print(f"[FunPackSceneChain] batch manifest save failed: {e}")
-        status = (f"Batch Training complete: {batch_n} generations in temp/{rel.replace(os.sep, '/')} "
-                  f"(cleared on restart) — rate them in Studio.")
+        status = (f"Batch Training complete ({mode}): {manifest['iterations']} generations in "
+                  f"temp/{rel.replace(os.sep, '/')} (cleared on restart) — rate them in Studio.")
         print(f"[FunPackSceneChain] {status}")
         if last is None:
             raise RuntimeError("Batch Training produced no output.")

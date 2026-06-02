@@ -1096,8 +1096,11 @@ function openPanel(node) {
       data.items.forEach((it) => {
         const r = el("div", "");
         r.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;";
-        const name = el("span", "", `#${(it.index ?? 0)} ${it.preview || it.id} (seed ${it.seed})`);
-        name.style.cssText = "flex:1;font-size:12px;opacity:0.85;";
+        const vtag = (it.variant != null) ? `[v${it.variant}] ` : "";
+        const label = it.prompt ? it.prompt : (it.preview || it.id);
+        const name = el("span", "", `#${(it.index ?? 0)} ${vtag}${label} (seed ${it.seed})`);
+        name.title = it.preview || it.id;
+        name.style.cssText = "flex:1;font-size:12px;opacity:0.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
         const prev = btn("Preview", "secondary");
         let imgEl = null;
         prev.addEventListener("click", () => {

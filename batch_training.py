@@ -82,13 +82,8 @@ def _profile_for(label):
 
 
 def _train_batch(key, manifest, batch_dir, ratings):
-    """Train the value function on (cond, reward) for each rated entry. Returns count trained."""
-    cond_file = manifest.get("cond")
-    if not cond_file:
-        return 0, "no conditioning saved for this batch — cannot train"
-    cond_path = os.path.join(batch_dir, cond_file)
-    if not os.path.exists(cond_path):
-        return 0, "conditioning file missing"
+    """Train the value function on (cond, reward) for each rated entry — each entry carries its
+    own conditioning (identical across a seed-only batch, distinct per shortcut variant)."""
     try:
         try:
             from .value_function import OnlineValueFunction
@@ -99,15 +94,10 @@ def _train_batch(key, manifest, batch_dir, ratings):
     except Exception as e:
         return 0, f"learning modules unavailable: {e}"
 
+    vf_path = refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
+    trained = 0
     with torch.inference_mode(False):
-        cond = torch.load(cond_path, map_location="cpu")
-        if not isinstance(cond, torch.Tensor):
-            return 0, "saved conditioning is not a tensor"
-        vf_path = refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
-        vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=int(cond.shape[-1]))
-        if vf is None:
-            return 0, "could not create value function"
-        trained = 0
+        vf = None
         for item in manifest.get("items", []):
             label = ratings.get(str(item.get("id")))
             if not label:
@@ -115,11 +105,26 @@ def _train_batch(key, manifest, batch_dir, ratings):
             profile = _profile_for(label)
             if not profile or profile.get("skip_learning"):
                 continue  # '-Just forget it-' and unknowns: skip
+            cond_file = item.get("cond")
+            if not cond_file:
+                continue
+            cond_path = os.path.join(batch_dir, cond_file)
+            if not os.path.exists(cond_path):
+                continue
+            cond = torch.load(cond_path, map_location="cpu")
+            if not isinstance(cond, torch.Tensor):
+                continue
+            if vf is None:
+                vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=int(cond.shape[-1]))
+                if vf is None:
+                    return 0, "could not create value function"
             reward = float(profile.get("reward", 0.0))
             vf.train_on(cond.clone(), reward)
             trained += 1
-        if trained:
+        if trained and vf is not None:
             vf.save(vf_path)
+    if trained == 0:
+        return 0, "no rated entries with saved conditioning"
     return trained, None
 
 
