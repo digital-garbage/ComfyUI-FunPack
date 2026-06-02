@@ -1621,10 +1621,6 @@ class FunPackLTXAVSceneChainSampler:
                 }),
             },
             "optional": {
-                "batch_iterations": ("INT", {
-                    "default": 1, "min": 1, "max": 32, "step": 1,
-                    "tooltip": "Batch Training: run the entire scene chain this many times with everything frozen except the seed (seed + i). Each result is saved under <refinement_key>_<timestamp> with a preview for rating in Studio. 1 = normal single generation. Requires refinement_key_input. Controlled batch = clean RLHF signal (same conditioning, only noise varies).",
-                }),
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
                     "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
@@ -2239,24 +2235,23 @@ class FunPackLTXAVSceneChainSampler:
                carry_i2v_guides=False,
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
                embed_guidance=False, embed_guidance_strength=0.02,
-               transition_duration=16, batch_iterations=1, decode_tile_size=0,
+               transition_duration=16, decode_tile_size=0,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
             negative = []
 
-        # Batch Training: run the whole chain N times, persisting each result for rating in
-        # Studio. Triggered by batch_iterations > 1 (seed-only) OR by Studio packing variant
-        # conditionings into positive (the 'funpack_batch_variant' markers — variant count wins).
-        batch_n = max(1, int(batch_iterations or 1))
-        if batch_n > 1 or self._split_batch_variants(positive) is not None:
+        # Batch Training: Studio (the hub) packs N conditionings into positive, each scene entry
+        # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
+        # batch-count input. Sample one chain per packed entry, persist each for rating in Studio.
+        if self._split_batch_variants(positive) is not None:
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
                 carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                 embed_guidance, embed_guidance_strength, transition_duration,
-                decode_tile_size, refinement_key_input, batch_n,
+                decode_tile_size, refinement_key_input,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -2486,11 +2481,10 @@ class FunPackLTXAVSceneChainSampler:
                             latent_template, num_frames_per_scene, frame_overlap, cfg, max_scenes,
                             use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                             embed_guidance, embed_guidance_strength, transition_duration,
-                            decode_tile_size, refinement_key_input, batch_n):
-        """Run the full scene chain batch_n times — frozen except the seed (seed + i) — and
-        persist each result (latent + preview + manifest) under refinements/batches/<key>/<stamp>
-        for controlled-batch rating in Studio. Conditioning is provably identical across the
-        batch because each run reuses sample() with only the seed changed."""
+                            decode_tile_size, refinement_key_input):
+        """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
+        (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
+        Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
         import json as _json, time as _time
         key = str(refinement_key_input or "").strip()
         if not key:
@@ -2501,38 +2495,31 @@ class FunPackLTXAVSceneChainSampler:
                 carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
                 embed_guidance_strength=embed_guidance_strength, transition_duration=transition_duration,
-                batch_iterations=1, decode_tile_size=decode_tile_size, refinement_key_input="",
+                decode_tile_size=decode_tile_size, refinement_key_input="",
             )
         stamp = _time.strftime("%Y-%m-%d_%H-%M-%S")
         batch_dir, safe, rel = self._batch_dir(key, stamp)
         scene_prompts = [self._scene_text(c, i) for i, c in enumerate(positive[:max(1, int(max_scenes))])]
         manifest = {"key": key, "created": stamp,
                     "subfolder": rel.replace(os.sep, "/"), "scene_prompts": scene_prompts, "items": []}
-        # Studio (the hub) owns conditioning. If it packed N shortcut VARIANTS into positive
-        # (each scene entry tagged 'funpack_batch_variant'), sample one chain per variant and the
-        # variant count wins. Otherwise this is a seed-only batch: one frozen conditioning sampled
-        # batch_n times. Either way each entry's conditioning is saved so Submit trains per entry.
-        variants = self._split_batch_variants(positive)
-        if variants is not None:
-            entries = list(enumerate(variants))   # [(idx, variant_positive_list), ...]
-            mode = "variant"
-        else:
-            entries = [(i, positive) for i in range(batch_n)]
-            mode = "seed-only"
+        # Studio packed N entries into positive (each scene entry tagged 'funpack_batch_variant').
+        # Sample one chain per entry. Entries may be genuinely different (shortcut variants) or
+        # identical (seed-only batch — Studio packed N copies); either way each saves its own cond.
+        variants = self._split_batch_variants(positive) or [positive]
+        entries = list(enumerate(variants))   # [(idx, variant_positive_list), ...]
         manifest["iterations"] = len(entries)
-        manifest["mode"] = mode
         last = None
         base_seed = int(seed)
         for idx, pos_i in entries:
             iter_seed = base_seed + idx
-            print(f"[FunPackSceneChain] Batch Training {idx + 1}/{len(entries)} ({mode}, seed={iter_seed})")
+            print(f"[FunPackSceneChain] Batch Training {idx + 1}/{len(entries)} (seed={iter_seed})")
             out = self.sample(
                 model, vae, pos_i, negative, sampler, sigmas, iter_seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
                 carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
                 embed_guidance_strength=embed_guidance_strength, transition_duration=transition_duration,
-                batch_iterations=1, decode_tile_size=decode_tile_size, refinement_key_input=key,
+                decode_tile_size=decode_tile_size, refinement_key_input=key,
                 unique_id=None, prompt=None,
             )
             last = out
@@ -2562,7 +2549,7 @@ class FunPackLTXAVSceneChainSampler:
                 print(f"[FunPackSceneChain] batch decode failed: {e}")
             manifest["items"].append({
                 "index": idx, "id": iid, "seed": iter_seed,
-                "variant": idx if mode == "variant" else None,
+                "variant": idx,
                 "prompt": self._scene_text(pos_i[0], 0) if pos_i else None,
                 "latent": os.path.basename(latent_path) if latent_path else None,
                 "preview": os.path.basename(preview_path) if has_preview else None,
@@ -2574,7 +2561,7 @@ class FunPackLTXAVSceneChainSampler:
                 _json.dump(manifest, f, indent=2)
         except Exception as e:
             print(f"[FunPackSceneChain] batch manifest save failed: {e}")
-        status = (f"Batch Training complete ({mode}): {manifest['iterations']} generations in "
+        status = (f"Batch Training complete: {manifest['iterations']} generation(s) in "
                   f"temp/{rel.replace(os.sep, '/')} (cleared on restart) — rate them in Studio.")
         print(f"[FunPackSceneChain] {status}")
         if last is None:

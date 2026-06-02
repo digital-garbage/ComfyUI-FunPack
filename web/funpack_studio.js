@@ -474,6 +474,169 @@ function showError(panel, msg) {
   if (tgt) tgt.textContent = msg;
 }
 
+// ─── Batch Training ─────────────────────────────────────────────────────────
+const _fpBatchProcessing = new Set();   // node ids whose armed batch is currently running
+
+function batchKey(node) {
+  try { return (getSettings(node)?.refinement_key) || linkedRefinementKey(node) || ""; }
+  catch { return ""; }
+}
+
+async function refreshBatchButton(node) {
+  const w = (node.widgets || []).find((x) => x._fpBatchBtn);
+  if (!w) return;
+  let label = "Batch Training (off)";
+  try {
+    const n = parseInt(getSettings(node)?.refiner?.batch_variants || 1, 10) || 1;
+    if (_fpBatchProcessing.has(node.id)) {
+      label = "Batch Training (Processing…)";
+    } else {
+      let pending = false;
+      const key = batchKey(node);
+      if (key) {
+        try {
+          const res = await api.fetchApi(`/funpack/batch/list?key=${encodeURIComponent(key)}`, { cache: "no-store" });
+          pending = !!(await res.json()).found;
+        } catch {}
+      }
+      if (pending) label = "Batch Training (Finished — rate)";
+      else if (n > 1) label = `Batch Training (armed ×${n})`;
+      else label = "Batch Training (off)";
+    }
+  } catch {}
+  w.name = label;
+  node.setDirtyCanvas?.(true, true);
+}
+
+function refreshAllBatchButtons() {
+  try {
+    for (const node of (app.graph?._nodes || [])) {
+      if (node?.comfyClass === NODE_NAME || node?.type === NODE_NAME) refreshBatchButton(node);
+    }
+  } catch {}
+}
+
+function openBatchPanel(node) {
+  closePanel();
+  injectStyles();
+  const root = el("div", "funpack-studio-panel");
+  root.style.cssText = "position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:10000;width:min(460px,calc(100vw - 24px));";
+  document.body.append(root);
+  activePanel = root;
+
+  const header = el("div", "funpack-studio-header");
+  header.append(el("div", "funpack-studio-title", "Batch Training"));
+  const closeBtn = btn("Close");
+  closeBtn.addEventListener("click", () => { closePanel(); refreshBatchButton(node); });
+  header.append(closeBtn);
+  root.append(header);
+
+  const errorEl = el("div", "funpack-studio-error");
+  root.append(errorEl);
+  const body = el("div", "funpack-studio-body");
+  root.append(body);
+
+  const key = batchKey(node);
+
+  async function render() {
+    body.replaceChildren();
+    errorEl.textContent = "";
+    if (!key) {
+      body.append(el("div", "funpack-studio-hint", "Set a refinement key (Studio → Session) or wire refinement_key_input to use Batch Training."));
+      return;
+    }
+    let data = { found: false, labels: [] };
+    try {
+      const res = await api.fetchApi(`/funpack/batch/list?key=${encodeURIComponent(key)}`, { cache: "no-store" });
+      data = await res.json();
+    } catch (e) {
+      body.append(el("div", "funpack-studio-hint", `Batch list failed: ${e.message}`));
+      return;
+    }
+    if (data.found) renderRatingList(data);
+    else renderConfig();
+  }
+
+  function renderConfig() {
+    const settings = getSettings(node);
+    const n = parseInt(settings?.refiner?.batch_variants || 1, 10) || 1;
+    body.append(el("div", "funpack-studio-hint",
+      "A batch is a set of generations made in one run with everything frozen except the seed (and shortcut options, if your prompt has any). Set the size and Arm it, then press ComfyUI's Generate. When it finishes, reopen this window to rate each one."));
+    const sizeInput = numInput(n > 1 ? n : 10, 2, 64, 1);
+    body.append(row("Batch size", sizeInput));
+    body.append(el("div", "funpack-studio-hint", n > 1 ? `Armed: the next Generate produces ${n}.` : "Not armed — Generate runs a single normal generation."));
+    const actions = el("div", "");
+    actions.style.cssText = "display:flex;gap:6px;margin-top:8px;";
+    const armBtn = btn(n > 1 ? "Re-arm" : "Arm batch");
+    armBtn.addEventListener("click", () => {
+      const v = Math.max(2, Math.min(64, parseInt(sizeInput.value, 10) || 0));
+      const s = getSettings(node); s.refiner = s.refiner || {}; s.refiner.batch_variants = v; saveSettings(node, s);
+      refreshBatchButton(node); render();
+    });
+    const offBtn = btn("Disarm", "secondary");
+    offBtn.addEventListener("click", () => {
+      const s = getSettings(node); s.refiner = s.refiner || {}; s.refiner.batch_variants = 1; saveSettings(node, s);
+      refreshBatchButton(node); render();
+    });
+    actions.append(armBtn, offBtn);
+    body.append(actions);
+  }
+
+  function renderRatingList(data) {
+    const labels = data.labels || [];
+    const ratings = {};
+    body.append(el("div", "funpack-studio-hint",
+      `Finished batch ${data.created} — rate each, then Submit to teach the value function + repair memory. Forget discards the whole batch.`));
+    data.items.forEach((it) => {
+      const r = el("div", "");
+      r.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;";
+      const vtag = (it.variant != null) ? `[v${it.variant}] ` : "";
+      const lab = it.prompt ? it.prompt : (it.preview || it.id);
+      const name = el("span", "", `#${it.index ?? 0} ${vtag}${lab} (seed ${it.seed})`);
+      name.title = it.preview || it.id;
+      name.style.cssText = "flex:1;font-size:12px;opacity:0.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+      const prev = btn("Preview", "secondary");
+      let imgEl = null;
+      prev.addEventListener("click", () => {
+        if (imgEl) { imgEl.remove(); imgEl = null; return; }
+        const url = `/view?filename=${encodeURIComponent(it.preview)}&type=temp&subfolder=${encodeURIComponent(data.subfolder)}`;
+        imgEl = el("img", ""); imgEl.src = url; imgEl.style.cssText = "max-width:100%;border-radius:6px;margin:4px 0;"; r.after(imgEl);
+      });
+      if (!it.preview) prev.disabled = true;
+      const sel = selectEl(["— rate —", ...labels], "— rate —");
+      sel.addEventListener("change", () => { if (sel.value && sel.value !== "— rate —") ratings[it.id] = sel.value; else delete ratings[it.id]; });
+      r.append(name, prev, sel);
+      body.append(r);
+    });
+    const actions = el("div", "");
+    actions.style.cssText = "display:flex;gap:6px;margin-top:8px;";
+    const submitBtn = btn("Submit");
+    const forgetBtn = btn("Forget batch", "secondary");
+    submitBtn.addEventListener("click", async () => {
+      if (Object.keys(ratings).length === 0) { errorEl.textContent = "Rate at least one generation first."; return; }
+      submitBtn.disabled = true;
+      try {
+        const res = await api.fetchApi("/funpack/batch/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, stamp: data.stamp, ratings }) });
+        const out = await res.json();
+        if (out.error) throw new Error(out.error);
+        errorEl.textContent = `Submitted — trained on ${out.trained}.${out.info ? " " + out.info : ""}`;
+        refreshBatchButton(node); render();
+      } catch (e) { errorEl.textContent = `Submit failed: ${e.message}`; submitBtn.disabled = false; }
+    });
+    forgetBtn.addEventListener("click", async () => {
+      try {
+        const res = await api.fetchApi("/funpack/batch/forget", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, stamp: data.stamp }) });
+        const out = await res.json(); if (out.error) throw new Error(out.error);
+        refreshBatchButton(node); render();
+      } catch (e) { errorEl.textContent = `Forget failed: ${e.message}`; }
+    });
+    actions.append(submitBtn, forgetBtn);
+    body.append(actions);
+  }
+
+  render();
+}
+
 function openPanel(node) {
   closePanel();
   injectStyles();
@@ -1661,30 +1824,13 @@ function setupNode(node) {
     openPanel(node);
   }, { serialize: false });
 
-  // Batch Training: one-shot — produce N generations (variants if the prompt has shortcut
-  // options, else seed-only), then auto-revert so the next queue is a normal single run.
-  node.widgets = (node.widgets || []).filter((w) => w.name !== "funpack_studio_batch");
-  node.addWidget("button", "Batch Training", "funpack_studio_batch", async () => {
-    const raw = window.prompt(
-      "Batch Training — how many generations?\n(Different shortcut variants if your prompt has options; otherwise the same prompt with different seeds. Rate them in Studio afterwards.)",
-      "10",
-    );
-    if (raw == null) return;
-    const n = Math.max(2, Math.min(64, parseInt(raw, 10) || 0));
-    if (n < 2) return;
-    const settings = getSettings(node);
-    settings.refiner = settings.refiner || {};
-    settings.refiner.batch_variants = n;
-    saveSettings(node, settings);
-    try {
-      await app.queuePrompt(0, 1);
-    } finally {
-      const s2 = getSettings(node);
-      s2.refiner = s2.refiner || {};
-      s2.refiner.batch_variants = 1;
-      saveSettings(node, s2);
-    }
-  }, { serialize: false });
+  // Batch Training: opens its own window to arm a batch or rate a finished one. It never
+  // queues — ComfyUI's Generate runs an armed batch. The label reflects live state.
+  node.widgets = (node.widgets || []).filter((w) => !w._fpBatchBtn && w.name !== "funpack_studio_batch");
+  const batchBtn = node.addWidget("button", "Batch Training (off)", "funpack_studio_batch",
+    () => openBatchPanel(node), { serialize: false });
+  batchBtn._fpBatchBtn = true;
+  refreshBatchButton(node);
 
   node.setDirtyCanvas?.(true, true);
 }
@@ -1928,6 +2074,32 @@ function injectStyles() {
 
 app.registerExtension({
   name: "funpack.studio",
+  setup() {
+    // Drive the Batch Training button label: Processing while an armed batch runs, then
+    // Finished (and one-shot disarm so the next Generate is normal).
+    const armedStudioNodes = () => (app.graph?._nodes || []).filter(
+      (n) => (n?.comfyClass === NODE_NAME || n?.type === NODE_NAME) &&
+             parseInt(getSettings(n)?.refiner?.batch_variants || 1, 10) > 1);
+    api.addEventListener("execution_start", () => {
+      for (const n of armedStudioNodes()) _fpBatchProcessing.add(n.id);
+      refreshAllBatchButtons();
+    });
+    const onEnd = () => {
+      if (_fpBatchProcessing.size === 0) return;
+      for (const n of (app.graph?._nodes || [])) {
+        if (!_fpBatchProcessing.has(n.id)) continue;
+        _fpBatchProcessing.delete(n.id);
+        const s = getSettings(n);   // one-shot: disarm after the batch ran
+        if (s?.refiner && parseInt(s.refiner.batch_variants || 1, 10) > 1) {
+          s.refiner.batch_variants = 1;
+          saveSettings(n, s);
+        }
+      }
+      setTimeout(refreshAllBatchButtons, 400);   // give the manifest a moment to land
+    };
+    api.addEventListener("execution_success", onEnd);
+    api.addEventListener("execution_error", onEnd);
+  },
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== NODE_NAME) return;
     const orig = nodeType.prototype.onNodeCreated;
