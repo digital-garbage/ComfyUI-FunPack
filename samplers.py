@@ -199,6 +199,46 @@ def _select_prompt_direction(slot, prompt_sig, x_shape):
     return num / total_w
 
 
+def _nearest_cluster_direction(slot, prompt_sig, x_shape):
+    """Option D: the single highest-similarity prompt cluster's direction (>= RESCUE_USE_SIM).
+
+    Returns one cluster's direction rather than a blend across clusters, preserving that
+    real good trajectory's high-frequency content instead of averaging several together
+    (averaging is what low-passes / softens). None if no cluster matches confidently.
+    """
+    clusters = slot.get("clusters") if isinstance(slot, dict) else None
+    if not clusters or prompt_sig is None:
+        return None
+    best_d, best_cos = None, RESCUE_USE_SIM
+    for c in clusters:
+        cs = c.get("sig")
+        d = c.get("direction")
+        if not isinstance(cs, torch.Tensor) or cs.shape != prompt_sig.shape:
+            continue
+        if not isinstance(d, torch.Tensor) or tuple(d.shape) != tuple(x_shape):
+            continue
+        cos = float(cs @ prompt_sig)
+        if cos >= best_cos:
+            best_cos, best_d = cos, d
+    return best_d
+
+
+def _velocity_direction(slot, prompt_sig, x_shape, source="mean"):
+    """Resolve a steering direction from a bank slot.
+
+    source="nearest" (option D): single best-matching prompt cluster — preserves one
+      real good trajectory's detail. Falls back to the global mean when no cluster
+      matches (e.g. no prompt sig, or memory captured before clustering existed).
+    source="mean" (default): prompt-blind global average (legacy behavior).
+    """
+    if source == "nearest":
+        d = _nearest_cluster_direction(slot, prompt_sig, x_shape)
+        if d is not None:
+            return d
+    g = slot.get("direction") if isinstance(slot, dict) else None
+    return g if isinstance(g, torch.Tensor) and tuple(g.shape) == tuple(x_shape) else None
+
+
 def _sigma_fn(t):
     return t.neg().exp()
 
@@ -363,25 +403,54 @@ def commit_staged_velocity(refinement_key, verdict):
     return n
 
 
-def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
+def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength, sigma_ratio=None,
+                         prompt_sig=None, source="mean"):
+    """Steer the latent toward the averaged good-trajectory direction.
+
+    Two anti-softening guards (see velocity-bias quality findings):
+      C. Structure-only + sigma decay — only fires at the highest velocity target
+         (structure-forming sigma, ~0.90 ratio); the lower detail target is left
+         untouched so high-frequency detail forms freely. Within that, strength
+         decays with the sigma ratio so the push is strongest early and fades as
+         sigma drops.
+      B. Magnitude-preserving — instead of adding the delta as raw energy
+         (x + delta, which pulls the latent toward the low-variance mean and
+         progressively softens), we rotate x toward (x + delta) and renormalize
+         back to |x|. Direction is steered; no energy is injected.
+    """
     if target is None or strength <= 0.0:
+        return x
+    # C: structure target only — skip the lower (detail) targets entirely.
+    if float(target) < max(VELOCITY_BIAS_TARGETS) - 1e-6:
         return x
     _ensure_velocity_loaded(refinement_key)
     key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
     slot = VELOCITY_BIAS_MEMORY.get(key)
-    if not isinstance(slot, dict) or not isinstance(slot.get("direction"), torch.Tensor):
+    if not isinstance(slot, dict):
         return x
-    direction = slot["direction"]
-    if tuple(direction.shape) != tuple(x.shape):
+    # D: nearest single good trajectory (prompt cluster) vs prompt-blind global mean.
+    direction = _velocity_direction(slot, prompt_sig, x.shape, source=source)
+    if not isinstance(direction, torch.Tensor):
         return x
     try:
+        # C: decay strength with the sigma ratio (full at the structure target, less below).
+        decay = 1.0
+        if sigma_ratio is not None:
+            decay = max(0.0, min(1.0, float(sigma_ratio) / max(VELOCITY_BIAS_TARGETS)))
+        eff_strength = max(0.0, min(0.35, float(strength))) * decay
+        if eff_strength <= 0.0:
+            return x
         direction = direction.to(device=x.device, dtype=x.dtype)
-        delta = direction * max(0.0, min(0.35, float(strength)))
-        max_delta = x.detach().float().norm().clamp_min(1e-8) * 0.045
+        delta = direction * eff_strength
+        x_norm = x.detach().float().norm().clamp_min(1e-8)
+        max_delta = x_norm * 0.045
         delta_norm = delta.detach().float().norm().clamp_min(1e-8)
         if delta_norm > max_delta:
             delta = delta * (max_delta / delta_norm).to(device=x.device, dtype=x.dtype)
-        return x + delta
+        # B: rotate, don't add — renormalize the biased latent back to the original norm.
+        biased = x + delta
+        biased_norm = biased.detach().float().norm().clamp_min(1e-8)
+        return biased * (x_norm / biased_norm).to(device=x.device, dtype=x.dtype)
     except Exception:
         return x
 
@@ -390,19 +459,26 @@ def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength):
 _RESCUE_LOG = {"warned_no_memory": False, "warned_no_prompt_match": False, "fired": 0}
 
 
-def _rescue_reference(bank, key, prompt_sig, x_shape):
-    """Resolve a steering direction from a bank: prompt-matched cluster when a prompt
-    signature is available, else the prompt-blind global average. None if absent."""
+def _rescue_reference(bank, key, prompt_sig, x_shape, source="mean"):
+    """Resolve a steering direction from a bank.
+
+    source="nearest" (option D): single best-matching prompt cluster (one real good
+      trajectory's detail), falling back to the global average if none matches.
+    source="mean" (default): similarity-weighted blend over prompt-relevant clusters
+      when a prompt signature is available, else the prompt-blind global average.
+    """
     slot = bank.get(key)
     if not isinstance(slot, dict):
         return None
+    if source == "nearest":
+        return _velocity_direction(slot, prompt_sig, x_shape, source="nearest")
     if prompt_sig is not None:
         return _select_prompt_direction(slot, prompt_sig, x_shape)
     g = slot.get("direction")
     return g if isinstance(g, torch.Tensor) and tuple(g.shape) == tuple(x_shape) else None
 
 
-def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength, prompt_sig=None):
+def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength, prompt_sig=None, source="mean"):
     """Reactive in-flight rescue, rating-aware.
 
     Pulls this step's trajectory toward the GOOD bank (rating-promoted likes) and away
@@ -417,8 +493,8 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, 
         return denoised
     _ensure_velocity_loaded(refinement_key)
     key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
-    good = _rescue_reference(VELOCITY_BIAS_MEMORY, key, prompt_sig, x.shape)
-    bad = _rescue_reference(VELOCITY_BIAS_BAD_MEMORY, key, prompt_sig, x.shape)
+    good = _rescue_reference(VELOCITY_BIAS_MEMORY, key, prompt_sig, x.shape, source=source)
+    bad = _rescue_reference(VELOCITY_BIAS_BAD_MEMORY, key, prompt_sig, x.shape, source=source)
     if good is None and bad is None:
         if not _RESCUE_LOG["warned_no_prompt_match"]:
             print("[FunPack rescue] no rated trajectory for this prompt yet — rate a few gens "
@@ -467,6 +543,28 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, 
         return denoised_corr
     except Exception as e:
         print(f"[FunPack rescue] skipped: {e}")
+        return denoised
+
+
+def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
+    """E: temporal-average unsharp on the x0 prediction during the quality phase.
+
+    The velocity-bias mean-pull (plus order-2 averaging) low-pass the latent and
+    soften fine detail. This boosts the high-frequency component of the current
+    denoised prediction relative to the previous step's prediction (a cheap
+    temporal low-pass), restoring detail with no extra model eval. No-op when
+    disabled, on the first quality step, or after a pulse reset (no prev).
+    """
+    if not sharpness or sharpness <= 0.0 or prev_denoised is None:
+        return denoised
+    try:
+        amount = max(0.0, min(1.0, float(sharpness)))
+        prev = prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
+        if tuple(prev.shape) != tuple(denoised.shape):
+            return denoised
+        detail = denoised - 0.5 * (denoised + prev)   # 0.5 * (denoised - prev): temporal high-pass
+        return denoised + amount * detail
+    except Exception:
         return denoised
 
 
@@ -622,7 +720,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           motion_pulse_noise, motion_pulse_steps,
                           velocity_bias_mode, velocity_bias_strength,
                           velocity_refinement_key, velocity_aspect_bucket,
-                          rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig):
+                          rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
+                          quality_sharpness=0.0, velocity_bias_source="mean"):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
 
     Rectified-flow-correct port of the hybrid sampler so its features actually run on
@@ -686,7 +785,9 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 prev_h = None
 
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
+            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
+                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
 
         denoised = model(x, sigma * s_in, **extra_args)
 
@@ -696,7 +797,11 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             denoised = _rescue_denoised(
                 denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
                 velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                source=velocity_bias_source,
             )
+        # E: restore high-frequency detail lost to the velocity-bias mean-pull (quality phase only).
+        if in_quality:
+            denoised = _apply_quality_sharpness(denoised, prev_denoised, quality_sharpness)
 
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
@@ -766,6 +871,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
 def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, eta=1.0, s_noise=1.0,
                                    high_quality_pct=0.35, correction_blend=1.0,
+                                   quality_sharpness=0.0,
                                    quality_sigma_start=None,
                                    motion_pulse_mode="off",
                                    motion_pulse_start_pct=0.30,
@@ -776,6 +882,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    motion_pulse_steps=None,
                                    velocity_bias_mode="off",
                                    velocity_bias_strength=0.0,
+                                   velocity_bias_source="mean",
                                    velocity_refinement_key="default",
                                    velocity_aspect_bucket="any",
                                    rescue_mode=False,
@@ -805,6 +912,9 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     if velocity_bias_mode not in VELOCITY_BIAS_MODES:
         velocity_bias_mode = "off"
     velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
+    velocity_bias_source = (velocity_bias_source or "mean").lower()
+    if velocity_bias_source not in ("mean", "nearest"):
+        velocity_bias_source = "mean"
     rescue_mode = bool(rescue_mode)
     rescue_threshold = max(0.0, min(1.0, float(rescue_threshold or 0.0)))
     rescue_strength = max(0.0, min(0.5, float(rescue_strength or 0.0)))
@@ -852,6 +962,8 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             velocity_bias_mode, velocity_bias_strength,
             velocity_refinement_key, velocity_aspect_bucket,
             rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
+            quality_sharpness=quality_sharpness,
+            velocity_bias_source=velocity_bias_source,
         )
 
     extra_args = {} if extra_args is None else extra_args
@@ -931,7 +1043,9 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 prev_h = None
 
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
+                                         sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             denoised = model(x, sigma * s_in, **extra_args)
             if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
@@ -939,6 +1053,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 denoised = _rescue_denoised(
                     denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
                     velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                    source=velocity_bias_source,
                 )
 
             if callback is not None:
@@ -980,7 +1095,9 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 effective_blend = 0.0 if quality_step_index < mid_quality else correction_blend
 
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength)
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
+                                         sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             denoised = model(x, sigma * s_in, **extra_args)
             if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
@@ -988,7 +1105,10 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 denoised = _rescue_denoised(
                     denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
                     velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                    source=velocity_bias_source,
                 )
+            # E: restore high-frequency detail lost to the velocity-bias mean-pull.
+            denoised = _apply_quality_sharpness(denoised, prev_denoised, quality_sharpness)
 
             if callback is not None:
                 callback({
@@ -1055,6 +1175,13 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "Blend between Euler ODE (0.0) and 2S correction (1.0) for the second half of quality-phase steps."
                 }),
+                "quality_sharpness": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.01,
+                    "tooltip": "Restores fine detail lost to velocity-bias softening. Temporal-average unsharp on the x0 prediction during the quality phase only. 0 disables; 0.2-0.4 typical when velocity bias is on. Free (no extra model eval)."
+                }),
                 "motion_pulse_mode": (MOTION_PULSE_MODES, {
                     "default": "off",
                     "tooltip": "Adds early/mid anti-stiffness motion pulses. Off preserves legacy sampler behavior."
@@ -1098,6 +1225,10 @@ class FunPackHybridEuler2SSampler:
                     "step": 0.01,
                     "tooltip": "Experimental strength for applying captured early velocity bias. Keep low; 0 disables the applied delta."
                 }),
+                "velocity_bias_source": (["mean", "nearest"], {
+                    "default": "mean",
+                    "tooltip": "How velocity bias / rescue pick a good direction. 'mean' = prompt-blind global average (legacy). 'nearest' = single best-matching prompt cluster — preserves one real good gen's detail instead of a washed-out average (less softening). Affects both apply and rescue."
+                }),
                 "velocity_refinement_key": ("STRING", {
                     "default": "default",
                     "multiline": False,
@@ -1139,10 +1270,12 @@ class FunPackHybridEuler2SSampler:
     )
 
     def get_sampler(self, eta, s_noise, high_quality_pct, correction_blend,
+                    quality_sharpness=0.0,
                     motion_pulse_mode="off", motion_pulse_start_pct=0.30,
                     motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
                     motion_pulse_strength=0.85, velocity_bias_mode="off",
-                    velocity_bias_strength=0.0, velocity_refinement_key="default",
+                    velocity_bias_strength=0.0, velocity_bias_source="mean",
+                    velocity_refinement_key="default",
                     velocity_aspect_bucket="any", rescue_mode=False,
                     rescue_threshold=0.15, rescue_strength=0.2, rescue_prompt_sig=None,
                     sigmas=None, eta_final=1.0):
@@ -1162,6 +1295,7 @@ class FunPackHybridEuler2SSampler:
                 "s_noise": s_noise,
                 "high_quality_pct": high_quality_pct,
                 "correction_blend": correction_blend,
+                "quality_sharpness": quality_sharpness,
                 "quality_sigma_start": quality_sigma_start,
                 "motion_pulse_mode": motion_pulse_mode,
                 "motion_pulse_start_pct": motion_pulse_start_pct,
@@ -1172,6 +1306,7 @@ class FunPackHybridEuler2SSampler:
                 "motion_pulse_steps": motion_pulse_steps,
                 "velocity_bias_mode": velocity_bias_mode,
                 "velocity_bias_strength": velocity_bias_strength,
+                "velocity_bias_source": velocity_bias_source,
                 "velocity_refinement_key": velocity_refinement_key,
                 "velocity_aspect_bucket": velocity_aspect_bucket,
                 "rescue_mode": rescue_mode,

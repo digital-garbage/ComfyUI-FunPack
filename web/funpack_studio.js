@@ -74,8 +74,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_refinement_key: "default", velocity_aspect_bucket: "any", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", velocity_aspect_bucket: "any", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", velocity_aspect_bucket: "any", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
     },
   };
 }
@@ -1159,7 +1159,8 @@ function openPanel(node) {
         const hc = cfg.hybrid;
         body.append(sectionTitle("Hybrid Euler 2S settings"));
         [["eta", 0, 1, 0.01], ["eta_final", 0, 1, 0.01], ["s_noise", 0, 10, 0.01],
-         ["high_quality_pct", 0, 1, 0.01], ["correction_blend", 0, 1, 0.01]].forEach(([k, mn, mx, st]) => {
+         ["high_quality_pct", 0, 1, 0.01], ["correction_blend", 0, 1, 0.01],
+         ["quality_sharpness", 0, 1, 0.01]].forEach(([k, mn, mx, st]) => {
           const inp = numInput(hc[k], mn, mx, st);
           inp.addEventListener("input", () => { hc[k] = parseFloat(inp.value); });
           body.append(row(k.replace(/_/g, " "), inp));
@@ -1185,6 +1186,13 @@ function openPanel(node) {
           const vbs = numInput(hc.velocity_bias_strength, 0, 0.35, 0.01);
           vbs.addEventListener("input", () => { hc.velocity_bias_strength = parseFloat(vbs.value); });
           body.append(row("velocity bias strength", vbs));
+          const vbsrc = selectEl(["mean", "nearest"], hc.velocity_bias_source || "mean");
+          vbsrc.addEventListener("change", () => { hc.velocity_bias_source = vbsrc.value; });
+          body.append(row("bias source", vbsrc));
+          const vbsrcNote = document.createElement("div");
+          vbsrcNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+          vbsrcNote.textContent = "mean = averaged good direction (legacy). nearest = single best-matching prompt cluster, preserves one real good gen's detail (less softening). Also affects rescue.";
+          body.append(vbsrcNote);
           const vrk = textInput(hc.velocity_refinement_key, "default");
           vrk.addEventListener("input", () => { hc.velocity_refinement_key = vrk.value; });
           body.append(row("velocity key", vrk));
@@ -1206,6 +1214,16 @@ function openPanel(node) {
           const rss = numInput(hc.rescue_strength, 0, 0.5, 0.01);
           rss.addEventListener("input", () => { hc.rescue_strength = parseFloat(rss.value); });
           body.append(row("rescue strength", rss));
+          if (hc.velocity_bias_mode === "off") {
+            // Source governs rescue too; only render here when the velocity-bias block above didn't.
+            const rsrc = selectEl(["mean", "nearest"], hc.velocity_bias_source || "mean");
+            rsrc.addEventListener("change", () => { hc.velocity_bias_source = rsrc.value; });
+            body.append(row("bias source", rsrc));
+            const rsrcNote = document.createElement("div");
+            rsrcNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+            rsrcNote.textContent = "mean = blended good direction (legacy). nearest = single best-matching prompt cluster, preserves one real good gen's detail.";
+            body.append(rsrcNote);
+          }
           const note = document.createElement("div");
           note.style.cssText = "font-size:11px;opacity:0.7;margin:2px 0 4px 0;";
           note.textContent = "Rating-gated: learns automatically from your ratings while on (good = steer toward, Awful = steer away). No-op until a few gens for this prompt are rated. Session reset clears it.";
