@@ -1183,7 +1183,7 @@ function openPanel(node) {
         vbm.addEventListener("change", () => { hc.velocity_bias_mode = vbm.value; renderSampler(); });
         body.append(row("velocity bias mode", vbm));
         if (hc.velocity_bias_mode !== "off") {
-          const vbs = numInput(hc.velocity_bias_strength, 0, 0.35, 0.01);
+          const vbs = numInput(hc.velocity_bias_strength, 0, 3.0, 0.05);
           vbs.addEventListener("input", () => { hc.velocity_bias_strength = parseFloat(vbs.value); });
           body.append(row("velocity bias strength", vbs));
           const vbsrc = selectEl(["mean", "nearest"], hc.velocity_bias_source || "mean");

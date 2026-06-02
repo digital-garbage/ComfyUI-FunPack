@@ -455,13 +455,18 @@ def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength, sig
         decay = 1.0
         if sigma_ratio is not None:
             decay = max(0.0, min(1.0, float(sigma_ratio) / max(VELOCITY_BIAS_TARGETS)))
-        eff_strength = max(0.0, min(0.35, float(strength))) * decay
+        eff_strength = max(0.0, min(3.0, float(strength))) * decay
         if eff_strength <= 0.0:
             return x
         direction = direction.to(device=x.device, dtype=x.dtype)
         delta = direction * eff_strength
         x_norm = x.detach().float().norm().clamp_min(1e-8)
-        max_delta = x_norm * 0.045
+        # Cap the rotation toward the remembered direction, scaled by strength so the WHOLE
+        # slider is meaningful (the old fixed 4.5% saturated almost immediately, making the
+        # upper range a no-op). 0.30*strength keeps the low end ~unchanged (strength~0.15 ==
+        # old ~4.5%) while high strength approaches full action replacement — capped at 0.95
+        # so it never totally wipes the current gen. Magnitude-preserving renorm keeps |x|.
+        max_delta = x_norm * min(0.95, 0.30 * eff_strength)
         delta_norm = delta.detach().float().norm().clamp_min(1e-8)
         if delta_norm > max_delta:
             delta = delta * (max_delta / delta_norm).to(device=x.device, dtype=x.dtype)
@@ -1018,7 +1023,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     velocity_bias_mode = (velocity_bias_mode or "off").lower()
     if velocity_bias_mode not in VELOCITY_BIAS_MODES:
         velocity_bias_mode = "off"
-    velocity_bias_strength = max(0.0, min(0.35, float(velocity_bias_strength or 0.0)))
+    velocity_bias_strength = max(0.0, min(3.0, float(velocity_bias_strength or 0.0)))
     velocity_bias_source = (velocity_bias_source or "mean").lower()
     if velocity_bias_source not in ("mean", "nearest"):
         velocity_bias_source = "mean"
@@ -1323,9 +1328,9 @@ class FunPackHybridEuler2SSampler:
                 "velocity_bias_strength": ("FLOAT", {
                     "default": 0.0,
                     "min": 0.0,
-                    "max": 0.35,
-                    "step": 0.01,
-                    "tooltip": "Experimental strength for applying captured early velocity bias. Keep low; 0 disables the applied delta."
+                    "max": 3.0,
+                    "step": 0.05,
+                    "tooltip": "Strength of the remembered velocity (action) injected at the structure sigma. 0 disables. ~0.15 = subtle spice; 0.3-1.0 = clear action crossover; 2-3 approaches full action replacement (capped so the current gen isn't wiped). Creative tool, not for consistency."
                 }),
                 "velocity_bias_source": (["mean", "nearest"], {
                     "default": "mean",
