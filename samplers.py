@@ -2245,7 +2245,16 @@ class FunPackLTXAVSceneChainSampler:
         # Batch Training: Studio (the hub) packs N conditionings into positive, each scene entry
         # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
         # batch-count input. Sample one chain per packed entry, persist each for rating in Studio.
-        if self._split_batch_variants(positive) is not None:
+        try:
+            _marks = [(e[1].get("funpack_batch_variant")
+                       if isinstance(e, (list, tuple)) and len(e) > 1 and isinstance(e[1], dict) else None)
+                      for e in (positive or [])]
+        except Exception:
+            _marks = "?"
+        _vg = self._split_batch_variants(positive)
+        print(f"[FunPackSceneChain] Batch check: {len(positive or [])} positive entr(ies), "
+              f"variant markers={_marks}, variant groups={len(_vg) if _vg else 0}")
+        if _vg is not None:
             return self._run_batch_training(
                 model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,

@@ -12169,6 +12169,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # one chain per entry. If the prompt has shortcut variability the entries differ (random
         # option per entry); otherwise they are identical and the sampler varies only the seed.
         # (Not combined with split_by_transitions — batch variants are single-scene by design.)
+        print(f"[FunPackVideoRefinerV2] Batch Training check: batch_variants={batch_variants}, "
+              f"split_by_transitions={split_by_transitions}, learning_mode={learning_mode}, "
+              f"prompt_only={prompt_only_mode}")
         if int(batch_variants or 1) > 1 and not split_by_transitions and not learning_mode and not prompt_only_mode:
             packed = self._v2_build_batch_variants(
                 _raw_positive_prompt, int(batch_variants), seed, clip, encode_cache, source_image,
@@ -12180,6 +12183,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
             if packed:
                 output_conditioning = packed
+                print(f"[FunPackVideoRefinerV2] Batch Training: output now has {len(output_conditioning)} "
+                      f"packed entries with variant markers.")
         if split_by_transitions:
             try:
                 scene_texts = split_scene_texts
