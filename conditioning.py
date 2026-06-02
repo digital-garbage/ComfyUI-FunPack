@@ -11321,7 +11321,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
-                  value_guidance=False, latent=None, seed_output_connected=False,
+                  value_guidance=True, latent=None, seed_output_connected=False,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
@@ -11427,7 +11427,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         )
         memory_status = f"{memory_status}\n{seed_memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
         self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
-        if value_guidance and has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+        # Always train the value function in the background (cheap: a small MLP, no diffusion
+        # calls) so the reward asset accumulates regardless of whether guidance is applied.
+        # value_guidance only controls APPLICATION (ascent below) — a user who runs with it
+        # off still builds the VF, so enabling guidance later works immediately.
+        if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
             try:
                 import torch as _torch
                 try:
@@ -12142,7 +12146,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         + f"\n\nDetected scenes:\n{scene_lines}"
                     )
                     return (
-                        self._v2_ascend_conditioning(output_conditioning, refinement_key),
+                        self._v2_ascend_conditioning(output_conditioning, refinement_key, apply=value_guidance),
                         status,
                         training_info,
                         loss_graph,
@@ -12154,7 +12158,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print(f"[FunPackVideoRefinerV2] Transition split failed: {e}")
 
         return (
-            self._v2_ascend_conditioning(output_conditioning, refinement_key),
+            self._v2_ascend_conditioning(output_conditioning, refinement_key, apply=value_guidance),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12163,10 +12167,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             video_latent,
         )
 
-    def _v2_ascend_conditioning(self, conditioning_list, refinement_key):
+    def _v2_ascend_conditioning(self, conditioning_list, refinement_key, apply=True):
         """Gradient-ascend each conditioning tensor toward higher predicted reward.
-        No-op if value function is missing or not yet ready (< MIN_SAMPLES ratings)."""
-        if not conditioning_list or not refinement_key:
+        No-op if disabled (apply=False), or if the value function is missing or not yet
+        ready (< MIN_SAMPLES ratings). The VF still trains in the background when this is
+        disabled — only the application of guidance is skipped."""
+        if not apply or not conditioning_list or not refinement_key:
             return conditioning_list
         try:
             try:
@@ -13243,7 +13249,7 @@ class FunPackStudio:
             split_transition_placement = "start"
         reference_injection = bool(rf.get("reference_injection", False))
         vision_conditioning = bool(rf.get("vision_conditioning", True))
-        value_guidance = bool(rf.get("value_guidance", False))
+        value_guidance = bool(rf.get("value_guidance", True))
 
         # feedback_prompt: popup wins if override is on, else external wins
         popup_feedback = str(rf.get("feedback_prompt", "") or "")
