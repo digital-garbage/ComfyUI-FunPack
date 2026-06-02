@@ -11390,6 +11390,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 f"Intent {intent_shortcut_status}"
             )
 
+        # When a batch is being generated, the rating selected on the Studio node is stale (it
+        # would apply learning to the PREVIOUS run). Ignore it — the batch is rated afterward in
+        # the Batch Training panel. '-Just forget it-' is skip_learning, so no learning fires.
+        if int(batch_variants or 1) > 1:
+            rating = "-Just forget it-"
         rating_profile = normalize_refiner_v2_rating(rating)
         rating_label = rating_profile.get("label", str(rating))
         execution_mode = self._v2_execution_mode(mode)
@@ -12259,16 +12264,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback=repair_feedback, intent_family_slot=intent_family_slot,
                 vf=vf, concept_dir=concept_dir, concept_strength=concept_strength,
                 current_final_texts=current_final_texts)
+        # Each variant needs DISTINCT noise, but multi-scene entries carry a per-scene
+        # 'funpack_scene_seed' that the sampler honors over its own seed — so duplicating the set
+        # verbatim makes every variant identical. Override the scene seeds per variant with a
+        # seeded RNG (reproducible per gen, well-spread across variants), so the N chains differ.
+        rng = random.Random(int(seed) & 0xffffffffffffffff)
         packed = []
         for i in range(n):
-            for entry in output_conditioning:
+            variant_seed = rng.randint(1, 0xffffffffffffffff)
+            for sidx, entry in enumerate(output_conditioning):
                 cond = entry[0]
                 meta = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
                 m = dict(meta)
                 m["funpack_batch_variant"] = i
+                m["funpack_scene_seed"] = (variant_seed + sidx) & 0xffffffffffffffff
                 packed.append((cond, m))
         print(f"[FunPackVideoRefinerV2] Batch Training: packed {n} x {len(output_conditioning)}-scene "
-              f"set = {len(packed)} entries with variant markers.")
+              f"set = {len(packed)} entries with variant markers + distinct per-variant seeds.")
         return packed
 
     def _v2_build_batch_variants(self, raw_prompt, n, seed, clip, encode_cache, source_image,
