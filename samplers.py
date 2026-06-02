@@ -340,6 +340,24 @@ def _sigma_ratio(sigmas, sigma):
     return current / start
 
 
+def _effective_eta(eta, eta_final, sigmas, sigma):
+    """Ancestral eta decayed across the schedule: full ``eta`` at the start
+    (sigma == sigmas[0]) ramping linearly to ``eta_final`` near the end (sigma -> 0).
+
+    Anchored to raw schedule progress (sigma/sigmas[0]), NOT the quality-phase boundary.
+    The old anchor collapsed to sigma=0 when high_quality_pct=0, silently pinning
+    effective_eta at ``eta`` for every step (eta_final ignored) and leaving full-strength
+    ancestral noise on the final detail steps with no deterministic phase to resolve it.
+    """
+    if eta_final >= eta:
+        return eta
+    ratio = _sigma_ratio(sigmas, sigma)
+    if ratio is None:
+        return eta
+    ratio = max(0.0, min(1.0, ratio))
+    return eta_final + (eta - eta_final) * ratio
+
+
 def _velocity_bias_target(sigmas, sigma):
     ratio = _sigma_ratio(sigmas, sigma)
     if ratio is None:
@@ -934,12 +952,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         else:
             # Early phase: ancestral RF euler (matches sample_euler_ancestral_RF), with
             # eta decay toward the quality boundary, using the AB2 denoised estimate.
-            if quality_sigma_start is not None and quality_sigma_start > 0.0 and eta_final < eta:
-                sv = float(sigma.item())
-                proximity = min(1.0, max(0.0, quality_sigma_start / max(sv, 1e-8)))
-                effective_eta = eta_final + (eta - eta_final) * (1.0 - proximity)
-            else:
-                effective_eta = eta
+            effective_eta = _effective_eta(eta, eta_final, sigmas, sigma)
             # Deterministic euler-RF step to sigma_next (this is what audio rides — no
             # ancestral re-noising). For single-stream video (mask None) it is only used
             # as the eta==0 fallback; the full ancestral result is kept for video.
@@ -1121,12 +1134,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
         if not in_quality_phase:
             # Adaptive eta: decay from eta toward eta_final as sigma
             # approaches the quality boundary.
-            if quality_sigma_start is not None and quality_sigma_start > 0.0 and eta_final < eta:
-                sigma_val = float(sigma.item())
-                proximity = min(1.0, max(0.0, quality_sigma_start / max(sigma_val, 1e-8)))
-                effective_eta = eta_final + (eta - eta_final) * (1.0 - proximity)
-            else:
-                effective_eta = eta
+            effective_eta = _effective_eta(eta, eta_final, sigmas, sigma)
 
             pulse_noise = motion_step_noise.get(int(i), 0.0)
             if pulse_noise > 0.0:
