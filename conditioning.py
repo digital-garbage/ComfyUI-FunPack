@@ -12173,9 +12173,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # conditioning just before each return below — so it wraps whatever output_conditioning
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
         _do_batch = int(batch_variants or 1) > 1 and not learning_mode and not prompt_only_mode
-        print(f"[FunPackVideoRefinerV2] Batch Training check: batch_variants={batch_variants}, "
-              f"split_by_transitions={split_by_transitions}, learning_mode={learning_mode}, "
-              f"prompt_only={prompt_only_mode}, will_batch={_do_batch}")
         if split_by_transitions:
             try:
                 scene_texts = split_scene_texts
@@ -12295,8 +12292,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             m["funpack_scene_seed"] = (variant_seed[vi] + scene_idx[vi]) & 0xffffffffffffffff
             scene_idx[vi] += 1
         print(f"[FunPackVideoRefinerV2] Batch Training: packed {n} variant(s) over "
-              f"{len(output_conditioning)} scene(s) = {len(packed)} entries; per-variant seeds = "
-              f"{[variant_seed[k] for k in sorted(variant_seed)]}")
+              f"{len(output_conditioning)} scene(s) = {len(packed)} entries.")
         return packed
 
     def _v2_build_batch_variants(self, raw_prompt, n, seed, clip, encode_cache, source_image,
