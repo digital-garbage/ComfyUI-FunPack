@@ -1621,6 +1621,10 @@ class FunPackLTXAVSceneChainSampler:
                 }),
             },
             "optional": {
+                "batch_iterations": ("INT", {
+                    "default": 1, "min": 1, "max": 32, "step": 1,
+                    "tooltip": "Batch Training: run the entire scene chain this many times with everything frozen except the seed (seed + i). Each result is saved under <refinement_key>_<timestamp> with a preview for rating in Studio. 1 = normal single generation. Requires refinement_key_input. Controlled batch = clean RLHF signal (same conditioning, only noise varies).",
+                }),
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
                     "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
@@ -2235,12 +2239,25 @@ class FunPackLTXAVSceneChainSampler:
                carry_i2v_guides=False,
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
                embed_guidance=False, embed_guidance_strength=0.02,
-               transition_duration=16, decode_tile_size=0,
+               transition_duration=16, batch_iterations=1, decode_tile_size=0,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
             negative = []
+
+        # Batch Training: run the whole chain N times, frozen except the seed, persisting each
+        # result for rating in Studio. Uses sample() itself as the per-generation primitive
+        # (only the seed differs), so the conditioning/settings are provably identical.
+        batch_n = max(1, int(batch_iterations or 1))
+        if batch_n > 1:
+            return self._run_batch_training(
+                model, vae, positive, negative, sampler, sigmas, seed, latent_template,
+                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
+                carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
+                embed_guidance, embed_guidance_strength, transition_duration,
+                decode_tile_size, refinement_key_input, batch_n,
+            )
 
         max_scene_count = max(1, int(max_scenes))
         scene_conditionings = positive[:max_scene_count]
@@ -2385,3 +2402,139 @@ class FunPackLTXAVSceneChainSampler:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
 
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
+
+    # --- Batch Training -----------------------------------------------------
+    def _batch_dir(self, refinement_key, stamp):
+        # Store under ComfyUI's temp dir so batch artifacts are wiped on restart (ephemeral
+        # rating material — useless once rated/learned) and are servable via /view?type=temp.
+        import re as _re
+        try:
+            import folder_paths
+            base = folder_paths.get_temp_directory()
+        except Exception:
+            base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements", "tmp")
+        safe = _re.sub(r"[^A-Za-z0-9_.-]", "_", str(refinement_key or "default").strip() or "default")
+        rel = os.path.join("funpack_batches", safe, stamp)
+        d = os.path.join(base, rel)
+        os.makedirs(d, exist_ok=True)
+        return d, safe, rel
+
+    def _save_batch_preview(self, decoded, path, max_frames=16, width=256):
+        """Save a decoded video tensor [T,H,W,C] in 0..1 as a downscaled animated webp."""
+        try:
+            from PIL import Image
+            import numpy as _np
+        except Exception:
+            return False
+        try:
+            t = decoded.detach().float().clamp(0, 1).cpu()
+            if t.dim() == 4 and t.shape[-1] not in (1, 3):
+                t = t.permute(0, 2, 3, 1)  # [T,C,H,W] -> [T,H,W,C]
+            frames = t.numpy()
+            n = int(frames.shape[0])
+            stride = max(1, n // max_frames)
+            imgs = []
+            for f in frames[::stride][:max_frames]:
+                arr = (f * 255).astype(_np.uint8)
+                if arr.shape[-1] == 1:
+                    arr = arr.repeat(3, axis=-1)
+                im = Image.fromarray(arr)
+                if im.width > width:
+                    im = im.resize((width, max(1, int(im.height * width / im.width))))
+                imgs.append(im)
+            if not imgs:
+                return False
+            imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=120, loop=0, format="WEBP")
+            return True
+        except Exception as e:
+            print(f"[FunPackSceneChain] batch preview failed: {e}")
+            return False
+
+    def _decode_for_preview(self, vae, latent, decode_tile_size=0):
+        video_tensor = self._latent_tensors(latent)[0]
+        try:
+            if decode_tile_size > 0:
+                decoded = vae.decode_tiled(video_tensor, tile_x=decode_tile_size // 8, tile_y=decode_tile_size // 8)
+            else:
+                decoded = vae.decode(video_tensor)
+        except Exception:
+            decoded = vae.decode(video_tensor)
+        if decoded.dim() == 5:
+            b, tt, h, w, c = decoded.shape
+            decoded = decoded.reshape(b * tt, h, w, c)
+        return decoded
+
+    def _run_batch_training(self, model, vae, positive, negative, sampler, sigmas, seed,
+                            latent_template, num_frames_per_scene, frame_overlap, cfg, max_scenes,
+                            use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
+                            embed_guidance, embed_guidance_strength, transition_duration,
+                            decode_tile_size, refinement_key_input, batch_n):
+        """Run the full scene chain batch_n times — frozen except the seed (seed + i) — and
+        persist each result (latent + preview + manifest) under refinements/batches/<key>/<stamp>
+        for controlled-batch rating in Studio. Conditioning is provably identical across the
+        batch because each run reuses sample() with only the seed changed."""
+        import json as _json, time as _time
+        key = str(refinement_key_input or "").strip()
+        if not key:
+            print("[FunPackSceneChain] Batch Training requires refinement_key_input; running once instead.")
+            return self.sample(
+                model, vae, positive, negative, sampler, sigmas, seed, latent_template,
+                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
+                carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
+                mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
+                embed_guidance_strength=embed_guidance_strength, transition_duration=transition_duration,
+                batch_iterations=1, decode_tile_size=decode_tile_size, refinement_key_input="",
+            )
+        stamp = _time.strftime("%Y-%m-%d_%H-%M-%S")
+        batch_dir, safe, rel = self._batch_dir(key, stamp)
+        scene_prompts = [self._scene_text(c, i) for i, c in enumerate(positive[:max(1, int(max_scenes))])]
+        manifest = {"key": key, "created": stamp, "iterations": int(batch_n),
+                    "subfolder": rel.replace(os.sep, "/"), "scene_prompts": scene_prompts, "items": []}
+        last = None
+        base_seed = int(seed)
+        for i in range(batch_n):
+            iter_seed = base_seed + i
+            print(f"[FunPackSceneChain] Batch Training {i + 1}/{batch_n} (seed={iter_seed})")
+            out = self.sample(
+                model, vae, positive, negative, sampler, sigmas, iter_seed, latent_template,
+                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
+                carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
+                mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
+                embed_guidance_strength=embed_guidance_strength, transition_duration=transition_duration,
+                batch_iterations=1, decode_tile_size=decode_tile_size, refinement_key_input=key,
+                unique_id=None, prompt=None,
+            )
+            last = out
+            out_latent = out[0]
+            iid = f"{safe}_{stamp}_{i:02d}"
+            latent_path = os.path.join(batch_dir, f"{iid}.latent.pt")
+            preview_path = os.path.join(batch_dir, f"{iid}.webp")
+            try:
+                torch.save({"samples": self._latent_tensors(out_latent)[0].detach().cpu()}, latent_path)
+            except Exception as e:
+                print(f"[FunPackSceneChain] batch latent save failed: {e}")
+                latent_path = None
+            has_preview = False
+            try:
+                decoded = self._decode_for_preview(vae, out_latent, decode_tile_size)
+                has_preview = self._save_batch_preview(decoded, preview_path)
+                del decoded
+            except Exception as e:
+                print(f"[FunPackSceneChain] batch decode failed: {e}")
+            manifest["items"].append({
+                "index": i, "id": iid, "seed": iter_seed,
+                "latent": os.path.basename(latent_path) if latent_path else None,
+                "preview": os.path.basename(preview_path) if has_preview else None,
+                "rating": None,
+            })
+        try:
+            with open(os.path.join(batch_dir, "batch.json"), "w") as f:
+                _json.dump(manifest, f, indent=2)
+        except Exception as e:
+            print(f"[FunPackSceneChain] batch manifest save failed: {e}")
+        status = (f"Batch Training complete: {batch_n} generations in temp/{rel.replace(os.sep, '/')} "
+                  f"(cleared on restart) — rate them in Studio.")
+        print(f"[FunPackSceneChain] {status}")
+        if last is None:
+            raise RuntimeError("Batch Training produced no output.")
+        return (last[0], last[1], status, last[3], last[4], last[5])
