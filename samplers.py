@@ -2521,7 +2521,9 @@ class FunPackLTXAVSceneChainSampler:
         base_seed = int(seed)
         for idx, pos_i in entries:
             iter_seed = base_seed + idx
-            print(f"[FunPackSceneChain] Batch Training {idx + 1}/{len(entries)} (seed={iter_seed})")
+            _scene_seeds = [self._scene_seed(sc) for sc in (pos_i or [])]
+            print(f"[FunPackSceneChain] Batch Training {idx + 1}/{len(entries)} "
+                  f"(loop_seed={iter_seed}, ACTUAL noise scene_seeds={_scene_seeds})")
             out = self.sample(
                 model, vae, pos_i, negative, sampler, sigmas, iter_seed, latent_template,
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
