@@ -12164,27 +12164,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             print(f"[FunPackVideoRefinerV2] Creativity mask failed: {e}")
 
         output_conditioning = [(refined, meta)]
-        # Batch Training: when Studio requests N variants, pack N conditioning entries into the
-        # single positive wire, each tagged 'funpack_batch_variant' so the Chain Sampler samples
-        # one chain per entry. If the prompt has shortcut variability the entries differ (random
-        # option per entry); otherwise they are identical and the sampler varies only the seed.
-        # (Not combined with split_by_transitions — batch variants are single-scene by design.)
+        # Batch Training packs N variant entries (tagged 'funpack_batch_variant') onto the FINAL
+        # conditioning just before each return below — so it wraps whatever output_conditioning
+        # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
+        _do_batch = int(batch_variants or 1) > 1 and not learning_mode and not prompt_only_mode
         print(f"[FunPackVideoRefinerV2] Batch Training check: batch_variants={batch_variants}, "
               f"split_by_transitions={split_by_transitions}, learning_mode={learning_mode}, "
-              f"prompt_only={prompt_only_mode}")
-        if int(batch_variants or 1) > 1 and not split_by_transitions and not learning_mode and not prompt_only_mode:
-            packed = self._v2_build_batch_variants(
-                _raw_positive_prompt, int(batch_variants), seed, clip, encode_cache, source_image,
-                base_entry=(refined, meta), base_prompt=prompt_to_encode,
-                global_state=global_state, learning_profile=learning_profile,
-                repair_feedback=repair_feedback, intent_family_slot=current_family_slot,
-                vf=_vf_for_memory, concept_dir=_concept_dir, concept_strength=_concept_strength,
-                current_final_texts=_current_final,
-            )
-            if packed:
-                output_conditioning = packed
-                print(f"[FunPackVideoRefinerV2] Batch Training: output now has {len(output_conditioning)} "
-                      f"packed entries with variant markers.")
+              f"prompt_only={prompt_only_mode}, will_batch={_do_batch}")
         if split_by_transitions:
             try:
                 scene_texts = split_scene_texts
@@ -12219,6 +12205,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                         )
                         + f"\n\nDetected scenes:\n{scene_lines}"
                     )
+                    if _do_batch:
+                        output_conditioning = self._v2_pack_batch(
+                            output_conditioning, batch_variants, _raw_positive_prompt, seed, clip,
+                            encode_cache, source_image, prompt_to_encode, global_state, learning_profile,
+                            repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
+                            _concept_strength, _current_final)
                     return (
                         self._v2_ascend_conditioning(output_conditioning, refinement_key, apply=value_guidance),
                         status,
@@ -12231,6 +12223,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Transition split failed: {e}")
 
+        if _do_batch:
+            output_conditioning = self._v2_pack_batch(
+                output_conditioning, batch_variants, _raw_positive_prompt, seed, clip,
+                encode_cache, source_image, prompt_to_encode, global_state, learning_profile,
+                repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
+                _concept_strength, _current_final)
         return (
             self._v2_ascend_conditioning(output_conditioning, refinement_key, apply=value_guidance),
             status + enhancement_status,
@@ -12240,6 +12238,38 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             patched_model,
             video_latent,
         )
+
+    def _v2_pack_batch(self, output_conditioning, n, raw_prompt, seed, clip, encode_cache,
+                       source_image, base_prompt, global_state, learning_profile, repair_feedback,
+                       intent_family_slot, vf, concept_dir, concept_strength, current_final_texts):
+        """Pack N Batch-Training variant entries onto the FINAL conditioning, each tagged
+        'funpack_batch_variant' so the Chain Sampler samples one chain per variant. Single-scene
+        output -> re-resolve shortcuts per variant (different option picks). Multi-scene output
+        (transition split) -> duplicate the whole scene-set per variant (seed-only; the sampler
+        varies the seed). Groups stay intact because each variant tags ALL its scene entries with
+        the same index, so the sampler chains a variant's scenes and keeps variants independent."""
+        n = max(1, int(n or 1))
+        if n <= 1 or not output_conditioning:
+            return output_conditioning
+        if len(output_conditioning) == 1:
+            return self._v2_build_batch_variants(
+                raw_prompt, n, seed, clip, encode_cache, source_image,
+                base_entry=output_conditioning[0], base_prompt=base_prompt,
+                global_state=global_state, learning_profile=learning_profile,
+                repair_feedback=repair_feedback, intent_family_slot=intent_family_slot,
+                vf=vf, concept_dir=concept_dir, concept_strength=concept_strength,
+                current_final_texts=current_final_texts)
+        packed = []
+        for i in range(n):
+            for entry in output_conditioning:
+                cond = entry[0]
+                meta = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
+                m = dict(meta)
+                m["funpack_batch_variant"] = i
+                packed.append((cond, m))
+        print(f"[FunPackVideoRefinerV2] Batch Training: packed {n} x {len(output_conditioning)}-scene "
+              f"set = {len(packed)} entries with variant markers.")
+        return packed
 
     def _v2_build_batch_variants(self, raw_prompt, n, seed, clip, encode_cache, source_image,
                                  base_entry, base_prompt, global_state, learning_profile,
