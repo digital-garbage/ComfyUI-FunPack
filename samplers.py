@@ -568,6 +568,80 @@ def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
         return denoised
 
 
+def _get_latent_shapes(model):
+    """Recover comfy's packed-latent stream shapes [video_shape, audio_shape, ...].
+
+    LTXAV packs its video + audio latents into one [B,1,N] tensor for sampling
+    (comfy.utils.pack_latents: each stream flattened to [B,1,-1] and concatenated on
+    the last dim, video first). comfy threads the per-stream shapes through the guider
+    conds as a 'latent_shapes' CONDConstant. We read them back so FunPack perturbations
+    can be confined to the video region. None when unavailable or single-stream.
+    """
+    try:
+        guider = getattr(model, "inner_model", None)  # CFGGuider
+        conds = getattr(guider, "conds", None)
+        if not isinstance(conds, dict):
+            return None
+        for key in ("positive", "negative"):
+            lst = conds.get(key)
+            if not lst:
+                continue
+            for c in lst:
+                mc = c.get("model_conds") if isinstance(c, dict) else None
+                ls = mc.get("latent_shapes") if isinstance(mc, dict) else None
+                val = getattr(ls, "cond", None)
+                if val and len(val) > 1:
+                    return val
+    except Exception:
+        return None
+    return None
+
+
+def _packed_video_mask(model, x):
+    """[1,1,N] mask over a packed AV latent: 1.0 on the video stream, 0.0 on audio.
+
+    Ancestral re-noising (and other video-tuned perturbations) corrupt the audio stream
+    while helping video. With this mask we keep all FunPack steering / ancestral noise on
+    video and let audio ride the clean deterministic flow. None when not a packed AV
+    latent (single-stream LTXV, or layout we can't verify) -> callers then no-op.
+    """
+    try:
+        shapes = _get_latent_shapes(model)
+        if not shapes or len(shapes) <= 1:
+            return None
+        if not hasattr(x, "shape") or x.dim() < 1:
+            return None
+        n = int(x.shape[-1])
+        sizes = [int(math.prod(tuple(s)[1:])) for s in shapes]
+        if sum(sizes) != n:
+            return None  # layout doesn't match our assumption -> don't risk masking
+        # Video = the highest-dimensional / largest stream (robust to stream ordering).
+        video_idx = max(range(len(shapes)), key=lambda i: (len(tuple(shapes[i])), sizes[i]))
+        mask = x.new_zeros((1, 1, n))
+        off = 0
+        for i, sz in enumerate(sizes):
+            if i == video_idx:
+                mask[..., off:off + sz] = 1.0
+            off += sz
+        return mask
+    except Exception:
+        return None
+
+
+def _video_only(x_new, x_old, mask):
+    """Confine a perturbation to the video region: audio keeps its base (x_old) value.
+
+    Works for any perturbation expressed as new-vs-old (additive noise, steering,
+    sharpness). For additive noise call as _video_only(x + noise, x, mask) = x + noise*mask.
+    """
+    if mask is None:
+        return x_new
+    try:
+        return x_old + (x_new - x_old) * mask
+    except Exception:
+        return x_new
+
+
 def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
     if sigmas is None or total_steps <= 1:
         return 0
@@ -771,6 +845,15 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     prev_h = None
     quality_step_index = 0
 
+    # Audio-safe sampling: on a packed LTXAV latent, keep ancestral noise + steering on the
+    # video stream and let audio ride the clean deterministic flow (ancestral re-noising
+    # corrupts audio). None for single-stream LTXV -> all of this is a no-op.
+    video_mask = _packed_video_mask(model, x)
+    if video_mask is not None:
+        n_aud = int((video_mask < 0.5).sum().item())
+        print(f"[FunPack AV] packed audio+video latent detected -> audio-safe sampling "
+              f"(audio held deterministic on {n_aud} of {video_mask.shape[-1]} packed dims)")
+
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
@@ -780,28 +863,30 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         if not in_quality:
             pulse = motion_step_noise.get(int(i), 0.0)
             if pulse > 0.0:
-                x = _apply_motion_pulse(x, sigma, sigma_next, pulse, noise_sampler)
+                x = _video_only(_apply_motion_pulse(x, sigma, sigma_next, pulse, noise_sampler), x, video_mask)
                 prev_denoised = None
                 prev_h = None
 
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+            x_pre = x
             x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
                                      sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
+            x = _video_only(x, x_pre, video_mask)
 
         denoised = model(x, sigma * s_in, **extra_args)
 
         if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
             _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
         if rescue_mode and velocity_target is not None:
-            denoised = _rescue_denoised(
+            denoised = _video_only(_rescue_denoised(
                 denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
                 velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                 source=velocity_bias_source,
-            )
+            ), denoised, video_mask)
         # E: restore high-frequency detail lost to the velocity-bias mean-pull (quality phase only).
         if in_quality:
-            denoised = _apply_quality_sharpness(denoised, prev_denoised, quality_sharpness)
+            denoised = _video_only(_apply_quality_sharpness(denoised, prev_denoised, quality_sharpness), denoised, video_mask)
 
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
@@ -855,15 +940,24 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 effective_eta = eta_final + (eta - eta_final) * (1.0 - proximity)
             else:
                 effective_eta = eta
-            downstep_ratio = 1 + (sigma_next / sigma - 1) * effective_eta
-            sigma_down = sigma_next * downstep_ratio
-            alpha_ip1 = 1 - sigma_next
-            alpha_down = 1 - sigma_down
-            sigma_down_i_ratio = sigma_down / sigma
-            x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised_eff
+            # Deterministic euler-RF step to sigma_next (this is what audio rides — no
+            # ancestral re-noising). For single-stream video (mask None) it is only used
+            # as the eta==0 fallback; the full ancestral result is kept for video.
+            er = sigma_next / sigma
+            x_det = er * x + (1 - er) * denoised_eff
             if effective_eta > 0:
+                downstep_ratio = 1 + (sigma_next / sigma - 1) * effective_eta
+                sigma_down = sigma_next * downstep_ratio
+                alpha_ip1 = 1 - sigma_next
+                alpha_down = 1 - sigma_down
+                sigma_down_i_ratio = sigma_down / sigma
+                x_anc = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised_eff
                 renoise_coeff = (sigma_next ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
-                x = (alpha_ip1 / alpha_down) * x + noise_sampler(sigma, sigma_next) * s_noise * renoise_coeff
+                x_anc = (alpha_ip1 / alpha_down) * x_anc + noise_sampler(sigma, sigma_next) * s_noise * renoise_coeff
+                # Video gets full ancestral noise; audio stays on the deterministic step.
+                x = _video_only(x_anc, x_det, video_mask)
+            else:
+                x = x_det
 
     return x
 
