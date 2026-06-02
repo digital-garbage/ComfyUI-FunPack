@@ -11322,7 +11322,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=False, latent=None, seed_output_connected=False,
-                  _seed=None, _seed_source="fresh seed", _scene_seeds=None):
+                  _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -12043,17 +12043,23 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Rating-gated commit of the previous gen's staged rescue trajectory: a positive
         # rating teaches rescue what to steer toward, Awful what to steer away from,
         # everything else is dropped (never lets an unrated/awful run pollute the banks).
-        if eff_key and isinstance(learning_profile, dict):
+        if isinstance(learning_profile, dict):
             _rk = learning_profile.get("key")
             _verdict = "good" if _rk in {"like", "loved_it", "nailed_it"} else ("bad" if _rk == "awful" else "drop")
-            try:
+            # Commit to every key the sampler may have captured under: the effective
+            # refinement key AND each pass's resolved velocity key (which differs when the
+            # user set a custom velocity_refinement_key). Dedup; skip empties.
+            _commit_keys = {k for k in ([eff_key] + list(_velocity_keys or [])) if str(k or "").strip()}
+            if _commit_keys:
                 try:
-                    from .samplers import commit_staged_velocity
-                except ImportError:
-                    from samplers import commit_staged_velocity
-                commit_staged_velocity(eff_key, _verdict)
-            except Exception as _e:
-                print(f"[FunPackVideoRefinerV2] velocity commit failed: {_e}")
+                    try:
+                        from .samplers import commit_staged_velocity
+                    except ImportError:
+                        from samplers import commit_staged_velocity
+                    for _ck in _commit_keys:
+                        commit_staged_velocity(_ck, _verdict)
+                except Exception as _e:
+                    print(f"[FunPackVideoRefinerV2] velocity commit failed: {_e}")
         if patched_model is not None:
             try:
                 try:
@@ -13340,12 +13346,29 @@ class FunPackStudio:
                     except Exception as e:
                         print(f"[FunPackStudio] LoRA load failed: {e}")
 
+        # Velocity/rescue commit keys: each sampler pass captures trajectories under its
+        # RESOLVED velocity key (the custom velocity_refinement_key field, else the effective
+        # refinement key). The refiner must commit the rating to those SAME keys — otherwise a
+        # custom velocity key captures every gen but never commits (silent no-learn). Resolve
+        # them with the same logic as _build_one_sampler and hand them to the refiner.
+        _eff_rkey = (refinement_key_input
+                     if str(refinement_key_input or "").strip() and not ov.get("refinement_key")
+                     else key)
+        _vel_commit_keys = []
+        for _pass in ("high", "low"):
+            _hc = (settings.get("samplers", {}).get(_pass, {}) or {}).get("hybrid", {})
+            _vk = str((_hc or {}).get("velocity_refinement_key", "") or "").strip()
+            if not _vk or _vk == "default":
+                _vk = str(_eff_rkey or "").strip() or "default"
+            _vel_commit_keys.append(_vk)
+
         # --- Refiner V2 ---
         cond, status, training_info, loss_graph, encoded_prompts, out_model, video_latent = refiner.refine_v2(
             active_prompt,
             clip=clip,
             rating=rating,
             refinement_key=key,
+            _velocity_keys=_vel_commit_keys,
             reset_session=reset_session,
             lora_stack=active_lora_stack,
             im_feeling_lucky=im_feeling_lucky,
@@ -13472,7 +13495,6 @@ class FunPackStudio:
                     velocity_bias_strength=float(hc.get("velocity_bias_strength", 0.0)),
                     velocity_bias_source=str(hc.get("velocity_bias_source", "mean")),
                     velocity_refinement_key=vkey,
-                    velocity_aspect_bucket=str(hc.get("velocity_aspect_bucket", "any")),
                     rescue_mode=bool(hc.get("rescue_mode", False)),
                     rescue_threshold=float(hc.get("rescue_threshold", 0.15)),
                     rescue_strength=float(hc.get("rescue_strength", 0.2)),

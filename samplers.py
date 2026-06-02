@@ -17,7 +17,13 @@ MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"]
 
 
 VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"]
-VELOCITY_BIAS_TARGETS = (0.90, 0.80)
+# Normalized-sigma targets (current/sigmas[0]) where velocity is captured and rescue acts.
+# Chosen to land on the structure AND detail-forming steps of the standard 8-step LTX
+# schedule [..,0.909,0.725,0.422,0] (matched within +/-0.065): 0.90->0.909 (structure),
+# 0.72->0.725 and 0.42->0.422 (where runs actually go good/bad). The old (0.90, 0.80) only
+# ever matched 0.909, so rescue fired once per gen at a near-noise step. Velocity-bias APPLY
+# still fires only at the highest target (structure); the extra targets are for rescue.
+VELOCITY_BIAS_TARGETS = (0.90, 0.72, 0.42)
 # Good-trajectory bank (rating-promoted). Also read by velocity-bias "apply".
 VELOCITY_BIAS_MEMORY = {}
 # Bad-trajectory bank (promoted from Awful/dislike), used by rescue to steer away.
@@ -45,12 +51,12 @@ def _serialize_velocity_bank(bank, norm):
     """weights_only-safe representation (lists/dicts/str/int + tensors; no tuple keys)."""
     out = []
     for key, slot in bank.items():
-        if not (isinstance(key, tuple) and len(key) == 4 and key[0] == norm):
+        if not (isinstance(key, tuple) and len(key) == 3 and key[0] == norm):
             continue
         direction = slot.get("direction")
         out.append({
-            "refkey": str(key[0]), "aspect": str(key[1]), "target": str(key[2]),
-            "shape": [int(v) for v in key[3]],
+            "refkey": str(key[0]), "target": str(key[1]),
+            "shape": [int(v) for v in key[2]],
             "count": int(slot.get("count", 0)),
             "direction": direction.half() if isinstance(direction, torch.Tensor) else None,
             "clusters": [
@@ -66,7 +72,8 @@ def _serialize_velocity_bank(bank, norm):
 def _deserialize_velocity_into(bank, entries):
     for e in entries or []:
         try:
-            key = (str(e["refkey"]), str(e["aspect"]), str(e["target"]),
+            # Old stores included an "aspect" field — ignored now (key dropped it).
+            key = (str(e["refkey"]), str(e["target"]),
                    tuple(int(v) for v in e["shape"]))
             d = e.get("direction")
             bank[key] = {
@@ -322,11 +329,12 @@ def _velocity_bias_enabled(mode, action):
     return mode == action
 
 
-def _velocity_bias_key(refinement_key, aspect_bucket, target, x):
+def _velocity_bias_key(refinement_key, target, x):
+    # (refinement_key, target, latent_shape). Shape already encodes resolution, so a
+    # separate aspect bucket was redundant — dropped.
     shape = tuple(int(item) for item in getattr(x, "shape", ()))
     key = str(refinement_key or "default").strip() or "default"
-    aspect = str(aspect_bucket or "any").strip() or "any"
-    return (key, aspect, f"{float(target):.2f}", shape)
+    return (key, f"{float(target):.2f}", shape)
 
 
 def _sigma_ratio(sigmas, sigma):
@@ -366,7 +374,7 @@ def _velocity_bias_target(sigmas, sigma):
     return target if abs(float(target) - ratio) <= 0.065 else None
 
 
-def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, denoised, prompt_sig=None):
+def _capture_velocity_bias(refinement_key, target, x, sigma, denoised, prompt_sig=None):
     """Stage this step's trajectory for the current generation. It is NOT committed to
     any bank here — the refiner commits it to good or bad once the gen is rated, so the
     banks never absorb unrated (possibly awful) runs. Staging overwrites per (key, shape,
@@ -377,7 +385,7 @@ def _capture_velocity_bias(refinement_key, aspect_bucket, target, x, sigma, deno
         direction = k_diffusion_sampling.to_d(x, sigma, denoised).detach().float().cpu()
     except Exception:
         return
-    key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
+    key = _velocity_bias_key(refinement_key, target, x)
     norm = key[0]
     staged = VELOCITY_BIAS_PENDING.setdefault(norm, {})
     staged[key] = {"direction": direction,
@@ -421,7 +429,7 @@ def commit_staged_velocity(refinement_key, verdict):
     return n
 
 
-def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength, sigma_ratio=None,
+def _apply_velocity_bias(x, refinement_key, target, strength, sigma_ratio=None,
                          prompt_sig=None, source="mean"):
     """Steer the latent toward the averaged good-trajectory direction.
 
@@ -442,7 +450,7 @@ def _apply_velocity_bias(x, refinement_key, aspect_bucket, target, strength, sig
     if float(target) < max(VELOCITY_BIAS_TARGETS) - 1e-6:
         return x
     _ensure_velocity_loaded(refinement_key)
-    key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
+    key = _velocity_bias_key(refinement_key, target, x)
     slot = VELOCITY_BIAS_MEMORY.get(key)
     if not isinstance(slot, dict):
         return x
@@ -501,7 +509,7 @@ def _rescue_reference(bank, key, prompt_sig, x_shape, source="mean"):
     return g if isinstance(g, torch.Tensor) and tuple(g.shape) == tuple(x_shape) else None
 
 
-def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, threshold, strength, prompt_sig=None, source="mean"):
+def _rescue_denoised(denoised, x, sigma, refinement_key, target, threshold, strength, prompt_sig=None, source="mean"):
     """Reactive in-flight rescue, rating-aware.
 
     Pulls this step's trajectory toward the GOOD bank (rating-promoted likes) and away
@@ -515,7 +523,7 @@ def _rescue_denoised(denoised, x, sigma, refinement_key, aspect_bucket, target, 
     if sig <= 1e-6:
         return denoised
     _ensure_velocity_loaded(refinement_key)
-    key = _velocity_bias_key(refinement_key, aspect_bucket, target, x)
+    key = _velocity_bias_key(refinement_key, target, x)
     good = _rescue_reference(VELOCITY_BIAS_MEMORY, key, prompt_sig, x.shape, source=source)
     bad = _rescue_reference(VELOCITY_BIAS_BAD_MEMORY, key, prompt_sig, x.shape, source=source)
     if good is None and bad is None:
@@ -816,7 +824,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           motion_pulse_spacing_pct, motion_pulse_strength,
                           motion_pulse_noise, motion_pulse_steps,
                           velocity_bias_mode, velocity_bias_strength,
-                          velocity_refinement_key, velocity_aspect_bucket,
+                          velocity_refinement_key,
                           rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
                           quality_sharpness=0.0, velocity_bias_source="mean"):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
@@ -892,7 +900,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
 
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
             x_pre = x
-            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
+            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
                                      sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             x = _video_only(x, x_pre, video_mask)
@@ -900,10 +908,10 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         denoised = model(x, sigma * s_in, **extra_args)
 
         if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
-            _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
         if rescue_mode and velocity_target is not None:
             denoised = _video_only(_rescue_denoised(
-                denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
+                denoised, x, sigma, velocity_refinement_key,
                 velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                 source=velocity_bias_source,
             ), denoised, video_mask)
@@ -996,7 +1004,6 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    velocity_bias_strength=0.0,
                                    velocity_bias_source="mean",
                                    velocity_refinement_key="default",
-                                   velocity_aspect_bucket="any",
                                    rescue_mode=False,
                                    rescue_threshold=0.15,
                                    rescue_strength=0.2,
@@ -1072,7 +1079,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             motion_pulse_spacing_pct, motion_pulse_strength,
             motion_pulse_noise, motion_pulse_steps,
             velocity_bias_mode, velocity_bias_strength,
-            velocity_refinement_key, velocity_aspect_bucket,
+            velocity_refinement_key,
             rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
             quality_sharpness=quality_sharpness,
             velocity_bias_source=velocity_bias_source,
@@ -1150,15 +1157,15 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 prev_h = None
 
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
                                          sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             denoised = model(x, sigma * s_in, **extra_args)
             if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
-                _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+                _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
                 denoised = _rescue_denoised(
-                    denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
+                    denoised, x, sigma, velocity_refinement_key,
                     velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                     source=velocity_bias_source,
                 )
@@ -1202,15 +1209,15 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                 effective_blend = 0.0 if quality_step_index < mid_quality else correction_blend
 
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_aspect_bucket, velocity_target, velocity_bias_strength,
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
                                          sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             denoised = model(x, sigma * s_in, **extra_args)
             if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
-                _capture_velocity_bias(velocity_refinement_key, velocity_aspect_bucket, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+                _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
                 denoised = _rescue_denoised(
-                    denoised, x, sigma, velocity_refinement_key, velocity_aspect_bucket,
+                    denoised, x, sigma, velocity_refinement_key,
                     velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                     source=velocity_bias_source,
                 )
@@ -1341,11 +1348,6 @@ class FunPackHybridEuler2SSampler:
                     "multiline": False,
                     "tooltip": "Memory key used to capture/apply early velocity bias."
                 }),
-                "velocity_aspect_bucket": ("STRING", {
-                    "default": "any",
-                    "multiline": False,
-                    "tooltip": "Optional aspect bucket such as landscape, portrait, square, ultrawide, or vertical."
-                }),
                 "rescue_mode": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Reactive in-flight rescue, rating-gated. Steers each eligible step toward trajectories you rated good and away from ones you rated Awful (matched to the current prompt). Learns automatically from ratings while on — no separate capture step needed. A no-op until you've rated a few gens for this prompt/key (a positive rating builds the target, an Awful builds what to avoid)."
@@ -1382,8 +1384,7 @@ class FunPackHybridEuler2SSampler:
                     motion_pulse_count=2, motion_pulse_spacing_pct=0.22,
                     motion_pulse_strength=0.85, velocity_bias_mode="off",
                     velocity_bias_strength=0.0, velocity_bias_source="mean",
-                    velocity_refinement_key="default",
-                    velocity_aspect_bucket="any", rescue_mode=False,
+                    velocity_refinement_key="default", rescue_mode=False,
                     rescue_threshold=0.15, rescue_strength=0.2, rescue_prompt_sig=None,
                     sigmas=None, eta_final=1.0):
         prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
@@ -1415,7 +1416,6 @@ class FunPackHybridEuler2SSampler:
                 "velocity_bias_strength": velocity_bias_strength,
                 "velocity_bias_source": velocity_bias_source,
                 "velocity_refinement_key": velocity_refinement_key,
-                "velocity_aspect_bucket": velocity_aspect_bucket,
                 "rescue_mode": rescue_mode,
                 "rescue_threshold": rescue_threshold,
                 "rescue_strength": rescue_strength,
