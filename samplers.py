@@ -2490,6 +2490,15 @@ class FunPackLTXAVSceneChainSampler:
         scene_prompts = [self._scene_text(c, i) for i, c in enumerate(positive[:max(1, int(max_scenes))])]
         manifest = {"key": key, "created": stamp, "iterations": int(batch_n),
                     "subfolder": rel.replace(os.sep, "/"), "scene_prompts": scene_prompts, "items": []}
+        # Save the (frozen) conditioning that produced this batch so Submit can train the value
+        # function on (cond, rating) for every entry — same cond, N rewards = variance reduction.
+        try:
+            cond0 = positive[0][0] if isinstance(positive[0], (list, tuple)) else None
+            if isinstance(cond0, torch.Tensor):
+                torch.save(cond0.detach().cpu(), os.path.join(batch_dir, "cond.pt"))
+                manifest["cond"] = "cond.pt"
+        except Exception as e:
+            print(f"[FunPackSceneChain] batch cond save failed: {e}")
         last = None
         base_seed = int(seed)
         for i in range(batch_n):

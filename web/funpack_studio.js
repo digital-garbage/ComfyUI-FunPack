@@ -1059,6 +1059,99 @@ function openPanel(node) {
     vfBtnWrap.append(vfExportBtn, vfImportBtn);
     body.append(row("Value function", vfBtnWrap));
 
+    // --- Batch Training rating panel ---
+    body.append(sectionTitle("Batch Training"));
+    body.append(el("div", "funpack-studio-hint",
+      "Rate every generation from a frozen batch (Scene Chain sampler → batch_iterations > 1). Submit teaches the value function from all of them at once — same conditioning, your ratings are the signal. Forget discards the batch. Batches are cleared on ComfyUI restart."));
+    const batchContainer = el("div", "");
+    const batchRefresh = btn("Refresh", "secondary");
+    batchRefresh.addEventListener("click", () => loadBatch());
+    body.append(row("Pending batch", batchRefresh));
+    body.append(batchContainer);
+
+    async function loadBatch() {
+      batchContainer.innerHTML = "";
+      const key = vfActiveKey();
+      if (!key) {
+        batchContainer.append(el("div", "funpack-studio-hint", "Set a refinement key to use Batch Training."));
+        return;
+      }
+      let data;
+      try {
+        const res = await api.fetchApi(`/funpack/batch/list?key=${encodeURIComponent(key)}`, { cache: "no-store" });
+        data = await res.json();
+      } catch (e) {
+        batchContainer.append(el("div", "funpack-studio-hint", `Batch list failed: ${e.message}`));
+        return;
+      }
+      if (!data.found) {
+        batchContainer.append(el("div", "funpack-studio-hint", "No pending batch for this key. Run the Scene Chain sampler with batch_iterations > 1."));
+        return;
+      }
+      const labels = data.labels || [];
+      const ratings = {};
+      const title = el("div", "", `Batch ${data.created} — ${data.items.length} generation(s)`);
+      title.style.cssText = "font-weight:600;margin:4px 0;";
+      batchContainer.append(title);
+      data.items.forEach((it) => {
+        const r = el("div", "");
+        r.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;";
+        const name = el("span", "", `#${(it.index ?? 0)} ${it.preview || it.id} (seed ${it.seed})`);
+        name.style.cssText = "flex:1;font-size:12px;opacity:0.85;";
+        const prev = btn("Preview", "secondary");
+        let imgEl = null;
+        prev.addEventListener("click", () => {
+          if (imgEl) { imgEl.remove(); imgEl = null; return; }
+          const url = `/view?filename=${encodeURIComponent(it.preview)}&type=temp&subfolder=${encodeURIComponent(data.subfolder)}`;
+          imgEl = el("img", "");
+          imgEl.src = url;
+          imgEl.style.cssText = "max-width:100%;border-radius:6px;margin:4px 0;";
+          r.after(imgEl);
+        });
+        if (!it.preview) prev.disabled = true;
+        const sel = selectEl(["— rate —", ...labels], "— rate —");
+        sel.addEventListener("change", () => {
+          if (sel.value && sel.value !== "— rate —") ratings[it.id] = sel.value;
+          else delete ratings[it.id];
+        });
+        r.append(name, prev, sel);
+        batchContainer.append(r);
+      });
+      const actions = el("div", "");
+      actions.style.cssText = "display:flex;gap:6px;margin-top:8px;";
+      const submitBtn = btn("Submit");
+      const forgetBtn = btn("Forget batch", "secondary");
+      submitBtn.addEventListener("click", async () => {
+        if (Object.keys(ratings).length === 0) { showError(root, "Rate at least one generation before submitting."); return; }
+        submitBtn.disabled = true;
+        try {
+          const res = await api.fetchApi("/funpack/batch/submit", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key, stamp: data.stamp, ratings }),
+          });
+          const out = await res.json();
+          if (out.error) throw new Error(out.error);
+          showError(root, `Batch submitted — trained on ${out.trained} rating(s)${out.warning ? ` (${out.warning})` : ""}.`);
+          loadBatch();
+        } catch (e) { showError(root, `Batch submit failed: ${e.message}`); submitBtn.disabled = false; }
+      });
+      forgetBtn.addEventListener("click", async () => {
+        try {
+          const res = await api.fetchApi("/funpack/batch/forget", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key, stamp: data.stamp }),
+          });
+          const out = await res.json();
+          if (out.error) throw new Error(out.error);
+          showError(root, "Batch forgotten.");
+          loadBatch();
+        } catch (e) { showError(root, `Batch forget failed: ${e.message}`); }
+      });
+      actions.append(submitBtn, forgetBtn);
+      batchContainer.append(actions);
+    }
+    loadBatch();
+
     body.append(sectionTitle("Negative prompt"));
     body.append(el("div", "funpack-studio-hint",
       "Encoded via CLIP and output as negative conditioning. Skipped when negative_conditioning input is connected."));

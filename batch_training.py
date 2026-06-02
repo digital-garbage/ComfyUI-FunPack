@@ -1,0 +1,198 @@
+"""Batch Training server routes + learning intake.
+
+Serves the Studio batch-rating panel and, on submit, trains the value function on the
+batch's (frozen) conditioning with each entry's rating — same cond, N rewards = the
+variance-reduction RLHF signal. Batches live in ComfyUI's temp dir (wiped on restart).
+"""
+
+import os
+import re
+import json
+import shutil
+
+import torch
+
+try:
+    from aiohttp import web
+    from server import PromptServer
+except Exception:  # pragma: no cover - only available inside ComfyUI
+    web = None
+    PromptServer = None
+
+
+def _safe_key(key):
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(key or "default").strip() or "default")
+
+
+def _batches_root():
+    try:
+        import folder_paths
+        base = folder_paths.get_temp_directory()
+    except Exception:
+        base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements", "tmp")
+    return os.path.join(base, "funpack_batches")
+
+
+def _key_dir(key):
+    return os.path.join(_batches_root(), _safe_key(key))
+
+
+def _latest_batch(key):
+    """Most recent batch stamp dir for a key (stamps sort lexically), or None."""
+    kd = _key_dir(key)
+    if not os.path.isdir(kd):
+        return None
+    stamps = sorted(
+        (d for d in os.listdir(kd) if os.path.isdir(os.path.join(kd, d))),
+        reverse=True,
+    )
+    for stamp in stamps:
+        d = os.path.join(kd, stamp)
+        if os.path.exists(os.path.join(d, "batch.json")):
+            return stamp, d
+    return None
+
+
+def _load_manifest(d):
+    with open(os.path.join(d, "batch.json"), "r") as f:
+        return json.load(f)
+
+
+def _rating_labels():
+    try:
+        try:
+            from .conditioning import V2_RATING_LABELS
+        except ImportError:
+            from conditioning import V2_RATING_LABELS
+        return list(V2_RATING_LABELS)
+    except Exception:
+        return ["Perfect", "Loved it", "Nailed it", "Missing details", "Missing action",
+                "Missing quality", "Awful", "-Just forget it-"]
+
+
+def _profile_for(label):
+    try:
+        try:
+            from .conditioning import normalize_refiner_v2_rating
+        except ImportError:
+            from conditioning import normalize_refiner_v2_rating
+        return normalize_refiner_v2_rating(label)
+    except Exception:
+        return None
+
+
+def _train_batch(key, manifest, batch_dir, ratings):
+    """Train the value function on (cond, reward) for each rated entry. Returns count trained."""
+    cond_file = manifest.get("cond")
+    if not cond_file:
+        return 0, "no conditioning saved for this batch — cannot train"
+    cond_path = os.path.join(batch_dir, cond_file)
+    if not os.path.exists(cond_path):
+        return 0, "conditioning file missing"
+    try:
+        try:
+            from .value_function import OnlineValueFunction
+            from .conditioning import refinement_state_path
+        except ImportError:
+            from value_function import OnlineValueFunction
+            from conditioning import refinement_state_path
+    except Exception as e:
+        return 0, f"learning modules unavailable: {e}"
+
+    with torch.inference_mode(False):
+        cond = torch.load(cond_path, map_location="cpu")
+        if not isinstance(cond, torch.Tensor):
+            return 0, "saved conditioning is not a tensor"
+        vf_path = refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
+        vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=int(cond.shape[-1]))
+        if vf is None:
+            return 0, "could not create value function"
+        trained = 0
+        for item in manifest.get("items", []):
+            label = ratings.get(str(item.get("id")))
+            if not label:
+                continue
+            profile = _profile_for(label)
+            if not profile or profile.get("skip_learning"):
+                continue  # '-Just forget it-' and unknowns: skip
+            reward = float(profile.get("reward", 0.0))
+            vf.train_on(cond.clone(), reward)
+            trained += 1
+        if trained:
+            vf.save(vf_path)
+    return trained, None
+
+
+if PromptServer is not None and web is not None:
+
+    @PromptServer.instance.routes.get("/funpack/batch/list")
+    async def funpack_batch_list(request):
+        key = request.rel_url.query.get("key", "")
+        if not str(key).strip():
+            return web.json_response({"found": False, "reason": "no key", "labels": _rating_labels()})
+        latest = _latest_batch(key)
+        if latest is None:
+            return web.json_response({"found": False, "labels": _rating_labels()})
+        stamp, d = latest
+        try:
+            manifest = _load_manifest(d)
+        except Exception as e:
+            return web.json_response({"found": False, "reason": f"manifest read failed: {e}",
+                                      "labels": _rating_labels()})
+        subfolder = manifest.get("subfolder") or f"funpack_batches/{_safe_key(key)}/{stamp}"
+        items = [{
+            "id": it.get("id"),
+            "index": it.get("index"),
+            "seed": it.get("seed"),
+            "preview": it.get("preview"),
+            "rating": it.get("rating"),
+        } for it in manifest.get("items", [])]
+        return web.json_response({
+            "found": True,
+            "key": key,
+            "stamp": stamp,
+            "subfolder": subfolder,
+            "created": manifest.get("created"),
+            "scene_prompts": manifest.get("scene_prompts", []),
+            "items": items,
+            "labels": _rating_labels(),
+        })
+
+    @PromptServer.instance.routes.post("/funpack/batch/submit")
+    async def funpack_batch_submit(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        key = str(body.get("key", "")).strip()
+        stamp = str(body.get("stamp", "")).strip()
+        ratings = body.get("ratings", {}) or {}
+        if not key or not stamp:
+            return web.json_response({"error": "key and stamp required"}, status=400)
+        batch_dir = os.path.join(_key_dir(key), stamp)
+        if not os.path.exists(os.path.join(batch_dir, "batch.json")):
+            return web.json_response({"error": "batch not found"}, status=404)
+        manifest = _load_manifest(batch_dir)
+        trained, err = _train_batch(key, manifest, batch_dir, {str(k): v for k, v in ratings.items()})
+        # Submit clears the batch regardless (rated material is consumed).
+        try:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+        except Exception:
+            pass
+        if err and trained == 0:
+            return web.json_response({"ok": True, "trained": 0, "warning": err})
+        return web.json_response({"ok": True, "trained": trained})
+
+    @PromptServer.instance.routes.post("/funpack/batch/forget")
+    async def funpack_batch_forget(request):
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        key = str(body.get("key", "")).strip()
+        stamp = str(body.get("stamp", "")).strip()
+        if not key or not stamp:
+            return web.json_response({"error": "key and stamp required"}, status=400)
+        batch_dir = os.path.join(_key_dir(key), stamp)
+        shutil.rmtree(batch_dir, ignore_errors=True)
+        return web.json_response({"ok": True})

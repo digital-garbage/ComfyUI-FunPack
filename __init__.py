@@ -22,6 +22,10 @@ if __package__:
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
+    try:
+        from . import batch_training  # noqa: F401  registers /funpack/batch/* routes
+    except Exception as _e:
+        print(f"[FunPack] batch_training routes unavailable: {_e}")
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (
