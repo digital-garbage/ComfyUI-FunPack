@@ -12256,31 +12256,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         n = max(1, int(n or 1))
         if n <= 1 or not output_conditioning:
             return output_conditioning
+        # Build the N variant entries. Single-scene output -> _v2_build_batch_variants (re-resolves
+        # shortcuts per variant). Multi-scene (transition split) -> duplicate the whole scene-set
+        # per variant. Each variant tags ALL its scene entries with the same index.
         if len(output_conditioning) == 1:
-            return self._v2_build_batch_variants(
+            packed = self._v2_build_batch_variants(
                 raw_prompt, n, seed, clip, encode_cache, source_image,
                 base_entry=output_conditioning[0], base_prompt=base_prompt,
                 global_state=global_state, learning_profile=learning_profile,
                 repair_feedback=repair_feedback, intent_family_slot=intent_family_slot,
                 vf=vf, concept_dir=concept_dir, concept_strength=concept_strength,
                 current_final_texts=current_final_texts)
-        # Each variant needs DISTINCT noise, but multi-scene entries carry a per-scene
-        # 'funpack_scene_seed' that the sampler honors over its own seed — so duplicating the set
-        # verbatim makes every variant identical. Override the scene seeds per variant with a
-        # seeded RNG (reproducible per gen, well-spread across variants), so the N chains differ.
+        else:
+            packed = []
+            for i in range(n):
+                for entry in output_conditioning:
+                    cond = entry[0]
+                    meta = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
+                    m = dict(meta)
+                    m["funpack_batch_variant"] = i
+                    packed.append((cond, m))
+        # CRITICAL: each scene entry carries a 'funpack_scene_seed' the Chain Sampler honors OVER
+        # its own seed. Variants inherit the base entry's scene seed, so without this every variant
+        # uses identical noise (the single-scene bug seen in the wild). Assign a fresh, well-spread
+        # seed PER VARIANT (seeded by the gen seed -> reproducible), with a per-scene offset, so the
+        # N chains have genuinely different noise. Applies to BOTH single- and multi-scene paths.
         rng = random.Random(int(seed) & 0xffffffffffffffff)
-        packed = []
-        for i in range(n):
-            variant_seed = rng.randint(1, 0xffffffffffffffff)
-            for sidx, entry in enumerate(output_conditioning):
-                cond = entry[0]
-                meta = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
-                m = dict(meta)
-                m["funpack_batch_variant"] = i
-                m["funpack_scene_seed"] = (variant_seed + sidx) & 0xffffffffffffffff
-                packed.append((cond, m))
-        print(f"[FunPackVideoRefinerV2] Batch Training: packed {n} x {len(output_conditioning)}-scene "
-              f"set = {len(packed)} entries with variant markers + distinct per-variant seeds.")
+        variant_seed = {}
+        scene_idx = {}
+        for entry in packed:
+            m = entry[1]
+            if not isinstance(m, dict):
+                continue
+            vi = int(m.get("funpack_batch_variant", 0))
+            if vi not in variant_seed:
+                variant_seed[vi] = rng.randint(1, 0xffffffffffffffff)
+                scene_idx[vi] = 0
+            m["funpack_scene_seed"] = (variant_seed[vi] + scene_idx[vi]) & 0xffffffffffffffff
+            scene_idx[vi] += 1
+        print(f"[FunPackVideoRefinerV2] Batch Training: packed {n} variant(s) over "
+              f"{len(output_conditioning)} scene(s) = {len(packed)} entries; per-variant seeds = "
+              f"{[variant_seed[k] for k in sorted(variant_seed)]}")
         return packed
 
     def _v2_build_batch_variants(self, raw_prompt, n, seed, clip, encode_cache, source_image,
