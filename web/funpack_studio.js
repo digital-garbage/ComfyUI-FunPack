@@ -397,6 +397,67 @@ function row(label, control, cls = "") {
 
 function sectionTitle(text) { return el("div", "funpack-studio-section-title", text); }
 
+// One macro that orchestrates the stochastic-variability knobs of the Hybrid sampler.
+// Chill = clean/reproducible, Chaos = wild. Writes the existing hybrid fields (still
+// individually editable afterward). Keeps high_quality_pct > 0 deliberately: disabling
+// the deterministic finisher while ancestral noise runs produces a noisy mess.
+function applyVariabilityMacro(hc, v) {
+  v = Math.max(0, Math.min(1, v));
+  hc.variability = +v.toFixed(2);
+  hc.eta = +v.toFixed(2);                                   // ancestral noise = video variability
+  hc.eta_final = +(Math.max(0, (v - 0.6) / 0.4) * 0.4).toFixed(2); // late noise only at high chaos
+  hc.s_noise = 1.0;
+  hc.high_quality_pct = 0.35;                               // keep the deterministic finisher
+  hc.quality_sharpness = +(0.15 + v * 0.25).toFixed(2);     // recover detail as noise rises
+  if (v < 0.3) {
+    hc.velocity_bias_mode = "off";
+  } else {                                                  // remembered-action spice past Spicy
+    hc.velocity_bias_mode = "apply";
+    hc.velocity_bias_source = "nearest";
+    hc.velocity_bias_strength = +(((v - 0.3) / 0.7) * 1.2).toFixed(2);
+  }
+  hc.motion_pulse_mode = v < 0.7 ? "off" : (v < 0.9 ? "balanced" : "aggressive");
+}
+
+// Legible readout of what the current Hybrid config actually does (not runtime telemetry).
+function buildFeatureSummary(hc) {
+  const items = [];
+  const eta = +hc.eta || 0, ef = +hc.eta_final || 0;
+  items.push(eta > 0
+    ? ["Ancestral noise", `eta ${eta.toFixed(2)}${ef < eta ? " → " + ef.toFixed(2) : ""} (video only)`, true]
+    : ["Ancestral noise", "off (deterministic)", false]);
+  const vbOn = (hc.velocity_bias_mode || "off") !== "off" && (+hc.velocity_bias_strength || 0) > 0;
+  items.push(vbOn
+    ? ["Velocity spice", `${hc.velocity_bias_mode} ${(+hc.velocity_bias_strength).toFixed(2)} (${hc.velocity_bias_source || "mean"})`, true]
+    : ["Velocity spice", "off", false]);
+  items.push(hc.rescue_mode
+    ? ["Rescue", `on (thr ${(+hc.rescue_threshold || 0).toFixed(2)} / str ${(+hc.rescue_strength || 0).toFixed(2)})`, true]
+    : ["Rescue", "off", false]);
+  const hqp = +hc.high_quality_pct || 0, sharp = +hc.quality_sharpness || 0;
+  items.push(["Quality pass", hqp > 0 ? `${Math.round(hqp * 100)}%${sharp > 0 ? " + sharpen " + sharp.toFixed(2) : ""}` : "off", hqp > 0]);
+  const mpm = hc.motion_pulse_mode || "off";
+  items.push(["Motion pulses", mpm, mpm !== "off"]);
+
+  const box = el("div");
+  box.style.cssText = "margin:0 0 10px 0; padding:8px; border:1px solid rgba(180,190,200,0.2); border-radius:6px;";
+  const t = el("div", "", "Active features (this config)");
+  t.style.cssText = "font-size:11px; font-weight:600; opacity:0.8; margin-bottom:4px;";
+  box.append(t);
+  for (const [label, value, on] of items) {
+    const r = el("div");
+    r.style.cssText = `display:flex; justify-content:space-between; font-size:11px; padding:1px 0; opacity:${on ? "1" : "0.45"};`;
+    const l = el("span", "", (on ? "🟢 " : "⚪ ") + label);
+    const val = el("span", "", value);
+    val.style.cssText = "opacity:0.85;";
+    r.append(l, val);
+    box.append(r);
+  }
+  const a = el("div", "", "Audio auto-held deterministic on LTXAV (ancestral noise + steering confined to video).");
+  a.style.cssText = "font-size:10px; opacity:0.6; margin-top:5px;";
+  box.append(a);
+  return box;
+}
+
 function splitLines(value) {
   return String(value || "")
     .split(/\n+/)
@@ -1158,6 +1219,41 @@ function openPanel(node) {
       if (cfg.type === "Hybrid Euler 2S") {
         const hc = cfg.hybrid;
         body.append(sectionTitle("Hybrid Euler 2S settings"));
+
+        // --- Variability macro: one control over the stochastic knobs below ---
+        const macroWrap = el("div");
+        macroWrap.style.cssText = "margin:0 0 8px 0; padding:8px; border:1px solid rgba(88,166,214,0.35); border-radius:6px; background:rgba(88,166,214,0.08);";
+        const macroTitle = el("div", "", "Variability macro");
+        macroTitle.style.cssText = "font-weight:600; margin-bottom:5px;";
+        macroWrap.append(macroTitle);
+        const presets = el("div");
+        presets.style.cssText = "display:flex; gap:6px; margin-bottom:6px;";
+        [["Chill", 0.1], ["Spicy", 0.5], ["Chaos", 0.9]].forEach(([name, val]) => {
+          const b = btn(name);
+          b.addEventListener("click", () => { applyVariabilityMacro(hc, val); renderSampler(); });
+          presets.append(b);
+        });
+        macroWrap.append(presets);
+        const slider = el("input");
+        slider.type = "range"; slider.min = "0"; slider.max = "1"; slider.step = "0.05";
+        slider.value = String(Number.isFinite(+hc.variability) ? +hc.variability : 0.5);
+        slider.style.cssText = "flex:1;";
+        const macroVal = el("span", "", (+slider.value).toFixed(2));
+        macroVal.style.cssText = "font-size:11px; opacity:0.8; margin-left:8px; min-width:28px;";
+        slider.addEventListener("input", () => { macroVal.textContent = (+slider.value).toFixed(2); });
+        slider.addEventListener("change", () => { applyVariabilityMacro(hc, parseFloat(slider.value)); renderSampler(); });
+        const sliderRow = el("div");
+        sliderRow.style.cssText = "display:flex; align-items:center;";
+        sliderRow.append(slider, macroVal);
+        macroWrap.append(sliderRow);
+        const macroHint = el("div", "", "Chill = clean & reproducible · Spicy = lively · Chaos = wild. Sets eta / sharpen / velocity spice / motion pulses below (still editable). Audio stays clean automatically.");
+        macroHint.style.cssText = "font-size:11px; opacity:0.7; margin-top:5px;";
+        macroWrap.append(macroHint);
+        body.append(macroWrap);
+
+        // --- What this config actually does ---
+        body.append(buildFeatureSummary(hc));
+
         [["eta", 0, 1, 0.01], ["eta_final", 0, 1, 0.01], ["s_noise", 0, 10, 0.01],
          ["high_quality_pct", 0, 1, 0.01], ["correction_blend", 0, 1, 0.01],
          ["quality_sharpness", 0, 1, 0.01]].forEach(([k, mn, mx, st]) => {
