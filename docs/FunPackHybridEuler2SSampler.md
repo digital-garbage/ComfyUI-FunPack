@@ -13,6 +13,8 @@ This sampler keeps classic Euler ancestral for the early "structure building" st
 
 It can also apply optional early/mid **motion pulses** for single-clip image-to-video workflows. These pulses add monotonic noise kicks at selected normal denoise steps instead of inserting upward sigma jumps. This is intended to push LTX2.3 away from stale frame-1 reference stiffness while avoiding the audio damage caused by Restart replay.
 
+On rectified-flow models (CONST, e.g. LTXAV) the sampler runs an RF-correct port of the same feature set — a Heun corrector replaces the 2S step — rather than falling back to plain `euler_ancestral`. Velocity bias and reactive rescue therefore work on LTXV/LTXAV, not just the discrete-step models. On LTXAV, ancestral noise and trajectory steering are applied to the video latent only, never the audio latent, to avoid joint-attention audio corruption.
+
 ## Recommended wiring
 
 Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
@@ -25,7 +27,7 @@ Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
 
 **eta**: Ancestral stochasticity at the start of sampling. `1.0` keeps normal ancestral behaviour.
 
-**eta_final**: Eta value at the quality phase boundary. When set below `eta`, ancestral noise strength decays linearly toward this value as sigma approaches the quality phase. Lower values give a cleaner hand-off into deterministic refinement. Set equal to `eta` to disable decay.
+**eta_final**: Target eta value that ancestral noise decays toward. When set below `eta`, noise strength decays linearly toward this value as **schedule progress** advances (decoupled from the quality-phase boundary as of 2.7.7, so decay tracks the sampling timeline rather than a quality threshold). Lower values give a cleaner hand-off into deterministic refinement. Set equal to `eta` to disable decay.
 
 **s_noise**: Noise multiplier for ancestral noise injection.
 
@@ -51,13 +53,19 @@ Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
 
 **motion_pulse_strength**: Strength of the monotonic noise kick. Higher values push harder against stale image references, with more drift risk.
 
-**velocity_bias_mode**: Experimental early velocity steering mode.
+**velocity_bias_mode**: Experimental early-velocity steering mode. Captures/applies averaged early model velocity around normalized sigma `0.9`/`0.8`. `off` preserves legacy behavior.
 
-**velocity_bias_strength**: Strength for applying captured early velocity bias. Keep this low; `0.0` disables the applied delta.
+**velocity_bias_strength**: Strength of the remembered velocity (action) injected at the structure sigma. `0` disables. `~0.15` = subtle spice; `0.3`–`1.0` = clear action crossover; `2`–`3` approaches full action replacement (capped so the current generation isn't wiped). This is a **creative / action-injection tool, not a consistency tool** — it also carries an emergent scene-cut prior (cuts survive the trajectory mean and can reappear unprompted). The bias is applied magnitude-preservingly with sigma-decay so it injects motion without washing out detail. Range `0.0`–`3.0`.
 
-**velocity_refinement_key**: In-memory key used to group captured velocity directions.
+**velocity_bias_source**: How velocity bias and rescue pick a good direction. `mean` = prompt-blind global average (legacy). `nearest` = single best-matching prompt cluster, which preserves one real good generation's detail instead of a washed-out average (less softening). Affects both apply and rescue.
 
-**velocity_aspect_bucket**: Optional grouping value such as `landscape`, `portrait`, `square`, `ultrawide`, or `vertical`.
+**velocity_refinement_key**: Memory key used to capture/apply early velocity bias and rescue trajectories. Wire this to Studio's refinement key so memory groups by the same key the Refiner uses. Trajectory banks persist to disk.
+
+**rescue_mode**: Reactive in-flight rescue, rating-gated. Steers each eligible step toward trajectories you rated good and away from ones you rated `Awful` (matched to the current prompt). Learns automatically from ratings while on — no separate capture step. It is a no-op until you've rated a few generations for this prompt/key (a positive rating builds the target, an `Awful` builds what to avoid).
+
+**rescue_threshold**: Fires when the step has diverged from the good trajectory by more than this (`1 - cosine`) **or** aligned with a bad trajectory by more than this (cosine). Lower corrects more eagerly; `0.10`–`0.20` typical, raise toward `0.4+` for only severe cases.
+
+**rescue_strength**: How hard to pull toward good / push away from bad when triggered (magnitude preserved, no energy injected). Keep moderate; `0.5` is a strong correction.
 
 **sigmas**: Optional incoming sigma schedule. If connected, the node returns the same schedule plus sampler-side metadata for motion pulses.
 
@@ -68,7 +76,8 @@ Use this node with `SamplerCustomAdvanced` or `CustomSamplerAdvanced`:
 - `high_quality_pct = 0.30` to `0.40`
 - `correction_blend = 1.0`
 - `motion_pulse_mode = off` for baseline testing
-- `velocity_bias_mode = off`
+- `velocity_bias_mode = off`, `velocity_bias_strength = 0.0`
+- `rescue_mode = off` (turn on once you have a few rated generations for the prompt/key)
 
 To smooth the transition into the quality phase, try `eta_final = 0.5`. This decays ancestral noise from `1.0` at the start toward `0.5` as sigma approaches the quality boundary.
 

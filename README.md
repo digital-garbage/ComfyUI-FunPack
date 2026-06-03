@@ -2,6 +2,26 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Updates in 2.7.7
+
+**Batch Training** brings controlled-batch RLHF to the workflow. Activate a batch and the Scene Chain sampler runs the chain `N` times with everything frozen except the noise seed, giving you `N` directly-comparable videos. Studio shows a rating panel; on submit the value function trains on the shared (frozen) conditioning with each variant's reward — same conditioning, N rewards, the cleanest comparison signal there is. Spans the engine, a Studio variant producer, the `/funpack/batch` routes and rating window, and the value-function intake. Batches live in ComfyUI's temp dir and clear on restart.
+
+**Reactive in-flight rescue** steers the Hybrid Euler-2S sampler away from known-bad trajectories mid-sampling, using rating-gated, prompt-clustered memory of past good and bad runs. The full velocity/rescue feature set now also runs on the LTXAV rectified-flow path, with audio-safe steering (video latent only) and disk-persisted trajectory banks.
+
+Also: **Monte Carlo conditioning search** after value-function ascent (best of a sampled neighbourhood, not the raw endpoint); `velocity_bias_strength` unlocked to `3.0` for creative action injection; Refiner V2 always trains the value function (`value_guidance` only gates application); and a Studio Variability macro with an active-feature readout.
+
+## Updates in 2.7.6
+
+**Value-function steering** matured. Conditioning is moved by gradient ascent toward higher predicted reward before generation (displacement-capped to prevent reward hacking), the value function exports/imports from Studio, and learned reward shapes phrase boosting, attention weights, and temperature. Added concept-in-context guidance, concept-pair bad-direction repulsion, and a **motion floor** in embed guidance that auto-boosts temporal variance when output goes static.
+
+**Rating UI overhaul**: a rating picker popup, a `Wrong` action, a `Nailed it` rating (prompt-adherence positive, weaker than `Perfect`), and a per-option **heart modifier** replacing the standalone `Loved it` (an axis-blind quality endorsement, disabled for degraded/`Awful` ratings). `perfect_freeze` is disabled — prompt changes after a `Perfect` are now respected.
+
+## Updates in 2.7.5
+
+**Embed guidance** nudges conditioning toward the learned liked-quality direction each step (near-free, needs a few liked generations on the wired refinement key). An **online value function** predicts reward from rated runs and can steer sampling. **Mid-scene guide** replaces the broken `self_consistency`, using LTX guide-attention to preserve static-element layout across a scene without the audio corruption joint-attention injection caused.
+
+Cleanup: the predefined transition-phrase list is gone (splitting is fully user/auto-driven), and the per-scene vision re-encoding + `clip` input added to the Scene Chain Sampler in 2.7.4 were removed as unstable, along with `self_consistency` and `i2i_scene_cut`.
+
 ## Updates in 2.7.4
 
 **K/V in-context conditioning** keeps character identity across scene cuts. Reference hidden states captured at the start of each scene are prepended as attention tokens to the model's identity-formation blocks during every denoising step. Strong character consistency across view changes, orientation flips, and hard cuts — no LoRAs required.

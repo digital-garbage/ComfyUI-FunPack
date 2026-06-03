@@ -1,5 +1,85 @@
 # Changelog
 
+## [2.7.7] - 2026-06-03
+
+### Added
+
+Added **Batch Training** — a controlled-batch RLHF workflow built around the principle that the cleanest learning signal comes from rating several generations that differ in exactly one thing. When a batch is active, the Scene Chain sampler runs the chain `N` times with everything frozen except the noise seed, producing `N` directly-comparable videos. Studio then shows a rating panel where every variant is scored, and on submit the value function trains on the batch's shared (frozen) conditioning with each variant's reward — same conditioning, N rewards, which is the variance-reduced comparison signal. Spans the full pipeline: the engine (controlled N-run mode on the sampler), a Studio variant producer that packs the variants into conditioning, the `/funpack/batch` server routes and rating window, and the value-function intake on submit. Phase 3b adds deeper learning from batch ratings via axis and direction memory. Batches live in ComfyUI's temp directory and are wiped on restart.
+
+Added a **reactive in-flight rescue** system to the Hybrid Euler-2S sampler. During sampling the trajectory is compared against conditioning-clustered memory of past good and bad runs; when a step drifts toward a known-bad trajectory it is nudged back. Rescue is rating-gated (separate good/bad trajectory banks, learned only from rated runs), prompt-aware (clustered by conditioning so the right memory is consulted), runs in both sampler phases, and persists its trajectory banks to disk. The full feature set was also ported to the LTXAV rectified-flow (CONST-model) path via a sampler mirror, so velocity capture and rescue now work for LTXV/LTXAV, not just the discrete-step models.
+
+Added **Monte Carlo conditioning search** after the value-function gradient ascent, plus a VF final gate, so the conditioning chosen for generation is the best of a sampled neighbourhood rather than the raw ascent endpoint.
+
+Added a Studio **Variability macro** and an **active-feature readout** for the Hybrid sampler, summarising which steering features (velocity bias, rescue, embed guidance, value guidance) are live for the current configuration.
+
+### Changed
+
+Unlocked `velocity_bias_strength` from a `0.35` cap to `3.0` for deliberate creative action injection. Velocity bias is an artistic / action-injection control (and carries an emergent scene-cut prior — cuts survive the trajectory mean and get reintroduced unprompted); it is not a consistency tool.
+
+Refiner V2 now **always trains the value function**; `value_guidance` only gates whether the learned reward is *applied* during sampling, and defaults on. This means rated runs keep teaching the value function even when guidance is off.
+
+Decoupled `eta_final` decay from the quality boundary — it now anchors to schedule progress instead, so ancestral-noise decay tracks the sampling timeline rather than a quality threshold.
+
+### Fixed
+
+Audio-safe LTXAV sampling: ancestral noise and trajectory steering are now applied to the video latent only, never the audio latent, preventing the joint-attention audio corruption that steering on the combined tensor caused.
+
+Velocity-bias anti-softening: the bias is now applied magnitude-preservingly with sigma-decay and a quality-sharpness term, and sourced from the nearest trajectory cluster, so it injects motion without washing out detail.
+
+Audit fixes: corrected a velocity commit key mismatch, sparse rescue targets, and a redundant aspect-bucket computation. Batch Training fixes: distinct per-variant seeds in both the split-scene and single-scene paths (identical seeds were producing identical videos), correct activation alongside `split_by_transitions`, the node rating is ignored while a batch is in progress, and the in-node panel was de-duplicated from the Studio Refiner tab.
+
+## [2.7.6] - 2026-05-30
+
+### Added
+
+Added **pre-generation conditioning ascent** driven by the value function. Before sampling, the positive conditioning is moved by gradient ascent toward higher predicted reward, in both the single and scene-split Refiner V2 output paths. Displacement is capped to prevent reward hacking (the value function will otherwise push conditioning into degenerate high-score regions). The value function can be exported and imported from Studio and is cleared on session reset.
+
+Added **VF-driven conditioning shaping**: confidence scaling and gradient-aligned phrase boosting in conditioning memory, attention-weight accumulation, and VF-driven temperature, so the learned reward influences which phrases and attention weights are emphasised.
+
+Added **concept-in-context conditioning guidance** and **concept-pair bad-direction repulsion** — conditioning is nudged toward liked concepts in context and away from concept pairs learned to be bad.
+
+Added a **motion floor** to embed guidance: when temporal variance falls below a threshold the guidance auto-boosts it, fighting static/frozen output. Activation is logged with step, sigma, and variance ratio.
+
+Reworked the rating UI into a **rating picker popup**. Added a `Wrong` action and an explicit quality rating, a `Nailed it` rating (prompt-adherence positive, weaker than `Perfect`), and replaced the standalone `Loved it` rating with a per-option **heart modifier** (an axis-blind quality endorsement layered on top of any rating). The heart is disabled for quality-degraded ratings and for `Awful`.
+
+### Changed
+
+Disabled `perfect_freeze` — prompt changes made after a `Perfect` rating are now respected instead of the conditioning being frozen.
+
+### Removed
+
+Removed the experimental latent value function (VGG-Flow-style per-step latent steering). It was added in this cycle but pulled: the LTX token format does not expose the latent in a form the per-step steering could act on.
+
+### Fixed
+
+Fixed an `UnboundLocalError` (`eff_key` not yet assigned when the value function loads), value-function loading needing `inference_mode(False)`, several rating-picker bugs (stale outside-click listener re-opening the picker, active state not updating on option change, clicks landing on a canvas button widget rather than a DOM element), and `Save Refinement Latent` not executing.
+
+## [2.7.5] - 2026-05-29
+
+### Added
+
+Added **embed guidance** — a per-step nudge of the conditioning toward the learned "liked-quality" direction during sampling. Near-free overhead; requires a wired `refinement_key_input` with enough liked generations to have formed a direction. Exposed as `embed_guidance` / `embed_guidance_strength` on the Scene Chain sampler.
+
+Added an **online value function** for reward-guided sampling — a small MLP trained on rated generations that predicts reward and can steer sampling toward it. Required several fixes to train and run gradients inside ComfyUI's `inference_mode` execution context.
+
+Added **mid-scene guide** (`mid_scene_guide` / `mid_scene_guide_strength`), replacing the broken `self_consistency` feature. It uses the LTX guide-attention mechanism rather than post-block hidden-state injection (which corrupted audio through joint attention). At ~`0.25`–`0.3` strength it preserves static-element layout across a scene; capped at `0.5`.
+
+Added a **vision-conditioning toggle** to the Studio popup, and moved reference-image conditioning into Studio, where the source image already lives.
+
+### Changed
+
+Removed the predefined transition-phrase list — scene splitting is now fully driven by user-defined and auto-detected transitions.
+
+### Removed
+
+Removed the **per-scene vision re-encoding and `clip` input** from the Scene Chain sampler, and reverted the per-scene reference-image encoding in Studio (both added in 2.7.4). They were unstable in practice.
+
+Removed `self_consistency` (corrupted audio via joint attention — superseded by `mid_scene_guide`), the `i2i_scene_cut` feature, and dead guide-keyframe / guide-conditioning code paths.
+
+### Fixed
+
+Fixed `i2i_strength` inversion (higher now means stronger reference influence) and replaced the 1-frame i2i anchor with 2-frame i2v anchor generation for hard cuts.
+
 ## [2.7.4] - 2026-05-28
 
 ### Added

@@ -24,7 +24,17 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 - `max_scenes`: Maximum scene entries to consume. Default is `8`, but it can be raised for longer chains.
 - `use_same_seed`: When off, each scene uses `funpack_scene_seed` metadata from Studio/Refiner split mode, falling back to `seed + scene_index`. When on, every scene uses the first provided scene seed or the base `seed`.
 - `carry_i2v_guides`: Experimental. Appends protected frames from `latent_template`'s `noise_mask` as hidden LTX guide tokens in each continuation chunk. Default is off. **Warning:** using this with `frame_overlap=0` is confirmed to produce bad results — enable only for testing.
-- `clip` *(optional)*: Connect the same CLIP as your Studio node. When provided, the sampler re-encodes each scene's conditioning after the previous scene finishes sampling, using the decoded last frame as visual context via Gemma3 vision. This gives identical scene texts genuinely different conditioning and lets the model reason about what state it came from when entering each new scene. Only active when the CLIP has vision capability (Gemma3-12B checkpoint with SigLIP weights). Safe to leave disconnected — behaviour is unchanged without it.
+- `mid_scene_guide`: Experimental. Appends the middle frame of the previous scene as a guide for the current scene via LTX guide attention, helping maintain character positioning and static-element layout across scenes. Default is off. (Replaced the older `self_consistency` feature, which corrupted audio through joint attention.)
+- `mid_scene_guide_strength`: Guide-attention strength for the mid-scene anchor. `0.25` is the minimum — below that audio degrades and character appearance drifts; above `~0.35` it causes spatial conflicts when scene composition shifts. Capped at `0.5`.
+- `embed_guidance`: Applies the Refiner's learned liked-quality conditioning direction at *every* denoising step, not just once before sampling. Requires `refinement_key_input` and enough liked generations to have formed a direction. Adds ~20–30% inference overhead. Default is off.
+- `embed_guidance_strength`: Per-step nudge strength toward the liked direction. Keep small — it is applied at every step so it compounds; `0.01`–`0.03` is typical.
+- `transition_duration`: Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. `0` disables all transition effects.
+- `decode_tile_size` *(optional)*: Tile size for VAE decode (`0` = no tiling). Set to e.g. `512` if decode OOMs.
+- `refinement_key_input` *(optional)*: Connect to the same refinement key as your V2 Refiner. When wired, the sampler writes `carry_i2v_guides`, `frame_overlap`, and the scene count into the refinement state so the Refiner can reason about what changed between rated runs, and it enables the value-function-driven `embed_guidance` direction.
+
+## Outputs
+
+`latent`, `images`, `status`, `scene_count`, `scene_report`, `scene_boundaries`. The `scene_report` and `scene_boundaries` describe how the chain was split and stitched; the boundaries can be used downstream to locate scene cuts in the decoded video.
 
 ## Behavior
 
@@ -37,6 +47,10 @@ When Studio or Refiner V2 split mode provides scene seed metadata, the sampler r
 When `carry_i2v_guides` is enabled, protected source frames from the incoming `latent_template` are appended as guide tokens with `keyframe_idxs` and `guide_attention_entries`, then cropped away after sampling. This follows the same broad idea as LTX guide/IC-LoRA conditioning: the reference is extra context, not a visible frame inserted into the generated timeline. Keep it off unless you are testing that behavior deliberately. **Combining `carry_i2v_guides=True` with `frame_overlap=0` is confirmed to produce bad results and is not recommended for normal use.**
 
 For nested LTXAV latents, video and audio tensors are continued together. Audio overlap is derived from the audio/video latent length ratio.
+
+### Batch Training
+
+This sampler is also the engine for **Batch Training**. When Studio packs a batch of variants into the conditioning, the sampler runs the chain `N` times with everything frozen except the per-variant noise seed, producing `N` directly-comparable videos for rating. Distinct per-variant seeds are used in both the split-scene and single-scene paths (identical seeds would otherwise produce identical videos), and the node's own rating is ignored while a batch is in progress. See `FunPack Studio` for the rating panel and submit flow.
 
 ## Notes
 
