@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+Ported **velocity bias + reactive rescue** to the `FunPack Distilled Flow` sampler (`sample_funpack_distilled_flow`), reusing the same capture/memory/rescue machinery as the Hybrid Euler-2S and LTXAV/RF samplers. The sampler now exposes `velocity_bias_mode`, `velocity_bias_strength`, `velocity_bias_source`, `velocity_refinement_key`, `rescue_mode`, `rescue_threshold`, and `rescue_strength`, and these are wired into Studio's **Distilled Flow** sampler config panel (with the same blank/`default` velocity-key → wired-refinement-key fallback the Hybrid panel uses). Steering is applied magnitude-preservingly and, on packed LTXAV latents, confined to the video stream (audio-safe). Note: few-step distilled schedules may only land on one or two velocity targets, so apply/rescue fire less often than on an 8-step run; they no-op cleanly when no target matches. With everything off the sampler is byte-identical to the previous deterministic ODE.
+
 ## [2.7.7] - 2026-06-03
 
 ### Added

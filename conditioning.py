@@ -13641,11 +13641,25 @@ class FunPackStudio:
                 except ImportError:
                     from samplers import FunPackDistilledFlowSampler
                 dc = cfg.get("distilled", {}) if isinstance(cfg.get("distilled"), dict) else {}
+                # Velocity/rescue memory namespace: follow the wired refinement key when the
+                # field is blank or the "default" placeholder, so capture/rescue share a bucket
+                # with the Hybrid sampler instead of needing a separate field (matches hybrid).
+                dvkey = str(dc.get("velocity_refinement_key", "") or "").strip()
+                if not dvkey or dvkey == "default":
+                    dvkey = str(refinement_key or "").strip() or "default"
                 node = FunPackDistilledFlowSampler()
                 sampler, out_sigmas = node.get_sampler(
                     order=int(dc.get("order", 2)),
                     final_correction_steps=int(dc.get("final_correction_steps", 1)),
                     s_noise=float(dc.get("s_noise", 0.0)),
+                    velocity_bias_mode=str(dc.get("velocity_bias_mode", "off")),
+                    velocity_bias_strength=float(dc.get("velocity_bias_strength", 0.0)),
+                    velocity_bias_source=str(dc.get("velocity_bias_source", "mean")),
+                    velocity_refinement_key=dvkey,
+                    rescue_mode=bool(dc.get("rescue_mode", False)),
+                    rescue_threshold=float(dc.get("rescue_threshold", 0.15)),
+                    rescue_strength=float(dc.get("rescue_strength", 0.2)),
+                    rescue_prompt_sig=prompt_sig,
                     sigmas=sigmas_raw,
                 )
             elif sampler_type == "KSampler":

@@ -124,7 +124,7 @@ Configure two independent sampler outputs: **High Pass** and **Low Pass**. Each 
 
 **Sampler types:**
 - `Hybrid Euler 2S` - ancestral Euler with order-2 extrapolation for motion, late DPM-Solver++ 2S for quality (Heun corrector on rectified-flow/LTXAV models). Exposes eta, eta_final, s_noise, quality phase settings, motion pulse, velocity bias, and reactive rescue controls.
-- `Distilled Flow` - ODE sampler for few-step distilled models. Exposes order, final correction steps, and s_noise.
+- `Distilled Flow` - ODE sampler for few-step distilled models. Exposes order, final correction steps, and s_noise, plus the same velocity bias and reactive rescue controls as the Hybrid sampler (sharing the same trajectory memory). On few-step schedules these fire less often than on an 8-step run, since fewer steps land on a velocity target.
 - `KSampler` - any standard ComfyUI sampler by name.
 
 **Sigmas** are entered as a comma-separated float list. Leave empty to pass sigmas in externally.

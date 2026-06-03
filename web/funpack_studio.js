@@ -74,8 +74,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
     },
   };
 }
@@ -1497,6 +1497,52 @@ function openPanel(node) {
         const snInp = numInput(dc.s_noise, 0, 0.5, 0.01);
         snInp.addEventListener("input", () => { dc.s_noise = parseFloat(snInp.value); });
         body.append(row("s_noise", snInp));
+        const dVbm = selectEl(VELOCITY_BIAS_MODES, dc.velocity_bias_mode || "off");
+        dVbm.addEventListener("change", () => { dc.velocity_bias_mode = dVbm.value; renderSampler(); });
+        body.append(row("velocity bias mode", dVbm));
+        const dFewNote = document.createElement("div");
+        dFewNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+        dFewNote.textContent = "Shares the same memory as the Hybrid sampler. Few-step distilled schedules may only land on a velocity target or two, so apply/rescue fire less often than on an 8-step run.";
+        body.append(dFewNote);
+        if (dc.velocity_bias_mode && dc.velocity_bias_mode !== "off") {
+          const dVbs = numInput(dc.velocity_bias_strength, 0, 3.0, 0.05);
+          dVbs.addEventListener("input", () => { dc.velocity_bias_strength = parseFloat(dVbs.value); });
+          body.append(row("velocity bias strength", dVbs));
+          const dVbsrc = selectEl(["mean", "nearest"], dc.velocity_bias_source || "mean");
+          dVbsrc.addEventListener("change", () => { dc.velocity_bias_source = dVbsrc.value; });
+          body.append(row("bias source", dVbsrc));
+          const dVbsrcNote = document.createElement("div");
+          dVbsrcNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+          dVbsrcNote.textContent = "mean = averaged good direction (legacy). nearest = single best-matching prompt cluster, preserves one real good gen's detail (less softening). Also affects rescue.";
+          body.append(dVbsrcNote);
+          const dVrk = textInput(dc.velocity_refinement_key, "default");
+          dVrk.addEventListener("input", () => { dc.velocity_refinement_key = dVrk.value; });
+          body.append(row("velocity key", dVrk));
+          const dVrkNote = document.createElement("div");
+          dVrkNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+          dVrkNote.textContent = "Blank or 'default' = follow the refinement key wired into Studio (capture and rescue then share one bucket).";
+          body.append(dVrkNote);
+        }
+        const dRsm = selectEl(["off", "on"], dc.rescue_mode ? "on" : "off");
+        dRsm.addEventListener("change", () => { dc.rescue_mode = (dRsm.value === "on"); renderSampler(); });
+        body.append(row("rescue mode", dRsm));
+        if (dc.rescue_mode) {
+          const dRst = numInput(dc.rescue_threshold, 0, 1, 0.01);
+          dRst.addEventListener("input", () => { dc.rescue_threshold = parseFloat(dRst.value); });
+          body.append(row("rescue threshold", dRst));
+          const dRss = numInput(dc.rescue_strength, 0, 0.5, 0.01);
+          dRss.addEventListener("input", () => { dc.rescue_strength = parseFloat(dRss.value); });
+          body.append(row("rescue strength", dRss));
+          if (!dc.velocity_bias_mode || dc.velocity_bias_mode === "off") {
+            const dRsrc = selectEl(["mean", "nearest"], dc.velocity_bias_source || "mean");
+            dRsrc.addEventListener("change", () => { dc.velocity_bias_source = dRsrc.value; });
+            body.append(row("bias source", dRsrc));
+          }
+          const dRnote = document.createElement("div");
+          dRnote.style.cssText = "font-size:11px;opacity:0.7;margin:2px 0 4px 0;";
+          dRnote.textContent = "Rating-gated: learns automatically from your ratings while on (good = steer toward, Awful = steer away). No-op until a few gens for this prompt are rated. Session reset clears it.";
+          body.append(dRnote);
+        }
       } else if (cfg.type === "KSampler") {
         body.append(sectionTitle("KSampler settings"));
         const ksSelect = selectEl(KSAMPLER_NAMES, cfg.ksampler_name || "euler");

@@ -1428,7 +1428,11 @@ class FunPackHybridEuler2SSampler:
 
 def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, order=2, s_noise=0.0,
-                                   final_correction_steps=1):
+                                   final_correction_steps=1,
+                                   velocity_bias_mode="off", velocity_bias_strength=0.0,
+                                   velocity_bias_source="mean", velocity_refinement_key="default",
+                                   rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
+                                   rescue_prompt_sig=None):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1441,6 +1445,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       sharpness and detail in the steps that define the final output.
     - Optional s_noise: tiny ancestral-style noise injection for diversity.
       Default 0 = fully deterministic ODE (recommended for distilled models).
+    - Velocity-bias capture/apply and reactive rescue around each model eval —
+      the same memory machinery the Hybrid/RF samplers use. On few-step schedules
+      the velocity targets may only match a step or two, so apply/rescue fire less
+      often than on an 8-step run; they no-op cleanly when no target matches.
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1455,6 +1463,19 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     final_correction_steps = max(0, min(total_steps // 2, int(final_correction_steps)))
     correction_start_idx = total_steps - final_correction_steps
 
+    _RESCUE_LOG["warned_no_memory"] = False
+    _RESCUE_LOG["warned_no_prompt_match"] = False
+    _RESCUE_LOG["fired"] = 0
+
+    # Audio-safe steering: on a packed LTXAV latent keep velocity bias / rescue on the
+    # video stream only (perturbing the audio stream corrupts it via joint attention).
+    # None for single-stream LTXV -> _video_only is a no-op.
+    video_mask = _packed_video_mask(model, x)
+    if video_mask is not None and (rescue_mode or velocity_bias_mode != "off"):
+        n_aud = int((video_mask < 0.5).sum().item())
+        print(f"[FunPack AV] packed audio+video latent detected -> audio-safe steering "
+              f"(audio held deterministic on {n_aud} of {video_mask.shape[-1]} packed dims)")
+
     s_in = x.new_ones([x.shape[0]])
     prev_denoised = None
     prev_h = None
@@ -1462,8 +1483,25 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
+        velocity_target = _velocity_bias_target(sigmas, sigma)
+
+        if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+            x_pre = x
+            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
+                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
+            x = _video_only(x, x_pre, video_mask)
 
         denoised = model(x, sigma * s_in, **extra_args)
+
+        if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
+            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+        if rescue_mode and velocity_target is not None:
+            denoised = _video_only(_rescue_denoised(
+                denoised, x, sigma, velocity_refinement_key,
+                velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                source=velocity_bias_source,
+            ), denoised, video_mask)
 
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
@@ -1542,6 +1580,34 @@ class FunPackDistilledFlowSampler:
                     "step": 0.01,
                     "tooltip": "Optional stochastic noise for diversity. 0 = fully deterministic ODE (recommended). Small values (0.05–0.15) add variation without strongly disrupting the distilled trajectory.",
                 }),
+                "velocity_bias_mode": (VELOCITY_BIAS_MODES, {
+                    "default": "off",
+                    "tooltip": "Experimental: capture/apply averaged early model velocity around normalized sigma 0.9/0.72/0.42. Off preserves the plain distilled ODE. Note: few-step schedules may only land on a target or two, so it fires less often than on an 8-step run.",
+                }),
+                "velocity_bias_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.05,
+                    "tooltip": "Strength of the remembered velocity (action) injected at the structure sigma. 0 disables. ~0.15 = subtle spice; 0.3-1.0 = clear action crossover; 2-3 approaches full action replacement (capped so the current gen isn't wiped). Creative tool, not for consistency.",
+                }),
+                "velocity_bias_source": (["mean", "nearest"], {
+                    "default": "mean",
+                    "tooltip": "How velocity bias / rescue pick a good direction. 'mean' = prompt-blind global average. 'nearest' = single best-matching prompt cluster — preserves one real good gen's detail instead of a washed-out average. Affects both apply and rescue.",
+                }),
+                "velocity_refinement_key": ("STRING", {
+                    "default": "default", "multiline": False,
+                    "tooltip": "Memory key used to capture/apply early velocity bias and rescue trajectories.",
+                }),
+                "rescue_mode": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Reactive in-flight rescue, rating-gated. Steers each eligible step toward trajectories you rated good and away from ones you rated Awful (matched to the current prompt). A no-op until you've rated a few gens for this prompt/key.",
+                }),
+                "rescue_threshold": ("FLOAT", {
+                    "default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Fires when the step has diverged from the good trajectory by more than this (1 - cosine) OR aligned with a bad trajectory by more than this (cosine). Lower = corrects more eagerly. 0.10-0.20 typical.",
+                }),
+                "rescue_strength": ("FLOAT", {
+                    "default": 0.2, "min": 0.0, "max": 0.5, "step": 0.01,
+                    "tooltip": "How hard to pull toward good / push away from bad when triggered (magnitude preserved, no energy injected). Keep moderate; 0.5 is a strong correction.",
+                }),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -1555,10 +1621,15 @@ class FunPackDistilledFlowSampler:
     DESCRIPTION = (
         "ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA). "
         "Adams-Bashforth 2-step multistep for better trajectory accuracy across large sigma jumps, "
-        "Heun predictor-corrector on final steps for quality, and optional controlled noise for diversity."
+        "Heun predictor-corrector on final steps for quality, optional controlled noise for diversity, "
+        "and optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers)."
     )
 
-    def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0, sigmas=None):
+    def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0,
+                    velocity_bias_mode="off", velocity_bias_strength=0.0,
+                    velocity_bias_source="mean", velocity_refinement_key="default",
+                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
+                    rescue_prompt_sig=None, sigmas=None):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -1566,6 +1637,14 @@ class FunPackDistilledFlowSampler:
                 "order": order,
                 "final_correction_steps": final_correction_steps,
                 "s_noise": s_noise,
+                "velocity_bias_mode": velocity_bias_mode,
+                "velocity_bias_strength": velocity_bias_strength,
+                "velocity_bias_source": velocity_bias_source,
+                "velocity_refinement_key": velocity_refinement_key,
+                "rescue_mode": rescue_mode,
+                "rescue_threshold": rescue_threshold,
+                "rescue_strength": rescue_strength,
+                "rescue_prompt_sig": rescue_prompt_sig,
             }
         )
         return (sampler, prepared_sigmas)
