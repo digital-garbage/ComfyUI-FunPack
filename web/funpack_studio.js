@@ -74,8 +74,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0, s_churn: 0.0, s_tmin: 0.5, s_tmax: 1.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, s_noise: 0.0, s_churn: 0.0, s_tmin: 0.5, s_tmax: 1.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
     },
   };
 }
@@ -1497,6 +1497,21 @@ function openPanel(node) {
         const snInp = numInput(dc.s_noise, 0, 0.5, 0.01);
         snInp.addEventListener("input", () => { dc.s_noise = parseFloat(snInp.value); });
         body.append(row("s_noise", snInp));
+        const scInp = numInput(dc.s_churn ?? 0.0, 0, 100, 0.1);
+        scInp.addEventListener("input", () => { dc.s_churn = parseFloat(scInp.value); renderSampler(); });
+        body.append(row("s_churn", scInp));
+        if ((+dc.s_churn || 0) > 0) {
+          const stminInp = numInput(dc.s_tmin ?? 0.5, 0, 1, 0.025);
+          stminInp.addEventListener("input", () => { dc.s_tmin = parseFloat(stminInp.value); });
+          body.append(row("churn s_tmin", stminInp));
+          const stmaxInp = numInput(dc.s_tmax ?? 1.0, 0, 1, 0.025);
+          stmaxInp.addEventListener("input", () => { dc.s_tmax = parseFloat(stmaxInp.value); });
+          body.append(row("churn s_tmax", stmaxInp));
+          const scNote = document.createElement("div");
+          scNote.style.cssText = "font-size:11px;opacity:0.7;margin:0 0 4px 0;";
+          scNote.textContent = "Re-noises before each eval inside [s_tmin, s_tmax], then re-resolves — fights stale/frozen output (more motion) and can sharpen, at zero extra model calls. Default band 0.5–1.0 churns the structure/motion sigmas and protects the sub-0.4 detail finish. Supersedes s_noise while on.";
+          body.append(scNote);
+        }
         const dVbm = selectEl(VELOCITY_BIAS_MODES, dc.velocity_bias_mode || "off");
         dVbm.addEventListener("change", () => { dc.velocity_bias_mode = dVbm.value; renderSampler(); });
         body.append(row("velocity bias mode", dVbm));

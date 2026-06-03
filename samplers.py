@@ -1429,6 +1429,7 @@ class FunPackHybridEuler2SSampler:
 def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, order=2, s_noise=0.0,
                                    final_correction_steps=1,
+                                   s_churn=0.0, s_tmin=0.5, s_tmax=1.0,
                                    velocity_bias_mode="off", velocity_bias_strength=0.0,
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
@@ -1445,6 +1446,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       sharpness and detail in the steps that define the final output.
     - Optional s_noise: tiny ancestral-style noise injection for diversity.
       Default 0 = fully deterministic ODE (recommended for distilled models).
+    - Optional Karras-style stochastic churn (s_churn over [s_tmin, s_tmax]):
+      re-noises x BEFORE the eval, then denoises from the bumped sigma_hat. Zero
+      extra model calls (still one eval per step, at a slightly higher noise level).
+      Keeps the distilled trajectory from freezing — more motion / less stale
+      imagery — and can sharpen by letting the model re-resolve. The final
+      jump-to-zero detail step is never churned.
     - Velocity-bias capture/apply and reactive rescue around each model eval —
       the same memory machinery the Hybrid/RF samplers use. On few-step schedules
       the velocity targets may only match a step or two, so apply/rescue fire less
@@ -1460,6 +1467,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
 
     order = max(1, min(2, int(order)))
     s_noise = max(0.0, min(0.5, float(s_noise)))
+    s_churn = max(0.0, float(s_churn))
+    s_tmin = max(0.0, float(s_tmin))
+    s_tmax = float(s_tmax)
+    sigma0 = float(sigmas[0].item())
     final_correction_steps = max(0, min(total_steps // 2, int(final_correction_steps)))
     correction_start_idx = total_steps - final_correction_steps
 
@@ -1485,6 +1496,23 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         sigma_next = sigmas[i + 1]
         velocity_target = _velocity_bias_target(sigmas, sigma)
 
+        # Karras-style stochastic churn: re-noise within [s_tmin, s_tmax] BEFORE the eval,
+        # then denoise from the bumped sigma_hat. Zero extra model calls. sigma_hat is clamped
+        # to the schedule start so we never push the model past its trained noise level, and
+        # the final jump-to-zero step (sigma_next == 0) is never churned. Audio-safe via
+        # video_mask. With s_churn == 0, sigma_hat stays == sigma and this block is a no-op.
+        sigma_hat = sigma
+        if s_churn > 0.0 and sigma_next > 0:
+            s_cur = float(sigma.item())
+            if s_tmin <= s_cur <= s_tmax:
+                gamma = min(s_churn / total_steps, 2.0 ** 0.5 - 1.0)
+                sh = min(s_cur * (1.0 + gamma), sigma0)
+                if sh > s_cur:
+                    x_pre = x
+                    x = x + noise_sampler(sigma, sigma_next) * math.sqrt(sh * sh - s_cur * s_cur)
+                    x = _video_only(x, x_pre, video_mask)
+                    sigma_hat = sigma.new_tensor(float(sh))
+
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
             x_pre = x
             x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
@@ -1492,21 +1520,21 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             x = _video_only(x, x_pre, video_mask)
 
-        denoised = model(x, sigma * s_in, **extra_args)
+        denoised = model(x, sigma_hat * s_in, **extra_args)
 
         if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
-            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma_hat, denoised, prompt_sig=rescue_prompt_sig)
         if rescue_mode and velocity_target is not None:
             denoised = _video_only(_rescue_denoised(
-                denoised, x, sigma, velocity_refinement_key,
+                denoised, x, sigma_hat, velocity_refinement_key,
                 velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                 source=velocity_bias_source,
             ), denoised, video_mask)
 
         if callback is not None:
-            callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+            callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma_hat, "denoised": denoised})
 
-        h = float((sigma - sigma_next).abs().item())
+        h = float((sigma_hat - sigma_next).abs().item())
 
         # Adams-Bashforth 2-step multistep correction.
         # Coefficients for variable step sizes: r = h_current / h_previous.
@@ -1529,12 +1557,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             x = denoised_eff
             continue
 
-        dt = sigma_next - sigma  # negative: sigmas decrease
+        dt = sigma_next - sigma_hat  # negative: sigmas decrease (from the churned level)
 
         if i >= correction_start_idx:
             # Heun predictor-corrector.
             # Predictor: Euler step using the (multistep-corrected) denoised.
-            d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+            d1 = k_diffusion_sampling.to_d(x, sigma_hat, denoised_eff)
             x_pred = x + d1 * dt
             # Corrector: evaluate model at the predicted x and sigma_next.
             denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
@@ -1544,10 +1572,13 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             prev_denoised = None
             prev_h = None
         else:
-            d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+            d = k_diffusion_sampling.to_d(x, sigma_hat, denoised_eff)
             x = x + d * dt
-            if s_noise > 0.0:
-                sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
+            # Legacy post-step ancestral noise. Skipped when churn is active (churn is the
+            # stochastic source then), so the two never stack. When s_churn == 0 this path is
+            # unchanged and sigma_hat == sigma, keeping the deterministic ODE byte-identical.
+            if s_noise > 0.0 and s_churn <= 0.0:
+                sigma_up = math.sqrt(max(0.0, float(sigma_hat.item()) ** 2 - float(sigma_next.item()) ** 2))
                 if sigma_up > 0.0:
                     x = x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up
 
@@ -1578,7 +1609,19 @@ class FunPackDistilledFlowSampler:
                     "min": 0.0,
                     "max": 0.50,
                     "step": 0.01,
-                    "tooltip": "Optional stochastic noise for diversity. 0 = fully deterministic ODE (recommended). Small values (0.05–0.15) add variation without strongly disrupting the distilled trajectory.",
+                    "tooltip": "Optional post-step ancestral noise for diversity. 0 = fully deterministic ODE (recommended). Small values (0.05–0.15) add variation without strongly disrupting the distilled trajectory. Ignored when s_churn > 0 (churn becomes the stochastic source).",
+                }),
+                "s_churn": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 100.0, "step": 0.1,
+                    "tooltip": "Karras-style stochastic churn: re-noises before each eval within [s_tmin, s_tmax], then denoises from the bumped sigma. Zero extra model calls. Fights stale/frozen distilled output (more motion, less locked imagery) and can sharpen. 0 = off. Try 1-4; 4+ saturates. Spread across steps internally.",
+                }),
+                "s_tmin": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.025,
+                    "tooltip": "Lowest sigma that churn touches. Default 0.5 protects the sub-0.4 detail-finish steps (re-noising there smears fine detail). Lower it only if you want churn to reach the detail end.",
+                }),
+                "s_tmax": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.025,
+                    "tooltip": "Highest sigma that churn touches. Default 1.0 = up to the schedule start. Churn at/above the start sigma is clamped to the start, so the model never sees a higher-than-trained noise level.",
                 }),
                 "velocity_bias_mode": (VELOCITY_BIAS_MODES, {
                     "default": "off",
@@ -1621,11 +1664,12 @@ class FunPackDistilledFlowSampler:
     DESCRIPTION = (
         "ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA). "
         "Adams-Bashforth 2-step multistep for better trajectory accuracy across large sigma jumps, "
-        "Heun predictor-corrector on final steps for quality, optional controlled noise for diversity, "
-        "and optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers)."
+        "Heun predictor-corrector on final steps for quality, optional controlled noise and "
+        "Karras churn for diversity, and optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers)."
     )
 
     def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0,
+                    s_churn=0.0, s_tmin=0.5, s_tmax=1.0,
                     velocity_bias_mode="off", velocity_bias_strength=0.0,
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
@@ -1637,6 +1681,9 @@ class FunPackDistilledFlowSampler:
                 "order": order,
                 "final_correction_steps": final_correction_steps,
                 "s_noise": s_noise,
+                "s_churn": s_churn,
+                "s_tmin": s_tmin,
+                "s_tmax": s_tmax,
                 "velocity_bias_mode": velocity_bias_mode,
                 "velocity_bias_strength": velocity_bias_strength,
                 "velocity_bias_source": velocity_bias_source,
