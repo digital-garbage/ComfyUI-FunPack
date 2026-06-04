@@ -2905,6 +2905,7 @@ class FunPackLTXAVSceneChainSampler:
         entries = list(enumerate(variants))   # [(idx, variant_positive_list), ...]
         manifest["iterations"] = len(entries)
         last = None
+        batch_images = []  # collect each variant's decoded frames for the IMAGES output
         base_seed = int(seed)
         for idx, pos_i in entries:
             iter_seed = base_seed + idx
@@ -2920,6 +2921,10 @@ class FunPackLTXAVSceneChainSampler:
                 unique_id=None, prompt=None,
             )
             last = out
+            # Collect this variant's decoded frames (CPU) so the IMAGES output shows ALL
+            # videos back-to-back, not just the last one. The sub-call already decoded them.
+            if isinstance(out[1], torch.Tensor) and out[1].dim() == 4 and out[1].shape[1] > 8:
+                batch_images.append(out[1].detach().cpu())
             out_latent = out[0]
             iid = f"{safe}_{stamp}_{idx:02d}"
             latent_path = os.path.join(batch_dir, f"{iid}.latent.pt")
@@ -2963,4 +2968,17 @@ class FunPackLTXAVSceneChainSampler:
         print(f"[FunPackSceneChain] {status}")
         if last is None:
             raise RuntimeError("Batch Training produced no output.")
-        return (last[0], last[1], status, last[3], last[4], last[5])
+        # IMAGES output = all variants' frames concatenated (so you can view the whole batch
+        # without rating). Falls back to the last variant if shapes are incompatible.
+        all_images = last[1]
+        compatible = [im for im in batch_images if im.shape[1:] == batch_images[0].shape[1:]] if batch_images else []
+        if len(compatible) > 1:
+            try:
+                all_images = torch.cat(compatible, dim=0)
+                print(f"[FunPackSceneChain] Batch IMAGES: {len(compatible)} videos concatenated "
+                      f"({all_images.shape[0]} frames total).")
+            except Exception as e:
+                print(f"[FunPackSceneChain] Batch IMAGES concat failed ({e}); returning last only.")
+        elif compatible:
+            all_images = compatible[0]
+        return (last[0], all_images, status, last[3], last[4], last[5])
