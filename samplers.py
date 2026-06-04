@@ -1694,10 +1694,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
                     "tooltip": "Per-step nudge strength toward the liked conditioning direction. Keep small — the direction is applied at every step so it compounds. 0.01-0.03 is typical.",
                 }),
-                "embed_guidance_source": (["relative", "absolute"], {
-                    "default": "relative",
-                    "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
-                }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
                     "tooltip": "Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. 0 = disable all transition effects.",
@@ -1713,6 +1709,12 @@ class FunPackLTXAVSceneChainSampler:
                     "multiline": False,
                     "forceInput": True,
                     "tooltip": "Connect to the same refinement key as your V2 Refiner. When wired, the sampler writes carry_i2v_guides, frame_overlap, and scene count into the refinement state so the Refiner can reason about what changed between rated runs.",
+                }),
+                # Appended last on purpose: inserting a widget earlier shifts every saved
+                # widgets_values slot in existing workflows. New widgets go at the end.
+                "embed_guidance_source": (["relative", "absolute"], {
+                    "default": "relative",
+                    "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
                 }),
             },
             "hidden": {
