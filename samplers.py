@@ -2956,6 +2956,9 @@ class FunPackLTXAVSceneChainSampler:
                 "latent": os.path.basename(latent_path) if latent_path else None,
                 "preview": os.path.basename(preview_path) if has_preview else None,
                 "cond": cond_name,
+                "guess_factor": (pos_i[0][1].get("funpack_guess_factor")
+                                 if pos_i and isinstance(pos_i[0], (list, tuple))
+                                 and len(pos_i[0]) > 1 and isinstance(pos_i[0][1], dict) else None),
                 "rating": None,
             })
         try:

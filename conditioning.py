@@ -413,6 +413,38 @@ def protect_audio_channels(steered, original):
         return steered
 
 
+def scale_conditioning_spread(cond, factor):
+    """Scale the conditioning's per-token spread (its 'sigma') on VIDEO channels only by `factor`,
+    mean-preserving per token; audio channels are left untouched (LTXAV channel split). factor>1
+    amplifies the prompt's expression (toward overbake), <1 dampens it. Used by Interactive
+    Guessing to build a strength ladder, and by the learned safe-spread cap."""
+    try:
+        if not isinstance(cond, torch.Tensor) or abs(float(factor) - 1.0) < 1e-6:
+            return cond
+        v = ltxav_video_channels(cond.shape[-1])
+        out = cond.clone()
+        vid = out[..., :v]
+        m = vid.mean(dim=-1, keepdim=True)
+        out[..., :v] = m + (vid - m) * float(factor)
+        return out
+    except Exception:
+        return cond
+
+
+def conditioning_spread(cond):
+    """Robust per-token video-channel spread (mean std over tokens) of a conditioning tensor —
+    the scalar Interactive Guessing's ladder and cap reason about. None if not measurable."""
+    try:
+        if not isinstance(cond, torch.Tensor):
+            return None
+        v = ltxav_video_channels(cond.shape[-1])
+        vid = cond[..., :v].float()
+        m = vid.mean(dim=-1, keepdim=True)
+        return float(((vid - m) ** 2).mean().clamp_min(1e-12).sqrt().item())
+    except Exception:
+        return None
+
+
 def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     refinements_dir = os.path.join(base_dir, "refinements")
@@ -11449,7 +11481,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
-                  batch_variants=1):
+                  batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -12288,7 +12320,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             output_conditioning, batch_variants, _raw_positive_prompt, seed, clip,
                             encode_cache, source_image, prompt_to_encode, global_state, learning_profile,
                             repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
-                            _concept_strength, _current_final)
+                            _concept_strength, _current_final,
+                            guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range)
                     return (
                         self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength),
                         status,
@@ -12317,9 +12350,44 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             video_latent,
         )
 
+    def _v2_pack_guess_ladder(self, output_conditioning, n, direction, guess_range, seed):
+        """Interactive Guessing: build N variants that scale the conditioning's spread (sigma) on
+        video channels by a LINEAR ramp, freezing everything else INCLUDING the noise seed so the
+        only variable across the ladder is conditioning strength. Variant 0 = base (factor 1.0);
+        the last = 1.0 +/- guess_range (up amplifies, down dampens). Each variant records
+        'funpack_guess_factor' so the rating ladder is interpretable and Phase-3 learning can read
+        each rung's strength."""
+        n = max(2, int(n))
+        guess_range = abs(float(guess_range or 1.0))
+        up = str(direction or "up").lower() != "down"
+        packed = []
+        for i in range(n):
+            t = i / (n - 1)
+            factor = (1.0 + guess_range * t) if up else (1.0 - min(0.95, guess_range) * t)
+            for entry in output_conditioning:
+                cond = entry[0]
+                meta = entry[1] if len(entry) > 1 and isinstance(entry[1], dict) else {}
+                m = dict(meta)
+                m["funpack_batch_variant"] = i
+                m["funpack_guess_factor"] = round(float(factor), 4)
+                packed.append((scale_conditioning_spread(cond, factor), m))
+        # Freeze the noise: every variant shares the same per-scene seeds, so only the spread varies.
+        base = random.Random(int(seed) & 0xffffffffffffffff).randint(1, 0xffffffffffffffff)
+        scene_counter = {}
+        for entry in packed:
+            m = entry[1]
+            vi = int(m.get("funpack_batch_variant", 0))
+            si = scene_counter.get(vi, 0)
+            m["funpack_scene_seed"] = (base + si) & 0xffffffffffffffff
+            scene_counter[vi] = si + 1
+        print(f"[FunPackVideoRefinerV2] Interactive Guessing: packed {n} rungs "
+              f"(direction={'up' if up else 'down'}, range={guess_range}, seed frozen).")
+        return packed
+
     def _v2_pack_batch(self, output_conditioning, n, raw_prompt, seed, clip, encode_cache,
                        source_image, base_prompt, global_state, learning_profile, repair_feedback,
-                       intent_family_slot, vf, concept_dir, concept_strength, current_final_texts):
+                       intent_family_slot, vf, concept_dir, concept_strength, current_final_texts,
+                       guess_mode=False, guess_direction="up", guess_range=1.0):
         """Pack N Batch-Training variant entries onto the FINAL conditioning, each tagged
         'funpack_batch_variant' so the Chain Sampler samples one chain per variant. Single-scene
         output -> re-resolve shortcuts per variant (different option picks). Multi-scene output
@@ -12329,6 +12397,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         n = max(1, int(n or 1))
         if n <= 1 or not output_conditioning:
             return output_conditioning
+        # Interactive Guessing: a conditioning-spread ladder (seed frozen), not shortcut/seed variants.
+        if guess_mode:
+            return self._v2_pack_guess_ladder(output_conditioning, n, guess_direction, guess_range, seed)
         # Build the N variant entries. Single-scene output -> _v2_build_batch_variants (re-resolves
         # shortcuts per variant). Multi-scene (transition split) -> duplicate the whole scene-set
         # per variant. Each variant tags ALL its scene entries with the same index.
@@ -13818,6 +13889,9 @@ class FunPackStudio:
             refinement_key=key,
             _velocity_keys=_vel_commit_keys,
             batch_variants=int(rf.get("batch_variants", 1) or 1),
+            guess_mode=bool(rf.get("guess_mode", False)),
+            guess_direction=str(rf.get("guess_direction", "up") or "up"),
+            guess_range=float(rf.get("guess_range", 1.0) or 1.0),
             reset_session=reset_session,
             lora_stack=active_lora_stack,
             im_feeling_lucky=im_feeling_lucky,
