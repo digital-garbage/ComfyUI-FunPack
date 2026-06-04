@@ -1694,6 +1694,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
                     "tooltip": "Per-step nudge strength toward the liked conditioning direction. Keep small — the direction is applied at every step so it compounds. 0.01-0.03 is typical.",
                 }),
+                "embed_guidance_source": (["relative", "absolute"], {
+                    "default": "relative",
+                    "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
+                }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
                     "tooltip": "Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. 0 = disable all transition effects.",
@@ -2163,6 +2167,14 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _absolute_key(self):
+        """The keyless global-taste key for Absolute embed_guidance (mirrors the Refiner)."""
+        try:
+            from .conditioning import FUNPACK_ABSOLUTE_KEY
+        except ImportError:
+            from conditioning import FUNPACK_ABSOLUTE_KEY
+        return FUNPACK_ABSOLUTE_KEY
+
     def _load_value_function(self, refinement_key):
         """Load the online value function if trained and ready."""
         try:
@@ -2314,6 +2326,7 @@ class FunPackLTXAVSceneChainSampler:
                carry_i2v_guides=False,
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
                embed_guidance=False, embed_guidance_strength=0.02,
+               embed_guidance_source="relative",
                transition_duration=16, decode_tile_size=0,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -2330,7 +2343,7 @@ class FunPackLTXAVSceneChainSampler:
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed,
                 carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                 embed_guidance, embed_guidance_strength, transition_duration,
-                decode_tile_size, refinement_key_input,
+                decode_tile_size, refinement_key_input, embed_guidance_source,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -2346,21 +2359,25 @@ class FunPackLTXAVSceneChainSampler:
         boundary_entries = []
         cumulative_latent_frames = 0
 
-        # Load liked direction once for embed_guidance
+        # Load liked direction once for embed_guidance. Source selects which learned direction:
+        # 'relative' = this prompt's key; 'absolute' = the global, prompt-agnostic taste store
+        # (keyless, so it works even without refinement_key_input).
         _liked_dir = None
         _value_fn = None
-        if embed_guidance and refinement_key_input:
-            _liked_dir = self._load_liked_direction(refinement_key_input)
+        _eg_source = str(embed_guidance_source or "relative").lower()
+        _eg_key = self._absolute_key() if _eg_source == "absolute" else refinement_key_input
+        if embed_guidance and _eg_key:
+            _liked_dir = self._load_liked_direction(_eg_key)
             if _liked_dir is None:
-                print("[FunPackSceneChain] embed_guidance: no liked direction found (need 3+ liked generations)")
+                print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): no liked direction found (need 3+ liked generations)")
             else:
-                _value_fn = self._load_value_function(refinement_key_input)
+                _value_fn = self._load_value_function(_eg_key)
                 if _value_fn:
                     ready = _value_fn.is_ready()
                     mode = f"value function ({_value_fn.n_trained} samples, ascent {'on' if ready else 'pending'})"
                 else:
                     mode = "fixed direction"
-                print(f"[FunPackSceneChain] embed_guidance: active via {mode}, strength={embed_guidance_strength}")
+                print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): active via {mode}, strength={embed_guidance_strength}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -2560,7 +2577,7 @@ class FunPackLTXAVSceneChainSampler:
                             latent_template, num_frames_per_scene, frame_overlap, cfg, max_scenes,
                             use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                             embed_guidance, embed_guidance_strength, transition_duration,
-                            decode_tile_size, refinement_key_input):
+                            decode_tile_size, refinement_key_input, embed_guidance_source="relative"):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -2573,7 +2590,8 @@ class FunPackLTXAVSceneChainSampler:
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
                 carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
-                embed_guidance_strength=embed_guidance_strength, transition_duration=transition_duration,
+                embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
+                transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input="",
             )
         stamp = _time.strftime("%Y-%m-%d_%H-%M-%S")
@@ -2597,7 +2615,8 @@ class FunPackLTXAVSceneChainSampler:
                 num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
                 carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
-                embed_guidance_strength=embed_guidance_strength, transition_duration=transition_duration,
+                embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
+                transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 unique_id=None, prompt=None,
             )

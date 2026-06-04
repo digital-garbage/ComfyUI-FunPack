@@ -69,7 +69,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6 },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -1204,6 +1204,26 @@ function openPanel(node) {
     valueGuidanceToggle.inp.addEventListener("change", () => { settings.refiner.value_guidance = valueGuidanceToggle.inp.checked; });
     body.append(el("div", "funpack-studio-hint", "The value function always trains in the background on rated generations (cheap, no extra diffusion). This toggle applies the learned reward direction to conditioning (ascent + search) once 10+ gens are rated — on by default. Turn off for strict prompt fidelity; learning still accumulates either way. The chain sampler's 'embed_guidance' uses the same trained function per-step."));
     body.append(row("Value guidance", valueGuidanceToggle.wrap));
+
+    if (!settings.refiner.steer_mode) settings.refiner.steer_mode = "relative";
+    const steerSelect = selectEl(["relative", "absolute", "both"], settings.refiner.steer_mode);
+    steerSelect.addEventListener("change", () => { settings.refiner.steer_mode = steerSelect.value; });
+    body.append(el("div", "funpack-studio-hint",
+      "Relative: per-prompt steering — finds the best conditioning for THIS prompt (the default; learns from prompt-specific ratings). " +
+      "Absolute: pulls conditioning toward a global learned taste that applies to ANY prompt; in this mode a rating means 'this has/lacks details I like in general' (Perfect = 'I love this, give me more of it everywhere'), independent of the prompt. " +
+      "Both: layer the global taste prior under the per-prompt fit."));
+    body.append(row("Steer mode", steerSelect));
+
+    if (settings.refiner.absolute_strength === undefined) settings.refiner.absolute_strength = 0.6;
+    const absStrengthInput = numInput(settings.refiner.absolute_strength, 0.0, 2.0, 0.05);
+    absStrengthInput.addEventListener("change", () => {
+      const v = parseFloat(absStrengthInput.value);
+      settings.refiner.absolute_strength = Number.isFinite(v) ? Math.max(0, Math.min(2, v)) : 0.6;
+    });
+    body.append(el("div", "funpack-studio-hint",
+      "How hard Absolute/Both pull toward the global taste direction. 0.6 is visible but non-destructive; raise to override the prompt more strongly."));
+    body.append(row("Absolute strength", absStrengthInput));
+
     const vfActiveKey = () => settings.refinement_key || linkedRefinementKey(node);
     const vfExportBtn = btn("Export", "secondary");
     const vfImportBtn = btn("Import", "secondary");

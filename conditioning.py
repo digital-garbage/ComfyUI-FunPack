@@ -360,6 +360,12 @@ def update_refinement_sampler_context(refinement_key, sampler_context):
         print(f"[FunPack] update_refinement_sampler_context: failed to save context: {e}")
 
 
+# Fixed, prompt-agnostic key for the Absolute steering store. Unlike every other refinement
+# key (which hashes a specific prompt), this one collects liked/disliked directions across
+# ALL prompts into a single "global taste" file. Relative mode = per-prompt; Absolute = this.
+FUNPACK_ABSOLUTE_KEY = "__funpack_absolute_global__"
+
+
 def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     refinements_dir = os.path.join(base_dir, "refinements")
@@ -5950,6 +5956,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "latent": ("LATENT", {
                     "tooltip": "Optional video latent for creativity masking. Takes priority over any saved latent for this key. Connect your i2v or previous KSampler output here.",
                 }),
+                "steer_mode": (["relative", "absolute", "both"], {
+                    "default": "relative",
+                    "label": "Steer Mode",
+                    "tooltip": "Relative: per-prompt steering (finds the best conditioning for THIS prompt — default). Absolute: pull conditioning toward the global learned taste, regardless of prompt. Both: layer them.",
+                }),
+                "absolute_strength": ("FLOAT", {
+                    "default": 0.6, "min": 0.0, "max": 2.0, "step": 0.05,
+                    "label": "Absolute Strength",
+                    "tooltip": "How hard Absolute mode pulls toward the global taste direction. 0.6 is visible but non-destructive; raise for stronger override of the prompt.",
+                }),
             },
         }
 
@@ -11371,6 +11387,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
+                  steer_mode="relative", absolute_strength=0.6,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
@@ -11490,25 +11507,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # value_guidance only controls APPLICATION (ascent below) — a user who runs with it
         # off still builds the VF, so enabling guidance later works immediately.
         if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
-            try:
-                import torch as _torch
-                try:
-                    from .value_function import OnlineValueFunction
-                except ImportError:
-                    from value_function import OnlineValueFunction
-                payload = (previous_run or {}).get("conditioning")
-                if isinstance(payload, dict):
-                    with _torch.inference_mode(False), _torch.enable_grad():
-                        cond_tensor = serializable_to_tensor(payload).clone()
-                        reward = float(learning_profile.get("reward", 0.0))
-                        vf_path = refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt")
-                        vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
-                        if vf is not None:
-                            vf.train_on(cond_tensor, reward)
-                            vf.save(vf_path)
-                            print(f"[FunPackRefiner] Value function updated — {vf.n_trained} samples, buffer={len(vf.buffer_c)}")
-            except Exception as e:
-                print(f"[FunPackRefiner] Value function training failed: {e}")
+            n = self._v2_train_value_function(
+                refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
+                (previous_run or {}).get("conditioning"),
+                float(learning_profile.get("reward", 0.0)),
+            )
+            if n is not None:
+                print(f"[FunPackRefiner] Value function updated — {n} samples")
+        # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
+        # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
+        if has_previous_run:
+            self._v2_learn_absolute(previous_run, learning_profile)
         if has_previous_run and not learning_profile.get("skip_learning"):
             self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
         repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
@@ -11771,6 +11780,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         elif prompt_only_mode:
             refined = cond
             adaptation_status = "Adaptation: Prompt only mode; conditioning vectors passed through unchanged."
+        elif str(steer_mode).lower() == "absolute":
+            # Pure Absolute: skip the per-prompt conditioning memory entirely. Steering happens
+            # only via the keyless global-taste pull in _v2_finalize_conditioning, so the result
+            # is moved toward general preferences "despite the prompt". (Both keeps per-prompt
+            # memory and layers the global pull on top.)
+            refined = cond
+            adaptation_status = "Adaptation: Absolute mode; per-prompt memory bypassed, global taste pull applied at output."
         else:
             _current_final = [t for t in (prompt_to_encode or "").split(",") if len(t.strip()) > 1]
             _prev_final = previous_run.get("final_phrase_texts", []) if isinstance(previous_run, dict) else []
@@ -12214,7 +12230,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                             _concept_strength, _current_final)
                     return (
-                        self._v2_ascend_conditioning(output_conditioning, refinement_key, apply=value_guidance),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength),
                         status,
                         training_info,
                         loss_graph,
@@ -12232,7 +12248,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_ascend_conditioning(output_conditioning, refinement_key, apply=value_guidance),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12378,6 +12394,177 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as e:
             print(f"[FunPackRefiner] Conditioning ascent failed: {e}")
             return conditioning_list
+
+    # ====================== ABSOLUTE STEERING (prompt-agnostic) ======================
+    # Relative steering (everything above) keys every learned direction to one prompt's
+    # state file. Absolute steering accumulates the SAME pooled, channel-space directions
+    # into a single keyless file so they describe a global "taste" that applies to any
+    # prompt. It is the learned, automated analogue of FunPackConditioningAdjust: instead
+    # of a user typing a phrase + strength, the direction is the running average of what
+    # was rated liked (vs. the global source mean), applied as a broadcast shift.
+
+    def _v2_absolute_state_path(self):
+        return refinement_state_path(FUNPACK_ABSOLUTE_KEY, "clip", prefix=self.V2_STATE_PREFIX)
+
+    def _v2_absolute_vf_path(self):
+        return refinement_state_path(FUNPACK_ABSOLUTE_KEY, "value_fn", prefix=self.V2_STATE_PREFIX, extension="pt")
+
+    def _v2_load_absolute_global(self):
+        """Load the keyless Absolute store and return (full_state, global_dict)."""
+        path = self._v2_absolute_state_path()
+        state = None
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+            except (json.JSONDecodeError, OSError, ValueError):
+                state = None
+        if not isinstance(state, dict):
+            state = {"version": 2, "global": {}}
+        global_state = state.setdefault("global", {})
+        global_state.setdefault("axis_conditioning_memory", {})
+        return state, global_state
+
+    def _v2_save_absolute_global(self, state):
+        path = self._v2_absolute_state_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(state, f)
+        except OSError as e:
+            print(f"[FunPackRefiner] Absolute store save failed: {e}")
+
+    def _v2_train_value_function(self, vf_path, payload, reward):
+        """Add one (conditioning, reward) sample to the value function at vf_path. Shared by
+        the per-key (relative) and keyless (absolute) reward assets. Returns n_trained or None."""
+        if not isinstance(payload, dict):
+            return None
+        try:
+            import torch as _torch
+            try:
+                from .value_function import OnlineValueFunction
+            except ImportError:
+                from value_function import OnlineValueFunction
+            with _torch.inference_mode(False), _torch.enable_grad():
+                cond_tensor = serializable_to_tensor(payload).clone()
+                vf = OnlineValueFunction.load_or_create(vf_path, hidden_dim=cond_tensor.shape[-1])
+                if vf is not None:
+                    vf.train_on(cond_tensor, float(reward))
+                    vf.save(vf_path)
+                    return vf.n_trained
+        except Exception as e:
+            print(f"[FunPackRefiner] Value function training failed: {e}")
+        return None
+
+    def _v2_learn_absolute(self, previous_run, learning_profile):
+        """Fold the just-rated generation into the prompt-agnostic Absolute store.
+
+        Rating semantics differ from Relative here. Relative asks "does this match the
+        prompt?" and attributes credit per missing/satisfied axis. Absolute asks "do I like
+        these details IN GENERAL, regardless of the prompt?" — so we deliberately IGNORE the
+        prompt-specific axis attribution and steer purely on the overall reward:
+          * a high rating ("Perfect" = I love this and want more of this in general) pushes
+            the global liked direction toward this generation;
+          * a low rating ("missing details I like in general") pushes the disliked direction.
+        Pooled across every prompt, this converges on a single global-taste prior. Also trains
+        the keyless value function. Runs independent of refinement_key — Absolute is keyless."""
+        if not isinstance(previous_run, dict) or learning_profile.get("skip_learning"):
+            return
+        payload = previous_run.get("conditioning")
+        if not isinstance(payload, dict):
+            return
+        reward = float(learning_profile.get("reward", 0.0))
+        try:
+            state, global_state = self._v2_load_absolute_global()
+            self._v2_update_session_mean(global_state, previous_run.get("source_conditioning"))
+            session_mean = global_state.get("session_source_mean")
+            if reward >= 0.3:
+                # "more of this, generally"
+                self._v2_store_direction(global_state.setdefault("liked_dir", {}), payload, session_mean)
+            elif reward <= 0.0:
+                # "this lacks the details I like, generally"
+                self._v2_store_direction(global_state.setdefault("bad_dir", {}), payload, session_mean)
+            # the mild-positive band (0, 0.3) is too ambiguous to move either pole
+            global_state["total_iterations"] = int(global_state.get("total_iterations", 0)) + 1
+            self._v2_save_absolute_global(state)
+        except Exception as e:
+            print(f"[FunPackRefiner] Absolute learning failed: {e}")
+        n = self._v2_train_value_function(self._v2_absolute_vf_path(), payload, reward)
+        if n is not None:
+            print(f"[FunPackRefiner] Absolute value function updated — {n} samples")
+
+    def _v2_apply_absolute(self, conditioning_list, strength, value_blend=True):
+        """Pull every conditioning entry toward the global learned taste direction, regardless
+        of prompt. Two layered engines: (1) the pooled liked direction (minus a global bad-dir
+        repel), applied as a calibrated broadcast shift via _v2_apply_direction; (2) the keyless
+        value-function ascent on top for the nonlinear component. No-op until each engine has
+        enough data (liked/bad need direction_count>=3; VF needs MIN_SAMPLES)."""
+        if not conditioning_list or strength <= 0:
+            return conditioning_list
+        try:
+            _, global_state = self._v2_load_absolute_global()
+        except Exception:
+            return conditioning_list
+        liked = global_state.get("liked_dir", {})
+        bad = global_state.get("bad_dir", {})
+        liked_ready = int(liked.get("direction_count", 0)) >= 3
+        bad_ready = int(bad.get("direction_count", 0)) >= 3
+
+        gvf = None
+        if value_blend:
+            try:
+                import torch as _torch
+                try:
+                    from .value_function import OnlineValueFunction
+                except ImportError:
+                    from value_function import OnlineValueFunction
+                vf_path = self._v2_absolute_vf_path()
+                if os.path.exists(vf_path):
+                    with _torch.inference_mode(False):
+                        candidate = OnlineValueFunction.load(vf_path)
+                    gvf = candidate if candidate.is_ready() else None
+            except Exception:
+                gvf = None
+
+        if not (liked_ready or bad_ready or gvf is not None):
+            return conditioning_list
+
+        out = []
+        applied = False
+        for entry in conditioning_list:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[0], torch.Tensor)):
+                out.append(entry)
+                continue
+            mixed, extra = entry[0], entry[1]
+            if liked_ready:
+                mixed = self._v2_apply_direction(mixed, liked, strength)
+            if bad_ready:
+                mixed = self._v2_apply_direction(mixed, bad, strength * 0.5, negate=True)
+            if gvf is not None:
+                try:
+                    mixed = gvf.ascend(mixed)
+                except Exception:
+                    pass
+            out.append((mixed, extra))
+            applied = True
+        if applied:
+            print(
+                f"[FunPackRefiner] Absolute steer applied (strength={strength}, "
+                f"liked={liked_ready}, bad={bad_ready}, value_fn={'on' if gvf is not None else 'off'})"
+            )
+        return out
+
+    def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
+                                  steer_mode, absolute_strength):
+        """Single output hook for both steering modes. Relative = per-key VF ascend (current
+        behaviour). Absolute = global taste pull. Both = layer them."""
+        mode = str(steer_mode or "relative").lower()
+        out = conditioning_list
+        if mode in ("relative", "both"):
+            out = self._v2_ascend_conditioning(out, refinement_key, apply=value_guidance)
+        if mode in ("absolute", "both"):
+            out = self._v2_apply_absolute(out, float(absolute_strength))
+        return out
 
 
 class FunPackSaveRefinementLatent:
@@ -13576,6 +13763,8 @@ class FunPackStudio:
             split_transition_placement=split_transition_placement,
             reference_injection=reference_injection,
             value_guidance=value_guidance,
+            steer_mode=str(rf.get("steer_mode", "relative") or "relative"),
+            absolute_strength=float(rf.get("absolute_strength", 0.6) or 0.6),
             latent=latent,
             seed_output_connected=seed_output_connected,
             _seed=seed,
