@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+**Distilled Flow `AB2 ramp` — graduated 2nd order.** New opt-in toggle (off by default) that, instead of applying full Adams-Bashforth 2-step extrapolation on every step, ramps the AB2 contribution linearly from 0→1 across the schedule: early/high-sigma steps stay near plain 1st-order euler (where the denoised estimate is rough and full AB2 tends to overshoot), late/detail steps get full AB2. Reuses the already-computed AB2 estimate, so **no extra model evals** — aimed at squeezing better quality out of low-step distilled runs. No effect at `order=1`. Exposed on the Distilled Flow sampler node and in Studio's sampler panel; audio stays on the plain euler path as always.
+
 ### Fixed
 
 **Audio corruption in the FunPack Hybrid Euler 2S and Distilled Flow samplers on LTXAV.** Both samplers' second-order machinery — the AB2 (Adams-Bashforth) denoised extrapolation and the Heun predictor-corrector — was applied to the *whole* packed latent, including the audio stream, which degraded audio. (Stock `euler`/`ddim` sound fine because they're plain 1st-order with no AB2/Heun; `ddim` in ComfyUI is literally `euler`.) Audio now always rides the plain 1st-order euler update (AB2 and Heun confined to the video stream via `_video_only`), so audio stays clean at any `order`/`correction_blend`/`final_correction_steps` setting while video keeps the 2nd-order treatment. Distilled Flow's optional `s_noise` diversity injection is likewise now video-only. For the deterministic "ddim look" plus FunPack steering, run Distilled Flow at `order=1, final_correction_steps=0` (pure euler base) — audio is doubly safe.

@@ -13915,6 +13915,7 @@ class FunPackStudio:
                 sampler, out_sigmas = node.get_sampler(
                     order=int(dc.get("order", 2)),
                     final_correction_steps=int(dc.get("final_correction_steps", 1)),
+                    ab2_ramp=bool(dc.get("ab2_ramp", False)),
                     s_noise=float(dc.get("s_noise", 0.0)),
                     velocity_bias_mode=str(dc.get("velocity_bias_mode", "off")),
                     velocity_bias_strength=float(dc.get("velocity_bias_strength", 0.0)),

@@ -1432,7 +1432,7 @@ class FunPackHybridEuler2SSampler:
 
 def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, order=2, s_noise=0.0,
-                                   final_correction_steps=1,
+                                   final_correction_steps=1, ab2_ramp=False,
                                    velocity_bias_mode="off", velocity_bias_strength=0.0,
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
@@ -1524,7 +1524,15 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         else:
             denoised_eff = denoised
 
-        # Audio rides plain 1st-order euler: keep the AB2-extrapolated estimate for video,
+        # Graduated 2nd order (opt-in, free): ramp the AB2 contribution linearly 0->1 across
+        # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
+        # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
+        # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
+        if ab2_ramp and total_steps > 1:
+            w = i / (total_steps - 1)  # 0 at first step -> 1 at last
+            denoised_eff = denoised + (denoised_eff - denoised) * w
+
+        # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
         # raw denoised for audio (2nd-order extrapolation corrupts the audio stream).
         denoised_eff = _video_only(denoised_eff, denoised, video_mask)
 
@@ -1622,6 +1630,12 @@ class FunPackDistilledFlowSampler:
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
+                # Appended last on purpose: a new widget inserted earlier shifts every saved
+                # widgets_values slot in existing Distilled Flow nodes.
+                "ab2_ramp": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Graduated 2nd order (free). Instead of full AB2 on every step, ramp the AB2 contribution linearly 0->1 across the schedule: early/noisy steps stay near 1st-order euler (less overshoot), late/detail steps get full AB2. No extra model calls. Helps low-step distilled runs. No effect at order=1.",
+                }),
             }
         }
 
@@ -1640,13 +1654,14 @@ class FunPackDistilledFlowSampler:
                     velocity_bias_mode="off", velocity_bias_strength=0.0,
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
-                    rescue_prompt_sig=None, sigmas=None):
+                    rescue_prompt_sig=None, sigmas=None, ab2_ramp=False):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
             extra_options={
                 "order": order,
                 "final_correction_steps": final_correction_steps,
+                "ab2_ramp": ab2_ramp,
                 "s_noise": s_noise,
                 "velocity_bias_mode": velocity_bias_mode,
                 "velocity_bias_strength": velocity_bias_strength,
