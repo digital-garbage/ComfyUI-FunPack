@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+**Audio corruption in the FunPack Hybrid Euler 2S and Distilled Flow samplers on LTXAV.** Both samplers' second-order machinery — the AB2 (Adams-Bashforth) denoised extrapolation and the Heun predictor-corrector — was applied to the *whole* packed latent, including the audio stream, which degraded audio. (Stock `euler`/`ddim` sound fine because they're plain 1st-order with no AB2/Heun; `ddim` in ComfyUI is literally `euler`.) Audio now always rides the plain 1st-order euler update (AB2 and Heun confined to the video stream via `_video_only`), so audio stays clean at any `order`/`correction_blend`/`final_correction_steps` setting while video keeps the 2nd-order treatment. Distilled Flow's optional `s_noise` diversity injection is likewise now video-only. For the deterministic "ddim look" plus FunPack steering, run Distilled Flow at `order=1, final_correction_steps=0` (pure euler base) — audio is doubly safe.
+
 ## [2.7.8] - 2026-06-04
 
 ### Added

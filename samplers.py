@@ -932,6 +932,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 denoised_eff = denoised
         else:
             denoised_eff = denoised
+        # Audio rides plain euler — exclude it from AB2 (2nd-order extrapolation corrupts audio).
+        denoised_eff = _video_only(denoised_eff, denoised, video_mask)
         prev_denoised = denoised.detach()
         prev_h = h
 
@@ -957,6 +959,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                 d_use = d1 + effective_blend * ((d1 + d2) * 0.5 - d1)
             else:
                 d_use = d1
+            # Audio rides the plain euler direction (d1); only video gets the Heun correction.
+            d_use = _video_only(d_use, d1, video_mask)
             x = x + d_use * dt
             # Heun changed x with a corrected direction; invalidate AB2 history.
             prev_denoised = None
@@ -1520,6 +1524,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         else:
             denoised_eff = denoised
 
+        # Audio rides plain 1st-order euler: keep the AB2-extrapolated estimate for video,
+        # raw denoised for audio (2nd-order extrapolation corrupts the audio stream).
+        denoised_eff = _video_only(denoised_eff, denoised, video_mask)
+
         # Store current denoised for the next step's multistep correction.
         # Reset after a Heun step since x was updated with a corrected direction.
         prev_denoised = denoised.detach()
@@ -1539,7 +1547,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             # Corrector: evaluate model at the predicted x and sigma_next.
             denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
             d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
-            x = x + (d1 + d2) / 2.0 * dt
+            # Audio rides the plain euler direction (d1); only video gets the Heun correction.
+            d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
+            x = x + d_use * dt
             # Heun updates x differently; invalidate multistep history.
             prev_denoised = None
             prev_h = None
@@ -1549,7 +1559,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             if s_noise > 0.0:
                 sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
                 if sigma_up > 0.0:
-                    x = x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up
+                    # Diversity noise on video only — ancestral-style noise corrupts audio.
+                    x = _video_only(x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up, x, video_mask)
 
     return x
 
