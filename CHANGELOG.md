@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.7.8] - 2026-06-04
+
 ### Added
 
 Made all conditioning steering **audio-safe on LTXAV**. LTXAV conditions video and audio from two separate text cross-attentions that the model carves out of one conditioning tensor by splitting its channel dim (`comfy/ldm/lightricks/av_model.py` `_prepare_context`: `torch.split(context, [v_context_dim, a_context_dim], -1)` — leading channels → video `attn2`, trailing → audio `audio_attn2`). Previously every steer (relative/absolute pull, value-function ascent + search, embed_guidance, the attn2 direction patch, and manual Conditioning Adjust) shifted the *whole* tensor, corrupting the audio's own text conditioning and degrading audio. Now a shared `protect_audio_channels` confines every edit to the video channel-slice and restores the audio slice from the unsteered conditioning — effectively "modified conditioning for video, original for audio", with no model patching or extra forward pass. The split is auto-detected from the channel width (7680→3840, 6144→4096) and logs the detected layout once; single-stream LTXV (unrecognised width) is a clean no-op, so video-only models are unaffected. Note: this protects the audio's *direct* text conditioning (the dominant lever); the per-block cross-modal `video_to_audio_attn` can still carry a weaker second-order influence from heavily-steered video.
