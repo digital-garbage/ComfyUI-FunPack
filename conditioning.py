@@ -13916,6 +13916,8 @@ class FunPackStudio:
                     order=int(dc.get("order", 2)),
                     final_correction_steps=int(dc.get("final_correction_steps", 1)),
                     ab2_ramp=bool(dc.get("ab2_ramp", False)),
+                    normalize_strength=float(dc.get("normalize_strength", 0.0)),
+                    normalize_start_sigma=float(dc.get("normalize_start_sigma", 0.9)),
                     s_noise=float(dc.get("s_noise", 0.0)),
                     velocity_bias_mode=str(dc.get("velocity_bias_mode", "off")),
                     velocity_bias_strength=float(dc.get("velocity_bias_strength", 0.0)),
@@ -13971,6 +13973,8 @@ class FunPackStudio:
                 sampler, out_sigmas = node.get_sampler(
                     eta=float(hc.get("eta", 1.0)),
                     eta_final=float(hc.get("eta_final", 1.0)),
+                    normalize_strength=float(hc.get("normalize_strength", 0.0)),
+                    normalize_start_sigma=float(hc.get("normalize_start_sigma", 0.9)),
                     s_noise=float(hc.get("s_noise", 1.0)),
                     high_quality_pct=float(hc.get("high_quality_pct", 0.35)),
                     correction_blend=float(hc.get("correction_blend", 1.0)),

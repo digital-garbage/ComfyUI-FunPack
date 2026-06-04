@@ -74,8 +74,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
     },
   };
 }
@@ -1402,6 +1402,15 @@ function openPanel(node) {
       if (cfg.type === "Hybrid Euler 2S") {
         const hc = cfg.hybrid;
         body.append(sectionTitle("Hybrid Euler 2S settings"));
+        if (hc.normalize_strength === undefined) hc.normalize_strength = 0.0;
+        const hNorm = numInput(hc.normalize_strength, 0, 1, 0.05);
+        hNorm.addEventListener("input", () => { hc.normalize_strength = parseFloat(hNorm.value); });
+        body.append(el("div", "funpack-studio-hint", "Video-only latent normalization (anti-overbake / oversaturation / colour drift) stacked on the RF loop — same as the Normalizing sampler. 0 = off. 0.5 = gentle. Audio is never touched (LTXAV/CONST path)."));
+        body.append(row("normalize strength", hNorm));
+        if (hc.normalize_start_sigma === undefined) hc.normalize_start_sigma = 0.9;
+        const hNormS = numInput(hc.normalize_start_sigma, 0, 1, 0.025);
+        hNormS.addEventListener("input", () => { hc.normalize_start_sigma = parseFloat(hNormS.value); });
+        body.append(row("normalize start sigma", hNormS));
 
         // --- Variability macro: one control over the stochastic knobs below ---
         const macroWrap = el("div");
@@ -1516,6 +1525,15 @@ function openPanel(node) {
         ab2RampToggle.inp.addEventListener("change", () => { dc.ab2_ramp = ab2RampToggle.inp.checked; });
         body.append(el("div", "funpack-studio-hint", "Graduated 2nd order (free, order=2 only): ramp the AB2 contribution 0→1 across the schedule — early/noisy steps stay near 1st-order euler (less overshoot), late/detail steps get full AB2. Helps low-step distilled runs."));
         body.append(row("AB2 ramp", ab2RampToggle.wrap));
+        if (dc.normalize_strength === undefined) dc.normalize_strength = 0.0;
+        const dNorm = numInput(dc.normalize_strength, 0, 1, 0.05);
+        dNorm.addEventListener("input", () => { dc.normalize_strength = parseFloat(dNorm.value); });
+        body.append(el("div", "funpack-studio-hint", "Video-only latent normalization (anti-overbake / oversaturation / colour drift) stacked on this ODE — same as the Normalizing sampler. 0 = off. 0.5 = gentle. Audio is never touched."));
+        body.append(row("normalize strength", dNorm));
+        if (dc.normalize_start_sigma === undefined) dc.normalize_start_sigma = 0.9;
+        const dNormS = numInput(dc.normalize_start_sigma, 0, 1, 0.025);
+        dNormS.addEventListener("input", () => { dc.normalize_start_sigma = parseFloat(dNormS.value); });
+        body.append(row("normalize start sigma", dNormS));
         const fcsInp = numInput(dc.final_correction_steps, 0, 3, 1);
         fcsInp.addEventListener("input", () => { dc.final_correction_steps = parseInt(fcsInp.value); });
         body.append(row("final correction steps", fcsInp));

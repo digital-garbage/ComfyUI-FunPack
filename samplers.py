@@ -826,7 +826,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           velocity_bias_mode, velocity_bias_strength,
                           velocity_refinement_key,
                           rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
-                          quality_sharpness=0.0, velocity_bias_source="mean"):
+                          quality_sharpness=0.0, velocity_bias_source="mean",
+                          normalize_strength=0.0, normalize_start_sigma=0.9):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
 
     Rectified-flow-correct port of the hybrid sampler so its features actually run on
@@ -885,6 +886,12 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         print(f"[FunPack AV] packed audio+video latent detected -> audio-safe sampling "
               f"(audio held deterministic on {n_aud} of {video_mask.shape[-1]} packed dims)")
 
+    normalize_strength = max(0.0, min(1.0, float(normalize_strength)))
+    ref_scale = [None]  # video-only latent-normalization reference (anti-overbake), opt-in
+    if normalize_strength > 0.0:
+        print(f"[FunPack AV] latent normalization on (strength={normalize_strength}, "
+              f"start_sigma={normalize_start_sigma}, video-only)")
+
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
@@ -918,6 +925,11 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         # E: restore high-frequency detail lost to the velocity-bias mean-pull (quality phase only).
         if in_quality:
             denoised = _video_only(_apply_quality_sharpness(denoised, prev_denoised, quality_sharpness), denoised, video_mask)
+
+        # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the RF loop.
+        denoised = _normalize_video_denoised(
+            denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
+        )
 
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
@@ -1012,7 +1024,9 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    rescue_threshold=0.15,
                                    rescue_strength=0.2,
                                    rescue_prompt_sig=None,
-                                   eta_final=1.0):
+                                   eta_final=1.0,
+                                   normalize_strength=0.0,
+                                   normalize_start_sigma=0.9):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral with order-2 denoised extrapolation for
@@ -1087,6 +1101,8 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
             quality_sharpness=quality_sharpness,
             velocity_bias_source=velocity_bias_source,
+            normalize_strength=normalize_strength,
+            normalize_start_sigma=normalize_start_sigma,
         )
 
     extra_args = {} if extra_args is None else extra_args
@@ -1367,6 +1383,15 @@ class FunPackHybridEuler2SSampler:
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
+                # Appended last on purpose so existing saved nodes keep their widget order.
+                "normalize_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Video-only latent normalization (anti-overbake / oversaturation / colour drift), same as the Normalizing sampler but stacked on this RF loop. 0 = off. 0.5 = gentle. Audio is never touched (LTXAV/CONST path). ~zero overhead.",
+                }),
+                "normalize_start_sigma": ("FLOAT", {
+                    "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.025,
+                    "tooltip": "Sigma at/below which latent normalization activates and anchors its reference. Only used when normalize_strength > 0.",
+                }),
             }
         }
 
@@ -1390,7 +1415,8 @@ class FunPackHybridEuler2SSampler:
                     velocity_bias_strength=0.0, velocity_bias_source="mean",
                     velocity_refinement_key="default", rescue_mode=False,
                     rescue_threshold=0.15, rescue_strength=0.2, rescue_prompt_sig=None,
-                    sigmas=None, eta_final=1.0):
+                    sigmas=None, eta_final=1.0,
+                    normalize_strength=0.0, normalize_start_sigma=0.9):
         prepared_sigmas, quality_sigma_start, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas,
             high_quality_pct,
@@ -1425,6 +1451,8 @@ class FunPackHybridEuler2SSampler:
                 "rescue_strength": rescue_strength,
                 "rescue_prompt_sig": rescue_prompt_sig,
                 "eta_final": eta_final,
+                "normalize_strength": normalize_strength,
+                "normalize_start_sigma": normalize_start_sigma,
             }
         )
         return (sampler, prepared_sigmas)
@@ -1433,6 +1461,7 @@ class FunPackHybridEuler2SSampler:
 def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=None,
                                    disable=None, order=2, s_noise=0.0,
                                    final_correction_steps=1, ab2_ramp=False,
+                                   normalize_strength=0.0, normalize_start_sigma=0.9,
                                    velocity_bias_mode="off", velocity_bias_strength=0.0,
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
@@ -1480,9 +1509,14 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         print(f"[FunPack AV] packed audio+video latent detected -> audio-safe steering "
               f"(audio held deterministic on {n_aud} of {video_mask.shape[-1]} packed dims)")
 
+    normalize_strength = max(0.0, min(1.0, float(normalize_strength)))
+    if normalize_strength > 0.0:
+        print(f"[FunPack AV] latent normalization on (strength={normalize_strength}, "
+              f"start_sigma={normalize_start_sigma}, video-only)")
     s_in = x.new_ones([x.shape[0]])
     prev_denoised = None
     prev_h = None
+    ref_scale = [None]  # video-only latent-normalization reference (anti-overbake), opt-in
 
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
@@ -1506,6 +1540,11 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                 velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                 source=velocity_bias_source,
             ), denoised, video_mask)
+
+        # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
+        denoised = _normalize_video_denoised(
+            denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
+        )
 
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
@@ -1636,6 +1675,14 @@ class FunPackDistilledFlowSampler:
                     "default": False,
                     "tooltip": "Graduated 2nd order (free). Instead of full AB2 on every step, ramp the AB2 contribution linearly 0->1 across the schedule: early/noisy steps stay near 1st-order euler (less overshoot), late/detail steps get full AB2. No extra model calls. Helps low-step distilled runs. No effect at order=1.",
                 }),
+                "normalize_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Video-only latent normalization (anti-overbake / oversaturation / colour drift), same as the Normalizing sampler but stacked on this ODE. 0 = off. 0.5 = gentle. Audio is never touched. ~zero overhead.",
+                }),
+                "normalize_start_sigma": ("FLOAT", {
+                    "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.025,
+                    "tooltip": "Sigma at/below which latent normalization activates and anchors its reference (above it the x0 estimate is meaningless). Only used when normalize_strength > 0.",
+                }),
             }
         }
 
@@ -1654,7 +1701,8 @@ class FunPackDistilledFlowSampler:
                     velocity_bias_mode="off", velocity_bias_strength=0.0,
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
-                    rescue_prompt_sig=None, sigmas=None, ab2_ramp=False):
+                    rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
+                    normalize_strength=0.0, normalize_start_sigma=0.9):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -1662,6 +1710,8 @@ class FunPackDistilledFlowSampler:
                 "order": order,
                 "final_correction_steps": final_correction_steps,
                 "ab2_ramp": ab2_ramp,
+                "normalize_strength": normalize_strength,
+                "normalize_start_sigma": normalize_start_sigma,
                 "s_noise": s_noise,
                 "velocity_bias_mode": velocity_bias_mode,
                 "velocity_bias_strength": velocity_bias_strength,
