@@ -1984,21 +1984,22 @@ class FunPackLTXAVSceneChainSampler:
                 }),
             },
             "optional": {
+                # Widget inputs first, then connection/forceInput sockets LAST. A forceInput
+                # input placed between widgets desyncs ComfyUI's widgets_values mapping on reload
+                # (the combo value lands on decode_tile_size -> NaN/"relative" in the INT field).
                 "decode_tile_size": ("INT", {
                     "default": 0, "min": 0, "max": 4096, "step": 64,
                     "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
+                }),
+                "embed_guidance_source": (["relative", "absolute"], {
+                    "default": "relative",
+                    "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
                 }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
                     "forceInput": True,
                     "tooltip": "Connect to the same refinement key as your V2 Refiner. When wired, the sampler writes carry_i2v_guides, frame_overlap, and scene count into the refinement state so the Refiner can reason about what changed between rated runs.",
-                }),
-                # Appended last on purpose: inserting a widget earlier shifts every saved
-                # widgets_values slot in existing workflows. New widgets go at the end.
-                "embed_guidance_source": (["relative", "absolute"], {
-                    "default": "relative",
-                    "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
                 }),
             },
             "hidden": {
@@ -2882,22 +2883,21 @@ class FunPackLTXAVSceneChainSampler:
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
         import json as _json, time as _time
         key = str(refinement_key_input or "").strip()
-        if not key:
-            print("[FunPackSceneChain] Batch Training requires refinement_key_input; running once instead.")
-            return self.sample(
-                model, vae, positive, negative, sampler, sigmas, seed, latent_template,
-                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=use_same_seed,
-                carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
-                mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
-                embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
-                transition_duration=transition_duration,
-                decode_tile_size=decode_tile_size, refinement_key_input="",
-            )
-        stamp = _time.strftime("%Y-%m-%d_%H-%M-%S")
-        batch_dir, safe, rel = self._batch_dir(key, stamp)
-        scene_prompts = [self._scene_text(c, i) for i, c in enumerate(positive[:max(1, int(max_scenes))])]
-        manifest = {"key": key, "created": stamp,
-                    "subfolder": rel.replace(os.sep, "/"), "scene_prompts": scene_prompts, "items": []}
+        # persist=True -> save each variant to temp + manifest for rating in Studio (needs a key).
+        # No key -> generate-only: run every variant and concat to IMAGES, but don't save/rate.
+        # (NEVER recurse into self.sample() with the marked positive — that loops forever.)
+        persist = bool(key)
+        stamp = safe = rel = batch_dir = None
+        if persist:
+            stamp = _time.strftime("%Y-%m-%d_%H-%M-%S")
+            batch_dir, safe, rel = self._batch_dir(key, stamp)
+            scene_prompts = [self._scene_text(c, i) for i, c in enumerate(positive[:max(1, int(max_scenes))])]
+            manifest = {"key": key, "created": stamp,
+                        "subfolder": rel.replace(os.sep, "/"), "scene_prompts": scene_prompts, "items": []}
+        else:
+            print("[FunPackSceneChain] Batch (no refinement_key): generating all variants to IMAGES, "
+                  "not saved for rating.")
+            manifest = {"items": []}
         # Studio packed N entries into positive (each scene entry tagged 'funpack_batch_variant').
         # Sample one chain per entry. Entries may be genuinely different (shortcut variants) or
         # identical (seed-only batch — Studio packed N copies); either way each saves its own cond.
@@ -2925,6 +2925,8 @@ class FunPackLTXAVSceneChainSampler:
             # videos back-to-back, not just the last one. The sub-call already decoded them.
             if isinstance(out[1], torch.Tensor) and out[1].dim() == 4 and out[1].shape[1] > 8:
                 batch_images.append(out[1].detach().cpu())
+            if not persist:
+                continue  # generate-only: no temp save / manifest
             out_latent = out[0]
             iid = f"{safe}_{stamp}_{idx:02d}"
             latent_path = os.path.join(batch_dir, f"{iid}.latent.pt")
@@ -2961,13 +2963,17 @@ class FunPackLTXAVSceneChainSampler:
                                  and len(pos_i[0]) > 1 and isinstance(pos_i[0][1], dict) else None),
                 "rating": None,
             })
-        try:
-            with open(os.path.join(batch_dir, "batch.json"), "w") as f:
-                _json.dump(manifest, f, indent=2)
-        except Exception as e:
-            print(f"[FunPackSceneChain] batch manifest save failed: {e}")
-        status = (f"Batch Training complete: {manifest['iterations']} generation(s) in "
-                  f"temp/{rel.replace(os.sep, '/')} (cleared on restart) — rate them in Studio.")
+        if persist:
+            manifest["iterations"] = len(manifest["items"])
+            try:
+                with open(os.path.join(batch_dir, "batch.json"), "w") as f:
+                    _json.dump(manifest, f, indent=2)
+            except Exception as e:
+                print(f"[FunPackSceneChain] batch manifest save failed: {e}")
+            status = (f"Batch Training complete: {len(manifest['items'])} generation(s) in "
+                      f"temp/{rel.replace(os.sep, '/')} (cleared on restart) — rate them in Studio.")
+        else:
+            status = f"Batch (generate-only): {len(entries)} variant(s) → IMAGES; no key, not saved for rating."
         print(f"[FunPackSceneChain] {status}")
         if last is None:
             raise RuntimeError("Batch Training produced no output.")
