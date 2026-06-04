@@ -12610,9 +12610,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append((mixed, extra))
             applied = True
         if applied:
+            # Report the audio split every run (the one-time dim log is easy to miss). If
+            # vsplit == D the conditioning has no recognised audio half → audio NOT protected.
+            try:
+                D = int(out[0][0].shape[-1]) if isinstance(out[0][0], torch.Tensor) else None
+            except Exception:
+                D = None
+            vsplit = ltxav_video_channels(D) if D is not None else None
+            if D is None:
+                audio_note = "audio split: n/a"
+            elif vsplit < D:
+                audio_note = f"audio PROTECTED (video[:{vsplit}] of {D})"
+            else:
+                audio_note = f"audio NOT split (dim={D} unrecognised — steering all channels)"
             print(
                 f"[FunPackRefiner] Absolute steer applied (strength={strength}, "
-                f"liked={liked_ready}, bad={bad_ready}, value_fn={'on' if gvf is not None else 'off'})"
+                f"liked={liked_ready}, bad={bad_ready}, value_fn={'on' if gvf is not None else 'off'}; {audio_note})"
             )
         return out
 
