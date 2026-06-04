@@ -11481,7 +11481,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
-                  batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0):
+                  batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
+                  guess_freeze_seed=True):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -12332,7 +12333,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             encode_cache, source_image, prompt_to_encode, global_state, learning_profile,
                             repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                             _concept_strength, _current_final,
-                            guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range)
+                            guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
+                            guess_freeze_seed=guess_freeze_seed)
                     return (
                         self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap),
                         status,
@@ -12361,13 +12363,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             video_latent,
         )
 
-    def _v2_pack_guess_ladder(self, output_conditioning, n, direction, guess_range, seed):
+    def _v2_pack_guess_ladder(self, output_conditioning, n, direction, guess_range, seed,
+                              freeze_seed=True):
         """Interactive Guessing: build N variants that scale the conditioning's spread (sigma) on
-        video channels by a LINEAR ramp, freezing everything else INCLUDING the noise seed so the
-        only variable across the ladder is conditioning strength. Variant 0 = base (factor 1.0);
-        the last = 1.0 +/- guess_range (up amplifies, down dampens). Each variant records
-        'funpack_guess_factor' so the rating ladder is interpretable and Phase-3 learning can read
-        each rung's strength."""
+        video channels by a LINEAR ramp. Variant 0 = base (factor 1.0); the last = 1.0 +/-
+        guess_range (up amplifies, down dampens). Each variant records 'funpack_guess_factor' so
+        the rating ladder is interpretable and Phase-3 learning can read each rung's strength.
+
+        freeze_seed=True (default): every rung shares the same noise, so the ONLY variable is
+        conditioning strength (cleanest for learning the safe ceiling). False: each rung gets a
+        distinct seed (different compositions too), like a regular batch."""
         n = max(2, int(n))
         guess_range = abs(float(guess_range or 1.0))
         up = str(direction or "up").lower() != "down"
@@ -12382,23 +12387,33 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 m["funpack_batch_variant"] = i
                 m["funpack_guess_factor"] = round(float(factor), 4)
                 packed.append((scale_conditioning_spread(cond, factor), m))
-        # Freeze the noise: every variant shares the same per-scene seeds, so only the spread varies.
-        base = random.Random(int(seed) & 0xffffffffffffffff).randint(1, 0xffffffffffffffff)
+        # Seed assignment. Frozen: every rung shares one base seed (only spread varies). Unfrozen:
+        # a distinct seed per rung (composition varies too).
+        rng = random.Random(int(seed) & 0xffffffffffffffff)
+        frozen_base = rng.randint(1, 0xffffffffffffffff)
+        variant_seed = {}
         scene_counter = {}
         for entry in packed:
             m = entry[1]
             vi = int(m.get("funpack_batch_variant", 0))
+            if freeze_seed:
+                vseed = frozen_base
+            else:
+                if vi not in variant_seed:
+                    variant_seed[vi] = rng.randint(1, 0xffffffffffffffff)
+                vseed = variant_seed[vi]
             si = scene_counter.get(vi, 0)
-            m["funpack_scene_seed"] = (base + si) & 0xffffffffffffffff
+            m["funpack_scene_seed"] = (vseed + si) & 0xffffffffffffffff
             scene_counter[vi] = si + 1
         print(f"[FunPackVideoRefinerV2] Interactive Guessing: packed {n} rungs "
-              f"(direction={'up' if up else 'down'}, range={guess_range}, seed frozen).")
+              f"(direction={'up' if up else 'down'}, range={guess_range}, "
+              f"seed={'frozen' if freeze_seed else 'varied'}).")
         return packed
 
     def _v2_pack_batch(self, output_conditioning, n, raw_prompt, seed, clip, encode_cache,
                        source_image, base_prompt, global_state, learning_profile, repair_feedback,
                        intent_family_slot, vf, concept_dir, concept_strength, current_final_texts,
-                       guess_mode=False, guess_direction="up", guess_range=1.0):
+                       guess_mode=False, guess_direction="up", guess_range=1.0, guess_freeze_seed=True):
         """Pack N Batch-Training variant entries onto the FINAL conditioning, each tagged
         'funpack_batch_variant' so the Chain Sampler samples one chain per variant. Single-scene
         output -> re-resolve shortcuts per variant (different option picks). Multi-scene output
@@ -12410,7 +12425,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return output_conditioning
         # Interactive Guessing: a conditioning-spread ladder (seed frozen), not shortcut/seed variants.
         if guess_mode:
-            return self._v2_pack_guess_ladder(output_conditioning, n, guess_direction, guess_range, seed)
+            return self._v2_pack_guess_ladder(output_conditioning, n, guess_direction, guess_range, seed,
+                                              freeze_seed=guess_freeze_seed)
         # Build the N variant entries. Single-scene output -> _v2_build_batch_variants (re-resolves
         # shortcuts per variant). Multi-scene (transition split) -> duplicate the whole scene-set
         # per variant. Each variant tags ALL its scene entries with the same index.
@@ -13919,6 +13935,7 @@ class FunPackStudio:
             guess_mode=bool(rf.get("guess_mode", False)),
             guess_direction=str(rf.get("guess_direction", "up") or "up"),
             guess_range=float(rf.get("guess_range", 1.0) or 1.0),
+            guess_freeze_seed=bool(rf.get("guess_freeze_seed", True)),
             reset_session=reset_session,
             lora_stack=active_lora_stack,
             im_feeling_lucky=im_feeling_lucky,

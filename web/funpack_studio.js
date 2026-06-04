@@ -572,7 +572,7 @@ function openBatchPanel(node) {
     modeSelect.addEventListener("change", () => { rf.batch_mode = modeSelect.value; saveSettings(node, settings); render(); });
     body.append(row("Mode", modeSelect));
 
-    let dirSelect = null, rangeInput = null;
+    let dirSelect = null, rangeInput = null, freezeToggle = null;
     if (rf.batch_mode === "Interactive Guessing") {
       if (!rf.guess_direction) rf.guess_direction = "up";
       dirSelect = selectEl(["up", "down"], rf.guess_direction);
@@ -582,6 +582,11 @@ function openBatchPanel(node) {
       rangeInput = numInput(rf.guess_range, 0.1, 2.0, 0.1);
       body.append(el("div", "funpack-studio-hint", "How far the last rung goes: up → 1.0+range (e.g. 1.0 = up to 2.0×). down → 1.0−range (capped above 0). The ladder ramps linearly from the untouched base to this."));
       body.append(row("Range", rangeInput));
+      if (rf.guess_freeze_seed === undefined) rf.guess_freeze_seed = true;
+      freezeToggle = toggleEl(!!rf.guess_freeze_seed, "Freeze noise seed across rungs");
+      freezeToggle.inp.addEventListener("change", () => { rf.guess_freeze_seed = freezeToggle.inp.checked; saveSettings(node, settings); });
+      body.append(el("div", "funpack-studio-hint", "On: every rung shares the same noise, so conditioning strength is the ONLY variable (cleanest for learning the safe ceiling). Off: each rung gets a different seed — varied compositions too."));
+      body.append(row("Freeze seed", freezeToggle.wrap));
     }
 
     if (rf.batch_learning === undefined) rf.batch_learning = true;
@@ -606,6 +611,7 @@ function openBatchPanel(node) {
       s.refiner.guess_mode = (modeSelect.value === "Interactive Guessing");
       if (dirSelect) s.refiner.guess_direction = dirSelect.value;
       if (rangeInput) s.refiner.guess_range = Math.max(0.1, Math.min(2.0, parseFloat(rangeInput.value) || 1.0));
+      if (freezeToggle) s.refiner.guess_freeze_seed = freezeToggle.inp.checked;
       s.refiner.batch_learning = learnToggle.inp.checked;
       saveSettings(node, s);
       refreshBatchButton(node); render();
