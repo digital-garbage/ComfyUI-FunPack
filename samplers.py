@@ -2177,6 +2177,18 @@ class FunPackLTXAVSceneChainSampler:
             from conditioning import FUNPACK_ABSOLUTE_KEY
         return FUNPACK_ABSOLUTE_KEY
 
+    def _protect_audio(self, steered, original):
+        """Confine a conditioning edit to LTXAV's video channel-slice; audio keeps the original
+        conditioning. No-op for single-stream LTXV. Mirrors the Refiner's protect_audio_channels."""
+        try:
+            try:
+                from .conditioning import protect_audio_channels
+            except ImportError:
+                from conditioning import protect_audio_channels
+            return protect_audio_channels(steered, original)
+        except Exception:
+            return steered
+
     def _load_value_function(self, refinement_key):
         """Load the online value function if trained and ready."""
         try:
@@ -2246,7 +2258,8 @@ class FunPackLTXAVSceneChainSampler:
                     else:
                         d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
                     new_c = dict(c)
-                    new_c["c_crossattn"] = cond + (_s * scale) * d
+                    # Steer video channels only; audio keeps its original text conditioning.
+                    new_c["c_crossattn"] = self._protect_audio(cond + (_s * scale) * d, cond)
                     args = dict(args)
                     args["c"] = new_c
             if _ew is not None:
@@ -2426,7 +2439,7 @@ class FunPackLTXAVSceneChainSampler:
 
             if embed_guidance and _value_fn is not None and _value_fn.is_ready():
                 orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
-                ascended = _value_fn.ascend(orig_cond)
+                ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
                 scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
             if embed_guidance and _liked_dir is not None:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)

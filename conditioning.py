@@ -366,6 +366,53 @@ def update_refinement_sampler_context(refinement_key, sampler_context):
 FUNPACK_ABSOLUTE_KEY = "__funpack_absolute_global__"
 
 
+# --- Audio-safe conditioning steering -------------------------------------------------------
+# LTXAV conditions video and audio from two separate text contexts that the model carves out of
+# ONE conditioning tensor by splitting its channel dim: comfy/ldm/lightricks/av_model.py
+# `_prepare_context` does `torch.split(context, [v_context_dim, a_context_dim], -1)` — leading
+# channels drive video (self.attn2), trailing channels drive audio (self.audio_attn2). So any
+# conditioning steering that shifts the WHOLE tensor also corrupts the audio's text cross-
+# attention (observed live as degraded audio). Confining edits to the video channel-slice gives
+# "original conditioning for audio, modified for video" with no model patching.
+#   LTXv2  fully-processed context = caption_channels*2 = 7680           → video = 3840
+#   LTXv2.3 fully-processed context = cross_attn_dim + audio_cross_attn_dim = 4096+2048 = 6144 → video = 4096
+# Anything else (single-stream LTXV, unrecognised dim) returns the full width, so callers no-op.
+_FUNPACK_AV_SPLIT_TABLE = {7680: 3840, 6144: 4096}
+_FUNPACK_AV_LOGGED = set()
+
+
+def ltxav_video_channels(dim):
+    """Leading channel count that conditions VIDEO for an LTXAV concat-context of width `dim`.
+    Returns `dim` (no audio half) for single-stream / unrecognised layouts."""
+    dim = int(dim)
+    v = _FUNPACK_AV_SPLIT_TABLE.get(dim, dim)
+    if dim not in _FUNPACK_AV_LOGGED:
+        _FUNPACK_AV_LOGGED.add(dim)
+        if v < dim:
+            print(f"[FunPack AV] conditioning dim={dim}: steering confined to video [:{v}], audio [{v}:] protected")
+        else:
+            print(f"[FunPack AV] conditioning dim={dim}: single-stream (no audio half); steering applies to all channels")
+    return v
+
+
+def protect_audio_channels(steered, original):
+    """Restore the audio channel-slice of a steered conditioning tensor from `original`, so the
+    steering only moves the video stream. No-op when shapes mismatch or there is no audio half."""
+    try:
+        if not isinstance(steered, torch.Tensor) or not isinstance(original, torch.Tensor):
+            return steered
+        if tuple(steered.shape) != tuple(original.shape):
+            return steered
+        v = ltxav_video_channels(steered.shape[-1])
+        if v >= steered.shape[-1]:
+            return steered
+        out = steered.clone()
+        out[..., v:] = original[..., v:].to(device=out.device, dtype=out.dtype)
+        return out
+    except Exception:
+        return steered
+
+
 def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     refinements_dir = os.path.join(base_dir, "refinements")
@@ -8917,6 +8964,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             v_out[:, start:end] = v_out[:, start:end] * 1.25
                 except Exception:
                     pass
+            # If this fires on an AV-concat context, keep the audio channel-slice unmodified
+            # (no-op on already-projected / single-stream widths). Protects audio_attn2.
+            k_out = protect_audio_channels(k_out, k)
+            v_out = protect_audio_channels(v_out, v)
             return q, k_out, v_out
 
         return patch
@@ -9380,7 +9431,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
-    def _v2_apply_conditioning_memory(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None, concept_delta_dir=None, concept_delta_strength=0.0, current_final_texts=None):
+    def _v2_apply_conditioning_memory(self, conditioning, *args, **kwargs):
+        """Audio-safe wrapper: confine all per-prompt conditioning steering to the video
+        channel-slice, restoring the audio channels from the unsteered input (LTXAV splits the
+        conditioning into video|audio channels; see protect_audio_channels)."""
+        result = self._v2_apply_conditioning_memory_impl(conditioning, *args, **kwargs)
+        if isinstance(result, tuple) and result and isinstance(result[0], torch.Tensor):
+            return (protect_audio_channels(result[0], conditioning),) + tuple(result[1:])
+        return result
+
+    def _v2_apply_conditioning_memory_impl(self, conditioning, global_state, rating_profile, axis_feedback=None, intent_family_slot=None, vf=None, concept_delta_dir=None, concept_delta_strength=0.0, current_final_texts=None):
         if not isinstance(conditioning, torch.Tensor):
             return conditioning, "Adaptation: unavailable."
         original = conditioning.clone()
@@ -12388,6 +12448,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 c = vf.ascend(tensor)
                 # Monte Carlo search around ascended point (explore neighbourhood)
                 c = vf.search(c)
+                c = protect_audio_channels(c, tensor)  # keep audio on the original conditioning
                 ascended.append((c, extra))
             print(f"[FunPackRefiner] Conditioning ascent+search applied ({vf.n_trained} samples, {len(ascended)} scene(s))")
             return ascended
@@ -12545,6 +12606,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     mixed = gvf.ascend(mixed)
                 except Exception:
                     pass
+            mixed = protect_audio_channels(mixed, entry[0])  # audio rides the original conditioning
             out.append((mixed, extra))
             applied = True
         if applied:
@@ -13466,7 +13528,7 @@ class FunPackConditioningAdjust:
             shift = total_delta.to(cond_tensor.dtype)
             while shift.dim() < cond_tensor.dim():
                 shift = shift.unsqueeze(0)
-            new_tensor = cond_tensor + shift
+            new_tensor = protect_audio_channels(cond_tensor + shift, cond_tensor)
             new_conditioning.append((new_tensor, meta))
 
         status = "Conditioning adjust: " + (", ".join(log) if log else "nothing applied")
