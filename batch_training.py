@@ -141,6 +141,92 @@ def _train_batch(key, manifest, batch_dir, ratings):
     return trained, axis_note
 
 
+def _store_guess_ceiling(key, factor, spread, direction):
+    """Write the learned Interactive-Guessing safe ceiling into the refiner state (global) for
+    `key`, preserving everything else. guess_safe_spread is the absolute cap the refiner clamps
+    future output conditioning to; guess_safe_factor is for display."""
+    try:
+        try:
+            from .conditioning import refinement_state_path
+        except ImportError:
+            from conditioning import refinement_state_path
+        path = refinement_state_path(key, "clip", prefix="refine_v2")
+        data = {}
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("version", 2)
+        g = data.setdefault("global", {})
+        g["guess_safe_factor"] = float(factor)
+        if spread is not None:
+            g["guess_safe_spread"] = float(spread)
+        g["guess_direction"] = str(direction)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return True
+    except Exception as e:
+        print(f"[FunPack guess] store ceiling failed: {e}")
+        return False
+
+
+def _learn_guess_ceiling(key, manifest, batch_dir, ratings):
+    """Interactive Guessing learning: from the rated ladder, find the safe steering ceiling — the
+    furthest-pushed rung still rated acceptable before quality broke — and store it (absolute
+    spread + factor) so the refiner auto-caps future steering. Reward >= 0 = acceptable."""
+    try:
+        from .conditioning import conditioning_spread
+    except ImportError:
+        try:
+            from conditioning import conditioning_spread
+        except Exception:
+            conditioning_spread = lambda c: None
+    rated = []
+    for item in manifest.get("items", []):
+        gf = item.get("guess_factor")
+        if gf is None:
+            continue
+        label = ratings.get(str(item.get("id")))
+        if not label:
+            continue
+        prof = _profile_for(label)
+        if not prof or prof.get("skip_learning"):
+            continue
+        rated.append((float(gf), float(prof.get("reward", 0.0)), item.get("cond")))
+    if not rated:
+        return "Interactive Guessing: no rated rungs — nothing learned."
+    up = sum(1 for f, _, _ in rated if f > 1.0) >= sum(1 for f, _, _ in rated if f < 1.0)
+    broke = [f for f, r, _ in rated if r < 0.0]
+    ok = [(f, c) for f, r, c in rated if r >= 0.0]
+    if up:
+        fail = min(broke) if broke else float("inf")
+        candidates = [(f, c) for f, c in ok if f < fail]
+        safe = max(candidates, key=lambda x: x[0]) if candidates else None
+    else:
+        fail = max(broke) if broke else float("-inf")
+        candidates = [(f, c) for f, c in ok if f > fail]
+        safe = min(candidates, key=lambda x: x[0]) if candidates else None
+    if safe is None:
+        # even the base broke — cap at base (1.0), no headroom
+        _store_guess_ceiling(key, 1.0, None, "up" if up else "down")
+        return "Interactive Guessing: every rung broke — capped steering to base (×1.00)."
+    safe_factor, safe_cond_file = safe
+    safe_spread = None
+    if safe_cond_file:
+        cond_path = os.path.join(batch_dir, safe_cond_file)
+        if os.path.exists(cond_path):
+            try:
+                with torch.inference_mode(False):
+                    safe_spread = conditioning_spread(torch.load(cond_path, map_location="cpu"))
+            except Exception:
+                safe_spread = None
+    _store_guess_ceiling(key, safe_factor, safe_spread, "up" if up else "down")
+    return (f"Interactive Guessing: safe up to ×{safe_factor:.2f}"
+            + (f" (spread {safe_spread:.3f}) — future steering auto-capped." if safe_spread
+               else " — future steering auto-capped."))
+
+
 if PromptServer is not None and web is not None:
 
     @PromptServer.instance.routes.get("/funpack/batch/list")
@@ -164,6 +250,7 @@ if PromptServer is not None and web is not None:
             "seed": it.get("seed"),
             "preview": it.get("preview"),
             "variant": it.get("variant"),
+            "guess_factor": it.get("guess_factor"),
             "prompt": it.get("prompt"),
             "rating": it.get("rating"),
         } for it in manifest.get("items", [])]
@@ -187,13 +274,22 @@ if PromptServer is not None and web is not None:
         key = str(body.get("key", "")).strip()
         stamp = str(body.get("stamp", "")).strip()
         ratings = body.get("ratings", {}) or {}
+        learn = bool(body.get("learn", True))
         if not key or not stamp:
             return web.json_response({"error": "key and stamp required"}, status=400)
         batch_dir = os.path.join(_key_dir(key), stamp)
         if not os.path.exists(os.path.join(batch_dir, "batch.json")):
             return web.json_response({"error": "batch not found"}, status=404)
         manifest = _load_manifest(batch_dir)
-        trained, note = _train_batch(key, manifest, batch_dir, {str(k): v for k, v in ratings.items()})
+        ratings = {str(k): v for k, v in ratings.items()}
+        is_guess = any(it.get("guess_factor") is not None for it in manifest.get("items", []))
+        if not learn:
+            trained, note = 0, "learning off — generated only, nothing learned."
+        elif is_guess:
+            note = _learn_guess_ceiling(key, manifest, batch_dir, ratings)
+            trained = 1 if "safe" in (note or "") else 0
+        else:
+            trained, note = _train_batch(key, manifest, batch_dir, ratings)
         # Submit clears the batch regardless (rated material is consumed).
         try:
             shutil.rmtree(batch_dir, ignore_errors=True)

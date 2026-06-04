@@ -559,23 +559,62 @@ function openBatchPanel(node) {
 
   function renderConfig() {
     const settings = getSettings(node);
-    const n = parseInt(settings?.refiner?.batch_variants || 1, 10) || 1;
+    const rf = settings.refiner = settings.refiner || {};
+    const n = parseInt(rf.batch_variants || 1, 10) || 1;
     body.append(el("div", "funpack-studio-hint",
-      "A batch is a set of generations made in one run with everything frozen except the seed (and shortcut options, if your prompt has any). Set the size and Arm it, then press ComfyUI's Generate. When it finishes, reopen this window to rate each one."));
+      "A batch is a set of generations made in one run. Regular = everything frozen except the seed (and shortcut options). Interactive Guessing = freeze EVERYTHING including the seed and sweep the conditioning strength up or down across the batch, so you can see exactly where it breaks. Set it up, Arm, then press ComfyUI's Generate. All videos come out the Chain Sampler's IMAGES output; reopen this window to rate them."));
+
     const sizeInput = numInput(n > 1 ? n : 10, 2, 64, 1);
     body.append(row("Batch size", sizeInput));
-    body.append(el("div", "funpack-studio-hint", n > 1 ? `Armed: the next Generate produces ${n}.` : "Not armed — Generate runs a single normal generation."));
+
+    if (!rf.batch_mode) rf.batch_mode = "Regular";
+    const modeSelect = selectEl(["Regular", "Interactive Guessing"], rf.batch_mode);
+    modeSelect.addEventListener("change", () => { rf.batch_mode = modeSelect.value; saveSettings(node, settings); render(); });
+    body.append(row("Mode", modeSelect));
+
+    let dirSelect = null, rangeInput = null;
+    if (rf.batch_mode === "Interactive Guessing") {
+      if (!rf.guess_direction) rf.guess_direction = "up";
+      dirSelect = selectEl(["up", "down"], rf.guess_direction);
+      body.append(el("div", "funpack-studio-hint", "up = amplify the conditioning's spread toward overbake (find your safe ceiling). down = dampen it (find how flat is too flat)."));
+      body.append(row("Direction", dirSelect));
+      if (rf.guess_range === undefined) rf.guess_range = 1.0;
+      rangeInput = numInput(rf.guess_range, 0.1, 2.0, 0.1);
+      body.append(el("div", "funpack-studio-hint", "How far the last rung goes: up → 1.0+range (e.g. 1.0 = up to 2.0×). down → 1.0−range (capped above 0). The ladder ramps linearly from the untouched base to this."));
+      body.append(row("Range", rangeInput));
+    }
+
+    if (rf.batch_learning === undefined) rf.batch_learning = true;
+    const learnToggle = toggleEl(!!rf.batch_learning, "Learn from ratings on Submit");
+    learnToggle.inp.addEventListener("change", () => { rf.batch_learning = learnToggle.inp.checked; saveSettings(node, settings); });
+    body.append(el("div", "funpack-studio-hint", rf.batch_mode === "Interactive Guessing"
+      ? "On: rating the ladder learns your safe-spread ceiling and auto-caps future steering for this key. Off: pure generation, nothing learned."
+      : "On: rating trains the value function + repair memory. Off: pure generation — make variations without teaching anything."));
+    body.append(row("Learning", learnToggle.wrap));
+
+    body.append(el("div", "funpack-studio-hint", n > 1
+      ? `Armed (${rf.batch_mode}): the next Generate produces ${n}.`
+      : "Not armed — Generate runs a single normal generation."));
     const actions = el("div", "");
     actions.style.cssText = "display:flex;gap:6px;margin-top:8px;";
     const armBtn = btn(n > 1 ? "Re-arm" : "Arm batch");
     armBtn.addEventListener("click", () => {
       const v = Math.max(2, Math.min(64, parseInt(sizeInput.value, 10) || 0));
-      const s = getSettings(node); s.refiner = s.refiner || {}; s.refiner.batch_variants = v; saveSettings(node, s);
+      const s = getSettings(node); s.refiner = s.refiner || {};
+      s.refiner.batch_variants = v;
+      s.refiner.batch_mode = modeSelect.value;
+      s.refiner.guess_mode = (modeSelect.value === "Interactive Guessing");
+      if (dirSelect) s.refiner.guess_direction = dirSelect.value;
+      if (rangeInput) s.refiner.guess_range = Math.max(0.1, Math.min(2.0, parseFloat(rangeInput.value) || 1.0));
+      s.refiner.batch_learning = learnToggle.inp.checked;
+      saveSettings(node, s);
       refreshBatchButton(node); render();
     });
     const offBtn = btn("Disarm", "secondary");
     offBtn.addEventListener("click", () => {
-      const s = getSettings(node); s.refiner = s.refiner || {}; s.refiner.batch_variants = 1; saveSettings(node, s);
+      const s = getSettings(node); s.refiner = s.refiner || {};
+      s.refiner.batch_variants = 1; s.refiner.guess_mode = false;
+      saveSettings(node, s);
       refreshBatchButton(node); render();
     });
     actions.append(armBtn, offBtn);
@@ -590,7 +629,7 @@ function openBatchPanel(node) {
     data.items.forEach((it) => {
       const r = el("div", "");
       r.style.cssText = "display:flex;align-items:center;gap:6px;margin:2px 0;";
-      const vtag = (it.variant != null) ? `[v${it.variant}] ` : "";
+      const vtag = (it.guess_factor != null) ? `[×${it.guess_factor}] ` : ((it.variant != null) ? `[v${it.variant}] ` : "");
       const lab = it.prompt ? it.prompt : (it.preview || it.id);
       const name = el("span", "", `#${it.index ?? 0} ${vtag}${lab} (seed ${it.seed})`);
       name.title = it.preview || it.id;
@@ -616,7 +655,8 @@ function openBatchPanel(node) {
       if (Object.keys(ratings).length === 0) { errorEl.textContent = "Rate at least one generation first."; return; }
       submitBtn.disabled = true;
       try {
-        const res = await api.fetchApi("/funpack/batch/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, stamp: data.stamp, ratings }) });
+        const learn = (getSettings(node)?.refiner?.batch_learning !== false);
+        const res = await api.fetchApi("/funpack/batch/submit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, stamp: data.stamp, ratings, learn }) });
         const out = await res.json();
         if (out.error) throw new Error(out.error);
         errorEl.textContent = `Submitted — trained on ${out.trained}.${out.info ? " " + out.info : ""}`;
@@ -2127,6 +2167,7 @@ app.registerExtension({
         const s = getSettings(n);   // one-shot: disarm after the batch ran
         if (s?.refiner && parseInt(s.refiner.batch_variants || 1, 10) > 1) {
           s.refiner.batch_variants = 1;
+          s.refiner.guess_mode = false;
           saveSettings(n, s);
         }
       }

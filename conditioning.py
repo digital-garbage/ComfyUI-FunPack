@@ -11517,6 +11517,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("phrase_memory", {})
         global_state.setdefault("axis_conditioning_memory", {})
         global_state.setdefault("negative_prompt_memory", {})
+
+        # Interactive-Guessing dual auto-cap (learned safe ceiling). Applied on NORMAL runs only —
+        # never during the guessing ladder itself, which deliberately sweeps the spread.
+        _guess_spread_cap = None
+        if not guess_mode:
+            _gsf = float(global_state.get("guess_safe_factor", 0) or 0)
+            if _gsf > 0:
+                absolute_strength = min(float(absolute_strength), _gsf)  # (a) soft strength pre-limit
+            _gss = float(global_state.get("guess_safe_spread", 0) or 0)
+            if _gss > 0:
+                _guess_spread_cap = _gss  # (b) output-spread clamp (the guarantee)
         global_state.setdefault("lora_weight_memory", {})
         global_state.setdefault("preferred_context_memory", {})
         global_state.setdefault("intent_alignment_memory", {})
@@ -12323,7 +12334,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             _concept_strength, _current_final,
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap),
                         status,
                         training_info,
                         loss_graph,
@@ -12341,7 +12352,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12701,15 +12712,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         return out
 
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
-                                  steer_mode, absolute_strength):
+                                  steer_mode, absolute_strength, spread_cap=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
-        behaviour). Absolute = global taste pull. Both = layer them."""
+        behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
+        Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
+        spread to it (the backstop half of the dual auto-cap)."""
         mode = str(steer_mode or "relative").lower()
         out = conditioning_list
         if mode in ("relative", "both"):
             out = self._v2_ascend_conditioning(out, refinement_key, apply=value_guidance)
         if mode in ("absolute", "both"):
             out = self._v2_apply_absolute(out, float(absolute_strength))
+        if spread_cap and spread_cap > 0:
+            capped = []
+            clamped_any = False
+            for entry in out:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[0], torch.Tensor):
+                    sp = conditioning_spread(entry[0])
+                    if sp and sp > spread_cap:
+                        entry = (scale_conditioning_spread(entry[0], spread_cap / sp), entry[1])
+                        clamped_any = True
+                capped.append(entry)
+            out = capped
+            if clamped_any:
+                print(f"[FunPackRefiner] Interactive-Guessing cap: output conditioning spread "
+                      f"clamped to learned-safe {spread_cap:.3f}.")
         return out
 
 
