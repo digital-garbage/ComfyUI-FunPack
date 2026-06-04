@@ -13927,6 +13927,29 @@ class FunPackStudio:
                     rescue_prompt_sig=prompt_sig,
                     sigmas=sigmas_raw,
                 )
+            elif sampler_type == "Normalizing":
+                try:
+                    from .samplers import FunPackNormalizingSampler
+                except ImportError:
+                    from samplers import FunPackNormalizingSampler
+                nc = cfg.get("normalizing", {}) if isinstance(cfg.get("normalizing"), dict) else {}
+                nvkey = str(nc.get("velocity_refinement_key", "") or "").strip()
+                if not nvkey or nvkey == "default":
+                    nvkey = str(refinement_key or "").strip() or "default"
+                node = FunPackNormalizingSampler()
+                sampler, out_sigmas = node.get_sampler(
+                    normalize_strength=float(nc.get("normalize_strength", 0.5)),
+                    normalize_start_sigma=float(nc.get("normalize_start_sigma", 0.9)),
+                    velocity_bias_mode=str(nc.get("velocity_bias_mode", "off")),
+                    velocity_bias_strength=float(nc.get("velocity_bias_strength", 0.0)),
+                    velocity_bias_source=str(nc.get("velocity_bias_source", "mean")),
+                    velocity_refinement_key=nvkey,
+                    rescue_mode=bool(nc.get("rescue_mode", False)),
+                    rescue_threshold=float(nc.get("rescue_threshold", 0.15)),
+                    rescue_strength=float(nc.get("rescue_strength", 0.2)),
+                    rescue_prompt_sig=prompt_sig,
+                    sigmas=sigmas_raw,
+                )
             elif sampler_type == "KSampler":
                 import comfy.samplers as _cs
                 sampler_name = str(cfg.get("ksampler_name", "euler") or "euler")

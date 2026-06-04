@@ -1676,6 +1676,214 @@ class FunPackDistilledFlowSampler:
         return (sampler, prepared_sigmas)
 
 
+def _normalize_video_denoised(denoised, video_mask, sigma, ref, strength,
+                              start_sigma, tolerance=0.05, beta=0.9):
+    """Keep the VIDEO latent's spread from drifting into overbaked / oversaturated ranges.
+
+    Operates on the denoised (x0) prediction, video stream only — audio is never touched, so it
+    is audio-safe by construction. Once x0 is meaningful (sigma <= start_sigma) it anchors a
+    reference spread (robust std over the video region) and gently compresses any later step
+    whose spread inflates past it; an EMA lets the reference follow legitimate detail growth
+    while resisting abrupt overbake spikes. Benefit-only: it never amplifies and is a no-op when
+    the latent stays healthy. Cost is a few masked reductions per step (~zero overhead).
+
+    `ref` is a 1-element list holding the reference scale across steps (mutable state).
+    """
+    if strength <= 0.0:
+        return denoised
+    try:
+        s = float(sigma.item()) if hasattr(sigma, "item") else float(sigma)
+    except Exception:
+        s = 1.0
+    if s > start_sigma:
+        return denoised  # skip the pure-noise plateau where the x0 estimate is not yet meaningful
+    try:
+        # Stats over the video region (whole tensor for single-stream LTXV, where mask is None).
+        if video_mask is not None:
+            m = video_mask
+            w = m.sum().clamp_min(1.0)
+            mean = (denoised * m).sum() / w
+            var = (((denoised - mean) ** 2) * m).sum() / w
+        else:
+            mean = denoised.mean()
+            var = ((denoised - mean) ** 2).mean()
+        std_v = float(torch.sqrt(var.clamp_min(1e-12)).item())
+        if ref[0] is None:
+            ref[0] = std_v
+            return denoised
+        target = ref[0] * (1.0 + tolerance)
+        if std_v > target and std_v > 1e-6:
+            factor = 1.0 - strength * (1.0 - target / std_v)  # = lerp(1, target/std, strength)
+            normalized = mean + (denoised - mean) * factor
+            denoised = _video_only(normalized, denoised, m)
+            ref[0] = ref[0] * beta + target * (1.0 - beta)
+        else:
+            ref[0] = ref[0] * beta + std_v * (1.0 - beta)
+    except Exception:
+        return denoised
+    return denoised
+
+
+def sample_funpack_normalizing(model, x, sigmas, extra_args=None, callback=None,
+                               disable=None,
+                               normalize_strength=0.5, normalize_start_sigma=0.9,
+                               velocity_bias_mode="off", velocity_bias_strength=0.0,
+                               velocity_bias_source="mean", velocity_refinement_key="default",
+                               rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
+                               rescue_prompt_sig=None):
+    """Deterministic 1st-order euler (rectified-flow) sampler + video-only latent normalization.
+
+    The plain euler base gives the clean 'ddim look' and clean audio (no AB2/Heun/ancestral, so
+    audio rides the same plain euler update). On top, per-step latent normalization keeps the
+    VIDEO latent's statistics in a healthy range to counter overbaking / oversaturation / colour
+    drift — the closest thing to a free, benefit-only quality lever for distilled LTXAV at CFG=1.
+    Velocity bias + reactive rescue are available too; everything except the deterministic euler
+    update is confined to the video stream, so audio stays clean.
+    """
+    extra_args = {} if extra_args is None else extra_args
+    total_steps = max(0, len(sigmas) - 1)
+    if total_steps <= 0:
+        return x
+    normalize_strength = max(0.0, min(1.0, float(normalize_strength)))
+    normalize_start_sigma = max(0.0, min(1.0, float(normalize_start_sigma)))
+
+    _RESCUE_LOG["warned_no_memory"] = False
+    _RESCUE_LOG["warned_no_prompt_match"] = False
+    _RESCUE_LOG["fired"] = 0
+
+    video_mask = _packed_video_mask(model, x)
+    if video_mask is not None:
+        n_aud = int((video_mask < 0.5).sum().item())
+        print(f"[FunPack AV] normalizing sampler: audio-safe (audio held deterministic on "
+              f"{n_aud} of {video_mask.shape[-1]} packed dims; normalization video-only)")
+
+    s_in = x.new_ones([x.shape[0]])
+    ref_scale = [None]
+
+    for i in comfy.utils.model_trange(total_steps, disable=disable):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        velocity_target = _velocity_bias_target(sigmas, sigma)
+
+        if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+            x_pre = x
+            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
+                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
+            x = _video_only(x, x_pre, video_mask)
+
+        denoised = model(x, sigma * s_in, **extra_args)
+
+        if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
+            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+        if rescue_mode and velocity_target is not None:
+            denoised = _video_only(_rescue_denoised(
+                denoised, x, sigma, velocity_refinement_key,
+                velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                source=velocity_bias_source,
+            ), denoised, video_mask)
+
+        # The point of this sampler: video-only latent normalization (anti-overbake).
+        denoised = _normalize_video_denoised(
+            denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
+        )
+
+        if callback is not None:
+            callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+
+        if sigma_next == 0:
+            x = denoised
+            continue
+        dt = sigma_next - sigma  # negative: sigmas decrease
+        d = k_diffusion_sampling.to_d(x, sigma, denoised)
+        x = x + d * dt
+
+    return x
+
+
+class FunPackNormalizingSampler:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "normalize_strength": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "How hard to pull the video latent's spread back toward its healthy reference when it inflates (overbaking). 0 = plain euler, no normalization. 0.5 = gentle anti-overbake. 1.0 = clamp spread to the reference. Audio is never affected.",
+                }),
+                "normalize_start_sigma": ("FLOAT", {
+                    "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.025,
+                    "tooltip": "Sigma at/below which normalization activates and the reference spread is anchored. Above this (pure-noise plateau) the x0 estimate is meaningless, so it's skipped. ~0.9 captures the reference at the structure-forming step.",
+                }),
+                "velocity_bias_mode": (VELOCITY_BIAS_MODES, {
+                    "default": "off",
+                    "tooltip": "Experimental: capture/apply averaged early model velocity (action) around the structure sigma. Off preserves the plain euler trajectory. Shares the same memory as the Hybrid/Distilled samplers.",
+                }),
+                "velocity_bias_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 3.0, "step": 0.05,
+                    "tooltip": "Strength of the remembered velocity (action) injected at the structure sigma. 0 disables. Creative/action tool, not a consistency lever.",
+                }),
+                "velocity_bias_source": (["mean", "nearest"], {
+                    "default": "mean",
+                    "tooltip": "How velocity bias / rescue pick a good direction. 'mean' = prompt-blind global average. 'nearest' = best-matching prompt cluster.",
+                }),
+                "velocity_refinement_key": ("STRING", {
+                    "default": "default", "multiline": False,
+                    "tooltip": "Memory key used to capture/apply velocity bias and rescue trajectories.",
+                }),
+                "rescue_mode": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Reactive in-flight rescue, rating-gated. Steers eligible steps toward trajectories you rated good and away from Awful ones (matched to the current prompt). No-op until a few gens are rated. Video-only.",
+                }),
+                "rescue_threshold": ("FLOAT", {
+                    "default": 0.15, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Fires when the step diverged from the good trajectory by more than this (1 - cosine) OR aligned with a bad one by more than this. Lower = corrects more eagerly.",
+                }),
+                "rescue_strength": ("FLOAT", {
+                    "default": 0.2, "min": 0.0, "max": 0.5, "step": 0.01,
+                    "tooltip": "How hard to pull toward good / away from bad when triggered (magnitude preserved). 0.5 is a strong correction.",
+                }),
+            },
+            "optional": {
+                "sigmas": ("SIGMAS",),
+            }
+        }
+
+    RETURN_TYPES = ("SAMPLER", "SIGMAS")
+    RETURN_NAMES = ("sampler", "sigmas")
+    FUNCTION = "get_sampler"
+    CATEGORY = "FunPack/Sampling"
+    DESCRIPTION = (
+        "Deterministic 1st-order euler (rectified-flow) sampler with video-only latent "
+        "normalization to counter overbaking / oversaturation / colour drift at ~zero overhead. "
+        "Clean 'ddim look' and clean audio (audio rides plain euler); normalization and the "
+        "optional velocity bias + reactive rescue are confined to the video stream. "
+        "Built for distilled few-step LTXAV at CFG=1."
+    )
+
+    def get_sampler(self, normalize_strength=0.5, normalize_start_sigma=0.9,
+                    velocity_bias_mode="off", velocity_bias_strength=0.0,
+                    velocity_bias_source="mean", velocity_refinement_key="default",
+                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
+                    rescue_prompt_sig=None, sigmas=None):
+        prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
+        sampler = comfy.samplers.KSAMPLER(
+            sample_funpack_normalizing,
+            extra_options={
+                "normalize_strength": normalize_strength,
+                "normalize_start_sigma": normalize_start_sigma,
+                "velocity_bias_mode": velocity_bias_mode,
+                "velocity_bias_strength": velocity_bias_strength,
+                "velocity_bias_source": velocity_bias_source,
+                "velocity_refinement_key": velocity_refinement_key,
+                "rescue_mode": rescue_mode,
+                "rescue_threshold": rescue_threshold,
+                "rescue_strength": rescue_strength,
+                "rescue_prompt_sig": rescue_prompt_sig,
+            }
+        )
+        return (sampler, prepared_sigmas)
+
+
 class FunPackLTXAVSceneChainSampler:
     @classmethod
     def INPUT_TYPES(cls):

@@ -12,7 +12,7 @@ const TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
 const TABS = ["Session", "Scene", "Shortcuts", "Transitions", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
-const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
+const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "Normalizing", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
 const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
@@ -74,8 +74,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
     },
   };
 }
@@ -1567,6 +1567,48 @@ function openPanel(node) {
           dRnote.style.cssText = "font-size:11px;opacity:0.7;margin:2px 0 4px 0;";
           dRnote.textContent = "Rating-gated: learns automatically from your ratings while on (good = steer toward, Awful = steer away). No-op until a few gens for this prompt are rated. Session reset clears it.";
           body.append(dRnote);
+        }
+      } else if (cfg.type === "Normalizing") {
+        const nc = cfg.normalizing || (cfg.normalizing = { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 });
+        body.append(sectionTitle("Normalizing settings"));
+        body.append(el("div", "funpack-studio-hint", "Deterministic euler (clean 'ddim look' + clean audio) with video-only latent normalization to counter overbaking / oversaturation / colour drift at ~zero overhead. Audio is never touched. Built for distilled LTXAV at CFG=1."));
+        const nStr = numInput(nc.normalize_strength, 0, 1, 0.05);
+        nStr.addEventListener("input", () => { nc.normalize_strength = parseFloat(nStr.value); });
+        body.append(el("div", "funpack-studio-hint", "How hard to pull the video latent's spread back when it inflates (overbaking). 0 = plain euler. 0.5 = gentle. 1.0 = clamp to reference."));
+        body.append(row("normalize strength", nStr));
+        const nStart = numInput(nc.normalize_start_sigma, 0, 1, 0.025);
+        nStart.addEventListener("input", () => { nc.normalize_start_sigma = parseFloat(nStart.value); });
+        body.append(el("div", "funpack-studio-hint", "Sigma at/below which normalization activates and anchors its reference. Above this (pure noise) it's skipped. ~0.9 = the structure-forming step."));
+        body.append(row("normalize start sigma", nStart));
+        const nVbm = selectEl(VELOCITY_BIAS_MODES, nc.velocity_bias_mode || "off");
+        nVbm.addEventListener("change", () => { nc.velocity_bias_mode = nVbm.value; renderSampler(); });
+        body.append(row("velocity bias mode", nVbm));
+        if (nc.velocity_bias_mode && nc.velocity_bias_mode !== "off") {
+          const nVbs = numInput(nc.velocity_bias_strength, 0, 3.0, 0.05);
+          nVbs.addEventListener("input", () => { nc.velocity_bias_strength = parseFloat(nVbs.value); });
+          body.append(row("velocity bias strength", nVbs));
+          const nVbsrc = selectEl(["mean", "nearest"], nc.velocity_bias_source || "mean");
+          nVbsrc.addEventListener("change", () => { nc.velocity_bias_source = nVbsrc.value; });
+          body.append(row("bias source", nVbsrc));
+          const nVrk = textInput(nc.velocity_refinement_key, "default");
+          nVrk.addEventListener("input", () => { nc.velocity_refinement_key = nVrk.value; });
+          body.append(row("velocity key", nVrk));
+        }
+        const nRsm = selectEl(["off", "on"], nc.rescue_mode ? "on" : "off");
+        nRsm.addEventListener("change", () => { nc.rescue_mode = (nRsm.value === "on"); renderSampler(); });
+        body.append(row("rescue mode", nRsm));
+        if (nc.rescue_mode) {
+          const nRst = numInput(nc.rescue_threshold, 0, 1, 0.01);
+          nRst.addEventListener("input", () => { nc.rescue_threshold = parseFloat(nRst.value); });
+          body.append(row("rescue threshold", nRst));
+          const nRss = numInput(nc.rescue_strength, 0, 0.5, 0.01);
+          nRss.addEventListener("input", () => { nc.rescue_strength = parseFloat(nRss.value); });
+          body.append(row("rescue strength", nRss));
+          if (!nc.velocity_bias_mode || nc.velocity_bias_mode === "off") {
+            const nRsrc = selectEl(["mean", "nearest"], nc.velocity_bias_source || "mean");
+            nRsrc.addEventListener("change", () => { nc.velocity_bias_source = nRsrc.value; });
+            body.append(row("bias source", nRsrc));
+          }
         }
       } else if (cfg.type === "KSampler") {
         body.append(sectionTitle("KSampler settings"));
