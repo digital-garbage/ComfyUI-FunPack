@@ -2062,6 +2062,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0, "min": 0, "max": 4096, "step": 64,
                     "tooltip": "Tile size for VAE decode (0 = no tiling). Set to e.g. 512 if decode OOMs.",
                 }),
+                "decode_noise_scale": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.005,
+                    "tooltip": "Noise injected at VAE decode to restore fine detail/grain (the LTX VAE decoder is itself a tiny diffusion model). 0 = off (clean decode). ~0.025 is a gentle detail restore. Applied to this node's IMAGES decode only.",
+                }),
+                "decode_timestep": ("FLOAT", {
+                    "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.001,
+                    "tooltip": "Decode timestep fed to the VAE decoder when decode_noise_scale > 0. ~0.05 adds subtle detail; higher gives the decoder more freedom (more deviation from the latent).",
+                }),
                 "embed_guidance_source": (["relative", "absolute"], {
                     "default": "relative",
                     "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
@@ -2706,6 +2714,25 @@ class FunPackLTXAVSceneChainSampler:
         return result, positive, negative, 1
 
 
+    def _vae_with_decode_noise(self, vae, timestep, scale, seed):
+        """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
+        internal decoder restores fine detail/grain. Never mutates the shared input VAE. Mirrors
+        LTXV's 'Set VAE Decoder Noise', but owned by the Chain Sampler (it does the decode)."""
+        try:
+            result = copy.copy(vae)
+        except Exception:
+            return vae
+        if hasattr(result, "first_stage_model"):
+            try:
+                result.first_stage_model.decode_timestep = timestep
+                result.first_stage_model.decode_noise_scale = scale
+            except Exception:
+                pass
+        result._decode_timestep = timestep
+        result.decode_noise_scale = scale
+        result.seed = seed
+        return result
+
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
@@ -2713,11 +2740,18 @@ class FunPackLTXAVSceneChainSampler:
                embed_guidance=False, embed_guidance_strength=0.02,
                embed_guidance_source="relative",
                transition_duration=16, decode_tile_size=0,
+               decode_noise_scale=0.0, decode_timestep=0.05,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
             negative = []
+
+        # Decode-time noise (folded in from LTXV's Set VAE Decoder Noise per the boundary law:
+        # the Chain Sampler owns IMAGES decode, so this lives here, not on a separate node).
+        # Stamp settings onto a shallow copy of the VAE so we never mutate the shared input.
+        if decode_noise_scale and decode_noise_scale > 0:
+            vae = self._vae_with_decode_noise(vae, decode_timestep, decode_noise_scale, seed)
 
         # Batch Training: Studio (the hub) packs N conditionings into positive, each scene entry
         # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
@@ -3098,58 +3132,3 @@ class FunPackLTXAVSceneChainSampler:
         elif compatible:
             all_images = compatible[0]
         return (last[0], all_images, status, last[3], last[4], last[5])
-
-
-class FunPackVAEDecoderNoise:
-    """Set the LTX VAE's decode-time noise (port of LTXVideo's 'Set VAE Decoder Noise').
-
-    The LTX VAE decoder is itself a tiny diffusion model that accepts a decode timestep +
-    noise scale; injecting a little noise at decode restores fine high-frequency detail/grain
-    that the latent alone looks slightly soft without. This is a pure config passthrough: it
-    stamps decode_timestep / decode_noise_scale / seed onto a copy of the VAE. Insert it on the
-    VAE line before any decode (Scene Chain Sampler, VAE Decode, etc.). ~zero cost, video-domain
-    only (does not touch the latent or audio)."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "vae": ("VAE",),
-                "timestep": ("FLOAT", {
-                    "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.001,
-                    "tooltip": "Decode timestep fed to the VAE's internal decoder. ~0.05 adds subtle detail; higher = more decoder freedom (and more deviation from the latent).",
-                }),
-                "scale": ("FLOAT", {
-                    "default": 0.025, "min": 0.0, "max": 1.0, "step": 0.001,
-                    "tooltip": "Amount of noise added at decode. 0 = clean/off (plain decode). ~0.025 is a gentle detail/grain restore.",
-                }),
-                "seed": ("INT", {
-                    "default": 42, "min": 0, "max": 0xFFFFFFFFFFFFFFFF,
-                    "tooltip": "Seed for the decode noise (kept fixed so repeated decodes of the same latent match).",
-                }),
-            }
-        }
-
-    RETURN_TYPES = ("VAE",)
-    RETURN_NAMES = ("vae",)
-    FUNCTION = "add_noise"
-    CATEGORY = "FunPack/Sampling"
-    DESCRIPTION = (
-        "Stamps decode-time noise settings onto the LTX VAE so the decoder restores fine "
-        "detail/grain. Passthrough VAE -> VAE; place before any VAE decode. scale=0 disables."
-    )
-
-    def add_noise(self, vae, timestep, scale, seed):
-        result = copy.copy(vae)
-        # LTX VAE reads these at decode; set both the wrapper and inner-model attrs to match the
-        # reference node so it works regardless of which the installed comfy build consults.
-        if hasattr(result, "first_stage_model"):
-            try:
-                result.first_stage_model.decode_timestep = timestep
-                result.first_stage_model.decode_noise_scale = scale
-            except Exception:
-                pass
-        result._decode_timestep = timestep
-        result.decode_noise_scale = scale
-        result.seed = seed
-        return (result,)
