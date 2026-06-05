@@ -2070,6 +2070,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.05, "min": 0.0, "max": 1.0, "step": 0.001,
                     "tooltip": "Decode timestep fed to the VAE decoder when decode_noise_scale > 0. ~0.05 adds subtle detail; higher gives the decoder more freedom (more deviation from the latent).",
                 }),
+                "i2v_anchor_power": ("FLOAT", {
+                    "default": 1.0, "min": 1.0, "max": 2.0, "step": 0.01,
+                    "tooltip": "Progressively strengthen i2v adherence to the conditioning frame as denoising proceeds (port of LTXV DynamicConditioning): the denoise mask is raised to power**step. 1.0 = off (no change). ~1.3 = noticeable anti-drift. EXPERIMENTAL on packed AV latents — validate in ComfyUI. ~zero overhead.",
+                }),
+                "i2v_anchor_first_frame_only": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "When i2v_anchor_power > 1.0: apply the ramp only to the first (conditioning) frame, leaving the rest free. Off ramps the whole mask.",
+                }),
                 "embed_guidance_source": (["relative", "absolute"], {
                     "default": "relative",
                     "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
@@ -2777,6 +2785,66 @@ class FunPackLTXAVSceneChainSampler:
         result.seed = seed
         return result
 
+    def _install_i2v_anchor(self, model, power, first_frame_only):
+        """Port of LTXV DynamicConditioning: progressively strengthen i2v adherence to the
+        conditioning frame as denoising proceeds, by raising the denoise mask to power**step.
+        Uses the stock comfy ModelPatcher API (set_model_denoise_mask_function) — no modified
+        model, no extra forward pass. Fully defensive: any missing mask / unexpected shape / error
+        falls through to the unmodified mask, so it's a safe no-op when it can't apply."""
+        p = float(power)
+
+        def _find_step(sigma, step_sigmas):
+            try:
+                for idx, s in enumerate(step_sigmas):
+                    if s <= sigma:
+                        return idx
+                return len(step_sigmas) - 1
+            except Exception:
+                return 0
+
+        def _denoise_mask_fn(sigma, denoise_mask, extra_options):
+            try:
+                step_sigmas = extra_options.get("sigmas")
+                inner = extra_options.get("model")
+                if denoise_mask is None or step_sigmas is None or inner is None:
+                    return denoise_mask
+                exp = p ** _find_step(sigma, step_sigmas)
+                if abs(exp - 1.0) < 1e-6:
+                    return denoise_mask
+                mask = denoise_mask.clone()
+                if first_frame_only:
+                    if mask.dim() < 3 or mask.shape[2] < 1:
+                        return denoise_mask  # not a [B,C,F,...] video mask -> don't touch (e.g. packed)
+                    try:
+                        num_channels = inner.model_patcher.model.diffusion_model.in_channels
+                    except Exception:
+                        num_channels = mask.shape[1]
+                    mask[:, :num_channels, :1] = mask[:, :num_channels, :1] ** exp
+                else:
+                    mask = mask ** exp
+                # Propagate to the conds so per-token timestep values stay consistent.
+                try:
+                    for ck in inner.conds:
+                        if "positive" in ck or "negative" in ck:
+                            for cond in inner.conds[ck]:
+                                mc = cond.get("model_conds") if isinstance(cond, dict) else None
+                                if mc and "denoise_mask" in mc:
+                                    mc["denoise_mask"].cond = mask
+                except Exception:
+                    pass
+                return mask
+            except Exception:
+                return denoise_mask
+
+        try:
+            patched = model.clone()
+            patched.set_model_denoise_mask_function(_denoise_mask_fn)
+            print(f"[FunPackSceneChain] i2v anchor ramp on (power={p}, first_frame_only={first_frame_only})")
+            return patched
+        except Exception as e:
+            print(f"[FunPackSceneChain] i2v anchor install failed ({e}); continuing without it.")
+            return model
+
     def sample(self, model, vae, positive, negative, sampler, sigmas, seed, latent_template,
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
@@ -2785,6 +2853,7 @@ class FunPackLTXAVSceneChainSampler:
                embed_guidance_source="relative",
                transition_duration=16, decode_tile_size=0,
                decode_noise_scale=0.0, decode_timestep=0.05,
+               i2v_anchor_power=1.0, i2v_anchor_first_frame_only=True,
                refinement_key_input="", unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -2796,6 +2865,11 @@ class FunPackLTXAVSceneChainSampler:
         # Stamp settings onto a shallow copy of the VAE so we never mutate the shared input.
         if decode_noise_scale and decode_noise_scale > 0:
             vae = self._vae_with_decode_noise(vae, decode_timestep, decode_noise_scale, seed)
+
+        # i2v anchor ramp (LTXV DynamicConditioning): patch the model BEFORE the batch/main split
+        # so both paths inherit it. power<=1.0 = off.
+        if i2v_anchor_power and i2v_anchor_power > 1.0:
+            model = self._install_i2v_anchor(model, i2v_anchor_power, bool(i2v_anchor_first_frame_only))
 
         # Batch Training: Studio (the hub) packs N conditionings into positive, each scene entry
         # tagged 'funpack_batch_variant'. That marker is the only trigger — the sampler has no
