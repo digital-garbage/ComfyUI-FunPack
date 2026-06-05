@@ -20,7 +20,7 @@ if __package__:
         FunPackVideoStitch,
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
-    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler
+    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler, FunPackVAEDecoderNoise
     from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
     try:
         from . import batch_training  # noqa: F401  registers /funpack/batch/* routes
@@ -59,7 +59,7 @@ else:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
     try:
-        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler
+        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler, FunPackVAEDecoderNoise
     except Exception:
         FunPackHybridEuler2SSampler = None
         FunPackDistilledFlowSampler = None
@@ -92,6 +92,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackDistilledFlowSampler": FunPackDistilledFlowSampler,
     "FunPackNormalizingSampler": FunPackNormalizingSampler,
     "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
+    "FunPackVAEDecoderNoise": FunPackVAEDecoderNoise,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
@@ -118,6 +119,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackDistilledFlowSampler": "FunPack Distilled Flow Sampler",
     "FunPackNormalizingSampler": "FunPack Normalizing Sampler",
     "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
+    "FunPackVAEDecoderNoise": "FunPack VAE Decoder Noise",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
