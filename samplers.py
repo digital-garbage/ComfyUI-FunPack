@@ -2371,17 +2371,59 @@ class FunPackLTXAVSceneChainSampler:
             result["samples"] = tensors[0]
         return result
 
-    def _blend_tensors(self, left, right, overlap):
+    def _slerp_block(self, a, b, t):
+        """Spherical interpolation of two latent blocks along the feature volume, per (batch, frame).
+
+        A linear crossfade of two different latents superimposes them and lets their magnitude
+        collapse near alpha~0.5 -> ghosting + washed-out seam. Slerp interpolates the DIRECTION on
+        the hypersphere and the MAGNITUDE separately, so the seam keeps its energy. Reduces over the
+        feature dims (C,H,W), keeping batch (0) and time (2). `t` is the fraction toward `b`,
+        broadcastable over the time axis. Math runs in float32 for stability, cast back to a.dtype."""
+        out_dtype = a.dtype
+        a = a.float()
+        b = b.to(a.device).float()
+        dims = tuple(d for d in range(a.dim()) if d not in (0, 2))
+        eps = 1e-8
+        # vector_norm (not Tensor.norm) — the latter treats a 3-tuple dim as a matrix norm.
+        a_norm = torch.linalg.vector_norm(a, dim=dims, keepdim=True)
+        b_norm = torch.linalg.vector_norm(b, dim=dims, keepdim=True)
+        a_u = a / a_norm.clamp_min(eps)
+        b_u = b / b_norm.clamp_min(eps)
+        dot = (a_u * b_u).sum(dim=dims, keepdim=True).clamp(-1.0, 1.0)
+        theta = torch.acos(dot)
+        sin_theta = torch.sin(theta)
+        denom = sin_theta.clamp_min(eps)
+        s0 = torch.sin((1.0 - t) * theta) / denom
+        s1 = torch.sin(t * theta) / denom
+        direction = torch.where(
+            sin_theta.abs() < 1e-4,                      # nearly collinear -> plain lerp of dirs
+            (1.0 - t) * a_u + t * b_u,
+            s0 * a_u + s1 * b_u,
+        )
+        mag = (1.0 - t) * a_norm + t * b_norm            # magnitude interpolated linearly
+        return (direction * mag).to(out_dtype)
+
+    def _blend_tensors(self, left, right, overlap, use_slerp=True):
         if overlap <= 0:
             return torch.cat([left, right], dim=2)
         if left.shape[:2] != right.shape[:2] or left.shape[3:] != right.shape[3:]:
             raise ValueError("Cannot blend scene latents with different non-time dimensions.")
-        alpha = torch.linspace(1.0, 0.0, overlap + 2, device=left.device, dtype=left.dtype)[1:-1]
+        right = right.to(left.device, left.dtype)
+        left_ov = left[:, :, -overlap:]
+        right_ov = right[:, :, :overlap]
         shape = [1] * left.dim()
         shape[2] = overlap
-        alpha = alpha.reshape(shape)
-        blended = alpha * left[:, :, -overlap:] + (1.0 - alpha) * right[:, :, :overlap].to(left.device, left.dtype)
-        return torch.cat([left[:, :, :-overlap], blended, right[:, :, overlap:].to(left.device, left.dtype)], dim=2)
+        if use_slerp:
+            # Smoothstep ramp 0->1 (eases in/out so less dwell at the 50/50 ghost point), then
+            # slerp so the crossfade preserves latent magnitude instead of washing out.
+            lin = torch.linspace(0.0, 1.0, overlap + 2, device=left.device, dtype=left.dtype)[1:-1]
+            t = (lin * lin * (3.0 - 2.0 * lin)).reshape(shape)
+            blended = self._slerp_block(left_ov, right_ov, t)
+        else:
+            # Audio (and any non-video stream) keeps the original linear crossfade untouched.
+            alpha = torch.linspace(1.0, 0.0, overlap + 2, device=left.device, dtype=left.dtype)[1:-1].reshape(shape)
+            blended = alpha * left_ov + (1.0 - alpha) * right_ov
+        return torch.cat([left[:, :, :-overlap], blended, right[:, :, overlap:]], dim=2)
 
     def _blend_latents(self, previous, current, video_overlap):
         result = self._clone_latent(previous)
@@ -2395,7 +2437,9 @@ class FunPackLTXAVSceneChainSampler:
         for index, tensor in enumerate(current_tensors):
             tensor_frames = self._tensor_frames(tensor)
             overlap = video_overlap if index == 0 else self._derived_overlap(video_overlap, video_frames, tensor_frames)
-            blended_tensors.append(self._blend_tensors(previous_tensors[index], tensor, overlap))
+            # index 0 is the video latent -> slerp+smoothstep; any further stream (audio) stays
+            # on the untouched linear crossfade (audio-safety: never reshape audio nonlinearly).
+            blended_tensors.append(self._blend_tensors(previous_tensors[index], tensor, overlap, use_slerp=(index == 0)))
 
         if self._is_nested(previous.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(blended_tensors)
