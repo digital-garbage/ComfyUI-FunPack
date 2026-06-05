@@ -2434,6 +2434,20 @@ class FunPackLTXAVSceneChainSampler:
             return None if effect == "none" else effect
         return None
 
+    def _scene_temporal_mult(self, scene_conditioning):
+        """Per-scene frame_rate multiplier baked in by Studio's "auto" temporal director.
+        Returns a float (1.0 = no change) or None when the scene carries no temporal intent."""
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            try:
+                return float(scene_conditioning[1].get("funpack_temporal_mult"))
+            except (TypeError, ValueError):
+                return None
+        return None
+
     def _decode_last_frame(self, latent, vae):
         try:
             tensors = self._latent_tensors(latent)
@@ -2728,9 +2742,31 @@ class FunPackLTXAVSceneChainSampler:
                 scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
             if embed_guidance and _liked_dir is not None:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
+            # Per-scene temporal style (temporal_style="auto"): layer a frame_rate wrapper on
+            # top of whatever is installed (e.g. embed guidance). Restored right after sampling,
+            # before the embed-guidance restore, so the wrappers unwind in install order.
+            _temporal_applied = False
+            _temporal_prev_wrapper = None
+            _scene_mult = self._scene_temporal_mult(scene_cond)
+            if _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
+                try:
+                    from .ltx_enhancements import make_temporal_wrapper
+                except ImportError:
+                    from ltx_enhancements import make_temporal_wrapper
+                _cur_wrapper = model.model_options.get("model_function_wrapper")
+                _tw = make_temporal_wrapper(_cur_wrapper, _scene_mult)
+                if _tw is not None:
+                    _temporal_prev_wrapper = _cur_wrapper
+                    model.model_options["model_function_wrapper"] = _tw
+                    _temporal_applied = True
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
             )
+            if _temporal_applied:
+                if _temporal_prev_wrapper is not None:
+                    model.model_options["model_function_wrapper"] = _temporal_prev_wrapper
+                elif "model_function_wrapper" in model.model_options:
+                    del model.model_options["model_function_wrapper"]
             if embed_guidance and _liked_dir is not None:
                 if _eg_old_wrapper is not None:
                     model.model_options["model_function_wrapper"] = _eg_old_wrapper

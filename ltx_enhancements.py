@@ -25,7 +25,107 @@ from hashlib import md5
 
 import torch
 
-TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"]
+TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze"]
+
+# frame_rate multiplier fed to the LTX RoPE per style. >1 => model assumes more
+# frames cover the same wall-clock time => smaller inter-frame deltas => smoother /
+# more "held" motion (freeze = strongest hold). <1 => larger deltas => punchier,
+# more dynamic motion. Single source of truth, shared by the global (concrete-style)
+# path in build_enhancements and the per-scene "auto" path in the chain sampler.
+TEMPORAL_STYLE_MULT = {
+    "accelerate": 1.35,
+    "decelerate": 0.72,
+    "loop": 1.0,   # loop is a separate RoPE coordinate trick (not yet wired); mult is a no-op
+    "freeze": 2.0,
+}
+
+
+# Keyword -> motion-energy intent for the "auto" director. The classifier scans a
+# scene's prompt and emits a continuous frame_rate multiplier (plus a loop flag).
+# "Energy" words want larger inter-frame deltas (mult < 1, toward decelerate);
+# "stillness" words want a hold (mult > 1, toward freeze). Tuned to stay inside the
+# same envelope as the manual presets (~0.72 .. 2.0) so auto never goes wilder than
+# a human would pick by hand.
+_TEMPORAL_ENERGY_WORDS = (
+    "run", "running", "sprint", "chase", "fight", "punch", "kick", "explosion",
+    "explode", "burst", "jump", "leap", "dash", "race", "fast", "rapid", "quick",
+    "frantic", "spin", "whirl", "fall", "crash", "swing", "throw", "action",
+    "dance", "dancing", "gallop", "charge", "shatter", "blast", "speeding",
+)
+_TEMPORAL_STILL_WORDS = (
+    "still", "stillness", "motionless", "static", "frozen", "freeze", "portrait",
+    "calm", "serene", "quiet", "slow", "slowly", "gentle", "gradual", "drift",
+    "drifting", "float", "floating", "hover", "stare", "gaze", "meditat",
+    "sleep", "resting", "rest", "standing", "posed", "pose", "close-up", "closeup",
+    "macro", "landscape", "ambient", "tranquil", "lingering",
+)
+_TEMPORAL_LOOP_WORDS = (
+    "loop", "looping", "seamless", "cycle", "cyclic", "repeat", "repeating",
+    "endless", "perpetual", "continuous loop",
+)
+
+
+def classify_temporal_intent(text):
+    """Heuristic per-scene motion director for temporal_style="auto".
+
+    Reads a scene's prompt and returns a dict describing the temporal treatment:
+      {"mult": float, "loop": bool, "label": str}
+    `mult` is a continuous frame_rate multiplier (1.0 = no change). This is the
+    baseline director; it is structured so a learned (reward-driven) override can
+    replace `mult` per intent-family later without touching callers. See
+    [[project-velocity-bias-role]] for why motion energy is treated as a dial.
+    """
+    t = str(text or "").lower()
+    if not t.strip():
+        return {"mult": 1.0, "loop": False, "label": "natural"}
+    energy = sum(1 for w in _TEMPORAL_ENERGY_WORDS if w in t)
+    still = sum(1 for w in _TEMPORAL_STILL_WORDS if w in t)
+    loop = any(w in t for w in _TEMPORAL_LOOP_WORDS)
+    net = still - energy  # >0 => want a hold; <0 => want energy
+    if net == 0:
+        mult, label = 1.0, "natural"
+    elif net > 0:
+        # ramp toward freeze (2.0); 1 hint ~ accelerate-grade hold, 2+ => stronger
+        mult = min(2.0, 1.0 + 0.35 * net)
+        label = "freeze" if mult >= 1.7 else "accelerate"
+    else:
+        # ramp toward decelerate (0.72) for punchier motion
+        mult = max(0.72, 1.0 - 0.14 * (-net))
+        label = "decelerate"
+    return {"mult": round(float(mult), 3), "loop": bool(loop), "label": label}
+
+
+def make_temporal_wrapper(old_wrapper, mult):
+    """Build a model_function_wrapper that scales the LTX `frame_rate` conditioning by
+    `mult`, chaining any existing wrapper. Returns None when mult is effectively 1.0
+    (nothing to do). Shared by the global concrete-style path and the per-scene auto
+    path so both apply identical RoPE manipulation."""
+    try:
+        mult = float(mult)
+    except (TypeError, ValueError):
+        return None
+    if abs(mult - 1.0) < 1e-3:
+        return None
+
+    def _temporal_wrapper(apply_fn, args, _mult=mult, _old=old_wrapper):
+        c = args.get("c")
+        if isinstance(c, dict) and "frame_rate" in c:
+            try:
+                fr_cond = c["frame_rate"]
+                if hasattr(fr_cond, "cond"):
+                    original_fr = float(fr_cond.cond)
+                    new_cond = type(fr_cond)(original_fr * _mult)
+                    new_c = dict(c)
+                    new_c["frame_rate"] = new_cond
+                    args = dict(args)
+                    args["c"] = new_c
+            except Exception:
+                pass
+        if _old is not None:
+            return _old(apply_fn, args)
+        return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+    return _temporal_wrapper
 
 # Confirmed semantic focal points (PAG default=14, STG defaults=14,19)
 ANCHOR_BLOCKS = [14, 19]
@@ -863,36 +963,15 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             print(f"[FunPackEnhancements] Hook setup failed: {e}")
 
     # --- Technique 3: temporal RoPE via model_function_wrapper ---
-    if temporal_style != "natural":
-        fps_multiplier = {
-            "accelerate": 1.35,
-            "decelerate": 0.72,
-            "loop": 1.0,   # same fps but coordinate trick below
-            "freeze": 2.0,
-        }.get(temporal_style, 1.0)
-
-        old_wrapper = model.model_options.get("model_function_wrapper")
-
-        def _temporal_wrapper(apply_fn, args, _mult=fps_multiplier, _old=old_wrapper):
-            c = args.get("c")
-            if isinstance(c, dict) and "frame_rate" in c:
-                try:
-                    fr_cond = c["frame_rate"]
-                    if hasattr(fr_cond, "cond"):
-                        original_fr = float(fr_cond.cond)
-                        new_fr = original_fr * _mult
-                        new_cond = type(fr_cond)(new_fr)
-                        new_c = dict(c)
-                        new_c["frame_rate"] = new_cond
-                        args = dict(args)
-                        args["c"] = new_c
-                except Exception:
-                    pass
-            if _old is not None:
-                return _old(apply_fn, args)
-            return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
-
-        model.model_options["model_function_wrapper"] = _temporal_wrapper
+    # "auto" is per-scene and owned by the chain sampler (it bakes a per-scene
+    # multiplier into each scene's conditioning and applies it there), so the global
+    # path here only fires for the concrete manual styles. "loop" stays a no-op until
+    # the RoPE coordinate trick is wired.
+    if temporal_style not in ("natural", "auto"):
+        mult = TEMPORAL_STYLE_MULT.get(temporal_style, 1.0)
+        wrapper = make_temporal_wrapper(model.model_options.get("model_function_wrapper"), mult)
+        if wrapper is not None:
+            model.model_options["model_function_wrapper"] = wrapper
 
     # --- Technique 5 (sigma tracking + i2v reference extraction) ---
     # Updates sigma_state before each model call so injection gating has the current

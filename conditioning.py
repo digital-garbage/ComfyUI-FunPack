@@ -6022,10 +6022,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "default": "",
                     "tooltip": "Optional user feedback describing what was specifically wrong with the previous output (e.g. 'he was supposed to hold her hand, not her head'). Has highest priority in the advisor system prompt.",
                 }),
-                "temporal_style": (["natural", "accelerate", "decelerate", "loop", "freeze"], {
+                "temporal_style": (["natural", "auto", "accelerate", "decelerate", "loop", "freeze"], {
                     "default": "natural",
                     "label": "Temporal Style",
-                    "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time.",
+                    "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, auto=per-scene director picks motion energy from each scene's prompt (needs the Scene Chain Sampler), accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time.",
                 }),
                 "split_by_transitions": ("BOOLEAN", {
                     "default": False,
@@ -12347,7 +12347,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode),
                         status,
                         training_info,
                         loss_graph,
@@ -12365,7 +12365,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12738,14 +12738,47 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
         return out
 
+    def _v2_apply_auto_temporal(self, conditioning_list, temporal_style, fallback_text=""):
+        """temporal_style="auto": bake a per-scene frame_rate multiplier into each
+        conditioning entry's metadata so the Scene Chain Sampler can apply per-scene motion
+        energy (the chain sampler reads funpack_temporal_*). The heuristic director classifies
+        each scene's own prompt; entries without scene text fall back to the run prompt.
+        No-op for any other style (concrete styles use the global build_enhancements path)."""
+        if str(temporal_style or "natural").strip().lower() != "auto":
+            return conditioning_list
+        try:
+            try:
+                from .ltx_enhancements import classify_temporal_intent
+            except ImportError:
+                from ltx_enhancements import classify_temporal_intent
+        except Exception:
+            return conditioning_list
+        out = []
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
+            intent = classify_temporal_intent(text)
+            meta["funpack_temporal_mult"] = intent["mult"]
+            meta["funpack_temporal_label"] = intent["label"]
+            if intent["loop"]:
+                meta["funpack_temporal_loop"] = True
+            # Preserve the original container type (ComfyUI conditioning entries are lists
+            # and some downstream code mutates them in place).
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        return out
+
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
-                                  steer_mode, absolute_strength, spread_cap=None):
+                                  steer_mode, absolute_strength, spread_cap=None,
+                                  temporal_style="natural", temporal_fallback_text=""):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
         spread to it (the backstop half of the dual auto-cap)."""
         mode = str(steer_mode or "relative").lower()
-        out = conditioning_list
+        out = self._v2_apply_auto_temporal(conditioning_list, temporal_style, fallback_text=temporal_fallback_text)
         if mode in ("relative", "both"):
             out = self._v2_ascend_conditioning(out, refinement_key, apply=value_guidance)
         if mode in ("absolute", "both"):

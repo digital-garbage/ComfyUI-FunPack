@@ -8,7 +8,7 @@ const LORA_TYPES = ["general", "action", "style", "quality", "character"];
 const ADVISOR_DTYPES = ["bfloat16", "float16", "float32"];
 const REFINER_MODES = ["Refine", "Prompt only", "Learning"];
 const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
-const TEMPORAL_STYLES = ["natural", "accelerate", "decelerate", "loop", "freeze"];
+const TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
 const TABS = ["Session", "Scene", "Shortcuts", "Transitions", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
@@ -1206,7 +1206,8 @@ function openPanel(node) {
     body.append(sectionTitle("Generation"));
     body.append(el("div", "funpack-studio-hint",
       "Temporal style controls how the model perceives motion timing via RoPE frame_rate manipulation. " +
-      "natural = no change. accelerate = faster, snappier motion. decelerate = heavier, slower motion. " +
+      "natural = no change. auto = per-scene director picks motion energy from each scene's prompt (needs the Scene Chain Sampler). " +
+      "accelerate = faster, snappier motion. decelerate = heavier, slower motion. " +
       "loop = circular temporal coords (experimental). freeze = highly compressed time (experimental). " +
       "Attention anchors from Perfect-rated outputs are automatically captured and injected into future runs."));
     if (!settings.refiner.temporal_style) settings.refiner.temporal_style = "natural";
