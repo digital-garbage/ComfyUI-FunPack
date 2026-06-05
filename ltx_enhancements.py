@@ -202,15 +202,19 @@ def load_and_apply_creativity_mask(refinement_key, rating_profile, reward, laten
 
 
 def clear_refinement_data(refinement_key):
-    """Remove all enhancement files for a key. Called on reset_session."""
-    if not refinement_key:
-        return
+    """Remove all enhancement files for a key. Called on reset_session.
+
+    A keyless run stores its maps/velocity under the "default" bucket (see the
+    `refinement_key or "default"` fallback on the write side, e.g. samplers.py
+    _velocity_store_path). Normalize the same way here so a keyless Session Reset
+    actually wipes that bucket instead of no-opping on an empty key."""
+    norm = str(refinement_key or "default").strip() or "default"
     for path in (
-        _temp_maps_path(refinement_key),
-        _blessed_maps_path(refinement_key),
-        _creativity_latent_path(refinement_key),
-        _attn_weights_temp_path(refinement_key),
-        _attn_weights_blessed_path(refinement_key),
+        _temp_maps_path(norm),
+        _blessed_maps_path(norm),
+        _creativity_latent_path(norm),
+        _attn_weights_temp_path(norm),
+        _attn_weights_blessed_path(norm),
     ):
         try:
             if os.path.exists(path):
@@ -225,7 +229,7 @@ def clear_refinement_data(refinement_key):
             from .samplers import clear_velocity_bias_memory
         except ImportError:
             from samplers import clear_velocity_bias_memory
-        clear_velocity_bias_memory(refinement_key)
+        clear_velocity_bias_memory(norm)
     except Exception as e:
         print(f"[FunPackEnhancements] Velocity memory cleanup failed: {e}")
 

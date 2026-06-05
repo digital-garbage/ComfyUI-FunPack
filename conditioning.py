@@ -6129,6 +6129,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     print(f"[FunPackVideoRefinerV2] Value function cleared for key '{refinement_key}'")
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Value function cleanup failed: {e}")
+            # The Absolute taste store is keyless and learns from EVERY rated run
+            # (see _v2_learn_absolute), so it is never tied to refinement_key and would
+            # otherwise survive every reset + restart. Session Reset means "fresh", so
+            # wipe the keyless liked/bad direction store and its global value function too.
+            for abs_path in (self._v2_absolute_state_path(), self._v2_absolute_vf_path()):
+                try:
+                    if os.path.exists(abs_path):
+                        os.remove(abs_path)
+                        print(f"[FunPackVideoRefinerV2] Absolute global store cleared: {os.path.basename(abs_path)}")
+                except Exception as e:
+                    print(f"[FunPackVideoRefinerV2] Absolute store cleanup failed: {e}")
         if reset_session or not os.path.exists(path):
             preserved_scene_builder = None
             if reset_session and os.path.exists(path):
