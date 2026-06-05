@@ -1774,13 +1774,54 @@ def _normalize_video_denoised(denoised, video_mask, sigma, ref, strength,
     return denoised
 
 
+def _parse_norm_factors(spec, total_steps, default=1.0):
+    """Parse a comma-separated per-step factor schedule into a list of length total_steps.
+
+    Faithful to LTXVNormalizingSampler: a short list extends by repeating its last value;
+    empty/invalid => all-default. Returns None when every factor is ~1.0, so callers can skip
+    the work entirely (true no-op when the schedule is left at its default '1')."""
+    vals = []
+    for tok in str(spec or "").split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        try:
+            vals.append(float(tok))
+        except ValueError:
+            continue
+    if not vals:
+        vals = [default]
+    if len(vals) < total_steps:
+        vals = vals + [vals[-1]] * (total_steps - len(vals))
+    vals = vals[:total_steps]
+    if all(abs(v - 1.0) < 1e-6 for v in vals):
+        return None
+    return vals
+
+
+def _apply_av_norm_factors(x, video_mask, v_factor, a_factor):
+    """Per-step scalar normalization of the running latent: scale the video stream by v_factor
+    and the audio stream by a_factor. Faithful port of LTXVNormalizingSampler's between-chunk
+    `samples * factor`. Audio-safe in mechanism: it only rescales the audio LATENT magnitude
+    (never attention / hidden states), which is the same lever the reference node uses. For
+    single-stream LTXV (mask None) there is no audio, so v_factor scales the whole tensor."""
+    if video_mask is None:
+        return x if abs(v_factor - 1.0) < 1e-6 else x * v_factor
+    if abs(v_factor - 1.0) < 1e-6 and abs(a_factor - 1.0) < 1e-6:
+        return x
+    # video_mask is 1.0 on video dims, 0.0 on audio dims; broadcast over [B,1,N].
+    factor_map = video_mask * v_factor + (1.0 - video_mask) * a_factor
+    return x * factor_map.to(x.dtype)
+
+
 def sample_funpack_normalizing(model, x, sigmas, extra_args=None, callback=None,
                                disable=None,
                                normalize_strength=0.5, normalize_start_sigma=0.9,
                                velocity_bias_mode="off", velocity_bias_strength=0.0,
                                velocity_bias_source="mean", velocity_refinement_key="default",
                                rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
-                               rescue_prompt_sig=None):
+                               rescue_prompt_sig=None,
+                               video_normalization_factors="1", audio_normalization_factors="1"):
     """Deterministic 1st-order euler (rectified-flow) sampler + video-only latent normalization.
 
     The plain euler base gives the clean 'ddim look' and clean audio (no AB2/Heun/ancestral, so
@@ -1806,6 +1847,18 @@ def sample_funpack_normalizing(model, x, sigmas, extra_args=None, callback=None,
         n_aud = int((video_mask < 0.5).sum().item())
         print(f"[FunPack AV] normalizing sampler: audio-safe (audio held deterministic on "
               f"{n_aud} of {video_mask.shape[-1]} packed dims; normalization video-only)")
+
+    # Per-step AV normalization factor schedules (faithful port of LTXVNormalizingSampler).
+    # Default "1" => None => skipped entirely (opt-in; off by default). The video stream already
+    # has the adaptive anti-overbake governor above; these manual schedules are the only path
+    # that can touch AUDIO (by latent-magnitude scaling, never attention).
+    v_norm_factors = _parse_norm_factors(video_normalization_factors, total_steps)
+    a_norm_factors = _parse_norm_factors(audio_normalization_factors, total_steps)
+    _av_norm_on = v_norm_factors is not None or a_norm_factors is not None
+    if _av_norm_on:
+        print(f"[FunPack AV] per-step normalization factors active "
+              f"(video={'custom' if v_norm_factors else 'off'}, "
+              f"audio={'custom' if a_norm_factors else 'off'})")
 
     s_in = x.new_ones([x.shape[0]])
     ref_scale = [None]
@@ -1843,10 +1896,16 @@ def sample_funpack_normalizing(model, x, sigmas, extra_args=None, callback=None,
 
         if sigma_next == 0:
             x = denoised
-            continue
-        dt = sigma_next - sigma  # negative: sigmas decrease
-        d = k_diffusion_sampling.to_d(x, sigma, denoised)
-        x = x + d * dt
+        else:
+            dt = sigma_next - sigma  # negative: sigmas decrease
+            d = k_diffusion_sampling.to_d(x, sigma, denoised)
+            x = x + d * dt
+
+        # Apply this step's manual normalization factor to the running latent.
+        if _av_norm_on:
+            vf = v_norm_factors[i] if v_norm_factors else 1.0
+            af = a_norm_factors[i] if a_norm_factors else 1.0
+            x = _apply_av_norm_factors(x, video_mask, vf, af)
 
     return x
 
@@ -1892,6 +1951,14 @@ class FunPackNormalizingSampler:
                     "default": 0.2, "min": 0.0, "max": 0.5, "step": 0.01,
                     "tooltip": "How hard to pull toward good / away from bad when triggered (magnitude preserved). 0.5 is a strong correction.",
                 }),
+                "video_normalization_factors": ("STRING", {
+                    "default": "1", "multiline": False,
+                    "tooltip": "Comma-separated per-step scalar applied to the VIDEO latent (faithful port of the LTXV Normalizing Sampler). '1' (default) = off/no-op. Short lists repeat their last value across remaining steps. The adaptive anti-overbake governor (normalize_strength) is the smarter video lever; use this only for a manual per-step gain schedule.",
+                }),
+                "audio_normalization_factors": ("STRING", {
+                    "default": "1", "multiline": False,
+                    "tooltip": "Comma-separated per-step scalar applied to the AUDIO latent. '1' (default) = off (audio untouched, as everywhere else in FunPack). This is the ONLY knob that scales audio, and it does so by latent magnitude only (never attention). Reference node's default was '1,1,0.25,1,1,0.25,1,1' (attenuate audio at steps 3 & 6). Opt-in; tune carefully — audio is fragile.",
+                }),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -1914,7 +1981,8 @@ class FunPackNormalizingSampler:
                     velocity_bias_mode="off", velocity_bias_strength=0.0,
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
-                    rescue_prompt_sig=None, sigmas=None):
+                    rescue_prompt_sig=None, sigmas=None,
+                    video_normalization_factors="1", audio_normalization_factors="1"):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_normalizing,
@@ -1929,6 +1997,8 @@ class FunPackNormalizingSampler:
                 "rescue_threshold": rescue_threshold,
                 "rescue_strength": rescue_strength,
                 "rescue_prompt_sig": rescue_prompt_sig,
+                "video_normalization_factors": video_normalization_factors,
+                "audio_normalization_factors": audio_normalization_factors,
             }
         )
         return (sampler, prepared_sigmas)
