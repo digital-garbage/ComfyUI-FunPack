@@ -2072,7 +2072,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "i2v_anchor_power": ("FLOAT", {
                     "default": 1.0, "min": 1.0, "max": 2.0, "step": 0.01,
-                    "tooltip": "Progressively strengthen i2v adherence to the conditioning frame as denoising proceeds (port of LTXV DynamicConditioning): the denoise mask is raised to power**step. 1.0 = off (no change). ~1.3 = noticeable anti-drift. EXPERIMENTAL on packed AV latents — validate in ComfyUI. ~zero overhead.",
+                    "tooltip": "Progressively strengthen i2v adherence to the conditioning frame as denoising proceeds (port of LTXV DynamicConditioning): the denoise mask is raised to power**step. 1.0 = off. NOTE: only works on UNPACKED 5D video masks; on PACKED audio+video (LTXAV) it safely no-ops (the mask is 3D and comfy's per-token-timestep patchify needs 5D). ~zero overhead.",
                 }),
                 "i2v_anchor_first_frame_only": ("BOOLEAN", {
                     "default": True,
@@ -2811,10 +2811,19 @@ class FunPackLTXAVSceneChainSampler:
                 exp = p ** _find_step(sigma, step_sigmas)
                 if abs(exp - 1.0) < 1e-6:
                     return denoise_mask
+                # This technique (LTXV DynamicConditioning) assumes an UNPACKED 5D video mask
+                # [B,C,F,H,W]: comfy's LTXAV process_timestep patchifies the mask expecting 5D.
+                # LTXAV PACKS the AV latent, so its denoise mask is 3D [B,C,N] — touching or
+                # propagating that crashes patchify (expected 5, got 3). So operate ONLY on genuine
+                # 5D masks; on packed AV (or anything else) this is a clean no-op.
+                if denoise_mask.dim() != 5:
+                    if not getattr(self, "_i2v_anchor_packed_warned", False):
+                        self._i2v_anchor_packed_warned = True
+                        print("[FunPackSceneChain] i2v anchor: packed/non-5D denoise mask "
+                              f"(ndim={denoise_mask.dim()}) -> no-op (technique needs unpacked video).")
+                    return denoise_mask
                 mask = denoise_mask.clone()
                 if first_frame_only:
-                    if mask.dim() < 3 or mask.shape[2] < 1:
-                        return denoise_mask  # not a [B,C,F,...] video mask -> don't touch (e.g. packed)
                     try:
                         num_channels = inner.model_patcher.model.diffusion_model.in_channels
                     except Exception:
