@@ -115,6 +115,22 @@ def test_explicit_wires_and_autowire():
     assert report["ambiguous"] == []
 
 
+def test_linked_inputs_drive_multiple_node_values():
+    models = {
+        "slots": [
+            {"id": "a", "node_class": "ImgProc", "inputs": {"length": 50}, "wires": {}},
+            {"id": "b", "node_class": "ImgProc", "inputs": {"length": 50}, "wires": {}},
+        ],
+        "links": [
+            {"id": "L1", "name": "size", "kind": "int", "value": 121,
+             "members": [{"slotId": "a", "input": "length"}, {"slotId": "b", "input": "length"}]},
+        ],
+    }
+    graph, _ = builder.build(OI, models, PARAMS)
+    assert graph["slot_a"]["inputs"]["length"] == 121
+    assert graph["slot_b"]["inputs"]["length"] == 121
+
+
 def test_ambiguous_type_is_reported_not_guessed():
     models = {"slots": [
         {"id": "v1", "node_class": "VaeLoader", "inputs": {}, "wires": {}},

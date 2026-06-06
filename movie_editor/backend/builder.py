@@ -234,6 +234,16 @@ def build(object_info: dict, models_config: dict, params: dict) -> tuple[dict, d
         if cls not in object_info:
             report["unsatisfied"].append(f"Slot node '{cls}' is not installed in ComfyUI.")
 
+    # 3b. linked inputs: one shared value drives several node inputs (e.g. width/height).
+    for link in (models_config or {}).get("links") or []:
+        val = link.get("value")
+        if val is None:
+            continue
+        for m in link.get("members") or []:
+            sid = slot_node_id.get(m.get("slotId"))
+            if sid and sid in graph:
+                graph[sid]["inputs"][m.get("input")] = val
+
     # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
     port_to_core = _port_index(object_info)
     for s in slots:

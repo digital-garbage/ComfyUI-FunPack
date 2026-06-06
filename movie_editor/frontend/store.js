@@ -202,6 +202,20 @@
     catch (e) { console.error("saveModels failed", e); }
   }
 
+  // Set a linked control's shared value (writes through to all member inputs) and persist.
+  async function setModelLink(linkId, value) {
+    const link = (state.models.links || []).find((l) => l.id === linkId);
+    if (!link) return;
+    link.value = value;
+    (link.members || []).forEach((m) => {
+      const s = (state.models.slots || []).find((x) => x.id === m.slotId);
+      if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; }
+    });
+    notify();
+    try { state.models = await API.saveModels(state.models); notify(); }
+    catch (e) { console.error("saveModels failed", e); }
+  }
+
   // ── boot ─────────────────────────────────────────────────────────────────────
   async function init() {
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
@@ -219,6 +233,6 @@
     refreshProjectList, loadProject, newProject, deleteProject,
     patchProject, patchScene, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, generate, loadModels, setModelInput,
+    refreshPreview, generate, loadModels, setModelInput, setModelLink,
   };
 })();

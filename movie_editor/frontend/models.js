@@ -12,8 +12,21 @@
   let config = { slots: [] };     // {slots:[{id,role,node_class,inputs:{},wires:{outName:value}}]}
   let overlay = null;
   const expanded = new Set();     // slot ids currently expanded (collapsed by default)
+  let linkMode = false;           // selecting inputs to bind into one shared control
+  let linkSel = [];               // [{slotId, input, kind, choices, label}]
 
   function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : key); }
+  function slotName(slot) { return slot.label || slot.node_class; }
+  function slotById(id) { return config.slots.find((s) => s.id === id); }
+
+  // ── linked inputs (one control drives several node inputs) ────────────────────
+  function ensureLinks() { if (!config.links) config.links = []; return config.links; }
+  function linkOf(slotId, input) { return (config.links || []).find((l) => (l.members || []).some((m) => m.slotId === slotId && m.input === input)); }
+  function linkSelHas(slotId, input) { return linkSel.some((s) => s.slotId === slotId && s.input === input); }
+  function applyLinkValue(link, value) {
+    link.value = value;
+    (link.members || []).forEach((m) => { const s = slotById(m.slotId); if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; } });
+  }
 
   function uid() { return Math.random().toString(36).slice(2, 9); }
 
@@ -157,7 +170,14 @@
     const head = el("div", "slot-head");
     head.append(el("span", "slot-chev", isExp ? "▾" : "▸"));
     head.append(el("span", "slot-role", role ? role.label : slot.role));
-    head.append(el("span", "slot-node", slot.node_class));
+    head.append(el("span", "slot-node", slotName(slot)));
+    const ren = el("button", "ic-btn", "✎"); ren.title = "Rename this node";
+    ren.onclick = async (e) => {
+      e.stopPropagation();
+      const n = prompt("Node label:", slot.label || slot.node_class);
+      if (n != null) { slot.label = n.trim() || undefined; await persist(); render(); }
+    };
+    head.append(ren);
     const nExp = (slot.exposed || []).length;
     if (nExp) head.append(el("span", "slot-badge exposed", `◉ ${nExp}`));
     if (errs) head.append(el("span", "slot-badge bad", `${errs} error${errs > 1 ? "s" : ""}`));
@@ -178,9 +198,30 @@
     if (cand && cand.inputs.length) {
       const grid = el("div", "slot-fields");
       cand.inputs.forEach((spec) => {
-        const f = widgetField(spec, slot.inputs[spec.name], async (v) => { slot.inputs[spec.name] = v; await persist(); });
+        const lk = linkOf(slot.id, spec.name);
+        const f = widgetField(spec, slot.inputs[spec.name], async (v) => {
+          slot.inputs[spec.name] = v;
+          const l2 = linkOf(slot.id, spec.name); if (l2) applyLinkValue(l2, v);  // keep group in sync
+          await persist();
+        });
         f.classList.add("with-eye");
-        f.append(eyeButton(slot, spec));
+        if (lk) {
+          f.classList.add("linked");
+          const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
+          f.append(el("span", "link-tag", "🔗 " + lk.name));
+        } else if (linkMode) {
+          const chk = el("button", "eye-btn link-pick" + (linkSelHas(slot.id, spec.name) ? " on" : ""), "+");
+          chk.type = "button"; chk.title = "Add to link selection";
+          chk.onclick = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (linkSelHas(slot.id, spec.name)) linkSel = linkSel.filter((s) => !(s.slotId === slot.id && s.input === spec.name));
+            else linkSel.push({ slotId: slot.id, input: spec.name, kind: spec.kind, choices: spec.choices, label: `${slotName(slot)} · ${spec.name}` });
+            render();
+          };
+          f.append(chk);
+        } else {
+          f.append(eyeButton(slot, spec));
+        }
         grid.append(f);
       });
       card.append(grid);
@@ -324,12 +365,93 @@
     return bar;
   }
 
+  // ── linked-inputs section ──────────────────────────────────────────────────────
+  function linkExposeBtn(link) {
+    const b = el("button", "eye-btn" + (link.exposed ? " on" : ""), "◉"); b.type = "button";
+    b.title = link.exposed ? "Hide from main editor window" : "Show in main editor window";
+    b.onclick = async () => { link.exposed = !link.exposed; await persist(); render(); };
+    return b;
+  }
+
+  function linkCard(link) {
+    const card = el("div", "link-card");
+    const head = el("div", "link-head");
+    head.append(el("span", "link-ico", "🔗"));
+    const name = el("input", "link-name"); name.value = link.name || "";
+    name.onchange = async () => { link.name = name.value.trim() || link.name; await persist(); render(); };
+    head.append(name);
+    head.append(linkExposeBtn(link));
+    const rm = el("button", "btn ghost tiny danger", "unlink all");
+    rm.onclick = async () => { config.links = (config.links || []).filter((l) => l.id !== link.id); await persist(); render(); };
+    head.append(rm);
+    card.append(head);
+
+    const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
+    const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });
+    vf.classList.add("link-value");
+    card.append(vf);
+
+    const mem = el("div", "link-members");
+    (link.members || []).forEach((m) => {
+      const s = slotById(m.slotId);
+      const chip = el("span", "link-chip", `${s ? slotName(s) : "?"} · ${m.input}`);
+      const x = el("button", "chip-x", "✕"); x.title = "Remove from link";
+      x.onclick = async () => {
+        link.members = (link.members || []).filter((mm) => !(mm.slotId === m.slotId && mm.input === m.input));
+        if (link.members.length < 2) config.links = (config.links || []).filter((l) => l.id !== link.id);
+        await persist(); render();
+      };
+      chip.append(x); mem.append(chip);
+    });
+    card.append(mem);
+    return card;
+  }
+
+  function linksSection() {
+    const sec = el("div", "links-section");
+    const head = el("div", "links-head");
+    head.append(el("div", "composer-title", "Linked inputs"));
+    const right = el("div", "links-head-right");
+    if (!linkMode) {
+      const b = el("button", "btn ghost tiny", "🔗 Link inputs");
+      b.onclick = () => { linkMode = true; linkSel = []; config.slots.forEach((s) => expanded.add(s.id)); render(); };
+      right.append(b);
+    } else {
+      const save = el("button", "btn primary tiny", `Save link (${linkSel.length})`);
+      save.disabled = linkSel.length < 2;
+      save.onclick = async () => {
+        if (linkSel.length < 2) return;
+        const def = "size " + ((config.links || []).length + 1);
+        const nm = prompt("Link name:", def); if (nm == null) return;
+        const first = linkSel[0]; const s0 = slotById(first.slotId);
+        const val = s0 ? (s0.inputs || {})[first.input] : undefined;
+        const link = { id: uid(), name: nm.trim() || def, kind: first.kind,
+          choices: first.kind === "combo" ? (first.choices || []) : undefined, value: val,
+          members: linkSel.map((s) => ({ slotId: s.slotId, input: s.input })), exposed: false };
+        ensureLinks().push(link);
+        applyLinkValue(link, val);
+        linkMode = false; linkSel = []; await persist(); render();
+      };
+      const cancel = el("button", "btn ghost tiny", "Cancel");
+      cancel.onclick = () => { linkMode = false; linkSel = []; render(); };
+      right.append(save); right.append(cancel);
+    }
+    head.append(right);
+    sec.append(head);
+    if (linkMode) sec.append(el("div", "links-hint", "Click ＋ next to any input below to add it to the link, then Save. (Pick 2+ inputs.)"));
+    (config.links || []).forEach((l) => sec.append(linkCard(l)));
+    if (!linkMode && !(config.links || []).length)
+      sec.append(el("div", "links-empty", "No links yet. Use “Link inputs” to drive several node inputs (e.g. width/height) from one control."));
+    return sec;
+  }
+
   function body() {
     const b = el("div", "models-body");
     b.append(composer());
     const v = validation();
     const banner = summaryBanner(v);
     if (banner) b.append(banner);
+    b.append(linksSection());
     const list = el("div", "slot-list");
     if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet. Add Unet, VAEs, CLIP, and pipeline nodes above."));
     else config.slots.forEach((s) => list.append(slotRow(s, v.perSlot[s.id])));

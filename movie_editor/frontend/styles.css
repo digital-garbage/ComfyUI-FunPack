@@ -328,6 +328,28 @@ label.field.with-eye { position: relative; padding-right: 26px; }
   cursor: pointer; font-size: 11px; }
 .eye-btn:hover { color: var(--muted); border-color: var(--muted); }
 .eye-btn.on { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
+.eye-btn.link-pick { color: var(--teal); }
+.eye-btn.link-pick.on { color: var(--ink-0); background: var(--teal); border-color: var(--teal); }
+label.field.linked input, label.field.linked select { opacity: .6; }
+.link-tag { position: absolute; top: 0; right: 0; font-size: 9.5px; color: var(--teal); font-family: var(--font-mono); }
+
+/* linked-inputs section */
+.links-section { background: var(--ink-0); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; }
+.links-head { display: flex; align-items: center; gap: 10px; }
+.links-head .composer-title { margin-bottom: 0; }
+.links-head-right { margin-left: auto; display: flex; gap: 6px; }
+.links-hint, .links-empty { font-size: 11.5px; color: var(--faint); margin-top: 8px; }
+.link-card { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 8px; background: var(--ink-1); }
+.link-head { display: flex; align-items: center; gap: 8px; }
+.link-ico { color: var(--teal); }
+.link-name { flex: 1; font-weight: 600; }
+.link-head .danger { margin-left: 4px; }
+.link-value { margin: 8px 0 0; }
+.link-members { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.link-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--muted); background: var(--ink-0); border: 1px solid var(--line); border-radius: 5px; padding: 2px 4px 2px 7px; }
+.chip-x { border: none; background: transparent; color: var(--faint); cursor: pointer; font-size: 10px; padding: 0 2px; }
+.chip-x:hover { color: var(--danger); }
 
 .wire-box { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .wire-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--teal); margin-bottom: 8px; }

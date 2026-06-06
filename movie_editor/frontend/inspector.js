@@ -136,13 +136,18 @@
   }
 
   function renderExposed(st) {
-    const items = [];
-    ((st.models && st.models.slots) || []).forEach((slot) =>
-      (slot.exposed || []).forEach((d) => items.push([slot, d])));
-    if (!items.length) return;
+    const m = st.models || {};
+    const slotItems = [];
+    (m.slots || []).forEach((slot) => (slot.exposed || []).forEach((d) => slotItems.push([slot, d])));
+    const linkItems = (m.links || []).filter((l) => l.exposed);
+    if (!slotItems.length && !linkItems.length) return;
     const wrap = el("div", "insp-block");
     const tag = el("div", "insp-tag"); tag.textContent = "Exposed controls"; wrap.append(tag);
-    items.forEach(([slot, d]) => {
+    linkItems.forEach((l) => {
+      const ctrl = exposedControl({ kind: l.kind, choices: l.choices }, l.value, (v) => S.setModelLink(l.id, v));
+      wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, ctrl));
+    });
+    slotItems.forEach(([slot, d]) => {
       const ctrl = exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v));
       wrap.append(field(`${slotLabel(slot)} · ${d.label || d.name}`, ctrl));
     });
