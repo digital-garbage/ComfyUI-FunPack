@@ -138,12 +138,25 @@
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
     body.append(field("Negative prompt", neg));
 
-    if (!p.conditioning_slot || p.conditioning_slot === "funpack") {
-      renderStudioSettings(st);
-    }
-    if (!p.sampler_slot || p.sampler_slot === "funpack") {
-      renderSamplerSettings(st);
-    }
+    const slots = (st.models?.slots || []);
+
+    // Conditioning slot selector + its settings panel
+    const condTag = el("div", "insp-tag"); condTag.textContent = "Conditioning"; body.append(condTag);
+    const condSel = el("select");
+    [["funpack", "FunPack Studio (built-in)"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
+      .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.conditioning_slot || "funpack") === v) o.selected = true; condSel.append(o); });
+    condSel.onchange = () => S.setConditioningSlot(condSel.value);
+    body.append(field("Node", condSel));
+    if (!p.conditioning_slot || p.conditioning_slot === "funpack") renderStudioSettings(st);
+
+    // Sampler slot selector + its settings panel
+    const sampTag = el("div", "insp-tag"); sampTag.textContent = "Sampler"; body.append(sampTag);
+    const sampSel = el("select");
+    [["funpack", "FunPack Chain Sampler (built-in)"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
+      .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.sampler_slot || "funpack") === v) o.selected = true; sampSel.append(o); });
+    sampSel.onchange = () => S.setSamplerSlot(sampSel.value);
+    body.append(field("Node", sampSel));
+    if (!p.sampler_slot || p.sampler_slot === "funpack") renderSamplerSettings(st);
   }
 
   function renderStudioSettings(st) {
@@ -153,7 +166,7 @@
     try { curSettings = JSON.parse(si.studio_settings || "{}"); } catch (_) {}
     const samplers = curSettings.samplers || null;
 
-    const tag = el("div", "insp-tag"); tag.textContent = "Studio sampler"; body.append(tag);
+    const tag = el("div", "insp-tag sp-sub"); tag.textContent = "Studio · sampler algorithm"; body.append(tag);
 
     function persist(updatedSamplers, quiet) {
       const next = JSON.stringify({ ...curSettings, samplers: updatedSamplers });
@@ -161,9 +174,15 @@
       else S.setStudioInputNow("studio_settings", next);
     }
 
-    window.SamplerPanel.render(body, samplers,
-      (s) => persist(s, true),
-      (s) => persist(s, false));
+    try {
+      window.SamplerPanel.render(body, samplers,
+        (s) => persist(s, true),
+        (s) => persist(s, false));
+    } catch (e) {
+      const err = el("div", "insp-hint"); err.style.color = "var(--err,#e55)";
+      err.textContent = "Studio sampler panel failed to render: " + e.message;
+      body.append(err);
+    }
   }
 
   // Key ChainSampler widget inputs exposed as simple form controls.
