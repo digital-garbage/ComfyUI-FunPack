@@ -11,6 +11,7 @@ from pathlib import Path
 # Where the editor stores projects (JSON) and, later, cached assets/latents.
 DATA_DIR = Path(os.environ.get("FUNPACK_MOVIE_DATA", Path.home() / ".funpack_movie"))
 PROJECTS_DIR = DATA_DIR / "projects"
+MEDIA_DIR = DATA_DIR / "media"          # uploaded assets (images/clips) + index.json
 
 # API-format workflow template the app fills and queues (user-exported; step 0).
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -54,3 +55,4 @@ def comfy_base_url() -> str:
 
 def ensure_dirs() -> None:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    MEDIA_DIR.mkdir(parents=True, exist_ok=True)

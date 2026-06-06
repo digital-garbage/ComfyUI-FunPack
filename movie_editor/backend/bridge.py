@@ -39,6 +39,51 @@ def transitions() -> dict:
     return {"data": data, "transitions": transition_items(data)}
 
 
+def _library_fns():
+    """FunPack shortcut/transition CRUD, in-process (no HTTP)."""
+    try:
+        from templates import (  # type: ignore
+            shortcut_items, save_shortcut_item, delete_shortcut_item,
+            transition_items, save_transition_item, delete_transition_item,
+        )
+    except ImportError:
+        from ...templates import (  # type: ignore
+            shortcut_items, save_shortcut_item, delete_shortcut_item,
+            transition_items, save_transition_item, delete_transition_item,
+        )
+    return (shortcut_items, save_shortcut_item, delete_shortcut_item,
+            transition_items, save_transition_item, delete_transition_item)
+
+
+def shortcuts() -> dict:
+    si, *_ = _library_fns()
+    return {"shortcuts": si()}
+
+
+def save_shortcut(payload: dict) -> dict:
+    si, save, *_ = _library_fns()
+    save(payload)
+    return {"shortcuts": si()}
+
+
+def delete_shortcut(name: str) -> dict:
+    si, _save, delete, *_ = _library_fns()
+    delete(name)
+    return {"shortcuts": si()}
+
+
+def save_transition(payload: dict) -> dict:
+    *_, ti, save, _del = _library_fns()
+    save(payload)
+    return {"transitions": ti()}
+
+
+def delete_transition(name: str) -> dict:
+    *_, ti, _save, delete = _library_fns()
+    delete(name)
+    return {"transitions": ti()}
+
+
 # ── Loopback HTTP to ComfyUI (queue + results) ───────────────────────────────
 
 def _url(path: str) -> str:

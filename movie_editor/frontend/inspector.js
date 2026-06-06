@@ -26,8 +26,8 @@
     const l = el("label", "field"); l.append(el("span", null, labelText)); l.append(control); return l;
   }
 
-  function numberField(labelText, value, on) {
-    const i = el("input"); i.type = "number"; i.value = value;
+  function numberField(labelText, value, on, key) {
+    const i = el("input"); i.type = "number"; i.value = value; if (key) i.dataset.k = key;
     i.oninput = () => on(parseInt(i.value || "0", 10));
     return field(labelText, i);
   }
@@ -36,8 +36,8 @@
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`;
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
 
-    const ta = el("textarea"); ta.rows = 5; ta.value = scene.text || ""; ta.placeholder = "Describe this scene…";
-    ta.oninput = () => S.patchScene(scene.id, { text: ta.value });
+    const ta = el("textarea"); ta.rows = 5; ta.value = scene.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
+    ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
 
     const src = el("select");
@@ -52,8 +52,8 @@
     const frames = scene.frames != null ? scene.frames : p.num_frames_per_scene;
     const fps = scene.fps != null ? scene.fps : p.frame_rate;
     const lenRow = el("div", "fields-row");
-    lenRow.append(numberField("Frames", frames, (v) => S.patchScene(scene.id, { frames: S.snapFrames(v) })));
-    lenRow.append(numberField("FPS", fps, (v) => S.patchScene(scene.id, { fps: Math.max(1, v) })));
+    lenRow.append(numberField("Frames", frames, (v) => S.patchSceneQuiet(scene.id, { frames: S.snapFrames(v) }), "sc-frames"));
+    lenRow.append(numberField("FPS", fps, (v) => S.patchSceneQuiet(scene.id, { fps: Math.max(1, v) }), "sc-fps"));
     body.append(lenRow);
     body.append(el("div", "insp-hint", `Duration ≈ ${(frames / (fps || 1)).toFixed(2)}s${scene.frames == null ? "  ·  inheriting project length" : ""}`));
 
@@ -74,25 +74,25 @@
     title.textContent = "Project";
     const tag = el("div", "insp-tag"); tag.textContent = "Global settings"; body.append(tag);
 
-    const name = el("input"); name.value = p.name || "";
-    name.oninput = () => S.patchProject({ name: name.value });
+    const name = el("input"); name.value = p.name || ""; name.dataset.k = "pj-name";
+    name.oninput = () => S.patchProjectQuiet({ name: name.value });
     body.append(field("Project name", name));
 
-    const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || "";
+    const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
     anchor.placeholder = "Character / world description prepended to every scene";
-    anchor.oninput = () => S.patchProject({ anchor: anchor.value });
+    anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
     body.append(field("Anchor", anchor));
 
     body.append(field("Opening transition (anchor → scene 1)", transitionSelect(p.intro_transition || "",
       (v) => S.patchProject({ intro_transition: v }))));
 
     const row1 = el("div", "fields-row");
-    row1.append(numberField("Seed", p.seed, (v) => S.patchProject({ seed: v })));
-    row1.append(numberField("Frames / scene", p.num_frames_per_scene, (v) => S.patchProject({ num_frames_per_scene: v })));
+    row1.append(numberField("Seed", p.seed, (v) => S.patchProjectQuiet({ seed: v }), "pj-seed"));
+    row1.append(numberField("Frames / scene", p.num_frames_per_scene, (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames"));
     body.append(row1);
     const row2 = el("div", "fields-row");
-    row2.append(numberField("FPS", p.frame_rate, (v) => S.patchProject({ frame_rate: v })));
-    row2.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProject({ max_scenes: v })));
+    row2.append(numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps"));
+    row2.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
     body.append(row2);
   }
 
@@ -155,12 +155,23 @@
   }
 
   function render(st) {
+    // preserve focus + caret of a text/number field across the rebuild (autosave-safe)
+    const a = document.activeElement;
+    let foc = null;
+    if (a && body.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && a.dataset.k)
+      foc = { k: a.dataset.k, s: a.selectionStart, e: a.selectionEnd };
+
     clear(body);
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const scene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
     if (scene) renderScene(st, scene); else renderProject(st);
     renderExposed(st);
     renderSplit(st);
+
+    if (foc) {
+      const n = body.querySelector(`[data-k="${foc.k}"]`);
+      if (n) { n.focus(); try { if (foc.s != null) n.setSelectionRange(foc.s, foc.e); } catch (_) {} }
+    }
   }
 
   S.subscribe(render);

@@ -12,6 +12,8 @@
     gen: { state: "idle", promptId: null, media: [], msg: "" },
     saving: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
+    mediaBin: [],            // uploaded assets [{id,name,kind,...}]
+    shortcuts: [],           // prompt shortcut library
   };
 
   const listeners = new Set();
@@ -54,8 +56,12 @@
   function scheduleSave() {
     state.saving = true; notify();
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(commit, 550);
+    saveTimer = setTimeout(commit, 900);
   }
+
+  // For free-text / number fields: update state and queue a save WITHOUT re-rendering,
+  // so typing isn't interrupted. The eventual commit() re-renders once, after a pause.
+  function scheduleSaveSilent() { clearTimeout(saveTimer); saveTimer = setTimeout(commit, 1100); }
 
   async function commit() {
     if (!state.project) return;
@@ -75,12 +81,17 @@
   }
 
   function patchProject(patch) { if (!state.project) return; Object.assign(state.project, patch); notify(); scheduleSave(); }
+  function patchProjectQuiet(patch) { if (!state.project) return; Object.assign(state.project, patch); scheduleSaveSilent(); }
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
   function patchScene(id, patch) {
     const s = scene(id); if (!s) return;
     Object.assign(s, patch); notify(); scheduleSave();
+  }
+  function patchSceneQuiet(id, patch) {
+    const s = scene(id); if (!s) return;
+    Object.assign(s, patch); scheduleSaveSilent();
   }
 
   function selectScene(id) { state.selectedSceneId = id; notify(); }
@@ -216,10 +227,42 @@
     catch (e) { console.error("saveModels failed", e); }
   }
 
+  // ── media bin + libraries ─────────────────────────────────────────────────────
+  async function loadMedia() { try { state.mediaBin = (await API.listMedia()).media || []; } catch (_) { state.mediaBin = []; } notify(); }
+  async function uploadMedia(files) {
+    for (const f of files) { try { await API.uploadMedia(f); } catch (e) { console.error("upload failed", e); } }
+    await loadMedia();
+  }
+  async function deleteMedia(id) { try { await API.deleteMedia(id); } catch (_) {} await loadMedia(); }
+
+  async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
+  async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
+  async function saveShortcut(item) { try { state.shortcuts = (await API.saveShortcut(item)).shortcuts || state.shortcuts; notify(); } catch (e) { alert("Save failed: " + e.message); } }
+  async function deleteShortcut(name) { try { state.shortcuts = (await API.deleteShortcut(name)).shortcuts || []; notify(); } catch (e) { console.error(e); } }
+  async function saveTransition(item) { try { state.transitions = (await API.saveTransition(item)).transitions || state.transitions; notify(); } catch (e) { alert("Save failed: " + e.message); } }
+  async function deleteTransition(name) { try { state.transitions = (await API.deleteTransition(name)).transitions || []; notify(); } catch (e) { console.error(e); } }
+
+  // Apply a library item to the selected scene.
+  function applyTransitionToSelection(trigger) {
+    const s = scene(state.selectedSceneId); if (!s) return false;
+    patchScene(s.id, { transition_to_next: trigger }); return true;
+  }
+  function insertShortcutIntoSelection(trigger) {
+    const s = scene(state.selectedSceneId); if (!s) return false;
+    const t = (s.text || "").trim();
+    patchScene(s.id, { text: t ? `${t} ${trigger}` : trigger }); return true;
+  }
+  function assignMediaToScene(sceneId, mediaId) {
+    const s = scene(sceneId); if (!s) return;
+    patchScene(sceneId, { source: { ...(s.source || {}), type: "image", media_ref: mediaId } });
+  }
+
   // ── boot ─────────────────────────────────────────────────────────────────────
   async function init() {
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
+    await loadShortcuts();
+    await loadMedia();
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
@@ -231,8 +274,11 @@
   window.Store = {
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject,
-    patchProject, patchScene, selectScene, addScene, removeScene, moveScene, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
     refreshPreview, generate, loadModels, setModelInput, setModelLink,
+    loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
+    loadShortcuts, saveShortcut, deleteShortcut, loadTransitions, saveTransition, deleteTransition,
+    applyTransitionToSelection, insertShortcutIntoSelection,
   };
 })();

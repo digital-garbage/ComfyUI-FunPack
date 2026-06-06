@@ -35,6 +35,22 @@
 
     // libraries
     transitions: () => j("GET", API("/library/transitions")),
+    saveTransition: (item) => j("POST", API("/library/transitions"), item),
+    deleteTransition: (name) => j("DELETE", API(`/library/transitions/${encodeURIComponent(name)}`)),
+    shortcuts: () => j("GET", API("/library/shortcuts")),
+    saveShortcut: (item) => j("POST", API("/library/shortcuts"), item),
+    deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),
+
+    // media bin
+    listMedia: () => j("GET", API("/media")),
+    mediaUrl: (id) => API(`/media/${encodeURIComponent(id)}`),
+    deleteMedia: (id) => j("DELETE", API(`/media/${encodeURIComponent(id)}`)),
+    async uploadMedia(file) {
+      const fd = new FormData(); fd.append("file", file, file.name);
+      const res = await fetch(API("/media"), { method: "POST", body: fd });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+      return res.json();
+    },
 
     // models / node slots
     nodeRoles: () => j("GET", API("/node-roles")),

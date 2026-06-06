@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, nodes, projects
+from .backend import bridge, builder, config, media, nodes, projects
 from .backend.timeline import Project, build_combined_prompt
 
 UI_PREFIX = "/funpack/movie"
@@ -179,13 +179,80 @@ if web is not None and PromptServer is not None:
             result["parse_error"] = str(e)
         return web.json_response(result)
 
-    # --- API: library ---
+    # --- API: library (shortcuts + transitions, FunPack in-process) ---
     @routes.get(UI_PREFIX + "/api/library/transitions")
     async def _transitions(_req):
         try:
             return web.json_response(bridge.transitions())
         except Exception as e:  # noqa: BLE001
             return web.json_response({"transitions": [], "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/library/transitions")
+    async def _transition_save(req):
+        try:
+            return web.json_response(bridge.save_transition(await req.json()))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.delete(UI_PREFIX + "/api/library/transitions/{name}")
+    async def _transition_delete(req):
+        try:
+            return web.json_response(bridge.delete_transition(req.match_info["name"]))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.get(UI_PREFIX + "/api/library/shortcuts")
+    async def _shortcuts(_req):
+        try:
+            return web.json_response(bridge.shortcuts())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"shortcuts": [], "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/library/shortcuts")
+    async def _shortcut_save(req):
+        try:
+            return web.json_response(bridge.save_shortcut(await req.json()))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.delete(UI_PREFIX + "/api/library/shortcuts/{name}")
+    async def _shortcut_delete(req):
+        try:
+            return web.json_response(bridge.delete_shortcut(req.match_info["name"]))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    # --- API: media bin ---
+    @routes.get(UI_PREFIX + "/api/media")
+    async def _media_list(_req):
+        return web.json_response({"media": media.list_media()})
+
+    @routes.post(UI_PREFIX + "/api/media")
+    async def _media_upload(req):
+        reader = await req.multipart()
+        saved = []
+        async for part in reader:
+            if part.name not in ("file", "files"):
+                continue
+            data = await part.read(decode=False)
+            if data:
+                saved.append(media.save_upload(part.filename or "upload.bin", data))
+        if not saved:
+            raise web.HTTPBadRequest(reason="No file in upload.")
+        return web.json_response({"media": saved})
+
+    @routes.get(UI_PREFIX + "/api/media/{mid}")
+    async def _media_get(req):
+        p = media.path_for(req.match_info["mid"])
+        if p is None:
+            raise web.HTTPNotFound()
+        return web.Response(body=p.read_bytes(), content_type=media.content_type(req.match_info["mid"]))
+
+    @routes.delete(UI_PREFIX + "/api/media/{mid}")
+    async def _media_delete(req):
+        if not media.delete(req.match_info["mid"]):
+            raise web.HTTPNotFound()
+        return web.json_response({"deleted": req.match_info["mid"]})
 
     # --- API: generate / status / result ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/generate")

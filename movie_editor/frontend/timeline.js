@@ -68,6 +68,15 @@
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = () => S.selectScene(scene.id);
 
+    // accept a media asset dragged from the bin → sets this clip's source
+    clip.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("application/funpack-media")) { e.preventDefault(); clip.classList.add("drop-target"); } });
+    clip.addEventListener("dragleave", () => clip.classList.remove("drop-target"));
+    clip.addEventListener("drop", (e) => {
+      const id = e.dataTransfer.getData("application/funpack-media");
+      clip.classList.remove("drop-target");
+      if (id) { e.preventDefault(); S.assignMediaToScene(scene.id, id); }
+    });
+
     const head = el("div", "clip-head");
     head.append(el("span", "clip-no", p2(index + 1)));
     head.append(el("span", "clip-src", SRC_ICON[scene.source?.type] || "▦"));

@@ -1,13 +1,15 @@
-// Left zone: projects list + media bin (drag-drop placeholder for Phase 3).
+// Left zone: projects + tabbed library bins — Media, Shortcuts, Transitions.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
+  const API = window.MovieEditorAPI;
   const body = document.getElementById("media-body");
 
-  function render(st) {
-    clear(body);
+  let tab = "Media";                 // active bin
+  let q = { Shortcuts: "", Transitions: "" };
 
-    // Projects
+  // ── projects ───────────────────────────────────────────────────────────────────
+  function projectsSection(st) {
     const sec = el("div", "mb-section");
     const head = el("div", "mb-section-title");
     head.append(el("span", null, "Projects"));
@@ -23,23 +25,142 @@
       sec.append(row);
     });
     if (!(st.projects || []).length) sec.append(el("div", "pj-meta", "No projects yet."));
-    body.append(sec);
+    return sec;
+  }
 
-    // Media bin (placeholder)
-    const msec = el("div", "mb-section");
-    const mhead = el("div", "mb-section-title");
-    mhead.append(el("span", null, "Media Bin"));
-    mhead.append(el("span", "soon", "soon"));
-    msec.append(mhead);
-    const bin = el("div", "mediabin");
-    bin.append(el("div", "big", "🎞"));
-    bin.append(el("div", null, "Drop images & clips here"));
-    bin.append(el("div", "pj-meta", "Assign to scenes as i2v anchors"));
-    // drag affordance (visual only for now)
-    ["dragenter", "dragover"].forEach((ev) => bin.addEventListener(ev, (e) => { e.preventDefault(); bin.classList.add("drag"); }));
-    ["dragleave", "drop"].forEach((ev) => bin.addEventListener(ev, (e) => { e.preventDefault(); bin.classList.remove("drag"); }));
-    msec.append(bin);
-    body.append(msec);
+  // ── media bin ──────────────────────────────────────────────────────────────────
+  function mediaTab(st) {
+    const wrap = el("div", "bin");
+    const drop = el("div", "mediabin");
+    drop.append(el("div", "big", "🎞"));
+    drop.append(el("div", null, "Drop images & clips here"));
+    drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its source"));
+    const file = el("input"); file.type = "file"; file.accept = "image/*,video/*"; file.multiple = true; file.style.display = "none";
+    file.onchange = () => { if (file.files.length) S.uploadMedia([...file.files]); file.value = ""; };
+    drop.onclick = () => file.click();
+    ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
+    ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("drag"); }));
+    drop.addEventListener("drop", (e) => { const fs = [...(e.dataTransfer?.files || [])]; if (fs.length) S.uploadMedia(fs); });
+    wrap.append(drop); wrap.append(file);
+
+    const grid = el("div", "media-grid");
+    (st.mediaBin || []).forEach((m) => {
+      const card = el("div", "media-card");
+      card.draggable = true;
+      card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
+      card.title = `${m.name}\nClick to assign to selected scene · drag onto a clip`;
+      const thumb = el("div", "media-thumb");
+      if (m.kind === "image") { const img = el("img"); img.src = API.mediaUrl(m.id); img.loading = "lazy"; thumb.append(img); }
+      else thumb.append(el("span", "media-icon", m.kind === "video" ? "▶" : "◆"));
+      card.append(thumb);
+      card.append(el("div", "media-name", m.name));
+      const del = el("button", "media-del", "✕"); del.title = "Delete asset";
+      del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
+      card.append(del);
+      card.onclick = () => {
+        if (!st.selectedSceneId) { alert("Select a scene first to assign this asset."); return; }
+        S.assignMediaToScene(st.selectedSceneId, m.id);
+      };
+      grid.append(card);
+    });
+    if (!(st.mediaBin || []).length) grid.append(el("div", "pj-meta", "No media yet."));
+    wrap.append(grid);
+    return wrap;
+  }
+
+  // ── shortcuts bin ────────────────────────────────────────────────────────────────
+  function shortcutsTab(st) {
+    const wrap = el("div", "bin");
+    wrap.append(searchRow("Shortcuts", "Filter shortcuts…", () => render(S.get())));
+    const addBtn = el("button", "btn ghost tiny", "＋ Add shortcut");
+    addBtn.onclick = async () => {
+      const name = prompt("Shortcut name / activation phrase:"); if (!name) return;
+      const repl = prompt(`Replacement phrase for “${name}”:`, ""); if (repl == null) return;
+      await S.saveShortcut({ name, triggers: [name], replacements: [repl] });
+    };
+    wrap.append(addBtn);
+
+    const list = el("div", "lib-list");
+    const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
+    items.forEach((s) => {
+      const trig = (s.triggers || [])[0] || s.name;
+      const row = el("div", "lib-row");
+      const main = el("div", "lib-main");
+      main.append(el("div", "lib-name", s.name));
+      const rep = (s.replacements || []).join(" / ");
+      if (rep) main.append(el("div", "lib-sub", "→ " + rep));
+      row.append(main);
+      const ins = el("button", "btn ghost tiny", "insert"); ins.title = "Append to selected scene's prompt";
+      ins.onclick = () => { if (!S.insertShortcutIntoSelection(trig)) alert("Select a scene first."); };
+      const del = el("button", "ic-btn danger", "✕"); del.title = "Delete shortcut";
+      del.onclick = () => { if (confirm(`Delete shortcut "${s.name}"?`)) S.deleteShortcut(s.name); };
+      row.append(ins); row.append(del);
+      list.append(row);
+    });
+    if (!items.length) list.append(el("div", "pj-meta", (st.shortcuts || []).length ? "No match." : "No shortcuts yet."));
+    wrap.append(list);
+    return wrap;
+  }
+
+  // ── transitions bin ──────────────────────────────────────────────────────────────
+  function transitionsTab(st) {
+    const wrap = el("div", "bin");
+    wrap.append(searchRow("Transitions", "Filter transitions…", () => render(S.get())));
+    const addBtn = el("button", "btn ghost tiny", "＋ Add transition");
+    addBtn.onclick = async () => {
+      const name = prompt("Transition trigger phrase (e.g. 'hard cut'):"); if (!name) return;
+      const fx = prompt("Visual effect (none, crossfade, fade_to_black, …):", "none") || "none";
+      await S.saveTransition({ name, trigger: name, visual_effect: fx });
+    };
+    wrap.append(addBtn);
+
+    const list = el("div", "lib-list");
+    const items = filtered(st.transitions || [], q.Transitions, (t) => `${t.name || ""} ${t.trigger || ""} ${t.visual_effect || ""}`);
+    items.forEach((t) => {
+      const trig = t.trigger || t.name || t.key;
+      const row = el("div", "lib-row");
+      const main = el("div", "lib-main");
+      main.append(el("div", "lib-name", t.name || trig));
+      const sub = [t.trigger && t.trigger !== (t.name || "") ? `“${t.trigger}”` : "", t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
+      if (sub) main.append(el("div", "lib-sub", sub));
+      row.append(main);
+      const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as the selected scene's transition";
+      apply.onclick = () => { if (!S.applyTransitionToSelection(trig)) alert("Select a scene first."); };
+      const del = el("button", "ic-btn danger", "✕"); del.title = "Delete transition";
+      del.onclick = () => { if (confirm(`Delete transition "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
+      row.append(apply); row.append(del);
+      list.append(row);
+    });
+    if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No transitions yet."));
+    wrap.append(list);
+    return wrap;
+  }
+
+  // ── helpers ──────────────────────────────────────────────────────────────────────
+  function filtered(arr, query, textOf) {
+    const s = (query || "").trim().toLowerCase();
+    return s ? arr.filter((x) => textOf(x).toLowerCase().includes(s)) : arr;
+  }
+  function searchRow(key, placeholder, onInput) {
+    const inp = el("input", "lib-search"); inp.type = "text"; inp.placeholder = placeholder; inp.value = q[key] || "";
+    inp.oninput = () => { q[key] = inp.value; onInput(); };
+    return inp;
+  }
+
+  function render(st) {
+    clear(body);
+    body.append(projectsSection(st));
+
+    const sec = el("div", "mb-section");
+    const tabs = el("div", "bin-tabs");
+    ["Media", "Shortcuts", "Transitions"].forEach((name) => {
+      const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
+      b.onclick = () => { tab = name; render(S.get()); };
+      tabs.append(b);
+    });
+    sec.append(tabs);
+    sec.append(tab === "Media" ? mediaTab(st) : tab === "Shortcuts" ? shortcutsTab(st) : transitionsTab(st));
+    body.append(sec);
   }
 
   S.subscribe(render);
