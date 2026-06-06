@@ -254,6 +254,15 @@ input[type=number] { font-family: var(--font-mono); }
 .pv-badge.anchor { color: var(--amber); border-color: #f3a93c55; }
 .pv-badge.trans { color: var(--faint); border-color: transparent; font-size: 9px; }
 .sync-preview-btn { margin-top: 8px; width: 100%; }
+
+/* Sampler panel (sp-*) */
+.insp-tag.sp-sub { font-size: 9px; margin-top: 8px; background: var(--ink-2); }
+.sp-macro { border: 1px solid rgba(88,166,214,0.25); border-radius: 6px; background: rgba(88,166,214,0.06); padding: 8px; margin: 6px 0; }
+.sp-macro-title { font-weight: 600; font-size: 11px; margin-bottom: 6px; color: var(--teal); }
+.sp-macro-presets { display: flex; gap: 6px; margin-bottom: 6px; }
+.sp-macro-slider { display: flex; align-items: center; gap: 8px; }
+.sp-macro-slider input[type=range] { flex: 1; }
+.sp-macro-val { font-family: var(--font-mono); font-size: 11px; color: var(--muted); min-width: 32px; }
 .pv-warn { color: var(--amber-2); font-size: 12px; display: flex; gap: 7px; margin-bottom: 8px; }
 .pv-raw { margin-top: 8px; }
 .pv-raw summary { cursor: pointer; color: var(--faint); font-size: 11px; font-family: var(--font-mono); }

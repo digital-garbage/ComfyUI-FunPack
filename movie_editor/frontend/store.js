@@ -83,10 +83,20 @@
     const prev = state.project.sampler_inputs || {};
     patchProjectQuiet({ sampler_inputs: { ...prev, [name]: value } });
   }
+  function setSamplerInputNow(name, value) {
+    if (!state.project) return;
+    const prev = state.project.sampler_inputs || {};
+    patchProject({ sampler_inputs: { ...prev, [name]: value } });
+  }
   function setStudioInput(name, value) {
     if (!state.project) return;
     const prev = state.project.studio_inputs || {};
     patchProjectQuiet({ studio_inputs: { ...prev, [name]: value } });
+  }
+  function setStudioInputNow(name, value) {
+    if (!state.project) return;
+    const prev = state.project.studio_inputs || {};
+    patchProject({ studio_inputs: { ...prev, [name]: value } });
   }
 
   // ── editing ────────────────────────────────────────────────────────────────
@@ -376,7 +386,7 @@
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
-    setConditioningSlot, setSamplerSlot, setSamplerInput, setStudioInput,
+    setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,

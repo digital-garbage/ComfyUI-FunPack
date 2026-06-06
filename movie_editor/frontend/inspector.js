@@ -147,9 +147,23 @@
   }
 
   function renderStudioSettings(st) {
-    // Studio settings are managed through studio_settings JSON — most are best left
-    // at reference-workflow defaults. Currently nothing extra is exposed here beyond
-    // the negative_prompt above (which goes through the neg primitive node).
+    const p = st.project;
+    const si = p.studio_inputs || {};
+    let curSettings = {};
+    try { curSettings = JSON.parse(si.studio_settings || "{}"); } catch (_) {}
+    const samplers = curSettings.samplers || null;
+
+    const tag = el("div", "insp-tag"); tag.textContent = "Studio sampler"; body.append(tag);
+
+    function persist(updatedSamplers, quiet) {
+      const next = JSON.stringify({ ...curSettings, samplers: updatedSamplers });
+      if (quiet) S.setStudioInput("studio_settings", next);
+      else S.setStudioInputNow("studio_settings", next);
+    }
+
+    window.SamplerPanel.render(body, samplers,
+      (s) => persist(s, true),
+      (s) => persist(s, false));
   }
 
   // Key ChainSampler widget inputs exposed as simple form controls.
@@ -181,7 +195,7 @@
       if (k.kind === "bool") {
         ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!val; ctrl.style.width = "auto";
         ctrl.dataset.k = "si-" + k.name;
-        ctrl.onchange = () => S.setSamplerInput(k.name, ctrl.checked);
+        ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.checked);
       } else {
         ctrl = el("input"); ctrl.type = "number";
         if (k.step != null) ctrl.step = String(k.step);
