@@ -252,17 +252,37 @@ input[type=number] { font-family: var(--font-mono); }
 .composer-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--amber); margin-bottom: 10px; }
 .composer-row { display: flex; gap: 10px; align-items: center; }
 .composer-row select { flex: 1; }
+.composer-row .composer-search { flex: 1.2; min-width: 0; }
 .composer-row .btn { flex: 0 0 auto; }
 .composer-preview { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .composer-preview:empty { display: none; }
 
+/* config validation banner */
+.valid-banner { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 8px; margin-bottom: 14px; font-size: 12.5px; border: 1px solid var(--line); }
+.valid-banner .valid-dot { font-family: var(--font-mono); font-weight: 700; }
+.valid-banner.ok   { color: var(--teal);   border-color: color-mix(in srgb, var(--teal) 45%, var(--line)); background: color-mix(in srgb, var(--teal) 9%, transparent); }
+.valid-banner.warn { color: var(--amber);  border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); background: color-mix(in srgb, var(--amber) 9%, transparent); }
+.valid-banner.bad  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); background: color-mix(in srgb, var(--danger) 9%, transparent); }
+
 .slot-list { display: flex; flex-direction: column; gap: 12px; }
 .slot-card { background: var(--ink-1); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .slot-card { border-left: 3px solid var(--amber); }
+.slot-card.slot-warn { border-left-color: var(--amber); }
+.slot-card.slot-bad  { border-left-color: var(--danger); }
 .slot-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .slot-role { font-weight: 600; }
 .slot-node { font-family: var(--font-mono); font-size: 11px; color: var(--muted); background: var(--ink-0); padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); }
+.slot-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: .5px; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; border: 1px solid; }
+.slot-badge.ok   { color: var(--teal);   border-color: color-mix(in srgb, var(--teal) 50%, var(--line)); }
+.slot-badge.warn { color: var(--amber);  border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
+.slot-badge.bad  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--line)); }
 .slot-head .btn { margin-left: auto; }
+
+.issue-box { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
+.issue { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; }
+.issue-dot { font-family: var(--font-mono); flex: 0 0 auto; }
+.issue-error .issue-dot, .issue-error .issue-msg { color: var(--danger); }
+.issue-warn .issue-dot, .issue-warn .issue-msg { color: var(--amber); }
 .slot-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
 .slot-fields label.field, .composer-preview label.field { margin-bottom: 0; }
 

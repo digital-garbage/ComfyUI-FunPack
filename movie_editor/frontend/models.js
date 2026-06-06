@@ -63,17 +63,87 @@
     return o;
   }
 
+  // ── validation ───────────────────────────────────────────────────────────────
+  // Roles the fixed FunPack path cannot generate without (at least one slot each).
+  const ESSENTIAL = [["unet", "Unet / Diffusion Model"], ["clip", "CLIP / Text Encoder"], ["video_vae", "Video VAE"]];
+
+  function validateSlot(slot) {
+    const issues = [];
+    const spec = specFor(slot);
+    if (!spec) {
+      issues.push({ level: "error", msg: "Node spec unavailable — node not installed, or ComfyUI offline." });
+      return issues;
+    }
+    (spec.inputs || []).forEach((w) => {
+      if (!w.required) return;
+      const v = slot.inputs[w.name];
+      if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
+        issues.push({ level: "error", msg: `“${w.name}” has no installed options to pick from.` });
+      } else if (v == null || v === "") {
+        issues.push({ level: "error", msg: `Required field “${w.name}” is empty.` });
+      }
+    });
+    const outs = spec.outputs || [];
+    const wires = slot.wires || {};
+    if (outs.length && !outs.some((o) => wires[o.name])) {
+      issues.push({ level: "warn", msg: "No outputs wired — this node feeds nothing." });
+    }
+    outs.forEach((o) => {
+      const cur = wires[o.name];
+      if (cur && !destinations(slot, o.type).some((d) => d.value === cur)) {
+        issues.push({ level: "error", msg: `“${o.name}” is wired to a destination that no longer exists.` });
+      }
+    });
+    return issues;
+  }
+
+  function missingEssentials() {
+    return ESSENTIAL.filter(([role]) => !config.slots.some((s) => s.role === role)).map(([, label]) => label);
+  }
+
+  function validation() {
+    const perSlot = {};
+    let errors = 0, warns = 0;
+    config.slots.forEach((s) => {
+      const list = validateSlot(s);
+      perSlot[s.id] = list;
+      list.forEach((i) => (i.level === "error" ? errors++ : warns++));
+    });
+    return { perSlot, errors, warns, missing: missingEssentials() };
+  }
+
+  function issuesBox(list) {
+    if (!list || !list.length) return null;
+    const box = el("div", "issue-box");
+    list.forEach((i) => {
+      const row = el("div", "issue issue-" + i.level);
+      row.append(el("span", "issue-dot", i.level === "error" ? "✕" : "▲"));
+      row.append(el("span", "issue-msg", i.msg));
+      box.append(row);
+    });
+    return box;
+  }
+
   // ── slot row (configured) ────────────────────────────────────────────────────
-  function slotRow(slot) {
+  function slotRow(slot, issues) {
     const role = roles.find((r) => r.key === slot.role);
     const card = el("div", "slot-card");
+    const errs = (issues || []).filter((i) => i.level === "error").length;
+    const warns = (issues || []).filter((i) => i.level === "warn").length;
+    if (errs) card.classList.add("slot-bad");
+    else if (warns) card.classList.add("slot-warn");
     const head = el("div", "slot-head");
     head.append(el("span", "slot-role", role ? role.label : slot.role));
     head.append(el("span", "slot-node", slot.node_class));
+    if (errs) head.append(el("span", "slot-badge bad", `${errs} error${errs > 1 ? "s" : ""}`));
+    else if (warns) head.append(el("span", "slot-badge warn", `${warns} warning${warns > 1 ? "s" : ""}`));
+    else head.append(el("span", "slot-badge ok", "ready"));
     const rm = el("button", "btn ghost tiny danger", "remove");
     rm.onclick = async () => { config.slots = config.slots.filter((s) => s.id !== slot.id); await persist(); render(); };
     head.append(rm);
     card.append(head);
+    const ib = issuesBox(issues);
+    if (ib) card.append(ib);
 
     const cand = specFor(slot);
     if (cand && cand.inputs.length) {
@@ -139,11 +209,12 @@
     const ogAny = document.createElement("optgroup"); ogAny.label = "Advanced";
     ogAny.append(new Option("Any node…", "__any__")); typeSel.append(ogAny);
 
+    const search = el("input", "composer-search"); search.type = "text"; search.placeholder = "Filter nodes…"; search.style.display = "none";
     const nodeSel = el("select"); nodeSel.disabled = true; nodeSel.append(new Option("Node…", ""));
     const addBtn = el("button", "btn primary", "Add"); addBtn.disabled = true;
     const preview = el("div", "composer-preview");
 
-    let curRole = "", curCand = null;
+    let curRole = "", curCand = null, curList = [];
 
     function showPreview() {
       clear(preview);
@@ -153,22 +224,33 @@
       preview._draft = d;
     }
 
+    function fill(list, placeholder) {
+      nodeSel.innerHTML = ""; nodeSel.append(new Option(placeholder, ""));
+      list.forEach((c) => nodeSel.append(new Option(`${c.display_name}  ·  ${c.class}`, c.class)));
+      nodeSel.disabled = !list.length;
+    }
+
+    function applyFilter() {
+      const q = search.value.trim().toLowerCase();
+      const f = q ? curList.filter((c) => (c.display_name + " " + c.class + " " + (c.category || "")).toLowerCase().includes(q)) : curList;
+      const shown = f.slice(0, 300);
+      fill(shown, f.length ? `${f.length} node${f.length > 1 ? "s" : ""} — pick one…${f.length > 300 ? " (showing first 300)" : ""}` : "No match");
+    }
+    search.oninput = applyFilter;
+
     typeSel.onchange = async () => {
-      curRole = typeSel.value; curCand = null; addBtn.disabled = true; clear(preview);
+      curRole = typeSel.value; curCand = null; curList = []; addBtn.disabled = true; clear(preview);
+      search.style.display = curRole === "__any__" ? "" : "none"; search.value = "";
       nodeSel.innerHTML = ""; nodeSel.append(new Option("Loading…", "")); nodeSel.disabled = true;
       if (!curRole) { nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); return; }
       try {
-        let list;
         if (curRole === "__any__") {
-          list = await ensureAllNodes();
-          nodeSel.innerHTML = ""; nodeSel.append(new Option("Search a node…", ""));
-          list.forEach((c) => nodeSel.append(new Option(`${c.display_name}  ·  ${c.class}`, c.class)));
+          curList = await ensureAllNodes();
+          applyFilter();
         } else {
-          list = await candidates(curRole);
-          nodeSel.innerHTML = ""; nodeSel.append(new Option(list.length ? "Loader Node…" : "No matching nodes", ""));
-          list.forEach((c) => nodeSel.append(new Option(`${c.display_name}  ·  ${c.class}`, c.class)));
+          curList = await candidates(curRole);
+          fill(curList, curList.length ? "Loader Node…" : "No matching nodes");
         }
-        nodeSel.disabled = !list.length;
       } catch (e) { nodeSel.innerHTML = ""; nodeSel.append(new Option("ComfyUI offline", "")); }
     };
     nodeSel.onchange = async () => {
@@ -184,20 +266,38 @@
       config.slots.push({ id: uid(), role, node_class: curCand.class, inputs: preview._draft || defaultsFor(curCand), wires: {} });
       await persist();
       typeSel.value = ""; nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); nodeSel.disabled = true;
-      addBtn.disabled = true; curCand = null; clear(preview); render();
+      search.style.display = "none"; search.value = "";
+      addBtn.disabled = true; curCand = null; curList = []; clear(preview); render();
     };
 
-    row.append(typeSel); row.append(nodeSel); row.append(addBtn);
+    row.append(typeSel); row.append(search); row.append(nodeSel); row.append(addBtn);
     box.append(row); box.append(preview);
     return box;
+  }
+
+  function summaryBanner(v) {
+    if (!config.slots.length) return null;
+    const bits = [];
+    if (v.errors) bits.push(`${v.errors} error${v.errors > 1 ? "s" : ""}`);
+    if (v.warns) bits.push(`${v.warns} warning${v.warns > 1 ? "s" : ""}`);
+    if (v.missing.length) bits.push(`missing: ${v.missing.join(", ")}`);
+    const ok = !v.errors && !v.missing.length;
+    const bar = el("div", "valid-banner " + (v.errors || v.missing.length ? "bad" : (v.warns ? "warn" : "ok")));
+    bar.append(el("span", "valid-dot", ok ? "✓" : "!"));
+    bar.append(el("span", null, ok ? (v.warns ? `Config usable — ${bits.join(", ")}.` : "Config complete — all slots ready.")
+                                   : `Config incomplete — ${bits.join(", ")}.`));
+    return bar;
   }
 
   function body() {
     const b = el("div", "models-body");
     b.append(composer());
+    const v = validation();
+    const banner = summaryBanner(v);
+    if (banner) b.append(banner);
     const list = el("div", "slot-list");
     if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet. Add Unet, VAEs, CLIP, and pipeline nodes above."));
-    else config.slots.forEach((s) => list.append(slotRow(s)));
+    else config.slots.forEach((s) => list.append(slotRow(s, v.perSlot[s.id])));
     b.append(list);
     return b;
   }
