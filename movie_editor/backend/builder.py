@@ -274,20 +274,25 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             report["unsatisfied"].append(f"media target '{media['target']}' could not be resolved.")
 
     # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
+    # target may be a string (legacy single) or a list of strings (multi-wire).
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd = slot_def[s["id"]]
         for out_name, target in (s.get("wires") or {}).items():
             if not target:
                 continue
+            targets = target if isinstance(target, list) else [target]
             oidx = _output_index(nd, out_name)
-            dst = _resolve_target(target, port_to_core, slot_node_id)
-            if not dst:
-                report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: wire target '{target}' could not be resolved.")
-                continue
-            dnode, dinput = dst
-            graph[dnode]["inputs"][dinput] = [sid, oidx]
-            report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
+            for t in targets:
+                if not t:
+                    continue
+                dst = _resolve_target(t, port_to_core, slot_node_id)
+                if not dst:
+                    report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: wire target '{t}' could not be resolved.")
+                    continue
+                dnode, dinput = dst
+                graph[dnode]["inputs"][dinput] = [sid, oidx]
+                report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
 
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)

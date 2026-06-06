@@ -118,14 +118,15 @@
     });
     const outs = spec.outputs || [];
     const wires = slot.wires || {};
-    if (outs.length && !outs.some((o) => wires[o.name])) {
-      issues.push({ level: "warn", msg: "No outputs wired — this node feeds nothing." });
+    if (outs.length && !outs.some((o) => wireTargets(wires[o.name]).some(Boolean))) {
+      issues.push({ level: “warn”, msg: “No outputs wired — this node feeds nothing.” });
     }
+    const dests = (o) => destinations(slot, o.type);
     outs.forEach((o) => {
-      const cur = wires[o.name];
-      if (cur && !destinations(slot, o.type).some((d) => d.value === cur)) {
-        issues.push({ level: "error", msg: `“${o.name}” is wired to a destination that no longer exists.` });
-      }
+      wireTargets(wires[o.name]).filter(Boolean).forEach((t) => {
+        if (!dests(o).some((d) => d.value === t))
+          issues.push({ level: “error”, msg: `”${o.name}” is wired to a destination that no longer exists.` });
+      });
     });
     return issues;
   }
@@ -227,16 +228,16 @@
       card.append(grid);
     }
 
-    // Wiring: each output -> a destination (pipeline port or another node's input).
+    // Wiring: each output -> one or more destinations.
     if (cand && (cand.outputs || []).length) {
       slot.wires = slot.wires || {};
       const wbox = el("div", "wire-box");
-      wbox.append(el("div", "wire-title", "Wire to"));
+      wbox.append(el("div", "wire-title", "Wire outputs to"));
       cand.outputs.forEach((out) => {
         const row = el("div", "wire-row");
         row.append(el("span", "wire-out", `${out.name} (${out.type})`));
         row.append(el("span", "wire-arrow", "→"));
-        row.append(destSelect(slot, out));
+        row.append(destMulti(slot, out));
         wbox.append(row);
       });
       card.append(wbox);
@@ -255,13 +256,43 @@
     return out;
   }
 
-  function destSelect(slot, out) {
-    const sel = el("select", "wire-select");
-    const cur = (slot.wires || {})[out.name] || "";
-    destinations(slot, out.type).forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === cur) o.selected = true; sel.append(o); });
-    if (cur && ![...sel.options].some((o) => o.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
-    sel.onchange = async () => { slot.wires = slot.wires || {}; slot.wires[out.name] = sel.value; await persist(); };
-    return sel;
+  // Normalize wires[outName] to always be an array (supports legacy string format).
+  function wireTargets(raw) {
+    if (!raw) return [];
+    return Array.isArray(raw) ? raw : [raw];
+  }
+
+  function destMulti(slot, out) {
+    slot.wires = slot.wires || {};
+    // normalize to array in-place
+    const raw = slot.wires[out.name];
+    let targets = wireTargets(raw);
+    slot.wires[out.name] = targets;
+
+    const wrap = el("div", "wire-multi");
+
+    function renderRows() {
+      clear(wrap);
+      const dests = destinations(slot, out.type);
+      targets.forEach((t, i) => {
+        const row = el("div", "wire-multi-row");
+        const sel = el("select", "wire-select");
+        dests.forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === t) o.selected = true; sel.append(o); });
+        if (t && !dests.some((d) => d.value === t)) { const o = el("option", null, t + " (missing)"); o.value = t; o.selected = true; sel.append(o); }
+        sel.onchange = async () => { targets[i] = sel.value; await persist(); };
+        const rm = el("button", "btn ghost tiny wire-rm", "×");
+        rm.title = "Remove this wire";
+        rm.onclick = async () => { targets.splice(i, 1); renderRows(); await persist(); };
+        row.append(sel, rm);
+        wrap.append(row);
+      });
+      const add = el("button", "btn ghost tiny wire-add", "+ Add");
+      add.onclick = () => { targets.push(""); renderRows(); };
+      wrap.append(add);
+    }
+
+    renderRows();
+    return wrap;
   }
 
   // ── add-model composer ───────────────────────────────────────────────────────
