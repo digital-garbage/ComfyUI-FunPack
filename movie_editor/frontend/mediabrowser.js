@@ -70,24 +70,24 @@
 
   // ── shortcuts bin ────────────────────────────────────────────────────────────────
   function shortcutsTab(st) {
-    const wrap = el(“div”, “bin”);
-    wrap.append(searchRow(“Shortcuts”, “Filter shortcuts…”, () => render(S.get())));
-    const toolbar = el(“div”, “bin-toolbar”);
-    const addBtn = el(“button”, “btn ghost tiny”, “＋ Add”);
+    const wrap = el("div", "bin");
+    wrap.append(searchRow("Shortcuts", "Filter shortcuts…", () => render(S.get())));
+    const toolbar = el("div", "bin-toolbar");
+    const addBtn = el("button", "btn ghost tiny", "＋ Add");
     addBtn.onclick = async () => {
-      const name = prompt(“Shortcut name / activation phrase:”); if (!name) return;
-      const repl = prompt(`Replacement phrase for “${name}”:`, “”); if (repl == null) return;
+      const name = prompt("Shortcut name / activation phrase:"); if (!name) return;
+      const repl = prompt(`Replacement phrase for "${name}":`, ""); if (repl == null) return;
       await S.saveShortcut({ name, triggers: [name], replacements: [repl] });
     };
-    const expBtn = el(“a”, “btn ghost tiny”, “↓ Export”);
-    expBtn.href = API.exportShortcutsUrl(); expBtn.download = “funpack_shortcuts.json”; expBtn.title = “Download shortcuts as JSON”;
-    const impFile = el(“input”); impFile.type = “file”; impFile.accept = “.json”; impFile.style.display = “none”;
+    const expBtn = el("a", "btn ghost tiny", "↓ Export");
+    expBtn.href = API.exportShortcutsUrl(); expBtn.download = "funpack_shortcuts.json"; expBtn.title = "Download shortcuts as JSON";
+    const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
     impFile.onchange = async () => {
       if (!impFile.files[0]) return;
-      const n = await S.importShortcuts(impFile.files[0]); impFile.value = “”;
+      const n = await S.importShortcuts(impFile.files[0]); impFile.value = "";
       if (n != null) alert(`Imported ${n} shortcut(s).`);
     };
-    const impBtn = el(“button”, “btn ghost tiny”, “↑ Import”); impBtn.title = “Import shortcuts from JSON”;
+    const impBtn = el("button", "btn ghost tiny", "↑ Import"); impBtn.title = "Import shortcuts from JSON";
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
     wrap.append(toolbar);
@@ -145,7 +145,7 @@
       const row = el("div", "lib-row");
       const main = el("div", "lib-main");
       main.append(el("div", "lib-name", t.name || trig));
-      const sub = [t.trigger && t.trigger !== (t.name || "") ? `“${t.trigger}”` : "", t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
+      const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "", t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
       if (sub) main.append(el("div", "lib-sub", sub));
       row.append(main);
       const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as the selected scene's transition";
