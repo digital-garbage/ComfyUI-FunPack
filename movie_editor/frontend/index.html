@@ -3,67 +3,73 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FunPack Movie Editor</title>
+  <title>FunPack · Cutting Room</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">🎬 FunPack Movie Editor <span class="tag">V1</span></div>
-    <div class="topbar-projects">
-      <select id="project-select" title="Open project"></select>
-      <button id="new-project">New</button>
-      <input id="project-name" placeholder="Project name" />
-      <button id="delete-project" class="danger" title="Delete project">Delete</button>
+  <!-- ───────────────────────── MENU BAR ───────────────────────── -->
+  <nav class="menubar" id="menubar">
+    <div class="brand"><span class="brand-mark">◉</span> FunPack <span class="brand-sub">Cutting Room</span></div>
+    <div class="menus" id="menus"><!-- populated by menubar.js --></div>
+    <div class="menubar-right">
+      <span class="save-chip" id="save-chip"></span>
+      <span class="health-chip" id="health-chip"></span>
     </div>
-    <div class="topbar-actions">
-      <button id="generate-all" class="primary">Generate</button>
-      <span id="health" class="health"></span>
-    </div>
-  </header>
+  </nav>
 
-  <main class="layout">
-    <section class="editor">
-      <div class="anchor-block">
-        <label class="block-label">Anchor — prepended to every scene (character/world)</label>
-        <textarea id="anchor" rows="2" placeholder="e.g. a young woman with red hair, cinematic lighting"></textarea>
-        <div class="anchor-row">
-          <label>Opening transition (anchor → scene 1)</label>
-          <select id="intro-transition"></select>
+  <!-- ───────────────────────── WORKSPACE ───────────────────────── -->
+  <div class="workspace" id="workspace">
+    <div class="row-main">
+      <!-- LEFT: media browser -->
+      <aside class="zone media" id="media-zone">
+        <div class="zone-head"><span class="zone-title">Media Browser</span></div>
+        <div class="zone-body" id="media-body"></div>
+      </aside>
+
+      <div class="splitter splitter-v" id="split-left" title="Drag to resize"></div>
+
+      <!-- RIGHT: preview + inspector -->
+      <section class="right-stack">
+        <div class="zone preview" id="preview-zone">
+          <div class="zone-head">
+            <span class="zone-title">Preview</span>
+            <span class="zone-head-right" id="preview-status"></span>
+          </div>
+          <div class="zone-body program" id="preview-body"></div>
         </div>
-      </div>
+        <div class="zone inspector" id="inspector-zone">
+          <div class="zone-head"><span class="zone-title" id="inspector-title">Inspector</span></div>
+          <div class="zone-body" id="inspector-body"></div>
+        </div>
+      </section>
+    </div>
 
-      <div class="settings-bar">
-        <label>Seed <input id="seed" type="number" min="0" /></label>
-        <label>Frames/scene <input id="frames" type="number" min="1" step="8" /></label>
-        <label>FPS <input id="fps" type="number" min="1" /></label>
-        <label>Max scenes <input id="max-scenes" type="number" min="1" /></label>
-      </div>
+    <div class="splitter splitter-h" id="split-bottom" title="Drag to resize"></div>
 
-      <div class="rail-header">
-        <h2>Timeline</h2>
-        <button id="add-scene">+ Add scene</button>
+    <!-- BOTTOM: timeline -->
+    <section class="zone timeline" id="timeline-zone">
+      <div class="zone-head">
+        <span class="zone-title">Timeline</span>
+        <span class="zone-head-right" id="timeline-meta"></span>
       </div>
-      <div id="rail" class="rail"></div>
+      <div class="zone-body" id="timeline-body"></div>
     </section>
+  </div>
 
-    <aside class="sidebar">
-      <div class="panel">
-        <div class="panel-head">
-          <h3>Split preview</h3>
-          <button id="refresh-preview" class="ghost">↻</button>
-        </div>
-        <div id="preview" class="preview"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><h3>Result</h3></div>
-        <div id="player" class="player"></div>
-      </div>
-    </aside>
-  </main>
+  <div class="grain" aria-hidden="true"></div>
+  <div class="menu-veil" id="menu-veil" hidden></div>
 
   <script src="api.js"></script>
-  <script src="timeline.js"></script>
+  <script src="dom.js"></script>
+  <script src="store.js"></script>
+  <script src="menubar.js"></script>
+  <script src="mediabrowser.js"></script>
   <script src="player.js"></script>
-  <script>window.MovieEditor.init();</script>
+  <script src="inspector.js"></script>
+  <script src="timeline.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

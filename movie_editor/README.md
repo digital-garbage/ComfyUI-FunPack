@@ -62,6 +62,27 @@ Nothing to start separately — the editor loads with ComfyUI:
 | `FUNPACK_MOVIE_TEMPLATE` | `backend/templates/ltxav_chain.api.json` | workflow template |
 | `FUNPACK_COMFY_URL` | auto (detected from the running server) | override only if loopback self-calls need a different address |
 
+## Interface ("Cutting Room")
+
+A classic NLE three-zone layout with a top menu bar:
+
+```
+ ┌ menu bar — File · Edit · View · Generate · FunPack ─────────────┐
+ ├───────────────┬────────────────────────────────────────────────┤
+ │ Media Browser │  Preview (program monitor)                      │
+ │  projects     │                                                 │
+ │  media bin    ├────────────────────────────────────────────────┤
+ │  (drag-drop)  │  Inspector — selected clip OR project + split   │
+ ├───────────────┴────────────────────────────────────────────────┤
+ │ Timeline — clips with transition seams; click a clip to edit it │
+ └──────────────────────────────────────────────────────────────────┘
+```
+
+Editing happens in the **Inspector**: select a clip in the timeline to edit its prompt,
+source (Empty/Image), transition, and exclude flag; deselect (Generate ▸ Project Settings)
+to edit the anchor and global seed/frames/fps. Panel borders are draggable. The media bin
+drag-drop and Render/Export are stubbed for later phases.
+
 ## How the timeline maps to Studio
 
 Studio splits one prompt into scenes by transition triggers; `segments[0]` (text before the
