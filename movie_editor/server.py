@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, config, nodes, projects, workflow
+from .backend import bridge, builder, config, nodes, projects
 from .backend.timeline import Project, build_combined_prompt
 
 UI_PREFIX = "/funpack/movie"
@@ -92,8 +92,8 @@ if web is not None and PromptServer is not None:
         return web.json_response({
             "ok": True,
             "comfy_url": config.comfy_base_url(),
-            "template": str(config.TEMPLATE_PATH),
-            "template_exists": config.TEMPLATE_PATH.exists(),
+            "reference_loaded": bool(builder.load_reference().get("nodes")),
+            "configured_slots": len(nodes.load_models().get("slots", [])),
         })
 
     @routes.get(UI_PREFIX + "/api/projects")
@@ -166,19 +166,22 @@ if web is not None and PromptServer is not None:
         if not prompt.strip():
             raise web.HTTPBadRequest(reason="Nothing to generate — no active scene text.")
         try:
-            graph = workflow.load_template()
-            graph, applied = workflow.inject(graph, {
-                "prompt": prompt, "seed": target.seed,
-                "num_frames_per_scene": target.num_frames_per_scene,
-                "frame_rate": target.frame_rate, "max_scenes": target.max_scenes,
-            })
-        except workflow.WorkflowError as e:
-            raise web.HTTPBadRequest(reason=str(e))
+            oi = await bridge.object_info()
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+        graph, report = builder.build(oi, nodes.load_models(), {
+            "prompt": prompt, "seed": target.seed,
+            "num_frames_per_scene": target.num_frames_per_scene,
+            "frame_rate": target.frame_rate,
+        })
+        if report["unsatisfied"]:
+            raise web.HTTPBadRequest(
+                reason="Incomplete config: " + "; ".join(report["unsatisfied"][:4]))
         try:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"Failed to queue: {e}")
-        return web.json_response({"prompt_id": result.get("prompt_id"), "injected": applied})
+        return web.json_response({"prompt_id": result.get("prompt_id"), "report": report})
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/status/{prompt_id}")
     async def _status(req):

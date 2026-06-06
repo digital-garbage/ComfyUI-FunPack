@@ -18,6 +18,9 @@ TEMPLATE_PATH = Path(
     os.environ.get("FUNPACK_MOVIE_TEMPLATE", BACKEND_DIR / "templates" / "ltxav_chain.api.json")
 )
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
+# Saved copy of the user's real workflow — read only, to seed fixed-core widget
+# values (the editor builds the graph in code; this is not a runtime template).
+REFERENCE_DIR = BACKEND_DIR / "reference"
 
 
 def comfy_base_url() -> str:

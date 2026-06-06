@@ -86,15 +86,61 @@ async def is_running(prompt_id: str) -> bool:
 _object_info_cache = {"data": None}
 
 
+def _build_object_info_inprocess() -> Optional[dict]:
+    """Build the node registry directly from ComfyUI's NODE_CLASS_MAPPINGS — no HTTP,
+    no port guessing. Mirrors server.py's /object_info (the subset the editor reads).
+    Returns None if we're not running inside ComfyUI."""
+    try:
+        import nodes as comfy_nodes  # ComfyUI's global node registry
+    except Exception:
+        return None
+    import json
+    mappings = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", None)
+    if not mappings:
+        return None
+    disp = getattr(comfy_nodes, "NODE_DISPLAY_NAME_MAPPINGS", {}) or {}
+    out: dict[str, Any] = {}
+    for name, cls in mappings.items():
+        try:
+            if hasattr(cls, "GET_NODE_INFO_V1"):       # V3 internal nodes
+                info = cls.GET_NODE_INFO_V1()
+            else:
+                rt = list(getattr(cls, "RETURN_TYPES", ()) or ())
+                info = {
+                    "input": cls.INPUT_TYPES(),
+                    "output": rt,
+                    "output_name": list(getattr(cls, "RETURN_NAMES", rt) or rt),
+                    "display_name": disp.get(name, name),
+                    "category": getattr(cls, "CATEGORY", ""),
+                }
+            # normalize tuples -> lists (the HTTP path gets this for free via JSON);
+            # default=str drops any exotic, non-serializable widget defaults.
+            out[name] = json.loads(json.dumps(info, default=str))
+        except Exception:
+            continue
+    return out or None
+
+
 async def object_info(refresh: bool = False) -> dict:
     """Full ComfyUI node registry (class -> input/output spec). Cached; combo lists
-    (installed files) refresh when `refresh=True` — same effect as pressing R in ComfyUI."""
+    (installed files) refresh when `refresh=True` — same effect as pressing R in ComfyUI.
+
+    Built in-process from NODE_CLASS_MAPPINGS (reliable, no port resolution). Falls
+    back to loopback HTTP only if the in-process registry isn't importable."""
     if _object_info_cache["data"] is not None and not refresh:
         return _object_info_cache["data"]
-    async with await _session() as s:
-        async with s.get(_url("/object_info")) as r:
-            r.raise_for_status()
-            data = await r.json()
+    if refresh:
+        try:  # force a filesystem rescan of model combos, like ComfyUI's R key
+            import folder_paths
+            folder_paths.filename_list_cache.clear()
+        except Exception:
+            pass
+    data = _build_object_info_inprocess()
+    if data is None:
+        async with await _session() as s:
+            async with s.get(_url("/object_info")) as r:
+                r.raise_for_status()
+                data = await r.json()
     _object_info_cache["data"] = data
     return data
 

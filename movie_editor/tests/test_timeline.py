@@ -1,4 +1,4 @@
-"""Unit tests for prompt assembly, project store, and workflow injection.
+"""Unit tests for prompt assembly and the project store.
 
 None of these require a running ComfyUI. Run from the repo root:
     pytest movie_editor/tests -q
@@ -7,14 +7,11 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 # Make `movie_editor` importable when run from the repo root.
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from movie_editor.backend.timeline import Project, Scene, build_combined_prompt  # noqa: E402
-from movie_editor.backend import workflow  # noqa: E402
 
 
 def _project(**kw):
@@ -94,34 +91,3 @@ def test_projects_store_crud(tmp_path, monkeypatch):
     assert any(x["id"] == created.id for x in projects.list_projects())
     assert projects.delete(created.id) is True
     assert projects.get(created.id) is None
-
-
-def test_workflow_injection_into_fixture_graph():
-    graph = {
-        "1": {"class_type": "FunPackPromptCombiner", "inputs": {"text": ""}},
-        "2": {"class_type": "FunPackLTXAVSceneChainSampler",
-              "inputs": {"seed": 0, "num_frames_per_scene": 97, "max_scenes": 8,
-                         "model": ["9", 0]}},
-        "3": {"class_type": "EmptyLTXVLatentVideo", "inputs": {"frame_rate": 25}},
-    }
-    out, applied = workflow.inject(graph, {
-        "prompt": "hello world",
-        "seed": 42,
-        "num_frames_per_scene": 121,
-        "max_scenes": 5,
-        "frame_rate": 30,
-    })
-    assert out["1"]["inputs"]["text"] == "hello world"
-    assert out["2"]["inputs"]["seed"] == 42
-    assert out["2"]["inputs"]["num_frames_per_scene"] == 121
-    assert out["2"]["inputs"]["max_scenes"] == 5
-    assert out["3"]["inputs"]["frame_rate"] == 30
-    # wired link on model must be preserved
-    assert out["2"]["inputs"]["model"] == ["9", 0]
-    assert any("prompt ->" in a for a in applied)
-
-
-def test_workflow_injection_requires_prompt_sink():
-    graph = {"2": {"class_type": "FunPackLTXAVSceneChainSampler", "inputs": {"seed": 0}}}
-    with pytest.raises(workflow.WorkflowError):
-        workflow.inject(graph, {"prompt": "no text node here"})
