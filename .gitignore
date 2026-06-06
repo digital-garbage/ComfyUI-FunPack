@@ -1,1 +1,19 @@
 .testvenv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# OS / editor
+.DS_Store
+
+# Local tooling / agent config
+.claude/
+
+# Runtime artifacts (generated refinement stores, attn maps, etc.)
+refinements/
+
+# Large local research docs
+*.pdf
