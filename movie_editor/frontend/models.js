@@ -540,7 +540,7 @@
     if (linkMode) sec.append(el("div", "links-hint", "Click ＋ next to any input below to add it to the link, then Save. (Pick 2+ inputs.)"));
     (config.links || []).forEach((l) => sec.append(linkCard(l)));
     if (!linkMode && !(config.links || []).length)
-      sec.append(el("div", "links-empty", "No links yet. Use "Link inputs" to drive several node inputs (e.g. width/height) from one control."));
+      sec.append(el("div", "links-empty", "No links yet. Use 'Link inputs' to drive several node inputs (e.g. width/height) from one control."));
     return sec;
   }
 
