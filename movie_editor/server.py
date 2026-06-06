@@ -398,10 +398,22 @@ if web is not None and PromptServer is not None:
             raise web.HTTPBadGateway(reason=f"history unavailable: {e}")
         if prompt_id in hist:
             entry = hist[prompt_id]
+            raw_status = entry.get("status") or {}
+            media = _media_from_history(entry)
+            # Extract ComfyUI execution errors from history so the frontend can show them.
+            exec_error: Optional[str] = None
+            for _kind, payload in raw_status.get("messages") or []:
+                if _kind == "execution_error" and isinstance(payload, dict):
+                    node_type = payload.get("node_type", "unknown node")
+                    exc = payload.get("exception_message") or payload.get("traceback") or "unknown error"
+                    exec_error = f"{node_type}: {exc}"
+                    break
+            is_error = raw_status.get("status_str") == "error"
             return web.json_response({
-                "state": "completed",
-                "media": _media_from_history(entry),
-                "status": entry.get("status", {}),
+                "state": "error" if (is_error and not media) else "completed",
+                "media": media,
+                "error": exec_error,
+                "status": raw_status,
             })
         try:
             running = await bridge.is_running(prompt_id)

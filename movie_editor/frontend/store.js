@@ -286,9 +286,13 @@
     pollTimer = setInterval(async () => {
       try {
         const s = await API.status(state.project.id, promptId);
-        if (s.state === "completed") {
+        if (s.state === "error") {
           clearInterval(pollTimer);
-          set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed (no media found)." } });
+          const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";
+          set({ gen: { state: "error", promptId, media: [], msg } });
+        } else if (s.state === "completed") {
+          clearInterval(pollTimer);
+          set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
         } else {
           set({ gen: { ...state.gen, state: s.state, msg: `Generating… (${s.state})` } });
         }

@@ -223,9 +223,16 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # the result must be written to the output dir so the editor can fetch it back
     # (the reference graph used preview-only save_output=False).
     graph["vhs"]["inputs"]["save_output"] = True
+    # split_by_transitions MUST be True — Studio defaults to False (single-scene mode)
+    # but the Movie Editor always builds multi-scene combined prompts.  Force it here
+    # BEFORE the user's studio_inputs override block so it cannot be accidentally
+    # overwritten to False via the sampler panel.
+    graph["studio"]["inputs"]["split_by_transitions"] = True
 
     # 2b. project-level widget overrides for the built-in FunPack nodes.
     for k, v in (params.get("studio_inputs") or {}).items():
+        if k == "split_by_transitions":
+            continue  # never allow overriding — multi-scene mode is mandatory
         if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
             graph["studio"]["inputs"][k] = v
     for k, v in (params.get("sampler_inputs") or {}).items():
