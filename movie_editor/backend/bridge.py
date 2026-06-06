@@ -83,6 +83,22 @@ async def is_running(prompt_id: str) -> bool:
     return False
 
 
+_object_info_cache = {"data": None}
+
+
+async def object_info(refresh: bool = False) -> dict:
+    """Full ComfyUI node registry (class -> input/output spec). Cached; combo lists
+    (installed files) refresh when `refresh=True` — same effect as pressing R in ComfyUI."""
+    if _object_info_cache["data"] is not None and not refresh:
+        return _object_info_cache["data"]
+    async with await _session() as s:
+        async with s.get(_url("/object_info")) as r:
+            r.raise_for_status()
+            data = await r.json()
+    _object_info_cache["data"] = data
+    return data
+
+
 async def fetch_view(filename: str, subfolder: str = "", type_: str = "output") -> tuple[bytes, str]:
     from urllib.parse import urlencode
     q = urlencode({"filename": filename, "subfolder": subfolder, "type": type_})

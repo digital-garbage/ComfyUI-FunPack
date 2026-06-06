@@ -46,6 +46,10 @@
         { label: "Project Settings", disabled: !hasProject(), action: () => S.selectScene(null) },
         { label: "Render / Export…", soon: true, disabled: true },
       ],
+      Models: [
+        { label: "Settings…", action: () => window.ModelsModal.open() },
+        { label: "Refresh model list", hint: "R", action: async () => { try { await window.MovieEditorAPI.refreshModels(); } catch (_) {} } },
+      ],
       FunPack: [
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },

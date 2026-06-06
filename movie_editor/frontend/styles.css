@@ -239,6 +239,33 @@ input[type=number] { font-family: var(--font-mono); }
 
 .empty-stage { color: var(--faint); padding: 30px; text-align: center; width: 100%; }
 
+/* ───────────────────────── MODALS (Models settings) ───────────────────────── */
+.modal-overlay { position: fixed; inset: 0; z-index: 500; background: rgba(6,5,4,.66); backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding: 7vh 16px; animation: fade .15s ease; }
+@keyframes fade { from { opacity: 0; } }
+.modal { width: min(760px, 96vw); max-height: 82vh; display: flex; flex-direction: column; background: #16140f; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; animation: pop .16s ease; }
+.modal-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(#1b1813, #161410); }
+.modal-title { font-family: var(--font-display); font-weight: 700; font-size: 17px; }
+.modal-head-right { margin-left: auto; display: flex; gap: 8px; }
+.modal-content { padding: 16px; overflow: auto; }
+
+.composer { background: var(--ink-0); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 18px; }
+.composer-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--amber); margin-bottom: 10px; }
+.composer-row { display: flex; gap: 10px; align-items: center; }
+.composer-row select { flex: 1; }
+.composer-row .btn { flex: 0 0 auto; }
+.composer-preview { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.composer-preview:empty { display: none; }
+
+.slot-list { display: flex; flex-direction: column; gap: 12px; }
+.slot-card { background: var(--ink-1); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.slot-card { border-left: 3px solid var(--amber); }
+.slot-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.slot-role { font-weight: 600; }
+.slot-node { font-family: var(--font-mono); font-size: 11px; color: var(--muted); background: var(--ink-0); padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); }
+.slot-head .btn { margin-left: auto; }
+.slot-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+.slot-fields label.field, .composer-preview label.field { margin-bottom: 0; }
+
 /* staggered zone reveal on load */
 .zone { animation: rise .5s both; }
 .media { animation-delay: .02s; }

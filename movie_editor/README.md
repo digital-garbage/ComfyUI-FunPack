@@ -83,6 +83,25 @@ source (Empty/Image), transition, and exclude flag; deselect (Generate ▸ Proje
 to edit the anchor and global seed/frames/fps. Panel borders are draggable. The media bin
 drag-drop and Render/Export are stubbed for later phases.
 
+## Models (loaders & pipeline nodes)
+
+The generation path is fixed (loaders → Studio → Chain Sampler → decode → save); only the
+**loaders and a couple of pipeline nodes vary per machine** because they depend on what's
+installed. The **Models** menu configures them model-agnostically:
+
+- **Refresh model list** — re-scan ComfyUI (`/object_info`), same as pressing `R` in ComfyUI,
+  so loader dropdowns show current files.
+- **Settings…** — *Add Model / Node*: pick a **type** (Unet, LoRA, Video VAE, Audio VAE, CLIP,
+  CLIP Vision, Input Image Processing, Empty Latent), then a **node** (only nodes that produce
+  that type are offered). The chosen node's inputs are rendered inline — combos populated with
+  your installed files — so it stays fully controlled. This "wires" the node into the pipeline.
+
+Discovery uses `/object_info` output types; source roles exclude patchers (e.g. a LoRA loader
+won't show under Unet). Config is stored globally at `~/.funpack_movie/models.json`.
+
+> The graph builder that injects these configured loaders into the fixed path is the next step
+> and needs the actual montage workflow JSON to encode exactly (the loader UI above works now).
+
 ## How the timeline maps to Studio
 
 Studio splits one prompt into scenes by transition triggers; `segments[0]` (text before the

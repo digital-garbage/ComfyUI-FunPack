@@ -36,6 +36,13 @@
     // libraries
     transitions: () => j("GET", API("/library/transitions")),
 
+    // models / node slots
+    nodeRoles: () => j("GET", API("/node-roles")),
+    nodeCandidates: (role, refresh) => j("GET", API(`/node-candidates/${role}${refresh ? "?refresh=true" : ""}`)),
+    getModels: () => j("GET", API("/models")),
+    saveModels: (data) => j("PUT", API("/models"), data),
+    refreshModels: () => j("POST", API("/models/refresh")),
+
     // generate
     generate: (id, onlyScene) => j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),

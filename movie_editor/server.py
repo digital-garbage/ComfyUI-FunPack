@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, config, projects, workflow
+from .backend import bridge, config, nodes, projects, workflow
 from .backend.timeline import Project, build_combined_prompt
 
 UI_PREFIX = "/funpack/movie"
@@ -206,6 +206,38 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"could not fetch result: {e}")
         return web.Response(body=data, content_type=ctype.split(";")[0])
+
+    # --- API: models / pluggable node slots ---
+    @routes.get(UI_PREFIX + "/api/node-roles")
+    async def _node_roles(_req):
+        return web.json_response({"roles": nodes.roles_payload()})
+
+    @routes.get(UI_PREFIX + "/api/node-candidates/{role}")
+    async def _node_candidates(req):
+        role = req.match_info["role"]
+        refresh = req.query.get("refresh") == "true"
+        try:
+            oi = await bridge.object_info(refresh=refresh)
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+        return web.json_response({"role": role, "candidates": nodes.candidates(oi, role)})
+
+    @routes.post(UI_PREFIX + "/api/models/refresh")
+    async def _models_refresh(_req):
+        try:
+            await bridge.object_info(refresh=True)
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"refresh failed: {e}")
+        return web.json_response({"ok": True})
+
+    @routes.get(UI_PREFIX + "/api/models")
+    async def _models_get(_req):
+        return web.json_response(nodes.load_models())
+
+    @routes.put(UI_PREFIX + "/api/models")
+    async def _models_put(req):
+        body = await req.json()
+        return web.json_response(nodes.save_models(body))
 
     # --- UI: static frontend (must be registered AFTER api routes) ---
     @routes.get(UI_PREFIX)
