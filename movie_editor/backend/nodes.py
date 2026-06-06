@@ -144,6 +144,45 @@ def candidates(object_info: dict, role_key: str) -> list[dict]:
     return result
 
 
+def all_nodes(object_info: dict) -> list[dict]:
+    """Lightweight list of every registered node for the 'add any node' picker."""
+    out = []
+    for cls, nd in object_info.items():
+        if not isinstance(nd, dict):
+            continue
+        out.append({"class": cls, "display_name": nd.get("display_name", cls), "category": nd.get("category", "")})
+    out.sort(key=lambda c: (c["category"], c["display_name"].lower()))
+    return out
+
+
+def describe_node(object_info: dict, cls: str) -> dict | None:
+    """Full editor spec for one node class (widgets + outputs + connection inputs)."""
+    nd = object_info.get(cls)
+    if not isinstance(nd, dict):
+        return None
+    return {
+        "class": cls,
+        "display_name": nd.get("display_name", cls),
+        "category": nd.get("category", ""),
+        "inputs": widget_inputs(nd),
+        "outputs": node_outputs(nd),
+        "connection_inputs": connection_inputs(nd),
+    }
+
+
+# Fixed-core nodes (built by the editor) whose EXTERNAL inputs accept loader/image-proc
+# outputs — exposed as wire destinations. Types resolved from object_info at runtime.
+CORE_PORT_NODES = [
+    ("LTXVConditioning", "LTXV Conditioning"),
+    ("LTXVConcatAVLatent", "Concat AV Latent"),
+    ("LTXVSeparateAVLatent", "Separate AV Latent"),
+    ("LTXVAudioVAEDecode", "Audio VAE Decode"),
+    ("NormalizeAudioLoudness", "Normalize Audio"),
+    ("VHS_VideoCombine", "Video Combine"),
+    ("FunPackSaveRefinementLatent", "Save Refinement Latent"),
+]
+
+
 def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list[dict]:
     """Pipeline connection points derived from a node's INPUT_TYPES (authoritative)."""
     ports = []
@@ -158,9 +197,21 @@ def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list
     return ports
 
 
-def pipeline_ports() -> list[dict]:
-    """The fixed path's connection points loaders/nodes wire into. Derived live from the
-    FunPack node classes so they always match the real graph; [] if ComfyUI isn't loaded."""
+def ports_from_object_info(object_info: dict, cls: str, label: str) -> list[dict]:
+    nd = object_info.get(cls)
+    if not isinstance(nd, dict):
+        return []
+    ports = []
+    for ci in connection_inputs(nd):
+        ports.append({"id": f"{cls}.{ci['name']}", "node": label, "input": ci["name"],
+                      "type": ci["type"], "label": f"{label} · {ci['name']}"})
+    return ports
+
+
+def pipeline_ports(object_info: dict | None = None) -> list[dict]:
+    """The fixed path's connection points loaders/nodes wire into. FunPack nodes derive from
+    their INPUT_TYPES; LTXV core nodes derive from object_info. [] if nothing is loaded."""
+    ports = []
     try:
         try:
             from conditioning import FunPackStudio
@@ -168,12 +219,14 @@ def pipeline_ports() -> list[dict]:
         except ImportError:
             from ...conditioning import FunPackStudio  # type: ignore
             from ...samplers import FunPackLTXAVSceneChainSampler  # type: ignore
+        ports += ports_from_input_types("Studio", "FunPackStudio", FunPackStudio.INPUT_TYPES())
+        ports += ports_from_input_types("Chain Sampler", "FunPackLTXAVSceneChainSampler",
+                                        FunPackLTXAVSceneChainSampler.INPUT_TYPES())
     except Exception:
-        return []
-    ports = []
-    ports += ports_from_input_types("Studio", "FunPackStudio", FunPackStudio.INPUT_TYPES())
-    ports += ports_from_input_types("Chain Sampler", "FunPackLTXAVSceneChainSampler",
-                                    FunPackLTXAVSceneChainSampler.INPUT_TYPES())
+        pass
+    if object_info:
+        for cls, label in CORE_PORT_NODES:
+            ports += ports_from_object_info(object_info, cls, label)
     return ports
 
 

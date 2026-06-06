@@ -229,7 +229,30 @@ if web is not None and PromptServer is not None:
 
     @routes.get(UI_PREFIX + "/api/pipeline-ports")
     async def _pipeline_ports(_req):
-        return web.json_response({"ports": nodes.pipeline_ports()})
+        try:
+            oi = await bridge.object_info()
+        except Exception:
+            oi = None
+        return web.json_response({"ports": nodes.pipeline_ports(oi)})
+
+    @routes.get(UI_PREFIX + "/api/all-nodes")
+    async def _all_nodes(_req):
+        try:
+            oi = await bridge.object_info()
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+        return web.json_response({"nodes": nodes.all_nodes(oi)})
+
+    @routes.get(UI_PREFIX + "/api/node/{cls}")
+    async def _node(req):
+        try:
+            oi = await bridge.object_info()
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+        spec = nodes.describe_node(oi, req.match_info["cls"])
+        if spec is None:
+            raise web.HTTPNotFound(reason="Unknown node class")
+        return web.json_response(spec)
 
     @routes.post(UI_PREFIX + "/api/models/refresh")
     async def _models_refresh(_req):

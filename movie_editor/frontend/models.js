@@ -6,20 +6,29 @@
 
   let roles = [];                 // [{key,label,category}]
   let ports = [];                 // pipeline connection points [{id,type,label}]
+  let allNodes = null;            // [{class,display_name,category}] for "any node" picker
   const candCache = {};           // role -> [candidate]
+  const specByClass = {};         // class -> full node spec (inputs/outputs/connection_inputs)
   let config = { slots: [] };     // {slots:[{id,role,node_class,inputs:{},wires:{outName:value}}]}
   let overlay = null;
 
-  function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : key; }
+  function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : key); }
 
   function uid() { return Math.random().toString(36).slice(2, 9); }
 
   async function ensureRoles() { if (!roles.length) roles = (await API.nodeRoles()).roles || []; }
+  async function ensureAllNodes() { if (!allNodes) allNodes = (await API.allNodes()).nodes || []; return allNodes; }
+
+  function cache(spec) { if (spec && spec.class) specByClass[spec.class] = spec; return spec; }
   async function candidates(role, refresh) {
-    if (!candCache[role] || refresh) candCache[role] = (await API.nodeCandidates(role, refresh)).candidates || [];
+    if (!candCache[role] || refresh) {
+      candCache[role] = (await API.nodeCandidates(role, refresh)).candidates || [];
+      candCache[role].forEach(cache);
+    }
     return candCache[role];
   }
-  function candidate(role, cls) { return (candCache[role] || []).find((c) => c.class === cls); }
+  async function loadSpec(cls) { if (!specByClass[cls]) cache(await API.nodeSpec(cls)); return specByClass[cls]; }
+  function specFor(slot) { return specByClass[slot.node_class] || null; }
 
   async function persist() { try { config = await API.saveModels(config); } catch (e) { console.error(e); } }
 
@@ -66,7 +75,7 @@
     head.append(rm);
     card.append(head);
 
-    const cand = candidate(slot.role, slot.node_class);
+    const cand = specFor(slot);
     if (cand && cand.inputs.length) {
       const grid = el("div", "slot-fields");
       cand.inputs.forEach((spec) => {
@@ -96,7 +105,7 @@
     const out = [{ value: "", label: "— unwired —" }];
     ports.filter((p) => p.type === type).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
-      const c2 = candidate(s2.role, s2.node_class);
+      const c2 = specFor(s2);
       (c2?.connection_inputs || []).filter((ci) => ci.type === type).forEach((ci) =>
         out.push({ value: `node:${s2.id}:${ci.name}`, label: `${roleLabel(s2.role)} · ${ci.name}` }));
     });
@@ -119,45 +128,63 @@
 
     const row = el("div", "composer-row");
     const typeSel = el("select");
-    const ph = el("option", null, "Model Type…"); ph.value = ""; typeSel.append(ph);
+    typeSel.append(new Option("Model Type…", ""));
     const cats = {};
     roles.forEach((r) => { (cats[r.category] = cats[r.category] || []).push(r); });
     Object.keys(cats).forEach((cat) => {
       const og = document.createElement("optgroup"); og.label = cat;
-      cats[cat].forEach((r) => { const o = el("option", null, r.label); o.value = r.key; og.append(o); });
+      cats[cat].forEach((r) => { og.append(new Option(r.label, r.key)); });
       typeSel.append(og);
     });
+    const ogAny = document.createElement("optgroup"); ogAny.label = "Advanced";
+    ogAny.append(new Option("Any node…", "__any__")); typeSel.append(ogAny);
 
-    const nodeSel = el("select"); nodeSel.disabled = true; nodeSel.append(new Option("Loader Node…", ""));
+    const nodeSel = el("select"); nodeSel.disabled = true; nodeSel.append(new Option("Node…", ""));
     const addBtn = el("button", "btn primary", "Add"); addBtn.disabled = true;
     const preview = el("div", "composer-preview");
 
     let curRole = "", curCand = null;
 
+    function showPreview() {
+      clear(preview);
+      if (!curCand) return;
+      const d = defaultsFor(curCand);
+      (curCand.inputs || []).forEach((spec) => preview.append(widgetField(spec, d[spec.name], (v) => { d[spec.name] = v; })));
+      preview._draft = d;
+    }
+
     typeSel.onchange = async () => {
       curRole = typeSel.value; curCand = null; addBtn.disabled = true; clear(preview);
       nodeSel.innerHTML = ""; nodeSel.append(new Option("Loading…", "")); nodeSel.disabled = true;
-      if (!curRole) { nodeSel.innerHTML = ""; nodeSel.append(new Option("Loader Node…", "")); return; }
-      let list = [];
-      try { list = await candidates(curRole); } catch (e) { nodeSel.innerHTML = ""; nodeSel.append(new Option("ComfyUI offline", "")); return; }
-      nodeSel.innerHTML = ""; nodeSel.append(new Option(list.length ? "Loader Node…" : "No matching nodes", ""));
-      list.forEach((c) => nodeSel.append(new Option(c.display_name + "  ·  " + c.class, c.class)));
-      nodeSel.disabled = !list.length;
+      if (!curRole) { nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); return; }
+      try {
+        let list;
+        if (curRole === "__any__") {
+          list = await ensureAllNodes();
+          nodeSel.innerHTML = ""; nodeSel.append(new Option("Search a node…", ""));
+          list.forEach((c) => nodeSel.append(new Option(`${c.display_name}  ·  ${c.class}`, c.class)));
+        } else {
+          list = await candidates(curRole);
+          nodeSel.innerHTML = ""; nodeSel.append(new Option(list.length ? "Loader Node…" : "No matching nodes", ""));
+          list.forEach((c) => nodeSel.append(new Option(`${c.display_name}  ·  ${c.class}`, c.class)));
+        }
+        nodeSel.disabled = !list.length;
+      } catch (e) { nodeSel.innerHTML = ""; nodeSel.append(new Option("ComfyUI offline", "")); }
     };
-    nodeSel.onchange = () => {
-      curCand = candidate(curRole, nodeSel.value); addBtn.disabled = !curCand; clear(preview);
-      if (curCand) {
-        const d = defaultsFor(curCand);
-        (curCand.inputs || []).forEach((spec) => preview.append(widgetField(spec, d[spec.name], (v) => { d[spec.name] = v; })));
-        preview._draft = d;
-      }
+    nodeSel.onchange = async () => {
+      addBtn.disabled = true; curCand = null; clear(preview);
+      if (!nodeSel.value) return;
+      curCand = specByClass[nodeSel.value];
+      if (!curCand) { try { curCand = await loadSpec(nodeSel.value); } catch (e) { return; } }
+      addBtn.disabled = !curCand; showPreview();
     };
     addBtn.onclick = async () => {
       if (!curCand) return;
-      config.slots.push({ id: uid(), role: curRole, node_class: curCand.class, inputs: preview._draft || defaultsFor(curCand) });
+      const role = curRole === "__any__" ? "custom" : curRole;
+      config.slots.push({ id: uid(), role, node_class: curCand.class, inputs: preview._draft || defaultsFor(curCand), wires: {} });
       await persist();
-      typeSel.value = ""; nodeSel.innerHTML = ""; nodeSel.append(new Option("Loader Node…", "")); nodeSel.disabled = true;
-      addBtn.disabled = true; clear(preview); render();
+      typeSel.value = ""; nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); nodeSel.disabled = true;
+      addBtn.disabled = true; curCand = null; clear(preview); render();
     };
 
     row.append(typeSel); row.append(nodeSel); row.append(addBtn);
@@ -182,11 +209,17 @@
     content.append(body());
   }
 
+  async function prewarmSpecs() {
+    // resolve the spec for every configured node (by class) so fields + wiring render
+    for (const cls of new Set(config.slots.map((s) => s.node_class))) { try { await loadSpec(cls); } catch (_) {} }
+  }
+
   async function refreshList() {
     Object.keys(candCache).forEach((k) => delete candCache[k]);
+    Object.keys(specByClass).forEach((k) => delete specByClass[k]);
+    allNodes = null;
     try { await API.refreshModels(); } catch (_) {}
-    // re-pull candidates for roles already configured so combos show fresh files
-    for (const role of new Set(config.slots.map((s) => s.role))) { try { await candidates(role, true); } catch (_) {} }
+    await prewarmSpecs();
     render();
   }
 
@@ -194,8 +227,7 @@
     await ensureRoles();
     try { ports = (await API.pipelinePorts()).ports || []; } catch (_) { ports = []; }
     try { config = await API.getModels(); } catch (_) { config = { slots: [] }; }
-    // pre-warm candidate cache for configured roles so their fields render
-    for (const role of new Set(config.slots.map((s) => s.role))) { try { await candidates(role); } catch (_) {} }
+    await prewarmSpecs();
 
     overlay = el("div", "modal-overlay");
     const modal = el("div", "modal");

@@ -75,6 +75,24 @@ def test_ports_from_input_types_derives_connection_points():
     assert all(p["id"].startswith("FunPackStudio.") for p in ports)  # STRING widgets excluded
 
 
+def test_all_nodes_and_describe_node():
+    listing = nodes.all_nodes(OI)
+    assert {n["class"] for n in listing} == set(OI)            # every node addable via "any node"
+    spec = nodes.describe_node(OI, "LTXVPreprocess")
+    assert spec["class"] == "LTXVPreprocess"
+    assert any(o["type"] == "IMAGE" for o in spec["outputs"])
+    assert nodes.describe_node(OI, "NoSuchNode") is None
+
+
+def test_ports_from_object_info_exposes_core_inputs():
+    oi = {"LTXVAudioVAEDecode": {"input": {"required": {"samples": ["LATENT"], "audio_vae": ["VAE"]}},
+                                 "output": ["AUDIO"]}}
+    ports = nodes.ports_from_object_info(oi, "LTXVAudioVAEDecode", "Audio VAE Decode")
+    by = {p["input"]: p["type"] for p in ports}
+    assert by == {"samples": "LATENT", "audio_vae": "VAE"}
+    assert all(p["label"].startswith("Audio VAE Decode · ") for p in ports)
+
+
 def test_models_store_roundtrip(tmp_path, monkeypatch):
     from movie_editor.backend import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
