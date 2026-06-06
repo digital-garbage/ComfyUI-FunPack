@@ -8,6 +8,27 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
+  <script>
+    // Boot-time error surface: if any script fails, show it instead of a blank app.
+    (function () {
+      function show(msg) {
+        var b = document.getElementById("boot-error");
+        if (!b) {
+          b = document.createElement("div"); b.id = "boot-error";
+          b.style.cssText = "position:fixed;z-index:99999;left:0;right:0;top:0;padding:10px 14px;" +
+            "background:#3a1320;color:#ffb3c1;font:12px/1.5 monospace;border-bottom:1px solid #e0566b;white-space:pre-wrap";
+          (document.body || document.documentElement).appendChild(b);
+        }
+        b.textContent = "Movie Editor error — " + msg + "\n(restart ComfyUI + hard-reload Cmd/Ctrl+Shift+R; if it persists, send me this text)";
+      }
+      window.addEventListener("error", function (e) {
+        show((e.message || "load error") + (e.filename ? "  @ " + e.filename.split("/").pop() + ":" + e.lineno : ""));
+      }, true);
+      window.addEventListener("unhandledrejection", function (e) {
+        show("promise: " + ((e.reason && (e.reason.message || e.reason)) || "rejected"));
+      });
+    })();
+  </script>
 </head>
 <body>
   <!-- ───────────────────────── MENU BAR ───────────────────────── -->

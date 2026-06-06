@@ -72,7 +72,12 @@ def _serve_static(tail: str) -> "web.Response":
     if not target.is_file():
         raise web.HTTPNotFound()
     ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-    return web.Response(body=target.read_bytes(), content_type=ctype)
+    if target.suffix == ".js":
+        ctype = "text/javascript"  # be explicit; some platforms guess text/plain
+    return web.Response(
+        body=target.read_bytes(), content_type=ctype,
+        headers={"Cache-Control": "no-store, max-age=0"},  # editor iterates fast; never cache
+    )
 
 
 # ── registration ─────────────────────────────────────────────────────────────
