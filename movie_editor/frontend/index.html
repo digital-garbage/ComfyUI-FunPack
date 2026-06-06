@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FunPack Movie Editor</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🎬 FunPack Movie Editor <span class="tag">V1</span></div>
+    <div class="topbar-projects">
+      <select id="project-select" title="Open project"></select>
+      <button id="new-project">New</button>
+      <input id="project-name" placeholder="Project name" />
+      <button id="delete-project" class="danger" title="Delete project">Delete</button>
+    </div>
+    <div class="topbar-actions">
+      <button id="generate-all" class="primary">Generate</button>
+      <span id="health" class="health"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="editor">
+      <div class="anchor-block">
+        <label class="block-label">Anchor — prepended to every scene (character/world)</label>
+        <textarea id="anchor" rows="2" placeholder="e.g. a young woman with red hair, cinematic lighting"></textarea>
+        <div class="anchor-row">
+          <label>Opening transition (anchor → scene 1)</label>
+          <select id="intro-transition"></select>
+        </div>
+      </div>
+
+      <div class="settings-bar">
+        <label>Seed <input id="seed" type="number" min="0" /></label>
+        <label>Frames/scene <input id="frames" type="number" min="1" step="8" /></label>
+        <label>FPS <input id="fps" type="number" min="1" /></label>
+        <label>Max scenes <input id="max-scenes" type="number" min="1" /></label>
+      </div>
+
+      <div class="rail-header">
+        <h2>Timeline</h2>
+        <button id="add-scene">+ Add scene</button>
+      </div>
+      <div id="rail" class="rail"></div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Split preview</h3>
+          <button id="refresh-preview" class="ghost">↻</button>
+        </div>
+        <div id="preview" class="preview"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>Result</h3></div>
+        <div id="player" class="player"></div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="api.js"></script>
+  <script src="timeline.js"></script>
+  <script src="player.js"></script>
+  <script>window.MovieEditor.init();</script>
+</body>
+</html>
