@@ -314,8 +314,9 @@
       return () => quiet ? save(s) : saveNow(s);
     }
 
-    renderPass(container, "high", "High pass", s.high, mkSave(true), mkSave(false));
-    renderPass(container, "low",  "Low pass",  s.low,  mkSave(true), mkSave(false));
+    // Only the high-pass sampler is wired in the Movie Editor graph
+    // (studio outputs 4+5 → chain sampler; outputs 6+7 are not connected).
+    renderPass(container, "high", "Sampler", s.high, mkSave(true), mkSave(false));
   }
 
   window.SamplerPanel = { render, defaultSamplers, defaultPass };

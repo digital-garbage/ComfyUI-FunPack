@@ -268,12 +268,14 @@
   }
 
   let pollTimer = null;
+  let pollStart = 0;
   async function generate(onlyScene) {
     if (!state.project) return;
     set({ gen: { state: "queuing", promptId: null, media: [], msg: onlyScene ? "Queuing scene…" : "Queuing montage…" } });
     try {
       const r = await API.generate(state.project.id, onlyScene);
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return; }
+      pollStart = Date.now();
       set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: "Generating…" } });
       poll(r.prompt_id);
     } catch (e) {
@@ -281,8 +283,14 @@
     }
   }
 
+  function _elapsed() {
+    const s = Math.floor((Date.now() - pollStart) / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
   function poll(promptId) {
     clearInterval(pollTimer);
+    let pendingStreak = 0;
     pollTimer = setInterval(async () => {
       try {
         const s = await API.status(state.project.id, promptId);
@@ -294,7 +302,16 @@
           clearInterval(pollTimer);
           set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
         } else {
-          set({ gen: { ...state.gen, state: s.state, msg: `Generating… (${s.state})` } });
+          // "pending" after being "running" means the job left the queue without a
+          // history entry — it likely crashed or was interrupted by ComfyUI.
+          if (s.state === "pending") pendingStreak++;
+          else pendingStreak = 0;
+          if (pendingStreak >= 3) {
+            clearInterval(pollTimer);
+            set({ gen: { state: "error", promptId, media: [], msg: "Job disappeared from ComfyUI queue — it may have crashed or been interrupted. Check the ComfyUI terminal." } });
+            return;
+          }
+          set({ gen: { ...state.gen, state: s.state, msg: `Generating… ${_elapsed()}` } });
         }
       } catch (e) {
         clearInterval(pollTimer);
