@@ -21,6 +21,18 @@ LINK_TYPES = {
 }
 WIDGET_PRIMITIVES = {"INT", "FLOAT", "STRING", "BOOLEAN"}
 
+# ComfyUI V3 dynamic match types that are semantically IMAGE-compatible.
+_MATCHTYPE_ALIASES: dict[str, str] = {}  # populated on first lookup — patterns are prefix-matched
+
+
+def _normalize_type(t: str) -> str:
+    """Normalize ComfyUI internal type aliases to canonical names.
+    COMFY_MATCHTYPE_V* are dynamic IMAGE-compatible types introduced in ComfyUI V3."""
+    if t.startswith("COMFY_MATCHTYPE_"):
+        return "IMAGE"
+    return t
+
+
 # role -> {label, category, want_output(s), [want_input]}.
 # A node qualifies for a role if it OUTPUTS the wanted type (and, for patchers like
 # LoRA / image processors, also INPUTS the relevant type).
@@ -58,8 +70,7 @@ PIPELINE_REQUIREMENTS = [
 
 def _outputs(node_def: dict) -> list[str]:
     out = node_def.get("output") or []
-    # output entries can be a string or a list-of-options; we only care about strings here
-    return [o for o in out if isinstance(o, str)]
+    return [_normalize_type(o) for o in out if isinstance(o, str)]
 
 
 def _all_input_types(node_def: dict) -> list[str]:
@@ -69,7 +80,7 @@ def _all_input_types(node_def: dict) -> list[str]:
         for spec in (inp.get(group) or {}).values():
             t = spec[0] if isinstance(spec, list) and spec else None
             if isinstance(t, str):
-                types.append(t)
+                types.append(_normalize_type(t))
     return types
 
 
@@ -98,8 +109,12 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(spec, list) or not spec:
                 continue
             t = spec[0]
-            if isinstance(t, str) and t not in WIDGET_PRIMITIVES:
-                out.append({"name": name, "type": t, "required": group == "required"})
+            if not isinstance(t, str) or t in WIDGET_PRIMITIVES:
+                continue
+            opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            # V3 nodes can mark a required-group input as optional via the flag.
+            is_required = group == "required" and not opts.get("optional", False)
+            out.append({"name": name, "type": _normalize_type(t), "required": is_required})
     return out
 
 
@@ -116,7 +131,7 @@ def node_outputs(node_def: dict) -> list[dict]:
         if not isinstance(t, str):
             continue
         nm = names[i] if i < len(names) and names[i] else t
-        out.append({"name": nm, "type": t})
+        out.append({"name": nm, "type": _normalize_type(t)})
     return out
 
 
