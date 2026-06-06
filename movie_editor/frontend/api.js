@@ -45,6 +45,7 @@
     getModels: () => j("GET", API("/models")),
     saveModels: (data) => j("PUT", API("/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
+    restart: () => j("POST", API("/restart")),
 
     // generate
     generate: (id, onlyScene) => j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null }),

@@ -9,6 +9,26 @@
   function sel() { return S.get().selectedSceneId; }
   function hasProject() { return !!S.get().project; }
 
+  async function restartComfy() {
+    if (!confirm("Restart ComfyUI now?\n\nThe server will be down for ~10–40s and any running generation will be lost. This page reloads automatically when it's back.")) return;
+    const ov = el("div", "restart-overlay");
+    const card = el("div", "restart-card");
+    card.append(el("div", "restart-spin"));
+    const msg = el("div", "restart-msg", "Restarting ComfyUI…\nThis page will reload when it's back.");
+    card.append(msg); ov.append(card); document.body.append(ov);
+    try { await window.MovieEditorAPI.restart(); } catch (_) { /* connection drops as it execv's — expected */ }
+    const start = Date.now();
+    const tick = async () => {
+      try {
+        const h = await window.MovieEditorAPI.health();
+        if (h && h.ok) { location.reload(); return; }
+      } catch (_) { /* still down */ }
+      if (Date.now() - start > 90000) msg.textContent = "Still waiting on ComfyUI…\nIt may need a manual restart — check the console.";
+      setTimeout(tick, 2000);
+    };
+    setTimeout(tick, 3500);  // give it a moment to actually go down first
+  }
+
   function menuSpec() {
     const st = S.get();
     const recent = (st.projects || []).slice(0, 8).map((p) => ({
@@ -53,6 +73,7 @@
       FunPack: [
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },
+        { label: "Restart ComfyUI", hint: "⟳", danger: true, action: restartComfy },
         { sep: true },
         { label: st.health?.reference_loaded ? "Pipeline reference: loaded" : "Pipeline reference: missing", disabled: true },
         { label: `Configured nodes: ${st.health?.configured_slots ?? 0}`, disabled: true },

@@ -293,6 +293,16 @@ input[type=number] { font-family: var(--font-mono); }
 .wire-arrow { color: var(--teal); }
 .wire-select { flex: 1; }
 
+/* restart overlay */
+.restart-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--ink-0) 88%, transparent); backdrop-filter: blur(3px); }
+.restart-card { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 30px 40px;
+  background: var(--ink-1); border: 1px solid var(--line); border-radius: 14px; }
+.restart-msg { color: var(--muted); text-align: center; white-space: pre-line; font-size: 13px; line-height: 1.5; }
+.restart-spin { width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--line);
+  border-top-color: var(--amber); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* staggered zone reveal on load */
 .zone { animation: rise .5s both; }
 .media { animation-delay: .02s; }
