@@ -28,6 +28,8 @@
     getProject: (id) => j("GET", API(`/projects/${id}`)),
     saveProject: (id, data) => j("PUT", API(`/projects/${id}`), data),
     deleteProject: (id) => j("DELETE", API(`/projects/${id}`)),
+    downloadProjectUrl: (id) => API(`/projects/${id}/download`),
+    importProject: (data) => j("POST", API("/projects/import"), data),
 
     // timeline preview
     preview: (id, includeExcluded) =>

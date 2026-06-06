@@ -53,6 +53,32 @@
     else notify();
   }
 
+  function downloadProject() {
+    if (!state.project) return;
+    const a = document.createElement("a");
+    a.href = API.downloadProjectUrl(state.project.id);
+    a.download = "";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  }
+
+  async function importProject(file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const p = await API.importProject(data);
+      await refreshProjectList();
+      await loadProject(p.id);
+    } catch (e) { alert("Import failed: " + e.message); }
+  }
+
+  // ── conditioning / sampler role ────────────────────────────────────────────────
+  function setConditioningSlot(slotId) {
+    patchProject({ conditioning_slot: slotId || "funpack" });
+  }
+  function setSamplerSlot(slotId) {
+    patchProject({ sampler_slot: slotId || "funpack" });
+  }
+
   // ── editing ────────────────────────────────────────────────────────────────
   function scheduleSave() {
     state.saving = true; notify();
@@ -69,8 +95,10 @@
     try {
       state.project = await API.saveProject(state.project.id, state.project);
       state.saving = false;
-      // keep selection valid
-      if (!state.project.scenes.some((s) => s.id === state.selectedSceneId))
+      // Preserve selectedSceneId: null means "project settings" — keep it.
+      // Only reset to first scene if a NON-null id is no longer in the scene list.
+      if (state.selectedSceneId !== null &&
+          !state.project.scenes.some((s) => s.id === state.selectedSceneId))
         state.selectedSceneId = state.project.scenes[0]?.id || null;
       notify();
       refreshProjectList();
@@ -152,6 +180,42 @@
     if (i < 0 || j < 0 || j >= arr.length) return;
     [arr[i], arr[j]] = [arr[j], arr[i]];
     notify(); scheduleSave();
+  }
+
+  // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
+  function syncFromPreview() {
+    if (!state.project || !state.preview) return;
+    const parsed = state.preview.parsed || {};
+    const parsedScenes = parsed.scenes || [];
+    const parsedTrans = parsed.transitions || [];
+    if (!parsedScenes.length) return;
+
+    // Sync anchor
+    if (parsed.anchor != null) state.project.anchor = parsed.anchor;
+
+    // Sync scene texts (only if count matches to avoid destructive mismatches)
+    const activeScenes = state.project.scenes.filter((s) => !s.excluded);
+    if (parsedScenes.length === activeScenes.length) {
+      parsedScenes.forEach((ps, i) => { if (ps.text) activeScenes[i].text = ps.text; });
+    }
+
+    // Sync transitions: parsed.transitions[i] → scene[i].transition_to_next
+    // We derive the trigger from the library by matching visual_effect.
+    parsedTrans.forEach((t) => {
+      const idx = t.after_scene;
+      const sceneIdx = idx >= 0 ? idx : -1;
+      if (sceneIdx >= 0 && sceneIdx < activeScenes.length) {
+        const s = activeScenes[sceneIdx];
+        if (!s.transition_to_next && t.visual_effect) {
+          const lib = (state.transitions || []).find((tr) =>
+            (tr.visual_effect || "none") === t.visual_effect);
+          if (lib) s.transition_to_next = lib.trigger || lib.name || "";
+        }
+      }
+    });
+
+    notify();
+    scheduleSave();
   }
 
   // ── preview ──────────────────────────────────────────────────────────────────
@@ -298,10 +362,11 @@
 
   window.Store = {
     get, set, subscribe, init,
-    refreshProjectList, loadProject, newProject, deleteProject,
+    refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
+    setConditioningSlot, setSamplerSlot,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,

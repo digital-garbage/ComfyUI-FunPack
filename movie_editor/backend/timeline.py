@@ -98,6 +98,10 @@ class Project:
     width: int = 768
     height: int = 512
     max_scenes: int = 8
+    # Pluggable role slots: "funpack" = built-in Studio/ChainSampler; any other value
+    # is a slot id from models.json. Stored now, full builder wiring in a future phase.
+    conditioning_slot: str = "funpack"
+    sampler_slot: str = "funpack"
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -115,6 +119,8 @@ class Project:
             width=int(d.get("width", 768)),
             height=int(d.get("height", 512)),
             max_scenes=int(d.get("max_scenes", 8)),
+            conditioning_slot=str(d.get("conditioning_slot", "funpack")),
+            sampler_slot=str(d.get("sampler_slot", "funpack")),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )

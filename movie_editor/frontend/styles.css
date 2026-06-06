@@ -252,6 +252,8 @@ input[type=number] { font-family: var(--font-mono); }
 .pv-line { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12.5px; }
 .pv-badge { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .5px; text-transform: uppercase; color: var(--teal); border: 1px solid #57d0c655; border-radius: 4px; padding: 1px 5px; flex: 0 0 auto; }
 .pv-badge.anchor { color: var(--amber); border-color: #f3a93c55; }
+.pv-badge.trans { color: var(--faint); border-color: transparent; font-size: 9px; }
+.sync-preview-btn { margin-top: 8px; width: 100%; }
 .pv-warn { color: var(--amber-2); font-size: 12px; display: flex; gap: 7px; margin-bottom: 8px; }
 .pv-raw { margin-top: 8px; }
 .pv-raw summary { cursor: pointer; color: var(--faint); font-size: 11px; font-family: var(--font-mono); }

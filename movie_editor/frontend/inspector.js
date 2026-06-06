@@ -143,9 +143,29 @@
     if (pv.parse_error) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, "ComfyUI offline — preview paused")); box.append(w); }
     const parsed = pv.parsed || {};
     if (parsed.anchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }
-    (parsed.scenes || []).forEach((s, i) => { const l = el("div", "pv-line"); l.append(el("span", "pv-badge", "S" + (i + 1))); l.append(el("span", null, s.text || "(empty)")); box.append(l); });
+    (parsed.scenes || []).forEach((s, i) => {
+      const l = el("div", "pv-line");
+      l.append(el("span", "pv-badge", "S" + (i + 1)));
+      l.append(el("span", null, s.text || "(empty)"));
+      // Show detected transition after this scene
+      const t = (parsed.transitions || []).find((tr) => tr.after_scene === i);
+      if (t?.visual_effect) l.append(el("span", "pv-badge trans", "→ " + t.visual_effect));
+      box.append(l);
+    });
     const raw = el("details", "pv-raw"); raw.append(el("summary", null, "combined prompt")); raw.append(el("pre", null, pv.combined_prompt || "")); box.append(raw);
-    wrap.append(box); body.append(wrap);
+    wrap.append(box);
+
+    // Sync button — lets the user push what was parsed back into the scene data
+    if ((parsed.scenes || []).length > 0) {
+      const syncBtn = el("button", "btn ghost tiny sync-preview-btn", "↺ Sync scenes from preview");
+      syncBtn.title = "Distribute the parsed anchor / scene texts / transitions back into the timeline";
+      syncBtn.onclick = () => {
+        if (confirm("This will overwrite scene texts and transitions with what the parser detected. Continue?"))
+          S.syncFromPreview();
+      };
+      wrap.append(syncBtn);
+    }
+    body.append(wrap);
   }
 
   function exposedControl(desc, value, on) {

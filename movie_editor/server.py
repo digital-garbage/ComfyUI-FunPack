@@ -164,6 +164,21 @@ if web is not None and PromptServer is not None:
         body = await req.json()
         return web.json_response(projects.create(str(body.get("name") or "Untitled")).to_dict())
 
+    @routes.post(UI_PREFIX + "/api/projects/import")
+    async def _import(req):
+        try:
+            body = await req.json()
+        except Exception:
+            return web.json_response({"detail": "Request body must be a project JSON."}, status=400)
+        if not isinstance(body, dict) or "scenes" not in body:
+            return web.json_response({"detail": "Payload does not look like a project file."}, status=400)
+        import time as _time
+        body.pop("id", None)
+        body["created_at"] = _time.time()
+        body["updated_at"] = _time.time()
+        p = projects.save(Project.from_dict(body))
+        return web.json_response(p.to_dict())
+
     @routes.get(UI_PREFIX + "/api/projects/{pid}")
     async def _get(req):
         return web.json_response(_project_or_404(req.match_info["pid"]).to_dict())
@@ -183,6 +198,19 @@ if web is not None and PromptServer is not None:
         if not projects.delete(pid):
             raise web.HTTPNotFound(reason=f"Project {pid} not found")
         return web.json_response({"deleted": pid})
+
+    @routes.get(UI_PREFIX + "/api/projects/{pid}/download")
+    async def _download(req):
+        p = _project_or_404(req.match_info["pid"])
+        safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in p.name).strip()[:64]
+        filename = f"{safe_name or p.id}.funpack_project.json"
+        import json as _json
+        return web.Response(
+            body=_json.dumps(p.to_dict(), indent=2).encode(),
+            content_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                     "Cache-Control": "no-store"},
+        )
 
     # --- API: timeline preview (round-trip integrity check) ---
     @routes.get(UI_PREFIX + "/api/projects/{pid}/preview")
@@ -336,11 +364,11 @@ if web is not None and PromptServer is not None:
         target = _solo(p, body.get("only_scene"))
         prompt = build_combined_prompt(target)
         if not prompt.strip():
-            raise web.HTTPBadRequest(reason="Nothing to generate — no active scene text.")
+            return web.json_response({"detail": "Nothing to generate — no active scene text."}, status=400)
         try:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
-            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+            return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
         graph, report = builder.build(oi, nodes.load_models(), {
             "prompt": prompt, "seed": target.seed,
             "num_frames_per_scene": target.num_frames_per_scene,
@@ -348,11 +376,12 @@ if web is not None and PromptServer is not None:
             "width": target.width, "height": target.height,
         }, media=_prepare_media(target))
         if report["blocking"]:
-            raise web.HTTPBadRequest(reason="Incomplete config — " + "; ".join(report["blocking"]))
+            detail = "Generation blocked — " + "; ".join(report["blocking"])
+            return web.json_response({"detail": detail, "report": report}, status=400)
         try:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001
-            raise web.HTTPBadGateway(reason=f"Failed to queue: {e}")
+            return web.json_response({"detail": f"Failed to queue with ComfyUI: {e}"}, status=502)
         return web.json_response({"prompt_id": result.get("prompt_id"), "report": report})
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/status/{prompt_id}")

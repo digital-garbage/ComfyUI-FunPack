@@ -9,6 +9,15 @@
   function sel() { return S.get().selectedSceneId; }
   function hasProject() { return !!S.get().project; }
 
+  // hidden file input for importing a project file
+  const importFileInput = (function () {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".json"; inp.style.display = "none";
+    inp.onchange = () => { if (inp.files[0]) { S.importProject(inp.files[0]); inp.value = ""; } };
+    document.body.appendChild(inp);
+    return inp;
+  })();
+
   async function restartComfy() {
     if (!confirm("Restart ComfyUI now?\n\nThe server will be down for ~10–40s and any running generation will be lost. This page reloads automatically when it's back.")) return;
     const ov = el("div", "restart-overlay");
@@ -41,6 +50,9 @@
         { menulabel: "Open recent" },
         ...(recent.length ? recent : [{ label: "No projects", disabled: true }]),
         { sep: true },
+        { label: "Save Project File…", disabled: !hasProject(), hint: "⬇", action: () => S.downloadProject() },
+        { label: "Load Project File…", action: () => importFileInput.click() },
+        { sep: true },
         { label: "Import Media…", soon: true, disabled: true },
         { label: "Delete Current Project", danger: true, disabled: !hasProject(),
           action: () => { const p = S.get().project; if (p && confirm(`Delete "${p.name}"?`)) S.deleteProject(p.id); } },
@@ -63,6 +75,11 @@
         { label: "Generate Whole Montage", hint: "▶", disabled: !hasProject(), action: () => S.generate(null) },
         { label: "Generate Selected Scene", disabled: !sel(), action: () => S.generate(sel()) },
         { sep: true },
+        { label: `Conditioning: ${_roleLabel(st.project?.conditioning_slot, "FunPack Studio")}`, disabled: !hasProject(),
+          action: () => _pickRole("conditioning_slot", "Conditioning node", st) },
+        { label: `Sampler: ${_roleLabel(st.project?.sampler_slot, "FunPack Chain Sampler")}`, disabled: !hasProject(),
+          action: () => _pickRole("sampler_slot", "Sampler node", st) },
+        { sep: true },
         { label: "Project Settings", disabled: !hasProject(), action: () => S.selectScene(null) },
         { label: "Render / Export…", soon: true, disabled: true },
       ],
@@ -80,6 +97,28 @@
         { label: st.health?.ok ? `Connected · ${window.location.host}` : "ComfyUI not reachable", disabled: true },
       ],
     };
+  }
+
+  function _roleLabel(slotId, defaultLabel) {
+    if (!slotId || slotId === "funpack") return defaultLabel;
+    const slot = (S.get().models?.slots || []).find((s) => s.id === slotId);
+    return slot ? (slot.label || slot.node_class || slotId) : slotId;
+  }
+
+  function _pickRole(field, title, st) {
+    closeAll();
+    const slots = (st.models?.slots || []);
+    const cur = st.project?.[field] || "funpack";
+    const opts = [{ id: "funpack", label: field === "conditioning_slot" ? "FunPack Studio (built-in)" : "FunPack Chain Sampler (built-in)" },
+      ...slots.map((s) => ({ id: s.id, label: s.label || s.node_class || s.id }))];
+    const chosen = window.prompt(
+      `${title}\n\nOptions:\n${opts.map((o, i) => `${i}: ${o.label}${o.id === cur ? " ✓" : ""}`).join("\n")}\n\nEnter number:`,
+      String(opts.findIndex((o) => o.id === cur)));
+    if (chosen == null || chosen === "") return;
+    const idx = parseInt(chosen, 10);
+    if (isNaN(idx) || idx < 0 || idx >= opts.length) return;
+    if (field === "conditioning_slot") S.setConditioningSlot(opts[idx].id);
+    else S.setSamplerSlot(opts[idx].id);
   }
 
   function closeAll() { openName = null; veil.hidden = true; render(); }
