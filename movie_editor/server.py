@@ -222,6 +222,10 @@ if web is not None and PromptServer is not None:
             raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
         return web.json_response({"role": role, "candidates": nodes.candidates(oi, role)})
 
+    @routes.get(UI_PREFIX + "/api/pipeline-ports")
+    async def _pipeline_ports(_req):
+        return web.json_response({"ports": nodes.pipeline_ports()})
+
     @routes.post(UI_PREFIX + "/api/models/refresh")
     async def _models_refresh(_req):
         try:

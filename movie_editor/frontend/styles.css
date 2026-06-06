@@ -266,6 +266,13 @@ input[type=number] { font-family: var(--font-mono); }
 .slot-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
 .slot-fields label.field, .composer-preview label.field { margin-bottom: 0; }
 
+.wire-box { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.wire-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--teal); margin-bottom: 8px; }
+.wire-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.wire-out { font-family: var(--font-mono); font-size: 11px; color: var(--muted); flex: 0 0 auto; min-width: 130px; }
+.wire-arrow { color: var(--teal); }
+.wire-select { flex: 1; }
+
 /* staggered zone reveal on load */
 .zone { animation: rise .5s both; }
 .media { animation-delay: .02s; }

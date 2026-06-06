@@ -68,6 +68,34 @@ def _matches_role(node_def: dict, role: dict) -> bool:
     return True
 
 
+def connection_inputs(node_def: dict) -> list[dict]:
+    """Typed connection inputs a node accepts (MODEL/CLIP/VAE/LATENT/IMAGE/...),
+    i.e. the sockets other nodes can wire INTO. Skips widgets (combo/INT/FLOAT/...)."""
+    out = []
+    inp = node_def.get("input") or {}
+    for group in ("required", "optional"):
+        for name, spec in (inp.get(group) or {}).items():
+            if not isinstance(spec, list) or not spec:
+                continue
+            t = spec[0]
+            if isinstance(t, str) and t not in WIDGET_PRIMITIVES:
+                out.append({"name": name, "type": t, "required": group == "required"})
+    return out
+
+
+def node_outputs(node_def: dict) -> list[dict]:
+    """Outputs a node produces, as {name, type}, so they can be wired onward."""
+    types = _outputs(node_def)
+    names = node_def.get("output_name") or []
+    out = []
+    for i, t in enumerate(node_def.get("output") or []):
+        if not isinstance(t, str):
+            continue
+        nm = names[i] if i < len(names) and names[i] else t
+        out.append({"name": nm, "type": t})
+    return out
+
+
 def widget_inputs(node_def: dict) -> list[dict]:
     """User-facing widgets for a node: combos (with options) and primitive fields.
     Skips graph-connection inputs (MODEL/CLIP/IMAGE/...)."""
@@ -109,9 +137,44 @@ def candidates(object_info: dict, role_key: str) -> list[dict]:
             "display_name": node_def.get("display_name", cls),
             "category": node_def.get("category", ""),
             "inputs": widget_inputs(node_def),
+            "outputs": node_outputs(node_def),
+            "connection_inputs": connection_inputs(node_def),
         })
     result.sort(key=lambda c: c["display_name"].lower())
     return result
+
+
+def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list[dict]:
+    """Pipeline connection points derived from a node's INPUT_TYPES (authoritative)."""
+    ports = []
+    for group in ("required", "optional"):
+        for name, spec in (input_types.get(group) or {}).items():
+            if not isinstance(spec, (list, tuple)) or not spec:
+                continue
+            t = spec[0]
+            if isinstance(t, str) and t not in WIDGET_PRIMITIVES:
+                ports.append({"id": f"{node_key}.{name}", "node": label, "input": name,
+                              "type": t, "label": f"{label} · {name}"})
+    return ports
+
+
+def pipeline_ports() -> list[dict]:
+    """The fixed path's connection points loaders/nodes wire into. Derived live from the
+    FunPack node classes so they always match the real graph; [] if ComfyUI isn't loaded."""
+    try:
+        try:
+            from conditioning import FunPackStudio
+            from samplers import FunPackLTXAVSceneChainSampler
+        except ImportError:
+            from ...conditioning import FunPackStudio  # type: ignore
+            from ...samplers import FunPackLTXAVSceneChainSampler  # type: ignore
+    except Exception:
+        return []
+    ports = []
+    ports += ports_from_input_types("Studio", "FunPackStudio", FunPackStudio.INPUT_TYPES())
+    ports += ports_from_input_types("Chain Sampler", "FunPackLTXAVSceneChainSampler",
+                                    FunPackLTXAVSceneChainSampler.INPUT_TYPES())
+    return ports
 
 
 def roles_payload() -> list[dict]:

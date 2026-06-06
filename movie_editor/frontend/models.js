@@ -5,9 +5,12 @@
   const API = window.MovieEditorAPI;
 
   let roles = [];                 // [{key,label,category}]
+  let ports = [];                 // pipeline connection points [{id,type,label}]
   const candCache = {};           // role -> [candidate]
-  let config = { slots: [] };     // {slots:[{id,role,node_class,inputs:{}}]}
+  let config = { slots: [] };     // {slots:[{id,role,node_class,inputs:{},wires:{outName:value}}]}
   let overlay = null;
+
+  function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : key; }
 
   function uid() { return Math.random().toString(36).slice(2, 9); }
 
@@ -70,10 +73,43 @@
         grid.append(widgetField(spec, slot.inputs[spec.name], async (v) => { slot.inputs[spec.name] = v; await persist(); }));
       });
       card.append(grid);
-    } else {
-      card.append(el("div", "pj-meta", "No configurable inputs."));
+    }
+
+    // Wiring: each output -> a destination (pipeline port or another node's input).
+    if (cand && (cand.outputs || []).length) {
+      slot.wires = slot.wires || {};
+      const wbox = el("div", "wire-box");
+      wbox.append(el("div", "wire-title", "Wire to"));
+      cand.outputs.forEach((out) => {
+        const row = el("div", "wire-row");
+        row.append(el("span", "wire-out", `${out.name} (${out.type})`));
+        row.append(el("span", "wire-arrow", "→"));
+        row.append(destSelect(slot, out));
+        wbox.append(row);
+      });
+      card.append(wbox);
     }
     return card;
+  }
+
+  function destinations(slot, type) {
+    const out = [{ value: "", label: "— unwired —" }];
+    ports.filter((p) => p.type === type).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
+    config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
+      const c2 = candidate(s2.role, s2.node_class);
+      (c2?.connection_inputs || []).filter((ci) => ci.type === type).forEach((ci) =>
+        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${roleLabel(s2.role)} · ${ci.name}` }));
+    });
+    return out;
+  }
+
+  function destSelect(slot, out) {
+    const sel = el("select", "wire-select");
+    const cur = (slot.wires || {})[out.name] || "";
+    destinations(slot, out.type).forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === cur) o.selected = true; sel.append(o); });
+    if (cur && ![...sel.options].some((o) => o.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
+    sel.onchange = async () => { slot.wires = slot.wires || {}; slot.wires[out.name] = sel.value; await persist(); };
+    return sel;
   }
 
   // ── add-model composer ───────────────────────────────────────────────────────
@@ -156,6 +192,7 @@
 
   async function open() {
     await ensureRoles();
+    try { ports = (await API.pipelinePorts()).ports || []; } catch (_) { ports = []; }
     try { config = await API.getModels(); } catch (_) { config = { slots: [] }; }
     // pre-warm candidate cache for configured roles so their fields render
     for (const role of new Set(config.slots.map((s) => s.role))) { try { await candidates(role); } catch (_) {} }

@@ -96,6 +96,14 @@ installed. The **Models** menu configures them model-agnostically:
   that type are offered). The chosen node's inputs are rendered inline — combos populated with
   your installed files — so it stays fully controlled. This "wires" the node into the pipeline.
 
+Each configured node also gets a **Wire to** selector per output: choose where its output
+connects — a **pipeline port** (Studio/Chain Sampler input, derived live from those nodes'
+real `INPUT_TYPES`) or **another configured node's input** of the matching type. So you can
+chain nodes (e.g. CLIP Vision loader → CLIPVisionEncode → Studio, or add an
+`LTXAV Latent Combine` and wire only its output into Studio) — rebuilding the graph as a tidy
+list instead of a canvas of spaghetti. Destinations are type-checked (only matching sockets
+are offered).
+
 Discovery uses `/object_info` output types; source roles exclude patchers (e.g. a LoRA loader
 won't show under Unet). Config is stored globally at `~/.funpack_movie/models.json`.
 

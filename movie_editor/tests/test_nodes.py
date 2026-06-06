@@ -56,6 +56,25 @@ def test_widget_inputs_skip_connections_and_expose_combos():
     assert ckpt["inputs"][0]["choices"] == ["a.safetensors", "b.ckpt"]
 
 
+def test_node_outputs_and_connection_inputs():
+    lora = next(c for c in nodes.candidates(OI, "lora") if c["class"] == "LoraLoader")
+    assert {o["type"] for o in lora["outputs"]} == {"MODEL", "CLIP"}
+    ci = {c["name"]: c["type"] for c in lora["connection_inputs"]}
+    assert ci == {"model": "MODEL", "clip": "CLIP"}        # widgets (lora_name/strength) excluded
+
+
+def test_ports_from_input_types_derives_connection_points():
+    it = {
+        "required": {"rating": (["a", "b"], {}), "studio_settings": ("STRING", {})},
+        "optional": {"model": ("MODEL",), "clip": ("CLIP",), "source_image": ("IMAGE",),
+                     "latent": ("LATENT",), "positive_prompt": ("STRING", {"forceInput": True})},
+    }
+    ports = nodes.ports_from_input_types("Studio", "FunPackStudio", it)
+    by_input = {p["input"]: p["type"] for p in ports}
+    assert by_input == {"model": "MODEL", "clip": "CLIP", "source_image": "IMAGE", "latent": "LATENT"}
+    assert all(p["id"].startswith("FunPackStudio.") for p in ports)  # STRING widgets excluded
+
+
 def test_models_store_roundtrip(tmp_path, monkeypatch):
     from movie_editor.backend import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

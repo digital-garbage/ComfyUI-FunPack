@@ -39,6 +39,7 @@
     // models / node slots
     nodeRoles: () => j("GET", API("/node-roles")),
     nodeCandidates: (role, refresh) => j("GET", API(`/node-candidates/${role}${refresh ? "?refresh=true" : ""}`)),
+    pipelinePorts: () => j("GET", API("/pipeline-ports")),
     getModels: () => j("GET", API("/models")),
     saveModels: (data) => j("PUT", API("/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
