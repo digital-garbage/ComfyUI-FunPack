@@ -211,6 +211,21 @@ input[type=number] { font-family: var(--font-mono); }
 
 /* media drop onto a clip */
 .clip.drop-target { border-color: var(--teal); box-shadow: inset 0 0 0 2px var(--teal-soft); }
+.clip-thumb { position: absolute; inset: 0; z-index: 0; opacity: .22; overflow: hidden; border-radius: 8px; }
+.clip-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.clip-thumb > span { position: absolute; right: 6px; bottom: 4px; font-size: 14px; color: #fff8; }
+.clip.has-media .clip-head, .clip.has-media .clip-text { position: relative; z-index: 1; }
+
+/* inspector image-source preview */
+.img-src { display: flex; gap: 10px; align-items: center; }
+.img-src-prev { width: 64px; height: 44px; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #060606; display: flex; align-items: center; justify-content: center; }
+.img-src-prev img { width: 100%; height: 100%; object-fit: cover; }
+.img-src-info { min-width: 0; }
+.img-src-name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+/* link source row */
+.link-source { margin: 8px 0 0; }
+.link-bound { font-size: 11.5px; color: var(--teal); margin-top: 6px; }
 
 /* ───────────────────────── PREVIEW / PROGRAM MONITOR ───────────────────────── */
 .program { padding: 0; background: #060606; display: flex; align-items: center; justify-content: center; position: relative; }

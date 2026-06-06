@@ -28,6 +28,7 @@ class SceneSource:
     type: str = "empty"  # "empty" | "image" | "generated_frame"
     media_ref: Optional[str] = None              # asset id, for type == "image"
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
+    target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
 
     @staticmethod
     def from_dict(d: Optional[dict]) -> "SceneSource":
@@ -36,6 +37,7 @@ class SceneSource:
             type=d.get("type", "empty"),
             media_ref=d.get("media_ref"),
             frame_ref=d.get("frame_ref"),
+            target=d.get("target"),
         )
 
 
@@ -52,6 +54,8 @@ class Scene:
     # Forward-compat per-scene knobs (uniform values still win in V1).
     frames: Optional[int] = None
     fps: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
     source: SceneSource = field(default_factory=SceneSource)
     # Selective generation (UI-functional only in Phase 3 — see plan). `excluded`
     # scenes are skipped by a full Generate/Render; "generate this scene only" is a
@@ -67,6 +71,8 @@ class Scene:
             transition_frames=d.get("transition_frames"),
             frames=d.get("frames"),
             fps=d.get("fps"),
+            width=d.get("width"),
+            height=d.get("height"),
             source=SceneSource.from_dict(d.get("source")),
             excluded=bool(d.get("excluded", False)),
         )
@@ -89,6 +95,8 @@ class Project:
     seed: int = 1
     num_frames_per_scene: int = 97
     frame_rate: int = 25
+    width: int = 768
+    height: int = 512
     max_scenes: int = 8
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -104,6 +112,8 @@ class Project:
             seed=int(d.get("seed", 1)),
             num_frames_per_scene=int(d.get("num_frames_per_scene", 97)),
             frame_rate=int(d.get("frame_rate", 25)),
+            width=int(d.get("width", 768)),
+            height=int(d.get("height", 512)),
             max_scenes=int(d.get("max_scenes", 8)),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),

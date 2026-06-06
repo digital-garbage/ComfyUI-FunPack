@@ -58,6 +58,7 @@
     allNodes: () => j("GET", API("/all-nodes")),
     nodeSpec: (cls) => j("GET", API(`/node/${encodeURIComponent(cls)}`)),
     pipelinePorts: () => j("GET", API("/pipeline-ports")),
+    imageTargets: () => j("GET", API("/image-targets")),
     getModels: () => j("GET", API("/models")),
     saveModels: (data) => j("PUT", API("/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),

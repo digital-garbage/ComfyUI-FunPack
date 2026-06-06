@@ -14,6 +14,7 @@
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     shortcuts: [],           // prompt shortcut library
+    imageTargets: [],        // where an image asset can be wired [{value,label}]
   };
 
   const listeners = new Set();
@@ -201,6 +202,11 @@
   async function loadModels() {
     try { state.models = await API.getModels(); } catch (_) { state.models = { slots: [] }; }
     notify();
+    loadImageTargets();
+  }
+  async function loadImageTargets() {
+    try { state.imageTargets = (await API.imageTargets()).targets || []; } catch (_) { state.imageTargets = []; }
+    notify();
   }
 
   // Edit a configured node input from the main editor (an "exposed" control) and persist.
@@ -276,7 +282,7 @@
     refreshProjectList, loadProject, newProject, deleteProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, generate, loadModels, setModelInput, setModelLink,
+    refreshPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, loadTransitions, saveTransition, deleteTransition,
     applyTransitionToSelection, insertShortcutIntoSelection,

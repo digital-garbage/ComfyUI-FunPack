@@ -184,9 +184,10 @@ def _output_index(node_def: Optional[dict], out_name: str) -> int:
     return 0
 
 
-def build(object_info: dict, models_config: dict, params: dict) -> tuple[dict, dict]:
+def build(object_info: dict, models_config: dict, params: dict, media: dict | None = None) -> tuple[dict, dict]:
     """Return (graph, report). `params`: prompt, negative_prompt, seed,
-    num_frames_per_scene, frame_rate. `models_config`: {"slots": [...]}."""
+    num_frames_per_scene, frame_rate, width, height. `models_config`: {"slots":[...],
+    "links":[...]}. `media`: optional {"filename": <comfy-input file>, "target": wire}."""
     object_info = object_info or {}
     ref_wv = _ref_widgets(load_reference())
     graph: dict[str, dict] = {}
@@ -239,8 +240,12 @@ def build(object_info: dict, models_config: dict, params: dict) -> tuple[dict, d
             report["unsatisfied"].append(msg); report["blocking"].append(msg)
 
     # 3b. linked inputs: one shared value drives several node inputs (e.g. width/height).
+    # An "editor"-sourced link pulls its value from a project setting (params) instead.
     for link in (models_config or {}).get("links") or []:
-        val = link.get("value")
+        if link.get("source") == "editor":
+            val = params.get(link.get("editor_key"))
+        else:
+            val = link.get("value")
         if val is None:
             continue
         for m in link.get("members") or []:
@@ -248,8 +253,19 @@ def build(object_info: dict, models_config: dict, params: dict) -> tuple[dict, d
             if sid and sid in graph:
                 graph[sid]["inputs"][m.get("input")] = val
 
-    # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
     port_to_core = _port_index(object_info)
+
+    # 3c. media: inject a LoadImage for the chosen asset, wired to the chosen input.
+    if media and media.get("filename") and media.get("target"):
+        graph["media_load"] = {"class_type": "LoadImage", "inputs": {"image": media["filename"]}}
+        dst = _resolve_target(media["target"], port_to_core, slot_node_id)
+        if dst and dst[0] in graph:
+            graph[dst[0]]["inputs"][dst[1]] = ["media_load", 0]
+            report["wired"].append(f"media -> {dst[0]}.{dst[1]}")
+        else:
+            report["unsatisfied"].append(f"media target '{media['target']}' could not be resolved.")
+
+    # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd = slot_def[s["id"]]

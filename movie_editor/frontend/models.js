@@ -386,10 +386,30 @@
     head.append(rm);
     card.append(head);
 
-    const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
-    const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });
-    vf.classList.add("link-value");
-    card.append(vf);
+    // source: a manual value, or driven by a project/editor setting
+    const srcRow = el("label", "field link-source");
+    srcRow.append(el("span", null, "Driven by"));
+    const srcSel = el("select");
+    [["", "Manual value"], ["frame_rate", "Project · FPS"], ["num_frames_per_scene", "Project · Frames"],
+     ["width", "Project · Width"], ["height", "Project · Height"]].forEach(([v, label]) => {
+      const o = new Option(label, v); if ((link.source === "editor" ? link.editor_key : "") === v) o.selected = true; srcSel.append(o);
+    });
+    srcSel.onchange = async () => {
+      if (srcSel.value) { link.source = "editor"; link.editor_key = srcSel.value; }
+      else { link.source = "manual"; delete link.editor_key; }
+      await persist(); render();
+    };
+    srcRow.append(srcSel);
+    card.append(srcRow);
+
+    if (link.source === "editor") {
+      card.append(el("div", "link-bound", `Value comes from the project setting at generate.`));
+    } else {
+      const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
+      const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });
+      vf.classList.add("link-value");
+      card.append(vf);
+    }
 
     const mem = el("div", "link-members");
     (link.members || []).forEach((m) => {

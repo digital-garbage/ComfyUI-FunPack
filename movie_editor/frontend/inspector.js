@@ -32,6 +32,37 @@
     return field(labelText, i);
   }
 
+  function renderImageSource(st, scene) {
+    const block = el("div", "insp-block img-src");
+    const ref = scene.source?.media_ref;
+    const asset = (st.mediaBin || []).find((m) => m.id === ref);
+    const prev = el("div", "img-src-prev");
+    if (asset && asset.kind === "image") { const img = el("img"); img.src = window.MovieEditorAPI.mediaUrl(asset.id); prev.append(img); }
+    else prev.append(el("span", "media-icon", asset ? "▶" : "◇"));
+    const info = el("div", "img-src-info");
+    info.append(el("div", "img-src-name", asset ? asset.name : "No asset — drag from the Media bin onto the clip, or pick below"));
+    block.append(prev); block.append(info);
+    body.append(block);
+
+    // pick an asset directly
+    const pick = el("select");
+    pick.append(new Option("— choose asset —", ""));
+    (st.mediaBin || []).forEach((m) => { const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o); });
+    pick.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "image", media_ref: pick.value || null } });
+    body.append(field("Media asset", pick));
+
+    // where the image is wired in the graph
+    const tgt = el("select");
+    tgt.append(new Option("— choose destination input —", ""));
+    (st.imageTargets || []).forEach((t) => { const o = new Option(t.label, t.value); if (t.value === scene.source?.target) o.selected = true; tgt.append(o); });
+    if (scene.source?.target && !(st.imageTargets || []).some((t) => t.value === scene.source.target)) {
+      const o = new Option(scene.source.target + " (missing)", scene.source.target); o.selected = true; tgt.append(o);
+    }
+    tgt.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "image", target: tgt.value || null } });
+    body.append(field("Feeds node input", tgt));
+    if (!(st.imageTargets || []).length) body.append(el("div", "insp-hint", "No IMAGE inputs found — add an image-processing node in Models first."));
+  }
+
   function renderScene(st, scene) {
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`;
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
@@ -43,7 +74,9 @@
     const src = el("select");
     SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((scene.source?.type) === v) o.selected = true; src.append(o); });
     src.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: src.value } });
-    body.append(field("Source (acts in Phase 2)", src));
+    body.append(field("Source", src));
+
+    if ((scene.source?.type) === "image") renderImageSource(st, scene);
 
     body.append(field("Transition to next scene", transitionSelect(scene.transition_to_next || "",
       (v) => S.patchScene(scene.id, { transition_to_next: v }))));
@@ -94,6 +127,11 @@
     row2.append(numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps"));
     row2.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
     body.append(row2);
+    const row3 = el("div", "fields-row");
+    row3.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
+    row3.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
+    body.append(row3);
+    body.append(el("div", "insp-hint", "Link FPS / Frames / Width / Height to node inputs in Models → Linked inputs (set Source = Project …)."));
   }
 
   function renderSplit(st) {
@@ -143,9 +181,15 @@
     if (!slotItems.length && !linkItems.length) return;
     const wrap = el("div", "insp-block");
     const tag = el("div", "insp-tag"); tag.textContent = "Exposed controls"; wrap.append(tag);
+    const SRC_LBL = { frame_rate: "Project FPS", num_frames_per_scene: "Project Frames", width: "Project Width", height: "Project Height" };
     linkItems.forEach((l) => {
-      const ctrl = exposedControl({ kind: l.kind, choices: l.choices }, l.value, (v) => S.setModelLink(l.id, v));
-      wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, ctrl));
+      if (l.source === "editor") {
+        const note = el("div", "lib-sub"); note.textContent = `← ${SRC_LBL[l.editor_key] || l.editor_key}`;
+        wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, note));
+      } else {
+        const ctrl = exposedControl({ kind: l.kind, choices: l.choices }, l.value, (v) => S.setModelLink(l.id, v));
+        wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, ctrl));
+      }
     });
     slotItems.forEach(([slot, d]) => {
       const ctrl = exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v));

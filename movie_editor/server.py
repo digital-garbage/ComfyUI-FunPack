@@ -74,6 +74,34 @@ def _media_from_history(hist_entry: dict) -> list[dict]:
     return out
 
 
+def _prepare_media(proj: Project) -> Optional[dict]:
+    """If a scene has an image asset + a chosen target, copy it into ComfyUI's input
+    folder (ephemeral) and return {filename, target} for the builder to LoadImage."""
+    import os
+    import shutil
+    try:
+        import folder_paths
+        indir = folder_paths.get_input_directory()
+    except Exception:
+        return None
+    for sc in proj.scenes:
+        src = sc.source
+        ref = getattr(src, "media_ref", None)
+        tgt = getattr(src, "target", None)
+        if not (src and getattr(src, "type", "") == "image" and ref and tgt):
+            continue
+        path = media.path_for(ref)
+        if not path:
+            continue
+        fn = f"funpack_movie_{ref}{path.suffix}"
+        try:
+            shutil.copy(str(path), os.path.join(indir, fn))
+        except OSError:
+            return None
+        return {"filename": fn, "target": tgt}
+    return None
+
+
 def _project_or_404(pid: str) -> Project:
     p = projects.get(pid)
     if p is None:
@@ -271,7 +299,8 @@ if web is not None and PromptServer is not None:
             "prompt": prompt, "seed": target.seed,
             "num_frames_per_scene": target.num_frames_per_scene,
             "frame_rate": target.frame_rate,
-        })
+            "width": target.width, "height": target.height,
+        }, media=_prepare_media(target))
         if report["blocking"]:
             raise web.HTTPBadRequest(reason="Incomplete config — " + "; ".join(report["blocking"]))
         try:
@@ -339,6 +368,24 @@ if web is not None and PromptServer is not None:
         except Exception:
             oi = None
         return web.json_response({"ports": nodes.pipeline_ports(oi)})
+
+    @routes.get(UI_PREFIX + "/api/image-targets")
+    async def _image_targets(_req):
+        try:
+            oi = await bridge.object_info()
+        except Exception:
+            oi = {}
+        out = []
+        for p in nodes.pipeline_ports(oi):
+            if p.get("type") == "IMAGE":
+                out.append({"value": "port:" + p["id"], "label": p["label"]})
+        for slot in nodes.load_models().get("slots", []):
+            nd = oi.get(slot.get("node_class")) or {}
+            for ci in nodes.connection_inputs(nd):
+                if ci["type"] == "IMAGE":
+                    label = (slot.get("label") or slot.get("node_class")) + " · " + ci["name"]
+                    out.append({"value": f"node:{slot['id']}:{ci['name']}", "label": label})
+        return web.json_response({"targets": out})
 
     @routes.get(UI_PREFIX + "/api/all-nodes")
     async def _all_nodes(_req):

@@ -77,6 +77,17 @@
       if (id) { e.preventDefault(); S.assignMediaToScene(scene.id, id); }
     });
 
+    // media thumbnail badge when an image asset is assigned
+    const mref = scene.source?.type === "image" ? scene.source.media_ref : null;
+    const asset = mref ? (st.mediaBin || []).find((m) => m.id === mref) : null;
+    if (asset) {
+      const th = el("div", "clip-thumb");
+      if (asset.kind === "image") { const img = el("img"); img.src = window.MovieEditorAPI.mediaUrl(asset.id); img.loading = "lazy"; th.append(img); }
+      else th.append(el("span", null, "▶"));
+      clip.append(th);
+      clip.classList.add("has-media");
+    }
+
     const head = el("div", "clip-head");
     head.append(el("span", "clip-no", p2(index + 1)));
     head.append(el("span", "clip-src", SRC_ICON[scene.source?.type] || "▦"));
@@ -87,7 +98,13 @@
 
     const actions = el("div", "clip-actions");
     const mk = (label, title, cls, fn) => { const b = el("button", "ic-btn" + (cls ? " " + cls : ""), label); b.title = title; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
-    actions.append(mk("⟈", "Split clip", "", () => S.splitScene(scene.id)));
+    actions.append(mk("⟈", "Split clip at playhead", "", () => {
+      const offsetSec = leftPx / pxPerSec, durSec = sDur(scene, p), fps = sFps(scene, p);
+      let at = null;
+      if (playheadSec > offsetSec + 0.05 && playheadSec < offsetSec + durSec - 0.05)
+        at = Math.round((playheadSec - offsetSec) * fps);
+      S.splitScene(scene.id, at);
+    }));
     actions.append(mk("‹", "Move left", "", () => S.moveScene(scene.id, -1)));
     actions.append(mk("›", "Move right", "", () => S.moveScene(scene.id, 1)));
     actions.append(mk("✕", "Delete clip", "danger", () => S.removeScene(scene.id)));

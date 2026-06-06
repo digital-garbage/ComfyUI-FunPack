@@ -131,6 +131,39 @@ def test_linked_inputs_drive_multiple_node_values():
     assert graph["slot_b"]["inputs"]["length"] == 121
 
 
+def test_editor_driven_link_pulls_from_params():
+    models = {
+        "slots": [{"id": "a", "node_class": "ImgProc", "inputs": {"length": 50}, "wires": {}}],
+        "links": [{"id": "L", "name": "len", "source": "editor", "editor_key": "num_frames_per_scene",
+                   "members": [{"slotId": "a", "input": "length"}]}],
+    }
+    graph, _ = builder.build(OI, models, PARAMS)   # PARAMS num_frames_per_scene = 121
+    assert graph["slot_a"]["inputs"]["length"] == 121
+
+
+def test_media_injects_loadimage_wired_to_target():
+    models = {"slots": [{"id": "ip", "node_class": "ImgProc", "inputs": {}, "wires": {}}]}
+    media = {"filename": "funpack_movie_x.png", "target": "node:ip:image"}
+    graph, report = builder.build(OI, models, PARAMS, media=media)
+    assert graph["media_load"]["class_type"] == "LoadImage"
+    assert graph["media_load"]["inputs"]["image"] == "funpack_movie_x.png"
+    assert graph["slot_ip"]["inputs"]["image"] == ["media_load", 0]
+
+
+def test_optional_open_ports_do_not_block():
+    # loaders + vae + audio handled, no image source: source_image/latent optional -> ok
+    models = {"slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+        {"id": "ip", "node_class": "ImgProc", "inputs": {},
+         "wires": {"latent": "port:FunPackStudio.latent", "Latent": "port:LTXVConcatAVLatent.audio_latent"}},
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:ip:image"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert report["blocking"] == []   # source_image/latent optional, everything required satisfied
+
+
 def test_ambiguous_type_is_reported_not_guessed():
     models = {"slots": [
         {"id": "v1", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
