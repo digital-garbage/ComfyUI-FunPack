@@ -269,7 +269,27 @@
         const cur = slot.input_sources[ci.name] || "";
         srcs.forEach((s) => { const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o); });
         if (cur && !srcs.some((s) => s.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
-        sel.onchange = async () => { slot.input_sources[ci.name] = sel.value; await persist(); };
+        sel.onchange = async () => {
+          slot.input_sources[ci.name] = sel.value;
+          // Auto-wire: if the user just assigned a non-auto source and this slot has
+          // exactly one output of the same type that is not yet wired, and there is
+          // exactly one pipeline destination for that type, wire it automatically.
+          if (sel.value && sel.value !== "") {
+            const matchOuts = (cand.outputs || []).filter((o) => o.type === ci.type);
+            if (matchOuts.length === 1) {
+              const outName = matchOuts[0].name;
+              const existing = wireTargets(slot.wires?.[outName]).filter(Boolean);
+              if (!existing.length) {
+                const dests = destinations(slot, ci.type).filter((d) => d.value);
+                if (dests.length === 1) {
+                  slot.wires = slot.wires || {};
+                  slot.wires[outName] = [dests[0].value];
+                }
+              }
+            }
+          }
+          await persist();
+        };
         row.append(sel);
         sbox.append(row);
       });

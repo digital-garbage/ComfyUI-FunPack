@@ -20,6 +20,10 @@ LINK_TYPES = {
     "GUIDER", "NOISE", "UPSCALE_MODEL", "PHOTOMAKER", "WEBCAM",
 }
 WIDGET_PRIMITIVES = {"INT", "FLOAT", "STRING", "BOOLEAN"}
+# "COMBO" is the V1/new-style dropdown widget type; it is NOT a graph connection even
+# though it is a string.  Old-style combos (spec[0] is a list) are already excluded by
+# the isinstance(t, str) guard, but new-style ones need an explicit check.
+_WIDGET_TYPES = WIDGET_PRIMITIVES | {"COMBO"}
 
 # ComfyUI V3 dynamic match types that are semantically IMAGE-compatible.
 _MATCHTYPE_ALIASES: dict[str, str] = {}  # populated on first lookup — patterns are prefix-matched
@@ -79,7 +83,7 @@ def _all_input_types(node_def: dict) -> list[str]:
     for group in ("required", "optional"):
         for spec in (inp.get(group) or {}).values():
             t = spec[0] if isinstance(spec, list) and spec else None
-            if isinstance(t, str):
+            if isinstance(t, str) and t not in _WIDGET_TYPES:
                 types.append(_normalize_type(t))
     return types
 
@@ -109,7 +113,7 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(spec, list) or not spec:
                 continue
             t = spec[0]
-            if not isinstance(t, str) or t in WIDGET_PRIMITIVES:
+            if not isinstance(t, str) or t in _WIDGET_TYPES:
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             # V3 nodes can mark a required-group input as optional via the flag.
