@@ -272,9 +272,8 @@ if web is not None and PromptServer is not None:
             "num_frames_per_scene": target.num_frames_per_scene,
             "frame_rate": target.frame_rate,
         })
-        if report["unsatisfied"]:
-            raise web.HTTPBadRequest(
-                reason="Incomplete config: " + "; ".join(report["unsatisfied"][:4]))
+        if report["blocking"]:
+            raise web.HTTPBadRequest(reason="Incomplete config — " + "; ".join(report["blocking"]))
         try:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001

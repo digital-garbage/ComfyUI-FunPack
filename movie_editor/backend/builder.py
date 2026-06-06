@@ -71,15 +71,17 @@ CORE_LINKS: dict[str, dict[str, tuple[str, int]]] = {
     "f2i":      {"a": ("fps", 0)},
 }
 
-# core inputs that MUST be fed by a user slot (the old group-node outputs).
-OPEN_PORTS: list[tuple[str, str, str]] = [   # (core_id, input, type)
-    ("studio", "model", "MODEL"),
-    ("studio", "clip", "CLIP"),
-    ("studio", "source_image", "IMAGE"),
-    ("studio", "latent", "LATENT"),
-    ("sampler", "vae", "VAE"),
-    ("concat", "audio_latent", "LATENT"),
-    ("audiodec", "audio_vae", "VAE"),
+# core inputs fed by a user slot (the old group-node outputs). `required` controls
+# whether an unsatisfied/ambiguous one blocks generation — source_image and latent
+# are optional on FunPackStudio, so a text-to-video montage is valid without them.
+OPEN_PORTS: list[tuple[str, str, str, bool]] = [   # (core_id, input, type, required)
+    ("studio", "model", "MODEL", True),
+    ("studio", "clip", "CLIP", True),
+    ("studio", "source_image", "IMAGE", False),
+    ("studio", "latent", "LATENT", False),
+    ("sampler", "vae", "VAE", True),
+    ("concat", "audio_latent", "LATENT", True),
+    ("audiodec", "audio_vae", "VAE", True),
 ]
 
 # core outputs offered as auto-wire producers for slot inputs (image-proc etc.).
@@ -188,12 +190,13 @@ def build(object_info: dict, models_config: dict, params: dict) -> tuple[dict, d
     object_info = object_info or {}
     ref_wv = _ref_widgets(load_reference())
     graph: dict[str, dict] = {}
-    report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": []}
+    # `blocking` is the subset of problems that should stop generation (required inputs).
+    report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [], "blocking": []}
 
     missing = [c for c in CORE if c not in ("",) and CORE[c] not in object_info]
     if missing:
-        report["unsatisfied"].append(
-            "Missing core node classes in ComfyUI: " + ", ".join(sorted(CORE[c] for c in missing)))
+        msg = "Missing core node classes in ComfyUI: " + ", ".join(sorted(CORE[c] for c in missing))
+        report["unsatisfied"].append(msg); report["blocking"].append(msg)
 
     # 1. core nodes: widget defaults <- reference values <- core links.
     for cid, cls in CORE.items():
@@ -232,7 +235,8 @@ def build(object_info: dict, models_config: dict, params: dict) -> tuple[dict, d
         inputs.update(s.get("inputs") or {})
         graph[sid] = {"class_type": cls, "inputs": inputs}
         if cls not in object_info:
-            report["unsatisfied"].append(f"Slot node '{cls}' is not installed in ComfyUI.")
+            msg = f"Slot node '{cls}' is not installed in ComfyUI."
+            report["unsatisfied"].append(msg); report["blocking"].append(msg)
 
     # 3b. linked inputs: one shared value drives several node inputs (e.g. width/height).
     for link in (models_config or {}).get("links") or []:
@@ -303,13 +307,13 @@ def _producers(graph, slots, slot_node_id, slot_def, object_info):
 
 
 def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report):
-    targets = [(cid, inp, t) for cid, inp, t in OPEN_PORTS]
+    targets = list(OPEN_PORTS)  # (core_id, input, type, required)
     for s in slots:  # slot connection inputs (e.g. image-proc vae/image/length)
         nd = slot_def[s["id"]]
         for ci in connection_inputs(nd or {}):
-            targets.append((slot_node_id[s["id"]], ci["name"], ci["type"]))
+            targets.append((slot_node_id[s["id"]], ci["name"], ci["type"], ci.get("required", False)))
 
-    for node_id, inp, t in targets:
+    for node_id, inp, t, required in targets:
         node = graph.get(node_id)
         if not node:
             continue
@@ -320,6 +324,12 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             node["inputs"][inp] = [cands[0][0], cands[0][1]]
             report["auto_wired"].append(f"{node_id}.{inp} <- {cands[0][0]} ({t})")
         elif len(cands) > 1:
-            report["ambiguous"].append(f"{node_id}.{inp} ({t}): {len(cands)} possible sources — wire it explicitly.")
+            msg = f"{node_id}.{inp} ({t}): {len(cands)} possible sources — wire it explicitly."
+            report["ambiguous"].append(msg)
+            if required:
+                report["blocking"].append(msg)
         else:
-            report["unsatisfied"].append(f"{node_id}.{inp} ({t}): no source available.")
+            msg = f"{node_id}.{inp} ({t}): no source available."
+            report["unsatisfied"].append(msg)
+            if required:
+                report["blocking"].append(msg)
