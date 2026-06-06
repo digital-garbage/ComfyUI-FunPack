@@ -33,7 +33,27 @@ ROLES: dict[str, dict] = {
     "clip_vision":   {"label": "CLIP Vision",             "category": "Loaders",  "output": "CLIP_VISION"},
     "image_processing": {"label": "Input Image Processing", "category": "Pipeline", "output": "IMAGE", "input": "IMAGE"},
     "empty_latent":  {"label": "Empty Latent Generator",  "category": "Pipeline", "output": "LATENT"},
+    "audio_encoder": {"label": "Audio Encoder",           "category": "Pipeline", "output": "LATENT"},
 }
+
+# Pipeline inputs that must be satisfied by configured slot nodes.
+# Each entry: id, type, label, required, role_hint (role key to suggest adding), hint.
+PIPELINE_REQUIREMENTS = [
+    {"id": "model",        "type": "MODEL",  "label": "Diffusion model",  "required": True,
+     "role_hint": "unet",       "hint": "Add a Unet / Diffusion Model loader (e.g. LTXVLoader)."},
+    {"id": "clip",         "type": "CLIP",   "label": "Text encoder",     "required": True,
+     "role_hint": "clip",       "hint": "Add a CLIP / Text Encoder loader (usually bundled with the unet loader)."},
+    {"id": "video_vae",    "type": "VAE",    "label": "Video VAE",        "required": True,
+     "role_hint": "video_vae",  "hint": "Add a Video VAE loader (e.g. LTXVVideoDecoder or the VAE output from LTXVLoader)."},
+    {"id": "audio_vae",    "type": "VAE",    "label": "Audio VAE",        "required": True,
+     "role_hint": "audio_vae",  "hint": "Add a separate Audio VAE loader (e.g. LTXVAudioDecoder). This is distinct from the video VAE."},
+    {"id": "audio_latent", "type": "LATENT", "label": "Audio latent",     "required": True,
+     "role_hint": "audio_encoder", "hint": "Add an Audio Encoder node that converts an audio file into a latent (e.g. LTXVAudioEncoder)."},
+    {"id": "source_image", "type": "IMAGE",  "label": "Source image",     "required": False,
+     "role_hint": None,         "hint": "Optional — attach an image to a scene for image-to-video generation."},
+    {"id": "init_latent",  "type": "LATENT", "label": "Initial video latent", "required": False,
+     "role_hint": "empty_latent", "hint": "Optional — override the starting latent. Usually left unset (Studio generates it)."},
+]
 
 
 def _outputs(node_def: dict) -> list[str]:
@@ -230,6 +250,10 @@ def ports_from_object_info(object_info: dict, cls: str, label: str) -> list[dict
         ports.append({"id": f"{cls}.{ci['name']}", "node": label, "input": ci["name"],
                       "type": ci["type"], "label": f"{label} · {ci['name']}"})
     return ports
+
+
+def pipeline_requirements() -> list[dict]:
+    return PIPELINE_REQUIREMENTS
 
 
 def core_producers() -> list[dict]:

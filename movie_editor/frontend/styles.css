@@ -352,6 +352,23 @@ input[type=number] { font-family: var(--font-mono); }
 .composer-preview:empty { display: none; }
 
 /* config validation banner */
+/* Pipeline requirements panel */
+.req-panel { margin-bottom: 18px; }
+.req-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--teal); margin-bottom: 8px; }
+.req-opt-head { font-size: 10px; color: var(--faint); margin: 8px 0 4px; text-transform: uppercase; letter-spacing: 1px; }
+.req-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 6px; margin-bottom: 4px; font-size: 12.5px; flex-wrap: wrap; }
+.req-row.ok { background: color-mix(in srgb, var(--teal) 8%, transparent); }
+.req-row.missing { background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
+.req-row.opt { background: transparent; opacity: 0.7; }
+.req-dot { font-family: var(--font-mono); font-weight: 700; flex: 0 0 auto; width: 14px; }
+.req-row.ok .req-dot    { color: var(--teal); }
+.req-row.missing .req-dot { color: var(--danger); }
+.req-label { flex: 1; }
+.req-type  { font-family: var(--font-mono); font-size: 10px; color: var(--faint); flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--line); border-radius: 3px; }
+.req-hint  { width: 100%; margin-top: 3px; margin-left: 22px; font-size: 11.5px; color: var(--muted); }
+.req-add   { flex: 0 0 auto; }
+.req-empty { color: var(--faint); font-size: 12px; padding: 8px 0; }
+
 .valid-banner { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 8px; margin-bottom: 14px; font-size: 12.5px; border: 1px solid var(--line); }
 .valid-banner .valid-dot { font-family: var(--font-mono); font-weight: 700; }
 .valid-banner.ok   { color: var(--teal);   border-color: color-mix(in srgb, var(--teal) 45%, var(--line)); background: color-mix(in srgb, var(--teal) 9%, transparent); }

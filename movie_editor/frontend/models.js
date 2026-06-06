@@ -11,6 +11,7 @@
   const specByClass = {};         // class -> full node spec (inputs/outputs/connection_inputs)
   let config = { slots: [] };     // {slots:[{id,role,role_label,node_class,inputs:{},wires:{},input_sources:{}}]}
   let coreProducers = [];          // [{id,type,label}]
+  let requirements = [];           // [{id,type,label,required,role_hint,hint}]
   let overlay = null;
   const expanded = new Set();     // slot ids currently expanded (collapsed by default)
   let linkMode = false;           // selecting inputs to bind into one shared control
@@ -430,18 +431,89 @@
     return box;
   }
 
+  // Does any configured slot produce the given type (optionally filtered by role)?
+  function slotProducesType(type, roleHint) {
+    return config.slots.some((s) => {
+      if (roleHint && s.role !== roleHint) return false;
+      const spec = specFor(s);
+      return (spec?.outputs || []).some((o) => o.type === type);
+    });
+  }
+
+  // For VAE: need two separate producers (video_vae + audio_vae roles).
+  // For others: at least one producer of the type (regardless of role).
+  function requirementSatisfied(req) {
+    if (req.role_hint) return slotProducesType(req.type, req.role_hint);
+    return slotProducesType(req.type, null);
+  }
+
+  function requirementsPanel() {
+    const sec = el("div", "req-panel");
+    sec.append(el("div", "req-title", "Pipeline requirements"));
+
+    if (!requirements.length) {
+      sec.append(el("div", "req-empty", "Requirements not loaded — open Models to refresh."));
+      return sec;
+    }
+
+    const required = requirements.filter((r) => r.required);
+    const optional = requirements.filter((r) => !r.required);
+    const allOk = required.every(requirementSatisfied);
+
+    required.forEach((req) => {
+      const ok = requirementSatisfied(req);
+      const row = el("div", "req-row" + (ok ? " ok" : " missing"));
+      row.append(el("span", "req-dot", ok ? "✓" : "✕"));
+      const lbl = el("span", "req-label", req.label);
+      const badge = el("span", "req-type", req.type);
+      row.append(lbl); row.append(badge);
+      if (!ok) {
+        const hint = el("div", "req-hint", req.hint);
+        row.append(hint);
+        if (req.role_hint) {
+          const addBtn = el("button", "btn ghost tiny req-add", "+ Add");
+          addBtn.onclick = () => {
+            // pre-scroll the composer to the right role and expand it
+            const typeSelEl = document.querySelector(".composer select");
+            if (typeSelEl) { typeSelEl.value = req.role_hint; typeSelEl.dispatchEvent(new Event("change")); }
+          };
+          row.append(addBtn);
+        }
+      }
+      sec.append(row);
+    });
+
+    if (optional.length) {
+      const optHead = el("div", "req-opt-head", "Optional");
+      sec.append(optHead);
+      optional.forEach((req) => {
+        const ok = requirementSatisfied(req);
+        const row = el("div", "req-row opt" + (ok ? " ok" : ""));
+        row.append(el("span", "req-dot", ok ? "✓" : "·"));
+        row.append(el("span", "req-label", req.label));
+        row.append(el("span", "req-type", req.type));
+        sec.append(row);
+      });
+    }
+
+    if (allOk && config.slots.length) {
+      const v = validation();
+      const bits = [];
+      if (v.errors) bits.push(`${v.errors} slot error${v.errors > 1 ? "s" : ""}`);
+      if (v.warns) bits.push(`${v.warns} warning${v.warns > 1 ? "s" : ""}`);
+      const bar = el("div", "valid-banner " + (v.errors ? "bad" : (v.warns ? "warn" : "ok")));
+      bar.append(el("span", "valid-dot", v.errors ? "!" : "✓"));
+      bar.append(el("span", null, v.errors ? `Pipeline ready but ${bits.join(", ")} in slot config.`
+        : (v.warns ? `Pipeline ready — ${bits.join(", ")}.` : "Pipeline ready.")));
+      sec.append(bar);
+    }
+
+    return sec;
+  }
+
   function summaryBanner(v) {
-    if (!config.slots.length) return null;
-    const bits = [];
-    if (v.errors) bits.push(`${v.errors} error${v.errors > 1 ? "s" : ""}`);
-    if (v.warns) bits.push(`${v.warns} warning${v.warns > 1 ? "s" : ""}`);
-    if (v.missing.length) bits.push(`missing: ${v.missing.join(", ")}`);
-    const ok = !v.errors && !v.missing.length;
-    const bar = el("div", "valid-banner " + (v.errors || v.missing.length ? "bad" : (v.warns ? "warn" : "ok")));
-    bar.append(el("span", "valid-dot", ok ? "✓" : "!"));
-    bar.append(el("span", null, ok ? (v.warns ? `Config usable — ${bits.join(", ")}.` : "Config complete — all slots ready.")
-                                   : `Config incomplete — ${bits.join(", ")}.`));
-    return bar;
+    // Kept for any callers — but requirementsPanel() is now shown instead.
+    return null;
   }
 
   // ── linked-inputs section ──────────────────────────────────────────────────────
@@ -546,13 +618,12 @@
 
   function body() {
     const b = el("div", "models-body");
+    b.append(requirementsPanel());
     b.append(composer());
-    const v = validation();
-    const banner = summaryBanner(v);
-    if (banner) b.append(banner);
     b.append(linksSection());
+    const v = validation();
     const list = el("div", "slot-list");
-    if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet. Add Unet, VAEs, CLIP, and pipeline nodes above."));
+    if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet — use the form above to add loaders."));
     else config.slots.forEach((s) => list.append(slotRow(s, v.perSlot[s.id])));
     b.append(list);
     return b;
@@ -581,7 +652,7 @@
 
   async function open() {
     await ensureRoles();
-    try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; } catch (_) { ports = []; coreProducers = []; }
+    try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; requirements = pp.requirements || []; } catch (_) { ports = []; coreProducers = []; requirements = []; }
     try { config = await API.getModels(); } catch (_) { config = { slots: [] }; }
     await prewarmSpecs();
 

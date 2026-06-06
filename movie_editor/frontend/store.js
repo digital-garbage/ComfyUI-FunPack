@@ -251,6 +251,22 @@
   }
 
   // ── generation ───────────────────────────────────────────────────────────────
+  const GEN_ERROR_MAP = [
+    [/audio_vae.*no source/i,    "Missing Audio VAE — add an Audio VAE loader in Models (distinct from the video VAE)."],
+    [/audio_latent.*no source/i, "Missing Audio latent — add an Audio Encoder node in Models (e.g. LTXVAudioEncoder)."],
+    [/\.vae.*no source/i,        "Missing Video VAE — add a Video VAE loader in Models."],
+    [/\.model.*no source/i,      "Missing diffusion model — add a Unet loader in Models."],
+    [/\.clip.*no source/i,       "Missing text encoder — add a CLIP loader in Models."],
+    [/no source available/i,     "A required pipeline input has no source — open Models and check the Pipeline requirements checklist."],
+    [/not installed/i,           "A configured node class is not installed in ComfyUI — check Models for details."],
+    [/Node registry unavailable/i, "ComfyUI is offline or still starting up — wait a moment and try again."],
+  ];
+
+  function _friendlyGenError(raw) {
+    for (const [pat, msg] of GEN_ERROR_MAP) if (pat.test(raw)) return msg;
+    return raw;
+  }
+
   let pollTimer = null;
   async function generate(onlyScene) {
     if (!state.project) return;
@@ -261,7 +277,7 @@
       set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: "Generating…" } });
       poll(r.prompt_id);
     } catch (e) {
-      set({ gen: { state: "error", promptId: null, media: [], msg: e.message } });
+      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
     }
   }
 

@@ -448,6 +448,7 @@ if web is not None and PromptServer is not None:
         return web.json_response({
             "ports": nodes.pipeline_ports(oi),
             "core_producers": nodes.core_producers(),
+            "requirements": nodes.pipeline_requirements(),
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")
