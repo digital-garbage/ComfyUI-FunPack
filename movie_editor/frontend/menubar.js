@@ -54,7 +54,8 @@
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },
         { sep: true },
-        { label: st.health?.template_exists ? "Workflow template: ready" : "Workflow template: missing", disabled: true },
+        { label: st.health?.reference_loaded ? "Pipeline reference: loaded" : "Pipeline reference: missing", disabled: true },
+        { label: `Configured nodes: ${st.health?.configured_slots ?? 0}`, disabled: true },
         { label: st.health?.ok ? `Connected · ${st.health.comfy_url || ""}` : "ComfyUI not reachable", disabled: true },
       ],
     };

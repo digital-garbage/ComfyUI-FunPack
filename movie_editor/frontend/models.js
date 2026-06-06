@@ -251,7 +251,10 @@
           curList = await candidates(curRole);
           fill(curList, curList.length ? "Loader Node…" : "No matching nodes");
         }
-      } catch (e) { nodeSel.innerHTML = ""; nodeSel.append(new Option("ComfyUI offline", "")); }
+      } catch (e) {
+        nodeSel.innerHTML = ""; nodeSel.append(new Option("Error: " + (e && e.message ? e.message : "node list unavailable"), ""));
+        console.error("[Models] node list failed:", e);
+      }
     };
     nodeSel.onchange = async () => {
       addBtn.disabled = true; curCand = null; clear(preview);
