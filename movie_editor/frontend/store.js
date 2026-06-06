@@ -78,6 +78,16 @@
   function setSamplerSlot(slotId) {
     patchProject({ sampler_slot: slotId || "funpack" });
   }
+  function setSamplerInput(name, value) {
+    if (!state.project) return;
+    const prev = state.project.sampler_inputs || {};
+    patchProjectQuiet({ sampler_inputs: { ...prev, [name]: value } });
+  }
+  function setStudioInput(name, value) {
+    if (!state.project) return;
+    const prev = state.project.studio_inputs || {};
+    patchProjectQuiet({ studio_inputs: { ...prev, [name]: value } });
+  }
 
   // ── editing ────────────────────────────────────────────────────────────────
   function scheduleSave() {
@@ -366,7 +376,7 @@
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
-    setConditioningSlot, setSamplerSlot,
+    setConditioningSlot, setSamplerSlot, setSamplerInput, setStudioInput,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,

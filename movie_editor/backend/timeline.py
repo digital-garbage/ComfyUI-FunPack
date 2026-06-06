@@ -87,6 +87,7 @@ class Project:
     id: str = field(default_factory=_new_id)
     name: str = "Untitled"
     anchor: str = ""               # text prepended to every scene (character anchor)
+    negative_prompt: str = ""      # passed to the neg primitive node in the graph
     # Marker separating the anchor from the first scene (Studio needs a trigger to
     # close segments[0]=anchor). Defaults resolved at assembly from the library.
     intro_transition: str = ""
@@ -102,6 +103,10 @@ class Project:
     # is a slot id from models.json. Stored now, full builder wiring in a future phase.
     conditioning_slot: str = "funpack"
     sampler_slot: str = "funpack"
+    # Widget-input overrides for the built-in FunPack nodes (only used when the
+    # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
+    studio_inputs: dict = field(default_factory=dict)
+    sampler_inputs: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -111,6 +116,7 @@ class Project:
             id=d.get("id") or _new_id(),
             name=str(d.get("name", "Untitled")),
             anchor=str(d.get("anchor", "")),
+            negative_prompt=str(d.get("negative_prompt", "")),
             intro_transition=str(d.get("intro_transition", "")),
             scenes=[Scene.from_dict(s) for s in d.get("scenes", [])],
             seed=int(d.get("seed", 1)),
@@ -121,6 +127,8 @@ class Project:
             max_scenes=int(d.get("max_scenes", 8)),
             conditioning_slot=str(d.get("conditioning_slot", "funpack")),
             sampler_slot=str(d.get("sampler_slot", "funpack")),
+            studio_inputs=dict(d.get("studio_inputs") or {}),
+            sampler_inputs=dict(d.get("sampler_inputs") or {}),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )

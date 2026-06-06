@@ -132,6 +132,69 @@
     row3.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
     body.append(row3);
     body.append(el("div", "insp-hint", "Link FPS / Frames / Width / Height to node inputs in Models → Linked inputs (set Source = Project …)."));
+
+    const neg = el("textarea"); neg.rows = 2; neg.value = p.negative_prompt || ""; neg.dataset.k = "pj-neg";
+    neg.placeholder = "What to avoid in every scene";
+    neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
+    body.append(field("Negative prompt", neg));
+
+    if (!p.conditioning_slot || p.conditioning_slot === "funpack") {
+      renderStudioSettings(st);
+    }
+    if (!p.sampler_slot || p.sampler_slot === "funpack") {
+      renderSamplerSettings(st);
+    }
+  }
+
+  function renderStudioSettings(st) {
+    // Studio settings are managed through studio_settings JSON — most are best left
+    // at reference-workflow defaults. Currently nothing extra is exposed here beyond
+    // the negative_prompt above (which goes through the neg primitive node).
+  }
+
+  // Key ChainSampler widget inputs exposed as simple form controls.
+  const SAMPLER_KNOBS = [
+    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1  },
+    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 97,  step: 1    },
+    { name: "carry_i2v_guides",      label: "Carry i2v guides",     kind: "bool",  default: false },
+    { name: "mid_scene_guide",       label: "Mid-scene guide",      kind: "bool",  default: false },
+    { name: "mid_scene_guide_strength", label: "Guide strength",    kind: "float", default: 0.25,  min: 0, max: 1,   step: 0.05, dependsOn: "mid_scene_guide" },
+    { name: "embed_guidance",        label: "Embed guidance",       kind: "bool",  default: false },
+    { name: "embed_guidance_strength", label: "Embed strength",     kind: "float", default: 0.02,  min: 0, max: 0.5, step: 0.005, dependsOn: "embed_guidance" },
+    { name: "decode_noise_scale",    label: "Decode noise scale",   kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
+    { name: "decode_timestep",       label: "Decode timestep",      kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
+  ];
+
+  function renderSamplerSettings(st) {
+    const p = st.project;
+    const si = p.sampler_inputs || {};
+    const tag = el("div", "insp-tag"); tag.textContent = "Sampler settings"; body.append(tag);
+
+    SAMPLER_KNOBS.forEach((k) => {
+      const dep = k.dependsOn;
+      if (dep) {
+        const depVal = si[dep] != null ? si[dep] : SAMPLER_KNOBS.find((x) => x.name === dep)?.default;
+        if (!depVal) return;
+      }
+      const val = si[k.name] != null ? si[k.name] : k.default;
+      let ctrl;
+      if (k.kind === "bool") {
+        ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!val; ctrl.style.width = "auto";
+        ctrl.dataset.k = "si-" + k.name;
+        ctrl.onchange = () => S.setSamplerInput(k.name, ctrl.checked);
+      } else {
+        ctrl = el("input"); ctrl.type = "number";
+        if (k.step != null) ctrl.step = String(k.step);
+        if (k.min != null) ctrl.min = String(k.min);
+        if (k.max != null) ctrl.max = String(k.max);
+        ctrl.value = val; ctrl.dataset.k = "si-" + k.name;
+        ctrl.oninput = () => {
+          const v = k.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0");
+          S.setSamplerInput(k.name, v);
+        };
+      }
+      body.append(field(k.label, ctrl));
+    });
   }
 
   function renderSplit(st) {

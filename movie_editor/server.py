@@ -374,6 +374,9 @@ if web is not None and PromptServer is not None:
             "num_frames_per_scene": target.num_frames_per_scene,
             "frame_rate": target.frame_rate,
             "width": target.width, "height": target.height,
+            "negative_prompt": target.negative_prompt or None,
+            "studio_inputs": target.studio_inputs if target.conditioning_slot == "funpack" else {},
+            "sampler_inputs": target.sampler_inputs if target.sampler_slot == "funpack" else {},
         }, media=_prepare_media(target))
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])

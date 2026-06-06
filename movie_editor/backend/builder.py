@@ -222,6 +222,14 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # (the reference graph used preview-only save_output=False).
     graph["vhs"]["inputs"]["save_output"] = True
 
+    # 2b. project-level widget overrides for the built-in FunPack nodes.
+    for k, v in (params.get("studio_inputs") or {}).items():
+        if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
+            graph["studio"]["inputs"][k] = v
+    for k, v in (params.get("sampler_inputs") or {}).items():
+        if k not in graph["sampler"]["inputs"] or not isinstance(graph["sampler"]["inputs"][k], list):
+            graph["sampler"]["inputs"][k] = v
+
     # 3. slot nodes.
     slots = (models_config or {}).get("slots") or []
     slot_node_id = {}
