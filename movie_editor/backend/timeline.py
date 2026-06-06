@@ -46,6 +46,9 @@ class Scene:
     # Transition marker applied at the seam AFTER this scene (e.g. "cut", "blur").
     # Empty string = no explicit transition. Library values come from /funpack/transitions.
     transition_to_next: str = ""
+    # Crossfade / transition length at that seam, in frames (post-decode pixel op only;
+    # never re-encodes to latent). None/0 = hard cut. Editor-set via the timeline.
+    transition_frames: Optional[int] = None
     # Forward-compat per-scene knobs (uniform values still win in V1).
     frames: Optional[int] = None
     fps: Optional[int] = None
@@ -61,6 +64,7 @@ class Scene:
             id=d.get("id") or _new_id(),
             text=str(d.get("text", "")),
             transition_to_next=str(d.get("transition_to_next", "")),
+            transition_frames=d.get("transition_frames"),
             frames=d.get("frames"),
             fps=d.get("fps"),
             source=SceneSource.from_dict(d.get("source")),

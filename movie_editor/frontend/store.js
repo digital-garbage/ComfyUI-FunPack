@@ -99,6 +99,38 @@
     notify(); scheduleSave();
   }
 
+  // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
+  function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
+
+  // Resize a clip by setting its frame count from a target duration (seconds) × fps.
+  function resizeScene(id, durationSec) {
+    if (!state.project) return;
+    const s = scene(id); if (!s) return;
+    const fps = s.fps != null ? s.fps : state.project.frame_rate;
+    s.frames = snapFrames(Math.max(1, durationSec) * fps);
+    notify(); scheduleSave();
+  }
+
+  // Split a clip in two at `atFrames` (defaults to the midpoint).
+  function splitScene(id, atFrames) {
+    if (!state.project) return;
+    const arr = state.project.scenes;
+    const i = arr.findIndex((s) => s.id === id); if (i < 0) return;
+    const s = arr[i];
+    const fps = s.fps != null ? s.fps : state.project.frame_rate;
+    const frames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
+    const cut = snapFrames(atFrames != null ? atFrames : frames / 2);
+    if (cut <= 9 || cut >= frames) return;
+    const second = JSON.parse(JSON.stringify(s));
+    delete second.id;
+    second.frames = snapFrames(frames - cut);
+    second.transition_to_next = s.transition_to_next || "";
+    second.transition_frames = s.transition_frames || null;
+    s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
+    arr.splice(i + 1, 0, second);
+    notify(); scheduleSave();
+  }
+
   function moveScene(id, delta) {
     if (!state.project) return;
     const arr = state.project.scenes;
@@ -186,6 +218,7 @@
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject,
     patchProject, patchScene, selectScene, addScene, removeScene, moveScene, scene,
+    resizeScene, splitScene, snapFrames,
     refreshPreview, generate, loadModels, setModelInput,
   };
 })();

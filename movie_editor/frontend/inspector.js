@@ -48,6 +48,15 @@
     body.append(field("Transition to next scene", transitionSelect(scene.transition_to_next || "",
       (v) => S.patchScene(scene.id, { transition_to_next: v }))));
 
+    const p = st.project;
+    const frames = scene.frames != null ? scene.frames : p.num_frames_per_scene;
+    const fps = scene.fps != null ? scene.fps : p.frame_rate;
+    const lenRow = el("div", "fields-row");
+    lenRow.append(numberField("Frames", frames, (v) => S.patchScene(scene.id, { frames: S.snapFrames(v) })));
+    lenRow.append(numberField("FPS", fps, (v) => S.patchScene(scene.id, { fps: Math.max(1, v) })));
+    body.append(lenRow);
+    body.append(el("div", "insp-hint", `Duration ≈ ${(frames / (fps || 1)).toFixed(2)}s${scene.frames == null ? "  ·  inheriting project length" : ""}`));
+
     const row = el("div", "insp-block");
     const chk = el("label", "chk"); const cb = el("input"); cb.type = "checkbox"; cb.checked = !!scene.excluded;
     cb.onchange = () => S.patchScene(scene.id, { excluded: cb.checked });
