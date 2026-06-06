@@ -102,7 +102,7 @@ def node_outputs(node_def: dict) -> list[dict]:
 
 def widget_inputs(node_def: dict) -> list[dict]:
     """User-facing widgets for a node: combos (with options) and primitive fields.
-    Skips graph-connection inputs (MODEL/CLIP/IMAGE/...)."""
+    Skips graph-connection inputs (MODEL/CLIP/IMAGE/...) and forceInput sockets."""
     out = []
     inp = node_def.get("input") or {}
     for group in ("required", "optional"):
@@ -111,11 +111,21 @@ def widget_inputs(node_def: dict) -> list[dict]:
                 continue
             t = spec[0]
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            # forceInput means the field is always a socket, never a user widget.
+            if opts.get("forceInput"):
+                continue
             field = {"name": name, "required": group == "required", "options": opts}
-            if isinstance(t, list):  # combo: t is the list of choices (e.g. files)
+            if isinstance(t, list):
+                # Old-style combo: t is the list of choices (e.g. folder_paths filenames).
                 field["kind"] = "combo"
                 field["choices"] = t
                 field["default"] = opts.get("default", t[0] if t else None)
+            elif t == "COMBO":
+                # V1/new-style combo: type string "COMBO", choices under opts["options"].
+                choices = opts.get("options") or []
+                field["kind"] = "combo"
+                field["choices"] = choices
+                field["default"] = opts.get("default", choices[0] if choices else None)
             elif t in WIDGET_PRIMITIVES:
                 field["kind"] = t.lower()
                 field["default"] = opts.get("default")

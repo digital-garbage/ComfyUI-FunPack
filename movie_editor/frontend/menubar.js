@@ -77,7 +77,7 @@
         { sep: true },
         { label: st.health?.reference_loaded ? "Pipeline reference: loaded" : "Pipeline reference: missing", disabled: true },
         { label: `Configured nodes: ${st.health?.configured_slots ?? 0}`, disabled: true },
-        { label: st.health?.ok ? `Connected · ${st.health.comfy_url || ""}` : "ComfyUI not reachable", disabled: true },
+        { label: st.health?.ok ? `Connected · ${window.location.host}` : "ComfyUI not reachable", disabled: true },
       ],
     };
   }

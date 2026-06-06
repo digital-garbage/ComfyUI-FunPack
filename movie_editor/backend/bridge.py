@@ -73,15 +73,75 @@ def delete_shortcut(name: str) -> dict:
 
 
 def save_transition(payload: dict) -> dict:
-    *_, ti, save, _del = _library_fns()
+    _si, _ss, _ds, ti, save, *_ = _library_fns()
     save(payload)
     return {"transitions": ti()}
 
 
 def delete_transition(name: str) -> dict:
-    *_, ti, _save, delete = _library_fns()
+    _si, _ss, _ds, ti, _sv, delete, *_ = _library_fns()
     delete(name)
     return {"transitions": ti()}
+
+
+def export_shortcuts() -> dict:
+    try:
+        from templates import load_shortcut_db  # type: ignore
+    except ImportError:
+        from ...templates import load_shortcut_db  # type: ignore
+    return load_shortcut_db()
+
+
+def import_shortcuts(incoming: dict) -> dict:
+    try:
+        from templates import (  # type: ignore
+            shortcut_items, load_shortcut_db, save_shortcut_db, normalize_shortcut_db,
+        )
+    except ImportError:
+        from ...templates import (  # type: ignore
+            shortcut_items, load_shortcut_db, save_shortcut_db, normalize_shortcut_db,
+        )
+    imported = normalize_shortcut_db(incoming)
+    data = load_shortcut_db()
+    shortcuts = data.setdefault("shortcuts", {})
+    count = 0
+    for key, item in imported.get("shortcuts", {}).items():
+        if isinstance(item, dict):
+            shortcuts[str(key)] = item
+            count += 1
+    save_shortcut_db(data)
+    data = load_shortcut_db()
+    return {"imported": count, "shortcuts": shortcut_items(data)}
+
+
+def export_transitions() -> dict:
+    try:
+        from templates import load_transition_db  # type: ignore
+    except ImportError:
+        from ...templates import load_transition_db  # type: ignore
+    return load_transition_db()
+
+
+def import_transitions(incoming: dict) -> dict:
+    try:
+        from templates import (  # type: ignore
+            transition_items, load_transition_db, save_transition_db, normalize_transition_db,
+        )
+    except ImportError:
+        from ...templates import (  # type: ignore
+            transition_items, load_transition_db, save_transition_db, normalize_transition_db,
+        )
+    imported = normalize_transition_db(incoming)
+    data = load_transition_db()
+    transitions = data.setdefault("transitions", {})
+    count = 0
+    for key, item in imported.get("transitions", {}).items():
+        if isinstance(item, dict):
+            transitions[str(key)] = item
+            count += 1
+    save_transition_db(data)
+    data = load_transition_db()
+    return {"imported": count, "transitions": transition_items(data)}
 
 
 # ── Loopback HTTP to ComfyUI (queue + results) ───────────────────────────────

@@ -107,6 +107,47 @@ def test_malformed_node_is_skipped_not_fatal():
     assert {n["class"] for n in nodes.all_nodes(bad)} >= set(OI)
 
 
+def test_v1_combo_and_force_input():
+    """V1/io.ComfyNode nodes encode combos as ("COMBO", {"options": [...]}) and mark
+    socket-only fields with forceInput=True. Both must be handled correctly."""
+    v1_node = {
+        "input": {
+            "required": {
+                "model": ["MODEL"],
+                "lora_name": ["COMBO", {"options": ["a.safetensors", "b.safetensors"], "tooltip": "pick a LoRA"}],
+                "strength_model": ["FLOAT", {"default": 1.0, "min": -100.0, "max": 100.0}],
+            },
+            "optional": {
+                "opt_path": ["STRING", {"forceInput": True, "tooltip": "absolute path override"}],
+                "blocks": ["SELECTEDDITBLOCKS"],
+            },
+        },
+        "output": ["MODEL"],
+        "display_name": "LTX2 LoRA Advanced",
+        "category": "test",
+    }
+    oi = dict(OI)
+    oi["LTX2LoraLoaderAdvanced"] = v1_node
+    desc = nodes.describe_node(oi, "LTX2LoraLoaderAdvanced")
+    widget_map = {w["name"]: w for w in desc["inputs"]}
+    # lora_name is a V1-style COMBO — must appear as combo widget with choices
+    assert "lora_name" in widget_map
+    assert widget_map["lora_name"]["kind"] == "combo"
+    assert "a.safetensors" in widget_map["lora_name"]["choices"]
+    # strength_model is a normal FLOAT widget
+    assert widget_map["strength_model"]["kind"] == "float"
+    # opt_path has forceInput=True → must be a socket, NOT a widget
+    assert "opt_path" not in widget_map
+    # blocks is a custom connection type — also not a widget
+    assert "blocks" not in widget_map
+    # model is a connection — not a widget
+    assert "model" not in widget_map
+    # connection_inputs: model and blocks (custom type)
+    ci = {c["name"]: c["type"] for c in desc["connection_inputs"]}
+    assert ci["model"] == "MODEL"
+    assert ci["blocks"] == "SELECTEDDITBLOCKS"
+
+
 def test_models_store_roundtrip(tmp_path, monkeypatch):
     from movie_editor.backend import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

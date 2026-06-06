@@ -201,6 +201,8 @@ input[type=number] { font-family: var(--font-mono); }
 .media-del:hover { color: var(--danger); }
 
 /* library lists (shortcuts / transitions) */
+.bin-toolbar { display: flex; gap: 5px; flex-wrap: wrap; }
+.bin-toolbar .btn { flex-shrink: 0; }
 .lib-search { width: 100%; }
 .lib-list { display: flex; flex-direction: column; gap: 5px; }
 .lib-row { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--ink-0); }

@@ -115,12 +115,13 @@
   function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
 
   // Resize a clip by setting its frame count from a target duration (seconds) × fps.
+  // Uses silent save so the drag handle isn't interrupted by a re-render mid-drag.
   function resizeScene(id, durationSec) {
     if (!state.project) return;
     const s = scene(id); if (!s) return;
     const fps = s.fps != null ? s.fps : state.project.frame_rate;
     s.frames = snapFrames(Math.max(1, durationSec) * fps);
-    notify(); scheduleSave();
+    scheduleSaveSilent();
   }
 
   // Split a clip in two at `atFrames` (defaults to the midpoint).
@@ -247,6 +248,24 @@
   async function deleteShortcut(name) { try { state.shortcuts = (await API.deleteShortcut(name)).shortcuts || []; notify(); } catch (e) { console.error(e); } }
   async function saveTransition(item) { try { state.transitions = (await API.saveTransition(item)).transitions || state.transitions; notify(); } catch (e) { alert("Save failed: " + e.message); } }
   async function deleteTransition(name) { try { state.transitions = (await API.deleteTransition(name)).transitions || []; notify(); } catch (e) { console.error(e); } }
+  async function importShortcuts(file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const r = await API.importShortcuts(data);
+      state.shortcuts = r.shortcuts || state.shortcuts; notify();
+      return r.imported;
+    } catch (e) { alert("Import failed: " + e.message); return 0; }
+  }
+  async function importTransitions(file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const r = await API.importTransitions(data);
+      state.transitions = r.transitions || state.transitions; notify();
+      return r.imported;
+    } catch (e) { alert("Import failed: " + e.message); return 0; }
+  }
 
   // Apply a library item to the selected scene.
   function applyTransitionToSelection(trigger) {
@@ -284,7 +303,7 @@
     resizeScene, splitScene, snapFrames,
     refreshPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
-    loadShortcuts, saveShortcut, deleteShortcut, loadTransitions, saveTransition, deleteTransition,
+    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,
   };
 })();

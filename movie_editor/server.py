@@ -250,6 +250,52 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
+    @routes.get(UI_PREFIX + "/api/library/shortcuts/export")
+    async def _shortcuts_export(_req):
+        try:
+            data = bridge.export_shortcuts()
+            return web.json_response(data, headers={
+                "Content-Disposition": "attachment; filename=funpack_shortcuts.json",
+                "Cache-Control": "no-store",
+            })
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPInternalServerError(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/library/shortcuts/import")
+    async def _shortcuts_import(req):
+        try:
+            incoming = await req.json()
+            if not isinstance(incoming, dict) or "shortcuts" not in incoming:
+                raise web.HTTPBadRequest(reason="Payload must be a shortcuts database JSON.")
+            return web.json_response(bridge.import_shortcuts(incoming))
+        except web.HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.get(UI_PREFIX + "/api/library/transitions/export")
+    async def _transitions_export(_req):
+        try:
+            data = bridge.export_transitions()
+            return web.json_response(data, headers={
+                "Content-Disposition": "attachment; filename=funpack_transitions.json",
+                "Cache-Control": "no-store",
+            })
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPInternalServerError(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/library/transitions/import")
+    async def _transitions_import(req):
+        try:
+            incoming = await req.json()
+            if not isinstance(incoming, dict) or "transitions" not in incoming:
+                raise web.HTTPBadRequest(reason="Payload must be a transitions database JSON.")
+            return web.json_response(bridge.import_transitions(incoming))
+        except web.HTTPException:
+            raise
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
     # --- API: media bin ---
     @routes.get(UI_PREFIX + "/api/media")
     async def _media_list(_req):

@@ -37,9 +37,13 @@
     transitions: () => j("GET", API("/library/transitions")),
     saveTransition: (item) => j("POST", API("/library/transitions"), item),
     deleteTransition: (name) => j("DELETE", API(`/library/transitions/${encodeURIComponent(name)}`)),
+    exportTransitionsUrl: () => API("/library/transitions/export"),
+    importTransitions: (data) => j("POST", API("/library/transitions/import"), data),
     shortcuts: () => j("GET", API("/library/shortcuts")),
     saveShortcut: (item) => j("POST", API("/library/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),
+    exportShortcutsUrl: () => API("/library/shortcuts/export"),
+    importShortcuts: (data) => j("POST", API("/library/shortcuts/import"), data),
 
     // media bin
     listMedia: () => j("GET", API("/media")),

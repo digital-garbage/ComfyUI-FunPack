@@ -70,15 +70,27 @@
 
   // ── shortcuts bin ────────────────────────────────────────────────────────────────
   function shortcutsTab(st) {
-    const wrap = el("div", "bin");
-    wrap.append(searchRow("Shortcuts", "Filter shortcuts…", () => render(S.get())));
-    const addBtn = el("button", "btn ghost tiny", "＋ Add shortcut");
+    const wrap = el(“div”, “bin”);
+    wrap.append(searchRow(“Shortcuts”, “Filter shortcuts…”, () => render(S.get())));
+    const toolbar = el(“div”, “bin-toolbar”);
+    const addBtn = el(“button”, “btn ghost tiny”, “＋ Add”);
     addBtn.onclick = async () => {
-      const name = prompt("Shortcut name / activation phrase:"); if (!name) return;
-      const repl = prompt(`Replacement phrase for “${name}”:`, ""); if (repl == null) return;
+      const name = prompt(“Shortcut name / activation phrase:”); if (!name) return;
+      const repl = prompt(`Replacement phrase for “${name}”:`, “”); if (repl == null) return;
       await S.saveShortcut({ name, triggers: [name], replacements: [repl] });
     };
-    wrap.append(addBtn);
+    const expBtn = el(“a”, “btn ghost tiny”, “↓ Export”);
+    expBtn.href = API.exportShortcutsUrl(); expBtn.download = “funpack_shortcuts.json”; expBtn.title = “Download shortcuts as JSON”;
+    const impFile = el(“input”); impFile.type = “file”; impFile.accept = “.json”; impFile.style.display = “none”;
+    impFile.onchange = async () => {
+      if (!impFile.files[0]) return;
+      const n = await S.importShortcuts(impFile.files[0]); impFile.value = “”;
+      if (n != null) alert(`Imported ${n} shortcut(s).`);
+    };
+    const impBtn = el(“button”, “btn ghost tiny”, “↑ Import”); impBtn.title = “Import shortcuts from JSON”;
+    impBtn.onclick = () => impFile.click();
+    toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
+    wrap.append(toolbar);
 
     const list = el("div", "lib-list");
     const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
@@ -106,13 +118,25 @@
   function transitionsTab(st) {
     const wrap = el("div", "bin");
     wrap.append(searchRow("Transitions", "Filter transitions…", () => render(S.get())));
-    const addBtn = el("button", "btn ghost tiny", "＋ Add transition");
+    const toolbar = el("div", "bin-toolbar");
+    const addBtn = el("button", "btn ghost tiny", "＋ Add");
     addBtn.onclick = async () => {
       const name = prompt("Transition trigger phrase (e.g. 'hard cut'):"); if (!name) return;
       const fx = prompt("Visual effect (none, crossfade, fade_to_black, …):", "none") || "none";
       await S.saveTransition({ name, trigger: name, visual_effect: fx });
     };
-    wrap.append(addBtn);
+    const expBtn = el("a", "btn ghost tiny", "↓ Export");
+    expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_transitions.json"; expBtn.title = "Download transitions as JSON";
+    const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
+    impFile.onchange = async () => {
+      if (!impFile.files[0]) return;
+      const n = await S.importTransitions(impFile.files[0]); impFile.value = "";
+      if (n != null) alert(`Imported ${n} transition(s).`);
+    };
+    const impBtn = el("button", "btn ghost tiny", "↑ Import"); impBtn.title = "Import transitions from JSON";
+    impBtn.onclick = () => impFile.click();
+    toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
+    wrap.append(toolbar);
 
     const list = el("div", "lib-list");
     const items = filtered(st.transitions || [], q.Transitions, (t) => `${t.name || ""} ${t.trigger || ""} ${t.visual_effect || ""}`);
