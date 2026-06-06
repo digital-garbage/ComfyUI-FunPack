@@ -26,6 +26,10 @@ if __package__:
         from . import batch_training  # noqa: F401  registers /funpack/batch/* routes
     except Exception as _e:
         print(f"[FunPack] batch_training routes unavailable: {_e}")
+    try:
+        from .movie_editor import server as _movie_editor_server  # noqa: F401  registers /funpack/movie/* routes
+    except Exception as _e:
+        print(f"[FunPack] Movie Editor routes unavailable: {_e}")
 else:
     # Standalone tests may not have the full ComfyUI/CUDA runtime loaded.
     from conditioning import (

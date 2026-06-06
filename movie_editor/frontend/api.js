@@ -1,5 +1,9 @@
-// Thin backend client for the Movie Editor sidecar.
+// Thin backend client. Served by ComfyUI, so all URLs are same-origin (relative):
+// the browser automatically uses whatever host:port ComfyUI runs on.
 (function () {
+  // Base = the directory this app is served from, e.g. /funpack/movie
+  const BASE = window.location.pathname.replace(/\/+$/, "").replace(/\/index\.html$/, "");
+  const API = (p) => `${BASE}/api${p}`;
   async function j(method, url, body) {
     const opts = { method, headers: {} };
     if (body !== undefined) {
@@ -15,30 +19,30 @@
     return res.status === 204 ? null : res.json();
   }
 
-  const API = {
-    health: () => j("GET", "/api/health"),
+  const ClientAPI = {
+    health: () => j("GET", API("/health")),
 
     // projects
-    listProjects: () => j("GET", "/api/projects"),
-    createProject: (name) => j("POST", "/api/projects", { name }),
-    getProject: (id) => j("GET", `/api/projects/${id}`),
-    saveProject: (id, data) => j("PUT", `/api/projects/${id}`, data),
-    deleteProject: (id) => j("DELETE", `/api/projects/${id}`),
+    listProjects: () => j("GET", API("/projects")),
+    createProject: (name) => j("POST", API("/projects"), { name }),
+    getProject: (id) => j("GET", API(`/projects/${id}`)),
+    saveProject: (id, data) => j("PUT", API(`/projects/${id}`), data),
+    deleteProject: (id) => j("DELETE", API(`/projects/${id}`)),
 
     // timeline preview
     preview: (id, includeExcluded) =>
-      j("GET", `/api/projects/${id}/preview?include_excluded=${includeExcluded ? "true" : "false"}`),
+      j("GET", API(`/projects/${id}/preview?include_excluded=${includeExcluded ? "true" : "false"}`)),
 
     // libraries
-    transitions: () => j("GET", "/api/library/transitions"),
+    transitions: () => j("GET", API("/library/transitions")),
 
     // generate
-    generate: (id, onlyScene) => j("POST", `/api/projects/${id}/generate`, { only_scene: onlyScene || null }),
-    status: (id, promptId) => j("GET", `/api/projects/${id}/status/${promptId}`),
+    generate: (id, onlyScene) => j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null }),
+    status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     resultUrl: (id, m) =>
-      `/api/projects/${id}/result?filename=${encodeURIComponent(m.filename)}` +
+      API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +
       `&subfolder=${encodeURIComponent(m.subfolder || "")}&type=${encodeURIComponent(m.type || "output")}`,
   };
 
-  window.MovieEditorAPI = API;
+  window.MovieEditorAPI = ClientAPI;
 })();

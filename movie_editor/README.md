@@ -1,9 +1,10 @@
 # FunPack Movie Editor (V1)
 
-A standalone web app for assembling LTXAV montages over the FunPack pipeline: scenes on
-an editable timeline, per-scene prompts, a transition library between scenes, and one-click
-generation. ComfyUI is the inference backend — the app drives it over its HTTP API and
-reuses FunPack's `/funpack/*` routes for parsing.
+A web app for assembling LTXAV montages over the FunPack pipeline: scenes on an editable
+timeline, per-scene prompts, a transition library between scenes, and one-click generation.
+It runs **inside ComfyUI** — routes are registered on ComfyUI's own server, so the editor
+opens at **`http://<your-comfyui-host>:<port>/funpack/movie/`** (same host/port as ComfyUI;
+no separate process, no extra dependencies).
 
 > **V1 scope.** Editable timeline + transition library feeding the **existing** uniform
 > Studio → Chain Sampler chain (one generation pass). Per-scene length/FPS, Empty/Image
@@ -14,10 +15,16 @@ reuses FunPack's `/funpack/*` routes for parsing.
 ## Architecture
 
 ```
-Browser (vanilla JS)  →  FastAPI sidecar (light, no torch)  →  ComfyUI
-                            project store + prompt assembly       /funpack/*  (parse, libraries)
-                                                                  /prompt /history /view  (generate)
+Browser ──(same origin)──► ComfyUI server (aiohttp)
+  vanilla JS frontend         /funpack/movie/         static UI
+                              /funpack/movie/api/*     this module (project store, prompt assembly)
+                                 ├─ in-process: parse_timeline / transitions (FunPack functions)
+                                 └─ loopback HTTP: /prompt /history /view (queue + results)
 ```
+
+No FastAPI/uvicorn/httpx — everything rides on ComfyUI's bundled aiohttp. The port is
+detected from the running server, so non-default `--port` works automatically; the browser
+uses same-origin relative URLs so it never needs to know the port at all.
 
 ## Step 0 (required for generation): export your workflow
 
@@ -34,30 +41,26 @@ If the app can't find the text node that feeds Studio's prompt, create
 { "prompt": [{ "node_id": "12", "input_key": "text" }] }
 ```
 
-(Find node ids with `GET /api/health` then inspect the template, or read the exported JSON.)
-Editing the timeline and the split preview work **without** the template — only the
-Generate button needs it.
+(Find node ids via `GET /funpack/movie/api/health` then inspect the template, or read the
+exported JSON.) Editing the timeline and the split preview work **without** the template —
+only the Generate button needs it.
 
 ## Run
 
-```bash
-# 1. Start ComfyUI (with ComfyUI-FunPack installed) on the GPU box, e.g. :8188
-# 2. Start the sidecar:
-pip install -r movie_editor/backend/requirements.txt
-FUNPACK_COMFY_URL=http://127.0.0.1:8188 \
-  python -m movie_editor.backend.app
-# 3. Open http://127.0.0.1:8200
+Nothing to start separately — the editor loads with ComfyUI:
+
+```
+1. Start ComfyUI normally (any --port). ComfyUI-FunPack registers the routes on load.
+2. Open  http://<comfyui-host>:<port>/funpack/movie/
 ```
 
-### Environment
+### Environment (all optional)
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `FUNPACK_COMFY_URL` | `http://127.0.0.1:8188` | ComfyUI base URL |
-| `FUNPACK_MOVIE_HOST` / `_PORT` | `127.0.0.1` / `8200` | sidecar bind |
 | `FUNPACK_MOVIE_DATA` | `~/.funpack_movie` | project store dir |
 | `FUNPACK_MOVIE_TEMPLATE` | `backend/templates/ltxav_chain.api.json` | workflow template |
-| `FUNPACK_MOVIE_CORS` | `*` | CORS origins |
+| `FUNPACK_COMFY_URL` | auto (detected from the running server) | override only if loopback self-calls need a different address |
 
 ## How the timeline maps to Studio
 
@@ -66,7 +69,7 @@ first trigger) is the **anchor** prepended to every scene. The app therefore emi
 before every scene: `intro_transition` separates the anchor from scene 1, then each scene is
 preceded by the previous scene's transition. Empty markers fall back to generic `scene N`
 labels. The **Split preview** panel shows exactly what Studio will see (live round-trip
-through `/funpack/parse_timeline`) and warns if the scene count doesn't match.
+through the same split logic Studio uses) and warns if the scene count doesn't match.
 
 ## Tests
 

@@ -1,13 +1,12 @@
-"""Movie Editor sidecar configuration.
+"""Movie Editor configuration.
 
-All values are overridable via environment variables so the app can point at a
-remote ComfyUI on a rental box without code changes.
+The editor now runs INSIDE ComfyUI (routes registered on ComfyUI's aiohttp
+PromptServer), so there is no separate server to bind. We only need storage paths
+and the template location; self-HTTP calls target ComfyUI's own host:port, resolved
+at runtime from comfy.cli_args.
 """
 import os
 from pathlib import Path
-
-# ComfyUI inference backend (the GPU box). No trailing slash.
-COMFY_URL = os.environ.get("FUNPACK_COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 
 # Where the editor stores projects (JSON) and, later, cached assets/latents.
 DATA_DIR = Path(os.environ.get("FUNPACK_MOVIE_DATA", Path.home() / ".funpack_movie"))
@@ -20,12 +19,34 @@ TEMPLATE_PATH = Path(
 )
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
-# Sidecar bind.
-HOST = os.environ.get("FUNPACK_MOVIE_HOST", "127.0.0.1")
-PORT = int(os.environ.get("FUNPACK_MOVIE_PORT", "8200"))
 
-# Comma-separated CORS origins; "*" by default for local dev.
-CORS_ORIGINS = [o.strip() for o in os.environ.get("FUNPACK_MOVIE_CORS", "*").split(",") if o.strip()]
+def comfy_base_url() -> str:
+    """Base URL of the ComfyUI server we run inside, for loopback /prompt calls.
+
+    The browser never needs this — the frontend is served by ComfyUI, so its API
+    calls are same-origin (relative) and hit the correct port automatically. This is
+    only for the backend talking to ComfyUI's own endpoints. We resolve the REAL port
+    (not the 8188 default) from the running server / CLI args; env override wins.
+    """
+    override = os.environ.get("FUNPACK_COMFY_URL")
+    if override:
+        return override.rstrip("/")
+    port = None
+    # 1) The live server instance knows the port it actually bound.
+    try:
+        from server import PromptServer
+        port = getattr(PromptServer.instance, "port", None)
+    except Exception:
+        pass
+    # 2) CLI args (--port).
+    if not port:
+        try:
+            from comfy.cli_args import args
+            port = getattr(args, "port", None)
+        except Exception:
+            pass
+    port = int(port or 8188)
+    return f"http://127.0.0.1:{port}"  # always loopback for self-calls
 
 
 def ensure_dirs() -> None:
