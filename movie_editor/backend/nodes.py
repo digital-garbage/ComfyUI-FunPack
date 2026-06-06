@@ -232,6 +232,15 @@ def ports_from_object_info(object_info: dict, cls: str, label: str) -> list[dict
     return ports
 
 
+def core_producers() -> list[dict]:
+    """Typed outputs from the fixed core that slot nodes can source from."""
+    return [
+        {"id": "core:frames:0", "type": "INT",   "label": "Project frames (primitive)"},
+        {"id": "core:fps:0",    "type": "FLOAT",  "label": "Project FPS (primitive)"},
+        {"id": "core:f2i:0",    "type": "INT",    "label": "Project FPS as int (primitive)"},
+    ]
+
+
 def pipeline_ports(object_info: dict | None = None) -> list[dict]:
     """The fixed path's connection points loaders/nodes wire into. FunPack nodes derive from
     their INPUT_TYPES; LTXV core nodes derive from object_info. [] if nothing is loaded."""

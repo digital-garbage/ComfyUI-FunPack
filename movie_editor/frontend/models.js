@@ -9,14 +9,21 @@
   let allNodes = null;            // [{class,display_name,category}] for "any node" picker
   const candCache = {};           // role -> [candidate]
   const specByClass = {};         // class -> full node spec (inputs/outputs/connection_inputs)
-  let config = { slots: [] };     // {slots:[{id,role,node_class,inputs:{},wires:{outName:value}}]}
+  let config = { slots: [] };     // {slots:[{id,role,role_label,node_class,inputs:{},wires:{},input_sources:{}}]}
+  let coreProducers = [];          // [{id,type,label}]
   let overlay = null;
   const expanded = new Set();     // slot ids currently expanded (collapsed by default)
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
 
-  function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : key); }
+  function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : (key || "?")); }
   function slotName(slot) { return slot.label || slot.node_class; }
+  // Full display name for use in pickers: "RoleLabel · NodeName"
+  function slotFullLabel(slot) {
+    const rl = slot.role_label || roleLabel(slot.role);
+    const nn = slotName(slot);
+    return rl && rl !== nn ? `${rl} · ${nn}` : nn;
+  }
   function slotById(id) { return config.slots.find((s) => s.id === id); }
 
   // ── linked inputs (one control drives several node inputs) ────────────────────
@@ -111,21 +118,21 @@
       if (!w.required) return;
       const v = slot.inputs[w.name];
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
-        issues.push({ level: "error", msg: `“${w.name}” has no installed options to pick from.` });
+        issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
       } else if (v == null || v === "") {
-        issues.push({ level: "error", msg: `Required field “${w.name}” is empty.` });
+        issues.push({ level: "error", msg: `Required field "${w.name}" is empty.` });
       }
     });
     const outs = spec.outputs || [];
     const wires = slot.wires || {};
     if (outs.length && !outs.some((o) => wireTargets(wires[o.name]).some(Boolean))) {
-      issues.push({ level: “warn”, msg: “No outputs wired — this node feeds nothing.” });
+      issues.push({ level: "warn", msg: "No outputs wired — this node feeds nothing." });
     }
     const dests = (o) => destinations(slot, o.type);
     outs.forEach((o) => {
       wireTargets(wires[o.name]).filter(Boolean).forEach((t) => {
         if (!dests(o).some((d) => d.value === t))
-          issues.push({ level: “error”, msg: `”${o.name}” is wired to a destination that no longer exists.` });
+          issues.push({ level: "error", msg: `"${o.name}" is wired to a destination that no longer exists.` });
       });
     });
     return issues;
@@ -170,13 +177,17 @@
 
     const head = el("div", "slot-head");
     head.append(el("span", "slot-chev", isExp ? "▾" : "▸"));
-    head.append(el("span", "slot-role", role ? role.label : slot.role));
+    const roleText = slot.role_label || (role ? role.label : slot.role) || "?";
+    const roleSpan = el("span", "slot-role", roleText);
+    roleSpan.title = "Click ✎ to rename this label";
+    head.append(roleSpan);
     head.append(el("span", "slot-node", slotName(slot)));
-    const ren = el("button", "ic-btn", "✎"); ren.title = "Rename this node";
+    const ren = el("button", "ic-btn", "✎"); ren.title = "Rename role label";
     ren.onclick = async (e) => {
       e.stopPropagation();
-      const n = prompt("Node label:", slot.label || slot.node_class);
-      if (n != null) { slot.label = n.trim() || undefined; await persist(); render(); }
+      const cur = slot.role_label || (role ? role.label : slot.role) || "";
+      const n = prompt("Role label (shown in pickers and headers):", cur);
+      if (n != null) { slot.role_label = n.trim() || undefined; await persist(); render(); }
     };
     head.append(ren);
     const nExp = (slot.exposed || []).length;
@@ -242,6 +253,28 @@
       });
       card.append(wbox);
     }
+
+    // Input sources: explicitly choose where each connection input comes from.
+    if (cand && (cand.connection_inputs || []).length) {
+      slot.input_sources = slot.input_sources || {};
+      const sbox = el("div", "wire-box");
+      sbox.append(el("div", "wire-title", "Input sources"));
+      cand.connection_inputs.forEach((ci) => {
+        const row = el("div", "wire-row");
+        row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
+        row.append(el("span", "wire-arrow", "←"));
+        const srcs = sources(slot, ci.type);
+        const sel = el("select", "wire-select");
+        const cur = slot.input_sources[ci.name] || "";
+        srcs.forEach((s) => { const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o); });
+        if (cur && !srcs.some((s) => s.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
+        sel.onchange = async () => { slot.input_sources[ci.name] = sel.value; await persist(); };
+        row.append(sel);
+        sbox.append(row);
+      });
+      card.append(sbox);
+    }
+
     return card;
   }
 
@@ -251,7 +284,22 @@
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
       (c2?.connection_inputs || []).filter((ci) => ci.type === type).forEach((ci) =>
-        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${roleLabel(s2.role)} · ${ci.name}` }));
+        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.name}` }));
+    });
+    return out;
+  }
+
+  // Available sources for a slot connection input of a given type.
+  // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>", "timeline" (IMAGE only).
+  function sources(slot, type) {
+    const out = [{ value: "", label: "(auto-wire)" }];
+    if (type === "IMAGE") out.push({ value: "timeline", label: "Timeline (scene image)" });
+    coreProducers.filter((p) => p.type === type).forEach((p) =>
+      out.push({ value: p.id, label: p.label }));
+    config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
+      const c2 = specFor(s2);
+      (c2?.outputs || []).filter((o) => o.type === type).forEach((o) =>
+        out.push({ value: `out:${s2.id}:${o.name}`, label: `${slotFullLabel(s2)} → ${o.name}` }));
     });
     return out;
   }
@@ -492,7 +540,7 @@
     if (linkMode) sec.append(el("div", "links-hint", "Click ＋ next to any input below to add it to the link, then Save. (Pick 2+ inputs.)"));
     (config.links || []).forEach((l) => sec.append(linkCard(l)));
     if (!linkMode && !(config.links || []).length)
-      sec.append(el("div", "links-empty", "No links yet. Use “Link inputs” to drive several node inputs (e.g. width/height) from one control."));
+      sec.append(el("div", "links-empty", "No links yet. Use "Link inputs" to drive several node inputs (e.g. width/height) from one control."));
     return sec;
   }
 
@@ -533,7 +581,7 @@
 
   async function open() {
     await ensureRoles();
-    try { ports = (await API.pipelinePorts()).ports || []; } catch (_) { ports = []; }
+    try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; } catch (_) { ports = []; coreProducers = []; }
     try { config = await API.getModels(); } catch (_) { config = { slots: [] }; }
     await prewarmSpecs();
 

@@ -424,6 +424,8 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .wire-multi-row .wire-select { flex: 1; }
 .wire-rm { padding: 1px 5px; color: var(--red, #e06c75); }
 .wire-add { align-self: flex-start; }
+/* Input-source arrow points left (← instead of →) */
+.wire-row .wire-arrow.src { color: var(--amber); }
 
 /* restart overlay */
 .restart-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;

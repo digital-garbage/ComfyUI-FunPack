@@ -247,7 +247,33 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             msg = f"Slot node '{cls}' is not installed in ComfyUI."
             report["unsatisfied"].append(msg); report["blocking"].append(msg)
 
-    # 3b. linked inputs: one shared value drives several node inputs (e.g. width/height).
+    # 3b. explicit input sources: user-chosen source for a slot's connection input.
+    # Runs before auto-wire so these pre-empt the uniqueness heuristic.
+    # source values: "" / "auto" → skip; "timeline" → scene image (media_load);
+    #   "out:<slotId>:<outName>" → another slot's named output;
+    #   "core:<coreId>:<outIdx>" → a core primitive output.
+    for s in slots:
+        sid = slot_node_id[s["id"]]
+        nd_s = slot_def[s["id"]]
+        for ci_name, source in (s.get("input_sources") or {}).items():
+            if not source or source == "auto":
+                continue
+            if source == "timeline":
+                if media and media.get("filename"):
+                    graph.setdefault("media_load", {
+                        "class_type": "LoadImage", "inputs": {"image": media["filename"]}})
+                    graph[sid]["inputs"][ci_name] = ["media_load", 0]
+                    report["wired"].append(f"timeline image -> {sid}.{ci_name}")
+                continue
+            src = _resolve_source(source, slot_node_id, slot_def, object_info)
+            if src:
+                graph[sid]["inputs"][ci_name] = list(src)
+                report["wired"].append(f"{source} -> {sid}.{ci_name}")
+            else:
+                report["unsatisfied"].append(
+                    f"{s.get('node_class')}.{ci_name}: input source '{source}' could not be resolved.")
+
+    # 3d. linked inputs: one shared value drives several node inputs (e.g. width/height).
     # An "editor"-sourced link pulls its value from a project setting (params) instead.
     for link in (models_config or {}).get("links") or []:
         if link.get("source") == "editor":
@@ -263,15 +289,20 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     port_to_core = _port_index(object_info)
 
-    # 3c. media: inject a LoadImage for the chosen asset, wired to the chosen input.
-    if media and media.get("filename") and media.get("target"):
-        graph["media_load"] = {"class_type": "LoadImage", "inputs": {"image": media["filename"]}}
-        dst = _resolve_target(media["target"], port_to_core, slot_node_id)
-        if dst and dst[0] in graph:
-            graph[dst[0]]["inputs"][dst[1]] = ["media_load", 0]
-            report["wired"].append(f"media -> {dst[0]}.{dst[1]}")
-        else:
-            report["unsatisfied"].append(f"media target '{media['target']}' could not be resolved.")
+    # 3e. media: inject a LoadImage for the chosen asset, wired to the chosen input(s).
+    # scene.source.target provides a legacy explicit target; "timeline" input_sources
+    # (step 3b) may have already created media_load — this step adds any extra targets.
+    if media and media.get("filename"):
+        if media.get("target"):
+            graph.setdefault("media_load", {
+                "class_type": "LoadImage", "inputs": {"image": media["filename"]}})
+            dst = _resolve_target(media["target"], port_to_core, slot_node_id)
+            if dst and dst[0] in graph:
+                graph[dst[0]]["inputs"][dst[1]] = ["media_load", 0]
+                report["wired"].append(f"media -> {dst[0]}.{dst[1]}")
+            else:
+                report["unsatisfied"].append(
+                    f"media target '{media['target']}' could not be resolved.")
 
     # 4. explicit wires (slot OUTPUT -> port:<id> | node:<slotId>:<input>).
     # target may be a string (legacy single) or a list of strings (multi-wire).
@@ -311,6 +342,23 @@ def _port_index(object_info: dict) -> dict[str, tuple[str, str]]:
             idx[f"{cls}.{ci['name']}"] = (cid, ci["name"])
     # FunPack ports use the class name directly too (already covered above).
     return idx
+
+
+def _resolve_source(source: str, slot_node_id: dict, slot_def: dict, object_info: dict) -> Optional[tuple[str, int]]:
+    """Resolve an input-source id to (node_id, output_index).
+    Formats: "out:<slotId>:<outName>" | "core:<coreId>:<outIdx>" | "timeline" handled by caller.
+    """
+    if source.startswith("out:"):
+        _, sid, out_name = source.split(":", 2)
+        nid = slot_node_id.get(sid)
+        if not nid:
+            return None
+        nd = slot_def.get(sid)
+        return (nid, _output_index(nd, out_name))
+    if source.startswith("core:"):
+        _, cid, oidx = source.split(":", 2)
+        return (cid, int(oidx))
+    return None
 
 
 def _resolve_target(target: str, port_to_core, slot_node_id) -> Optional[tuple[str, str]]:

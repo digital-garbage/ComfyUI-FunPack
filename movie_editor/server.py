@@ -445,7 +445,10 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception:
             oi = None
-        return web.json_response({"ports": nodes.pipeline_ports(oi)})
+        return web.json_response({
+            "ports": nodes.pipeline_ports(oi),
+            "core_producers": nodes.core_producers(),
+        })
 
     @routes.get(UI_PREFIX + "/api/image-targets")
     async def _image_targets(_req):
