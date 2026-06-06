@@ -162,19 +162,18 @@ def build_combined_prompt(project: Project, include_excluded: bool = False) -> s
         parts.append(anchor)
 
     scenes = [s for s in project.scenes if include_excluded or not s.excluded]
-    label_n = 1
-    prev_marker = (project.intro_transition or "").strip() if anchor else ""
+    # Always emit a separator marker before every scene.  Studio's split puts
+    # segments[0] as the character anchor and segments[1..N] as generated scenes.
+    # Without a separator before scene 1, scene 1's text would land in segments[0]
+    # (the anchor slot) and be skipped for generation — only N-1 scenes would be
+    # produced for an N-scene project.
+    prev_marker = (project.intro_transition or "").strip()
     for i, scene in enumerate(scenes):
         text = (scene.text or "").strip()
-        # A separator is needed before this scene if there is preceding content
-        # (the anchor, or an earlier scene) to split away from.
-        need_sep = bool(anchor) or i > 0
-        if need_sep:
-            marker = prev_marker
-            if not marker:
-                marker = f"scene {label_n + 1}"
-            parts.append(marker)
-        label_n += 1
+        marker = prev_marker
+        if not marker:
+            marker = f"scene {i + 1}"
+        parts.append(marker)
         if text:
             parts.append(text)
         prev_marker = (scene.transition_to_next or "").strip()

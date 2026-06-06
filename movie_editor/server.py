@@ -369,12 +369,14 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
+        active_scene_count = len([s for s in target.scenes if not s.excluded])
         graph, report = builder.build(oi, nodes.load_models(), {
             "prompt": prompt, "seed": target.seed,
             "num_frames_per_scene": target.num_frames_per_scene,
             "frame_rate": target.frame_rate,
             "width": target.width, "height": target.height,
             "negative_prompt": target.negative_prompt or None,
+            "max_scenes": active_scene_count,
             "studio_inputs": target.studio_inputs if target.conditioning_slot == "funpack" else {},
             "sampler_inputs": target.sampler_inputs if target.sampler_slot == "funpack" else {},
         }, media=_prepare_media(target))

@@ -218,6 +218,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         graph["fps"]["inputs"]["value"] = params["frame_rate"]
     if params.get("seed") is not None:
         graph["sampler"]["inputs"]["seed"] = params["seed"]
+    if params.get("max_scenes") is not None:
+        graph["sampler"]["inputs"]["max_scenes"] = params["max_scenes"]
     # the result must be written to the output dir so the editor can fetch it back
     # (the reference graph used preview-only save_output=False).
     graph["vhs"]["inputs"]["save_output"] = True
