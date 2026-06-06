@@ -11,6 +11,7 @@
   const specByClass = {};         // class -> full node spec (inputs/outputs/connection_inputs)
   let config = { slots: [] };     // {slots:[{id,role,node_class,inputs:{},wires:{outName:value}}]}
   let overlay = null;
+  const expanded = new Set();     // slot ids currently expanded (collapsed by default)
 
   function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : key); }
 
@@ -30,7 +31,26 @@
   async function loadSpec(cls) { if (!specByClass[cls]) cache(await API.nodeSpec(cls)); return specByClass[cls]; }
   function specFor(slot) { return specByClass[slot.node_class] || null; }
 
-  async function persist() { try { config = await API.saveModels(config); } catch (e) { console.error(e); } }
+  async function persist() {
+    try { config = await API.saveModels(config); window.dispatchEvent(new Event("funpack-models-changed")); }
+    catch (e) { console.error(e); }
+  }
+
+  // ── "expose to main editor" (eye toggle) ─────────────────────────────────────
+  function isExposed(slot, name) { return (slot.exposed || []).some((e) => e.name === name); }
+  function toggleExpose(slot, spec) {
+    slot.exposed = slot.exposed || [];
+    if (isExposed(slot, spec.name)) slot.exposed = slot.exposed.filter((e) => e.name !== spec.name);
+    else slot.exposed.push({ name: spec.name, kind: spec.kind,
+                             choices: spec.kind === "combo" ? (spec.choices || []) : undefined, label: spec.name });
+  }
+  function eyeButton(slot, spec) {
+    const b = el("button", "eye-btn" + (isExposed(slot, spec.name) ? " on" : ""), "◉");
+    b.type = "button";
+    b.title = isExposed(slot, spec.name) ? "Hide from main editor window" : "Show in main editor window";
+    b.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); toggleExpose(slot, spec); await persist(); render(); };
+    return b;
+  }
 
   // ── widget field rendering from object_info spec ─────────────────────────────
   function widgetField(spec, value, onChange) {
@@ -127,21 +147,30 @@
   // ── slot row (configured) ────────────────────────────────────────────────────
   function slotRow(slot, issues) {
     const role = roles.find((r) => r.key === slot.role);
-    const card = el("div", "slot-card");
+    const isExp = expanded.has(slot.id);
+    const card = el("div", "slot-card" + (isExp ? " open" : ""));
     const errs = (issues || []).filter((i) => i.level === "error").length;
     const warns = (issues || []).filter((i) => i.level === "warn").length;
     if (errs) card.classList.add("slot-bad");
     else if (warns) card.classList.add("slot-warn");
+
     const head = el("div", "slot-head");
+    head.append(el("span", "slot-chev", isExp ? "▾" : "▸"));
     head.append(el("span", "slot-role", role ? role.label : slot.role));
     head.append(el("span", "slot-node", slot.node_class));
+    const nExp = (slot.exposed || []).length;
+    if (nExp) head.append(el("span", "slot-badge exposed", `◉ ${nExp}`));
     if (errs) head.append(el("span", "slot-badge bad", `${errs} error${errs > 1 ? "s" : ""}`));
     else if (warns) head.append(el("span", "slot-badge warn", `${warns} warning${warns > 1 ? "s" : ""}`));
     else head.append(el("span", "slot-badge ok", "ready"));
     const rm = el("button", "btn ghost tiny danger", "remove");
-    rm.onclick = async () => { config.slots = config.slots.filter((s) => s.id !== slot.id); await persist(); render(); };
+    rm.onclick = async (e) => { e.stopPropagation(); config.slots = config.slots.filter((s) => s.id !== slot.id); expanded.delete(slot.id); await persist(); render(); };
     head.append(rm);
+    head.onclick = () => { isExp ? expanded.delete(slot.id) : expanded.add(slot.id); render(); };
     card.append(head);
+
+    if (!isExp) return card;  // collapsed: header only
+
     const ib = issuesBox(issues);
     if (ib) card.append(ib);
 
@@ -149,7 +178,10 @@
     if (cand && cand.inputs.length) {
       const grid = el("div", "slot-fields");
       cand.inputs.forEach((spec) => {
-        grid.append(widgetField(spec, slot.inputs[spec.name], async (v) => { slot.inputs[spec.name] = v; await persist(); }));
+        const f = widgetField(spec, slot.inputs[spec.name], async (v) => { slot.inputs[spec.name] = v; await persist(); });
+        f.classList.add("with-eye");
+        f.append(eyeButton(slot, spec));
+        grid.append(f);
       });
       card.append(grid);
     }

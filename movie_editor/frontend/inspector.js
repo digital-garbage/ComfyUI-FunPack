@@ -101,11 +101,51 @@
     wrap.append(box); body.append(wrap);
   }
 
+  function exposedControl(desc, value, on) {
+    let ctrl;
+    if (desc.kind === "combo") {
+      ctrl = el("select");
+      (desc.choices || []).forEach((c) => { const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o); });
+      if (!(desc.choices || []).length) { ctrl.append(el("option", null, "(none)")); ctrl.disabled = true; }
+      ctrl.onchange = () => on(ctrl.value);
+    } else if (desc.kind === "boolean") {
+      ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!value; ctrl.style.width = "auto";
+      ctrl.onchange = () => on(ctrl.checked);
+    } else if (desc.kind === "int" || desc.kind === "float") {
+      ctrl = el("input"); ctrl.type = "number"; if (desc.kind === "float") ctrl.step = "any";
+      ctrl.value = value != null ? value : "";
+      ctrl.oninput = () => on(desc.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0"));
+    } else {
+      ctrl = el("input"); ctrl.type = "text"; ctrl.value = value != null ? value : "";
+      ctrl.oninput = () => on(ctrl.value);
+    }
+    return ctrl;
+  }
+
+  function slotLabel(slot) {
+    return slot.role && slot.role !== "custom" ? slot.role : (slot.node_class || "node");
+  }
+
+  function renderExposed(st) {
+    const items = [];
+    ((st.models && st.models.slots) || []).forEach((slot) =>
+      (slot.exposed || []).forEach((d) => items.push([slot, d])));
+    if (!items.length) return;
+    const wrap = el("div", "insp-block");
+    const tag = el("div", "insp-tag"); tag.textContent = "Exposed controls"; wrap.append(tag);
+    items.forEach(([slot, d]) => {
+      const ctrl = exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v));
+      wrap.append(field(`${slotLabel(slot)} · ${d.label || d.name}`, ctrl));
+    });
+    body.append(wrap);
+  }
+
   function render(st) {
     clear(body);
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const scene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
     if (scene) renderScene(st, scene); else renderProject(st);
+    renderExposed(st);
     renderSplit(st);
   }
 

@@ -269,13 +269,16 @@ input[type=number] { font-family: var(--font-mono); }
 .slot-card { border-left: 3px solid var(--amber); }
 .slot-card.slot-warn { border-left-color: var(--amber); }
 .slot-card.slot-bad  { border-left-color: var(--danger); }
-.slot-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.slot-head { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
+.slot-card.open .slot-head { margin-bottom: 10px; }
+.slot-chev { color: var(--faint); width: 12px; flex: 0 0 auto; font-size: 11px; }
 .slot-role { font-weight: 600; }
 .slot-node { font-family: var(--font-mono); font-size: 11px; color: var(--muted); background: var(--ink-0); padding: 2px 7px; border-radius: 5px; border: 1px solid var(--line); }
 .slot-badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: .5px; text-transform: uppercase; padding: 2px 7px; border-radius: 5px; border: 1px solid; }
 .slot-badge.ok   { color: var(--teal);   border-color: color-mix(in srgb, var(--teal) 50%, var(--line)); }
 .slot-badge.warn { color: var(--amber);  border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
 .slot-badge.bad  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--line)); }
+.slot-badge.exposed { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
 .slot-head .btn { margin-left: auto; }
 
 .issue-box { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
@@ -285,6 +288,14 @@ input[type=number] { font-family: var(--font-mono); }
 .issue-warn .issue-dot, .issue-warn .issue-msg { color: var(--amber); }
 .slot-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
 .slot-fields label.field, .composer-preview label.field { margin-bottom: 0; }
+
+/* eye toggle: expose a node input to the main editor window */
+label.field.with-eye { position: relative; padding-right: 26px; }
+.eye-btn { position: absolute; top: 0; right: 0; width: 22px; height: 18px; padding: 0; line-height: 1;
+  background: transparent; border: 1px solid var(--line); border-radius: 5px; color: var(--faint);
+  cursor: pointer; font-size: 11px; }
+.eye-btn:hover { color: var(--muted); border-color: var(--muted); }
+.eye-btn.on { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
 
 .wire-box { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .wire-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--teal); margin-bottom: 8px; }

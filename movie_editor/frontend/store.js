@@ -11,6 +11,7 @@
     preview: null,         // {combined_prompt, parsed, warning, parse_error}
     gen: { state: "idle", promptId: null, media: [], msg: "" },
     saving: false,
+    models: { slots: [] },   // pluggable node config (shared with Models modal)
   };
 
   const listeners = new Set();
@@ -153,10 +154,28 @@
     }, 2000);
   }
 
+  // ── pluggable models / exposed controls ──────────────────────────────────────
+  async function loadModels() {
+    try { state.models = await API.getModels(); } catch (_) { state.models = { slots: [] }; }
+    notify();
+  }
+
+  // Edit a configured node input from the main editor (an "exposed" control) and persist.
+  async function setModelInput(slotId, name, value) {
+    const slot = (state.models.slots || []).find((s) => s.id === slotId);
+    if (!slot) return;
+    slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
+    notify();
+    try { state.models = await API.saveModels(state.models); notify(); }
+    catch (e) { console.error("saveModels failed", e); }
+  }
+
   // ── boot ─────────────────────────────────────────────────────────────────────
   async function init() {
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
+    await loadModels();
+    window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
     if (state.projects[0]) await loadProject(state.projects[0].id);
     else await newProject("My first montage");
@@ -167,6 +186,6 @@
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject,
     patchProject, patchScene, selectScene, addScene, removeScene, moveScene, scene,
-    refreshPreview, generate,
+    refreshPreview, generate, loadModels, setModelInput,
   };
 })();
