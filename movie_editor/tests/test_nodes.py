@@ -93,6 +93,20 @@ def test_ports_from_object_info_exposes_core_inputs():
     assert all(p["label"].startswith("Audio VAE Decode · ") for p in ports)
 
 
+def test_malformed_node_is_skipped_not_fatal():
+    # a node with V3-style dict outputs / odd shapes must not crash the whole list
+    bad = dict(OI)
+    bad["WeirdNode"] = {"input": {"required": {"x": {"nested": "dict"}}},
+                        "output": {"a": "MODEL"}, "output_name": {"a": "model"},
+                        "display_name": "Weird", "category": "x"}
+    bad["AlsoBad"] = {"input": "not-a-dict", "output": None}
+    # candidates for a role still returns the good loaders, no exception
+    got = {c["class"] for c in nodes.candidates(bad, "unet")}
+    assert "CheckpointLoaderSimple" in got
+    # all_nodes lists everything (incl. the weird ones) without crashing
+    assert {n["class"] for n in nodes.all_nodes(bad)} >= set(OI)
+
+
 def test_models_store_roundtrip(tmp_path, monkeypatch):
     from movie_editor.backend import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

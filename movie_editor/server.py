@@ -228,7 +228,12 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info(refresh=refresh)
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
-        return web.json_response({"role": role, "candidates": nodes.candidates(oi, role)})
+        try:
+            return web.json_response({"role": role, "candidates": nodes.candidates(oi, role)})
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            print(f"[FunPack][movie] node-candidates({role}) failed:\n{traceback.format_exc()}")
+            raise web.HTTPInternalServerError(reason=f"candidates({role}) failed: {e}")
 
     @routes.get(UI_PREFIX + "/api/pipeline-ports")
     async def _pipeline_ports(_req):
@@ -244,7 +249,12 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
-        return web.json_response({"nodes": nodes.all_nodes(oi)})
+        try:
+            return web.json_response({"nodes": nodes.all_nodes(oi)})
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            print(f"[FunPack][movie] all-nodes failed:\n{traceback.format_exc()}")
+            raise web.HTTPInternalServerError(reason=f"all-nodes failed: {e}")
 
     @routes.get(UI_PREFIX + "/api/node/{cls}")
     async def _node(req):

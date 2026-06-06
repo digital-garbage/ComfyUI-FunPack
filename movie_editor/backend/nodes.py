@@ -85,10 +85,14 @@ def connection_inputs(node_def: dict) -> list[dict]:
 
 def node_outputs(node_def: dict) -> list[dict]:
     """Outputs a node produces, as {name, type}, so they can be wired onward."""
-    types = _outputs(node_def)
-    names = node_def.get("output_name") or []
+    names = node_def.get("output_name")
+    if not isinstance(names, list):
+        names = []
     out = []
-    for i, t in enumerate(node_def.get("output") or []):
+    outputs = node_def.get("output")
+    if not isinstance(outputs, list):
+        return out
+    for i, t in enumerate(outputs):
         if not isinstance(t, str):
             continue
         nm = names[i] if i < len(names) and names[i] else t
@@ -122,7 +126,10 @@ def widget_inputs(node_def: dict) -> list[dict]:
 
 
 def candidates(object_info: dict, role_key: str) -> list[dict]:
-    """Candidate node classes for a role, each with their widget inputs."""
+    """Candidate node classes for a role, each with their widget inputs.
+
+    Each node is processed defensively (like ComfyUI's own /object_info): a node
+    with an unexpected schema is skipped, never crashing the whole list."""
     role = ROLES.get(role_key)
     if not role:
         return []
@@ -130,17 +137,20 @@ def candidates(object_info: dict, role_key: str) -> list[dict]:
     for cls, node_def in object_info.items():
         if not isinstance(node_def, dict):
             continue
-        if not _matches_role(node_def, role):
+        try:
+            if not _matches_role(node_def, role):
+                continue
+            result.append({
+                "class": cls,
+                "display_name": node_def.get("display_name", cls),
+                "category": node_def.get("category", ""),
+                "inputs": widget_inputs(node_def),
+                "outputs": node_outputs(node_def),
+                "connection_inputs": connection_inputs(node_def),
+            })
+        except Exception:  # noqa: BLE001 - skip malformed node, keep the rest
             continue
-        result.append({
-            "class": cls,
-            "display_name": node_def.get("display_name", cls),
-            "category": node_def.get("category", ""),
-            "inputs": widget_inputs(node_def),
-            "outputs": node_outputs(node_def),
-            "connection_inputs": connection_inputs(node_def),
-        })
-    result.sort(key=lambda c: c["display_name"].lower())
+    result.sort(key=lambda c: str(c["display_name"]).lower())
     return result
 
 
@@ -150,8 +160,12 @@ def all_nodes(object_info: dict) -> list[dict]:
     for cls, nd in object_info.items():
         if not isinstance(nd, dict):
             continue
-        out.append({"class": cls, "display_name": nd.get("display_name", cls), "category": nd.get("category", "")})
-    out.sort(key=lambda c: (c["category"], c["display_name"].lower()))
+        try:
+            out.append({"class": cls, "display_name": nd.get("display_name", cls),
+                        "category": nd.get("category", "")})
+        except Exception:  # noqa: BLE001
+            continue
+    out.sort(key=lambda c: (str(c["category"]), str(c["display_name"]).lower()))
     return out
 
 
