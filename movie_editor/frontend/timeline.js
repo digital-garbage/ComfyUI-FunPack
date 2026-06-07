@@ -183,6 +183,8 @@
     tlTcEl = tc;  // keep ref for Player's onPlayheadChanged updates
     bar.append(tc);
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
+    const keys = el("span", "tl-keys", "S split · ⌫ remove"); keys.title = "Select a clip, then: S splits it at the playhead · Delete/Backspace removes it";
+    bar.append(keys);
     const zlabel = el("span", "tl-zlabel", "zoom"); bar.append(zlabel);
     const zout = el("button", "btn ghost tiny", "−"); zout.onclick = () => setZoom(pxPerSec / 1.4);
     const zin = el("button", "btn ghost tiny", "＋"); zin.onclick = () => setZoom(pxPerSec * 1.4);
@@ -264,6 +266,31 @@
   }
 
   S.subscribe(render);
+
+  // ── keyboard: S = split selected clip at playhead, Del/Backspace = remove it ──
+  function splitSelectedAtPlayhead() {
+    const st = S.get();
+    if (!st.project || !st.selectedSceneId) return;
+    const p = st.project;
+    let off = 0, target = null;
+    for (const sc of (p.scenes || [])) { if (sc.id === st.selectedSceneId) { target = sc; break; } off += sDur(sc, p); }
+    if (!target) return;
+    const ph = window.Player?.getPlayhead() ?? 0;
+    const fps = sFps(target, p), dur = sDur(target, p);
+    // Split at the playhead when it's inside the clip; otherwise at the midpoint.
+    const at = (ph > off + 0.05 && ph < off + dur - 0.05) ? Math.round((ph - off) * fps) : null;
+    S.splitScene(target.id, at);
+  }
+
+  window.addEventListener("keydown", (e) => {
+    const a = document.activeElement;
+    if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const st = S.get();
+    if (!st.project || !st.selectedSceneId) return;
+    if (e.key === "s" || e.key === "S") { e.preventDefault(); splitSelectedAtPlayhead(); }
+    else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); S.removeScene(st.selectedSceneId); }
+  });
 
   // Update only the playhead needle + timecode during video playback.
   // Runs at video's timeupdate rate (~4–25Hz) — no full re-render needed.
