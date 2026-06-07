@@ -160,15 +160,22 @@ _XFADE_MAP = {
 }
 
 
-def _build_render_filter(clips: list) -> str:
+def _build_render_filter(clips: list, tracks: Optional[list] = None,
+                         keep_original: bool = True, base_input: int = 0) -> tuple[str, bool]:
     """ffmpeg filter_complex for the final stitch.
 
-    Per clip: apply blur / fade in-out / Ken-Burns zoom (scale eval=frame so the scale
-    animates over the clip; zoom-in crops the overflow, zoom-out pads into the box). Then
-    fold the clips left-to-right: a seam with a video_transition uses xfade (overlap, so the
-    total shortens by the transition length) + acrossfade for audio; otherwise a hard-cut
-    concat. All pure pixel ops — nothing re-encodes to latent. Returns labels [vout]/[aout].
+    Video — per clip: normalize to one canvas, then blur / fade in-out / virtual Ken-Burns
+    zoom (zoompan, fixed output size). Fold left-to-right with xfade (overlap) or concat.
+
+    Audio — per-clip original audio gets its volume; when keep_original the per-clip streams
+    are folded alongside the video (acrossfade at crossfades, concat otherwise) into [aorig].
+    Extra `tracks` (inserted audio, input index base_input+j) are delayed to their start and
+    volume-scaled, then everything is amixed into [aout]. keep_original=False drops the
+    original LTXAV audio entirely; with no tracks either, the output is silent (no [aout]).
+
+    Returns (filter_complex, has_audio).
     """
+    tracks = tracks or []
     n = len(clips)
     parts: list[str] = []
 
@@ -211,9 +218,14 @@ def _build_render_filter(clips: list) -> str:
         vf.append("format=yuv420p")
         vf.append("setsar=1")
         parts.append(f"[{i}:v:0]{','.join(vf)}[v{i}]")
-        parts.append(f"[{i}:a:0]aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
+        if keep_original:
+            vol = float(c.get("volume", 1.0))
+            af = "aformat=sample_fmts=fltp:channel_layouts=stereo"
+            if abs(vol - 1.0) > 1e-3:
+                af += f",volume={max(0.0, vol):.3f}"
+            parts.append(f"[{i}:a:0]{af}[a{i}]")
 
-    # Fold the processed streams together.
+    # Fold video (and the original audio when kept) left-to-right.
     acc_v, acc_a = "[v0]", "[a0]"
     acc_dur = float(clips[0].get("dur") or 0) or 0.0
     for i in range(1, n):
@@ -223,20 +235,45 @@ def _build_render_filter(clips: list) -> str:
         dur_i = float(clips[i].get("dur") or 0) or 0.0
         if trans in _XFADE_MAP and td > 0 and acc_dur > td:
             off = max(0.0, acc_dur - td)
-            ov, oa = f"[vx{i}]", f"[ax{i}]"
+            ov = f"[vx{i}]"
             parts.append(f"{acc_v}[v{i}]xfade=transition={_XFADE_MAP[trans]}:duration={td:.3f}:offset={off:.3f}{ov}")
-            parts.append(f"{acc_a}[a{i}]acrossfade=d={td:.3f}{oa}")
-            acc_v, acc_a, acc_dur = ov, oa, acc_dur + dur_i - td
+            if keep_original:
+                oa = f"[ax{i}]"; parts.append(f"{acc_a}[a{i}]acrossfade=d={td:.3f}{oa}"); acc_a = oa
+            acc_v, acc_dur = ov, acc_dur + dur_i - td
         else:
-            ov, oa = f"[vc{i}]", f"[ac{i}]"
+            ov = f"[vc{i}]"
             parts.append(f"{acc_v}[v{i}]concat=n=2:v=1:a=0{ov}")
-            parts.append(f"{acc_a}[a{i}]concat=n=2:v=0:a=1{oa}")
-            acc_v, acc_a, acc_dur = ov, oa, acc_dur + dur_i
+            if keep_original:
+                oa = f"[ac{i}]"; parts.append(f"{acc_a}[a{i}]concat=n=2:v=0:a=1{oa}"); acc_a = oa
+            acc_v, acc_dur = ov, acc_dur + dur_i
 
-    # Final relabel to [vout]/[aout].
     parts.append(f"{acc_v}null[vout]")
-    parts.append(f"{acc_a}anull[aout]")
-    return ";".join(parts)
+    total = max(0.01, acc_dur)
+
+    # Assemble the audio mix: original (if kept) + each inserted track (delayed/volume'd).
+    mix: list[str] = []
+    if keep_original and n > 0:
+        mix.append(acc_a)
+    for j, t in enumerate(tracks):
+        idx = base_input + j
+        start = float(t.get("start_sec") or 0)
+        tvol = float(t.get("volume", 1.0))
+        ms = int(max(0.0, start) * 1000)
+        lbl = f"[at{j}]"
+        chain = f"[{idx}:a:0]aformat=sample_fmts=fltp:channel_layouts=stereo,volume={max(0.0, tvol):.3f}"
+        if ms > 0:
+            chain += f",adelay={ms}|{ms}"
+        parts.append(f"{chain}{lbl}")
+        mix.append(lbl)
+
+    if not mix:
+        return ";".join(parts), False  # silent output (video only)
+    if len(mix) == 1:
+        parts.append(f"{mix[0]}atrim=0:{total:.3f},asetpts=PTS-STARTPTS[aout]")
+    else:
+        parts.append("".join(mix) + f"amix=inputs={len(mix)}:normalize=0:duration=longest[amx]")
+        parts.append(f"[amx]atrim=0:{total:.3f},asetpts=PTS-STARTPTS[aout]")
+    return ";".join(parts), True
 
 
 def _segment(p: Project, scene_ids: list) -> Project:
@@ -640,9 +677,9 @@ if web is not None and PromptServer is not None:
     # --- API: final render (hard-cut concat of kept clips, with per-clip in/out) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/render")
     async def _render_final(req):
-        _project_or_404(req.match_info["pid"])
+        proj = _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
-        clips = body.get("clips") or []  # ordered [{filename, subfolder, type, in?, dur?}]
+        clips = body.get("clips") or []  # ordered [{filename, subfolder, type, in?, dur?, volume?}]
         if not clips:
             return web.json_response({"detail": "Nothing to render — no generated clips."}, status=400)
         import os
@@ -668,13 +705,22 @@ if web is not None and PromptServer is not None:
         if missing:
             return web.json_response({"detail": f"{len(missing)} clip file(s) not found on disk — regenerate then render."}, status=400)
 
+        # Inserted audio tracks (project-level): resolve each media asset to a file. Skip any
+        # that no longer exist on disk rather than failing the whole render.
+        keep_original = bool(getattr(proj, "keep_original_audio", True))
+        tracks = []
+        for t in (getattr(proj, "audio_tracks", None) or []):
+            mp = media.path_for(t.get("media_ref") or "")
+            if mp is None:
+                continue
+            tracks.append({"path": str(mp), "start_sec": t.get("start_sec") or 0, "volume": t.get("volume", 1.0)})
+
         # The final render is ephemeral (temp dir) — persist it via the Export Save dialog.
         out_name = f"funpack_final_{int(_time.time())}.mp4"
         out_path = os.path.join(tempdir, out_name)
         # Per-clip in/out via -ss/-t before each input, then a filter graph that applies
-        # per-clip video effects (blur/fade/zoom — pure pixel ops, never re-encode to
-        # latent) and folds clips together with xfade/concat seam transitions. Re-encode
-        # keeps the LTXAV audio.
+        # per-clip video effects + seam transitions and the audio mix (per-clip volume,
+        # original-audio toggle, inserted tracks). Re-encode keeps/mixes the audio.
         cmd = [ff, "-y"]
         for c, pth in zip(clips, paths):
             inn, dur = c.get("in"), c.get("dur")
@@ -684,10 +730,14 @@ if web is not None and PromptServer is not None:
                 cmd += ["-t", f"{float(dur):.3f}"]
             cmd += ["-i", pth]
         n = len(clips)
-        filt = _build_render_filter(clips)
+        for t in tracks:  # inserted-audio inputs follow the clip inputs (indices n..n+k-1)
+            cmd += ["-i", t["path"]]
+        filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
+        cmd += ["-filter_complex", filt, "-map", "[vout]"]
+        if has_audio:
+            cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
         cmd += [
-            "-filter_complex", filt, "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
             "-movflags", "+faststart", out_path,
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True)

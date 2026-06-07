@@ -50,7 +50,7 @@
     for (const sc of (p.scenes || [])) {
       const dur = sFrames(sc) / sFps(sc);
       const r = sr[sc.id];
-      if (r && r.media) out.push({ media: r.media, sceneId: sc.id, startSec: acc, durationSec: dur, inSec: r.inSec || 0, fx: sc.effects || {} });
+      if (r && r.media) out.push({ media: r.media, sceneId: sc.id, startSec: acc, durationSec: dur, inSec: r.inSec || 0, fx: sc.effects || {}, vol: sc.audio_volume != null ? sc.audio_volume : 1 });
       acc += dur;  // timeline advances even over ungenerated scenes (gaps)
     }
     return out;
@@ -126,6 +126,10 @@
     if (fi > 0 && within < fi) op = Math.max(0, within / fi);
     if (fo > 0 && dur > 0 && within > dur - fo) op = Math.min(op, Math.max(0, (dur - within) / fo));
     v.style.opacity = op < 1 ? op.toFixed(3) : "";
+    // audio: per-clip original volume, muted when the project drops original audio.
+    const keepOrig = (S.get().project || {}).keep_original_audio !== false;
+    const vol = (clip && clip.vol != null) ? clip.vol : 1;
+    v.volume = keepOrig ? Math.max(0, Math.min(1, vol)) : 0;
   }
 
   // Show `clip` at `offset` seconds into the clip; play if requested. Seeks to the clip's

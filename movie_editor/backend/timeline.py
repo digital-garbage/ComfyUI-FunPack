@@ -60,6 +60,8 @@ class Scene:
     # Per-scene post-decode video effects applied to this clip (pixel ops), keys:
     #   {blur: 0..1, fade_in: sec, fade_out: sec, zoom: "none"|"in"|"out"}.
     effects: dict = field(default_factory=dict)
+    # Gain applied to this clip's ORIGINAL (LTXAV) audio at render. 1.0 = unchanged, 0 = mute.
+    audio_volume: float = 1.0
     # Forward-compat per-scene knobs (uniform values still win in V1).
     frames: Optional[int] = None
     fps: Optional[int] = None
@@ -90,6 +92,7 @@ class Scene:
             transition_frames=d.get("transition_frames"),
             video_transition=str(d.get("video_transition", "")),
             effects=dict(d.get("effects") or {}),
+            audio_volume=float(d.get("audio_volume", 1.0)),
             frames=d.get("frames"),
             fps=d.get("fps"),
             frames_mode=str(d.get("frames_mode") or "timeline"),
@@ -145,6 +148,11 @@ class Project:
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
     sampler_inputs: dict = field(default_factory=dict)
+    # Audio editing (render-time mix). keep_original_audio=False drops the per-clip LTXAV
+    # audio entirely. audio_tracks = inserted tracks mixed over the montage, each:
+    #   {id, media_ref, start_sec, volume, label}. With no tracks and original off → silent.
+    keep_original_audio: bool = True
+    audio_tracks: list = field(default_factory=list)
     # Per-project pipeline config: the configured loader/node slots + linked inputs
     # (same shape as the global models.json). Empty {"slots": []} falls back to the
     # global default at build/read time; the editor seeds new projects from it.
@@ -172,6 +180,8 @@ class Project:
             sampler_slot=str(d.get("sampler_slot", "funpack")),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
+            keep_original_audio=bool(d.get("keep_original_audio", True)),
+            audio_tracks=list(d.get("audio_tracks") or []),
             models=dict(d.get("models") or {"slots": []}),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),

@@ -259,6 +259,31 @@
     notify(); scheduleSave();
   }
 
+  // ── audio editing ─────────────────────────────────────────────────────────────
+  function _uid() { return "a" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36); }
+
+  function addAudioTrack(mediaId, startSec) {
+    if (!state.project || !mediaId) return;
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    state.project.audio_tracks = state.project.audio_tracks || [];
+    state.project.audio_tracks.push({
+      id: _uid(), media_ref: mediaId, start_sec: +(startSec || 0),
+      volume: 1.0, label: (asset && asset.name) || "track",
+    });
+    notify(); scheduleSave();
+  }
+  function updateAudioTrack(id, patch, quiet) {
+    const t = (state.project?.audio_tracks || []).find((x) => x.id === id);
+    if (!t) return;
+    Object.assign(t, patch);
+    notify(); quiet ? scheduleSaveSilent() : scheduleSave();
+  }
+  function removeAudioTrack(id) {
+    if (!state.project) return;
+    state.project.audio_tracks = (state.project.audio_tracks || []).filter((x) => x.id !== id);
+    notify(); scheduleSave();
+  }
+
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
@@ -562,6 +587,7 @@
         h: (sc.height != null ? sc.height : p.height) || null,
         transition: sc.video_transition || "",
         tdur: tFrames > 0 ? tFrames / fps : 0,
+        volume: sc.audio_volume != null ? sc.audio_volume : 1,
       });
     }
     return out;
@@ -588,7 +614,9 @@
       filename: c.media.filename, subfolder: c.media.subfolder || "", type: c.media.type || "output",
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
       fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
+      volume: c.volume,
     }));
+    await flushSave();  // audio tracks / keep-original live on the project — render reads it from disk
     set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} clip(s)…` } });
     try {
       const r = await API.renderFinal(state.project.id, clips);
@@ -707,6 +735,7 @@
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, moveScene, moveSceneTo, scene,
+    addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,

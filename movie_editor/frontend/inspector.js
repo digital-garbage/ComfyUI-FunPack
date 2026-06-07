@@ -198,6 +198,15 @@
       body.append(el("div", "insp-hint", "Crossfades overlap the two clips, so the montage gets a little shorter."));
     }
 
+    // ── Clip audio (original LTXAV audio gain)
+    const auTag = el("div", "insp-tag"); auTag.textContent = "Clip audio"; body.append(auTag);
+    const vol = el("input"); vol.type = "range"; vol.min = "0"; vol.max = "2"; vol.step = "0.05";
+    vol.value = scene.audio_volume != null ? scene.audio_volume : 1; vol.dataset.k = "sc-vol";
+    const volPct = Math.round((scene.audio_volume != null ? scene.audio_volume : 1) * 100);
+    vol.oninput = () => S.patchSceneQuiet(scene.id, { audio_volume: parseFloat(vol.value) });
+    body.append(field(`Original volume (${volPct}%)`, vol));
+    body.append(el("div", "insp-hint", "0% mutes this clip. Add background tracks & toggle original audio in Project settings."));
+
     const p = st.project;
     const lenRow = el("div", "fields-row");
     lenRow.append(lengthControl(scene, "frames"));
@@ -253,6 +262,48 @@
     neg.placeholder = "What to avoid in every scene";
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
     body.append(field("Negative prompt", neg));
+
+    // ── Audio (render-time mix) ───────────────────────────────────────────────────
+    const audTag = el("div", "insp-tag"); audTag.textContent = "Audio"; body.append(audTag);
+    const keepRow = el("div", "insp-block");
+    const keepLbl = el("label", "chk"); const keepCb = el("input"); keepCb.type = "checkbox";
+    keepCb.checked = p.keep_original_audio !== false;
+    keepCb.onchange = () => S.patchProject({ keep_original_audio: keepCb.checked });
+    keepLbl.append(keepCb); keepLbl.append(el("span", null, "Keep original (generated) audio"));
+    keepRow.append(keepLbl); body.append(keepRow);
+    if (p.keep_original_audio === false)
+      body.append(el("div", "insp-hint", "Original audio is OFF — the render uses only inserted tracks below (silent if none)."));
+
+    // inserted tracks
+    (p.audio_tracks || []).forEach((t, i) => {
+      const asset = (st.mediaBin || []).find((m) => m.id === t.media_ref);
+      const card = el("div", "aud-track");
+      const head = el("div", "aud-track-head");
+      head.append(el("span", "aud-track-name", (asset && asset.name) || t.label || `Track ${i + 1}`));
+      const rm = el("button", "ic-btn danger", "✕"); rm.title = "Remove track";
+      rm.onclick = () => S.removeAudioTrack(t.id);
+      head.append(rm); card.append(head);
+      const r = el("div", "fields-row");
+      r.append(numberField("Start (s)", t.start_sec || 0, (v) => S.updateAudioTrack(t.id, { start_sec: v }, true), "aud-st-" + t.id));
+      const volWrap = el("label", "field");
+      volWrap.append(el("span", "field-label", `Volume (${Math.round((t.volume != null ? t.volume : 1) * 100)}%)`));
+      const tv = el("input"); tv.type = "range"; tv.min = "0"; tv.max = "2"; tv.step = "0.05";
+      tv.value = t.volume != null ? t.volume : 1; tv.dataset.k = "aud-vol-" + t.id;
+      tv.oninput = () => S.updateAudioTrack(t.id, { volume: parseFloat(tv.value) }, true);
+      volWrap.append(tv); r.append(volWrap);
+      card.append(r);
+      body.append(card);
+    });
+
+    // add a track from the media bin
+    const audioAssets = (st.mediaBin || []).filter((m) => m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(m.name || ""));
+    const addRow = el("div", "insp-block");
+    const addSel = el("select"); addSel.dataset.k = "aud-add";
+    addSel.append(new Option(audioAssets.length ? "— add audio track… —" : "— upload audio to the Media bin first —", ""));
+    audioAssets.forEach((m) => addSel.append(new Option(m.name || m.id, m.id)));
+    addSel.onchange = () => { if (addSel.value) { S.addAudioTrack(addSel.value, 0); addSel.value = ""; } };
+    addRow.append(field("Add background track", addSel)); body.append(addRow);
+    body.append(el("div", "insp-hint", "Inserted tracks are mixed at render only (not in the live preview). Per-clip original volume is on each scene."));
 
     const slots = (st.models?.slots || []);
 

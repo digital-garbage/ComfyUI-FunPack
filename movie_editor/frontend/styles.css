@@ -387,6 +387,9 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .tl-dd-val { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
 .tl-dd-val[hidden] { display: none; }
 .tl-dd-val input { width: 78px; }
+.aud-track { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 6px 0; background: #1a1711; }
+.aud-track-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.aud-track-name { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .clip.selected { border-color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal-soft); z-index: 3; }
 .clip.selected::before { background: var(--teal); opacity: 1; }
 .clip.excluded { opacity: .42; }
