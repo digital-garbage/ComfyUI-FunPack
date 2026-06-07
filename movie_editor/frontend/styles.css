@@ -116,6 +116,7 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .log-panel { position: fixed; z-index: 9000; right: 14px; top: 48px; width: min(720px, 88vw); height: min(420px, 60vh);
   background: #0c0b09f2; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column;
   box-shadow: 0 16px 40px -12px #000; overflow: hidden; }
+.log-panel[hidden] { display: none; }  /* explicit display:flex above would otherwise beat the hidden attribute */
 .log-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid var(--line);
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
 .log-actions { display: flex; gap: 6px; }
