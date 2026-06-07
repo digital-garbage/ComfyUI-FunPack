@@ -346,6 +346,9 @@ input[type=number] { font-family: var(--font-mono); }
 .clip.selected::before { background: var(--teal); opacity: 1; }
 .clip.excluded { opacity: .42; }
 .clip.excluded::before { background: var(--faint); }
+/* a clip that has a rendered video available (in temp) */
+.clip.rendered::after { content: "●"; position: absolute; top: 4px; right: 6px; font-size: 7px;
+  color: #57c98e; text-shadow: 0 0 5px rgba(87,201,142,.7); pointer-events: none; z-index: 4; }
 .clip.trimming { border-color: var(--amber); z-index: 5; }
 .clip-head { display: flex; align-items: center; gap: 6px; }
 .clip-no { font-family: var(--font-mono); font-size: 11px; color: var(--amber); font-weight: 600; }

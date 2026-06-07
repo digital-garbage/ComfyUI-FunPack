@@ -220,9 +220,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         graph["sampler"]["inputs"]["seed"] = params["seed"]
     if params.get("max_scenes") is not None:
         graph["sampler"]["inputs"]["max_scenes"] = params["max_scenes"]
-    # the result must be written to the output dir so the editor can fetch it back
-    # (the reference graph used preview-only save_output=False).
-    graph["vhs"]["inputs"]["save_output"] = True
+    # UI renders are EPHEMERAL: write to ComfyUI's temp dir (cleared on restart), not
+    # the output dir. Persisting a result is the user's job via Export (Save dialog).
+    # save_output=False routes VHS_VideoCombine to temp; history reports type="temp",
+    # which the result proxy + final-render concat resolve against the temp directory.
+    graph["vhs"]["inputs"]["save_output"] = False
     # split_by_transitions MUST be True — Studio defaults to False (single-scene mode)
     # but the Movie Editor always builds multi-scene combined prompts.  Force it here
     # BEFORE the user's studio_inputs override block so it cannot be accidentally

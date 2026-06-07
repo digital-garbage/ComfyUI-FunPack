@@ -535,8 +535,10 @@ if web is not None and PromptServer is not None:
         if missing:
             return web.json_response({"detail": f"{len(missing)} clip file(s) not found on disk — regenerate then render."}, status=400)
 
+        # The final render is ALSO ephemeral (temp dir) — the user persists it via the
+        # Export Save dialog, not by us writing to the output directory.
         out_name = f"funpack_final_{int(_time.time())}.mp4"
-        out_path = os.path.join(outdir, out_name)
+        out_path = os.path.join(tempdir, out_name)
         # concat demuxer + re-encode → tolerates differing codecs/params between runs
         # and keeps BOTH the video and the LTXAV audio stream.
         list_fd, list_path = tempfile.mkstemp(suffix=".txt")
@@ -561,7 +563,7 @@ if web is not None and PromptServer is not None:
             except OSError:
                 pass
         return web.json_response({
-            "media": {"filename": out_name, "subfolder": "", "type": "output", "kind": "videos"},
+            "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
             "clips": len(paths),
         })
 

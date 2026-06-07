@@ -25,6 +25,9 @@
   const sFrames = (sc, p) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
   const sDur = (sc, p) => sFrames(sc, p) / sFps(sc, p);
 
+  const hasRender = (st, sceneId) =>
+    (st.renderedSegments || []).some((s) => s.media && (s.sceneIds || []).includes(sceneId));
+
   const p2 = (n) => String(n).padStart(2, "0");
   function timecode(sec, fps) {
     sec = Math.max(0, sec);
@@ -70,7 +73,7 @@
 
   // ── clip ───────────────────────────────────────────────────────────────────────
   function clipEl(st, p, scene, index, leftPx, widthPx) {
-    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : ""));
+    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : ""));
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = () => S.selectScene(scene.id);
@@ -191,7 +194,11 @@
     const del = el("button", "btn ghost tiny danger", "✕ Remove");
     del.title = "Remove the selected clip (Delete / Backspace)"; del.disabled = !hasSel;
     del.onclick = () => { if (st.selectedSceneId) S.removeScene(st.selectedSceneId); };
-    bar.append(split); bar.append(del);
+    const exp = el("button", "btn ghost tiny", "⤓ Export");
+    exp.title = "Save the selected clip's rendered video to disk (renders are temporary)";
+    exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
+    exp.onclick = () => S.exportSelected();
+    bar.append(split); bar.append(del); bar.append(exp);
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const keys = el("span", "tl-keys", "S split · ⌫ remove"); keys.title = "Select a clip, then: S splits it at the playhead · Delete/Backspace removes it";

@@ -216,13 +216,14 @@
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
-    // raw = verbatim split (shortcuts preserved); exp = expanded (transition detection)
+    // structure from whichever split defines more scenes; verbatim text on a tie.
     const raw = state.preview.parsed_raw || state.preview.parsed || {};
     const exp = state.preview.parsed || raw;
-    const parsedScenes = raw.scenes || [];
+    const src = _structureSource(raw, exp);
+    const parsedScenes = src.scenes || [];
     if (!parsedScenes.length) return;
 
-    if (raw.anchor != null) state.project.anchor = raw.anchor;
+    if (src.anchor != null) state.project.anchor = src.anchor;
 
     // Sync scene texts verbatim (only if count matches to avoid destructive mismatches)
     const activeScenes = state.project.scenes.filter((s) => !s.excluded);
@@ -231,7 +232,7 @@
     }
 
     // Transitions: only fill seams the user hasn't set, mapped via the library.
-    const trans = (((exp.scenes || []).length === parsedScenes.length ? exp.transitions : raw.transitions) || []);
+    const trans = (((exp.scenes || []).length === parsedScenes.length ? exp.transitions : src.transitions) || []);
     trans.forEach((t) => {
       const idx = t.after_scene;
       if (idx >= 0 && idx < activeScenes.length && t.visual_effect) {
@@ -257,30 +258,40 @@
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
     catch (e) { alert("Could not parse the global prompt: " + e.message); return; }
-    // raw = verbatim split (shortcuts kept in scene text); exp = expanded split, used
-    // ONLY to detect transitions (incl. those a shortcut expands into).
-    const raw = res.parsed_raw || res.parsed;
+    // raw = verbatim split (shortcuts kept in text); exp = expanded split. The
+    // STRUCTURE (scene count / anchor / transitions) can be created by shortcut
+    // expansion, so take it from whichever splits MORE. Verbatim text is kept only
+    // when the raw split structures the prompt just as well as the expanded one.
+    const raw = res.parsed_raw || res.parsed || {};
     const exp = res.parsed || raw;
-    if (!raw || !(raw.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
+    const src = _structureSource(raw, exp);
+    if (!(src.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
 
-    if (raw.anchor != null) state.project.anchor = raw.anchor;
+    if (src.anchor != null) state.project.anchor = src.anchor;
     const old = state.project.scenes || [];
-    const next = (raw.scenes || []).map((ps, i) => {
-      const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "empty" }, excluded: false };
-      base.text = ps.text || "";          // verbatim — shortcuts preserved
+    const next = (src.scenes || []).map((ps, i) => {
+      const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "carry" }, excluded: false };
+      base.text = ps.text || "";
       base.transition_to_next = "";
       return base;
     });
-    _applyDetectedTransitions(next, raw, exp);
+    _applyDetectedTransitions(next, src, exp);
     state.project.scenes = next;
     state.selectedSceneId = null;  // show project view so the result is visible
     notify(); scheduleSave();
   }
 
+  // Pick the split that defines the most scenes — prefer raw (verbatim) on a tie so
+  // descriptive shortcuts stay unexpanded; fall back to expanded when it splits more.
+  function _structureSource(raw, exp) {
+    const rawN = (raw.scenes || []).length, expN = (exp.scenes || []).length;
+    return (rawN >= expN && rawN > 0) ? raw : exp;
+  }
+
   // Map detected transitions (visual_effect) onto scene seams via the library. Prefers
   // the expanded split (catches shortcut→transition) when its scene count matches.
-  function _applyDetectedTransitions(scenes, raw, exp) {
-    const trans = (((exp.scenes || []).length === scenes.length ? exp.transitions : raw.transitions) || []);
+  function _applyDetectedTransitions(scenes, src, exp) {
+    const trans = (((exp.scenes || []).length === scenes.length ? exp.transitions : src.transitions) || []);
     trans.forEach((t) => {
       const idx = t.after_scene;
       if (idx >= 0 && idx < scenes.length && t.visual_effect) {
@@ -425,6 +436,40 @@
     set({ gen: { state: "done", promptId: null, media: state.gen.media, msg: `${runs.length} run(s) generated — use Render Final Video to stitch them.` } });
   }
 
+  // Fetch a render and offer a Save dialog (File System Access API where available,
+  // else a normal download). Renders live in ComfyUI's temp dir, so persisting one
+  // is the user's job — this is how they do it.
+  async function _saveBlobAs(url, name) {
+    let blob;
+    try { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); blob = await r.blob(); }
+    catch (e) { alert("Could not fetch the render: " + e.message); return; }
+    if (window.showSaveFilePicker) {
+      try {
+        const h = await window.showSaveFilePicker({
+          suggestedName: name,
+          types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
+        });
+        const w = await h.createWritable(); await w.write(blob); await w.close();
+        return;
+      } catch (e) { if (e && e.name === "AbortError") return; }  // cancelled, or unsupported → fall through
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+
+  // Export the render covering the selected clip via a Save dialog.
+  async function exportSelected() {
+    if (!state.project) return;
+    const id = state.selectedSceneId;
+    if (!id) { alert("Select a clip to export."); return; }
+    const seg = (state.renderedSegments || []).find((s) => s.media && (s.sceneIds || []).includes(id));
+    if (!seg) { alert("That clip hasn't been generated yet — generate it first."); return; }
+    const idx = state.project.scenes.findIndex((s) => s.id === id);
+    await _saveBlobAs(API.resultUrl(state.project.id, seg.media), `scene_${idx >= 0 ? idx + 1 : "x"}.mp4`);
+  }
+
   // Stitch the rendered runs (hard cut, video + audio) into one final file.
   async function renderFinal() {
     if (!state.project) return;
@@ -439,7 +484,9 @@
       const r = await API.renderFinal(state.project.id, clips);
       // Show the stitched file across the whole timeline in the program monitor.
       state.renderedSegments = [{ sceneIds: order, media: r.media }];
-      set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} run(s).` } });
+      set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} run(s) — saving…` } });
+      const name = (state.project.name || "montage").replace(/\s+/g, "_") + ".mp4";
+      await _saveBlobAs(API.resultUrl(state.project.id, r.media), name);
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + e.message } });
     }
@@ -547,7 +594,7 @@
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
