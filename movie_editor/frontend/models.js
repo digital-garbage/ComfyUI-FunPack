@@ -124,7 +124,9 @@
       if (w.kind === "combo" && (!w.choices || !w.choices.length)) {
         issues.push({ level: "error", msg: `"${w.name}" has no installed options to pick from.` });
       } else if (v == null || v === "") {
-        issues.push({ level: "error", msg: `Required field "${w.name}" is empty.` });
+        // Not blocking: the builder emits a type-appropriate empty for any widget left
+        // blank (matching ComfyUI's frontend), so an empty field won't stall generation.
+        issues.push({ level: "warn", msg: `"${w.name}" is empty — using its default.` });
       }
     });
     const outs = spec.outputs || [];

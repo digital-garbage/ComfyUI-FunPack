@@ -92,6 +92,8 @@ CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
 ]
 
 CONTROL_VALUES = {"fixed", "randomize", "increment", "decrement"}
+# Type-appropriate empty values for widgets that declare no default.
+_WIDGET_EMPTY = {"STRING": "", "INT": 0, "FLOAT": 0.0, "BOOLEAN": False}
 _VHS_NON_INPUT = {"videopreview"}
 
 
@@ -156,9 +158,15 @@ def _widget_defaults(node_def: Optional[dict]) -> dict:
                 continue
             if isinstance(t, list):
                 out[name] = opts.get("default", t[0] if t else None)
+            elif t == "COMBO":
+                choices = opts.get("options") or []
+                out[name] = opts.get("default", choices[0] if choices else "")
             elif t in WIDGET_PRIMITIVES:
-                if "default" in opts:
-                    out[name] = opts["default"]
+                # Always emit a value for every widget — ComfyUI's frontend does, and a
+                # required widget with no declared default (e.g. ImageTransform's bboxes)
+                # otherwise goes missing and ComfyUI rejects the prompt. Fall back to a
+                # type-appropriate empty so generation isn't blocked.
+                out[name] = opts.get("default", _WIDGET_EMPTY.get(t, ""))
     return out
 
 

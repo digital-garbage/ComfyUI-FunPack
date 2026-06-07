@@ -113,9 +113,14 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(spec, list) or not spec:
                 continue
             t = spec[0]
-            if not isinstance(t, str) or t in _WIDGET_TYPES:
+            if not isinstance(t, str):
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            # A widget-typed input is a SOCKET (wireable) only when forceInput is set —
+            # e.g. refinement_key_input is ("STRING", {"forceInput": True}). Plain widgets
+            # are handled by widget_inputs, not here.
+            if t in _WIDGET_TYPES and not opts.get("forceInput"):
+                continue
             # V3 nodes can mark a required-group input as optional via the flag.
             is_required = group == "required" and not opts.get("optional", False)
             out.append({"name": name, "type": _normalize_type(t), "required": is_required})
@@ -254,9 +259,15 @@ def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list
             if not isinstance(spec, (list, tuple)) or not spec:
                 continue
             t = spec[0]
-            if isinstance(t, str) and t not in WIDGET_PRIMITIVES:
-                ports.append({"id": f"{node_key}.{name}", "node": label, "input": name,
-                              "type": t, "label": f"{label} · {name}"})
+            if not isinstance(t, str):
+                continue
+            opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            # Expose typed sockets, plus forceInput widget sockets (e.g. the STRING
+            # refinement_key_input on Studio/Sampler) so they can be wired manually.
+            if t in WIDGET_PRIMITIVES and not opts.get("forceInput"):
+                continue
+            ports.append({"id": f"{node_key}.{name}", "node": label, "input": name,
+                          "type": t, "label": f"{label} · {name}"})
     return ports
 
 
