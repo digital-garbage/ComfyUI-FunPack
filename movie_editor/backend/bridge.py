@@ -42,6 +42,17 @@ def parse_timeline_raw(prompt: str) -> dict:
     return parse_timeline_segments(str(prompt or ""))
 
 
+def parse_timeline_verbatim(prompt: str) -> dict:
+    """LOSSLESS split into anchor + scenes: boundaries from shortcut-aware transitions,
+    but no expansion and no dropped words (anchor + scenes reproduce the prompt). This is
+    what the editor uses to map the global prompt onto the timeline."""
+    try:
+        from conditioning import split_timeline_verbatim
+    except ImportError:  # package submodule
+        from ...conditioning import split_timeline_verbatim  # type: ignore
+    return split_timeline_verbatim(str(prompt or ""))
+
+
 def transitions() -> dict:
     _, _, load_transition_db, transition_items = _funpack_imports()
     data = load_transition_db()

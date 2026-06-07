@@ -216,33 +216,19 @@
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
-    // structure from whichever split defines more scenes; verbatim text on a tie.
-    const raw = state.preview.parsed_raw || state.preview.parsed || {};
-    const exp = state.preview.parsed || raw;
-    const src = _structureSource(raw, exp);
-    const parsedScenes = src.scenes || [];
+    // Authoritative lossless split (verbatim text, shortcut-aware boundaries).
+    const v = state.preview.parsed_verbatim || state.preview.parsed_raw || state.preview.parsed || {};
+    const parsedScenes = v.scenes || [];
     if (!parsedScenes.length) return;
 
-    if (src.anchor != null) state.project.anchor = src.anchor;
+    state.project.anchor = v.anchor || "";
 
     // Sync scene texts verbatim (only if count matches to avoid destructive mismatches)
     const activeScenes = state.project.scenes.filter((s) => !s.excluded);
     if (parsedScenes.length === activeScenes.length) {
       parsedScenes.forEach((ps, i) => { if (ps.text) activeScenes[i].text = ps.text; });
     }
-
-    // Transitions: only fill seams the user hasn't set, mapped via the library.
-    const trans = (((exp.scenes || []).length === parsedScenes.length ? exp.transitions : src.transitions) || []);
-    trans.forEach((t) => {
-      const idx = t.after_scene;
-      if (idx >= 0 && idx < activeScenes.length && t.visual_effect) {
-        const s = activeScenes[idx];
-        if (!s.transition_to_next) {
-          const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);
-          if (lib) s.transition_to_next = lib.trigger || lib.name || "";
-        }
-      }
-    });
+    _applyDetectedTransitions(activeScenes, v.transitions);
 
     notify();
     scheduleSave();
@@ -258,41 +244,29 @@
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
     catch (e) { alert("Could not parse the global prompt: " + e.message); return; }
-    // raw = verbatim split (shortcuts kept in text); exp = expanded split. The
-    // STRUCTURE (scene count / anchor / transitions) can be created by shortcut
-    // expansion, so take it from whichever splits MORE. Verbatim text is kept only
-    // when the raw split structures the prompt just as well as the expanded one.
-    const raw = res.parsed_raw || res.parsed || {};
-    const exp = res.parsed || raw;
-    const src = _structureSource(raw, exp);
-    if (!(src.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
+    // The verbatim split is authoritative: correct (shortcut-aware) boundaries, scene
+    // text kept exactly as typed, anchor + scenes reproduce the global prompt.
+    const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
+    if (!(v.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
 
-    if (src.anchor != null) state.project.anchor = src.anchor;
+    state.project.anchor = v.anchor || "";
     const old = state.project.scenes || [];
-    const next = (src.scenes || []).map((ps, i) => {
+    const next = (v.scenes || []).map((ps, i) => {
       const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "carry" }, excluded: false };
-      base.text = ps.text || "";
+      base.text = ps.text || "";          // verbatim chunk of the global prompt
       base.transition_to_next = "";
       return base;
     });
-    _applyDetectedTransitions(next, src, exp);
+    _applyDetectedTransitions(next, v.transitions);
     state.project.scenes = next;
     state.selectedSceneId = null;  // show project view so the result is visible
     notify(); scheduleSave();
   }
 
-  // Pick the split that defines the most scenes — prefer raw (verbatim) on a tie so
-  // descriptive shortcuts stay unexpanded; fall back to expanded when it splits more.
-  function _structureSource(raw, exp) {
-    const rawN = (raw.scenes || []).length, expN = (exp.scenes || []).length;
-    return (rawN >= expN && rawN > 0) ? raw : exp;
-  }
-
-  // Map detected transitions (visual_effect) onto scene seams via the library. Prefers
-  // the expanded split (catches shortcut→transition) when its scene count matches.
-  function _applyDetectedTransitions(scenes, src, exp) {
-    const trans = (((exp.scenes || []).length === scenes.length ? exp.transitions : src.transitions) || []);
-    trans.forEach((t) => {
+  // Map detected transitions (visual_effect) onto scene seams via the library (display
+  // metadata; the trigger word itself already lives verbatim in the scene text).
+  function _applyDetectedTransitions(scenes, transitions) {
+    (transitions || []).forEach((t) => {
       const idx = t.after_scene;
       if (idx >= 0 && idx < scenes.length && t.visual_effect) {
         const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);

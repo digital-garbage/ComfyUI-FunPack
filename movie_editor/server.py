@@ -260,6 +260,7 @@ if web is not None and PromptServer is not None:
             parsed = bridge.parse_timeline(prompt, seed=p.seed)
             result["parsed"] = parsed
             result["parsed_raw"] = bridge.parse_timeline_raw(prompt)
+            result["parsed_verbatim"] = bridge.parse_timeline_verbatim(prompt)
             expected = len([s for s in p.scenes if include_excluded or not s.excluded])
             got = len(parsed.get("scenes", []))
             result["expected_scenes"] = expected
@@ -281,8 +282,12 @@ if web is not None and PromptServer is not None:
         prompt = str(body.get("prompt", ""))
         try:
             parsed = bridge.parse_timeline(prompt, seed=p.seed)
-            parsed_raw = bridge.parse_timeline_raw(prompt)
-            return web.json_response({"parsed": parsed, "parsed_raw": parsed_raw, "combined_prompt": prompt})
+            return web.json_response({
+                "parsed": parsed,
+                "parsed_raw": bridge.parse_timeline_raw(prompt),
+                "parsed_verbatim": bridge.parse_timeline_verbatim(prompt),
+                "combined_prompt": prompt,
+            })
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Parse failed: {e}"}, status=502)
 

@@ -616,6 +616,97 @@ def split_prompt_by_transitions(prompt, placement="start"):
     return [(text, None)]
 
 
+def _verbatim_boundary_triggers():
+    """{trigger_lower: {placement, visual_effect}} for tokens that mark a scene boundary:
+    every direct transition trigger, PLUS any shortcut whose expansion resolves to a
+    transition (e.g. 'qcut' -> '...cuts to the next scene'). Used for lossless timeline
+    splitting where the trigger word itself is kept verbatim in the text."""
+    try:
+        from .templates import (load_custom_transition_triggers, load_shortcut_db,
+                                 shortcut_list, _shortcut_replacements)
+    except ImportError:
+        from templates import (load_custom_transition_triggers, load_shortcut_db,
+                               shortcut_list, _shortcut_replacements)
+    direct = load_custom_transition_triggers()
+    out = dict(direct)
+    if direct:
+        parts = "|".join(re.escape(t) for t in sorted(direct, key=len, reverse=True))
+        dpat = re.compile(r"\b(?:" + parts + r")\b", re.IGNORECASE)
+        try:
+            sc = load_shortcut_db()
+        except Exception:
+            sc = {}
+        for shortcut in (sc.get("shortcuts", {}) or {}).values():
+            if not isinstance(shortcut, dict) or not shortcut.get("enabled", True):
+                continue
+            reps = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
+            hit = None
+            for rep in reps:
+                mm = dpat.search(rep or "")
+                if mm:
+                    hit = direct.get(re.sub(r"\s+", " ", mm.group(0).strip().lower()))
+                    if hit:
+                        break
+            if hit:
+                for trig in shortcut_list(shortcut.get("triggers", [])):
+                    key = re.sub(r"\s+", " ", str(trig or "").strip().lower())
+                    if key and key not in out:
+                        out[key] = hit
+    return out
+
+
+def split_timeline_verbatim(prompt):
+    """Lossless split of the master prompt into anchor + scenes for the editor.
+
+    Boundaries are transition triggers (direct, or shortcuts that expand to one), but
+    NOTHING is expanded and NO word is dropped: `anchor` + scene texts, concatenated with
+    single spaces, reproduce the prompt. A 'start' trigger leads the new scene; an
+    'end'/'silent'/global trigger trails the previous chunk. Each scene records the
+    visual_effect of the transition that precedes it (anchor->scene1 effect is omitted).
+    """
+    text = str(prompt or "")
+    stripped = text.strip()
+    if not stripped:
+        return {"anchor": "", "scenes": [], "transitions": []}
+
+    def _single():
+        return {"anchor": "", "scenes": [{"index": 0, "text": stripped}], "transitions": []}
+
+    triggers = _verbatim_boundary_triggers()
+    if not triggers:
+        return _single()
+
+    def _pat(t):
+        end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+        return r"\b" + re.escape(t) + end
+    combined = "|".join(_pat(t) for t in sorted(triggers, key=len, reverse=True))
+    pat = re.compile(r"(?:" + combined + r")", re.IGNORECASE)
+
+    cuts = []  # (char_index_of_cut, visual_effect_before_following_scene)
+    for m in pat.finditer(text):
+        info = triggers.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
+        effect = info.get("visual_effect") or None
+        if effect == "none":
+            effect = None
+        # 'start' -> cut before the trigger (it leads the new scene); otherwise cut
+        # after it (the trigger trails the previous chunk).
+        idx = m.start() if info.get("placement") == "start" else m.end()
+        cuts.append((idx, effect))
+    if not cuts:
+        return _single()
+
+    positions = [0] + [c[0] for c in cuts] + [len(text)]
+    chunks = [text[positions[i]:positions[i + 1]].strip() for i in range(len(positions) - 1)]
+    scene_texts = chunks[1:]
+    effects = [c[1] for c in cuts]  # effects[i] precedes scene_texts[i]
+    scenes = [{"index": i, "text": t} for i, t in enumerate(scene_texts)]
+    transitions = [
+        {"after_scene": i - 1, "visual_effect": effects[i]}
+        for i in range(1, len(scene_texts)) if effects[i]
+    ]
+    return {"anchor": chunks[0], "scenes": scenes, "transitions": transitions}
+
+
 def parse_timeline_segments(prompt):
     """Return {"anchor": str, "scenes": [...], "transitions": [...]} for timeline preview.
 

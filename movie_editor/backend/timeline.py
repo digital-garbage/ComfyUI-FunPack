@@ -168,43 +168,23 @@ class Project:
 
 
 def build_combined_prompt(project: Project, include_excluded: bool = False) -> str:
-    """Assemble the single prompt string Studio splits into scenes.
+    """The verbatim master prompt = anchor + scene texts, joined with single spaces.
 
-    Studio's split puts segments[0] (text before the FIRST transition trigger) as the
-    anchor and segments[1:] as the generated scenes. So to get N scenes we must emit a
-    trigger before EACH scene: `intro_transition` separates the anchor from scene 0,
-    then each scene is preceded by the previous scene's `transition_to_next`.
-
-    A separator is required at every seam or two scenes would merge. When a marker is
-    empty we fall back to a generic `scene N` label (the built-in split pattern,
-    no visual effect). NOTE: under Studio's default split placement="start" a generic
-    label can leak into the scene text; the live parse_timeline preview makes the
-    actual split visible so the user can pick a real library transition instead.
-
-    Markers may themselves be shortcuts that expand to transition phrases, so emit
-    them verbatim — Studio runs shortcuts -> transitions -> split (memory
-    project-director-vision). `include_excluded=False` drops scenes flagged excluded.
+    The editor stores each scene as a VERBATIM chunk of the global prompt: transition
+    triggers and shortcuts stay in-text exactly as the user typed them, so concatenating
+    anchor + scenes reproduces the global prompt. No markers are injected and nothing is
+    expanded here — Studio expands shortcuts, splits by transitions and applies the
+    anchor at generation time (its normal pipeline). `include_excluded=False` drops
+    scenes flagged excluded (their chunk is omitted from the prompt).
     """
     parts: list[str] = []
     anchor = (project.anchor or "").strip()
     if anchor:
         parts.append(anchor)
-
-    scenes = [s for s in project.scenes if include_excluded or not s.excluded]
-    # Always emit a separator marker before every scene.  Studio's split puts
-    # segments[0] as the character anchor and segments[1..N] as generated scenes.
-    # Without a separator before scene 1, scene 1's text would land in segments[0]
-    # (the anchor slot) and be skipped for generation — only N-1 scenes would be
-    # produced for an N-scene project.
-    prev_marker = (project.intro_transition or "").strip()
-    for i, scene in enumerate(scenes):
+    for scene in project.scenes:
+        if not include_excluded and scene.excluded:
+            continue
         text = (scene.text or "").strip()
-        marker = prev_marker
-        if not marker:
-            marker = f"scene {i + 1}"
-        parts.append(marker)
         if text:
             parts.append(text)
-        prev_marker = (scene.transition_to_next or "").strip()
-
-    return "\n".join(p for p in parts if p).strip()
+    return " ".join(parts).strip()
