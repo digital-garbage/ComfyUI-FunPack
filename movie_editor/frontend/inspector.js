@@ -454,12 +454,13 @@
     body.append(sw);
   }
 
+  // While the user is actively editing one of our fields, DON'T rebuild the inspector —
+  // autosave fires ~1s and a rebuild would yank the field out, drop the selection and
+  // make typing append (e.g. "512" + "640" -> "512640"). We defer and re-sync on blur.
+  let _editing = false;
+
   function render(st) {
-    // preserve focus + caret of a text/number field across the rebuild (autosave-safe)
-    const a = document.activeElement;
-    let foc = null;
-    if (a && body.contains(a) && (a.tagName === "TEXTAREA" || a.tagName === "INPUT") && a.dataset.k)
-      foc = { k: a.dataset.k, s: a.selectionStart, e: a.selectionEnd };
+    if (_editing) return;  // editing in progress — leave the DOM (and the user's caret) alone
 
     clear(body);
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
@@ -469,12 +470,20 @@
     if (scene) renderScene(st, scene); else renderProject(st);
     renderExposed(st);
     renderSplit(st);
-
-    if (foc) {
-      const n = body.querySelector(`[data-k="${foc.k}"]`);
-      if (n) { n.focus(); try { if (foc.s != null) n.setSelectionRange(foc.s, foc.e); } catch (_) {} }
-    }
   }
+
+  // Track edit state so autosave re-renders never interrupt the focused field.
+  body.addEventListener("focusin", (e) => {
+    const t = e.target;
+    if (t && t.dataset && t.dataset.k) _editing = true;
+  });
+  body.addEventListener("focusout", (e) => {
+    const t = e.target;
+    if (!(t && t.dataset && t.dataset.k)) return;
+    _editing = false;
+    // If focus didn't move to another of our fields, re-sync the inspector to state.
+    setTimeout(() => { if (!_editing) render(S.get()); }, 60);
+  });
 
   S.subscribe(render);
 })();
