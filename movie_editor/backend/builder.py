@@ -312,9 +312,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # scene.source.target provides a legacy explicit target; "timeline" input_sources
     # (step 3b) may have already created media_load — this step adds any extra targets.
     if media and media.get("filename"):
+        # Always materialise the scene image as a LoadImage so it can feed IMAGE inputs
+        # (it's the timeline's image — there's no node that "outputs" it otherwise).
+        graph.setdefault("media_load", {
+            "class_type": "LoadImage", "inputs": {"image": media["filename"]}})
         if media.get("target"):
-            graph.setdefault("media_load", {
-                "class_type": "LoadImage", "inputs": {"image": media["filename"]}})
             dst = _resolve_target(media["target"], port_to_core, slot_node_id)
             if dst and dst[0] in graph:
                 graph[dst[0]]["inputs"][dst[1]] = ["media_load", 0]
@@ -361,6 +363,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
+    # The timeline scene image (LoadImage) is an IMAGE producer too, so a node's IMAGE
+    # input (e.g. an ImageTransform) auto-wires to the scene image instead of reporting
+    # 'no node outputs IMAGE'.
+    if "media_load" in graph:
+        producers.setdefault("IMAGE", []).append(("media_load", 0))
     # A slot only matters if it's wired into the pipeline (an output wire, or referenced
     # as a source by a core override). Inert/unused slots are NOT validated or auto-wired,
     # so an unused node's required input never blocks generation.

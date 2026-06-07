@@ -159,6 +159,7 @@
     // that feeds nothing must not be flagged or block generation.
     if (slotIsActive(slot)) (spec.connection_inputs || []).forEach((ci) => {
       if (!ci.required) return;
+      if (ci.type === "IMAGE") return;  // a scene/timeline image can always feed an IMAGE input
       const src = (slot.input_sources || {})[ci.name];
       if (src && src !== "auto") return;  // explicitly sourced (incl. "timeline")
       const incoming = (config.slots || []).some((s2) =>
