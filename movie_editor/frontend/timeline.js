@@ -7,7 +7,7 @@
   const body = document.getElementById("timeline-body");
   const meta = document.getElementById("timeline-meta");
 
-  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶" };
+  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥" };
   const ZOOM_KEY = "funpack_tl_zoom";
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom
   let scrollLeft = 0;

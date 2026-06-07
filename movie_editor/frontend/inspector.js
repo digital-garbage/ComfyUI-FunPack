@@ -5,7 +5,12 @@
   const body = document.getElementById("inspector-body");
   const title = document.getElementById("inspector-title");
 
-  const SRC = [["empty", "Empty · text-to-video"], ["image", "Image · i2v anchor"], ["generated_frame", "From generated frame"]];
+  const SRC = [
+    ["empty", "Empty · text-to-video"],
+    ["image", "Image · i2v anchor"],
+    ["generated_frame", "From generated frame"],
+    ["carry", "Carry i2v guide · continue previous"],
+  ];
 
   function transitionSelect(value, onChange) {
     const sel = el("select");
@@ -157,6 +162,12 @@
 
     if ((scene.source?.type) === "image") renderImageSource(st, scene);
     if ((scene.source?.type) === "generated_frame") renderGeneratedFrameSource(st, scene);
+    if ((scene.source?.type) === "carry") {
+      const hint = el("div", "insp-block");
+      hint.append(el("div", "insp-hint",
+        "No start frame of its own — this scene continues from the previous scene's i2v guide and overlaps with it (chain-sampler carry behaviour). Use this for a continuous shot; use an Image / generated frame to hard-cut to a new anchor."));
+      body.append(hint);
+    }
 
     body.append(field("Transition to next scene", transitionSelect(scene.transition_to_next || "",
       (v) => S.patchScene(scene.id, { transition_to_next: v }))));

@@ -25,7 +25,7 @@ def _new_id() -> str:
 class SceneSource:
     """How a scene's latent is born. V1 ignores this (uniform chain); Phase 2 maps
     it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v)."""
-    type: str = "empty"  # "empty" | "image" | "generated_frame"
+    type: str = "empty"  # "empty" | "image" | "generated_frame" | "carry"
     media_ref: Optional[str] = None              # asset id, for type == "image"
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
     target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
