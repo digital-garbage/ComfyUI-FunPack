@@ -735,9 +735,9 @@
   function body() {
     const b = el("div", "models-body");
     b.append(requirementsPanel());
+    b.append(coreSection());
     b.append(composer());
     b.append(linksSection());
-    b.append(coreSection());
     const v = validation();
     const list = el("div", "slot-list");
     if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet — use the form above to add loaders."));

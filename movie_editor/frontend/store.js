@@ -294,12 +294,14 @@
     [/\.vae.*no source/i,        "Missing Video VAE — add a Video VAE loader in Models."],
     [/\.model.*no source/i,      "Missing diffusion model — add a Unet loader in Models."],
     [/\.clip.*no source/i,       "Missing text encoder — add a CLIP loader in Models."],
-    [/no source available/i,     "A required pipeline input has no source — open Models and check the Pipeline requirements checklist."],
     [/not installed/i,           "A configured node class is not installed in ComfyUI — check Models for details."],
     [/Node registry unavailable/i, "ComfyUI is offline or still starting up — wait a moment and try again."],
   ];
 
   function _friendlyGenError(raw) {
+    // "Generation blocked — …" already names the exact input(s); pass it through so the
+    // message is actionable instead of a vague "a required input has no source".
+    if (/Generation blocked/i.test(raw)) return raw;
     for (const [pat, msg] of GEN_ERROR_MAP) if (pat.test(raw)) return msg;
     return raw;
   }

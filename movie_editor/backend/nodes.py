@@ -116,10 +116,14 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(t, str):
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
-            # A widget-typed input is a SOCKET (wireable) only when forceInput is set —
-            # e.g. refinement_key_input is ("STRING", {"forceInput": True}). Plain widgets
-            # are handled by widget_inputs, not here.
-            if t in _WIDGET_TYPES and not opts.get("forceInput"):
+            if t in _WIDGET_TYPES:
+                # A widget-typed input is a SOCKET (wireable) only when forceInput is set —
+                # e.g. refinement_key_input is ("STRING", {"forceInput": True}). It always
+                # has a widget fallback, so it's NEVER auto-required (it must not block
+                # generation when left unwired). Plain widgets are handled by widget_inputs.
+                if not opts.get("forceInput"):
+                    continue
+                out.append({"name": name, "type": _normalize_type(t), "required": False})
                 continue
             # V3 nodes can mark a required-group input as optional via the flag.
             is_required = group == "required" and not opts.get("optional", False)
