@@ -55,17 +55,7 @@
     (st.mediaBin || []).forEach((m) => { const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o); });
     pick.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "image", media_ref: pick.value || null } });
     body.append(field("Media asset", pick));
-
-    // where the image is wired in the graph
-    const tgt = el("select");
-    tgt.append(new Option("— choose destination input —", ""));
-    (st.imageTargets || []).forEach((t) => { const o = new Option(t.label, t.value); if (t.value === scene.source?.target) o.selected = true; tgt.append(o); });
-    if (scene.source?.target && !(st.imageTargets || []).some((t) => t.value === scene.source.target)) {
-      const o = new Option(scene.source.target + " (missing)", scene.source.target); o.selected = true; tgt.append(o);
-    }
-    tgt.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "image", target: tgt.value || null } });
-    body.append(field("Feeds node input", tgt));
-    if (!(st.imageTargets || []).length) body.append(el("div", "insp-hint", "No IMAGE inputs found — add an image-processing node in Models first."));
+    body.append(el("div", "insp-hint", "Feeds the i2v anchor for this scene. Routing is automatic (→ Studio source image); to send it through a node first, set that node's Input source to Timeline in Models."));
   }
 
   function renderGeneratedFrameSource(st, scene) {
@@ -89,18 +79,6 @@
         "Scrub the player to the desired frame (playhead must be on a rendered segment), then press 📌 Use as anchor in the player transport bar and select this scene."));
       body.append(hint);
     }
-
-    // Wire target — same selector as image source so the user can redirect if needed.
-    const tgt = el("select");
-    tgt.append(new Option("— choose destination input —", ""));
-    (st.imageTargets || []).forEach((t) => {
-      const o = new Option(t.label, t.value); if (t.value === scene.source?.target) o.selected = true; tgt.append(o);
-    });
-    if (scene.source?.target && !(st.imageTargets || []).some((t) => t.value === scene.source.target)) {
-      const o = new Option(scene.source.target + " (missing)", scene.source.target); o.selected = true; tgt.append(o);
-    }
-    tgt.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "generated_frame", target: tgt.value || null } });
-    body.append(field("Feeds node input", tgt));
   }
 
   // Per-scene length / fps with a 3-way mode (project | timeline | custom).
