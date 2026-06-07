@@ -222,13 +222,21 @@ def _install_progress_hook():
         return
     prev = getattr(_cu, "PROGRESS_BAR_HOOK", None)
 
-    def _hook(value, total, preview=None):
-        _progress["value"] = int(value)
-        _progress["max"] = int(total)
-        _progress["ts"] = _t.time()
+    def _hook(value, total, preview=None, *args, **kwargs):
+        try:
+            _progress["value"] = int(value)
+            _progress["max"] = int(total)
+            _progress["ts"] = _t.time()
+        except Exception:
+            pass
         if callable(prev):
             try:
-                prev(value, total, preview)
+                prev(value, total, preview, *args, **kwargs)
+            except TypeError:
+                try:
+                    prev(value, total, preview)
+                except Exception:
+                    pass
             except Exception:
                 pass
 
