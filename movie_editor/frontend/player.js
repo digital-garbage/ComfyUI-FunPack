@@ -154,7 +154,7 @@
     _renderTransport();
   }
 
-  // ── public Player API (consumed by timeline.js) ────────────────────────────
+  // ── public Player API (consumed by timeline.js + inspector) ──────────────
   window.Player = {
     seek: _seek,
     getPlayhead: () => _phSec,
@@ -163,6 +163,15 @@
     stop: _stop,
     isPlaying: () => _playing,
     onPlayheadChanged: (fn) => { _phListeners.add(fn); return () => _phListeners.delete(fn); },
+    // Capture the current video frame as a PNG Blob.  Returns null if no video
+    // is loaded or the frame isn't ready.
+    captureFrame: () => {
+      if (!video.videoWidth || video.readyState < 2) return null;
+      const c = document.createElement("canvas");
+      c.width = video.videoWidth; c.height = video.videoHeight;
+      c.getContext("2d").drawImage(video, 0, 0);
+      return new Promise((resolve) => c.toBlob((b) => resolve(b), "image/png"));
+    },
   };
 
   // ── timecode formatter ─────────────────────────────────────────────────────
@@ -187,6 +196,60 @@
     playBtn.title = _playing ? "Pause" : "Play"; playBtn.onclick = () => _playing ? _pause() : _play();
     const tc = el("span", "pm-tc", _tc(_phSec, _fpsCur));
     _transportEl.append(stopBtn, playBtn, tc);
+
+    // Anchor capture — only when a rendered frame is under the playhead.
+    if (_loadedSeg) {
+      const scenes = (S.get().project?.scenes || []).filter((s) => !s.excluded);
+      if (scenes.length) {
+        const sep = el("div", "pm-sep"); _transportEl.append(sep);
+
+        const anchorSel = el("select", "pm-anchor-sel");
+        anchorSel.title = "Scene that will receive this frame as its i2v anchor";
+        // Default: currently selected scene, or first scene
+        const curId = S.get().selectedSceneId;
+        scenes.forEach((s, i) => {
+          const label = `Scene ${i + 1}` + (s.text ? ": " + s.text.substring(0, 22) : "");
+          const o = new Option(label, s.id);
+          if (s.id === curId) o.selected = true;
+          anchorSel.append(o);
+        });
+
+        const anchorBtn = el("button", "btn ghost tiny pm-anchor-btn", "📌 Use as anchor");
+        anchorBtn.title = "Capture this frame and set it as the i2v starting image for the selected scene";
+        anchorBtn.onclick = async () => {
+          anchorBtn.disabled = true; anchorBtn.textContent = "Capturing…";
+          try {
+            const blob = await window.Player.captureFrame();
+            if (!blob) {
+              anchorBtn.textContent = "📌 Use as anchor";
+              alert("No video frame available — make sure the playhead is on a rendered segment.");
+              return;
+            }
+            const sceneId = anchorSel.value;
+            const sc = scenes.find((s) => s.id === sceneId);
+            const name = `anchor_scene${sc ? (S.get().project.scenes.indexOf(sc) + 1) : ""}_${Date.now()}.png`;
+            const file = new File([blob], name, { type: "image/png" });
+            await S.uploadMedia([file]);
+            const bin = S.get().mediaBin;
+            const asset = bin[bin.length - 1];
+            if (!asset) { alert("Upload failed."); return; }
+            // Store as generated_frame type (builder accepts it like "image")
+            S.patchScene(sceneId, {
+              source: { type: "generated_frame", media_ref: asset.id, target: "port:FunPackStudio.source_image" },
+            });
+            anchorBtn.textContent = "✓ Applied";
+            setTimeout(() => _renderTransport(), 1600);
+          } catch (e) {
+            alert("Capture failed: " + e.message);
+            anchorBtn.textContent = "📌 Use as anchor";
+          } finally {
+            anchorBtn.disabled = false;
+          }
+        };
+
+        _transportEl.append(anchorSel, anchorBtn);
+      }
+    }
   }
 
   function _renderNeedle() {

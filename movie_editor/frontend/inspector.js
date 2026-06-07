@@ -63,6 +63,41 @@
     if (!(st.imageTargets || []).length) body.append(el("div", "insp-hint", "No IMAGE inputs found — add an image-processing node in Models first."));
   }
 
+  function renderGeneratedFrameSource(st, scene) {
+    const ref = scene.source?.media_ref;
+    const asset = (st.mediaBin || []).find((m) => m.id === ref);
+
+    if (asset) {
+      // A frame has been captured — show it with a replace hint.
+      const block = el("div", "insp-block img-src");
+      const prev = el("div", "img-src-prev");
+      const img = el("img"); img.src = window.MovieEditorAPI.mediaUrl(asset.id); img.loading = "lazy"; prev.append(img);
+      const info = el("div", "img-src-info");
+      info.append(el("div", "img-src-name", "Captured frame · " + (asset.name || asset.id)));
+      info.append(el("div", "insp-hint", "To replace: scrub the player to the new frame, then press 📌 Use as anchor and pick this scene."));
+      block.append(prev, info);
+      body.append(block);
+    } else {
+      // No frame captured yet — show instructions.
+      const hint = el("div", "insp-block");
+      hint.append(el("div", "insp-hint",
+        "Scrub the player to the desired frame (playhead must be on a rendered segment), then press 📌 Use as anchor in the player transport bar and select this scene."));
+      body.append(hint);
+    }
+
+    // Wire target — same selector as image source so the user can redirect if needed.
+    const tgt = el("select");
+    tgt.append(new Option("— choose destination input —", ""));
+    (st.imageTargets || []).forEach((t) => {
+      const o = new Option(t.label, t.value); if (t.value === scene.source?.target) o.selected = true; tgt.append(o);
+    });
+    if (scene.source?.target && !(st.imageTargets || []).some((t) => t.value === scene.source.target)) {
+      const o = new Option(scene.source.target + " (missing)", scene.source.target); o.selected = true; tgt.append(o);
+    }
+    tgt.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "generated_frame", target: tgt.value || null } });
+    body.append(field("Feeds node input", tgt));
+  }
+
   function renderScene(st, scene) {
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`;
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
@@ -77,6 +112,7 @@
     body.append(field("Source", src));
 
     if ((scene.source?.type) === "image") renderImageSource(st, scene);
+    if ((scene.source?.type) === "generated_frame") renderGeneratedFrameSource(st, scene);
 
     body.append(field("Transition to next scene", transitionSelect(scene.transition_to_next || "",
       (v) => S.patchScene(scene.id, { transition_to_next: v }))));

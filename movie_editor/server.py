@@ -88,7 +88,7 @@ def _prepare_media(proj: Project) -> Optional[dict]:
         src = sc.source
         ref = getattr(src, "media_ref", None)
         tgt = getattr(src, "target", None)
-        if not (src and getattr(src, "type", "") == "image" and ref and tgt):
+        if not (src and getattr(src, "type", "") in ("image", "generated_frame") and ref and tgt):
             continue
         path = media.path_for(ref)
         if not path:
