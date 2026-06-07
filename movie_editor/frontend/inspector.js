@@ -418,8 +418,8 @@
     const head = el("div", "insp-global-head");
     head.append(el("span", "insp-global-title", "Global prompt"));
     const apply = el("button", "btn primary tiny", "Apply →");
-    apply.title = "Reparse this prompt into anchor, scenes and transitions (overwrites the timeline)";
-    apply.disabled = !dirty;
+    apply.title = "Split this prompt into anchor, scenes and transitions on the timeline (overwrites it)";
+    apply.disabled = !val.trim();  // clickable whenever there's a prompt to (re)split — not only after edits
     apply.onclick = async () => {
       apply.disabled = true; apply.textContent = "Applying…";
       await S.applyGlobalPrompt(gpDraft != null ? gpDraft : live);
@@ -431,11 +431,11 @@
 
     const ta = el("textarea", "insp-global-ta"); ta.rows = 3; ta.value = val; ta.dataset.k = "global-prompt";
     ta.placeholder = "Anchor, then scene texts joined by transition markers — the whole montage as one prompt.";
-    ta.oninput = () => { gpDraft = ta.value; apply.disabled = (gpDraft === live); };
+    ta.oninput = () => { gpDraft = ta.value; apply.disabled = !ta.value.trim(); };
     sec.append(ta);
     sec.append(el("div", "insp-hint", dirty
-      ? "Edited — press Apply to rebuild the timeline from this prompt."
-      : "Live view of the assembled prompt. Edit a scene below and it updates here; edit here + Apply to rewrite scenes."));
+      ? "Edited — press Apply to (re)split this prompt onto the timeline."
+      : "Live view of the assembled prompt. Edit a scene below and it updates here; press Apply to split this prompt into scenes."));
     body.append(sec);
   }
 

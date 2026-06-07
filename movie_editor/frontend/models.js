@@ -272,7 +272,7 @@
         const cur = slot.input_sources[ci.name] || "";
         srcs.forEach((s) => { const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o); });
         if (cur && !srcs.some((s) => s.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
-        sel.onchange = async () => { slot.input_sources[ci.name] = sel.value; await persist(); };
+        sel.onchange = async () => { _setInputSource(slot, ci.name, sel.value); await persist(); render(); };
         row.append(sel);
         sbox.append(row);
       });
@@ -314,6 +314,55 @@
     return Array.isArray(raw) ? raw : [raw];
   }
 
+  // ── edge mirroring ────────────────────────────────────────────────────────────
+  // An output→input edge can be authored from either side: a slot's wires
+  // ("node:<destId>:<input>") OR the destination's input_sources ("out:<srcId>:<out>").
+  // They describe the SAME connection, so we keep both in sync — wiring an output shows
+  // the input as connected on the other node, and vice-versa.
+  function _parseNodeTarget(t) {
+    if (typeof t !== "string" || !t.startsWith("node:")) return null;
+    const parts = t.split(":");
+    return { slotId: parts[1], input: parts.slice(2).join(":") };
+  }
+  function _parseOutSource(s) {
+    if (typeof s !== "string" || !s.startsWith("out:")) return null;
+    const parts = s.split(":");
+    return { slotId: parts[1], out: parts.slice(2).join(":") };
+  }
+  function _addWire(slotId, outName, target) {
+    const s = slotById(slotId); if (!s) return;
+    s.wires = s.wires || {};
+    const arr = wireTargets(s.wires[outName]);
+    if (!arr.includes(target)) arr.push(target);
+    s.wires[outName] = arr;
+  }
+  function _removeWire(slotId, outName, target) {
+    const s = slotById(slotId); if (!s || !s.wires) return;
+    s.wires[outName] = wireTargets(s.wires[outName]).filter((t) => t !== target);
+  }
+  // Set a destination's input source + mirror it as a wire on the source slot.
+  function _setInputSource(destSlot, inp, value) {
+    const prev = _parseOutSource(destSlot.input_sources[inp]);
+    if (prev) _removeWire(prev.slotId, prev.out, `node:${destSlot.id}:${inp}`);
+    destSlot.input_sources[inp] = value;
+    const next = _parseOutSource(value);
+    if (next) _addWire(next.slotId, next.out, `node:${destSlot.id}:${inp}`);
+  }
+  // Replace a wire target + mirror it as an input source on the destination slot.
+  function _setWireTarget(srcSlot, outName, oldTarget, newTarget) {
+    const old = _parseNodeTarget(oldTarget);
+    if (old) {
+      const ds = slotById(old.slotId);
+      if (ds && ds.input_sources && ds.input_sources[old.input] === `out:${srcSlot.id}:${outName}`)
+        ds.input_sources[old.input] = "";
+    }
+    const nu = _parseNodeTarget(newTarget);
+    if (nu) {
+      const ds = slotById(nu.slotId);
+      if (ds) { ds.input_sources = ds.input_sources || {}; ds.input_sources[nu.input] = `out:${srcSlot.id}:${outName}`; }
+    }
+  }
+
   function destMulti(slot, out) {
     slot.wires = slot.wires || {};
     // normalize to array in-place
@@ -331,10 +380,10 @@
         const sel = el("select", "wire-select");
         dests.forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === t) o.selected = true; sel.append(o); });
         if (t && !dests.some((d) => d.value === t)) { const o = el("option", null, t + " (missing)"); o.value = t; o.selected = true; sel.append(o); }
-        sel.onchange = async () => { targets[i] = sel.value; await persist(); };
+        sel.onchange = async () => { _setWireTarget(slot, out.name, targets[i], sel.value); targets[i] = sel.value; await persist(); render(); };
         const rm = el("button", "btn ghost tiny wire-rm", "×");
         rm.title = "Remove this wire";
-        rm.onclick = async () => { targets.splice(i, 1); renderRows(); await persist(); };
+        rm.onclick = async () => { _setWireTarget(slot, out.name, targets[i], ""); targets.splice(i, 1); await persist(); render(); };
         row.append(sel, rm);
         wrap.append(row);
       });
