@@ -769,6 +769,7 @@
   }
 
   async function open() {
+    if (overlay) return;  // already open — don't stack a second modal (orphans handlers)
     await ensureRoles();
     try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; requirements = pp.requirements || []; } catch (_) { ports = []; coreProducers = []; requirements = []; }
     try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
@@ -780,13 +781,14 @@
     const head = el("div", "modal-head");
     head.append(el("div", "modal-title", "Models & Pipeline Nodes"));
     const refresh = el("button", "btn ghost", "↻ Refresh model list"); refresh.onclick = refreshList;
-    const close = el("button", "btn ghost", "✕"); close.onclick = () => { overlay.remove(); overlay = null; };
+    const closeModal = () => { if (overlay) overlay.remove(); overlay = null; };
+    const close = el("button", "btn ghost", "✕"); close.onclick = closeModal;
     const heRight = el("div", "modal-head-right"); heRight.append(refresh); heRight.append(close);
     head.append(heRight);
     modal.append(head);
     modal.append(el("div", "modal-content"));
     overlay.append(modal);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) { overlay.remove(); overlay = null; } });
+    overlay.addEventListener("click", (e) => { if (overlay && e.target === overlay) closeModal(); });
     document.body.append(overlay);
     render();
   }
