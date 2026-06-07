@@ -18,7 +18,6 @@
   const stage = document.createElement("div"); stage.className = "pm-stage";
   const pool = new Map();    // url -> <video>
   let _active = null;        // visible <video>
-  let _currentSeg = null;    // segment the active video belongs to
   let _seekPending = null;   // offset to apply once the active video has metadata
   let _playPending = false;
 
@@ -31,43 +30,37 @@
     _phListeners.forEach((fn) => { try { fn(_phSec, _playing); } catch (_) {} });
   }
 
-  // ── segment helpers ────────────────────────────────────────────────────────
-  // Segments are [{sceneIds, media, startSec, durationSec}], computed from store state.
-  let _segs = [];
+  // ── clips ────────────────────────────────────────────────────────────────────
+  // Per-scene clips: { media, sceneId, startSec (timeline), durationSec, inSec (source
+  // in-point) }. Built from store.sceneRenders so splits/deletes play correct portions.
+  let _clips = [];
+  let _currentClip = null;
 
-  const _urlFor = (seg) => API.resultUrl(S.get().project?.id, seg.media);
-  const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || t) - 0.02));
+  const _urlFor = (media) => API.resultUrl(S.get().project?.id, media);
+  const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || (t + 1)) - 0.02));
 
-  function _buildSegs(st) {
+  function _buildClips(st) {
     if (!st.project) return [];
     const p = st.project;
+    const sr = st.sceneRenders || {};
     const sFps = (sc) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : p.frame_rate) || 25;
     const sFrames = (sc) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
-
-    // Map sceneId → timeline start time
-    const startOf = {};
+    const out = [];
     let acc = 0;
     for (const sc of (p.scenes || [])) {
-      startOf[sc.id] = acc;
-      acc += sFrames(sc) / sFps(sc);
+      const dur = sFrames(sc) / sFps(sc);
+      const r = sr[sc.id];
+      if (r && r.media) out.push({ media: r.media, sceneId: sc.id, startSec: acc, durationSec: dur, inSec: r.inSec || 0 });
+      acc += dur;  // timeline advances even over ungenerated scenes (gaps)
     }
-
-    return (st.renderedSegments || []).flatMap((seg) => {
-      const ids = seg.sceneIds || [];
-      if (!ids.length || !seg.media) return [];
-      const starts = ids.map((id) => startOf[id]).filter((s) => s != null);
-      if (!starts.length) return [];
-      const startSec = Math.min(...starts);
-      const endSec = Math.max(...ids.map((id) => {
-        const sc = (p.scenes || []).find((s) => s.id === id);
-        return sc ? startOf[id] + sFrames(sc) / sFps(sc) : 0;
-      }));
-      return [{ ...seg, startSec, durationSec: Math.max(0, endSec - startSec) }];
-    });
+    return out;
   }
 
-  function _segAt(sec) {
-    return _segs.find((s) => sec >= s.startSec - 0.05 && sec < s.startSec + s.durationSec + 0.05) || null;
+  function _clipAt(sec) {
+    return _clips.find((c) => sec >= c.startSec - 0.05 && sec < c.startSec + c.durationSec - 0.001) || null;
+  }
+  function _clipFrom(sec) {  // first clip at/after sec (for play/skip-gap)
+    return _clipAt(sec) || _clips.find((c) => c.startSec >= sec - 0.05) || null;
   }
 
   // ── video pool management ─────────────────────────────────────────────────────
@@ -81,30 +74,25 @@
       if (_seekPending != null) { v.currentTime = _clampT(v, _seekPending); _seekPending = null; }
       if (_playPending) { _playPending = false; v.play().catch(() => {}); }
     });
-    v.addEventListener("timeupdate", () => {
-      if (v !== _active || !_currentSeg) return;
-      _phSec = _currentSeg.startSec + v.currentTime; _notifyPh();
-    });
-    v.addEventListener("ended", () => { if (v === _active) _onEnded(); });
+    v.addEventListener("ended", () => { if (v === _active) _advance(); });
     stage.append(v); pool.set(url, v);
     return v;
   }
 
-  // Add videos for current segments (preload), drop ones no longer used. Keeps the pool
-  // in sync as the timeline is cut/regenerated on the fly.
   function _syncPool() {
-    const urls = new Set(_segs.map(_urlFor));
+    const urls = new Set(_clips.map((c) => _urlFor(c.media)));
     urls.forEach((u) => _ensureVideo(u));
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
       v.pause(); v.remove(); pool.delete(u);
-      if (_active === v) { _active = null; _currentSeg = null; }
+      if (_active === v) { _active = null; }
     }
   }
 
   function _resetPool() {
+    _stopTick();
     for (const [, v] of pool) { v.pause(); v.remove(); }
-    pool.clear(); _active = null; _currentSeg = null; _seekPending = null; _playPending = false;
+    pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
   }
 
   function _setActive(v) {
@@ -113,47 +101,64 @@
     _active = v; if (v) v.classList.add("active");
   }
 
-  // Show `seg` at `offset`; play if requested. The clip is preloaded, so the frame
-  // appears immediately on a same- or cross-clip jump (no black flash).
-  function _goto(seg, offset, play) {
-    if (!seg || !seg.media) return;
-    const v = _ensureVideo(_urlFor(seg));
-    _currentSeg = seg; _setActive(v);
+  // Show `clip` at `offset` seconds into the clip; play if requested. Seeks to the clip's
+  // in-point + offset within the (preloaded) source video.
+  function _goto(clip, offset, play) {
+    if (!clip || !clip.media) return;
+    const v = _ensureVideo(_urlFor(clip.media));
+    _currentClip = clip; _setActive(v);
+    const target = (clip.inSec || 0) + Math.max(0, offset);
     if (v.readyState >= 1) {
-      v.currentTime = _clampT(v, offset);
-      if (play) v.play().catch(() => {}); else _playPending = false;
+      v.currentTime = _clampT(v, target);
+      if (play) { v.play().catch(() => {}); _startTick(); } else _playPending = false;
     } else {
-      _seekPending = offset; _playPending = !!play;
+      _seekPending = target; _playPending = !!play;
+      if (play) _startTick();
     }
   }
 
-  function _onEnded() {
-    _playing = false;
-    if (_currentSeg) {
-      const endSec = _currentSeg.startSec + _currentSeg.durationSec;
-      const next = _segs.find((s) => s.startSec >= endSec - 0.05 && s !== _currentSeg);
-      if (next) { _phSec = next.startSec; _playing = true; _goto(next, 0, true); }
-      else _phSec = endSec;
-    }
+  // Advance to the next clip at a clip's out-point (or stop). Same-source contiguous
+  // clips (a split seam) continue without reseeking; otherwise seek; no next → stop.
+  function _advance() {
+    if (!_currentClip) { _pause(); return; }
+    const end = _currentClip.startSec + _currentClip.durationSec;
+    const next = _clips.find((c) => c.startSec >= end - 0.02 && c !== _currentClip);
+    if (!next) { _phSec = end; _pause(); return; }
+    const contiguous = _urlFor(next.media) === _urlFor(_currentClip.media)
+      && Math.abs((next.inSec || 0) - ((_currentClip.inSec || 0) + _currentClip.durationSec)) < 0.05;
+    _phSec = next.startSec;
+    _currentClip = next;
+    if (!contiguous) _goto(next, 0, _playing);  // jump (different source / non-contiguous)
     _notifyPh();
-    _renderTransport();
+  }
+
+  // ── playback tick (precise out-points, so deleted parts aren't played) ─────────
+  let _raf = null;
+  function _startTick() { if (!_raf) _raf = requestAnimationFrame(_tick); }
+  function _stopTick() { if (_raf) { cancelAnimationFrame(_raf); _raf = null; } }
+  function _tick() {
+    _raf = null;
+    if (!_playing || !_active || !_currentClip) return;
+    const within = _active.currentTime - (_currentClip.inSec || 0);
+    if (within >= _currentClip.durationSec - 0.001) { _advance(); }
+    else { _phSec = _currentClip.startSec + Math.max(0, within); _notifyPh(); }
+    if (_playing) _raf = requestAnimationFrame(_tick);
   }
 
   // ── transport actions ──────────────────────────────────────────────────────
   function _seek(sec) {
     _phSec = Math.max(0, sec);
-    const seg = _segAt(_phSec);
-    if (seg) _goto(seg, _phSec - seg.startSec, false);
+    const clip = _clipAt(_phSec);
+    if (clip) _goto(clip, _phSec - clip.startSec, false);
     _notifyPh();
   }
 
   function _play() {
-    let seg = _segAt(_phSec);
-    if (!seg) seg = _segs.find((s) => s.startSec >= _phSec - 0.05);
-    if (!seg) return;
-    if (_phSec < seg.startSec) _phSec = seg.startSec;
+    const clip = _clipFrom(_phSec);
+    if (!clip) return;
+    if (_phSec < clip.startSec) _phSec = clip.startSec;
     _playing = true;
-    _goto(seg, _phSec - seg.startSec, true);
+    _goto(clip, _phSec - clip.startSec, true);
     _notifyPh();
     _renderTransport();
   }
@@ -162,6 +167,7 @@
     if (_active) _active.pause();
     _playing = false;
     _playPending = false;
+    _stopTick();
     _notifyPh();
     _renderTransport();
   }
@@ -171,7 +177,8 @@
     _phSec = 0;
     _playing = false;
     _playPending = false;
-    const first = _segs[0];
+    _stopTick();
+    const first = _clips[0];
     if (first) _goto(first, 0, false);
     _notifyPh();
     _renderTransport();
@@ -222,7 +229,7 @@
     _transportEl.append(stopBtn, playBtn, tc);
 
     // Anchor capture — only when a rendered frame is under the playhead.
-    if (_currentSeg) {
+    if (_currentClip) {
       const scenes = (S.get().project?.scenes || []).filter((s) => !s.excluded);
       if (scenes.length) {
         const sep = el("div", "pm-sep"); _transportEl.append(sep);
@@ -302,23 +309,16 @@
       _phSec = 0; _playing = false; _lastSegHash = "";
     }
 
-    _segs = _buildSegs(st);
+    _clips = _buildClips(st);
     _syncPool();  // preload current clips, drop stale ones (timeline is dynamic)
 
-    // Keep _currentSeg pointing at a fresh segment object (positions change with edits).
-    if (_currentSeg) {
-      const u = _urlFor(_currentSeg);
-      _currentSeg = _segAt(_phSec) && _urlFor(_segAt(_phSec)) === u ? _segAt(_phSec)
-        : (_segs.find((s) => _urlFor(s) === u) || _currentSeg);
-    }
-
-    const hash = _segs.map((s) => s.media?.filename || "").join("|");
+    // Re-resolve the clip under the playhead each render (positions change with edits).
+    const hash = _clips.map((c) => c.media?.filename + "@" + c.startSec.toFixed(2) + "+" + c.inSec.toFixed(2)).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
-      // Segments changed — re-resolve the frame at the playhead (keep playing if we were).
-      const seg = _segAt(_phSec);
-      if (seg) _goto(seg, _phSec - seg.startSec, _playing);
-      else if (_segs.length && !_active) _goto(_segs[0], 0, false);
+      const clip = _clipAt(_phSec);
+      if (clip) _goto(clip, _phSec - clip.startSec, _playing);
+      else if (_clips.length && !_active) _goto(_clips[0], 0, false);
     }
 
     const p = st.project;
@@ -335,7 +335,7 @@
 
     // ── canvas (video + placeholder) ────────────────────────────────────────
     const canvas = el("div", "pm-canvas");
-    if (_segs.length) {
+    if (_clips.length) {
       canvas.append(stage);  // pooled videos live here; only the active one is visible
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
@@ -382,7 +382,7 @@
       (p.scenes || []).forEach((sc) => {
         const d = sFrames(sc) / sFps(sc);
         const o = acc; acc += d;
-        const rendered = _segs.some((s) => (s.sceneIds || []).includes(sc.id));
+        const rendered = !!((st.sceneRenders || {})[sc.id] || {}).media;
         const chip = el("div", "pm-chip" + (rendered ? " rendered" : ""));
         chip.style.width = (d / _totalSecCur * 100).toFixed(3) + "%";
         chip.title = `Scene ${(p.scenes || []).indexOf(sc) + 1}${rendered ? " (rendered)" : " (not rendered)"}`;

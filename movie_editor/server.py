@@ -552,18 +552,17 @@ if web is not None and PromptServer is not None:
             raise web.HTTPBadGateway(reason=f"could not fetch result: {e}")
         return web.Response(body=data, content_type=ctype.split(";")[0])
 
-    # --- API: final render (hard-cut concat of generated runs, video + audio) ---
+    # --- API: final render (hard-cut concat of kept clips, with per-clip in/out) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/render")
     async def _render_final(req):
         _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
-        clips = body.get("clips") or []  # ordered [{filename, subfolder, type}]
+        clips = body.get("clips") or []  # ordered [{filename, subfolder, type, in?, dur?}]
         if not clips:
-            return web.json_response({"detail": "Nothing to render — no generated runs."}, status=400)
+            return web.json_response({"detail": "Nothing to render — no generated clips."}, status=400)
         import os
         import shutil
         import subprocess
-        import tempfile
         import time as _time
         ff = shutil.which("ffmpeg")
         if not ff:
@@ -584,36 +583,33 @@ if web is not None and PromptServer is not None:
         if missing:
             return web.json_response({"detail": f"{len(missing)} clip file(s) not found on disk — regenerate then render."}, status=400)
 
-        # The final render is ALSO ephemeral (temp dir) — the user persists it via the
-        # Export Save dialog, not by us writing to the output directory.
+        # The final render is ephemeral (temp dir) — persist it via the Export Save dialog.
         out_name = f"funpack_final_{int(_time.time())}.mp4"
         out_path = os.path.join(tempdir, out_name)
-        # concat demuxer + re-encode → tolerates differing codecs/params between runs
-        # and keeps BOTH the video and the LTXAV audio stream.
-        list_fd, list_path = tempfile.mkstemp(suffix=".txt")
-        try:
-            with os.fdopen(list_fd, "w") as lf:
-                for pth in paths:
-                    safe = pth.replace("'", "'\\''")
-                    lf.write(f"file '{safe}'\n")
-            cmd = [
-                ff, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k",
-                "-movflags", "+faststart", out_path,
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                tail = (proc.stderr or "")[-800:]
-                return web.json_response({"detail": f"ffmpeg concat failed: {tail}"}, status=500)
-        finally:
-            try:
-                os.unlink(list_path)
-            except OSError:
-                pass
+        # Per-clip in/out via -ss/-t before each input, concatenated with the concat filter
+        # (re-encode; keeps the LTXAV audio). This honours splits and deletions.
+        cmd = [ff, "-y"]
+        for c, pth in zip(clips, paths):
+            inn, dur = c.get("in"), c.get("dur")
+            if inn is not None:
+                cmd += ["-ss", f"{float(inn):.3f}"]
+            if dur is not None:
+                cmd += ["-t", f"{float(dur):.3f}"]
+            cmd += ["-i", pth]
+        n = len(clips)
+        filt = "".join(f"[{i}:v:0][{i}:a:0]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+        cmd += [
+            "-filter_complex", filt, "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", out_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            tail = (proc.stderr or "")[-1000:]
+            return web.json_response({"detail": f"ffmpeg render failed: {tail}"}, status=500)
         return web.json_response({
             "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
-            "clips": len(paths),
+            "clips": n,
         })
 
     # --- API: models / pluggable node slots ---

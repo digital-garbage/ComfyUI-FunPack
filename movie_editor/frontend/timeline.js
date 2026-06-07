@@ -25,8 +25,7 @@
   const sFrames = (sc, p) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
   const sDur = (sc, p) => sFrames(sc, p) / sFps(sc, p);
 
-  const hasRender = (st, sceneId) =>
-    (st.renderedSegments || []).some((s) => s.media && (s.sceneIds || []).includes(sceneId));
+  const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
 
   const p2 = (n) => String(n).padStart(2, "0");
   function timecode(sec, fps) {

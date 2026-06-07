@@ -10,10 +10,10 @@
     health: null,          // {ok, comfy_url, template_exists}
     preview: null,         // {combined_prompt, parsed, warning, parse_error}
     gen: { state: "idle", promptId: null, media: [], msg: "" },
-    // Rendered video segments: [{sceneIds, media, startSec (computed), durationSec (computed)}]
-    // Not persisted to disk — cleared on project switch. Player uses these to map
-    // timeline positions to video files and compute seek offsets.
-    renderedSegments: [],
+    // Per-scene render mapping: { sceneId: { media, inSec } } — `inSec` is the IN-point
+    // within that source video this clip starts at (so split halves / deleted clips play
+    // the correct portion). Not persisted to disk; cleared on project switch.
+    sceneRenders: {},
     saving: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
@@ -40,7 +40,7 @@
     state.project = await API.getProject(id);
     state.selectedSceneId = state.project.scenes[0]?.id || null;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
-    state.renderedSegments = [];  // segments are per-session; not persisted
+    state.sceneRenders = {};  // per-session; not persisted
     notify();
     refreshPreview();
     loadModels();  // models config is per-project — reload for this project
@@ -178,12 +178,21 @@
   function removeScene(id) {
     if (!state.project) return;
     state.project.scenes = state.project.scenes.filter((s) => s.id !== id);
+    delete state.sceneRenders[id];  // drop its render mapping (preview/render skip it)
     if (state.selectedSceneId === id) state.selectedSceneId = state.project.scenes[0]?.id || null;
     notify(); scheduleSave();
   }
 
   // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
   function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
+
+  // A scene's duration in seconds (respecting per-scene frames/fps modes).
+  function sceneDurationSec(sc) {
+    const p = state.project; if (!p || !sc) return 0;
+    const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
+    const frames = (sc.frames_mode !== "project" && sc.frames != null ? sc.frames : p.num_frames_per_scene) || 1;
+    return frames / fps;
+  }
 
   // Resize a clip by setting its frame count from a target duration (seconds) × fps.
   // Uses silent save so the drag handle isn't interrupted by a re-render mid-drag.
@@ -217,10 +226,13 @@
     second.transition_frames = s.transition_frames || null;
     s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
     arr.splice(i + 1, 0, second);
-    // Keep the existing render covering both halves (same source media spans the cut).
-    (state.renderedSegments || []).forEach((seg) => {
-      if ((seg.sceneIds || []).includes(id) && !seg.sceneIds.includes(second.id)) seg.sceneIds.push(second.id);
-    });
+    // Keep the render across the cut: the second half plays the SAME source video starting
+    // at the first half's out-point (its in-point + first-half duration).
+    const r = state.sceneRenders[id];
+    if (r && r.media) {
+      const fps = s.fps_mode !== "project" && s.fps != null ? s.fps : state.project.frame_rate;
+      state.sceneRenders[second.id] = { media: r.media, inSec: (r.inSec || 0) + cut / (fps || 25) };
+    }
     notify(); scheduleSave();
   }
 
@@ -361,14 +373,17 @@
     return runs;
   }
 
-  // Record a completed run's output so the player can map it onto the timeline.
+  // Record a completed run's output: map each of the run's scenes to the one source
+  // video at its cumulative in-point, so splits/deletes later play the right portions.
   function _recordSegment(mediaList, targetSceneIds) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
-    const keep = (state.renderedSegments || []).filter(
-      (seg) => !(seg.sceneIds || []).some((id) => targetSceneIds.includes(id))
-    );
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
-    state.renderedSegments = [...keep, { sceneIds: targetSceneIds, media: primary }];
+    let inAcc = 0;
+    for (const id of targetSceneIds) {
+      const sc = scene(id); if (!sc) continue;
+      state.sceneRenders[id] = { media: primary, inSec: inAcc };
+      inAcc += sceneDurationSec(sc);
+    }
   }
 
   // Poll a single queued prompt to completion. Resolves true on success, false on error.
@@ -499,32 +514,48 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
 
+  // Ordered list of rendered clips in timeline order: {media, inSec, durationSec} for
+  // each non-excluded scene that has a render. This is what plays/exports — so splits
+  // and deletes are honoured (deleted scenes simply aren't here).
+  function _renderClips() {
+    const out = [];
+    for (const sc of (state.project.scenes || [])) {
+      if (sc.excluded) continue;
+      const r = state.sceneRenders[sc.id];
+      if (r && r.media) out.push({ media: r.media, inSec: r.inSec || 0, durationSec: sceneDurationSec(sc) });
+    }
+    return out;
+  }
+
   // Export the render covering the selected clip via a Save dialog.
   async function exportSelected() {
     if (!state.project) return;
     const id = state.selectedSceneId;
     if (!id) { alert("Select a clip to export."); return; }
-    const seg = (state.renderedSegments || []).find((s) => s.media && (s.sceneIds || []).includes(id));
-    if (!seg) { alert("That clip hasn't been generated yet — generate it first."); return; }
+    const r = state.sceneRenders[id];
+    if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
     const idx = state.project.scenes.findIndex((s) => s.id === id);
-    await _saveBlobAs(API.resultUrl(state.project.id, seg.media), `scene_${idx >= 0 ? idx + 1 : "x"}.mp4`);
+    await _saveBlobAs(API.resultUrl(state.project.id, r.media), `scene_${idx >= 0 ? idx + 1 : "x"}.mp4`);
   }
 
-  // Stitch the rendered runs (hard cut, video + audio) into one final file.
+  // Stitch the kept clips (in/out per clip, hard cut, video + audio) into one final file.
   async function renderFinal() {
     if (!state.project) return;
-    const order = state.project.scenes.filter((s) => !s.excluded).map((s) => s.id);
-    const pos = (ids) => Math.min(...ids.map((id) => { const i = order.indexOf(id); return i < 0 ? 1e9 : i; }));
-    const segs = (state.renderedSegments || []).filter((s) => s.media)
-      .slice().sort((a, b) => pos(a.sceneIds || []) - pos(b.sceneIds || []));
-    if (!segs.length) { alert("No generated runs to stitch yet — generate first."); return; }
-    const clips = segs.map((s) => ({ filename: s.media.filename, subfolder: s.media.subfolder || "", type: s.media.type || "output" }));
-    set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} run(s)…` } });
+    const rc = _renderClips();
+    if (!rc.length) { alert("No generated clips to stitch yet — generate first."); return; }
+    const clips = rc.map((c) => ({
+      filename: c.media.filename, subfolder: c.media.subfolder || "", type: c.media.type || "output",
+      in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
+    }));
+    set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} clip(s)…` } });
     try {
       const r = await API.renderFinal(state.project.id, clips);
-      // Show the stitched file across the whole timeline in the program monitor.
-      state.renderedSegments = [{ sceneIds: order, media: r.media }];
-      set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} run(s) — saving…` } });
+      // Play the stitched file across the whole timeline (single source, in-point 0).
+      const order = state.project.scenes.filter((s) => !s.excluded);
+      state.sceneRenders = {};
+      let acc = 0;
+      for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
+      set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} clip(s) — saving…` } });
       const name = (state.project.name || "montage").replace(/\s+/g, "_") + ".mp4";
       await _saveBlobAs(API.resultUrl(state.project.id, r.media), name);
     } catch (e) {
