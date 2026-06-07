@@ -7,6 +7,80 @@
 
   let tab = "Media";                 // active bin
   let q = { Shortcuts: "", Transitions: "" };
+  let editShortcut = null;           // shortcut item being edited ({} = new), or null
+  let editTransition = null;         // transition item being edited ({} = new), or null
+
+  // ── library edit helpers ───────────────────────────────────────────────────────
+  const splitLines = (v) => String(v || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+  function labeled(label, ctrl) {
+    const l = el("label", "lib-field"); l.append(el("span", null, label)); l.append(ctrl); return l;
+  }
+  function checkRow(label, checked) {
+    const row = el("label", "chk"); const cb = el("input"); cb.type = "checkbox"; cb.checked = checked;
+    row.append(cb); row.append(el("span", null, label)); row._cb = cb; return row;
+  }
+
+  function shortcutForm(item) {
+    const isNew = !item.name;
+    const box = el("div", "lib-form");
+    box.append(el("div", "lib-form-title", isNew ? "New shortcut" : `Edit “${item.name}”`));
+    const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
+    const trig = el("textarea", "lib-in"); trig.rows = 2; trig.placeholder = "Triggers — one per line or comma-separated"; trig.value = (item.triggers || []).join("\n");
+    const reps = el("textarea", "lib-in"); reps.rows = 3; reps.placeholder = "Replacement(s) — one per line; multiple = random pick"; reps.value = (item.replacements || []).join("\n");
+    const en = checkRow("Enabled", item.enabled !== false);
+    box.append(labeled("Name", name), labeled("Triggers", trig), labeled("Replacements", reps), en);
+    const actions = el("div", "lib-form-actions");
+    const save = el("button", "btn primary tiny", "Save");
+    save.onclick = async () => {
+      const triggers = splitLines(trig.value);
+      if (!triggers.length) { alert("At least one trigger is required."); return; }
+      await S.saveShortcut({
+        name: name.value.trim() || triggers[0], triggers,
+        replacements: splitLines(reps.value), enabled: en._cb.checked,
+        original_name: item.name || undefined,
+      });
+      editShortcut = null; render(S.get());
+    };
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = () => { editShortcut = null; render(S.get()); };
+    actions.append(save, cancel); box.append(actions);
+    return box;
+  }
+
+  const PLACEMENTS = ["global", "start", "end", "silent"];
+  const EFFECTS = ["none", "fade_to_black", "crossfade", "blur_out_in"];
+  function selectFrom(opts, value) {
+    const sel = el("select", "lib-in");
+    opts.forEach((o) => { const op = el("option", null, o); op.value = o; if (o === value) op.selected = true; sel.append(op); });
+    return sel;
+  }
+  function transitionForm(item) {
+    const isNew = !item.name && !item.trigger;
+    const box = el("div", "lib-form");
+    box.append(el("div", "lib-form-title", isNew ? "New transition" : `Edit “${item.name || item.trigger}”`));
+    const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
+    const trig = el("input", "lib-in"); trig.placeholder = "Trigger phrase (what appears in the prompt)"; trig.value = item.trigger || "";
+    const place = selectFrom(PLACEMENTS, item.placement || "global");
+    const fx = selectFrom(EFFECTS, item.visual_effect || "none");
+    const en = checkRow("Enabled", item.enabled !== false);
+    box.append(labeled("Name", name), labeled("Trigger", trig), labeled("Placement", place), labeled("Visual effect", fx), en);
+    const actions = el("div", "lib-form-actions");
+    const save = el("button", "btn primary tiny", "Save");
+    save.onclick = async () => {
+      const trigger = trig.value.trim();
+      if (!trigger) { alert("A trigger phrase is required."); return; }
+      await S.saveTransition({
+        name: name.value.trim() || trigger, trigger,
+        placement: place.value, visual_effect: fx.value, enabled: en._cb.checked,
+        original_name: item.name || undefined,
+      });
+      editTransition = null; render(S.get());
+    };
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = () => { editTransition = null; render(S.get()); };
+    actions.append(save, cancel); box.append(actions);
+    return box;
+  }
 
   // ── projects ───────────────────────────────────────────────────────────────────
   function projectsSection(st) {
@@ -74,11 +148,7 @@
     wrap.append(searchRow("Shortcuts", "Filter shortcuts…", () => render(S.get())));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add");
-    addBtn.onclick = async () => {
-      const name = prompt("Shortcut name / activation phrase:"); if (!name) return;
-      const repl = prompt(`Replacement phrase for "${name}":`, ""); if (repl == null) return;
-      await S.saveShortcut({ name, triggers: [name], replacements: [repl] });
-    };
+    addBtn.onclick = () => { editShortcut = {}; render(S.get()); };
     const expBtn = el("a", "btn ghost tiny", "↓ Export");
     expBtn.href = API.exportShortcutsUrl(); expBtn.download = "funpack_shortcuts.json"; expBtn.title = "Download shortcuts as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
@@ -91,6 +161,7 @@
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
     wrap.append(toolbar);
+    if (editShortcut) wrap.append(shortcutForm(editShortcut));
 
     const list = el("div", "lib-list");
     const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
@@ -98,15 +169,17 @@
       const trig = (s.triggers || [])[0] || s.name;
       const row = el("div", "lib-row");
       const main = el("div", "lib-main");
-      main.append(el("div", "lib-name", s.name));
+      main.append(el("div", "lib-name", s.name + (s.enabled === false ? " (off)" : "")));
       const rep = (s.replacements || []).join(" / ");
       if (rep) main.append(el("div", "lib-sub", "→ " + rep));
       row.append(main);
       const ins = el("button", "btn ghost tiny", "insert"); ins.title = "Append to selected scene's prompt";
       ins.onclick = () => { if (!S.insertShortcutIntoSelection(trig)) alert("Select a scene first."); };
+      const edit = el("button", "ic-btn", "✎"); edit.title = "Edit shortcut";
+      edit.onclick = () => { editShortcut = s; render(S.get()); };
       const del = el("button", "ic-btn danger", "✕"); del.title = "Delete shortcut";
       del.onclick = () => { if (confirm(`Delete shortcut "${s.name}"?`)) S.deleteShortcut(s.name); };
-      row.append(ins); row.append(del);
+      row.append(ins); row.append(edit); row.append(del);
       list.append(row);
     });
     if (!items.length) list.append(el("div", "pj-meta", (st.shortcuts || []).length ? "No match." : "No shortcuts yet."));
@@ -120,11 +193,7 @@
     wrap.append(searchRow("Transitions", "Filter transitions…", () => render(S.get())));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add");
-    addBtn.onclick = async () => {
-      const name = prompt("Transition trigger phrase (e.g. 'hard cut'):"); if (!name) return;
-      const fx = prompt("Visual effect (none, crossfade, fade_to_black, …):", "none") || "none";
-      await S.saveTransition({ name, trigger: name, visual_effect: fx });
-    };
+    addBtn.onclick = () => { editTransition = {}; render(S.get()); };
     const expBtn = el("a", "btn ghost tiny", "↓ Export");
     expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_transitions.json"; expBtn.title = "Download transitions as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
@@ -137,6 +206,7 @@
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
     wrap.append(toolbar);
+    if (editTransition) wrap.append(transitionForm(editTransition));
 
     const list = el("div", "lib-list");
     const items = filtered(st.transitions || [], q.Transitions, (t) => `${t.name || ""} ${t.trigger || ""} ${t.visual_effect || ""}`);
@@ -144,15 +214,19 @@
       const trig = t.trigger || t.name || t.key;
       const row = el("div", "lib-row");
       const main = el("div", "lib-main");
-      main.append(el("div", "lib-name", t.name || trig));
-      const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "", t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
+      main.append(el("div", "lib-name", (t.name || trig) + (t.enabled === false ? " (off)" : "")));
+      const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "",
+                   t.placement && t.placement !== "global" ? t.placement : "",
+                   t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
       if (sub) main.append(el("div", "lib-sub", sub));
       row.append(main);
       const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as the selected scene's transition";
       apply.onclick = () => { if (!S.applyTransitionToSelection(trig)) alert("Select a scene first."); };
+      const edit = el("button", "ic-btn", "✎"); edit.title = "Edit transition";
+      edit.onclick = () => { editTransition = t; render(S.get()); };
       const del = el("button", "ic-btn danger", "✕"); del.title = "Delete transition";
       del.onclick = () => { if (confirm(`Delete transition "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
-      row.append(apply); row.append(del);
+      row.append(apply); row.append(edit); row.append(del);
       list.append(row);
     });
     if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No transitions yet."));
