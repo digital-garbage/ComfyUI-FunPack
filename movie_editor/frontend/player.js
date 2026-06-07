@@ -1,11 +1,12 @@
 // Right-top zone: NLE program monitor.
 //
 // Architecture:
-//   - <video> is created ONCE and re-appended on each store render (never destroyed),
-//     so playback survives editor state changes without restarting.
+//   - A POOL of <video>, one per clip file, lives in a persistent stage; only the
+//     active one is shown. Switching clips swaps which is visible — every clip is
+//     preloaded, so scrubbing across cut boundaries never blacks out (real-NLE feel).
+//   - The pool is rebuilt as the timeline changes (cuts/regens are dynamic); segment
+//     positions are recomputed live from store state.
 //   - window.Player mediates the playhead between this module and timeline.js.
-//   - renderedSegments (set by the store when generation completes) maps scene ids
-//     to video files + time offsets; the player seeks within the correct segment.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
@@ -13,11 +14,13 @@
   const body = document.getElementById("preview-body");
   const statusEl = document.getElementById("preview-status");
 
-  // ── persistent video element ───────────────────────────────────────────────
-  const video = document.createElement("video");
-  video.className = "pm-video";
-  video.preload = "auto";
-  video.playsInline = true;
+  // ── preloaded video pool ─────────────────────────────────────────────────────
+  const stage = document.createElement("div"); stage.className = "pm-stage";
+  const pool = new Map();    // url -> <video>
+  let _active = null;        // visible <video>
+  let _currentSeg = null;    // segment the active video belongs to
+  let _seekPending = null;   // offset to apply once the active video has metadata
+  let _playPending = false;
 
   // ── playhead state ─────────────────────────────────────────────────────────
   let _phSec = 0;
@@ -31,6 +34,9 @@
   // ── segment helpers ────────────────────────────────────────────────────────
   // Segments are [{sceneIds, media, startSec, durationSec}], computed from store state.
   let _segs = [];
+
+  const _urlFor = (seg) => API.resultUrl(S.get().project?.id, seg.media);
+  const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || t) - 0.02));
 
   function _buildSegs(st) {
     if (!st.project) return [];
@@ -64,69 +70,80 @@
     return _segs.find((s) => sec >= s.startSec - 0.05 && sec < s.startSec + s.durationSec + 0.05) || null;
   }
 
-  // ── video src management ───────────────────────────────────────────────────
-  let _currentUrl = null;
-  let _loadedSeg = null;
-  let _seekPending = null;   // time offset to apply after loadedmetadata
-  let _playPending = false;  // start playback once the (newly loaded) source is ready
+  // ── video pool management ─────────────────────────────────────────────────────
+  function _ensureVideo(url) {
+    let v = pool.get(url);
+    if (v) return v;
+    v = document.createElement("video");
+    v.className = "pm-video"; v.preload = "auto"; v.playsInline = true; v.src = url;
+    v.addEventListener("loadedmetadata", () => {
+      if (v !== _active) return;
+      if (_seekPending != null) { v.currentTime = _clampT(v, _seekPending); _seekPending = null; }
+      if (_playPending) { _playPending = false; v.play().catch(() => {}); }
+    });
+    v.addEventListener("timeupdate", () => {
+      if (v !== _active || !_currentSeg) return;
+      _phSec = _currentSeg.startSec + v.currentTime; _notifyPh();
+    });
+    v.addEventListener("ended", () => { if (v === _active) _onEnded(); });
+    stage.append(v); pool.set(url, v);
+    return v;
+  }
 
-  // Load `seg` at `offsetSec`. If `play` is set, begin playback as soon as it's ready
-  // (immediately for an already-loaded file, else after loadedmetadata — calling play()
-  // right after a fresh load() rejects and would stall the chain at one clip).
-  function _loadAndSeek(seg, offsetSec, play) {
-    if (!seg?.media) return;
-    const pid = S.get().project?.id;
-    const url = API.resultUrl(pid, seg.media);
-    _loadedSeg = seg;
-    if (url === _currentUrl) {
-      video.currentTime = Math.max(0, Math.min(offsetSec, video.duration - 0.02 || offsetSec));
-      if (play) video.play().catch(() => {});
-    } else {
-      _currentUrl = url;
-      _seekPending = offsetSec;
-      _playPending = !!play;
-      video.src = url;
-      video.load();
+  // Add videos for current segments (preload), drop ones no longer used. Keeps the pool
+  // in sync as the timeline is cut/regenerated on the fly.
+  function _syncPool() {
+    const urls = new Set(_segs.map(_urlFor));
+    urls.forEach((u) => _ensureVideo(u));
+    for (const [u, v] of [...pool]) {
+      if (urls.has(u)) continue;
+      v.pause(); v.remove(); pool.delete(u);
+      if (_active === v) { _active = null; _currentSeg = null; }
     }
   }
 
-  video.addEventListener("loadedmetadata", () => {
-    if (_seekPending != null) {
-      video.currentTime = Math.max(0, Math.min(_seekPending, video.duration - 0.02));
-      _seekPending = null;
+  function _resetPool() {
+    for (const [, v] of pool) { v.pause(); v.remove(); }
+    pool.clear(); _active = null; _currentSeg = null; _seekPending = null; _playPending = false;
+  }
+
+  function _setActive(v) {
+    if (_active === v) return;
+    if (_active) { _active.pause(); _active.classList.remove("active"); }
+    _active = v; if (v) v.classList.add("active");
+  }
+
+  // Show `seg` at `offset`; play if requested. The clip is preloaded, so the frame
+  // appears immediately on a same- or cross-clip jump (no black flash).
+  function _goto(seg, offset, play) {
+    if (!seg || !seg.media) return;
+    const v = _ensureVideo(_urlFor(seg));
+    _currentSeg = seg; _setActive(v);
+    if (v.readyState >= 1) {
+      v.currentTime = _clampT(v, offset);
+      if (play) v.play().catch(() => {}); else _playPending = false;
+    } else {
+      _seekPending = offset; _playPending = !!play;
     }
-    if (_playPending) { _playPending = false; video.play().catch(() => {}); }
-  });
+  }
 
-  video.addEventListener("timeupdate", () => {
-    if (!_loadedSeg) return;
-    _phSec = _loadedSeg.startSec + video.currentTime;
-    _notifyPh();
-  });
-
-  // At end of segment: jump to next rendered segment or stop.
-  video.addEventListener("ended", () => {
+  function _onEnded() {
     _playing = false;
-    if (_loadedSeg) {
-      const endSec = _loadedSeg.startSec + _loadedSeg.durationSec;
-      const next = _segs.find((s) => s.startSec >= endSec - 0.05 && s !== _loadedSeg);
-      if (next) {
-        _phSec = next.startSec;
-        _playing = true;
-        _loadAndSeek(next, 0, true);  // play once the next clip is loaded
-      } else {
-        _phSec = endSec;
-      }
+    if (_currentSeg) {
+      const endSec = _currentSeg.startSec + _currentSeg.durationSec;
+      const next = _segs.find((s) => s.startSec >= endSec - 0.05 && s !== _currentSeg);
+      if (next) { _phSec = next.startSec; _playing = true; _goto(next, 0, true); }
+      else _phSec = endSec;
     }
     _notifyPh();
     _renderTransport();
-  });
+  }
 
   // ── transport actions ──────────────────────────────────────────────────────
   function _seek(sec) {
     _phSec = Math.max(0, sec);
     const seg = _segAt(_phSec);
-    if (seg) _loadAndSeek(seg, _phSec - seg.startSec);
+    if (seg) _goto(seg, _phSec - seg.startSec, false);
     _notifyPh();
   }
 
@@ -136,25 +153,26 @@
     if (!seg) return;
     if (_phSec < seg.startSec) _phSec = seg.startSec;
     _playing = true;
-    _loadAndSeek(seg, _phSec - seg.startSec, true);
+    _goto(seg, _phSec - seg.startSec, true);
     _notifyPh();
     _renderTransport();
   }
 
   function _pause() {
-    video.pause();
+    if (_active) _active.pause();
     _playing = false;
-    _playPending = false;  // cancel any queued autoplay
+    _playPending = false;
     _notifyPh();
     _renderTransport();
   }
 
   function _stop() {
-    video.pause();
+    if (_active) _active.pause();
     _phSec = 0;
     _playing = false;
+    _playPending = false;
     const first = _segs[0];
-    if (first) _loadAndSeek(first, 0);
+    if (first) _goto(first, 0, false);
     _notifyPh();
     _renderTransport();
   }
@@ -171,10 +189,11 @@
     // Capture the current video frame as a PNG Blob.  Returns null if no video
     // is loaded or the frame isn't ready.
     captureFrame: () => {
-      if (!video.videoWidth || video.readyState < 2) return null;
+      const v = _active;
+      if (!v || !v.videoWidth || v.readyState < 2) return null;
       const c = document.createElement("canvas");
-      c.width = video.videoWidth; c.height = video.videoHeight;
-      c.getContext("2d").drawImage(video, 0, 0);
+      c.width = v.videoWidth; c.height = v.videoHeight;
+      c.getContext("2d").drawImage(v, 0, 0);
       return new Promise((resolve) => c.toBlob((b) => resolve(b), "image/png"));
     },
   };
@@ -203,7 +222,7 @@
     _transportEl.append(stopBtn, playBtn, tc);
 
     // Anchor capture — only when a rendered frame is under the playhead.
-    if (_loadedSeg) {
+    if (_currentSeg) {
       const scenes = (S.get().project?.scenes || []).filter((s) => !s.excluded);
       if (scenes.length) {
         const sep = el("div", "pm-sep"); _transportEl.append(sep);
@@ -276,22 +295,30 @@
 
   // ── full render (store subscription) ──────────────────────────────────────
   function render(st) {
-    // Project switch: reset video state
+    // Project switch: drop the whole pool and reset.
     if (st.project?.id !== _lastProjectId) {
       _lastProjectId = st.project?.id || null;
-      video.pause(); video.src = "";
-      _currentUrl = null; _loadedSeg = null; _seekPending = null;
-      _phSec = 0; _playing = false;
+      _resetPool();
+      _phSec = 0; _playing = false; _lastSegHash = "";
     }
 
     _segs = _buildSegs(st);
+    _syncPool();  // preload current clips, drop stale ones (timeline is dynamic)
+
+    // Keep _currentSeg pointing at a fresh segment object (positions change with edits).
+    if (_currentSeg) {
+      const u = _urlFor(_currentSeg);
+      _currentSeg = _segAt(_phSec) && _urlFor(_segAt(_phSec)) === u ? _segAt(_phSec)
+        : (_segs.find((s) => _urlFor(s) === u) || _currentSeg);
+    }
+
     const hash = _segs.map((s) => s.media?.filename || "").join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
-      // Segments changed — re-resolve current position
+      // Segments changed — re-resolve the frame at the playhead (keep playing if we were).
       const seg = _segAt(_phSec);
-      if (seg) _loadAndSeek(seg, _phSec - seg.startSec);
-      else if (_segs.length && !_loadedSeg) _loadAndSeek(_segs[0], 0);
+      if (seg) _goto(seg, _phSec - seg.startSec, _playing);
+      else if (_segs.length && !_active) _goto(_segs[0], 0, false);
     }
 
     const p = st.project;
@@ -309,7 +336,7 @@
     // ── canvas (video + placeholder) ────────────────────────────────────────
     const canvas = el("div", "pm-canvas");
     if (_segs.length) {
-      canvas.append(video);  // re-appending the same element — playback continues
+      canvas.append(stage);  // pooled videos live here; only the active one is visible
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
       splash.append(el("div", "pm-gen-icon", "⚙"));
