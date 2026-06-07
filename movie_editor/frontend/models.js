@@ -113,6 +113,15 @@
   // Roles the fixed FunPack path cannot generate without (at least one slot each).
   const ESSENTIAL = [["unet", "Unet / Diffusion Model"], ["clip", "CLIP / Text Encoder"], ["video_vae", "Video VAE"]];
 
+  // A slot is "active" (part of the pipeline) if it wires an output somewhere or a core
+  // override sources from it. Inert slots are left alone (no required-input errors).
+  function slotIsActive(slot) {
+    if (Object.values(slot.wires || {}).some((tg) => wireTargets(tg).some(Boolean))) return true;
+    const ov = config.core_overrides || {};
+    return Object.values(ov).some((ins) =>
+      Object.values(ins || {}).some((src) => typeof src === "string" && src.startsWith(`out:${slot.id}:`)));
+  }
+
   function validateSlot(slot) {
     const issues = [];
     const spec = specFor(slot);
@@ -142,6 +151,25 @@
         if (!dests(o).some((d) => d.value === t))
           issues.push({ level: "error", msg: `"${o.name}" is wired to a destination that no longer exists.` });
       });
+    });
+
+    // Required connection INPUTS must actually be fed (matches the builder's blocking):
+    // explicit input source, an incoming wire from another node, or a unique auto-wire
+    // producer. Only checked for ACTIVE slots (wired into the pipeline) — an unused node
+    // that feeds nothing must not be flagged or block generation.
+    if (slotIsActive(slot)) (spec.connection_inputs || []).forEach((ci) => {
+      if (!ci.required) return;
+      const src = (slot.input_sources || {})[ci.name];
+      if (src && src !== "auto") return;  // explicitly sourced (incl. "timeline")
+      const incoming = (config.slots || []).some((s2) =>
+        s2.id !== slot.id && Object.values(s2.wires || {}).some((tg) => wireTargets(tg).includes(`node:${slot.id}:${ci.name}`)));
+      if (incoming) return;
+      const prod = sources(slot, ci.type).filter((o) => o.value && o.value !== "timeline").length;
+      if (prod === 1) return;  // a single producer auto-wires
+      if (prod > 1)
+        issues.push({ level: "error", msg: `Input "${ci.name}" (${ci.type}): ${prod} possible sources — set its Input source.` });
+      else
+        issues.push({ level: "error", msg: `Input "${ci.name}" (${ci.type}) has no source — set its Input source or add a node that outputs ${ci.type}.` });
     });
     return issues;
   }
@@ -559,7 +587,7 @@
       if (v.warns) bits.push(`${v.warns} warning${v.warns > 1 ? "s" : ""}`);
       const bar = el("div", "valid-banner " + (v.errors ? "bad" : (v.warns ? "warn" : "ok")));
       bar.append(el("span", "valid-dot", v.errors ? "!" : "✓"));
-      bar.append(el("span", null, v.errors ? `Pipeline ready but ${bits.join(", ")} in slot config.`
+      bar.append(el("span", null, v.errors ? `Not ready — ${bits.join(", ")} to fix.`
         : (v.warns ? `Pipeline ready — ${bits.join(", ")}.` : "Pipeline ready.")));
       sec.append(bar);
     }

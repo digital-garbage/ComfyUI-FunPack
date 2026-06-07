@@ -361,7 +361,18 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
-    _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report)
+    # A slot only matters if it's wired into the pipeline (an output wire, or referenced
+    # as a source by a core override). Inert/unused slots are NOT validated or auto-wired,
+    # so an unused node's required input never blocks generation.
+    active_slots = set()
+    for s in slots:
+        if any(t for tg in (s.get("wires") or {}).values() for t in (tg if isinstance(tg, list) else [tg]) if t):
+            active_slots.add(s["id"])
+    for ovs in ((models_config or {}).get("core_overrides") or {}).values():
+        for src in (ovs or {}).values():
+            if isinstance(src, str) and src.startswith("out:"):
+                active_slots.add(src.split(":", 2)[1])
+    _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
 
     return graph, report
 
@@ -510,12 +521,14 @@ def _node_labels(slots, slot_node_id, object_info):
     return label
 
 
-def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report):
+def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots=None):
     label = _node_labels(slots, slot_node_id, object_info)
     L = lambda nid: label.get(nid, nid)
 
     targets = list(OPEN_PORTS)  # (core_id, input, type, required)
     for s in slots:  # slot connection inputs (e.g. image-proc vae/image/length)
+        if active_slots is not None and s["id"] not in active_slots:
+            continue  # inert slot (feeds nothing) — don't auto-wire or block on its inputs
         nd = slot_def[s["id"]]
         for ci in connection_inputs(nd or {}):
             targets.append((slot_node_id[s["id"]], ci["name"], ci["type"], ci.get("required", False)))

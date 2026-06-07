@@ -437,7 +437,9 @@ input[type=number] { font-family: var(--font-mono); }
 .slot-card { background: var(--ink-1); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
 .slot-card { border-left: 3px solid var(--amber); }
 .slot-card.slot-warn { border-left-color: var(--amber); }
-.slot-card.slot-bad  { border-left-color: var(--danger); }
+.slot-card.slot-bad  { border-color: var(--danger); border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 9%, var(--ink-1));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--danger) 35%, transparent); }
 .slot-head { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
 .slot-card.open .slot-head { margin-bottom: 10px; }
 .slot-chev { color: var(--faint); width: 12px; flex: 0 0 auto; font-size: 11px; }
