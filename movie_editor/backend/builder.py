@@ -494,7 +494,26 @@ def _producers(graph, slots, slot_node_id, slot_def, object_info):
     return out
 
 
+def _node_labels(slots, slot_node_id, object_info):
+    """node_id -> human label ('Role / Name [NodeClass]') for report messages, so users
+    don't see opaque ids like 'slot_5u09gm5'."""
+    label = {}
+    for cid, cls in CORE.items():
+        label[cid] = f"{(object_info.get(cls) or {}).get('display_name', cls)} [{cls}]"
+    for s in slots:
+        nid = slot_node_id.get(s["id"])
+        if not nid:
+            continue
+        cls = s.get("node_class") or ""
+        nm = s.get("label") or s.get("role_label") or cls or nid
+        label[nid] = f"{nm} [{cls}]" if cls and nm != cls else (nm or nid)
+    return label
+
+
 def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report):
+    label = _node_labels(slots, slot_node_id, object_info)
+    L = lambda nid: label.get(nid, nid)
+
     targets = list(OPEN_PORTS)  # (core_id, input, type, required)
     for s in slots:  # slot connection inputs (e.g. image-proc vae/image/length)
         nd = slot_def[s["id"]]
@@ -510,14 +529,14 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
         cands = [p for p in producers.get(t, []) if p[0] != node_id]
         if len(cands) == 1:
             node["inputs"][inp] = [cands[0][0], cands[0][1]]
-            report["auto_wired"].append(f"{node_id}.{inp} <- {cands[0][0]} ({t})")
+            report["auto_wired"].append(f"{L(node_id)}.{inp} <- {L(cands[0][0])} ({t})")
         elif len(cands) > 1:
-            msg = f"{node_id}.{inp} ({t}): {len(cands)} possible sources — wire it explicitly."
+            msg = f"{L(node_id)}.{inp} ({t}): {len(cands)} possible sources — wire it explicitly."
             report["ambiguous"].append(msg)
             if required:
                 report["blocking"].append(msg)
         else:
-            msg = f"{node_id}.{inp} ({t}): no source available."
+            msg = f"{L(node_id)}.{inp} ({t}): no node outputs {t} — add one in Models, or this input may not be needed."
             report["unsatisfied"].append(msg)
             if required:
                 report["blocking"].append(msg)
