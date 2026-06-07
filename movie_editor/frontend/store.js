@@ -501,6 +501,12 @@
     set({ gen: { state: "done", promptId: null, media: state.gen.media, msg: `${runs.length} run(s) generated — use Render Final Video to stitch them.` } });
   }
 
+  // Local timestamp for unique export filenames: YYYYMMDD-HHMMSS.
+  function _stamp() {
+    const d = new Date(), p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+  }
+
   // Fetch a render and offer a Save dialog (File System Access API where available,
   // else a normal download). Renders live in ComfyUI's temp dir, so persisting one
   // is the user's job — this is how they do it.
@@ -546,7 +552,7 @@
     if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
     const idx = state.project.scenes.findIndex((s) => s.id === id);
     const proj = (state.project.name || "montage").replace(/[^\w.-]+/g, "_");
-    await _saveBlobAs(API.resultUrl(state.project.id, r.media), `${proj}_scene${idx >= 0 ? idx + 1 : "x"}.mp4`);
+    await _saveBlobAs(API.resultUrl(state.project.id, r.media), `${proj}_scene${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`);
   }
 
   // Stitch the kept clips (in/out per clip, hard cut, video + audio) into one final file.
@@ -567,7 +573,7 @@
       let acc = 0;
       for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
       set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} clip(s) — saving…` } });
-      const name = (state.project.name || "montage").replace(/\s+/g, "_") + ".mp4";
+      const name = (state.project.name || "montage").replace(/[^\w.-]+/g, "_") + `_final_${_stamp()}.mp4`;
       await _saveBlobAs(API.resultUrl(state.project.id, r.media), name);
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + e.message } });
