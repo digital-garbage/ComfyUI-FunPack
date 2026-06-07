@@ -235,42 +235,46 @@
         const sep = el("div", "pm-sep"); _transportEl.append(sep);
 
         const anchorSel = el("select", "pm-anchor-sel");
-        anchorSel.title = "Scene that will receive this frame as its i2v anchor";
-        // Require an explicit choice so the capture never silently overwrites a scene's
-        // existing image (defaulting to scene 1 was clobbering it).
-        anchorSel.append(new Option("— apply to scene… —", ""));
+        anchorSel.title = "Scene to anchor — or leave blank to just save the frame to the Media bin";
+        // No default scene: blank = just save the frame (never silently overwrites a scene).
+        anchorSel.append(new Option("— save to Media bin —", ""));
         scenes.forEach((s, i) => {
-          const label = `Scene ${i + 1}` + (s.text ? ": " + s.text.substring(0, 22) : "");
+          const label = `anchor → Scene ${i + 1}` + (s.text ? ": " + s.text.substring(0, 18) : "");
           anchorSel.append(new Option(label, s.id));
         });
 
-        const anchorBtn = el("button", "btn ghost tiny pm-anchor-btn", "📌 Use as anchor");
-        anchorBtn.title = "Capture this frame and set it as the i2v starting image for the chosen scene";
+        const anchorBtn = el("button", "btn ghost tiny pm-anchor-btn", "📌 Save frame");
+        const _btnLabel = () => (anchorSel.value ? "📌 Use as anchor" : "📌 Save frame");
+        anchorSel.onchange = () => { anchorBtn.textContent = _btnLabel(); };
+        anchorBtn.title = "Capture this frame — to the Media bin, or as the chosen scene's i2v anchor";
         anchorBtn.onclick = async () => {
           const sceneId = anchorSel.value;
-          if (!sceneId) { alert("Pick which scene to apply this frame to first."); return; }
           anchorBtn.disabled = true; anchorBtn.textContent = "Capturing…";
           try {
             const blob = await window.Player.captureFrame();
             if (!blob) {
-              anchorBtn.textContent = "📌 Use as anchor";
+              anchorBtn.textContent = _btnLabel();
               alert("No video frame available — make sure the playhead is on a rendered segment.");
               return;
             }
-            const sc = scenes.find((s) => s.id === sceneId);
-            const name = `anchor_scene${sc ? (S.get().project.scenes.indexOf(sc) + 1) : ""}_${Date.now()}.png`;
+            const sc = sceneId ? scenes.find((s) => s.id === sceneId) : null;
+            const name = `frame_${sc ? "scene" + (S.get().project.scenes.indexOf(sc) + 1) + "_" : ""}${Date.now()}.png`;
             const file = new File([blob], name, { type: "image/png" });
             await S.uploadMedia([file]);
-            const bin = S.get().mediaBin;
-            const asset = bin[bin.length - 1];
-            if (!asset) { alert("Upload failed."); return; }
-            // Store as generated_frame type (builder accepts it like "image")
-            S.patchScene(sceneId, { source: { type: "generated_frame", media_ref: asset.id } });
-            anchorBtn.textContent = "✓ Applied";
+            if (sceneId) {
+              const bin = S.get().mediaBin;
+              const asset = bin[bin.length - 1];
+              if (!asset) { alert("Upload failed."); return; }
+              // Store as generated_frame type (builder accepts it like "image")
+              S.patchScene(sceneId, { source: { type: "generated_frame", media_ref: asset.id } });
+              anchorBtn.textContent = "✓ Applied";
+            } else {
+              anchorBtn.textContent = "✓ Saved";
+            }
             setTimeout(() => _renderTransport(), 1600);
           } catch (e) {
             alert("Capture failed: " + e.message);
-            anchorBtn.textContent = "📌 Use as anchor";
+            anchorBtn.textContent = _btnLabel();
           } finally {
             anchorBtn.disabled = false;
           }
