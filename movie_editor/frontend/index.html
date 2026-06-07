@@ -15,11 +15,19 @@
         var b = document.getElementById("boot-error");
         if (!b) {
           b = document.createElement("div"); b.id = "boot-error";
-          b.style.cssText = "position:fixed;z-index:99999;left:0;right:0;top:0;padding:10px 14px;" +
+          b.style.cssText = "position:fixed;z-index:99999;left:0;right:0;top:0;padding:10px 34px 10px 14px;" +
             "background:#3a1320;color:#ffb3c1;font:12px/1.5 monospace;border-bottom:1px solid #e0566b;white-space:pre-wrap";
+          var x = document.createElement("button");
+          x.textContent = "✕"; x.title = "Dismiss";
+          x.style.cssText = "position:absolute;top:6px;right:8px;background:transparent;border:1px solid #e0566b;" +
+            "color:#ffb3c1;border-radius:6px;cursor:pointer;font:12px monospace;padding:1px 7px;line-height:1.4";
+          x.onclick = function () { b.remove(); };
+          b.appendChild(x);
           (document.body || document.documentElement).appendChild(b);
         }
-        b.textContent = "Movie Editor error — " + msg + "\n(restart ComfyUI + hard-reload Cmd/Ctrl+Shift+R; if it persists, send me this text)";
+        var t = b.querySelector(".boot-error-text");
+        if (!t) { t = document.createElement("span"); t.className = "boot-error-text"; b.insertBefore(t, b.firstChild); }
+        t.textContent = "Movie Editor error — " + msg + "\n(restart ComfyUI + hard-reload Cmd/Ctrl+Shift+R; if it persists, send me this text)";
       }
       window.addEventListener("error", function (e) {
         show((e.message || "load error") + (e.filename ? "  @ " + e.filename.split("/").pop() + ":" + e.lineno : ""));

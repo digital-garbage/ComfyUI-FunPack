@@ -88,7 +88,9 @@ def _prepare_media(proj: Project) -> Optional[dict]:
         src = sc.source
         ref = getattr(src, "media_ref", None)
         tgt = getattr(src, "target", None)
-        if not (src and getattr(src, "type", "") in ("image", "generated_frame") and ref and tgt):
+        # A target is OPTIONAL now (routing is automatic — the image becomes a LoadImage
+        # IMAGE producer that auto-wires). Only an asset reference is required.
+        if not (src and getattr(src, "type", "") in ("image", "generated_frame") and ref):
             continue
         path = media.path_for(ref)
         if not path:
