@@ -227,12 +227,33 @@
     if (!p.sampler_slot || p.sampler_slot === "funpack") renderSamplerSettings(st);
   }
 
+  // Studio refiner flags (live in studio_settings.refiner). Booleans the editor exposes.
+  const STUDIO_REFINER_FLAGS = [
+    { name: "vision_conditioning", label: "Vision conditioning", default: true },
+    { name: "reference_injection", label: "Reference injection", default: false },
+    { name: "prompt_repair", label: "Prompt repair", default: true },
+  ];
+
   function renderStudioSettings(st) {
     const p = st.project;
     const si = p.studio_inputs || {};
     let curSettings = {};
     try { curSettings = JSON.parse(si.studio_settings || "{}"); } catch (_) {}
     const samplers = curSettings.samplers || null;
+
+    // Studio refiner toggles
+    const rfTag = el("div", "insp-tag sp-sub"); rfTag.textContent = "Studio · refiner"; body.append(rfTag);
+    const rf = (curSettings.refiner && typeof curSettings.refiner === "object") ? curSettings.refiner : {};
+    STUDIO_REFINER_FLAGS.forEach((f) => {
+      const cur = rf[f.name] != null ? rf[f.name] : f.default;
+      const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur; ctrl.style.width = "auto";
+      ctrl.dataset.k = "rf-" + f.name;
+      ctrl.onchange = () => {
+        const next = { ...curSettings, refiner: { ...rf, [f.name]: ctrl.checked } };
+        S.setStudioInputNow("studio_settings", JSON.stringify(next));
+      };
+      body.append(field(f.label, ctrl));
+    });
 
     const tag = el("div", "insp-tag sp-sub"); tag.textContent = "Studio · sampler algorithm"; body.append(tag);
 
@@ -261,6 +282,7 @@
     { name: "mid_scene_guide",       label: "Mid-scene guide",      kind: "bool",  default: false },
     { name: "mid_scene_guide_strength", label: "Guide strength",    kind: "float", default: 0.25,  min: 0, max: 1,   step: 0.05, dependsOn: "mid_scene_guide" },
     { name: "embed_guidance",        label: "Embed guidance",       kind: "bool",  default: false },
+    { name: "embed_guidance_source", label: "Embed mode",           kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance" },
     { name: "embed_guidance_strength", label: "Embed strength",     kind: "float", default: 0.02,  min: 0, max: 0.5, step: 0.005, dependsOn: "embed_guidance" },
     { name: "decode_noise_scale",    label: "Decode noise scale",   kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
     { name: "decode_timestep",       label: "Decode timestep",      kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
@@ -283,6 +305,10 @@
         ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!val; ctrl.style.width = "auto";
         ctrl.dataset.k = "si-" + k.name;
         ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.checked);
+      } else if (k.kind === "combo") {
+        ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
+        (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
+        ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
       } else {
         ctrl = el("input"); ctrl.type = "number";
         if (k.step != null) ctrl.step = String(k.step);
@@ -438,7 +464,13 @@
   let _editing = false;
 
   function render(st) {
-    if (_editing) return;  // editing in progress — leave the DOM (and the user's caret) alone
+    if (_editing) {
+      // Only skip if a field is actually still focused; else the flag got stuck (focused
+      // element removed without focusout) — clear it so the inspector resumes updating.
+      const a = document.activeElement;
+      if (a && body.contains(a) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT") && a.dataset.k) return;
+      _editing = false;
+    }
 
     const scrollTop = body.scrollTop;  // preserve scroll across the rebuild
     clear(body);

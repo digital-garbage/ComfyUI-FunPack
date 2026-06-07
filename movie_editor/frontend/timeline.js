@@ -237,7 +237,13 @@
   let _tlEditing = false;
 
   function render(st) {
-    if (_tlEditing) return;
+    if (_tlEditing) {
+      // Only hold off if a control is genuinely still focused; otherwise the flag got
+      // stuck (focused element removed without a focusout) — clear it and re-render.
+      const a = document.activeElement;
+      if (a && body.contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName)) return;
+      _tlEditing = false;
+    }
     clear(body); clear(meta);
     if (!st.project) { body.append(el("div", "empty-stage", "Open a project to start cutting.")); return; }
     const p = st.project;

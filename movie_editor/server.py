@@ -438,7 +438,7 @@ if web is not None and PromptServer is not None:
             target = _segment(p, scene_ids)
         else:
             target = _solo(p, body.get("only_scene"))
-        prompt = build_combined_prompt(target)
+        prompt = build_combined_prompt(target, for_generation=True)
         if not prompt.strip():
             return web.json_response({"detail": "Nothing to generate — no active scene text."}, status=400)
         try:

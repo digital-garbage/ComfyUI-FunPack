@@ -236,18 +236,19 @@
 
         const anchorSel = el("select", "pm-anchor-sel");
         anchorSel.title = "Scene that will receive this frame as its i2v anchor";
-        // Default: currently selected scene, or first scene
-        const curId = S.get().selectedSceneId;
+        // Require an explicit choice so the capture never silently overwrites a scene's
+        // existing image (defaulting to scene 1 was clobbering it).
+        anchorSel.append(new Option("— apply to scene… —", ""));
         scenes.forEach((s, i) => {
           const label = `Scene ${i + 1}` + (s.text ? ": " + s.text.substring(0, 22) : "");
-          const o = new Option(label, s.id);
-          if (s.id === curId) o.selected = true;
-          anchorSel.append(o);
+          anchorSel.append(new Option(label, s.id));
         });
 
         const anchorBtn = el("button", "btn ghost tiny pm-anchor-btn", "📌 Use as anchor");
-        anchorBtn.title = "Capture this frame and set it as the i2v starting image for the selected scene";
+        anchorBtn.title = "Capture this frame and set it as the i2v starting image for the chosen scene";
         anchorBtn.onclick = async () => {
+          const sceneId = anchorSel.value;
+          if (!sceneId) { alert("Pick which scene to apply this frame to first."); return; }
           anchorBtn.disabled = true; anchorBtn.textContent = "Capturing…";
           try {
             const blob = await window.Player.captureFrame();
@@ -256,7 +257,6 @@
               alert("No video frame available — make sure the playhead is on a rendered segment.");
               return;
             }
-            const sceneId = anchorSel.value;
             const sc = scenes.find((s) => s.id === sceneId);
             const name = `anchor_scene${sc ? (S.get().project.scenes.indexOf(sc) + 1) : ""}_${Date.now()}.png`;
             const file = new File([blob], name, { type: "image/png" });
@@ -265,9 +265,7 @@
             const asset = bin[bin.length - 1];
             if (!asset) { alert("Upload failed."); return; }
             // Store as generated_frame type (builder accepts it like "image")
-            S.patchScene(sceneId, {
-              source: { type: "generated_frame", media_ref: asset.id, target: "port:FunPackStudio.source_image" },
-            });
+            S.patchScene(sceneId, { source: { type: "generated_frame", media_ref: asset.id } });
             anchorBtn.textContent = "✓ Applied";
             setTimeout(() => _renderTransport(), 1600);
           } catch (e) {

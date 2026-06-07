@@ -362,12 +362,22 @@
   // Split the active scenes into chain runs. A run starts at an anchored scene
   // (empty / image / generated_frame); a "carry" scene appends to the current run
   // so it overlaps the previous scene (one chain-sampler request per run).
+  // True if a scene's image anchor still exists in the media bin (deleted image → fall
+  // back to carry / i2v guides, not a broken anchor).
+  function _anchorAvailable(s) {
+    const t = s.source && s.source.type;
+    if (t !== "image" && t !== "generated_frame") return false;
+    const ref = s.source.media_ref;
+    return !!(ref && (state.mediaBin || []).some((m) => m.id === ref));
+  }
   function _runs() {
     const active = state.project.scenes.filter((s) => !s.excluded);
     const runs = [];
     for (const s of active) {
       const t = (s.source && s.source.type) || "empty";
-      if (t === "carry" && runs.length) runs[runs.length - 1].push(s.id);
+      // carry OR an anchor whose image is gone -> continue the previous run (i2v guides).
+      const isCarry = t === "carry" || ((t === "image" || t === "generated_frame") && !_anchorAvailable(s));
+      if (isCarry && runs.length) runs[runs.length - 1].push(s.id);
       else runs.push([s.id]);
     }
     return runs;
@@ -535,7 +545,8 @@
     const r = state.sceneRenders[id];
     if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
     const idx = state.project.scenes.findIndex((s) => s.id === id);
-    await _saveBlobAs(API.resultUrl(state.project.id, r.media), `scene_${idx >= 0 ? idx + 1 : "x"}.mp4`);
+    const proj = (state.project.name || "montage").replace(/[^\w.-]+/g, "_");
+    await _saveBlobAs(API.resultUrl(state.project.id, r.media), `${proj}_scene${idx >= 0 ? idx + 1 : "x"}.mp4`);
   }
 
   // Stitch the kept clips (in/out per clip, hard cut, video + audio) into one final file.

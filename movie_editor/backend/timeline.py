@@ -171,24 +171,64 @@ class Project:
         return d
 
 
-def build_combined_prompt(project: Project, include_excluded: bool = False) -> str:
-    """The verbatim master prompt = anchor + scene texts, joined with single spaces.
+_TRIGGER_RE = None
+_TRIGGER_RE_BUILT = False
 
-    The editor stores each scene as a VERBATIM chunk of the global prompt: transition
-    triggers and shortcuts stay in-text exactly as the user typed them, so concatenating
-    anchor + scenes reproduces the global prompt. No markers are injected and nothing is
-    expanded here — Studio expands shortcuts, splits by transitions and applies the
-    anchor at generation time (its normal pipeline). `include_excluded=False` drops
-    scenes flagged excluded (their chunk is omitted from the prompt).
+
+def _leading_trigger_re():
+    """Regex matching a leading transition trigger (direct DB trigger or generic 'scene N'
+    label) at the start of a scene's text. Cached. None if nothing is available."""
+    global _TRIGGER_RE, _TRIGGER_RE_BUILT
+    if _TRIGGER_RE_BUILT:
+        return _TRIGGER_RE
+    _TRIGGER_RE_BUILT = True
+    import re
+    try:
+        try:
+            from templates import load_custom_transition_triggers
+        except ImportError:
+            from ...templates import load_custom_transition_triggers  # type: ignore
+        trigs = list(load_custom_transition_triggers().keys())
+    except Exception:
+        trigs = []
+    parts = [re.escape(t) for t in sorted(trigs, key=len, reverse=True)]
+    parts.append(r"scene\s+[-+]?\d+")  # built-in generic split label
+    _TRIGGER_RE = re.compile(r"^\s*(?:" + "|".join(parts) + r")\b", re.IGNORECASE)
+    return _TRIGGER_RE
+
+
+def build_combined_prompt(project: Project, include_excluded: bool = False,
+                          for_generation: bool = False) -> str:
+    """The master prompt = anchor + scene texts.
+
+    Display (for_generation=False): a verbatim join — transition triggers/shortcuts stay
+    in-text exactly as typed, so it round-trips with the global prompt.
+
+    Generation (for_generation=True): Studio must split into EXACTLY one scene per timeline
+    scene, but a `carry` scene's text has no leading transition, so Studio would merge it
+    with the previous one (only the first scene gets generated). So before any scene whose
+    text doesn't already begin with a transition trigger we inject a separator (the seam's
+    transition_to_next, else the generic 'scene N' label) to force the split. This affects
+    only what's sent to Studio, never the displayed global prompt.
     """
+    scenes = [s for s in project.scenes if include_excluded or not s.excluded]
     parts: list[str] = []
     anchor = (project.anchor or "").strip()
     if anchor:
         parts.append(anchor)
-    for scene in project.scenes:
-        if not include_excluded and scene.excluded:
-            continue
+    trig_re = _leading_trigger_re() if for_generation else None
+    for i, scene in enumerate(scenes):
         text = (scene.text or "").strip()
+        if for_generation:
+            has_lead = bool(text and trig_re and trig_re.match(text))
+            if not has_lead:
+                if i == 0:
+                    marker = (project.intro_transition or "").strip()
+                else:
+                    marker = (scenes[i - 1].transition_to_next or "").strip()
+                if not marker:
+                    marker = f"scene {i + 1}"
+                parts.append(marker)
         if text:
             parts.append(text)
-    return " ".join(parts).strip()
+    return " ".join(p for p in parts if p).strip()
