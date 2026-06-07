@@ -534,11 +534,22 @@
   // each non-excluded scene that has a render. This is what plays/exports — so splits
   // and deletes are honoured (deleted scenes simply aren't here).
   function _renderClips() {
+    const p = state.project;
     const out = [];
-    for (const sc of (state.project.scenes || [])) {
+    for (const sc of (p.scenes || [])) {
       if (sc.excluded) continue;
       const r = state.sceneRenders[sc.id];
-      if (r && r.media) out.push({ media: r.media, inSec: r.inSec || 0, durationSec: sceneDurationSec(sc) });
+      if (!(r && r.media)) continue;
+      const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
+      const tFrames = sc.transition_frames || 0;
+      out.push({
+        media: r.media, inSec: r.inSec || 0, durationSec: sceneDurationSec(sc),
+        fx: sc.effects || {}, fps,
+        w: (sc.width != null ? sc.width : p.width) || null,
+        h: (sc.height != null ? sc.height : p.height) || null,
+        transition: sc.video_transition || "",
+        tdur: tFrames > 0 ? tFrames / fps : 0,
+      });
     }
     return out;
   }
@@ -563,6 +574,7 @@
     const clips = rc.map((c) => ({
       filename: c.media.filename, subfolder: c.media.subfolder || "", type: c.media.type || "output",
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
+      fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
     }));
     set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} clip(s)…` } });
     try {

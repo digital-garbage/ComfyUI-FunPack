@@ -154,6 +154,79 @@ def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
     return samp
 
 
+_XFADE_MAP = {
+    "crossfade": "fade", "fadeblack": "fadeblack",
+    "wipeleft": "wipeleft", "wiperight": "wiperight", "dissolve": "dissolve",
+}
+
+
+def _build_render_filter(clips: list) -> str:
+    """ffmpeg filter_complex for the final stitch.
+
+    Per clip: apply blur / fade in-out / Ken-Burns zoom (scale eval=frame so the scale
+    animates over the clip; zoom-in crops the overflow, zoom-out pads into the box). Then
+    fold the clips left-to-right: a seam with a video_transition uses xfade (overlap, so the
+    total shortens by the transition length) + acrossfade for audio; otherwise a hard-cut
+    concat. All pure pixel ops — nothing re-encodes to latent. Returns labels [vout]/[aout].
+    """
+    n = len(clips)
+    parts: list[str] = []
+
+    for i, c in enumerate(clips):
+        fx = c.get("fx") or {}
+        dur = float(c.get("dur") or 0) or 0.0
+        w = int(c.get("w") or 0) or None
+        h = int(c.get("h") or 0) or None
+        vf: list[str] = []
+        zoom = fx.get("zoom")
+        if zoom in ("in", "out") and dur > 0 and w and h:
+            # animate the scale across the clip via scale's per-frame eval, relative to box.
+            if zoom == "in":
+                vf.append(f"scale=w='{w}*(1+0.20*t/{dur:.3f})':h='{h}*(1+0.20*t/{dur:.3f})':eval=frame")
+                vf.append(f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2")
+            else:  # out -> shrink and pad into the box
+                vf.append(f"scale=w='{w}*(1-0.20*t/{dur:.3f})':h='{h}*(1-0.20*t/{dur:.3f})':eval=frame")
+                vf.append(f"pad={w}:{h}:({w}-iw)/2:({h}-ih)/2:black")
+        blur = float(fx.get("blur") or 0)
+        if blur > 0:
+            vf.append(f"gblur=sigma={blur * 20:.2f}")
+        fi = float(fx.get("fade_in") or 0)
+        if fi > 0:
+            vf.append(f"fade=t=in:st=0:d={fi:.3f}")
+        fo = float(fx.get("fade_out") or 0)
+        if fo > 0 and dur > 0:
+            vf.append(f"fade=t=out:st={max(0.0, dur - fo):.3f}:d={fo:.3f}")
+        vf.append("format=yuv420p")
+        vf.append("setsar=1")
+        parts.append(f"[{i}:v:0]{','.join(vf)}[v{i}]")
+        parts.append(f"[{i}:a:0]aformat=sample_fmts=fltp:channel_layouts=stereo[a{i}]")
+
+    # Fold the processed streams together.
+    acc_v, acc_a = "[v0]", "[a0]"
+    acc_dur = float(clips[0].get("dur") or 0) or 0.0
+    for i in range(1, n):
+        prev = clips[i - 1]
+        trans = (prev.get("transition") or "").strip()
+        td = float(prev.get("tdur") or 0)
+        dur_i = float(clips[i].get("dur") or 0) or 0.0
+        if trans in _XFADE_MAP and td > 0 and acc_dur > td:
+            off = max(0.0, acc_dur - td)
+            ov, oa = f"[vx{i}]", f"[ax{i}]"
+            parts.append(f"{acc_v}[v{i}]xfade=transition={_XFADE_MAP[trans]}:duration={td:.3f}:offset={off:.3f}{ov}")
+            parts.append(f"{acc_a}[a{i}]acrossfade=d={td:.3f}{oa}")
+            acc_v, acc_a, acc_dur = ov, oa, acc_dur + dur_i - td
+        else:
+            ov, oa = f"[vc{i}]", f"[ac{i}]"
+            parts.append(f"{acc_v}[v{i}]concat=n=2:v=1:a=0{ov}")
+            parts.append(f"{acc_a}[a{i}]concat=n=2:v=0:a=1{oa}")
+            acc_v, acc_a, acc_dur = ov, oa, acc_dur + dur_i
+
+    # Final relabel to [vout]/[aout].
+    parts.append(f"{acc_v}null[vout]")
+    parts.append(f"{acc_a}anull[aout]")
+    return ";".join(parts)
+
+
 def _segment(p: Project, scene_ids: list) -> Project:
     """Project clone holding only `scene_ids` (in their project order). Used to
     generate one chain run: its first scene supplies the i2v anchor, the rest are
@@ -586,8 +659,10 @@ if web is not None and PromptServer is not None:
         # The final render is ephemeral (temp dir) — persist it via the Export Save dialog.
         out_name = f"funpack_final_{int(_time.time())}.mp4"
         out_path = os.path.join(tempdir, out_name)
-        # Per-clip in/out via -ss/-t before each input, concatenated with the concat filter
-        # (re-encode; keeps the LTXAV audio). This honours splits and deletions.
+        # Per-clip in/out via -ss/-t before each input, then a filter graph that applies
+        # per-clip video effects (blur/fade/zoom — pure pixel ops, never re-encode to
+        # latent) and folds clips together with xfade/concat seam transitions. Re-encode
+        # keeps the LTXAV audio.
         cmd = [ff, "-y"]
         for c, pth in zip(clips, paths):
             inn, dur = c.get("in"), c.get("dur")
@@ -597,9 +672,9 @@ if web is not None and PromptServer is not None:
                 cmd += ["-t", f"{float(dur):.3f}"]
             cmd += ["-i", pth]
         n = len(clips)
-        filt = "".join(f"[{i}:v:0][{i}:a:0]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+        filt = _build_render_filter(clips)
         cmd += [
-            "-filter_complex", filt, "-map", "[v]", "-map", "[a]",
+            "-filter_complex", filt, "-map", "[vout]", "-map", "[aout]",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
             "-movflags", "+faststart", out_path,
         ]

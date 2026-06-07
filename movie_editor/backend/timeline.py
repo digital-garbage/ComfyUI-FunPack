@@ -51,6 +51,15 @@ class Scene:
     # Crossfade / transition length at that seam, in frames (post-decode pixel op only;
     # never re-encodes to latent). None/0 = hard cut. Editor-set via the timeline.
     transition_frames: Optional[int] = None
+    # Post-decode VIDEO transition at the seam AFTER this scene (pure pixel op; never
+    # re-encodes to latent): "" = hard cut | "crossfade" | "fadeblack" | "wipeleft" |
+    # "wiperight" | "dissolve". Length comes from transition_frames. Distinct from
+    # transition_to_next (a prompt trigger that shapes generation) — this only affects the
+    # rendered/previewed pixels at the seam.
+    video_transition: str = ""
+    # Per-scene post-decode video effects applied to this clip (pixel ops), keys:
+    #   {blur: 0..1, fade_in: sec, fade_out: sec, zoom: "none"|"in"|"out"}.
+    effects: dict = field(default_factory=dict)
     # Forward-compat per-scene knobs (uniform values still win in V1).
     frames: Optional[int] = None
     fps: Optional[int] = None
@@ -79,6 +88,8 @@ class Scene:
             text=str(d.get("text", "")),
             transition_to_next=str(d.get("transition_to_next", "")),
             transition_frames=d.get("transition_frames"),
+            video_transition=str(d.get("video_transition", "")),
+            effects=dict(d.get("effects") or {}),
             frames=d.get("frames"),
             fps=d.get("fps"),
             frames_mode=str(d.get("frames_mode") or "timeline"),

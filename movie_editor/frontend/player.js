@@ -50,7 +50,7 @@
     for (const sc of (p.scenes || [])) {
       const dur = sFrames(sc) / sFps(sc);
       const r = sr[sc.id];
-      if (r && r.media) out.push({ media: r.media, sceneId: sc.id, startSec: acc, durationSec: dur, inSec: r.inSec || 0 });
+      if (r && r.media) out.push({ media: r.media, sceneId: sc.id, startSec: acc, durationSec: dur, inSec: r.inSec || 0, fx: sc.effects || {} });
       acc += dur;  // timeline advances even over ungenerated scenes (gaps)
     }
     return out;
@@ -97,8 +97,34 @@
 
   function _setActive(v) {
     if (_active === v) return;
-    if (_active) { _active.pause(); _active.classList.remove("active"); }
+    if (_active) {
+      _active.pause(); _active.classList.remove("active");
+      _active.style.filter = ""; _active.style.transform = ""; _active.style.opacity = "";  // drop stale fx
+    }
     _active = v; if (v) v.classList.add("active");
+  }
+
+  // Live preview approximation of a clip's video effects (the render does the real thing).
+  // within = seconds into the clip. Blur -> CSS blur; zoom in -> scale up (overflow hidden
+  // by the canvas = crop); zoom out -> scale down (canvas bg shows through = pad); fade ->
+  // opacity. Computed from the playhead so it tracks scrubbing too.
+  function _applyFx(clip, within) {
+    const v = _active; if (!v) return;
+    const fx = (clip && clip.fx) || {};
+    const dur = (clip && clip.durationSec) || 0;
+    const t = dur > 0 ? Math.max(0, Math.min(1, within / dur)) : 0;
+    const blur = +fx.blur || 0;
+    v.style.filter = blur > 0 ? `blur(${(blur * 8).toFixed(1)}px)` : "";
+    let scale = 1;
+    if (fx.zoom === "in") scale = 1 + 0.2 * t;
+    else if (fx.zoom === "out") scale = 1 - 0.2 * t;
+    v.style.transformOrigin = "center";
+    v.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
+    let op = 1;
+    const fi = +fx.fade_in || 0, fo = +fx.fade_out || 0;
+    if (fi > 0 && within < fi) op = Math.max(0, within / fi);
+    if (fo > 0 && dur > 0 && within > dur - fo) op = Math.min(op, Math.max(0, (dur - within) / fo));
+    v.style.opacity = op < 1 ? op.toFixed(3) : "";
   }
 
   // Show `clip` at `offset` seconds into the clip; play if requested. Seeks to the clip's
@@ -115,6 +141,7 @@
       _seekPending = target; _playPending = !!play;
       if (play) _startTick();
     }
+    _applyFx(clip, Math.max(0, offset));
   }
 
   // Advance to the next clip at a clip's out-point (or stop). Same-source contiguous
@@ -141,7 +168,7 @@
     if (!_playing || !_active || !_currentClip) return;
     const within = _active.currentTime - (_currentClip.inSec || 0);
     if (within >= _currentClip.durationSec - 0.001) { _advance(); }
-    else { _phSec = _currentClip.startSec + Math.max(0, within); _notifyPh(); }
+    else { _phSec = _currentClip.startSec + Math.max(0, within); _applyFx(_currentClip, within); _notifyPh(); }
     if (_playing) _raf = requestAnimationFrame(_tick);
   }
 

@@ -150,6 +150,54 @@
     body.append(field("Transition to next scene", transitionSelect(scene.transition_to_next || "",
       (v) => S.patchScene(scene.id, { transition_to_next: v }))));
 
+    // ── Video effects (post-decode pixel ops; applied at render + approximated in preview)
+    const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; body.append(fxTag);
+    const fx = scene.effects || {};
+    const patchFx = (k, v, quiet) => {
+      const next = { ...(scene.effects || {}), [k]: v };
+      quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
+    };
+    const _num = (val, k, opts) => {
+      const i = el("input"); i.type = "number"; i.value = val; i.dataset.k = k;
+      if (opts) Object.assign(i, opts);
+      return i;
+    };
+
+    const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
+    blur.value = fx.blur || 0; blur.dataset.k = "sc-fx-blur";
+    blur.oninput = () => patchFx("blur", parseFloat(blur.value), true);
+    body.append(field(`Gaussian blur (${Math.round((fx.blur || 0) * 100)}%)`, blur));
+
+    const fadeRow = el("div", "fields-row");
+    const fi = _num(fx.fade_in || 0, "sc-fx-fi", { min: 0, max: 10, step: 0.1 });
+    fi.oninput = () => patchFx("fade_in", parseFloat(fi.value || "0"), true);
+    const fo = _num(fx.fade_out || 0, "sc-fx-fo", { min: 0, max: 10, step: 0.1 });
+    fo.oninput = () => patchFx("fade_out", parseFloat(fo.value || "0"), true);
+    fadeRow.append(field("Fade in (s)", fi)); fadeRow.append(field("Fade out (s)", fo));
+    body.append(fadeRow);
+
+    const zoom = el("select"); zoom.dataset.k = "sc-fx-zoom";
+    [["none", "None"], ["in", "Zoom in (crop)"], ["out", "Zoom out (pad)"]].forEach(([v, label]) => {
+      const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
+    });
+    zoom.onchange = () => patchFx("zoom", zoom.value);
+    body.append(field("Zoom (Ken Burns)", zoom));
+
+    // ── Seam transition (rendered crossfade / fade — overlaps & shortens total)
+    const vt = el("select"); vt.dataset.k = "sc-vt";
+    [["", "Hard cut"], ["crossfade", "Crossfade (dissolve)"], ["fadeblack", "Fade through black"],
+     ["wipeleft", "Wipe left"], ["wiperight", "Wipe right"]].forEach(([v, label]) => {
+      const o = el("option", null, label); o.value = v; if ((scene.video_transition || "") === v) o.selected = true; vt.append(o);
+    });
+    vt.onchange = () => S.patchScene(scene.id, { video_transition: vt.value });
+    body.append(field("Video transition to next", vt));
+    if (scene.video_transition) {
+      const tf = _num(scene.transition_frames || 16, "sc-tf", { min: 1, max: 120, step: 1 });
+      tf.oninput = () => S.patchSceneQuiet(scene.id, { transition_frames: parseInt(tf.value || "0", 10) });
+      body.append(field("Transition length (frames)", tf));
+      body.append(el("div", "insp-hint", "Crossfades overlap the two clips, so the montage gets a little shorter."));
+    }
+
     const p = st.project;
     const lenRow = el("div", "fields-row");
     lenRow.append(lengthControl(scene, "frames"));
