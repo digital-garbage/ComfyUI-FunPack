@@ -209,12 +209,18 @@
     const cut = snapFrames(atFrames != null ? atFrames : frames / 2);
     if (cut <= 9 || cut >= frames) return;
     const second = JSON.parse(JSON.stringify(s));
-    delete second.id;
+    // Assign a client id up-front (server honors it) so the rendered video can be mapped
+    // to BOTH halves immediately — like an NLE, a split yields two clips of one source.
+    second.id = "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     second.frames = snapFrames(frames - cut);
     second.transition_to_next = s.transition_to_next || "";
     second.transition_frames = s.transition_frames || null;
     s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
     arr.splice(i + 1, 0, second);
+    // Keep the existing render covering both halves (same source media spans the cut).
+    (state.renderedSegments || []).forEach((seg) => {
+      if ((seg.sceneIds || []).includes(id) && !seg.sceneIds.includes(second.id)) seg.sceneIds.push(second.id);
+    });
     notify(); scheduleSave();
   }
 

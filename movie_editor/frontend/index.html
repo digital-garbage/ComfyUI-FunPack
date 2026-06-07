@@ -30,6 +30,10 @@
         t.textContent = "Movie Editor error — " + msg + "\n(restart ComfyUI + hard-reload Cmd/Ctrl+Shift+R; if it persists, send me this text)";
       }
       window.addEventListener("error", function (e) {
+        // Ignore resource-load errors (e.g. a pooled <video>/<img> failing to fetch) —
+        // those fire an error event on the element with an empty message; only surface
+        // real script errors so a missing clip doesn't pop the scary boot overlay.
+        if (e && e.target && e.target !== window && e.target.nodeName) return;
         show((e.message || "load error") + (e.filename ? "  @ " + e.filename.split("/").pop() + ":" + e.lineno : ""));
       }, true);
       window.addEventListener("unhandledrejection", function (e) {
