@@ -126,10 +126,13 @@
     if (fi > 0 && within < fi) op = Math.max(0, within / fi);
     if (fo > 0 && dur > 0 && within > dur - fo) op = Math.min(op, Math.max(0, (dur - within) / fo));
     v.style.opacity = op < 1 ? op.toFixed(3) : "";
-    // audio: per-clip original volume, muted when the project drops original audio.
+    // audio: per-clip original volume, muted when the project drops original audio. Guarded —
+    // a non-finite volume throws on assignment, which (in the rAF tick) would freeze playback.
     const keepOrig = (S.get().project || {}).keep_original_audio !== false;
-    const vol = (clip && clip.vol != null) ? clip.vol : 1;
-    v.volume = keepOrig ? Math.max(0, Math.min(1, vol)) : 0;
+    let vol = (clip && clip.vol != null) ? +clip.vol : 1;
+    if (!isFinite(vol)) vol = 1;
+    const nv = keepOrig ? Math.max(0, Math.min(1, vol)) : 0;
+    if (v.volume !== nv) { try { v.volume = nv; } catch (_) {} }
   }
 
   // Show `clip` at `offset` seconds into the clip; play if requested. Seeks to the clip's
@@ -173,7 +176,7 @@
     if (!_playing || !_active || !_currentClip) return;
     const within = _active.currentTime - (_currentClip.inSec || 0);
     if (within >= _currentClip.durationSec - 0.001) { _advance(); }
-    else { _phSec = _currentClip.startSec + Math.max(0, within); _applyFx(_currentClip, within); _notifyPh(); }
+    else { _phSec = _currentClip.startSec + Math.max(0, within); try { _applyFx(_currentClip, within); } catch (_) {} _notifyPh(); }
     if (_playing) _raf = requestAnimationFrame(_tick);
   }
 
