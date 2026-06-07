@@ -616,53 +616,94 @@ def split_prompt_by_transitions(prompt, placement="start"):
     return [(text, None)]
 
 
-def _verbatim_boundary_triggers():
-    """{trigger_lower: {placement, visual_effect}} for tokens that mark a scene boundary:
-    every direct transition trigger, PLUS any shortcut whose expansion resolves to a
-    transition (e.g. 'qcut' -> '...cuts to the next scene'). Used for lossless timeline
-    splitting where the trigger word itself is kept verbatim in the text."""
+def _expand_with_map(text):
+    """Expand shortcuts EXACTLY like apply_prompt_shortcuts, but record a position map so
+    boundaries found in the expanded text can be projected back onto the original.
+
+    Returns (expanded, pieces) where each piece is
+    {exp_start, exp_end, orig_start, orig_end, is_shortcut}. Literal pieces map 1:1;
+    shortcut pieces map a (possibly different-length) replacement back to the original
+    trigger span.
+    """
     try:
-        from .templates import (load_custom_transition_triggers, load_shortcut_db,
-                                 shortcut_list, _shortcut_replacements)
+        from .templates import (load_shortcut_db, shortcut_list, shortcut_key,
+                                 _shortcut_replacements, _shortcut_trigger_pattern)
     except ImportError:
-        from templates import (load_custom_transition_triggers, load_shortcut_db,
-                               shortcut_list, _shortcut_replacements)
-    direct = load_custom_transition_triggers()
-    out = dict(direct)
-    if direct:
-        parts = "|".join(re.escape(t) for t in sorted(direct, key=len, reverse=True))
-        dpat = re.compile(r"\b(?:" + parts + r")\b", re.IGNORECASE)
-        try:
-            sc = load_shortcut_db()
-        except Exception:
-            sc = {}
-        for shortcut in (sc.get("shortcuts", {}) or {}).values():
-            if not isinstance(shortcut, dict) or not shortcut.get("enabled", True):
-                continue
-            reps = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
-            hit = None
-            for rep in reps:
-                mm = dpat.search(rep or "")
-                if mm:
-                    hit = direct.get(re.sub(r"\s+", " ", mm.group(0).strip().lower()))
-                    if hit:
-                        break
-            if hit:
-                for trig in shortcut_list(shortcut.get("triggers", [])):
-                    key = re.sub(r"\s+", " ", str(trig or "").strip().lower())
-                    if key and key not in out:
-                        out[key] = hit
-    return out
+        from templates import (load_shortcut_db, shortcut_list, shortcut_key,
+                               _shortcut_replacements, _shortcut_trigger_pattern)
+    import random
+    from hashlib import md5
+
+    whole = [{"exp_start": 0, "exp_end": len(text), "orig_start": 0,
+              "orig_end": len(text), "is_shortcut": False}]
+    try:
+        data = load_shortcut_db()
+    except Exception:
+        return text, whole
+    candidates = []
+    for shortcut in (data.get("shortcuts", {}) or {}).values():
+        if not isinstance(shortcut, dict) or not bool(shortcut.get("enabled", True)):
+            continue
+        reps = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
+        if not reps:
+            continue
+        for trig in shortcut_list(shortcut.get("triggers", [])):
+            pat = _shortcut_trigger_pattern(trig)
+            if pat:
+                candidates.append((trig, pat, reps))
+    if not candidates:
+        return text, whole
+    candidates.sort(key=lambda it: len(shortcut_key(it[0])), reverse=True)
+    combined = "|".join(f"(?P<t{i}>{pat})" for i, (_, pat, _) in enumerate(candidates))
+    rng = random.Random(int(md5(text.encode("utf-8")).hexdigest()[:12], 16))
+    pattern = re.compile(combined, re.IGNORECASE | re.UNICODE)
+
+    pieces, parts, exp_pos, last = [], [], 0, 0
+    for m in pattern.finditer(text):
+        if m.start() > last:
+            lit = text[last:m.start()]
+            pieces.append({"exp_start": exp_pos, "exp_end": exp_pos + len(lit),
+                           "orig_start": last, "orig_end": m.start(), "is_shortcut": False})
+            parts.append(lit); exp_pos += len(lit)
+        rep = None
+        for i, (_, _, reps) in enumerate(candidates):
+            if m.group(f"t{i}") is not None:
+                rep = rng.choice(reps); break
+        if rep is None:
+            rep = m.group(0)
+        pieces.append({"exp_start": exp_pos, "exp_end": exp_pos + len(rep),
+                       "orig_start": m.start(), "orig_end": m.end(), "is_shortcut": True})
+        parts.append(rep); exp_pos += len(rep)
+        last = m.end()
+    if last < len(text):
+        lit = text[last:]
+        pieces.append({"exp_start": exp_pos, "exp_end": exp_pos + len(lit),
+                       "orig_start": last, "orig_end": len(text), "is_shortcut": False})
+        parts.append(lit)
+    return "".join(parts), (pieces or whole)
+
+
+def _project_offset(pieces, exp_off, side):
+    """Map an expanded-text offset back to the original. `side` is "before"/"after":
+    when the offset lands inside an expanded shortcut, the WHOLE original trigger token
+    moves to one side (before -> token leads the next chunk; after -> token trails)."""
+    for pc in pieces:
+        inside = pc["exp_start"] <= exp_off < pc["exp_end"]
+        at_end = exp_off == pc["exp_end"]
+        if inside or (at_end and pc is pieces[-1]):
+            if pc["is_shortcut"]:
+                return pc["orig_start"] if side == "before" else pc["orig_end"]
+            return pc["orig_start"] + (exp_off - pc["exp_start"])
+    return pieces[-1]["orig_end"] if pieces else exp_off
 
 
 def split_timeline_verbatim(prompt):
     """Lossless split of the master prompt into anchor + scenes for the editor.
 
-    Boundaries are transition triggers (direct, or shortcuts that expand to one), but
-    NOTHING is expanded and NO word is dropped: `anchor` + scene texts, concatenated with
-    single spaces, reproduce the prompt. A 'start' trigger leads the new scene; an
-    'end'/'silent'/global trigger trails the previous chunk. Each scene records the
-    visual_effect of the transition that precedes it (anchor->scene1 effect is omitted).
+    Correct order (all internal): expand shortcuts -> detect transitions + placements ->
+    split as Studio does (text before the first transition is the anchor) -> then COMPACT
+    the boundaries back onto the ORIGINAL text so each field shows verbatim chunks. No word
+    is expanded or dropped in the result: anchor + scene texts reproduce the prompt.
     """
     text = str(prompt or "")
     stripped = text.strip()
@@ -672,33 +713,51 @@ def split_timeline_verbatim(prompt):
     def _single():
         return {"anchor": "", "scenes": [{"index": 0, "text": stripped}], "transitions": []}
 
-    triggers = _verbatim_boundary_triggers()
-    if not triggers:
-        return _single()
+    try:
+        from .templates import load_custom_transition_triggers
+    except ImportError:
+        from templates import load_custom_transition_triggers
+    custom_map = load_custom_transition_triggers()
 
-    def _pat(t):
-        end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
-        return r"\b" + re.escape(t) + end
-    combined = "|".join(_pat(t) for t in sorted(triggers, key=len, reverse=True))
-    pat = re.compile(r"(?:" + combined + r")", re.IGNORECASE)
+    expanded, pieces = _expand_with_map(text)
 
-    cuts = []  # (char_index_of_cut, visual_effect_before_following_scene)
-    for m in pat.finditer(text):
-        info = triggers.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
+    triggers = list(custom_map.keys())
+    if triggers:
+        def _trig_pat(t):
+            end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+            return r"\b" + re.escape(t) + end
+        parts = "|".join(_trig_pat(t) for t in sorted(triggers, key=len, reverse=True))
+        split_pattern = re.compile(r"(?:" + parts + r"|" + _GENERIC_SCENE_LABEL_PATTERN + r")", re.IGNORECASE)
+    else:
+        split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
+
+    cuts = []  # (orig_offset, effect)
+    for m in split_pattern.finditer(expanded):
+        info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
         effect = info.get("visual_effect") or None
         if effect == "none":
             effect = None
-        # 'start' -> cut before the trigger (it leads the new scene); otherwise cut
-        # after it (the trigger trails the previous chunk).
-        idx = m.start() if info.get("placement") == "start" else m.end()
-        cuts.append((idx, effect))
-    if not cuts:
+        # 'start' -> cut before the trigger (leads new scene); otherwise after it.
+        if info.get("placement") == "start":
+            orig = _project_offset(pieces, m.start(), "before")
+        else:
+            orig = _project_offset(pieces, m.end(), "after")
+        cuts.append((orig, effect))
+
+    # dedupe boundaries that map to the same original offset (e.g. several triggers inside
+    # one shortcut expansion) and drop any at the very start.
+    seen, uniq = set(), []
+    for off, eff in sorted(cuts, key=lambda c: c[0]):
+        if off <= 0 or off in seen:
+            continue
+        seen.add(off); uniq.append((off, eff))
+    if not uniq:
         return _single()
 
-    positions = [0] + [c[0] for c in cuts] + [len(text)]
+    positions = [0] + [c[0] for c in uniq] + [len(text)]
     chunks = [text[positions[i]:positions[i + 1]].strip() for i in range(len(positions) - 1)]
     scene_texts = chunks[1:]
-    effects = [c[1] for c in cuts]  # effects[i] precedes scene_texts[i]
+    effects = [c[1] for c in uniq]  # effects[i] precedes scene_texts[i]
     scenes = [{"index": i, "text": t} for i, t in enumerate(scene_texts)]
     transitions = [
         {"after_scene": i - 1, "visual_effect": effects[i]}
