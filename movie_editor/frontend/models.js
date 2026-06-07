@@ -569,7 +569,7 @@
       const x = el("button", "chip-x", "✕"); x.title = "Remove from link";
       x.onclick = async () => {
         link.members = (link.members || []).filter((mm) => !(mm.slotId === m.slotId && mm.input === m.input));
-        if (link.members.length < 2) config.links = (config.links || []).filter((l) => l.id !== link.id);
+        if (link.members.length < 1) config.links = (config.links || []).filter((l) => l.id !== link.id);
         await persist(); render();
       };
       chip.append(x); mem.append(chip);
@@ -589,9 +589,9 @@
       right.append(b);
     } else {
       const save = el("button", "btn primary tiny", `Save link (${linkSel.length})`);
-      save.disabled = linkSel.length < 2;
+      save.disabled = linkSel.length < 1;
       save.onclick = async () => {
-        if (linkSel.length < 2) return;
+        if (linkSel.length < 1) return;
         const def = "size " + ((config.links || []).length + 1);
         const nm = prompt("Link name:", def); if (nm == null) return;
         const first = linkSel[0]; const s0 = slotById(first.slotId);
@@ -609,10 +609,10 @@
     }
     head.append(right);
     sec.append(head);
-    if (linkMode) sec.append(el("div", "links-hint", "Click ＋ next to any input below to add it to the link, then Save. (Pick 2+ inputs.)"));
+    if (linkMode) sec.append(el("div", "links-hint", "Click ＋ next to any input below to add it to the link, then Save. Pick a single input to tie it to a project value (e.g. FPS), or several to drive them together."));
     (config.links || []).forEach((l) => sec.append(linkCard(l)));
     if (!linkMode && !(config.links || []).length)
-      sec.append(el("div", "links-empty", "No links yet. Use 'Link inputs' to drive several node inputs (e.g. width/height) from one control."));
+      sec.append(el("div", "links-empty", "No links yet. Use 'Link inputs' to bind a node input to a project value (e.g. tie a loader's FPS to Project · FPS), or to drive several inputs from one control."));
     return sec;
   }
 

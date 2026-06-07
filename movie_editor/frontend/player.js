@@ -35,8 +35,8 @@
   function _buildSegs(st) {
     if (!st.project) return [];
     const p = st.project;
-    const sFps = (sc) => (sc.fps != null ? sc.fps : p.frame_rate) || 25;
-    const sFrames = (sc) => (sc.frames != null ? sc.frames : p.num_frames_per_scene) || 1;
+    const sFps = (sc) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : p.frame_rate) || 25;
+    const sFrames = (sc) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
 
     // Map sceneId → timeline start time
     const startOf = {};
@@ -294,8 +294,8 @@
     _fpsCur = p?.frame_rate || 25;
 
     // Compute total duration
-    const sFps = (sc) => (sc.fps != null ? sc.fps : _fpsCur) || 25;
-    const sFrames = (sc) => (sc.frames != null ? sc.frames : p?.num_frames_per_scene || 1) || 1;
+    const sFps = (sc) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : _fpsCur) || 25;
+    const sFrames = (sc) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p?.num_frames_per_scene || 1) || 1;
     _totalSecCur = 0;
     for (const sc of (p?.scenes || [])) _totalSecCur += sFrames(sc) / sFps(sc);
 

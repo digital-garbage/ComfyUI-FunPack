@@ -235,6 +235,18 @@ if web is not None and PromptServer is not None:
             result["parse_error"] = str(e)
         return web.json_response(result)
 
+    # --- API: parse an arbitrary prompt (global-prompt → anchor/scenes/transitions) ---
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/parse")
+    async def _parse(req):
+        p = _project_or_404(req.match_info["pid"])
+        body = await req.json() if req.can_read_body else {}
+        prompt = str(body.get("prompt", ""))
+        try:
+            parsed = bridge.parse_timeline(prompt, seed=p.seed)
+            return web.json_response({"parsed": parsed, "combined_prompt": prompt})
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Parse failed: {e}"}, status=502)
+
     # --- API: library (shortcuts + transitions, FunPack in-process) ---
     @routes.get(UI_PREFIX + "/api/library/transitions")
     async def _transitions(_req):
@@ -375,7 +387,11 @@ if web is not None and PromptServer is not None:
         # This makes the timeline trim handle actually affect generation length,
         # provided the user has linked EmptyLTXVLatent.num_frames → Project Frames
         # in Models → Linked inputs.
-        trimmed = [s.frames for s in active_scenes if s.frames is not None]
+        trimmed = [
+            s.eff_frames(target)
+            for s in active_scenes
+            if s.frames_mode != "project" and s.frames is not None
+        ]
         effective_frames = (
             trimmed[0]
             if trimmed and all(f == trimmed[0] for f in trimmed)

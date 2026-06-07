@@ -21,8 +21,8 @@
   let tlFps = 25;
 
   // ── helpers ──────────────────────────────────────────────────────────────────
-  const sFps = (sc, p) => (sc.fps != null ? sc.fps : p.frame_rate) || 25;
-  const sFrames = (sc, p) => (sc.frames != null ? sc.frames : p.num_frames_per_scene) || 1;
+  const sFps = (sc, p) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : p.frame_rate) || 25;
+  const sFrames = (sc, p) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
   const sDur = (sc, p) => sFrames(sc, p) / sFps(sc, p);
 
   const p2 = (n) => String(n).padStart(2, "0");
@@ -118,10 +118,15 @@
     actions.append(mk("✕", "Delete clip", "danger", () => S.removeScene(scene.id)));
     clip.append(actions);
 
-    // right-edge trim → new duration → frames recomputed (duration × fps)
-    const handle = el("div", "clip-trim");
-    handle.title = "Drag to trim · length = duration × fps";
+    // right-edge trim → new duration → frames recomputed (duration × fps).
+    // Locked when length is "custom" (the inspector value wins over the timeline).
+    const locked = scene.frames_mode === "custom";
+    const handle = el("div", "clip-trim" + (locked ? " locked" : ""));
+    handle.title = locked
+      ? "Length is Custom — change it in the inspector (set Frames to Inherit timeline to trim here)"
+      : "Drag to trim · length = duration × fps";
     const baseDur = sDur(scene, p);
+    if (locked) { clip.append(handle); return clip; }
     handle.addEventListener("mousedown", (e) => {
       clip.classList.add("trimming");
       const tip = el("div", "trim-tip"); clip.append(tip);

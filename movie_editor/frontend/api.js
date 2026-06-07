@@ -34,6 +34,7 @@
     // timeline preview
     preview: (id, includeExcluded) =>
       j("GET", API(`/projects/${id}/preview?include_excluded=${includeExcluded ? "true" : "false"}`)),
+    parsePrompt: (id, prompt) => j("POST", API(`/projects/${id}/parse`), { prompt }),
 
     // libraries
     transitions: () => j("GET", API("/library/transitions")),

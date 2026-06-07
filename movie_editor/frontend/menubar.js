@@ -80,7 +80,6 @@
         { label: `Sampler: ${_roleLabel(st.project?.sampler_slot, "FunPack Chain Sampler")}`, disabled: !hasProject(),
           action: () => _pickRole("sampler_slot", "Sampler node", st) },
         { sep: true },
-        { label: "Project Settings", disabled: !hasProject(), action: () => S.selectScene(null) },
         { label: "Render / Export…", soon: true, disabled: true },
       ],
       Models: [

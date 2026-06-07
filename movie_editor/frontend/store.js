@@ -172,8 +172,11 @@
   function resizeScene(id, durationSec) {
     if (!state.project) return;
     const s = scene(id); if (!s) return;
-    const fps = s.fps != null ? s.fps : state.project.frame_rate;
+    if (s.frames_mode === "custom") return;  // custom length is locked against trim
+    const fps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
     s.frames = snapFrames(Math.max(1, durationSec) * fps);
+    // Dragging the trim handle opts the scene into timeline-driven length.
+    if (s.frames_mode == null || s.frames_mode === "project") s.frames_mode = "timeline";
     scheduleSaveSilent();
   }
 
@@ -241,6 +244,38 @@
 
     notify();
     scheduleSave();
+  }
+
+  // ── global prompt → distribute into anchor / scenes / transitions ──────────────
+  // Reparses a master prompt (Studio combined syntax) and rebuilds the timeline:
+  // anchor + one scene per parsed segment + transitions matched from the library.
+  // Existing per-scene source / length settings are carried over by index.
+  async function applyGlobalPrompt(text) {
+    if (!state.project) return;
+    state.project.global_prompt = text;
+    let parsed;
+    try { parsed = (await API.parsePrompt(state.project.id, text)).parsed; }
+    catch (e) { alert("Could not parse the global prompt: " + e.message); return; }
+    if (!parsed || !(parsed.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
+
+    if (parsed.anchor != null) state.project.anchor = parsed.anchor;
+    const old = state.project.scenes || [];
+    const next = (parsed.scenes || []).map((ps, i) => {
+      const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "empty" }, excluded: false };
+      base.text = ps.text || "";
+      base.transition_to_next = "";
+      return base;
+    });
+    (parsed.transitions || []).forEach((t) => {
+      const idx = t.after_scene;
+      if (idx >= 0 && idx < next.length && t.visual_effect) {
+        const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);
+        if (lib) next[idx].transition_to_next = lib.trigger || lib.name || "";
+      }
+    });
+    state.project.scenes = next;
+    state.selectedSceneId = null;  // show project view so the result is visible
+    notify(); scheduleSave();
   }
 
   // ── preview ──────────────────────────────────────────────────────────────────
@@ -440,7 +475,7 @@
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, syncFromPreview, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,

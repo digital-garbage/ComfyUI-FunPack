@@ -54,6 +54,13 @@ class Scene:
     # Forward-compat per-scene knobs (uniform values still win in V1).
     frames: Optional[int] = None
     fps: Optional[int] = None
+    # How `frames`/`fps` are resolved:
+    #   "project"  → ignore the per-scene value, use the project global.
+    #   "timeline" → use the per-scene value; the timeline trim handle writes it live.
+    #   "custom"   → use the per-scene value; the timeline trim handle is locked.
+    # Defaults: length follows the timeline (trim-derived), fps follows the project.
+    frames_mode: str = "timeline"
+    fps_mode: str = "project"
     width: Optional[int] = None
     height: Optional[int] = None
     source: SceneSource = field(default_factory=SceneSource)
@@ -71,6 +78,8 @@ class Scene:
             transition_frames=d.get("transition_frames"),
             frames=d.get("frames"),
             fps=d.get("fps"),
+            frames_mode=str(d.get("frames_mode") or "timeline"),
+            fps_mode=str(d.get("fps_mode") or "project"),
             width=d.get("width"),
             height=d.get("height"),
             source=SceneSource.from_dict(d.get("source")),
@@ -81,12 +90,26 @@ class Scene:
         d = asdict(self)
         return d
 
+    def eff_frames(self, project: "Project") -> int:
+        if self.frames_mode == "project" or self.frames is None:
+            return project.num_frames_per_scene
+        return self.frames
+
+    def eff_fps(self, project: "Project") -> int:
+        if self.fps_mode == "project" or self.fps is None:
+            return project.frame_rate
+        return self.fps
+
 
 @dataclass
 class Project:
     id: str = field(default_factory=_new_id)
     name: str = "Untitled"
     anchor: str = ""               # text prepended to every scene (character anchor)
+    # Optional master prompt in Studio combined syntax. When the user edits it and
+    # hits Apply, the editor reparses it into anchor + scenes + transitions (normal
+    # Studio behaviour). Stored verbatim so the field round-trips; not used at build.
+    global_prompt: str = ""
     negative_prompt: str = ""      # passed to the neg primitive node in the graph
     # Marker separating the anchor from the first scene (Studio needs a trigger to
     # close segments[0]=anchor). Defaults resolved at assembly from the library.
@@ -116,6 +139,7 @@ class Project:
             id=d.get("id") or _new_id(),
             name=str(d.get("name", "Untitled")),
             anchor=str(d.get("anchor", "")),
+            global_prompt=str(d.get("global_prompt", "")),
             negative_prompt=str(d.get("negative_prompt", "")),
             intro_transition=str(d.get("intro_transition", "")),
             scenes=[Scene.from_dict(s) for s in d.get("scenes", [])],

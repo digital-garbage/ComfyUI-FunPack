@@ -98,6 +98,50 @@
     body.append(field("Feeds node input", tgt));
   }
 
+  // Per-scene length / fps with a 3-way mode (project | timeline | custom).
+  const LEN_META = {
+    frames: { label: "Frames", projKey: "num_frames_per_scene", snap: (v) => S.snapFrames(v) },
+    fps:    { label: "FPS",    projKey: "frame_rate",          snap: (v) => Math.max(1, v) },
+  };
+  const LEN_DEFAULT_MODE = { frames: "timeline", fps: "project" };
+
+  function modeOf(scene, kind) { return scene[kind + "_mode"] || LEN_DEFAULT_MODE[kind]; }
+  function effOf(scene, kind) {
+    const m = LEN_META[kind], p = S.get().project;
+    return modeOf(scene, kind) !== "project" && scene[kind] != null ? scene[kind] : p[m.projKey];
+  }
+
+  function lengthControl(scene, kind) {
+    const m = LEN_META[kind], p = S.get().project;
+    const mode = modeOf(scene, kind);
+    const wrap = el("label", "field");
+    wrap.append(el("span", null, m.label));
+
+    const sel = el("select"); sel.dataset.k = "sc-" + kind + "mode";
+    [["project", "Inherit project global"], ["timeline", "Inherit timeline (trim)"], ["custom", "Custom"]]
+      .forEach(([v, l]) => { const o = el("option", null, l); o.value = v; if (v === mode) o.selected = true; sel.append(o); });
+    sel.onchange = () => {
+      const patch = { [kind + "_mode"]: sel.value };
+      // Seed the per-scene value from the current effective value when leaving "project".
+      if (sel.value !== "project" && scene[kind] == null) patch[kind] = effOf(scene, kind);
+      S.patchScene(scene.id, patch);
+    };
+    wrap.append(sel);
+
+    if (mode === "custom") {
+      const i = el("input"); i.type = "number"; i.value = effOf(scene, kind); i.dataset.k = "sc-" + kind;
+      i.oninput = () => S.patchSceneQuiet(scene.id, { [kind]: m.snap(parseInt(i.value || "0", 10)) });
+      wrap.append(i);
+    } else {
+      const note = el("div", "len-readout");
+      note.textContent = mode === "project"
+        ? `${p[m.projKey]} · from project`
+        : `${effOf(scene, kind)} · from timeline`;
+      wrap.append(note);
+    }
+    return wrap;
+  }
+
   function renderScene(st, scene) {
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`;
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
@@ -118,13 +162,12 @@
       (v) => S.patchScene(scene.id, { transition_to_next: v }))));
 
     const p = st.project;
-    const frames = scene.frames != null ? scene.frames : p.num_frames_per_scene;
-    const fps = scene.fps != null ? scene.fps : p.frame_rate;
     const lenRow = el("div", "fields-row");
-    lenRow.append(numberField("Frames", frames, (v) => S.patchSceneQuiet(scene.id, { frames: S.snapFrames(v) }), "sc-frames"));
-    lenRow.append(numberField("FPS", fps, (v) => S.patchSceneQuiet(scene.id, { fps: Math.max(1, v) }), "sc-fps"));
+    lenRow.append(lengthControl(scene, "frames"));
+    lenRow.append(lengthControl(scene, "fps"));
     body.append(lenRow);
-    body.append(el("div", "insp-hint", `Duration ≈ ${(frames / (fps || 1)).toFixed(2)}s${scene.frames == null ? "  ·  inheriting project length" : ""}`));
+    const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
+    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s`));
 
     const row = el("div", "insp-block");
     const chk = el("label", "chk"); const cb = el("input"); cb.type = "checkbox"; cb.checked = !!scene.excluded;
@@ -350,6 +393,56 @@
     body.append(wrap);
   }
 
+  // Pinned global-prompt editor (always on top). Backed by the live combined prompt
+  // so editing any scene flows into it; `gpDraft` holds unapplied direct edits.
+  let gpDraft = null;
+  let gpProjectId = null;
+  function renderGlobalPrompt(st) {
+    if (st.project.id !== gpProjectId) { gpProjectId = st.project.id; gpDraft = null; }  // drop stale edits on project switch
+    const live = (st.preview && st.preview.combined_prompt) || st.project.global_prompt || "";
+    const dirty = gpDraft != null && gpDraft !== live;
+    const val = gpDraft != null ? gpDraft : live;
+
+    const sec = el("div", "insp-global");
+    const head = el("div", "insp-global-head");
+    head.append(el("span", "insp-global-title", "Global prompt"));
+    const apply = el("button", "btn primary tiny", "Apply →");
+    apply.title = "Reparse this prompt into anchor, scenes and transitions (overwrites the timeline)";
+    apply.disabled = !dirty;
+    apply.onclick = async () => {
+      apply.disabled = true; apply.textContent = "Applying…";
+      await S.applyGlobalPrompt(gpDraft != null ? gpDraft : live);
+      gpDraft = null;
+      S.set({});  // re-render so the field returns to its live view
+    };
+    head.append(apply);
+    sec.append(head);
+
+    const ta = el("textarea", "insp-global-ta"); ta.rows = 3; ta.value = val; ta.dataset.k = "global-prompt";
+    ta.placeholder = "Anchor, then scene texts joined by transition markers — the whole montage as one prompt.";
+    ta.oninput = () => { gpDraft = ta.value; apply.disabled = (gpDraft === live); };
+    sec.append(ta);
+    sec.append(el("div", "insp-hint", dirty
+      ? "Edited — press Apply to rebuild the timeline from this prompt."
+      : "Live view of the assembled prompt. Edit a scene below and it updates here; edit here + Apply to rewrite scenes."));
+    body.append(sec);
+  }
+
+  function renderSwitch(st, scene) {
+    const sw = el("div", "insp-switch");
+    const mk = (label, active, on, disabled) => {
+      const b = el("button", "insp-seg" + (active ? " active" : ""), label);
+      if (disabled) b.disabled = true; else b.onclick = on;
+      return b;
+    };
+    sw.append(mk("Project", !scene, () => S.selectScene(null)));
+    sw.append(mk("Scene", !!scene, () => {
+      const id = st.selectedSceneId || (st.project.scenes[0] && st.project.scenes[0].id);
+      if (id) S.selectScene(id);
+    }, !st.project.scenes.length));
+    body.append(sw);
+  }
+
   function render(st) {
     // preserve focus + caret of a text/number field across the rebuild (autosave-safe)
     const a = document.activeElement;
@@ -360,6 +453,8 @@
     clear(body);
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const scene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
+    renderGlobalPrompt(st);
+    renderSwitch(st, scene);
     if (scene) renderScene(st, scene); else renderProject(st);
     renderExposed(st);
     renderSplit(st);
