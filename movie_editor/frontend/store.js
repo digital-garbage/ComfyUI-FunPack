@@ -420,11 +420,12 @@
     });
   }
 
-  // Arm a Studio session reset — applied to the FIRST run of the next generation.
+  // Toggle a pending Studio session reset — applied to the FIRST run of the next
+  // generation. Clicking again disarms it (in case of a mis-click).
   let _resetSessionPending = false;
   function resetStudioSession() {
-    _resetSessionPending = true;
-    set({ resetSessionArmed: true });
+    _resetSessionPending = !_resetSessionPending;
+    set({ resetSessionArmed: _resetSessionPending });
   }
 
   // Generate one run (single scene, or an explicit list of scene ids). Returns success.
