@@ -80,6 +80,7 @@
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
     ratingLabels: () => j("GET", API("/rating-labels")),
+    log: (limit) => j("GET", API("/log" + (limit ? `?limit=${limit}` : ""))),
     interrupt: () => j("POST", API("/interrupt")),
     renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
     resultUrl: (id, m) =>

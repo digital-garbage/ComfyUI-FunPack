@@ -53,6 +53,65 @@ def parse_timeline_verbatim(prompt: str) -> dict:
     return split_timeline_verbatim(str(prompt or ""))
 
 
+# ── ComfyUI log capture ───────────────────────────────────────────────────────
+# Tee stdout/stderr into a ring buffer so the editor can show ComfyUI's real backend
+# log (writes still pass through to the terminal). Captures print() and logging.
+import collections as _collections
+import threading as _threading
+
+_LOG = _collections.deque(maxlen=5000)
+_LOG_LOCK = _threading.Lock()
+_log_installed = False
+
+
+class _Tee:
+    def __init__(self, orig):
+        self._orig = orig
+        self._buf = ""
+
+    def write(self, s):
+        try:
+            self._orig.write(s)
+        except Exception:
+            pass
+        try:
+            with _LOG_LOCK:
+                self._buf += s
+                while "\n" in self._buf:
+                    line, self._buf = self._buf.split("\n", 1)
+                    _LOG.append(line)
+        except Exception:
+            pass
+        return len(s) if isinstance(s, str) else 0
+
+    def flush(self):
+        try:
+            self._orig.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._orig, name)
+
+
+def install_log_capture():
+    global _log_installed
+    if _log_installed:
+        return
+    import sys
+    try:
+        sys.stdout = _Tee(sys.stdout)
+        sys.stderr = _Tee(sys.stderr)
+        _log_installed = True
+    except Exception:
+        pass
+
+
+def recent_log(limit: int = 500) -> list:
+    with _LOG_LOCK:
+        return list(_LOG)[-int(limit):]
+
+
 def rating_labels() -> dict:
     """FunPack Studio V2 rating labels (for the Scene rating dropdown)."""
     try:

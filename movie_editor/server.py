@@ -188,6 +188,7 @@ def _serve_static(tail: str) -> "web.Response":
 if web is not None and PromptServer is not None:
     routes = PromptServer.instance.routes
     config.ensure_dirs()
+    bridge.install_log_capture()  # tee ComfyUI stdout/stderr for the Log viewer
 
     # --- API: projects ---
     @routes.get(UI_PREFIX + "/api/health")
@@ -521,6 +522,14 @@ if web is not None and PromptServer is not None:
     @routes.get(UI_PREFIX + "/api/progress")
     async def _progress(_req):
         return web.json_response(bridge.current_progress())
+
+    @routes.get(UI_PREFIX + "/api/log")
+    async def _log(req):
+        try:
+            limit = int(req.query.get("limit", "600"))
+        except (TypeError, ValueError):
+            limit = 600
+        return web.json_response({"lines": bridge.recent_log(limit)})
 
     @routes.post(UI_PREFIX + "/api/interrupt")
     async def _interrupt(_req):

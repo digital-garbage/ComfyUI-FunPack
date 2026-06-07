@@ -108,6 +108,20 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .save-chip { border-color: transparent; color: var(--faint); }
 .save-chip.dirty { color: var(--amber); }
 
+/* backend log viewer */
+.log-btn { background: var(--ink-2); border: 1px solid var(--line); border-radius: 20px; color: var(--muted);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .5px; padding: 3px 11px; cursor: pointer; }
+.log-btn:hover { color: var(--amber-2); background: var(--ink-3); }
+.log-btn.active { color: var(--amber-2); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
+.log-panel { position: fixed; z-index: 9000; right: 14px; top: 48px; width: min(720px, 88vw); height: min(420px, 60vh);
+  background: #0c0b09f2; border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column;
+  box-shadow: 0 16px 40px -12px #000; overflow: hidden; }
+.log-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
+.log-actions { display: flex; gap: 6px; }
+.log-body { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: var(--muted); background: #060606; }
+
 /* ───────────────────────── WORKSPACE GRID ───────────────────────── */
 .workspace { height: calc(100% - var(--menubar-h)); display: flex; flex-direction: column; }
 .row-main { flex: 1; display: flex; min-height: 0; }
