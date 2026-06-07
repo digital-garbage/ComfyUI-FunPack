@@ -203,65 +203,85 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # `blocking` is the subset of problems that should stop generation (required inputs).
     report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [], "blocking": []}
 
-    missing = [c for c in CORE if c not in ("",) and CORE[c] not in object_info]
-    if missing:
-        msg = "Missing core node classes in ComfyUI: " + ", ".join(sorted(CORE[c] for c in missing))
-        report["unsatisfied"].append(msg); report["blocking"].append(msg)
+    # "Disable built-in pipeline": skip the whole fixed FunPack core graph and run only the
+    # user-wired nodes. The final result then comes from whatever is wired to the global
+    # video/audio outputs (or any output node the user includes).
+    disable_core = bool((models_config or {}).get("disable_core"))
 
-    # 1. core nodes: widget defaults <- reference values <- core links.
-    for cid, cls in CORE.items():
-        nd = object_info.get(cls)
-        inputs = _widget_defaults(nd)
-        inputs.update(extract_widgets(nd, ref_wv.get(REF_ID.get(cid))))
-        for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
-            inputs[inp] = [src, idx]
-        graph[cid] = {"class_type": cls, "inputs": inputs}
+    if not disable_core:
+        missing = [c for c in CORE if c not in ("",) and CORE[c] not in object_info]
+        if missing:
+            msg = "Missing core node classes in ComfyUI: " + ", ".join(sorted(CORE[c] for c in missing))
+            report["unsatisfied"].append(msg); report["blocking"].append(msg)
 
-    # 2. param overrides on the primitives + sampler seed.
-    graph["pos"]["inputs"]["value"] = params.get("prompt", "")
-    if params.get("negative_prompt") is not None:
-        graph["neg"]["inputs"]["value"] = params["negative_prompt"]
-    if params.get("num_frames_per_scene") is not None:
-        graph["frames"]["inputs"]["value"] = params["num_frames_per_scene"]
-    if params.get("frame_rate") is not None:
-        graph["fps"]["inputs"]["value"] = params["frame_rate"]
-    if params.get("seed") is not None:
-        graph["sampler"]["inputs"]["seed"] = params["seed"]
-    if params.get("max_scenes") is not None:
-        graph["sampler"]["inputs"]["max_scenes"] = params["max_scenes"]
-    # UI renders are EPHEMERAL: write to ComfyUI's temp dir (cleared on restart), not
-    # the output dir. Persisting a result is the user's job via Export (Save dialog).
-    # save_output=False routes VHS_VideoCombine to temp; history reports type="temp",
-    # which the result proxy + final-render concat resolve against the temp directory.
-    graph["vhs"]["inputs"]["save_output"] = False
+        # 1. core nodes: widget defaults <- reference values <- core links.
+        for cid, cls in CORE.items():
+            nd = object_info.get(cls)
+            inputs = _widget_defaults(nd)
+            inputs.update(extract_widgets(nd, ref_wv.get(REF_ID.get(cid))))
+            for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
+                inputs[inp] = [src, idx]
+            graph[cid] = {"class_type": cls, "inputs": inputs}
 
-    # 2b. project-level widget overrides for the built-in FunPack nodes.
-    for k, v in (params.get("studio_inputs") or {}).items():
-        if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
-            graph["studio"]["inputs"][k] = v
+        # 2. param overrides on the primitives + sampler seed.
+        graph["pos"]["inputs"]["value"] = params.get("prompt", "")
+        if params.get("negative_prompt") is not None:
+            graph["neg"]["inputs"]["value"] = params["negative_prompt"]
+        if params.get("num_frames_per_scene") is not None:
+            graph["frames"]["inputs"]["value"] = params["num_frames_per_scene"]
+        if params.get("frame_rate") is not None:
+            graph["fps"]["inputs"]["value"] = params["frame_rate"]
+        if params.get("seed") is not None:
+            graph["sampler"]["inputs"]["seed"] = params["seed"]
+        if params.get("max_scenes") is not None:
+            graph["sampler"]["inputs"]["max_scenes"] = params["max_scenes"]
+        # UI renders are EPHEMERAL: write to ComfyUI's temp dir (cleared on restart), not
+        # the output dir. Persisting a result is the user's job via Export (Save dialog).
+        # save_output=False routes VHS_VideoCombine to temp; history reports type="temp",
+        # which the result proxy + final-render concat resolve against the temp directory.
+        graph["vhs"]["inputs"]["save_output"] = False
 
-    # split_by_transitions is NOT a top-level Studio input — Studio reads it from
-    # studio_settings.refiner.split_by_transitions (default False = single-scene mode).
-    # The Movie Editor always builds multi-scene combined prompts, so force it ON inside
-    # the settings JSON (after the overrides above so it can't be turned off).
-    _ss = graph["studio"]["inputs"].get("studio_settings")
-    try:
-        _ss = json.loads(str(_ss or "{}"))
-    except Exception:
-        _ss = {}
-    if not isinstance(_ss, dict):
-        _ss = {}
-    _rf = _ss.get("refiner") if isinstance(_ss.get("refiner"), dict) else {}
-    _rf["split_by_transitions"] = True
-    # reset_session also lives in studio_settings.refiner — armed per-run by the editor
-    # (first run after the user clicks "Reset Studio session"); explicit so it's never
-    # left on from a previous run.
-    _rf["reset_session"] = bool(params.get("reset_session"))
-    _ss["refiner"] = _rf
-    graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss)
-    for k, v in (params.get("sampler_inputs") or {}).items():
-        if k not in graph["sampler"]["inputs"] or not isinstance(graph["sampler"]["inputs"][k], list):
-            graph["sampler"]["inputs"][k] = v
+        # 2b. project-level widget overrides for the built-in FunPack nodes.
+        for k, v in (params.get("studio_inputs") or {}).items():
+            if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
+                graph["studio"]["inputs"][k] = v
+
+        # split_by_transitions is NOT a top-level Studio input — Studio reads it from
+        # studio_settings.refiner.split_by_transitions (default False = single-scene mode).
+        # The Movie Editor always builds multi-scene combined prompts, so force it ON inside
+        # the settings JSON (after the overrides above so it can't be turned off).
+        _ss = graph["studio"]["inputs"].get("studio_settings")
+        try:
+            _ss = json.loads(str(_ss or "{}"))
+        except Exception:
+            _ss = {}
+        if not isinstance(_ss, dict):
+            _ss = {}
+        _rf = _ss.get("refiner") if isinstance(_ss.get("refiner"), dict) else {}
+        _rf["split_by_transitions"] = True
+        # reset_session also lives in studio_settings.refiner — armed per-run by the editor
+        # (first run after the user clicks "Reset Studio session"); explicit so it's never
+        # left on from a previous run.
+        _rf["reset_session"] = bool(params.get("reset_session"))
+        _ss["refiner"] = _rf
+        graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss)
+        for k, v in (params.get("sampler_inputs") or {}).items():
+            if k not in graph["sampler"]["inputs"] or not isinstance(graph["sampler"]["inputs"][k], list):
+                graph["sampler"]["inputs"][k] = v
+
+    # The global editor outputs: a VHS_VideoCombine synthesized on demand when a slot output
+    # is wired to global:video / global:audio. Lazily created so it only exists when used.
+    def _ensure_global_out() -> str:
+        if "global_out" in graph:
+            return "global_out"
+        vhs_cls = CORE.get("vhs", "VHS_VideoCombine")
+        nd = object_info.get(vhs_cls)
+        g_inputs = _widget_defaults(nd)
+        g_inputs["save_output"] = False  # ephemeral, like the core combine
+        if params.get("frame_rate") is not None and "frame_rate" in g_inputs:
+            g_inputs["frame_rate"] = params["frame_rate"]
+        graph["global_out"] = {"class_type": vhs_cls, "inputs": g_inputs}
+        return "global_out"
 
     # 3. slot nodes.
     slots = (models_config or {}).get("slots") or []
@@ -358,11 +378,23 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             for t in targets:
                 if not t:
                     continue
+                # Global editor outputs: feed the synthesized combine node. global:video ->
+                # its IMAGE frames, global:audio -> its AUDIO (muxed into the same video+audio
+                # file). Either is optional; wire both for a combined video with sound.
+                if t in ("global:video", "global:audio"):
+                    gid = _ensure_global_out()
+                    dinput = "images" if t == "global:video" else "audio"
+                    graph[gid]["inputs"][dinput] = [sid, oidx]
+                    report["wired"].append(f"{s.get('node_class')}.{out_name} -> Global {'video' if t == 'global:video' else 'audio'} output")
+                    continue
                 dst = _resolve_target(t, port_to_core, slot_node_id)
                 if not dst:
                     report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: wire target '{t}' could not be resolved.")
                     continue
                 dnode, dinput = dst
+                if dnode not in graph:  # e.g. a core-port target while the built-in pipeline is disabled
+                    report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: target '{t}' node is not in the graph (built-in pipeline disabled?).")
+                    continue
                 graph[dnode]["inputs"][dinput] = [sid, oidx]
                 report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
 
@@ -383,6 +415,10 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
 
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
+    # Drop producers whose node isn't in the graph (core producers vanish when the built-in
+    # pipeline is disabled) so auto-wire never points at a non-existent node.
+    for t in list(producers):
+        producers[t] = [(nid, oi) for (nid, oi) in producers[t] if nid in graph]
     # The timeline scene image (LoadImage) is an IMAGE producer too, so a node's IMAGE
     # input (e.g. an ImageTransform) auto-wires to the scene image instead of reporting
     # 'no node outputs IMAGE'.
@@ -400,6 +436,13 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             if isinstance(src, str) and src.startswith("out:"):
                 active_slots.add(src.split(":", 2)[1])
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
+
+    # With the built-in pipeline disabled, the result must come from the global outputs (or a
+    # save node the user wired). Warn (non-blocking) if nothing will surface to the editor.
+    if disable_core and "global_out" not in graph:
+        report["unsatisfied"].append(
+            "Built-in pipeline is disabled and nothing is wired to the Global video output — "
+            "the editor may not show a result. Wire a final IMAGE output to 🌐 Global video output.")
 
     return graph, report
 

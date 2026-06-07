@@ -114,7 +114,7 @@ def _project_or_404(pid: str) -> Project:
 def _project_models(p: Optional[Project]) -> dict:
     """The project's own pipeline config, or the global default when it has none yet."""
     m = getattr(p, "models", None) or {}
-    if m.get("slots") or m.get("links") or m.get("core_overrides"):
+    if m.get("slots") or m.get("links") or m.get("core_overrides") or m.get("disable_core"):
         return m
     return nodes.load_models()
 

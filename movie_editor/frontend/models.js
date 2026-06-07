@@ -318,6 +318,10 @@
   const _KIND2T = { int: "INT", float: "FLOAT", string: "STRING", boolean: "BOOLEAN" };
   function destinations(slot, type) {
     const out = [{ value: "", label: "— unwired —" }];
+    // Global editor outputs: wire your final video/audio producer here and the editor shows
+    // it (works with or without the built-in pipeline). IMAGE -> video, AUDIO -> audio.
+    if (type === "IMAGE") out.push({ value: "global:video", label: "🌐 Global video output (shown in editor)" });
+    if (type === "AUDIO") out.push({ value: "global:audio", label: "🌐 Global audio output (shown in editor)" });
     ports.filter((p) => p.type === type).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
@@ -753,12 +757,23 @@
   }
   function coreSection() {
     const sec = el("div", "links-section");
+    const disabled = !!config.disable_core;
     const head = el("div", "links-head");
     const toggle = el("button", "btn ghost tiny", (coreOpen ? "▾ " : "▸ ") + "Built-in pipeline");
     toggle.onclick = () => { coreOpen = !coreOpen; render(); };
     head.append(toggle);
-    head.append(el("span", "lib-sub", `${coreNodes.length} fixed nodes`));
+    head.append(el("span", "lib-sub", disabled ? "disabled" : `${coreNodes.length} fixed nodes`));
+    const dis = el("button", "btn ghost tiny" + (disabled ? " danger" : ""), disabled ? "↺ Enable built-in pipeline" : "⏻ Disable built-in pipeline");
+    dis.title = disabled
+      ? "Re-enable the built-in FunPack Studio → Chain Sampler → decode → combine pipeline."
+      : "Drop the built-in pipeline entirely and run only your wired nodes. Wire your final image to 🌐 Global video output (and audio to 🌐 Global audio output) so the editor shows the result.";
+    dis.onclick = async () => { config.disable_core = !disabled; await persist(); render(); };
+    head.append(dis);
     sec.append(head);
+    if (disabled) {
+      sec.append(el("div", "links-hint", "Built-in pipeline is OFF — generation runs only your configured nodes. Wire your final IMAGE output to 🌐 Global video output (and AUDIO to 🌐 Global audio output) so the result shows in the editor."));
+      return sec;
+    }
     if (coreOpen) {
       sec.append(el("div", "links-hint", "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it."));
       coreNodes.forEach((n) => sec.append(coreCard(n)));
