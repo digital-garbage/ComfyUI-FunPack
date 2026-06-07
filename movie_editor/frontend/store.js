@@ -420,12 +420,19 @@
     });
   }
 
+  // Arm a Studio session reset — applied to the FIRST run of the next generation.
+  let _resetSessionPending = false;
+  function resetStudioSession() {
+    _resetSessionPending = true;
+    set({ resetSessionArmed: true });
+  }
+
   // Generate one run (single scene, or an explicit list of scene ids). Returns success.
-  async function _generateRun(sceneIds, onlyScene, prefix) {
+  async function _generateRun(sceneIds, onlyScene, prefix, resetSession) {
     _interrupted = false;
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
-      const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds);
+      const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession);
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
       pollStart = Date.now();
       set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: `${prefix}: generating…` } });
@@ -440,18 +447,23 @@
     if (!state.project) return;
     await flushSave();  // ensure the server has the latest edits before generating
     if (!onlyScene) return generateMontage();
-    await _generateRun([onlyScene], onlyScene, "Generating scene");
+    const reset = _resetSessionPending; _resetSessionPending = false;
+    if (reset) state.resetSessionArmed = false;
+    await _generateRun([onlyScene], onlyScene, "Generating scene", reset);
   }
 
   // Generate the whole montage: one chain request per run, fired sequentially
-  // (one GPU at a time). Each run's first scene supplies its i2v anchor.
+  // (one GPU at a time). Each run's first scene supplies its i2v anchor. A pending
+  // session reset applies to the FIRST run only.
   async function generateMontage() {
     if (!state.project) return;
     await flushSave();  // persist pending edits before reading scenes/runs
     const runs = _runs();
     if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
+    const reset = _resetSessionPending; _resetSessionPending = false;
+    if (reset) state.resetSessionArmed = false;
     for (let i = 0; i < runs.length; i++) {
-      const ok = await _generateRun(runs[i], null, `Run ${i + 1}/${runs.length}`);
+      const ok = await _generateRun(runs[i], null, `Run ${i + 1}/${runs.length}`, reset && i === 0);
       if (!ok) return;  // error already surfaced
     }
     set({ gen: { state: "done", promptId: null, media: state.gen.media, msg: `${runs.length} run(s) generated — use Render Final Video to stitch them.` } });
@@ -622,5 +634,6 @@
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,
     setSceneRating: (id, v) => patchScene(id, { rating: v }),
+    resetStudioSession,
   };
 })();

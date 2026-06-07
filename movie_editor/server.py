@@ -130,13 +130,14 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
 
 def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
     """Studio widget overrides for this run, incl. the RLHF rating of the run's last
-    render (Studio refines the next generation from it). Uses the run's first rated scene."""
+    render (Studio refines from it). Uses the run's first user-rated scene; when no scene
+    was rated by the user, send "-Just forget it-" so Studio does NOT learn from a rating
+    it assigned itself."""
     if target.conditioning_slot != "funpack":
         return {}
     si = dict(target.studio_inputs or {})
     rating = next((s.rating for s in active_scenes if (getattr(s, "rating", "") or "").strip()), None)
-    if rating:
-        si["rating"] = rating
+    si["rating"] = rating or "-Just forget it-"
     return si
 
 
@@ -467,6 +468,7 @@ if web is not None and PromptServer is not None:
             "max_scenes": active_scene_count,
             "studio_inputs": _run_studio_inputs(target, active_scenes),
             "sampler_inputs": _run_sampler_inputs(target, active_scene_count),
+            "reset_session": bool(body.get("reset_session")),
         }, media=_prepare_media(target))
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])

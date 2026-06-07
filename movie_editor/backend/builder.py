@@ -253,6 +253,10 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         _ss = {}
     _rf = _ss.get("refiner") if isinstance(_ss.get("refiner"), dict) else {}
     _rf["split_by_transitions"] = True
+    # reset_session also lives in studio_settings.refiner — armed per-run by the editor
+    # (first run after the user clicks "Reset Studio session"); explicit so it's never
+    # left on from a previous run.
+    _rf["reset_session"] = bool(params.get("reset_session"))
     _ss["refiner"] = _rf
     graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss)
     for k, v in (params.get("sampler_inputs") or {}).items():

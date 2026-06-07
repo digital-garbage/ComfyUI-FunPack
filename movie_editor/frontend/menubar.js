@@ -87,6 +87,9 @@
         { label: "Refresh model list", hint: "R", action: async () => { try { await window.MovieEditorAPI.refreshModels(); } catch (_) {} } },
       ],
       FunPack: [
+        { label: st.resetSessionArmed ? "Reset Studio session ✓ (armed)" : "Reset Studio session",
+          disabled: !hasProject(), action: () => S.resetStudioSession() },
+        { sep: true },
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },
         { label: "Restart ComfyUI", hint: "⟳", danger: true, action: restartComfy },

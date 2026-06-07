@@ -233,7 +233,12 @@
   }
 
   // ── render ───────────────────────────────────────────────────────────────────────
+  // Don't rebuild the timeline while the user is interacting with one of its controls
+  // (e.g. the rating dropdown) — a store notify (autosave/progress) would close it.
+  let _tlEditing = false;
+
   function render(st) {
+    if (_tlEditing) return;
     clear(body); clear(meta);
     if (!st.project) { body.append(el("div", "empty-stage", "Open a project to start cutting.")); return; }
     const p = st.project;
@@ -305,6 +310,19 @@
   }
 
   S.subscribe(render);
+
+  // Pause rebuilds while a timeline control (rating/transition dropdown, trim input) is
+  // focused; re-sync shortly after it loses focus.
+  body.addEventListener("focusin", (e) => {
+    const t = e.target.tagName;
+    if (t === "SELECT" || t === "INPUT" || t === "TEXTAREA") _tlEditing = true;
+  });
+  body.addEventListener("focusout", (e) => {
+    const t = e.target.tagName;
+    if (!(t === "SELECT" || t === "INPUT" || t === "TEXTAREA")) return;
+    _tlEditing = false;
+    setTimeout(() => { if (!_tlEditing) render(S.get()); }, 60);
+  });
 
   // ── keyboard: S = split selected clip at playhead, Del/Backspace = remove it ──
   function splitSelectedAtPlayhead() {
