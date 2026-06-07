@@ -67,19 +67,24 @@
   // ── video src management ───────────────────────────────────────────────────
   let _currentUrl = null;
   let _loadedSeg = null;
-  let _seekPending = null;  // time offset to apply after loadedmetadata
+  let _seekPending = null;   // time offset to apply after loadedmetadata
+  let _playPending = false;  // start playback once the (newly loaded) source is ready
 
-  function _loadAndSeek(seg, offsetSec) {
+  // Load `seg` at `offsetSec`. If `play` is set, begin playback as soon as it's ready
+  // (immediately for an already-loaded file, else after loadedmetadata — calling play()
+  // right after a fresh load() rejects and would stall the chain at one clip).
+  function _loadAndSeek(seg, offsetSec, play) {
     if (!seg?.media) return;
     const pid = S.get().project?.id;
     const url = API.resultUrl(pid, seg.media);
     _loadedSeg = seg;
     if (url === _currentUrl) {
-      // Same file — seek directly (no reload)
       video.currentTime = Math.max(0, Math.min(offsetSec, video.duration - 0.02 || offsetSec));
+      if (play) video.play().catch(() => {});
     } else {
       _currentUrl = url;
       _seekPending = offsetSec;
+      _playPending = !!play;
       video.src = url;
       video.load();
     }
@@ -90,6 +95,7 @@
       video.currentTime = Math.max(0, Math.min(_seekPending, video.duration - 0.02));
       _seekPending = null;
     }
+    if (_playPending) { _playPending = false; video.play().catch(() => {}); }
   });
 
   video.addEventListener("timeupdate", () => {
@@ -106,9 +112,8 @@
       const next = _segs.find((s) => s.startSec >= endSec - 0.05 && s !== _loadedSeg);
       if (next) {
         _phSec = next.startSec;
-        _loadAndSeek(next, 0);
-        video.play().catch(() => {});
         _playing = true;
+        _loadAndSeek(next, 0, true);  // play once the next clip is loaded
       } else {
         _phSec = endSec;
       }
@@ -130,9 +135,8 @@
     if (!seg) seg = _segs.find((s) => s.startSec >= _phSec - 0.05);
     if (!seg) return;
     if (_phSec < seg.startSec) _phSec = seg.startSec;
-    _loadAndSeek(seg, _phSec - seg.startSec);
-    video.play().catch(() => {});
     _playing = true;
+    _loadAndSeek(seg, _phSec - seg.startSec, true);
     _notifyPh();
     _renderTransport();
   }
@@ -140,6 +144,7 @@
   function _pause() {
     video.pause();
     _playing = false;
+    _playPending = false;  // cancel any queued autoplay
     _notifyPh();
     _renderTransport();
   }
