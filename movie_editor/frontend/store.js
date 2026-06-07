@@ -309,68 +309,128 @@
 
   let pollTimer = null;
   let pollStart = 0;
-  async function generate(onlyScene) {
-    if (!state.project) return;
-    // Capture which scene ids this generation covers so the player can map
-    // the output video to the correct timeline positions.
-    const activeScenes = state.project.scenes.filter((s) => !s.excluded);
-    const targetSceneIds = onlyScene ? [onlyScene] : activeScenes.map((s) => s.id);
-    set({ gen: { state: "queuing", promptId: null, media: [], msg: onlyScene ? "Queuing scene…" : "Queuing montage…" } });
-    try {
-      const r = await API.generate(state.project.id, onlyScene);
-      if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return; }
-      pollStart = Date.now();
-      set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: "Generating…" } });
-      poll(r.prompt_id, targetSceneIds);
-    } catch (e) {
-      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
-    }
-  }
 
   function _elapsed() {
     const s = Math.floor((Date.now() - pollStart) / 1000);
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   }
 
-  function poll(promptId, targetSceneIds) {
-    clearInterval(pollTimer);
-    let pendingStreak = 0;
-    pollTimer = setInterval(async () => {
-      try {
-        const s = await API.status(state.project.id, promptId);
-        if (s.state === "error") {
-          clearInterval(pollTimer);
-          const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";
-          set({ gen: { state: "error", promptId, media: [], msg } });
-        } else if (s.state === "completed") {
-          clearInterval(pollTimer);
-          // Record the segment so the player can map it to timeline positions.
-          if (s.media.length && targetSceneIds?.length) {
-            const keep = (state.renderedSegments || []).filter(
-              (seg) => !(seg.sceneIds || []).some((id) => targetSceneIds.includes(id))
-            );
-            // Primary media (first video/gif) is the playable output.
-            const primary = s.media.find((m) => m.kind === "videos" || m.kind === "gifs") || s.media[0];
-            state.renderedSegments = [...keep, { sceneIds: targetSceneIds, media: primary }];
-          }
-          set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
-        } else {
-          // "pending" after being "running" means the job left the queue without a
-          // history entry — it likely crashed or was interrupted by ComfyUI.
-          if (s.state === "pending") pendingStreak++;
-          else pendingStreak = 0;
-          if (pendingStreak >= 3) {
+  // Split the active scenes into chain runs. A run starts at an anchored scene
+  // (empty / image / generated_frame); a "carry" scene appends to the current run
+  // so it overlaps the previous scene (one chain-sampler request per run).
+  function _runs() {
+    const active = state.project.scenes.filter((s) => !s.excluded);
+    const runs = [];
+    for (const s of active) {
+      const t = (s.source && s.source.type) || "empty";
+      if (t === "carry" && runs.length) runs[runs.length - 1].push(s.id);
+      else runs.push([s.id]);
+    }
+    return runs;
+  }
+
+  // Record a completed run's output so the player can map it onto the timeline.
+  function _recordSegment(mediaList, targetSceneIds) {
+    if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
+    const keep = (state.renderedSegments || []).filter(
+      (seg) => !(seg.sceneIds || []).some((id) => targetSceneIds.includes(id))
+    );
+    const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
+    state.renderedSegments = [...keep, { sceneIds: targetSceneIds, media: primary }];
+  }
+
+  // Poll a single queued prompt to completion. Resolves true on success, false on error.
+  function _pollPromise(promptId, targetSceneIds, prefix) {
+    prefix = prefix || "Generating…";
+    return new Promise((resolve) => {
+      clearInterval(pollTimer);
+      let pendingStreak = 0;
+      pollTimer = setInterval(async () => {
+        try {
+          const s = await API.status(state.project.id, promptId);
+          if (s.state === "error") {
             clearInterval(pollTimer);
-            set({ gen: { state: "error", promptId, media: [], msg: "Job disappeared from ComfyUI queue — it may have crashed or been interrupted. Check the ComfyUI terminal." } });
-            return;
+            const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";
+            set({ gen: { state: "error", promptId, media: [], msg } });
+            resolve(false);
+          } else if (s.state === "completed") {
+            clearInterval(pollTimer);
+            _recordSegment(s.media, targetSceneIds);
+            set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
+            resolve(true);
+          } else {
+            // "pending" after "running" means the job left the queue without a history
+            // entry — it likely crashed or was interrupted by ComfyUI.
+            if (s.state === "pending") pendingStreak++; else pendingStreak = 0;
+            if (pendingStreak >= 3) {
+              clearInterval(pollTimer);
+              set({ gen: { state: "error", promptId, media: [], msg: "Job disappeared from ComfyUI queue — it may have crashed or been interrupted. Check the ComfyUI terminal." } });
+              resolve(false);
+              return;
+            }
+            set({ gen: { ...state.gen, state: s.state, msg: `${prefix} ${_elapsed()}` } });
           }
-          set({ gen: { ...state.gen, state: s.state, msg: `Generating… ${_elapsed()}` } });
+        } catch (e) {
+          clearInterval(pollTimer);
+          set({ gen: { ...state.gen, state: "error", msg: e.message } });
+          resolve(false);
         }
-      } catch (e) {
-        clearInterval(pollTimer);
-        set({ gen: { ...state.gen, state: "error", msg: e.message } });
-      }
-    }, 2000);
+      }, 2000);
+    });
+  }
+
+  // Generate one run (single scene, or an explicit list of scene ids). Returns success.
+  async function _generateRun(sceneIds, onlyScene, prefix) {
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…` } });
+    try {
+      const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds);
+      if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
+      pollStart = Date.now();
+      set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: `${prefix}: generating…` } });
+      return await _pollPromise(r.prompt_id, sceneIds, prefix);
+    } catch (e) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
+      return false;
+    }
+  }
+
+  async function generate(onlyScene) {
+    if (!state.project) return;
+    if (!onlyScene) return generateMontage();
+    await _generateRun([onlyScene], onlyScene, "Generating scene");
+  }
+
+  // Generate the whole montage: one chain request per run, fired sequentially
+  // (one GPU at a time). Each run's first scene supplies its i2v anchor.
+  async function generateMontage() {
+    if (!state.project) return;
+    const runs = _runs();
+    if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
+    for (let i = 0; i < runs.length; i++) {
+      const ok = await _generateRun(runs[i], null, `Run ${i + 1}/${runs.length}`);
+      if (!ok) return;  // error already surfaced
+    }
+    set({ gen: { state: "done", promptId: null, media: state.gen.media, msg: `${runs.length} run(s) generated — use Render Final Video to stitch them.` } });
+  }
+
+  // Stitch the rendered runs (hard cut, video + audio) into one final file.
+  async function renderFinal() {
+    if (!state.project) return;
+    const order = state.project.scenes.filter((s) => !s.excluded).map((s) => s.id);
+    const pos = (ids) => Math.min(...ids.map((id) => { const i = order.indexOf(id); return i < 0 ? 1e9 : i; }));
+    const segs = (state.renderedSegments || []).filter((s) => s.media)
+      .slice().sort((a, b) => pos(a.sceneIds || []) - pos(b.sceneIds || []));
+    if (!segs.length) { alert("No generated runs to stitch yet — generate first."); return; }
+    const clips = segs.map((s) => ({ filename: s.media.filename, subfolder: s.media.subfolder || "", type: s.media.type || "output" }));
+    set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} run(s)…` } });
+    try {
+      const r = await API.renderFinal(state.project.id, clips);
+      // Show the stitched file across the whole timeline in the program monitor.
+      state.renderedSegments = [{ sceneIds: order, media: r.media }];
+      set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} run(s).` } });
+    } catch (e) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + e.message } });
+    }
   }
 
   // ── pluggable models / exposed controls ──────────────────────────────────────
@@ -475,7 +535,7 @@
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,

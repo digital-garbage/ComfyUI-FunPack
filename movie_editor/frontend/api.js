@@ -71,9 +71,11 @@
     refreshModels: () => j("POST", API("/models/refresh")),
     restart: () => j("POST", API("/restart")),
 
-    // generate
-    generate: (id, onlyScene) => j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null }),
+    // generate (a single scene, or an explicit run of scene ids = one chain request)
+    generate: (id, onlyScene, sceneIds) =>
+      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
+    renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +
       `&subfolder=${encodeURIComponent(m.subfolder || "")}&type=${encodeURIComponent(m.type || "output")}`,

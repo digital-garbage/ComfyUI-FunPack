@@ -120,6 +120,29 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
     return clone
 
 
+def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
+    """Sampler widget overrides for one chain run. Carries inside a multi-scene run
+    must overlap, so carry_i2v_guides is forced on; a 1-scene run leaves it alone."""
+    if target.sampler_slot != "funpack":
+        return {}
+    samp = dict(target.sampler_inputs or {})
+    if scene_count > 1:
+        samp["carry_i2v_guides"] = True
+    return samp
+
+
+def _segment(p: Project, scene_ids: list) -> Project:
+    """Project clone holding only `scene_ids` (in their project order). Used to
+    generate one chain run: its first scene supplies the i2v anchor, the rest are
+    carries that overlap inside the run (one ComfyUI chain-sampler request)."""
+    ids = set(scene_ids)
+    clone = Project.from_dict(p.to_dict())
+    clone.scenes = [s for s in clone.scenes if s.id in ids]
+    if not clone.scenes:
+        raise web.HTTPNotFound(reason="No scenes matched the requested segment")
+    return clone
+
+
 def _serve_static(tail: str) -> "web.Response":
     root = config.FRONTEND_DIR.resolve()
     rel = (tail or "index.html").lstrip("/")
@@ -373,7 +396,11 @@ if web is not None and PromptServer is not None:
     async def _generate(req):
         p = _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
-        target = _solo(p, body.get("only_scene"))
+        scene_ids = body.get("scene_ids")
+        if scene_ids:
+            target = _segment(p, scene_ids)
+        else:
+            target = _solo(p, body.get("only_scene"))
         prompt = build_combined_prompt(target)
         if not prompt.strip():
             return web.json_response({"detail": "Nothing to generate — no active scene text."}, status=400)
@@ -405,7 +432,7 @@ if web is not None and PromptServer is not None:
             "negative_prompt": target.negative_prompt or None,
             "max_scenes": active_scene_count,
             "studio_inputs": target.studio_inputs if target.conditioning_slot == "funpack" else {},
-            "sampler_inputs": target.sampler_inputs if target.sampler_slot == "funpack" else {},
+            "sampler_inputs": _run_sampler_inputs(target, active_scene_count),
         }, media=_prepare_media(target))
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
@@ -459,6 +486,68 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"could not fetch result: {e}")
         return web.Response(body=data, content_type=ctype.split(";")[0])
+
+    # --- API: final render (hard-cut concat of generated runs, video + audio) ---
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/render")
+    async def _render_final(req):
+        _project_or_404(req.match_info["pid"])
+        body = await req.json() if req.can_read_body else {}
+        clips = body.get("clips") or []  # ordered [{filename, subfolder, type}]
+        if not clips:
+            return web.json_response({"detail": "Nothing to render — no generated runs."}, status=400)
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        import time as _time
+        ff = shutil.which("ffmpeg")
+        if not ff:
+            return web.json_response({"detail": "ffmpeg not found on PATH — install it to render the final video."}, status=503)
+        try:
+            import folder_paths
+            outdir = folder_paths.get_output_directory()
+            tempdir = folder_paths.get_temp_directory()
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Output directory unavailable: {e}"}, status=500)
+
+        def _resolve(c):
+            base = outdir if c.get("type", "output") == "output" else tempdir
+            return os.path.join(base, c.get("subfolder", ""), c.get("filename", ""))
+
+        paths = [_resolve(c) for c in clips]
+        missing = [p for p in paths if not os.path.isfile(p)]
+        if missing:
+            return web.json_response({"detail": f"{len(missing)} clip file(s) not found on disk — regenerate then render."}, status=400)
+
+        out_name = f"funpack_final_{int(_time.time())}.mp4"
+        out_path = os.path.join(outdir, out_name)
+        # concat demuxer + re-encode → tolerates differing codecs/params between runs
+        # and keeps BOTH the video and the LTXAV audio stream.
+        list_fd, list_path = tempfile.mkstemp(suffix=".txt")
+        try:
+            with os.fdopen(list_fd, "w") as lf:
+                for pth in paths:
+                    safe = pth.replace("'", "'\\''")
+                    lf.write(f"file '{safe}'\n")
+            cmd = [
+                ff, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart", out_path,
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                tail = (proc.stderr or "")[-800:]
+                return web.json_response({"detail": f"ffmpeg concat failed: {tail}"}, status=500)
+        finally:
+            try:
+                os.unlink(list_path)
+            except OSError:
+                pass
+        return web.json_response({
+            "media": {"filename": out_name, "subfolder": "", "type": "output", "kind": "videos"},
+            "clips": len(paths),
+        })
 
     # --- API: models / pluggable node slots ---
     @routes.get(UI_PREFIX + "/api/node-roles")
