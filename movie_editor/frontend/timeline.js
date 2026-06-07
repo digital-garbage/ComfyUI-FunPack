@@ -182,6 +182,17 @@
     const tc = el("span", "tl-tc", timecode(Math.min(ph, totalSec), p.frame_rate) + " / " + timecode(totalSec, p.frame_rate));
     tlTcEl = tc;  // keep ref for Player's onPlayheadChanged updates
     bar.append(tc);
+
+    // Clip actions on the selected clip (also bound to S / Delete).
+    const hasSel = !!st.selectedSceneId;
+    const split = el("button", "btn ghost tiny", "⧅ Split");
+    split.title = "Split the selected clip at the playhead (S)"; split.disabled = !hasSel;
+    split.onclick = () => splitSelectedAtPlayhead();
+    const del = el("button", "btn ghost tiny danger", "✕ Remove");
+    del.title = "Remove the selected clip (Delete / Backspace)"; del.disabled = !hasSel;
+    del.onclick = () => { if (st.selectedSceneId) S.removeScene(st.selectedSceneId); };
+    bar.append(split); bar.append(del);
+
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const keys = el("span", "tl-keys", "S split · ⌫ remove"); keys.title = "Select a clip, then: S splits it at the playhead · Delete/Backspace removes it";
     bar.append(keys);
