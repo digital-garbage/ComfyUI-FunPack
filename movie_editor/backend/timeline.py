@@ -216,19 +216,19 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
     anchor = (project.anchor or "").strip()
     if anchor:
         parts.append(anchor)
-    trig_re = _leading_trigger_re() if for_generation else None
+    # Only inject separators for a MULTI-scene run: Studio treats text before the first
+    # transition as the (prepended) anchor, so every scene — including the first — needs a
+    # leading trigger or it merges. A single-scene run needs none (the whole prompt is that
+    # one scene), avoiding a leaked 'scene N' marker.
+    inject = for_generation and len(scenes) > 1
+    trig_re = _leading_trigger_re() if inject else None
     for i, scene in enumerate(scenes):
         text = (scene.text or "").strip()
-        if for_generation:
-            has_lead = bool(text and trig_re and trig_re.match(text))
-            if not has_lead:
-                if i == 0:
-                    marker = (project.intro_transition or "").strip()
-                else:
-                    marker = (scenes[i - 1].transition_to_next or "").strip()
-                if not marker:
-                    marker = f"scene {i + 1}"
-                parts.append(marker)
+        if inject and not (text and trig_re and trig_re.match(text)):
+            marker = (project.intro_transition or "").strip() if i == 0 else (scenes[i - 1].transition_to_next or "").strip()
+            if not marker:
+                marker = f"scene {i + 1}"
+            parts.append(marker)
         if text:
             parts.append(text)
     return " ".join(p for p in parts if p).strip()
