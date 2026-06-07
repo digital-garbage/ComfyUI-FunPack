@@ -234,18 +234,27 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # save_output=False routes VHS_VideoCombine to temp; history reports type="temp",
     # which the result proxy + final-render concat resolve against the temp directory.
     graph["vhs"]["inputs"]["save_output"] = False
-    # split_by_transitions MUST be True — Studio defaults to False (single-scene mode)
-    # but the Movie Editor always builds multi-scene combined prompts.  Force it here
-    # BEFORE the user's studio_inputs override block so it cannot be accidentally
-    # overwritten to False via the sampler panel.
-    graph["studio"]["inputs"]["split_by_transitions"] = True
 
     # 2b. project-level widget overrides for the built-in FunPack nodes.
     for k, v in (params.get("studio_inputs") or {}).items():
-        if k == "split_by_transitions":
-            continue  # never allow overriding — multi-scene mode is mandatory
         if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
             graph["studio"]["inputs"][k] = v
+
+    # split_by_transitions is NOT a top-level Studio input — Studio reads it from
+    # studio_settings.refiner.split_by_transitions (default False = single-scene mode).
+    # The Movie Editor always builds multi-scene combined prompts, so force it ON inside
+    # the settings JSON (after the overrides above so it can't be turned off).
+    _ss = graph["studio"]["inputs"].get("studio_settings")
+    try:
+        _ss = json.loads(str(_ss or "{}"))
+    except Exception:
+        _ss = {}
+    if not isinstance(_ss, dict):
+        _ss = {}
+    _rf = _ss.get("refiner") if isinstance(_ss.get("refiner"), dict) else {}
+    _rf["split_by_transitions"] = True
+    _ss["refiner"] = _rf
+    graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss)
     for k, v in (params.get("sampler_inputs") or {}).items():
         if k not in graph["sampler"]["inputs"] or not isinstance(graph["sampler"]["inputs"][k], list):
             graph["sampler"]["inputs"][k] = v
