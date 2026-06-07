@@ -35,6 +35,32 @@ def _is_combo_type(t) -> bool:
 def _is_widget_type(t) -> bool:
     return isinstance(t, str) and (t in _WIDGET_TYPES or _is_combo_type(t))
 
+
+def _combo_choices(opts: dict) -> list:
+    """Normalise combo options to plain string/int choices. V3 dynamic combos express
+    options as dicts {"key": <value>, "inputs": [...]}; standard combos are list[str]."""
+    raw = opts.get("options")
+    if raw is None:
+        raw = opts.get("choices")
+    out = []
+    for o in (raw or []):
+        if isinstance(o, dict):
+            out.append(str(o.get("key", o.get("value", o.get("content", o.get("name", o.get("label", "")))))))
+        else:
+            out.append(o)
+    return out
+
+
+def _combo_default(opts: dict, choices: list | None = None):
+    if choices is None:
+        choices = _combo_choices(opts)
+    d = opts.get("default")
+    if isinstance(d, dict):
+        d = d.get("key", d.get("value"))
+    if d is not None and d != "":
+        return d
+    return choices[0] if choices else ""
+
 # ComfyUI V3 dynamic match types that are semantically IMAGE-compatible.
 _MATCHTYPE_ALIASES: dict[str, str] = {}  # populated on first lookup — patterns are prefix-matched
 
@@ -180,12 +206,12 @@ def widget_inputs(node_def: dict) -> list[dict]:
                 field["choices"] = t
                 field["default"] = opts.get("default", t[0] if t else None)
             elif _is_combo_type(t):
-                # V1 "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3): choices under
-                # opts["options"] (V3) or opts["choices"].
-                choices = opts.get("options") or opts.get("choices") or []
+                # V1 "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3). Options may be
+                # plain strings or {"key": ...} dicts — normalise to the selectable value.
+                choices = _combo_choices(opts)
                 field["kind"] = "combo"
                 field["choices"] = choices
-                field["default"] = opts.get("default", choices[0] if choices else None)
+                field["default"] = _combo_default(opts, choices)
             elif t in WIDGET_PRIMITIVES:
                 field["kind"] = t.lower()
                 field["default"] = opts.get("default")

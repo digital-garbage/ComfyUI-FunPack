@@ -23,7 +23,7 @@ import json
 from typing import Any, Optional
 
 from . import config
-from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs
+from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs, _combo_default
 
 # ── fixed core ────────────────────────────────────────────────────────────────
 # logical id -> class_type
@@ -159,9 +159,9 @@ def _widget_defaults(node_def: Optional[dict]) -> dict:
             if isinstance(t, list):
                 out[name] = opts.get("default", t[0] if t else None)
             elif isinstance(t, str) and "COMBO" in t.upper():
-                # "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3)
-                choices = opts.get("options") or opts.get("choices") or []
-                out[name] = opts.get("default", choices[0] if choices else "")
+                # "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3): emit the selected
+                # key string (options may be {"key": ...} dicts), not the option object.
+                out[name] = _combo_default(opts)
             elif t in WIDGET_PRIMITIVES:
                 # Always emit a value for every widget — ComfyUI's frontend does, and a
                 # required widget with no declared default (e.g. ImageTransform's bboxes)
@@ -261,7 +261,13 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         slot_node_id[s["id"]] = sid
         slot_def[s["id"]] = nd
         inputs = _widget_defaults(nd)
+        defaults = dict(inputs)
         inputs.update(s.get("inputs") or {})
+        # Coerce stale/invalid combo values (e.g. a saved "[object Object]" or a dict from
+        # an earlier bug) back to the node's default key.
+        for wname, wval in list(inputs.items()):
+            if isinstance(wval, dict) or wval == "[object Object]":
+                inputs[wname] = defaults.get(wname, "")
         graph[sid] = {"class_type": cls, "inputs": inputs}
         if cls not in object_info:
             msg = f"Slot node '{cls}' is not installed in ComfyUI."
