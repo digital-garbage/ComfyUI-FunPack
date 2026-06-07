@@ -28,6 +28,15 @@
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
   function set(patch) { Object.assign(state, patch); notify(); }
+
+  // Update generation progress WITHOUT a full notify(): a store notify rebuilds the whole
+  // editor (inspector/timeline/player), which during a long generation kept interrupting the
+  // user (couldn't save frames to the bin or add effects). Progress ticks instead mutate
+  // state.gen quietly and fire a DOM event the player listens to, updating only the readout.
+  function updateGenProgress(patch) {
+    Object.assign(state.gen, patch);
+    try { window.dispatchEvent(new CustomEvent("funpack-gen-progress", { detail: state.gen })); } catch (_) {}
+  }
   function get() { return state; }
 
   // ── project lifecycle ──────────────────────────────────────────────────────
@@ -388,7 +397,7 @@
   // "Interrupted" and the run loop stops.
   async function interrupt() {
     _interrupted = true;
-    set({ gen: { ...state.gen, msg: "Interrupting…" } });
+    updateGenProgress({ msg: "Interrupting…" });
     try { await API.interrupt(); } catch (_) {}
   }
 
@@ -445,7 +454,7 @@
         if (_interrupted) return;
         try {
           const pr = await API.progress();
-          if (pr && pr.max > 0) set({ gen: { ...state.gen, step: pr.value, maxStep: pr.max } });
+          if (pr && pr.max > 0) updateGenProgress({ step: pr.value, maxStep: pr.max });
         } catch (_) {}
       }, 700);
       pollTimer = setInterval(async () => {
@@ -478,7 +487,7 @@
               return;
             }
             const step = (state.gen.maxStep > 0) ? `  ·  step ${state.gen.step}/${state.gen.maxStep}` : "";
-            set({ gen: { ...state.gen, state: s.state, msg: `${prefix} ${_elapsed()}${step}` } });
+            updateGenProgress({ state: s.state, msg: `${prefix} ${_elapsed()}${step}` });
           }
         } catch (e) {
           _clearGenTimers();

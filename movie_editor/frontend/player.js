@@ -257,6 +257,20 @@
   let _fpsCur = 25;
   let _tcEl = null;       // timecode span (updated live, not rebuilt)
   let _playBtnEl = null;  // play/pause button (glyph updated live, not rebuilt)
+  let _genMsgEl = null, _genBarEl = null, _genFillEl = null;  // gen readout, updated live
+
+  // Update the generation readout in place on progress ticks (no store re-render, so the
+  // editor stays interactive — frames can be saved, effects added — while a job runs).
+  window.addEventListener("funpack-gen-progress", (e) => {
+    const g = (e && e.detail) || {};
+    if (_genMsgEl && g.msg != null) _genMsgEl.textContent = g.msg || g.state || "";
+    if (_genFillEl && _genBarEl) {
+      if (g.maxStep > 0) {
+        _genBarEl.style.visibility = "";
+        _genFillEl.style.width = Math.min(100, Math.round((g.step / g.maxStep) * 100)) + "%";
+      }
+    }
+  });
 
   // Lightweight per-tick update: never rebuilds the buttons (rebuilding mid-click ate the
   // mousedown/mouseup, so play/pause/stop stopped responding during playback).
@@ -404,22 +418,21 @@
       empty.append(el("div", "pj-meta", "Generate from the menu or timeline"));
       canvas.append(empty);
     }
-    // generation progress overlay (visible even when there's already media)
+    // generation progress overlay (visible even when there's already media). Built once per
+    // store render; live progress ticks update it in place (see the gen-progress listener),
+    // so the rest of the editor isn't rebuilt while a generation runs.
+    _genMsgEl = _genBarEl = _genFillEl = null;
     if (["queuing", "running", "pending", "error"].includes(gen.state)) {
       const busy = gen.state !== "error";
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
       ro.append(el("span", "pulse"));
-      ro.append(el("span", null, gen.msg || gen.state));
-      // step progress bar
-      if (busy && gen.maxStep > 0) {
-        const bar = el("div", "gen-bar");
-        const fill = el("div", "gen-bar-fill");
-        fill.style.width = Math.min(100, Math.round((gen.step / gen.maxStep) * 100)) + "%";
-        bar.append(fill);
-        ro.append(bar);
-      }
-      // interrupt
+      _genMsgEl = el("span", null, gen.msg || gen.state); ro.append(_genMsgEl);
       if (busy) {
+        const bar = el("div", "gen-bar"); _genBarEl = bar;
+        _genFillEl = el("div", "gen-bar-fill");
+        _genFillEl.style.width = gen.maxStep > 0 ? Math.min(100, Math.round((gen.step / gen.maxStep) * 100)) + "%" : "0%";
+        if (!(gen.maxStep > 0)) bar.style.visibility = "hidden";
+        bar.append(_genFillEl); ro.append(bar);
         const stop = el("button", "gen-interrupt", "■ Interrupt");
         stop.title = "Stop the current generation";
         stop.onclick = () => S.interrupt();
