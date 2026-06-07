@@ -200,6 +200,22 @@
     exp.onclick = () => S.exportSelected();
     bar.append(split); bar.append(del); bar.append(exp);
 
+    // Scene rating — only when FunPack Studio is the conditioning provider AND the
+    // selected clip has a render. Rates that clip's own scene (cut-aware by scene id);
+    // fed into Studio at the next generation of its run.
+    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
+    if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
+      const sc = S.scene(st.selectedSceneId);
+      const sceneNo = p.scenes.indexOf(sc) + 1;
+      const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
+      const rsel = el("select", "tl-rating");
+      rsel.title = "Rate this scene's render — FunPack Studio refines from it next generation";
+      rsel.append(new Option("— rate —", ""));
+      (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
+      rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
+      bar.append(rlabel); bar.append(rsel);
+    }
+
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const keys = el("span", "tl-keys", "S split · ⌫ remove"); keys.title = "Select a clip, then: S splits it at the playhead · Delete/Backspace removes it";
     bar.append(keys);

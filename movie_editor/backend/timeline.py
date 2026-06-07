@@ -64,6 +64,9 @@ class Scene:
     width: Optional[int] = None
     height: Optional[int] = None
     source: SceneSource = field(default_factory=SceneSource)
+    # FunPack Studio RLHF rating of this scene's last render (a V2_RATING_LABELS value).
+    # Fed into Studio at the next generation of this scene's run so it refines. "" = unrated.
+    rating: str = ""
     # Selective generation (UI-functional only in Phase 3 — see plan). `excluded`
     # scenes are skipped by a full Generate/Render; "generate this scene only" is a
     # transient request handled at the API/route level, not stored here.
@@ -83,6 +86,7 @@ class Scene:
             width=d.get("width"),
             height=d.get("height"),
             source=SceneSource.from_dict(d.get("source")),
+            rating=str(d.get("rating", "")),
             excluded=bool(d.get("excluded", False)),
         )
 

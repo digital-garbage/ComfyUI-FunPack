@@ -128,6 +128,18 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
     return clone
 
 
+def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
+    """Studio widget overrides for this run, incl. the RLHF rating of the run's last
+    render (Studio refines the next generation from it). Uses the run's first rated scene."""
+    if target.conditioning_slot != "funpack":
+        return {}
+    si = dict(target.studio_inputs or {})
+    rating = next((s.rating for s in active_scenes if (getattr(s, "rating", "") or "").strip()), None)
+    if rating:
+        si["rating"] = rating
+    return si
+
+
 def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
     """Sampler widget overrides for one chain run. Carries inside a multi-scene run
     must overlap, so carry_i2v_guides is forced on; a 1-scene run leaves it alone."""
@@ -453,7 +465,7 @@ if web is not None and PromptServer is not None:
             "width": target.width, "height": target.height,
             "negative_prompt": target.negative_prompt or None,
             "max_scenes": active_scene_count,
-            "studio_inputs": target.studio_inputs if target.conditioning_slot == "funpack" else {},
+            "studio_inputs": _run_studio_inputs(target, active_scenes),
             "sampler_inputs": _run_sampler_inputs(target, active_scene_count),
         }, media=_prepare_media(target))
         if report["blocking"]:
@@ -496,6 +508,13 @@ if web is not None and PromptServer is not None:
         except Exception:  # noqa: BLE001
             running = True
         return web.json_response({"state": "running" if running else "pending", "media": []})
+
+    @routes.get(UI_PREFIX + "/api/rating-labels")
+    async def _rating_labels(_req):
+        try:
+            return web.json_response(bridge.rating_labels())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"labels": [], "error": str(e)})
 
     @routes.get(UI_PREFIX + "/api/progress")
     async def _progress(_req):

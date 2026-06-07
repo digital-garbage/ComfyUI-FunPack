@@ -336,6 +336,7 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-tc { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
 .tl-zlabel { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
 .tl-keys { font-family: var(--font-mono); font-size: 10px; letter-spacing: .5px; color: var(--faint); margin-right: 10px; opacity: .8; }
+.tl-rating { font-size: 12px; padding: 3px 6px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; color: var(--amber-2); max-width: 200px; }
 
 .tl-scroll { flex: 1; overflow-x: auto; overflow-y: hidden; position: relative; }
 .tl-content { position: relative; height: 100%; min-height: 100%; }

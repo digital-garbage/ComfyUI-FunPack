@@ -19,6 +19,7 @@
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     shortcuts: [],           // prompt shortcut library
     imageTargets: [],        // where an image asset can be wired [{value,label}]
+    ratingLabels: [],        // FunPack Studio V2 rating options
   };
 
   const listeners = new Set();
@@ -601,6 +602,7 @@
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
     await loadShortcuts();
     await loadMedia();
+    try { state.ratingLabels = (await API.ratingLabels()).labels || []; } catch (_) { state.ratingLabels = []; }
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
@@ -619,5 +621,6 @@
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,
+    setSceneRating: (id, v) => patchScene(id, { rating: v }),
   };
 })();

@@ -315,6 +315,7 @@
     return card;
   }
 
+  const _KIND2T = { int: "INT", float: "FLOAT", string: "STRING", boolean: "BOOLEAN" };
   function destinations(slot, type) {
     const out = [{ value: "", label: "— unwired —" }];
     ports.filter((p) => p.type === type).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
@@ -322,6 +323,10 @@
       const c2 = specFor(s2);
       (c2?.connection_inputs || []).filter((ci) => ci.type === type).forEach((ci) =>
         out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.name}` }));
+      // Widget inputs can also receive a connection (ComfyUI converts a widget to an
+      // input when wired) — e.g. EmptyLatentVideo.width/height. Offer them as targets.
+      (c2?.inputs || []).filter((w) => _KIND2T[w.kind] === type).forEach((w) =>
+        out.push({ value: `node:${s2.id}:${w.name}`, label: `${slotFullLabel(s2)} · ${w.name} (widget)` }));
     });
     return out;
   }

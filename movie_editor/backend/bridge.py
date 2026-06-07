@@ -53,6 +53,15 @@ def parse_timeline_verbatim(prompt: str) -> dict:
     return split_timeline_verbatim(str(prompt or ""))
 
 
+def rating_labels() -> dict:
+    """FunPack Studio V2 rating labels (for the Scene rating dropdown)."""
+    try:
+        from conditioning import V2_RATING_LABELS
+    except ImportError:  # package submodule
+        from ...conditioning import V2_RATING_LABELS  # type: ignore
+    return {"labels": list(V2_RATING_LABELS)}
+
+
 def transitions() -> dict:
     _, _, load_transition_db, transition_items = _funpack_imports()
     data = load_transition_db()
