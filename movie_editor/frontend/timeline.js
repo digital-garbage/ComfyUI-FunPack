@@ -235,8 +235,8 @@
   // Each writes onto the selected scene, so the inspector's per-scene controls stay the
   // single source of truth and reflect whatever is added here.
   const FX_DEFS = [
-    { id: "zoom_in",  label: "Zoom in (crop)",      apply: (sc) => ({ effects: { ...(sc.effects || {}), zoom: "in" } }) },
-    { id: "zoom_out", label: "Zoom out (pad)",      apply: (sc) => ({ effects: { ...(sc.effects || {}), zoom: "out" } }) },
+    { id: "zoom_in",  label: "Zoom in (push)",      apply: (sc) => ({ effects: { ...(sc.effects || {}), zoom: "in" } }) },
+    { id: "zoom_out", label: "Zoom out (pull back)", apply: (sc) => ({ effects: { ...(sc.effects || {}), zoom: "out" } }) },
     { id: "blur",     label: "Gaussian blur",       val: { label: "Strength (0–1)", def: 0.3, min: 0, max: 1, step: 0.05 }, apply: (sc, v) => ({ effects: { ...(sc.effects || {}), blur: v } }) },
     { id: "fade_in",  label: "Fade in",             val: { label: "Seconds", def: 0.5, min: 0, max: 10, step: 0.1 }, apply: (sc, v) => ({ effects: { ...(sc.effects || {}), fade_in: v } }) },
     { id: "fade_out", label: "Fade out",            val: { label: "Seconds", def: 0.5, min: 0, max: 10, step: 0.1 }, apply: (sc, v) => ({ effects: { ...(sc.effects || {}), fade_out: v } }) },

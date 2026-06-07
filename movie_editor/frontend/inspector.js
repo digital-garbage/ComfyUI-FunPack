@@ -177,7 +177,7 @@
     body.append(fadeRow);
 
     const zoom = el("select"); zoom.dataset.k = "sc-fx-zoom";
-    [["none", "None"], ["in", "Zoom in (crop)"], ["out", "Zoom out (pad)"]].forEach(([v, label]) => {
+    [["none", "None"], ["in", "Zoom in (push)"], ["out", "Zoom out (pull back)"]].forEach(([v, label]) => {
       const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
     });
     zoom.onchange = () => patchFx("zoom", zoom.value);

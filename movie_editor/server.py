@@ -172,21 +172,33 @@ def _build_render_filter(clips: list) -> str:
     n = len(clips)
     parts: list[str] = []
 
+    # One canvas for the whole render (clips may have differing native sizes/fps — xfade and
+    # concat require identical size/fps/sar, so every clip is normalized to this).
+    cw = int(clips[0].get("w") or 0) or 768
+    ch = int(clips[0].get("h") or 0) or 768
+    cfps = float(clips[0].get("fps") or 0) or 25.0
+
     for i, c in enumerate(clips):
         fx = c.get("fx") or {}
         dur = float(c.get("dur") or 0) or 0.0
-        w = int(c.get("w") or 0) or None
-        h = int(c.get("h") or 0) or None
-        vf: list[str] = []
+        # Normalize first: fit into the canvas (letterbox), fixed fps + square pixels.
+        vf: list[str] = [
+            f"scale={cw}:{ch}:force_original_aspect_ratio=decrease",
+            f"pad={cw}:{ch}:-1:-1:color=black",
+            "setsar=1", f"fps={cfps:g}",
+        ]
         zoom = fx.get("zoom")
-        if zoom in ("in", "out") and dur > 0 and w and h:
-            # animate the scale across the clip via scale's per-frame eval, relative to box.
-            if zoom == "in":
-                vf.append(f"scale=w='{w}*(1+0.20*t/{dur:.3f})':h='{h}*(1+0.20*t/{dur:.3f})':eval=frame")
-                vf.append(f"crop={w}:{h}:(iw-{w})/2:(ih-{h})/2")
-            else:  # out -> shrink and pad into the box
-                vf.append(f"scale=w='{w}*(1-0.20*t/{dur:.3f})':h='{h}*(1-0.20*t/{dur:.3f})':eval=frame")
-                vf.append(f"pad={w}:{h}:({w}-iw)/2:({h}-ih)/2:black")
+        if zoom in ("in", "out") and dur > 0:
+            # VIRTUAL zoom: zoompan keeps the output fixed at the canvas size and scales the
+            # content within it (never changes the actual frame size). in: 1.0->1.2 (push in);
+            # out: 1.2->1.0 (pull back). Centered.
+            nframes = max(1, round(dur * cfps))
+            z = f"1+0.20*on/{nframes}" if zoom == "in" else f"1.20-0.20*on/{nframes}"
+            vf.append(
+                f"zoompan=z='{z}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                f":s={cw}x{ch}:fps={cfps:g}"
+            )
+            vf.append("setsar=1")
         blur = float(fx.get("blur") or 0)
         if blur > 0:
             vf.append(f"gblur=sigma={blur * 20:.2f}")

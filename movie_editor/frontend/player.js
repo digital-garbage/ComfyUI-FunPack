@@ -105,9 +105,10 @@
   }
 
   // Live preview approximation of a clip's video effects (the render does the real thing).
-  // within = seconds into the clip. Blur -> CSS blur; zoom in -> scale up (overflow hidden
-  // by the canvas = crop); zoom out -> scale down (canvas bg shows through = pad); fade ->
-  // opacity. Computed from the playhead so it tracks scrubbing too.
+  // within = seconds into the clip. Blur -> CSS blur; zoom is VIRTUAL — the frame stays the
+  // canvas size and only the content scales (overflow clipped by the canvas), matching the
+  // render's zoompan: in 1.0->1.2 (push in), out 1.2->1.0 (pull back). fade -> opacity.
+  // Computed from the playhead so it tracks scrubbing too.
   function _applyFx(clip, within) {
     const v = _active; if (!v) return;
     const fx = (clip && clip.fx) || {};
@@ -117,7 +118,7 @@
     v.style.filter = blur > 0 ? `blur(${(blur * 8).toFixed(1)}px)` : "";
     let scale = 1;
     if (fx.zoom === "in") scale = 1 + 0.2 * t;
-    else if (fx.zoom === "out") scale = 1 - 0.2 * t;
+    else if (fx.zoom === "out") scale = 1.2 - 0.2 * t;
     v.style.transformOrigin = "center";
     v.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
     let op = 1;
