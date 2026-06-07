@@ -112,7 +112,7 @@ def _project_or_404(pid: str) -> Project:
 def _project_models(p: Optional[Project]) -> dict:
     """The project's own pipeline config, or the global default when it has none yet."""
     m = getattr(p, "models", None) or {}
-    if m.get("slots") or m.get("links"):
+    if m.get("slots") or m.get("links") or m.get("core_overrides"):
         return m
     return nodes.load_models()
 
@@ -623,6 +623,16 @@ if web is not None and PromptServer is not None:
                     label = (slot.get("label") or slot.get("node_class")) + " · " + ci["name"]
                     out.append({"value": f"node:{slot['id']}:{ci['name']}", "label": label})
         return web.json_response({"targets": out})
+
+    @routes.get(UI_PREFIX + "/api/core-graph")
+    async def _core_graph(req):
+        try:
+            oi = await bridge.object_info()
+        except Exception:
+            oi = {}
+        pid = req.query.get("pid")
+        models_cfg = _project_models(projects.get(pid)) if pid else nodes.load_models()
+        return web.json_response({"nodes": builder.core_graph(oi, models_cfg)})
 
     @routes.get(UI_PREFIX + "/api/all-nodes")
     async def _all_nodes(_req):

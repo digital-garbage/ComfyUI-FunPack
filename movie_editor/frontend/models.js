@@ -10,6 +10,8 @@
   const candCache = {};           // role -> [candidate]
   const specByClass = {};         // class -> full node spec (inputs/outputs/connection_inputs)
   let config = { slots: [] };     // {slots:[{id,role,role_label,node_class,inputs:{},wires:{},input_sources:{}}]}
+  let coreNodes = [];             // built-in pipeline description (from /core-graph)
+  let coreOpen = false;           // built-in pipeline panel expanded?
   let coreProducers = [];          // [{id,type,label}]
   let requirements = [];           // [{id,type,label,required,role_hint,hint}]
   let overlay = null;
@@ -670,11 +672,72 @@
     return sec;
   }
 
+  // ── built-in pipeline (core) — visible + re-wireable ──────────────────────────
+  function setCoreOverride(cid, inp, value) {
+    config.core_overrides = config.core_overrides || {};
+    config.core_overrides[cid] = config.core_overrides[cid] || {};
+    if (value) config.core_overrides[cid][inp] = value;
+    else delete config.core_overrides[cid][inp];
+  }
+  function coreCard(n) {
+    const card = el("div", "slot-card open" + (n.installed ? "" : " slot-bad"));
+    const head = el("div", "slot-head");
+    head.append(el("span", "slot-role", n.display_name));
+    head.append(el("span", "slot-node", n.class));
+    if (!n.installed) head.append(el("span", "slot-badge bad", "not installed"));
+    card.append(head);
+    if ((n.inputs || []).length) {
+      const box = el("div", "wire-box");
+      box.append(el("div", "wire-title", "Inputs ← source"));
+      n.inputs.forEach((inp) => {
+        const row = el("div", "wire-row");
+        row.append(el("span", "wire-out", `${inp.name} (${inp.type})`));
+        row.append(el("span", "wire-arrow", "←"));
+        const sel = el("select", "wire-select");
+        (inp.options || []).forEach((o) => { const op = el("option", null, o.label); op.value = o.value; if (o.value === (inp.value || "")) op.selected = true; sel.append(op); });
+        if (inp.value && !(inp.options || []).some((o) => o.value === inp.value)) { const op = el("option", null, inp.value + " (missing)"); op.value = inp.value; op.selected = true; sel.append(op); }
+        sel.onchange = async () => { setCoreOverride(n.id, inp.name, sel.value); await persist(); coreNodes = (await API.coreGraph(window.Store?.get().project?.id).catch(() => ({}))).nodes || coreNodes; render(); };
+        row.append(sel);
+        box.append(row);
+      });
+      card.append(box);
+    }
+    const outs = (n.outputs || []).filter((o) => (o.to || []).length);
+    if (outs.length) {
+      const box = el("div", "wire-box");
+      box.append(el("div", "wire-title", "Outputs → destinations"));
+      outs.forEach((o) => {
+        const row = el("div", "wire-row");
+        row.append(el("span", "wire-out", `${o.name} (${o.type})`));
+        row.append(el("span", "wire-arrow", "→"));
+        row.append(el("span", "wire-dest", o.to.join(", ")));
+        box.append(row);
+      });
+      card.append(box);
+    }
+    return card;
+  }
+  function coreSection() {
+    const sec = el("div", "links-section");
+    const head = el("div", "links-head");
+    const toggle = el("button", "btn ghost tiny", (coreOpen ? "▾ " : "▸ ") + "Built-in pipeline");
+    toggle.onclick = () => { coreOpen = !coreOpen; render(); };
+    head.append(toggle);
+    head.append(el("span", "lib-sub", `${coreNodes.length} fixed nodes`));
+    sec.append(head);
+    if (coreOpen) {
+      sec.append(el("div", "links-hint", "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it."));
+      coreNodes.forEach((n) => sec.append(coreCard(n)));
+    }
+    return sec;
+  }
+
   function body() {
     const b = el("div", "models-body");
     b.append(requirementsPanel());
     b.append(composer());
     b.append(linksSection());
+    b.append(coreSection());
     const v = validation();
     const list = el("div", "slot-list");
     if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet — use the form above to add loaders."));
@@ -700,6 +763,7 @@
     Object.keys(specByClass).forEach((k) => delete specByClass[k]);
     allNodes = null;
     try { await API.refreshModels(); } catch (_) {}
+    try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) {}
     await prewarmSpecs();
     render();
   }
@@ -708,6 +772,7 @@
     await ensureRoles();
     try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; requirements = pp.requirements || []; } catch (_) { ports = []; coreProducers = []; requirements = []; }
     try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
+    try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();
 
     overlay = el("div", "modal-overlay");

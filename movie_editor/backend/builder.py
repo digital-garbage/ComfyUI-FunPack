@@ -344,11 +344,103 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 graph[dnode]["inputs"][dinput] = [sid, oidx]
                 report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
 
+    # 4b. core input overrides: redirect a built-in core node input to a chosen source
+    # ("core:<coreId>:<idx>" or "out:<slotId>:<outName>"). Overrides the default wiring.
+    for cid, ovs in ((models_config or {}).get("core_overrides") or {}).items():
+        if cid not in graph:
+            continue
+        for inp, source in (ovs or {}).items():
+            if not source:
+                continue
+            src = _resolve_source(source, slot_node_id, slot_def, object_info)
+            if src:
+                graph[cid]["inputs"][inp] = list(src)
+                report["wired"].append(f"{source} -> {cid}.{inp} (core override)")
+            else:
+                report["unsatisfied"].append(f"core override {cid}.{inp}: '{source}' could not be resolved.")
+
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report)
 
     return graph, report
+
+
+def core_graph(object_info: dict, models_config: dict | None = None) -> list[dict]:
+    """Describe the built-in core pipeline for the editor: each node, its inputs (with the
+    current source + candidate sources so they can be re-wired) and outputs (with internal
+    destinations). Inputs default to the built-in wiring; `core_overrides` in models_config
+    can redirect any of them (applied by build())."""
+    object_info = object_info or {}
+    overrides = (models_config or {}).get("core_overrides") or {}
+    slots = (models_config or {}).get("slots", []) or []
+
+    rev: dict[str, list] = {}
+    for cid, links in CORE_LINKS.items():
+        for inp, (src, idx) in links.items():
+            rev.setdefault(src, []).append((idx, cid, inp))
+
+    def _outs(core_id):
+        return node_outputs(object_info.get(CORE.get(core_id)) or {})
+
+    def _out_name(core_id, idx):
+        outs = _outs(core_id)
+        return outs[idx]["name"] if 0 <= idx < len(outs) else f"out{idx}"
+
+    # typed producers (core outputs + slot outputs) for the source pickers
+    producers: dict[str, list] = {}
+    for cid2, cls2 in CORE.items():
+        for i, o in enumerate(node_outputs(object_info.get(cls2) or {})):
+            producers.setdefault(o["type"], []).append((f"core:{cid2}:{i}", f"{cid2} · {o['name']}"))
+    slot_label = {}
+    for s in slots:
+        sid = s.get("id"); lbl = s.get("label") or s.get("node_class") or sid
+        slot_label[sid] = lbl
+        for o in node_outputs(object_info.get(s.get("node_class")) or {}):
+            producers.setdefault(o["type"], []).append((f"out:{sid}:{o['name']}", f"{lbl} · {o['name']}"))
+
+    open_by_node: dict[str, dict] = {}
+    for (cid, inp, t, req) in OPEN_PORTS:
+        open_by_node.setdefault(cid, {})[inp] = (t, req)
+
+    def _input_type(cid, inp):
+        for ci in connection_inputs(object_info.get(CORE.get(cid)) or {}):
+            if ci["name"] == inp:
+                return ci["type"]
+        return None
+
+    def _options(t, builtin_label, self_cid):
+        opts = [{"value": "", "label": f"built-in: {builtin_label}"}]
+        for val, lbl in producers.get(t, []):
+            if val.startswith(f"core:{self_cid}:"):
+                continue
+            opts.append({"value": val, "label": lbl})
+        return opts
+
+    nodes = []
+    for cid, cls in CORE.items():
+        nd = object_info.get(cls)
+        ov = overrides.get(cid) or {}
+        inputs = []
+        for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
+            t = _input_type(cid, inp) or "*"
+            builtin = f"{src} · {_out_name(src, idx)}"
+            inputs.append({"name": inp, "type": t, "from": "internal", "detail": builtin,
+                           "value": ov.get(inp, ""), "options": _options(t, builtin, cid)})
+        for inp, (t, req) in open_by_node.get(cid, {}).items():
+            builtin = f"a {t} from your loaders"
+            inputs.append({"name": inp, "type": t, "from": "loader", "required": req,
+                           "detail": builtin + ("" if req else " (optional)"),
+                           "value": ov.get(inp, ""), "options": _options(t, "(auto-wire from loaders)", cid)})
+        outputs = []
+        for i, o in enumerate(node_outputs(nd or {})):
+            dests = [f"{d} · {di}" for (oi, d, di) in rev.get(cid, []) if oi == i]
+            outputs.append({"name": o["name"], "type": o["type"], "to": dests})
+        nodes.append({"id": cid, "class": cls,
+                      "display_name": (nd or {}).get("display_name", cls),
+                      "installed": cls in object_info,
+                      "inputs": inputs, "outputs": outputs})
+    return nodes
 
 
 def _port_index(object_info: dict) -> dict[str, tuple[str, str]]:

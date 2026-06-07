@@ -68,6 +68,7 @@
     imageTargets: (pid) => j("GET", API("/image-targets" + (pid ? `?pid=${encodeURIComponent(pid)}` : ""))),
     // Models config is per-project; pass the project id. Falls back to the global
     // default route (used as the seed/template) when no project is given.
+    coreGraph: (pid) => j("GET", API("/core-graph" + (pid ? `?pid=${encodeURIComponent(pid)}` : ""))),
     getModels: (pid) => j("GET", API(pid ? `/projects/${pid}/models` : "/models")),
     saveModels: (pid, data) => j("PUT", API(pid ? `/projects/${pid}/models` : "/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
