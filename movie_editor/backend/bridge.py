@@ -196,6 +196,54 @@ async def history(prompt_id: str) -> dict:
             return await r.json()
 
 
+async def interrupt() -> dict:
+    """Ask ComfyUI to interrupt the running prompt."""
+    async with await _session() as s:
+        async with s.post(_url("/interrupt")) as r:
+            r.raise_for_status()
+            return {"interrupted": True}
+
+
+# ── sampler step progress ─────────────────────────────────────────────────────
+# ComfyUI's ProgressBar calls a single global hook with (value, total). We chain it so
+# we record the latest step without clobbering ComfyUI's own (websocket) progress.
+_progress = {"value": 0, "max": 0, "ts": 0.0}
+_progress_installed = False
+
+
+def _install_progress_hook():
+    global _progress_installed
+    if _progress_installed:
+        return
+    try:
+        import time as _t
+        import comfy.utils as _cu
+    except Exception:
+        return
+    prev = getattr(_cu, "PROGRESS_BAR_HOOK", None)
+
+    def _hook(value, total, preview=None):
+        _progress["value"] = int(value)
+        _progress["max"] = int(total)
+        _progress["ts"] = _t.time()
+        if callable(prev):
+            try:
+                prev(value, total, preview)
+            except Exception:
+                pass
+
+    try:
+        _cu.set_progress_bar_global_hook(_hook)
+        _progress_installed = True
+    except Exception:
+        pass
+
+
+def current_progress() -> dict:
+    _install_progress_hook()
+    return {"value": _progress["value"], "max": _progress["max"]}
+
+
 async def is_running(prompt_id: str) -> bool:
     async with await _session() as s:
         async with s.get(_url("/queue")) as r:

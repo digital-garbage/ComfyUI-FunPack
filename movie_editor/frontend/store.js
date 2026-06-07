@@ -321,7 +321,19 @@
   }
 
   let pollTimer = null;
+  let progressTimer = null;
   let pollStart = 0;
+  let _interrupted = false;
+
+  function _clearGenTimers() { clearInterval(pollTimer); clearInterval(progressTimer); }
+
+  // Ask ComfyUI to stop the current generation. The running poll then resolves as
+  // "Interrupted" and the run loop stops.
+  async function interrupt() {
+    _interrupted = true;
+    set({ gen: { ...state.gen, msg: "Interrupting…" } });
+    try { await API.interrupt(); } catch (_) {}
+  }
 
   function _elapsed() {
     const s = Math.floor((Date.now() - pollStart) / 1000);
@@ -356,18 +368,32 @@
   function _pollPromise(promptId, targetSceneIds, prefix) {
     prefix = prefix || "Generating…";
     return new Promise((resolve) => {
-      clearInterval(pollTimer);
+      _clearGenTimers();
       let pendingStreak = 0;
+      // Faster step-progress poll (sampler current/total steps).
+      progressTimer = setInterval(async () => {
+        if (_interrupted) return;
+        try {
+          const pr = await API.progress();
+          if (pr && pr.max > 0) set({ gen: { ...state.gen, step: pr.value, maxStep: pr.max } });
+        } catch (_) {}
+      }, 700);
       pollTimer = setInterval(async () => {
+        if (_interrupted) {
+          _clearGenTimers();
+          set({ gen: { state: "idle", promptId, media: [], msg: "Interrupted." } });
+          resolve(false);
+          return;
+        }
         try {
           const s = await API.status(state.project.id, promptId);
           if (s.state === "error") {
-            clearInterval(pollTimer);
+            _clearGenTimers();
             const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";
             set({ gen: { state: "error", promptId, media: [], msg } });
             resolve(false);
           } else if (s.state === "completed") {
-            clearInterval(pollTimer);
+            _clearGenTimers();
             _recordSegment(s.media, targetSceneIds);
             set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
             resolve(true);
@@ -376,15 +402,16 @@
             // entry — it likely crashed or was interrupted by ComfyUI.
             if (s.state === "pending") pendingStreak++; else pendingStreak = 0;
             if (pendingStreak >= 3) {
-              clearInterval(pollTimer);
+              _clearGenTimers();
               set({ gen: { state: "error", promptId, media: [], msg: "Job disappeared from ComfyUI queue — it may have crashed or been interrupted. Check the ComfyUI terminal." } });
               resolve(false);
               return;
             }
-            set({ gen: { ...state.gen, state: s.state, msg: `${prefix} ${_elapsed()}` } });
+            const step = (state.gen.maxStep > 0) ? `  ·  step ${state.gen.step}/${state.gen.maxStep}` : "";
+            set({ gen: { ...state.gen, state: s.state, msg: `${prefix} ${_elapsed()}${step}` } });
           }
         } catch (e) {
-          clearInterval(pollTimer);
+          _clearGenTimers();
           set({ gen: { ...state.gen, state: "error", msg: e.message } });
           resolve(false);
         }
@@ -394,7 +421,8 @@
 
   // Generate one run (single scene, or an explicit list of scene ids). Returns success.
   async function _generateRun(sceneIds, onlyScene, prefix) {
-    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…` } });
+    _interrupted = false;
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
       const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds);
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
@@ -586,7 +614,7 @@
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,

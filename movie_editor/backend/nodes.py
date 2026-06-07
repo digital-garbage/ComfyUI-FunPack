@@ -25,6 +25,16 @@ WIDGET_PRIMITIVES = {"INT", "FLOAT", "STRING", "BOOLEAN"}
 # the isinstance(t, str) guard, but new-style ones need an explicit check.
 _WIDGET_TYPES = WIDGET_PRIMITIVES | {"COMBO"}
 
+
+def _is_combo_type(t) -> bool:
+    """Any dropdown widget: 'COMBO' or a V3 dynamic combo (e.g. COMFY_DYNAMICCOMBO_V3).
+    These are widgets, never graph connections, even though they're string-typed."""
+    return isinstance(t, str) and "COMBO" in t.upper()
+
+
+def _is_widget_type(t) -> bool:
+    return isinstance(t, str) and (t in _WIDGET_TYPES or _is_combo_type(t))
+
 # ComfyUI V3 dynamic match types that are semantically IMAGE-compatible.
 _MATCHTYPE_ALIASES: dict[str, str] = {}  # populated on first lookup — patterns are prefix-matched
 
@@ -116,11 +126,12 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(t, str):
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
-            if t in _WIDGET_TYPES:
+            if _is_widget_type(t):
                 # A widget-typed input is a SOCKET (wireable) only when forceInput is set —
                 # e.g. refinement_key_input is ("STRING", {"forceInput": True}). It always
                 # has a widget fallback, so it's NEVER auto-required (it must not block
-                # generation when left unwired). Plain widgets are handled by widget_inputs.
+                # generation when left unwired). Plain widgets (incl. V3 dynamic combos
+                # like COMFY_DYNAMICCOMBO_V3) are handled by widget_inputs, not here.
                 if not opts.get("forceInput"):
                     continue
                 out.append({"name": name, "type": _normalize_type(t), "required": False})
@@ -168,9 +179,10 @@ def widget_inputs(node_def: dict) -> list[dict]:
                 field["kind"] = "combo"
                 field["choices"] = t
                 field["default"] = opts.get("default", t[0] if t else None)
-            elif t == "COMBO":
-                # V1/new-style combo: type string "COMBO", choices under opts["options"].
-                choices = opts.get("options") or []
+            elif _is_combo_type(t):
+                # V1 "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3): choices under
+                # opts["options"] (V3) or opts["choices"].
+                choices = opts.get("options") or opts.get("choices") or []
                 field["kind"] = "combo"
                 field["choices"] = choices
                 field["default"] = opts.get("default", choices[0] if choices else None)
@@ -268,7 +280,7 @@ def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             # Expose typed sockets, plus forceInput widget sockets (e.g. the STRING
             # refinement_key_input on Studio/Sampler) so they can be wired manually.
-            if t in WIDGET_PRIMITIVES and not opts.get("forceInput"):
+            if _is_widget_type(t) and not opts.get("forceInput"):
                 continue
             ports.append({"id": f"{node_key}.{name}", "node": label, "input": name,
                           "type": t, "label": f"{label} · {name}"})

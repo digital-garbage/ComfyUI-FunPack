@@ -254,6 +254,10 @@ input[type=number] { font-family: var(--font-mono); }
 .gen-readout .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); animation: pulse 1s infinite; flex: 0 0 auto; }
 .gen-readout.error { color: var(--danger); }
 .gen-readout.error .pulse { background: var(--danger); animation: none; }
+.gen-bar { width: 90px; height: 5px; background: #ffffff22; border-radius: 3px; overflow: hidden; flex: 0 0 auto; }
+.gen-bar-fill { height: 100%; background: var(--amber); border-radius: 3px; transition: width .2s; }
+.gen-interrupt { font-family: var(--font-mono); font-size: 11px; color: var(--danger); background: transparent; border: 1px solid color-mix(in srgb, var(--danger) 50%, var(--line)); border-radius: 12px; padding: 2px 9px; cursor: pointer; flex: 0 0 auto; }
+.gen-interrupt:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
 @keyframes pulse { 50% { opacity: .25; } }
 
 /* minibar: rendered-segment overview strip + scrub */

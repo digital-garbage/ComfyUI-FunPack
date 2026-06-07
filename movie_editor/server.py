@@ -429,6 +429,7 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
+        bridge.current_progress()  # ensure the sampler step-progress hook is installed
         active_scenes = [s for s in target.scenes if not s.excluded]
         active_scene_count = len(active_scenes)
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.
@@ -495,6 +496,17 @@ if web is not None and PromptServer is not None:
         except Exception:  # noqa: BLE001
             running = True
         return web.json_response({"state": "running" if running else "pending", "media": []})
+
+    @routes.get(UI_PREFIX + "/api/progress")
+    async def _progress(_req):
+        return web.json_response(bridge.current_progress())
+
+    @routes.post(UI_PREFIX + "/api/interrupt")
+    async def _interrupt(_req):
+        try:
+            return web.json_response(await bridge.interrupt())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": str(e)}, status=502)
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/result")
     async def _result(req):

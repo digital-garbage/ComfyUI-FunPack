@@ -78,6 +78,8 @@
     generate: (id, onlyScene, sceneIds) =>
       j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
+    progress: () => j("GET", API("/progress")),
+    interrupt: () => j("POST", API("/interrupt")),
     renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +

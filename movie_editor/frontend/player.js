@@ -324,9 +324,25 @@
     }
     // generation progress overlay (visible even when there's already media)
     if (["queuing", "running", "pending", "error"].includes(gen.state)) {
+      const busy = gen.state !== "error";
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
       ro.append(el("span", "pulse"));
       ro.append(el("span", null, gen.msg || gen.state));
+      // step progress bar
+      if (busy && gen.maxStep > 0) {
+        const bar = el("div", "gen-bar");
+        const fill = el("div", "gen-bar-fill");
+        fill.style.width = Math.min(100, Math.round((gen.step / gen.maxStep) * 100)) + "%";
+        bar.append(fill);
+        ro.append(bar);
+      }
+      // interrupt
+      if (busy) {
+        const stop = el("button", "gen-interrupt", "■ Interrupt");
+        stop.title = "Stop the current generation";
+        stop.onclick = () => S.interrupt();
+        ro.append(stop);
+      }
       canvas.append(ro);
     }
     body.append(canvas);

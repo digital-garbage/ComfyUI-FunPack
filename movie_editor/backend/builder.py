@@ -158,8 +158,9 @@ def _widget_defaults(node_def: Optional[dict]) -> dict:
                 continue
             if isinstance(t, list):
                 out[name] = opts.get("default", t[0] if t else None)
-            elif t == "COMBO":
-                choices = opts.get("options") or []
+            elif isinstance(t, str) and "COMBO" in t.upper():
+                # "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3)
+                choices = opts.get("options") or opts.get("choices") or []
                 out[name] = opts.get("default", choices[0] if choices else "")
             elif t in WIDGET_PRIMITIVES:
                 # Always emit a value for every widget — ComfyUI's frontend does, and a
