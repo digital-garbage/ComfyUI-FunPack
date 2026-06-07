@@ -218,6 +218,19 @@
   let _minibarEl = null;
   let _totalSecCur = 0;   // total timeline duration for the current project
   let _fpsCur = 25;
+  let _tcEl = null;       // timecode span (updated live, not rebuilt)
+  let _playBtnEl = null;  // play/pause button (glyph updated live, not rebuilt)
+
+  // Lightweight per-tick update: never rebuilds the buttons (rebuilding mid-click ate the
+  // mousedown/mouseup, so play/pause/stop stopped responding during playback).
+  function _updateTransportLive() {
+    if (_tcEl) _tcEl.textContent = _tc(_phSec, _fpsCur);
+    if (_playBtnEl) {
+      _playBtnEl.textContent = _playing ? "⏸" : "▶";
+      _playBtnEl.title = _playing ? "Pause" : "Play";
+      _playBtnEl.classList.toggle("active", _playing);
+    }
+  }
 
   function _renderTransport() {
     if (!_transportEl) return;
@@ -225,7 +238,9 @@
     const stopBtn = el("button", "ic-btn", "⏹"); stopBtn.title = "Stop"; stopBtn.onclick = _stop;
     const playBtn = el("button", "ic-btn" + (_playing ? " active" : ""), _playing ? "⏸" : "▶");
     playBtn.title = _playing ? "Pause" : "Play"; playBtn.onclick = () => _playing ? _pause() : _play();
+    _playBtnEl = playBtn;
     const tc = el("span", "pm-tc", _tc(_phSec, _fpsCur));
+    _tcEl = tc;
     _transportEl.append(stopBtn, playBtn, tc);
 
     // Anchor capture — only when a rendered frame is under the playhead.
@@ -293,8 +308,9 @@
   }
 
   // Subscribe to Player changes to update transport + needle without full re-render
+  // (a full _renderTransport here would recreate the buttons every tick and swallow clicks).
   window.Player.onPlayheadChanged(() => {
-    _renderTransport();
+    _updateTransportLive();
     _renderNeedle();
   });
 
