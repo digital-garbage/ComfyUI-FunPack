@@ -369,10 +369,21 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
-        active_scene_count = len([s for s in target.scenes if not s.excluded])
+        active_scenes = [s for s in target.scenes if not s.excluded]
+        active_scene_count = len(active_scenes)
+        # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.
+        # This makes the timeline trim handle actually affect generation length,
+        # provided the user has linked EmptyLTXVLatent.num_frames → Project Frames
+        # in Models → Linked inputs.
+        trimmed = [s.frames for s in active_scenes if s.frames is not None]
+        effective_frames = (
+            trimmed[0]
+            if trimmed and all(f == trimmed[0] for f in trimmed)
+            else target.num_frames_per_scene
+        )
         graph, report = builder.build(oi, nodes.load_models(), {
             "prompt": prompt, "seed": target.seed,
-            "num_frames_per_scene": target.num_frames_per_scene,
+            "num_frames_per_scene": effective_frames,
             "frame_rate": target.frame_rate,
             "width": target.width, "height": target.height,
             "negative_prompt": target.negative_prompt or None,

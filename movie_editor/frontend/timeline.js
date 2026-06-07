@@ -10,8 +10,15 @@
   const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶" };
   const ZOOM_KEY = "funpack_tl_zoom";
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom
-  let playheadSec = 0;
   let scrollLeft = 0;
+
+  // Refs updated on each render so the Player playhead listener can update
+  // just the needle and timecode without a full re-render.
+  let tlPhEl = null;
+  let tlTcEl = null;
+  let tlScrollEl = null;
+  let tlTotalSec = 0;
+  let tlFps = 25;
 
   // ── helpers ──────────────────────────────────────────────────────────────────
   const sFps = (sc, p) => (sc.fps != null ? sc.fps : p.frame_rate) || 25;
@@ -100,9 +107,10 @@
     const mk = (label, title, cls, fn) => { const b = el("button", "ic-btn" + (cls ? " " + cls : ""), label); b.title = title; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
     actions.append(mk("⟈", "Split clip at playhead", "", () => {
       const offsetSec = leftPx / pxPerSec, durSec = sDur(scene, p), fps = sFps(scene, p);
+      const ph = window.Player?.getPlayhead() ?? 0;
       let at = null;
-      if (playheadSec > offsetSec + 0.05 && playheadSec < offsetSec + durSec - 0.05)
-        at = Math.round((playheadSec - offsetSec) * fps);
+      if (ph > offsetSec + 0.05 && ph < offsetSec + durSec - 0.05)
+        at = Math.round((ph - offsetSec) * fps);
       S.splitScene(scene.id, at);
     }));
     actions.append(mk("‹", "Move left", "", () => S.moveScene(scene.id, -1)));
@@ -165,7 +173,9 @@
     const bar = el("div", "tl-toolbar");
     const add = el("button", "btn ghost tiny", "＋ Clip"); add.onclick = () => S.addScene();
     bar.append(add);
-    const tc = el("span", "tl-tc", timecode(playheadSec, p.frame_rate) + " / " + timecode(totalSec, p.frame_rate));
+    const ph = window.Player?.getPlayhead() ?? 0;
+    const tc = el("span", "tl-tc", timecode(Math.min(ph, totalSec), p.frame_rate) + " / " + timecode(totalSec, p.frame_rate));
+    tlTcEl = tc;  // keep ref for Player's onPlayheadChanged updates
     bar.append(tc);
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const zlabel = el("span", "tl-zlabel", "zoom"); bar.append(zlabel);
@@ -192,7 +202,8 @@
     let acc = 0;
     const lay = scenes.map((sc) => { const d = sDur(sc, p); const o = acc; acc += d; return { sc, o, d }; });
     const totalSec = acc;
-    playheadSec = Math.min(playheadSec, totalSec);
+    tlTotalSec = totalSec;
+    tlFps = p.frame_rate;
     const contentW = Math.max(totalSec * pxPerSec + 40, 480);
 
     body.append(toolbar(st, p, totalSec));
@@ -209,7 +220,21 @@
       tick.append(el("span", "tl-tick-label", rulerLabel(t, iv)));
       ruler.append(tick);
     }
-    ruler.onclick = (e) => { const r = ruler.getBoundingClientRect(); playheadSec = Math.max(0, (e.clientX - r.left) / pxPerSec); render(st); };
+    // Drag-to-scrub on ruler: smooth seek without full re-render (Player listener
+    // updates just the needle + timecode element on every mousemove).
+    ruler.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const scrub = (ev) => {
+        const r = ruler.getBoundingClientRect();
+        const sec = Math.max(0, Math.min((ev.clientX - r.left) / pxPerSec, totalSec));
+        window.Player?.seek(sec);
+      };
+      scrub(e);
+      const move = (ev) => scrub(ev);
+      const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
     content.append(ruler);
 
     // track
@@ -218,17 +243,39 @@
     // seams between clips
     for (let i = 0; i < lay.length - 1; i++) track.append(seamEl(st, p, lay[i].sc, (lay[i].o + lay[i].d) * pxPerSec));
     if (!lay.length) track.append(el("div", "tl-emptyhint", "No clips yet — add one from the toolbar."));
-    // playhead
-    const ph = el("div", "tl-playhead"); ph.style.left = (playheadSec * pxPerSec) + "px"; track.append(ph);
+    // playhead — read from Player; keep a ref so the onPlayheadChanged handler
+    // can update just the left position without a full re-render.
+    const phSec = Math.min(window.Player?.getPlayhead() ?? 0, totalSec);
+    tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; track.append(tlPhEl);
     content.append(track);
 
     scroll.append(content);
     body.append(scroll);
     scroll.scrollLeft = scrollLeft;
+    tlScrollEl = scroll;
 
     const active = scenes.filter((s) => !s.excluded).length;
     meta.append(el("span", null, `${scenes.length} clips · ${active} active · ${timecode(totalSec, p.frame_rate)}`));
   }
 
   S.subscribe(render);
+
+  // Update only the playhead needle + timecode during video playback.
+  // Runs at video's timeupdate rate (~4–25Hz) — no full re-render needed.
+  if (window.Player) {
+    window.Player.onPlayheadChanged((sec) => {
+      const clamped = Math.min(Math.max(0, sec), tlTotalSec);
+      if (tlPhEl) tlPhEl.style.left = (clamped * pxPerSec) + "px";
+      if (tlTcEl) tlTcEl.textContent = timecode(clamped, tlFps) + " / " + timecode(tlTotalSec, tlFps);
+      // Auto-scroll to keep the playhead visible during playback
+      if (tlScrollEl && window.Player.isPlaying()) {
+        const phPx = clamped * pxPerSec;
+        const vis0 = tlScrollEl.scrollLeft;
+        const vis1 = vis0 + tlScrollEl.clientWidth;
+        if (phPx > vis1 - 60 || phPx < vis0 + 20) {
+          tlScrollEl.scrollLeft = Math.max(0, phPx - tlScrollEl.clientWidth / 3);
+        }
+      }
+    });
+  }
 })();

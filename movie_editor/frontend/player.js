@@ -1,4 +1,11 @@
-// Right-top zone: the program monitor (result video) + generation readout.
+// Right-top zone: NLE program monitor.
+//
+// Architecture:
+//   - <video> is created ONCE and re-appended on each store render (never destroyed),
+//     so playback survives editor state changes without restarting.
+//   - window.Player mediates the playhead between this module and timeline.js.
+//   - renderedSegments (set by the store when generation completes) maps scene ids
+//     to video files + time offsets; the player seeks within the correct segment.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
@@ -6,37 +13,295 @@
   const body = document.getElementById("preview-body");
   const statusEl = document.getElementById("preview-status");
 
-  function render(st) {
-    clear(body);
-    const gen = st.gen || { state: "idle", media: [] };
+  // ── persistent video element ───────────────────────────────────────────────
+  const video = document.createElement("video");
+  video.className = "pm-video";
+  video.preload = "auto";
+  video.playsInline = true;
 
-    if (gen.media && gen.media.length) {
-      const m = gen.media[0];
-      const url = API.resultUrl(st.project.id, m);
-      const isVideo = m.kind !== "images" || /\.(mp4|webm|mov)$/i.test(m.filename) ||
-        (m.format || "").toLowerCase().includes("mp4");
-      if (isVideo && !/\.gif$/i.test(m.filename)) {
-        const v = el("video", "result-media"); v.src = url; v.controls = true; v.autoplay = true; v.loop = true;
-        body.append(v);
+  // ── playhead state ─────────────────────────────────────────────────────────
+  let _phSec = 0;
+  let _playing = false;
+  const _phListeners = new Set();
+
+  function _notifyPh() {
+    _phListeners.forEach((fn) => { try { fn(_phSec, _playing); } catch (_) {} });
+  }
+
+  // ── segment helpers ────────────────────────────────────────────────────────
+  // Segments are [{sceneIds, media, startSec, durationSec}], computed from store state.
+  let _segs = [];
+
+  function _buildSegs(st) {
+    if (!st.project) return [];
+    const p = st.project;
+    const sFps = (sc) => (sc.fps != null ? sc.fps : p.frame_rate) || 25;
+    const sFrames = (sc) => (sc.frames != null ? sc.frames : p.num_frames_per_scene) || 1;
+
+    // Map sceneId → timeline start time
+    const startOf = {};
+    let acc = 0;
+    for (const sc of (p.scenes || [])) {
+      startOf[sc.id] = acc;
+      acc += sFrames(sc) / sFps(sc);
+    }
+
+    return (st.renderedSegments || []).flatMap((seg) => {
+      const ids = seg.sceneIds || [];
+      if (!ids.length || !seg.media) return [];
+      const starts = ids.map((id) => startOf[id]).filter((s) => s != null);
+      if (!starts.length) return [];
+      const startSec = Math.min(...starts);
+      const endSec = Math.max(...ids.map((id) => {
+        const sc = (p.scenes || []).find((s) => s.id === id);
+        return sc ? startOf[id] + sFrames(sc) / sFps(sc) : 0;
+      }));
+      return [{ ...seg, startSec, durationSec: Math.max(0, endSec - startSec) }];
+    });
+  }
+
+  function _segAt(sec) {
+    return _segs.find((s) => sec >= s.startSec - 0.05 && sec < s.startSec + s.durationSec + 0.05) || null;
+  }
+
+  // ── video src management ───────────────────────────────────────────────────
+  let _currentUrl = null;
+  let _loadedSeg = null;
+  let _seekPending = null;  // time offset to apply after loadedmetadata
+
+  function _loadAndSeek(seg, offsetSec) {
+    if (!seg?.media) return;
+    const pid = S.get().project?.id;
+    const url = API.resultUrl(pid, seg.media);
+    _loadedSeg = seg;
+    if (url === _currentUrl) {
+      // Same file — seek directly (no reload)
+      video.currentTime = Math.max(0, Math.min(offsetSec, video.duration - 0.02 || offsetSec));
+    } else {
+      _currentUrl = url;
+      _seekPending = offsetSec;
+      video.src = url;
+      video.load();
+    }
+  }
+
+  video.addEventListener("loadedmetadata", () => {
+    if (_seekPending != null) {
+      video.currentTime = Math.max(0, Math.min(_seekPending, video.duration - 0.02));
+      _seekPending = null;
+    }
+  });
+
+  video.addEventListener("timeupdate", () => {
+    if (!_loadedSeg) return;
+    _phSec = _loadedSeg.startSec + video.currentTime;
+    _notifyPh();
+  });
+
+  // At end of segment: jump to next rendered segment or stop.
+  video.addEventListener("ended", () => {
+    _playing = false;
+    if (_loadedSeg) {
+      const endSec = _loadedSeg.startSec + _loadedSeg.durationSec;
+      const next = _segs.find((s) => s.startSec >= endSec - 0.05 && s !== _loadedSeg);
+      if (next) {
+        _phSec = next.startSec;
+        _loadAndSeek(next, 0);
+        video.play().catch(() => {});
+        _playing = true;
       } else {
-        const img = el("img", "result-media"); img.src = url; body.append(img);
+        _phSec = endSec;
       }
-      body.append(el("div", "result-cap", m.filename));
+    }
+    _notifyPh();
+    _renderTransport();
+  });
+
+  // ── transport actions ──────────────────────────────────────────────────────
+  function _seek(sec) {
+    _phSec = Math.max(0, sec);
+    const seg = _segAt(_phSec);
+    if (seg) _loadAndSeek(seg, _phSec - seg.startSec);
+    _notifyPh();
+  }
+
+  function _play() {
+    let seg = _segAt(_phSec);
+    if (!seg) seg = _segs.find((s) => s.startSec >= _phSec - 0.05);
+    if (!seg) return;
+    if (_phSec < seg.startSec) _phSec = seg.startSec;
+    _loadAndSeek(seg, _phSec - seg.startSec);
+    video.play().catch(() => {});
+    _playing = true;
+    _notifyPh();
+    _renderTransport();
+  }
+
+  function _pause() {
+    video.pause();
+    _playing = false;
+    _notifyPh();
+    _renderTransport();
+  }
+
+  function _stop() {
+    video.pause();
+    _phSec = 0;
+    _playing = false;
+    const first = _segs[0];
+    if (first) _loadAndSeek(first, 0);
+    _notifyPh();
+    _renderTransport();
+  }
+
+  // ── public Player API (consumed by timeline.js) ────────────────────────────
+  window.Player = {
+    seek: _seek,
+    getPlayhead: () => _phSec,
+    play: _play,
+    pause: _pause,
+    stop: _stop,
+    isPlaying: () => _playing,
+    onPlayheadChanged: (fn) => { _phListeners.add(fn); return () => _phListeners.delete(fn); },
+  };
+
+  // ── timecode formatter ─────────────────────────────────────────────────────
+  const _p2 = (n) => String(Math.floor(Math.max(0, n))).padStart(2, "0");
+  function _tc(sec, fps) {
+    fps = fps || 25; sec = Math.max(0, sec);
+    const f = Math.round(sec * fps), ff = f % fps, t = Math.floor(f / fps);
+    return _p2(t / 3600) + ":" + _p2((t % 3600) / 60) + ":" + _p2(t % 60) + ":" + _p2(ff);
+  }
+
+  // ── transport DOM (re-rendered without touching the video) ─────────────────
+  let _transportEl = null;
+  let _minibarEl = null;
+  let _totalSecCur = 0;   // total timeline duration for the current project
+  let _fpsCur = 25;
+
+  function _renderTransport() {
+    if (!_transportEl) return;
+    clear(_transportEl);
+    const stopBtn = el("button", "ic-btn", "⏹"); stopBtn.title = "Stop"; stopBtn.onclick = _stop;
+    const playBtn = el("button", "ic-btn" + (_playing ? " active" : ""), _playing ? "⏸" : "▶");
+    playBtn.title = _playing ? "Pause" : "Play"; playBtn.onclick = () => _playing ? _pause() : _play();
+    const tc = el("span", "pm-tc", _tc(_phSec, _fpsCur));
+    _transportEl.append(stopBtn, playBtn, tc);
+  }
+
+  function _renderNeedle() {
+    if (!_minibarEl || !_totalSecCur) return;
+    let needle = _minibarEl.querySelector(".pm-needle");
+    if (!needle) { needle = el("div", "pm-needle"); _minibarEl.append(needle); }
+    needle.style.left = (Math.min(_phSec, _totalSecCur) / _totalSecCur * 100).toFixed(3) + "%";
+  }
+
+  // Subscribe to Player changes to update transport + needle without full re-render
+  window.Player.onPlayheadChanged(() => {
+    _renderTransport();
+    _renderNeedle();
+  });
+
+  // ── segment change detection ───────────────────────────────────────────────
+  let _lastSegHash = "";
+  let _lastProjectId = null;
+
+  // ── full render (store subscription) ──────────────────────────────────────
+  function render(st) {
+    // Project switch: reset video state
+    if (st.project?.id !== _lastProjectId) {
+      _lastProjectId = st.project?.id || null;
+      video.pause(); video.src = "";
+      _currentUrl = null; _loadedSeg = null; _seekPending = null;
+      _phSec = 0; _playing = false;
+    }
+
+    _segs = _buildSegs(st);
+    const hash = _segs.map((s) => s.media?.filename || "").join("|");
+    if (hash !== _lastSegHash) {
+      _lastSegHash = hash;
+      // Segments changed — re-resolve current position
+      const seg = _segAt(_phSec);
+      if (seg) _loadAndSeek(seg, _phSec - seg.startSec);
+      else if (_segs.length && !_loadedSeg) _loadAndSeek(_segs[0], 0);
+    }
+
+    const p = st.project;
+    const gen = st.gen || { state: "idle", media: [] };
+    _fpsCur = p?.frame_rate || 25;
+
+    // Compute total duration
+    const sFps = (sc) => (sc.fps != null ? sc.fps : _fpsCur) || 25;
+    const sFrames = (sc) => (sc.frames != null ? sc.frames : p?.num_frames_per_scene || 1) || 1;
+    _totalSecCur = 0;
+    for (const sc of (p?.scenes || [])) _totalSecCur += sFrames(sc) / sFps(sc);
+
+    clear(body);
+
+    // ── canvas (video + placeholder) ────────────────────────────────────────
+    const canvas = el("div", "pm-canvas");
+    if (_segs.length) {
+      canvas.append(video);  // re-appending the same element — playback continues
+    } else if (["queuing", "running", "pending"].includes(gen.state)) {
+      const splash = el("div", "pm-gen-splash");
+      splash.append(el("div", "pm-gen-icon", "⚙"));
+      splash.append(el("div", "pm-gen-label", gen.msg || "Generating…"));
+      canvas.append(splash);
     } else {
       const empty = el("div", "program-empty");
       empty.append(el("div", "reel", "🎬"));
-      empty.append(el("div", null, st.project ? "No render yet" : "Open or create a project"));
+      empty.append(el("div", null, p ? "No render yet" : "Open or create a project"));
       empty.append(el("div", "pj-meta", "Generate from the menu or timeline"));
-      body.append(empty);
+      canvas.append(empty);
     }
-
-    // readout overlay
+    // generation progress overlay (visible even when there's already media)
     if (["queuing", "running", "pending", "error"].includes(gen.state)) {
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
       ro.append(el("span", "pulse"));
       ro.append(el("span", null, gen.msg || gen.state));
-      body.append(ro);
+      canvas.append(ro);
     }
+    body.append(canvas);
+
+    // ── minibar (segment strips + scrub needle) ──────────────────────────────
+    const minibar = el("div", "pm-minibar");
+    _minibarEl = minibar;
+    if (p && _totalSecCur > 0) {
+      let acc = 0;
+      (p.scenes || []).forEach((sc) => {
+        const d = sFrames(sc) / sFps(sc);
+        const o = acc; acc += d;
+        const rendered = _segs.some((s) => (s.sceneIds || []).includes(sc.id));
+        const chip = el("div", "pm-chip" + (rendered ? " rendered" : ""));
+        chip.style.width = (d / _totalSecCur * 100).toFixed(3) + "%";
+        chip.title = `Scene ${(p.scenes || []).indexOf(sc) + 1}${rendered ? " (rendered)" : " (not rendered)"}`;
+        // Drag-to-scrub on minibar
+        chip.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          const scrub = (ev) => {
+            const r = minibar.getBoundingClientRect();
+            const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+            _seek(frac * _totalSecCur);
+          };
+          scrub(e);
+          const move = (ev) => scrub(ev);
+          const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+          document.addEventListener("mousemove", move);
+          document.addEventListener("mouseup", up);
+        });
+        minibar.append(chip);
+      });
+      const needle = el("div", "pm-needle");
+      needle.style.left = (Math.min(_phSec, _totalSecCur) / _totalSecCur * 100).toFixed(3) + "%";
+      minibar.append(needle);
+    }
+    body.append(minibar);
+
+    // ── transport bar ────────────────────────────────────────────────────────
+    const transport = el("div", "pm-transport");
+    _transportEl = transport;
+    _renderTransport();
+    body.append(transport);
 
     // header status
     clear(statusEl);

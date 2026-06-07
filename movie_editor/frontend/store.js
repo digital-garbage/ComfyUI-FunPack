@@ -10,6 +10,10 @@
     health: null,          // {ok, comfy_url, template_exists}
     preview: null,         // {combined_prompt, parsed, warning, parse_error}
     gen: { state: "idle", promptId: null, media: [], msg: "" },
+    // Rendered video segments: [{sceneIds, media, startSec (computed), durationSec (computed)}]
+    // Not persisted to disk — cleared on project switch. Player uses these to map
+    // timeline positions to video files and compute seek offsets.
+    renderedSegments: [],
     saving: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
@@ -35,6 +39,7 @@
     state.project = await API.getProject(id);
     state.selectedSceneId = state.project.scenes[0]?.id || null;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
+    state.renderedSegments = [];  // segments are per-session; not persisted
     notify();
     refreshPreview();
   }
@@ -271,13 +276,17 @@
   let pollStart = 0;
   async function generate(onlyScene) {
     if (!state.project) return;
+    // Capture which scene ids this generation covers so the player can map
+    // the output video to the correct timeline positions.
+    const activeScenes = state.project.scenes.filter((s) => !s.excluded);
+    const targetSceneIds = onlyScene ? [onlyScene] : activeScenes.map((s) => s.id);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: onlyScene ? "Queuing scene…" : "Queuing montage…" } });
     try {
       const r = await API.generate(state.project.id, onlyScene);
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return; }
       pollStart = Date.now();
       set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: "Generating…" } });
-      poll(r.prompt_id);
+      poll(r.prompt_id, targetSceneIds);
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
     }
@@ -288,7 +297,7 @@
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   }
 
-  function poll(promptId) {
+  function poll(promptId, targetSceneIds) {
     clearInterval(pollTimer);
     let pendingStreak = 0;
     pollTimer = setInterval(async () => {
@@ -300,6 +309,15 @@
           set({ gen: { state: "error", promptId, media: [], msg } });
         } else if (s.state === "completed") {
           clearInterval(pollTimer);
+          // Record the segment so the player can map it to timeline positions.
+          if (s.media.length && targetSceneIds?.length) {
+            const keep = (state.renderedSegments || []).filter(
+              (seg) => !(seg.sceneIds || []).some((id) => targetSceneIds.includes(id))
+            );
+            // Primary media (first video/gif) is the playable output.
+            const primary = s.media.find((m) => m.kind === "videos" || m.kind === "gifs") || s.media[0];
+            state.renderedSegments = [...keep, { sceneIds: targetSceneIds, media: primary }];
+          }
           set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
         } else {
           // "pending" after being "running" means the job left the queue without a
