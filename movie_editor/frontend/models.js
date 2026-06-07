@@ -53,7 +53,10 @@
   function specFor(slot) { return specByClass[slot.node_class] || null; }
 
   async function persist() {
-    try { config = await API.saveModels(window.Store?.get().project?.id, config); window.dispatchEvent(new Event("funpack-models-changed")); }
+    // Keep the SAME `config` object — every wire/widget handler closes over it, so
+    // reassigning it to the server's returned object detaches those closures and the
+    // next edit wouldn't persist until the node is re-rendered. Save in place instead.
+    try { await API.saveModels(window.Store?.get().project?.id, config); window.dispatchEvent(new Event("funpack-models-changed")); }
     catch (e) { console.error(e); }
   }
 
