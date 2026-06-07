@@ -246,6 +246,19 @@
     notify(); scheduleSave();
   }
 
+  // Move a scene to an absolute index (post-removal index). Used by timeline drag-reorder.
+  function moveSceneTo(id, toIndex) {
+    if (!state.project) return;
+    const arr = state.project.scenes;
+    const from = arr.findIndex((s) => s.id === id);
+    if (from < 0) return;
+    toIndex = Math.max(0, Math.min(arr.length - 1, toIndex));
+    if (toIndex === from) return;
+    const [it] = arr.splice(from, 1);
+    arr.splice(toIndex, 0, it);
+    notify(); scheduleSave();
+  }
+
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
@@ -693,7 +706,7 @@
   window.Store = {
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, moveScene, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, moveScene, moveSceneTo, scene,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,

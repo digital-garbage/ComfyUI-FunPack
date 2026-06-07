@@ -372,6 +372,11 @@ input[type=number] { font-family: var(--font-mono); }
   transition: border-color .12s, box-shadow .12s; }
 .clip::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--amber); opacity: .55; }
 .clip:hover { border-color: #4a4334; }
+.clip:active { cursor: grabbing; }
+.clip.reordering { opacity: .8; z-index: 50; cursor: grabbing; box-shadow: 0 6px 18px rgba(0,0,0,.5); transition: none; }
+body.tl-reordering { cursor: grabbing; user-select: none; }
+.tl-dropline { position: absolute; top: 6px; bottom: 6px; width: 2px; background: var(--amber, #e0a23a);
+  box-shadow: 0 0 6px 1px rgba(224,162,58,.8); z-index: 60; pointer-events: none; }
 .clip.selected { border-color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal-soft); z-index: 3; }
 .clip.selected::before { background: var(--teal); opacity: 1; }
 .clip.excluded { opacity: .42; }

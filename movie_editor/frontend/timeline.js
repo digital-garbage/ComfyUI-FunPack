@@ -70,12 +70,68 @@
     document.addEventListener("mouseup", up);
   }
 
+  // ── drag-reorder: where in the track does the cursor want to drop? ───────────────
+  // Returns {idx, x}: idx = post-removal insertion index among non-dragged clips; x =
+  // the boundary's x relative to the track (for the insertion line).
+  function _dropTarget(track, dragged, clientX) {
+    const others = [...track.querySelectorAll(".clip")].filter((c) => c !== dragged);
+    const tr = track.getBoundingClientRect();
+    let idx = 0;
+    for (const c of others) {
+      const r = c.getBoundingClientRect();
+      if (clientX > r.left + r.width / 2) idx++; else break;
+    }
+    let x;
+    if (!others.length) x = 0;
+    else if (idx === 0) x = others[0].getBoundingClientRect().left - tr.left;
+    else x = others[idx - 1].getBoundingClientRect().right - tr.left;
+    return { idx, x };
+  }
+
   // ── clip ───────────────────────────────────────────────────────────────────────
   function clipEl(st, p, scene, index, leftPx, widthPx) {
     const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : ""));
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = () => S.selectScene(scene.id);
+
+    // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
+    // plain clicks = select; trim handle / action buttons opt out).
+    clip.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim")) return;
+      const startX = e.clientX;
+      let dragging = false, drop = null;
+      const track = clip.parentNode;
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX;
+        if (!dragging) {
+          if (Math.abs(dx) < 5) return;
+          dragging = true; clip.classList.add("reordering"); document.body.classList.add("tl-reordering");
+          _reordering = true;  // hard-block store-driven rebuilds while dragging
+        }
+        clip.style.transform = `translateX(${dx}px)`;
+        drop = _dropTarget(track, clip, ev.clientX);
+        let line = track.querySelector(".tl-dropline");
+        if (!line) { line = el("div", "tl-dropline"); track.append(line); }
+        line.style.left = drop.x + "px";
+      };
+      const onUp = (ev) => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.classList.remove("tl-reordering");
+        const line = track.querySelector(".tl-dropline"); if (line) line.remove();
+        if (dragging) {
+          ev.preventDefault();
+          clip.style.transform = ""; clip.classList.remove("reordering");
+          _reordering = false;
+          if (drop) S.moveSceneTo(scene.id, drop.idx);
+          // swallow the click that fires right after the drag so it doesn't re-select
+          clip.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
+        }
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
 
     // accept a media asset dragged from the bin → sets this clip's source
     clip.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("application/funpack-media")) { e.preventDefault(); clip.classList.add("drop-target"); } });
@@ -235,8 +291,10 @@
   // Don't rebuild the timeline while the user is interacting with one of its controls
   // (e.g. the rating dropdown) — a store notify (autosave/progress) would close it.
   let _tlEditing = false;
+  let _reordering = false;  // a clip is being drag-reordered — never rebuild mid-drag
 
   function render(st) {
+    if (_reordering) return;
     if (_tlEditing) {
       // Only hold off if a control is genuinely still focused; otherwise the flag got
       // stuck (focused element removed without a focusout) — clear it and re-render.
