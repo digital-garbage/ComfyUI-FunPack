@@ -462,6 +462,7 @@
   function render(st) {
     if (_editing) return;  // editing in progress — leave the DOM (and the user's caret) alone
 
+    const scrollTop = body.scrollTop;  // preserve scroll across the rebuild
     clear(body);
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const scene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
@@ -470,6 +471,7 @@
     if (scene) renderScene(st, scene); else renderProject(st);
     renderExposed(st);
     renderSplit(st);
+    body.scrollTop = scrollTop;  // restore so editing doesn't jump to the top
   }
 
   // Track edit state so autosave re-renders never interrupt the focused field.
@@ -481,8 +483,13 @@
     const t = e.target;
     if (!(t && t.dataset && t.dataset.k)) return;
     _editing = false;
-    // If focus didn't move to another of our fields, re-sync the inspector to state.
-    setTimeout(() => { if (!_editing) render(S.get()); }, 60);
+    // Persist the edit now (no more per-second autosave), then re-sync if focus didn't
+    // move to another field. flushSave commits + notifies (which renders); fall back to a
+    // manual render when there was nothing pending.
+    setTimeout(() => {
+      if (_editing) return;
+      if (!S.flushSave()) render(S.get());
+    }, 60);
   });
 
   S.subscribe(render);

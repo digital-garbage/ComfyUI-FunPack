@@ -106,15 +106,29 @@
   }
 
   // ── editing ────────────────────────────────────────────────────────────────
+  // Autosave just persists the project to disk so edits aren't lost — it does NOT need
+  // to fire every keystroke. Discrete actions (dropdowns, checkboxes) save ~1s after the
+  // last change; free typing waits longer and is flushed on blur (see flushSave).
   function scheduleSave() {
     state.saving = true; notify();
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(commit, 900);
+    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, 1200);
   }
 
   // For free-text / number fields: update state and queue a save WITHOUT re-rendering,
-  // so typing isn't interrupted. The eventual commit() re-renders once, after a pause.
-  function scheduleSaveSilent() { clearTimeout(saveTimer); saveTimer = setTimeout(commit, 1100); }
+  // so typing isn't interrupted. Long debounce; blur flushes it (flushSave).
+  function scheduleSaveSilent() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, 6000);
+  }
+
+  // Commit any pending save immediately (field blur / before generate). Returns the
+  // commit promise when it flushed, else null.
+  function flushSave() {
+    if (!saveTimer) return null;
+    clearTimeout(saveTimer); saveTimer = null;
+    return commit();
+  }
 
   async function commit() {
     if (!state.project) return;
@@ -395,6 +409,7 @@
 
   async function generate(onlyScene) {
     if (!state.project) return;
+    await flushSave();  // ensure the server has the latest edits before generating
     if (!onlyScene) return generateMontage();
     await _generateRun([onlyScene], onlyScene, "Generating scene");
   }
@@ -403,6 +418,7 @@
   // (one GPU at a time). Each run's first scene supplies its i2v anchor.
   async function generateMontage() {
     if (!state.project) return;
+    await flushSave();  // persist pending edits before reading scenes/runs
     const runs = _runs();
     if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
     for (let i = 0; i < runs.length; i++) {
@@ -568,7 +584,7 @@
   window.Store = {
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, selectScene, addScene, removeScene, moveScene, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, moveScene, scene,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
