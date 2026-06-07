@@ -235,6 +235,11 @@
 
     const scroll = el("div", "tl-scroll");
     scroll.addEventListener("scroll", () => { scrollLeft = scroll.scrollLeft; });
+    // Click empty timeline space (not a clip/seam) to clear the selection.
+    scroll.addEventListener("click", (e) => {
+      if (st.selectedSceneId && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2"))
+        S.selectScene(null);
+    });
     const content = el("div", "tl-content"); content.style.width = contentW + "px";
 
     // ruler
