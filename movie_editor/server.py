@@ -109,6 +109,14 @@ def _project_or_404(pid: str) -> Project:
     return p
 
 
+def _project_models(p: Optional[Project]) -> dict:
+    """The project's own pipeline config, or the global default when it has none yet."""
+    m = getattr(p, "models", None) or {}
+    if m.get("slots") or m.get("links"):
+        return m
+    return nodes.load_models()
+
+
 def _solo(p: Project, only_scene: Optional[str]) -> Project:
     if not only_scene:
         return p
@@ -185,7 +193,13 @@ if web is not None and PromptServer is not None:
     @routes.post(UI_PREFIX + "/api/projects")
     async def _create(req):
         body = await req.json()
-        return web.json_response(projects.create(str(body.get("name") or "Untitled")).to_dict())
+        p = projects.create(str(body.get("name") or "Untitled"))
+        # seed the new project's pipeline config from the global default
+        glob = nodes.load_models()
+        if glob.get("slots") or glob.get("links"):
+            p.models = glob
+            projects.save(p)
+        return web.json_response(p.to_dict())
 
     @routes.post(UI_PREFIX + "/api/projects/import")
     async def _import(req):
@@ -426,7 +440,7 @@ if web is not None and PromptServer is not None:
             if trimmed and all(f == trimmed[0] for f in trimmed)
             else target.num_frames_per_scene
         )
-        graph, report = builder.build(oi, nodes.load_models(), {
+        graph, report = builder.build(oi, _project_models(target), {
             "prompt": prompt, "seed": target.seed,
             "num_frames_per_scene": effective_frames,
             "frame_rate": target.frame_rate,
@@ -584,7 +598,7 @@ if web is not None and PromptServer is not None:
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")
-    async def _image_targets(_req):
+    async def _image_targets(req):
         try:
             oi = await bridge.object_info()
         except Exception:
@@ -593,7 +607,9 @@ if web is not None and PromptServer is not None:
         for p in nodes.pipeline_ports(oi):
             if p.get("type") == "IMAGE":
                 out.append({"value": "port:" + p["id"], "label": p["label"]})
-        for slot in nodes.load_models().get("slots", []):
+        pid = req.query.get("pid")
+        models_cfg = _project_models(projects.get(pid)) if pid else nodes.load_models()
+        for slot in models_cfg.get("slots", []):
             nd = oi.get(slot.get("node_class")) or {}
             for ci in nodes.connection_inputs(nd):
                 if ci["type"] == "IMAGE":
@@ -648,6 +664,25 @@ if web is not None and PromptServer is not None:
     async def _models_put(req):
         body = await req.json()
         return web.json_response(nodes.save_models(body))
+
+    # Per-project pipeline config (slots + links). Falls back to the global default
+    # when the project has none yet; saving also updates the global default so the
+    # next NEW project inherits your latest loaders.
+    @routes.get(UI_PREFIX + "/api/projects/{pid}/models")
+    async def _project_models_get(req):
+        return web.json_response(_project_models(_project_or_404(req.match_info["pid"])))
+
+    @routes.put(UI_PREFIX + "/api/projects/{pid}/models")
+    async def _project_models_put(req):
+        p = _project_or_404(req.match_info["pid"])
+        body = await req.json()
+        if not isinstance(body, dict):
+            body = {"slots": []}
+        body.setdefault("slots", [])
+        p.models = body
+        projects.save(p)
+        nodes.save_models(body)  # keep the global default in sync (seeds new projects)
+        return web.json_response(body)
 
     # --- UI: static frontend (must be registered AFTER api routes) ---
     @routes.get(UI_PREFIX)

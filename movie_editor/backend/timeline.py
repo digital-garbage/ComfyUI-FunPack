@@ -25,7 +25,7 @@ def _new_id() -> str:
 class SceneSource:
     """How a scene's latent is born. V1 ignores this (uniform chain); Phase 2 maps
     it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v)."""
-    type: str = "empty"  # "empty" | "image" | "generated_frame" | "carry"
+    type: str = "carry"  # "carry" (default) | "empty" | "image" | "generated_frame"
     media_ref: Optional[str] = None              # asset id, for type == "image"
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
     target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
@@ -34,7 +34,7 @@ class SceneSource:
     def from_dict(d: Optional[dict]) -> "SceneSource":
         d = d or {}
         return SceneSource(
-            type=d.get("type", "empty"),
+            type=d.get("type", "carry"),
             media_ref=d.get("media_ref"),
             frame_ref=d.get("frame_ref"),
             target=d.get("target"),
@@ -130,6 +130,10 @@ class Project:
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
     sampler_inputs: dict = field(default_factory=dict)
+    # Per-project pipeline config: the configured loader/node slots + linked inputs
+    # (same shape as the global models.json). Empty {"slots": []} falls back to the
+    # global default at build/read time; the editor seeds new projects from it.
+    models: dict = field(default_factory=lambda: {"slots": []})
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -153,6 +157,7 @@ class Project:
             sampler_slot=str(d.get("sampler_slot", "funpack")),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
+            models=dict(d.get("models") or {"slots": []}),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )

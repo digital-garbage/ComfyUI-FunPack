@@ -42,6 +42,7 @@
     state.renderedSegments = [];  // segments are per-session; not persisted
     notify();
     refreshPreview();
+    loadModels();  // models config is per-project — reload for this project
   }
 
   async function newProject(name) {
@@ -152,7 +153,9 @@
 
   function addScene() {
     if (!state.project) return;
-    const s = { text: "", transition_to_next: "", source: { type: "empty" }, excluded: false };
+    // Default to "carry": a new scene continues the previous one (overlap) unless the
+    // user picks an anchor/empty. Scene 1 carrying just starts a fresh run.
+    const s = { text: "", transition_to_next: "", source: { type: "carry" }, excluded: false };
     state.project.scenes.push(s);
     notify(); scheduleSave(); // server assigns id; reselect after commit
   }
@@ -444,12 +447,12 @@
 
   // ── pluggable models / exposed controls ──────────────────────────────────────
   async function loadModels() {
-    try { state.models = await API.getModels(); } catch (_) { state.models = { slots: [] }; }
+    try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
     notify();
     loadImageTargets();
   }
   async function loadImageTargets() {
-    try { state.imageTargets = (await API.imageTargets()).targets || []; } catch (_) { state.imageTargets = []; }
+    try { state.imageTargets = (await API.imageTargets(state.project?.id)).targets || []; } catch (_) { state.imageTargets = []; }
     notify();
   }
 
@@ -459,7 +462,7 @@
     if (!slot) return;
     slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
     notify();
-    try { state.models = await API.saveModels(state.models); notify(); }
+    try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
     catch (e) { console.error("saveModels failed", e); }
   }
 
@@ -473,7 +476,7 @@
       if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; }
     });
     notify();
-    try { state.models = await API.saveModels(state.models); notify(); }
+    try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
     catch (e) { console.error("saveModels failed", e); }
   }
 

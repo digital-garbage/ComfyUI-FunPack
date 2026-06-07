@@ -65,9 +65,11 @@
     allNodes: () => j("GET", API("/all-nodes")),
     nodeSpec: (cls) => j("GET", API(`/node/${encodeURIComponent(cls)}`)),
     pipelinePorts: () => j("GET", API("/pipeline-ports")),
-    imageTargets: () => j("GET", API("/image-targets")),
-    getModels: () => j("GET", API("/models")),
-    saveModels: (data) => j("PUT", API("/models"), data),
+    imageTargets: (pid) => j("GET", API("/image-targets" + (pid ? `?pid=${encodeURIComponent(pid)}` : ""))),
+    // Models config is per-project; pass the project id. Falls back to the global
+    // default route (used as the seed/template) when no project is given.
+    getModels: (pid) => j("GET", API(pid ? `/projects/${pid}/models` : "/models")),
+    saveModels: (pid, data) => j("PUT", API(pid ? `/projects/${pid}/models` : "/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
     restart: () => j("POST", API("/restart")),
 

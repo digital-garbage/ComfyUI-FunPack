@@ -53,7 +53,7 @@
   function specFor(slot) { return specByClass[slot.node_class] || null; }
 
   async function persist() {
-    try { config = await API.saveModels(config); window.dispatchEvent(new Event("funpack-models-changed")); }
+    try { config = await API.saveModels(window.Store?.get().project?.id, config); window.dispatchEvent(new Event("funpack-models-changed")); }
     catch (e) { console.error(e); }
   }
 
@@ -653,7 +653,7 @@
   async function open() {
     await ensureRoles();
     try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; requirements = pp.requirements || []; } catch (_) { ports = []; coreProducers = []; requirements = []; }
-    try { config = await API.getModels(); } catch (_) { config = { slots: [] }; }
+    try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
     await prewarmSpecs();
 
     overlay = el("div", "modal-overlay");

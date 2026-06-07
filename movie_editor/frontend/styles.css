@@ -267,10 +267,9 @@ input[type=number] { font-family: var(--font-mono); }
 .insp-hint { font-size: 11px; color: var(--faint); margin: -4px 0 12px; }
 .insp-block { margin-bottom: 16px; }
 
-/* pinned global prompt */
-.insp-global { position: sticky; top: 0; z-index: 5; margin: -2px -2px 14px; padding: 10px 10px 8px;
-  background: linear-gradient(var(--ink-2), var(--ink-1)); border: 1px solid var(--line); border-radius: 9px;
-  box-shadow: 0 6px 14px -10px #000; }
+/* global prompt — first entry in the inspector list (scrolls with content) */
+.insp-global { margin: 0 0 14px; padding: 10px 10px 8px;
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: 9px; }
 .insp-global-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .insp-global-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
 .insp-global-ta { width: 100%; background: var(--ink-0); border: 1px solid var(--line); border-radius: 7px;
