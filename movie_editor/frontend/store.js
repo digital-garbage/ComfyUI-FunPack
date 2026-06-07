@@ -213,30 +213,28 @@
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
-    const parsed = state.preview.parsed || {};
-    const parsedScenes = parsed.scenes || [];
-    const parsedTrans = parsed.transitions || [];
+    // raw = verbatim split (shortcuts preserved); exp = expanded (transition detection)
+    const raw = state.preview.parsed_raw || state.preview.parsed || {};
+    const exp = state.preview.parsed || raw;
+    const parsedScenes = raw.scenes || [];
     if (!parsedScenes.length) return;
 
-    // Sync anchor
-    if (parsed.anchor != null) state.project.anchor = parsed.anchor;
+    if (raw.anchor != null) state.project.anchor = raw.anchor;
 
-    // Sync scene texts (only if count matches to avoid destructive mismatches)
+    // Sync scene texts verbatim (only if count matches to avoid destructive mismatches)
     const activeScenes = state.project.scenes.filter((s) => !s.excluded);
     if (parsedScenes.length === activeScenes.length) {
       parsedScenes.forEach((ps, i) => { if (ps.text) activeScenes[i].text = ps.text; });
     }
 
-    // Sync transitions: parsed.transitions[i] → scene[i].transition_to_next
-    // We derive the trigger from the library by matching visual_effect.
-    parsedTrans.forEach((t) => {
+    // Transitions: only fill seams the user hasn't set, mapped via the library.
+    const trans = (((exp.scenes || []).length === parsedScenes.length ? exp.transitions : raw.transitions) || []);
+    trans.forEach((t) => {
       const idx = t.after_scene;
-      const sceneIdx = idx >= 0 ? idx : -1;
-      if (sceneIdx >= 0 && sceneIdx < activeScenes.length) {
-        const s = activeScenes[sceneIdx];
-        if (!s.transition_to_next && t.visual_effect) {
-          const lib = (state.transitions || []).find((tr) =>
-            (tr.visual_effect || "none") === t.visual_effect);
+      if (idx >= 0 && idx < activeScenes.length && t.visual_effect) {
+        const s = activeScenes[idx];
+        if (!s.transition_to_next) {
+          const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);
           if (lib) s.transition_to_next = lib.trigger || lib.name || "";
         }
       }
@@ -253,29 +251,40 @@
   async function applyGlobalPrompt(text) {
     if (!state.project) return;
     state.project.global_prompt = text;
-    let parsed;
-    try { parsed = (await API.parsePrompt(state.project.id, text)).parsed; }
+    let res;
+    try { res = await API.parsePrompt(state.project.id, text); }
     catch (e) { alert("Could not parse the global prompt: " + e.message); return; }
-    if (!parsed || !(parsed.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
+    // raw = verbatim split (shortcuts kept in scene text); exp = expanded split, used
+    // ONLY to detect transitions (incl. those a shortcut expands into).
+    const raw = res.parsed_raw || res.parsed;
+    const exp = res.parsed || raw;
+    if (!raw || !(raw.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
 
-    if (parsed.anchor != null) state.project.anchor = parsed.anchor;
+    if (raw.anchor != null) state.project.anchor = raw.anchor;
     const old = state.project.scenes || [];
-    const next = (parsed.scenes || []).map((ps, i) => {
+    const next = (raw.scenes || []).map((ps, i) => {
       const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "empty" }, excluded: false };
-      base.text = ps.text || "";
+      base.text = ps.text || "";          // verbatim — shortcuts preserved
       base.transition_to_next = "";
       return base;
     });
-    (parsed.transitions || []).forEach((t) => {
-      const idx = t.after_scene;
-      if (idx >= 0 && idx < next.length && t.visual_effect) {
-        const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);
-        if (lib) next[idx].transition_to_next = lib.trigger || lib.name || "";
-      }
-    });
+    _applyDetectedTransitions(next, raw, exp);
     state.project.scenes = next;
     state.selectedSceneId = null;  // show project view so the result is visible
     notify(); scheduleSave();
+  }
+
+  // Map detected transitions (visual_effect) onto scene seams via the library. Prefers
+  // the expanded split (catches shortcut→transition) when its scene count matches.
+  function _applyDetectedTransitions(scenes, raw, exp) {
+    const trans = (((exp.scenes || []).length === scenes.length ? exp.transitions : raw.transitions) || []);
+    trans.forEach((t) => {
+      const idx = t.after_scene;
+      if (idx >= 0 && idx < scenes.length && t.visual_effect) {
+        const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);
+        if (lib) scenes[idx].transition_to_next = lib.trigger || lib.name || "";
+      }
+    });
   }
 
   // ── preview ──────────────────────────────────────────────────────────────────

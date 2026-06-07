@@ -27,10 +27,19 @@ def _funpack_imports():
 
 
 def parse_timeline(prompt: str, seed: int = 0) -> dict:
-    """{anchor, scenes, transitions} — the canonical split Studio will see."""
+    """{anchor, scenes, transitions} — the canonical split Studio will see.
+    Shortcuts are expanded first (as generation does)."""
     parse_timeline_segments, apply_prompt_shortcuts, *_ = _funpack_imports()
     expanded, _applied = apply_prompt_shortcuts(str(prompt or ""), seed=int(seed or 0))
     return parse_timeline_segments(expanded)
+
+
+def parse_timeline_raw(prompt: str) -> dict:
+    """Split WITHOUT expanding shortcuts — scene texts stay verbatim (shortcuts and
+    transition triggers preserved). Used by editing views so the user keeps operating
+    on shortcuts unchanged; only the full preview / generation expand them."""
+    parse_timeline_segments, *_ = _funpack_imports()
+    return parse_timeline_segments(str(prompt or ""))
 
 
 def transitions() -> dict:
