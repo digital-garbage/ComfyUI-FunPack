@@ -8,7 +8,7 @@ Right now, this is purely a passion project bringing me $0 per month and I'd rat
 I feel uncomfortable asking for financial support, yet I'd still appreciate it if you can help to sustain this project and let it live.
 Vast.ai are cool guys I would recommend to you without being paid a dime (and I did that before) - https://cloud.vast.ai/?ref_id=308176 - these are providers of my AI instances I use for experiments.
 
-You can also ask for a personal couching where I will guide you through every single button of FunPack and explain in details what works and why.
+You can also ask for a personal coaching where I will guide you through every single button of FunPack and explain in details what works and why.
 Please contact me on Discord if you are interested - @digitalgarbage
 
 Just in case - I will NEVER hide a single feature behind paywall or refuse to respond to your question like "What it is?" or "How does it work?" or "How do I set it up?".
