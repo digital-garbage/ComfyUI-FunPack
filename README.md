@@ -2,6 +2,18 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
+## Support
+
+Sadly, but running that project and keeping it alive costs me somewhere around $200-$300 per month.
+I feel really guilty asking for any sort of support because I highly believe that open-source software must be delivered for absolutely free.
+But right now, this project is bringing me only joy without bringing me any finances to sustain itself.
+
+Not asking for much - I'd just recommend the service I use for renting instances for my AI workflows - vast.ai.
+Please use the referral link - it'll help me to run my test environments and refine the FunPack for you.
+
+Right now, this is purely a passion project bringing me $0 per month and I'd rather have it like that.
+Anyways - please use the link. vast.ai are cool guys I would recommend to you without being paid a dime (and I did that before) - https://cloud.vast.ai/?ref_id=308176
+
 ## Updates in 2.7.7
 
 **Batch Training** brings controlled-batch RLHF to the workflow. Activate a batch and the Scene Chain sampler runs the chain `N` times with everything frozen except the noise seed, giving you `N` directly-comparable videos. Studio shows a rating panel; on submit the value function trains on the shared (frozen) conditioning with each variant's reward — same conditioning, N rewards, the cleanest comparison signal there is. Spans the engine, a Studio variant producer, the `/funpack/batch` routes and rating window, and the value-function intake. Batches live in ComfyUI's temp dir and clear on restart.
