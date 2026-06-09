@@ -4,23 +4,18 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
 
 ## Support
 
-Sadly, but running that project and keeping it alive costs me somewhere around $200-$300 per month.
-I feel really guilty asking for any sort of support because I highly believe that open-source software must be delivered for absolutely free.
-But right now, this project is bringing me only joy without bringing me any finances to sustain itself.
+Right now, this is purely a passion project bringing me $0 per month and I'd rather have it like that, but it bites my wallet quite a lot.
+I feel uncomfortable asking for financial support, yet I'd still appreciate it if you can help to sustain this project and let it live.
+Vast.ai are cool guys I would recommend to you without being paid a dime (and I did that before) - https://cloud.vast.ai/?ref_id=308176 - these are providers of my AI instances I use for experiments.
 
-Not asking for much - I'd just recommend the service I use for renting instances for my AI workflows - vast.ai.
-Please use the referral link - it'll help me to run my test environments and refine the FunPack for you.
-
-Right now, this is purely a passion project bringing me $0 per month and I'd rather have it like that.
-Anyways - please use the link. vast.ai are cool guys I would recommend to you without being paid a dime (and I did that before) - https://cloud.vast.ai/?ref_id=308176
-
-Or you can ask for a personal couching where I will guide you through every single button of FunPack and explain in details why this is a technology worth time and money.
+You can also ask for a personal couching where I will guide you through every single button of FunPack and explain in details what works and why.
 Please contact me on Discord if you are interested - @digitalgarbage
 
-Just in case - I will NEVER hide a single feature behind paywall or refuse to respond to your question like "What it is?" or "How does it work?" or "How do I set it up?"
+Just in case - I will NEVER hide a single feature behind paywall or refuse to respond to your question like "What it is?" or "How does it work?" or "How do I set it up?".
 Everything on this repo comes for free, available for everyone to download, use and refine to their own taste - this is covered by GPLv3 license.
 
 With <3
+
 DigitalGarbage
 
 ## Updates in 2.7.7
