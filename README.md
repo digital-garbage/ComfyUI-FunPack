@@ -17,6 +17,12 @@ Anyways - please use the link. vast.ai are cool guys I would recommend to you wi
 Or you can ask for a personal couching where I will guide you through every single button of FunPack and explain in details why this is a technology worth time and money.
 Please contact me on Discord if you are interested - @digitalgarbage
 
+Just in case - I will NEVER hide a single feature behind paywall or refuse to respond to your question like "What it is?" or "How does it work?" or "How do I set it up?"
+Everything on this repo comes for free, available for everyone to download, use and refine to their own taste - this is covered by GPLv3 license.
+
+With <3
+DigitalGarbage
+
 ## Updates in 2.7.7
 
 **Batch Training** brings controlled-batch RLHF to the workflow. Activate a batch and the Scene Chain sampler runs the chain `N` times with everything frozen except the noise seed, giving you `N` directly-comparable videos. Studio shows a rating panel; on submit the value function trains on the shared (frozen) conditioning with each variant's reward — same conditioning, N rewards, the cleanest comparison signal there is. Spans the engine, a Studio variant producer, the `/funpack/batch` routes and rating window, and the value-function intake. Batches live in ComfyUI's temp dir and clear on restart.
