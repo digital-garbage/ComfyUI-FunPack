@@ -19,6 +19,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     build_scene_guides_payload,
     collapse_generative_units,
     group_generative_units,
+    is_mixed_source,
     normalize_guide_settings,
 )
 
@@ -127,6 +128,25 @@ def test_guide_stack_studio_default_per_continuation_scene():
     assert payload["scenes"][0] is None
     assert payload["scenes"][1] == [STUDIO_DEFAULT_GUIDE]
     assert payload["scenes"][2] == [STUDIO_DEFAULT_GUIDE]
+
+
+def test_mixed_source_emits_anchor_and_studio_default():
+    p = _project(
+        scenes=[
+            {"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}},
+            {"id": "s2", "text": "b", "source": {"type": "mixed", "media_ref": "img2"}},
+        ],
+    )
+    assert is_mixed_source(p.scenes[1])
+    payload = build_scene_guides_payload(p)
+    assert payload is not None
+    assert payload["has_mixed"] is True
+    scene2 = payload["scenes"][1]
+    assert len(scene2) == 2
+    assert scene2[0] == STUDIO_DEFAULT_GUIDE
+    assert scene2[1]["source"] == "anchor"
+    assert scene2[1]["media_ref"] == "img2"
+    assert scene2[1]["apply_at"] == 0
 
 
 def test_guide_stack_accumulate_prior():

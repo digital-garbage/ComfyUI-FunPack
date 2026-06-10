@@ -607,13 +607,13 @@
   }
 
   // Split the active scenes into chain runs. A run starts at an anchored scene
-  // (empty / image / generated_frame); a "carry" scene appends to the current run
+  // (empty / image / generated_frame); "mixed" and "carry" continue the current run.
   // so it overlaps the previous scene (one chain-sampler request per run).
   // True if a scene's image anchor still exists in the media bin (deleted image → fall
   // back to carry / i2v guides, not a broken anchor).
   function _anchorAvailable(s) {
     const t = s.source && s.source.type;
-    if (t !== "image" && t !== "generated_frame") return false;
+    if (t !== "image" && t !== "generated_frame" && t !== "mixed") return false;
     const ref = s.source.media_ref;
     return !!(ref && (state.mediaBin || []).some((m) => m.id === ref));
   }
@@ -625,6 +625,7 @@
       // Editorial subclips always continue the current run; carry / broken anchors too.
       const isCarry = isGenSubclip(s)
         || t === "carry"
+        || t === "mixed"
         || ((t === "image" || t === "generated_frame") && !_anchorAvailable(s));
       if (isCarry && runs.length) runs[runs.length - 1].push(s.id);
       else runs.push([s.id]);

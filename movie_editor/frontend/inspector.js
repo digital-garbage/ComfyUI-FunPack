@@ -10,6 +10,7 @@
     ["image", "Image · i2v anchor"],
     ["generated_frame", "From generated frame"],
     ["carry", "Carry i2v guide · continue previous"],
+    ["mixed", "Mixed · anchor + prior guides"],
   ];
 
   function transitionSelect(value, onChange) {
@@ -156,12 +157,18 @@
     src.onchange = () => S.patchScene(scene.id, { source: { ...(root.source || {}), type: src.value } });
     body.append(field("Source", src));
 
-    if ((root.source?.type) === "image") renderImageSource(st, root);
+    if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root);
     if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
     if ((root.source?.type) === "carry") {
       const hint = el("div", "insp-block");
       hint.append(el("div", "insp-hint",
-        "No start frame of its own — this scene continues from the previous scene's i2v guide and overlaps with it (chain-sampler carry behaviour). Use this for a continuous shot; use an Image / generated frame to hard-cut to a new anchor."));
+        "No start frame of its own — this scene continues from the previous scene's i2v guide and overlaps with it (chain-sampler carry behaviour). Use this for a continuous shot; use Mixed or Image to supply a new anchor while keeping prior guides."));
+      body.append(hint);
+    }
+    if ((root.source?.type) === "mixed") {
+      const hint = el("div", "insp-block");
+      hint.append(el("div", "insp-hint",
+        "Stays in the same chain run (overlap + prior guides at frame 0) while also applying this scene's image anchor at frame 0. Default: Studio guide from scene 1 plus this anchor — enable Custom guide stack in Project for more control."));
       body.append(hint);
     }
 

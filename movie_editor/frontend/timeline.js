@@ -7,7 +7,7 @@
   const body = document.getElementById("timeline-body");
   const meta = document.getElementById("timeline-meta");
 
-  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥" };
+  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑" };
   const ZOOM_KEY = "funpack_tl_zoom";
   const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom

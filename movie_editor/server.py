@@ -80,34 +80,53 @@ def _media_from_history(hist_entry: dict) -> list[dict]:
     return out
 
 
-def _prepare_media(proj: Project) -> Optional[dict]:
-    """If a scene has an image asset + a chosen target, copy it into ComfyUI's input
-    folder (ephemeral) and return {filename, target} for the builder to LoadImage."""
+def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     import os
     import shutil
+    path = media.path_for(ref)
+    if not path:
+        return None
+    fn = f"funpack_movie_{ref}{path.suffix}"
+    try:
+        shutil.copy(str(path), os.path.join(indir, fn))
+    except OSError:
+        return None
+    return fn
+
+
+def _prepare_media(proj: Project) -> Optional[dict]:
+    """Copy scene image assets into ComfyUI's input folder.
+
+    Returns {"primary": {filename, target}, "by_scene": {scene_id: {filename, media_ref, target}}}
+    for the builder (first run anchor) and mixed per-scene anchors in the sampler.
+    """
+    import os
     try:
         import folder_paths
         indir = folder_paths.get_input_directory()
     except Exception:
         return None
+    primary = None
+    by_scene: dict = {}
     for sc in proj.scenes:
+        if sc.excluded:
+            continue
         src = sc.source
         ref = getattr(src, "media_ref", None)
         tgt = getattr(src, "target", None)
-        # A target is OPTIONAL now (routing is automatic — the image becomes a LoadImage
-        # IMAGE producer that auto-wires). Only an asset reference is required.
-        if not (src and getattr(src, "type", "") in ("image", "generated_frame") and ref):
+        stype = getattr(src, "type", "") if src else ""
+        if stype not in ("image", "generated_frame", "mixed") or not ref:
             continue
-        path = media.path_for(ref)
-        if not path:
+        fn = _copy_scene_media(ref, indir)
+        if not fn:
             continue
-        fn = f"funpack_movie_{ref}{path.suffix}"
-        try:
-            shutil.copy(str(path), os.path.join(indir, fn))
-        except OSError:
-            return None
-        return {"filename": fn, "target": tgt}
-    return None
+        entry = {"filename": fn, "media_ref": ref, "target": tgt}
+        by_scene[sc.id] = entry
+        if primary is None:
+            primary = {"filename": fn, "target": tgt}
+    if not by_scene:
+        return None
+    return {"primary": primary, "by_scene": by_scene}
 
 
 def _project_or_404(pid: str) -> Project:
@@ -181,6 +200,13 @@ def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
         samp["funpack_scene_guides"] = json.dumps(guides)
     elif scene_count > 1:
         samp["carry_i2v_guides"] = True
+    return samp
+
+
+def _attach_scene_media(samp: dict, media_pack: Optional[dict]) -> dict:
+    import json
+    if media_pack and media_pack.get("by_scene"):
+        samp["funpack_scene_media"] = json.dumps(media_pack["by_scene"])
     return samp
 
 
@@ -615,6 +641,9 @@ if web is not None and PromptServer is not None:
             if trimmed and all(f == trimmed[0] for f in trimmed)
             else target.num_frames_per_scene
         )
+        media_pack = _prepare_media(target)
+        sampler_inputs = _run_sampler_inputs(target, active_scene_count)
+        _attach_scene_media(sampler_inputs, media_pack)
         graph, report = builder.build(oi, _project_models(target), {
             "prompt": prompt, "seed": target.seed,
             "num_frames_per_scene": effective_frames,
@@ -623,9 +652,9 @@ if web is not None and PromptServer is not None:
             "negative_prompt": target.negative_prompt or None,
             "max_scenes": active_scene_count,
             "studio_inputs": _run_studio_inputs(target, active_scenes),
-            "sampler_inputs": _run_sampler_inputs(target, active_scene_count),
+            "sampler_inputs": sampler_inputs,
             "reset_session": bool(body.get("reset_session")),
-        }, media=_prepare_media(target))
+        }, media=(media_pack or {}).get("primary") if media_pack else None)
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)

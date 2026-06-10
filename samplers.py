@@ -2085,6 +2085,11 @@ class FunPackLTXAVSceneChainSampler:
                     "multiline": True,
                     "tooltip": "Optional JSON from Movie Editor when guide_settings.stack_enabled: per-scene guide lists with source, frame_idx, apply_at, strength. When empty, carry_i2v_guides uses the Studio default (scene 1 template at frame 0).",
                 }),
+                "funpack_scene_media": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "Optional JSON map of scene_id → {filename} for mixed-source per-scene i2v anchors (Movie Editor).",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2830,12 +2835,76 @@ class FunPackLTXAVSceneChainSampler:
             data = json.loads(str(raw))
         except Exception:
             return None
-        if not isinstance(data, dict) or not data.get("stack_enabled"):
+        if not isinstance(data, dict):
+            return None
+        if not data.get("scenes") and not data.get("has_mixed"):
             return None
         return data
 
+    def _parse_scene_media(self, raw):
+        if not raw or not str(raw).strip():
+            return {}
+        try:
+            import json
+            data = json.loads(str(raw))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _encode_image_guide_frame(self, filename, vae, ref_tensor):
+        import os
+        try:
+            import folder_paths
+            import numpy as np
+            from PIL import Image
+        except ImportError:
+            return None
+        path = os.path.join(folder_paths.get_input_directory(), filename)
+        if not os.path.isfile(path):
+            return None
+        try:
+            img = Image.open(path).convert("RGB")
+            arr = np.array(img).astype(np.float32) / 255.0
+            pixels = torch.from_numpy(arr)[None,]
+            if ref_tensor is not None:
+                _, _, _, rh, rw = ref_tensor.shape
+                if pixels.shape[1] != rh or pixels.shape[2] != rw:
+                    pixels = pixels.movedim(-1, 1)
+                    pixels = comfy.utils.common_upscale(pixels, rw, rh, "bilinear", "center")
+                    pixels = pixels.movedim(1, -1)
+            pixels = pixels.movedim(-1, 1)
+            if pixels.ndim == 4:
+                pixels = pixels.unsqueeze(2)
+            encoded = vae.encode(pixels.to(ref_tensor.device if ref_tensor is not None else pixels.device))
+            if isinstance(encoded, dict):
+                samples = encoded.get("samples")
+            else:
+                samples = encoded
+            if samples is None:
+                return None
+            if samples.dim() == 5:
+                return samples[:, :, :1]
+            return samples
+        except Exception:
+            return None
+
+    def _append_media_guide_at(self, chunk, filename, frame_idx, apply_at, strength,
+                               positive, negative, vae):
+        chunk_tensors = self._latent_tensors(chunk)
+        if not chunk_tensors:
+            return chunk, positive, negative, 0, 0
+        guide_frame = self._encode_image_guide_frame(filename, vae, chunk_tensors[0])
+        if guide_frame is None:
+            return chunk, positive, negative, 0, 0
+        total = self._tensor_frames(guide_frame)
+        at = self._resolve_frame_index(total, frame_idx)
+        guide_slice = self._time_slice(guide_frame, at, at + 1)
+        return self._append_guide_latent(
+            chunk, guide_slice, apply_at, strength, positive, negative, vae,
+        ) + (0,)
+
     def _apply_configured_guides(self, chunk, scene_index, guide_list, latent_template,
-                                 scene_outputs, positive, negative, vae):
+                                 scene_outputs, scene_media, positive, negative, vae):
         head_crop = 0
         tail_crop = 0
         for g in guide_list or []:
@@ -2861,6 +2930,20 @@ class FunPackLTXAVSceneChainSampler:
                     continue
                 chunk, positive, negative, head, tail = self._append_scene_guide_at(
                     chunk, scene_outputs[si], frame_idx, apply_at, strength, positive, negative, vae,
+                )
+            elif source in ("anchor", "image"):
+                sid = g.get("scene_id")
+                meta = (scene_media or {}).get(sid) if sid else None
+                if not meta and g.get("media_ref"):
+                    for _k, m in (scene_media or {}).items():
+                        if isinstance(m, dict) and m.get("media_ref") == g.get("media_ref"):
+                            meta = m
+                            break
+                fn = (meta or {}).get("filename") if isinstance(meta, dict) else None
+                if not fn:
+                    continue
+                chunk, positive, negative, head, tail = self._append_media_guide_at(
+                    chunk, fn, frame_idx, apply_at, strength, positive, negative, vae,
                 )
             else:
                 continue
@@ -2963,6 +3046,7 @@ class FunPackLTXAVSceneChainSampler:
                transition_duration=16, decode_tile_size=0,
                decode_noise_scale=0.0, decode_timestep=0.05,
                refinement_key_input="", funpack_scene_guides="",
+               funpack_scene_media="",
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3035,6 +3119,7 @@ class FunPackLTXAVSceneChainSampler:
 
         scene_guides_cfg = self._parse_scene_guides(funpack_scene_guides)
         per_scene_guides = (scene_guides_cfg or {}).get("scenes") if scene_guides_cfg else None
+        scene_media = self._parse_scene_media(funpack_scene_media)
         scene_outputs: list = []
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
@@ -3070,7 +3155,7 @@ class FunPackLTXAVSceneChainSampler:
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
                     chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
-                        chunk, scene_index, custom_guides, latent_template, scene_outputs,
+                        chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media,
                         scene_positive, scene_negative, vae,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
