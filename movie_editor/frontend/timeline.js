@@ -317,9 +317,11 @@
 
   function sceneAudioClip(st, p, scene, index, leftPx, widthPx) {
     const vol = scene.audio_volume != null ? scene.audio_volume : 1;
+    const w = Math.max(widthPx, 8);  // match video clip min width — never grow past scene duration
     const clip = el("div", "tl-aud-clip scene-aud" + (scene.id === st.selectedSceneId ? " selected" : ""));
     clip.style.left = leftPx + "px";
-    clip.style.width = Math.max(widthPx, 40) + "px";
+    clip.style.width = w + "px";
+    clip.style.maxWidth = w + "px";
     clip.onclick = (e) => { e.stopPropagation(); S.selectScene(scene.id); };
     clip.append(el("span", "tl-aud-name", `S${index + 1}`));
     const slider = el("input", "tl-aud-vol"); slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";

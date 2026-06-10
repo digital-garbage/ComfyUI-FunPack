@@ -452,12 +452,12 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-audio-lane-body { position: absolute; inset: 0; }
 .tl-aud-clip { position: absolute; top: 5px; bottom: 5px; box-sizing: border-box;
   background: linear-gradient(180deg, #1e3a2f, #152820); border: 1px solid #2d5a45; border-radius: 5px;
-  display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 48px; overflow: hidden; }
+  display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 0; overflow: hidden; }
 .tl-aud-clip.scene-aud { cursor: pointer; }
 .tl-aud-clip.scene-aud.selected { border-color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal-soft); }
 .tl-aud-clip.ins { background: linear-gradient(180deg, #1a2840, #121c2e); border-color: #2a4468; }
 .tl-aud-name { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-.tl-aud-vol { width: 56px; flex: 0 0 auto; accent-color: var(--teal); }
+.tl-aud-vol { width: 56px; max-width: 42%; flex: 0 1 56px; min-width: 0; accent-color: var(--teal); }
 .tl-aud-rm { flex: 0 0 auto; }
 .tl-emptyhint { position: absolute; left: 16px; top: 20px; color: var(--faint); font-style: italic; }
 
