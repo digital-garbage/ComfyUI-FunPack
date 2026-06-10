@@ -72,9 +72,34 @@ def is_mixed_source(scene: Scene) -> bool:
     return (scene.source.type or "carry") == "mixed"
 
 
+def build_mixed_solo_guides_payload(project: Project, mixed_scene: Scene) -> Optional[dict]:
+    """Guides for one independent mixed-scene i2v run (max_scenes=1).
+
+    The mixed scene's own anchor image goes through the graph-level Img2Video path;
+    this payload only supplies hidden guides borrowed from the prior timeline scene."""
+    active = [s for s in project.scenes if not s.excluded]
+    idx = next((i for i, sc in enumerate(active) if sc.id == mixed_scene.id), -1)
+    if idx <= 0:
+        return None
+    prior = active[idx - 1]
+    guide = dict(STUDIO_DEFAULT_GUIDE)
+    prior_src = prior.source
+    prior_ref = getattr(prior_src, "media_ref", None) if prior_src else None
+    prior_type = (prior_src.type or "carry") if prior_src else "carry"
+    if prior_ref and prior_type in ("image", "mixed", "generated_frame"):
+        guide["source"] = "image"
+        guide["media_ref"] = prior_ref
+    return {
+        "stack_enabled": True,
+        "accumulate_prior": False,
+        "scenes": [[guide]],
+    }
+
+
 def build_scene_anchors_payload(project: Project) -> Optional[dict]:
-    """Per-scene i2v anchors for mixed sources — image → LTXVImgToVideoInplace starting
-    latent, NOT guide attention. Scene 0 uses the graph-level Studio/img2video path."""
+    """Legacy multi-scene chain anchors (unused by Movie Editor mixed runs).
+
+    Mixed timeline scenes are generated solo via the graph-level Img2Video path."""
     active = [s for s in project.scenes if not s.excluded]
     anchors: dict[str, dict] = {}
     for i, sc in enumerate(active):

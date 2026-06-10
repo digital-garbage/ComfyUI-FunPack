@@ -94,11 +94,12 @@ def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     return fn
 
 
-def _prepare_media(proj: Project) -> Optional[dict]:
+def _prepare_media(proj: Project, extra_refs: Optional[list] = None) -> Optional[dict]:
     """Copy scene image assets into ComfyUI's input folder.
 
     Returns {"primary": {filename, target}, "by_scene": {scene_id: {filename, media_ref, target}}}
-    for the builder (first run anchor) and mixed per-scene anchors in the sampler.
+    for the builder (run anchor) and sampler guide lookups. `extra_refs` copies additional
+    media-bin ids (e.g. prior-scene guide images for solo mixed runs).
     """
     import os
     try:
@@ -108,6 +109,24 @@ def _prepare_media(proj: Project) -> Optional[dict]:
         return None
     primary = None
     by_scene: dict = {}
+    seen_refs: set = set()
+
+    def _add_ref(ref: str, tgt=None, sid: Optional[str] = None) -> None:
+        nonlocal primary
+        if not ref or ref in seen_refs:
+            return
+        fn = _copy_scene_media(ref, indir)
+        if not fn:
+            return
+        seen_refs.add(ref)
+        entry = {"filename": fn, "media_ref": ref, "target": tgt}
+        if sid:
+            by_scene[sid] = entry
+        else:
+            by_scene[f"_ref_{ref}"] = entry
+        if primary is None:
+            primary = {"filename": fn, "target": tgt}
+
     for sc in proj.scenes:
         if sc.excluded:
             continue
@@ -117,13 +136,9 @@ def _prepare_media(proj: Project) -> Optional[dict]:
         stype = getattr(src, "type", "") if src else ""
         if stype not in ("image", "generated_frame", "mixed") or not ref:
             continue
-        fn = _copy_scene_media(ref, indir)
-        if not fn:
-            continue
-        entry = {"filename": fn, "media_ref": ref, "target": tgt}
-        by_scene[sc.id] = entry
-        if primary is None:
-            primary = {"filename": fn, "target": tgt}
+        _add_ref(ref, tgt, sc.id)
+    for ref in (extra_refs or []):
+        _add_ref(str(ref))
     if not by_scene:
         return None
     return {"primary": primary, "by_scene": by_scene}
@@ -180,21 +195,46 @@ def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
     return si
 
 
-def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
-    """Sampler widget overrides for one chain run.
+def _mixed_solo_guide_refs(full: Project, target: Project) -> list:
+    """Media-bin ids for prior-scene guide images on a solo mixed run."""
+    from .backend.timeline import build_mixed_solo_guides_payload, is_mixed_source
 
-    Default (guide_settings.stack_enabled off): multi-scene runs force carry_i2v_guides
-    — one guide from scene 1's template at frame 0, same as Studio always did.
+    active = [s for s in target.scenes if not s.excluded]
+    if len(active) != 1 or not is_mixed_source(active[0]):
+        return []
+    payload = build_mixed_solo_guides_payload(full, active[0])
+    if not payload:
+        return []
+    refs = []
+    for g in (payload.get("scenes") or [[]])[0] or []:
+        if g.get("source") == "image" and g.get("media_ref"):
+            refs.append(g["media_ref"])
+    return refs
 
-    Custom guide stack (stack_enabled on): per-scene guide JSON is passed instead;
-    carry_i2v_guides is not auto-forced (avoids double-applying the template guide).
+
+def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Project] = None) -> dict:
+    """Sampler widget overrides for one generation run.
+
+    Mixed timeline scenes are solo i2v (max_scenes=1): anchor via Img2Video, guides from
+    the prior scene — not continuous chain overlap.
+
+    Carry runs (multi-scene): default carry_i2v_guides unless a custom guide stack is on.
     """
     if target.sampler_slot != "funpack":
         return {}
     import json
-    from .backend.timeline import build_scene_guides_payload
+    from .backend.timeline import build_mixed_solo_guides_payload, build_scene_guides_payload, is_mixed_source
 
     samp = dict(target.sampler_inputs or {})
+    active = [s for s in target.scenes if not s.excluded]
+    if scene_count == 1 and len(active) == 1 and is_mixed_source(active[0]):
+        guides = build_mixed_solo_guides_payload(full or target, active[0])
+        if guides:
+            samp["funpack_scene_guides"] = json.dumps(guides)
+        samp["frame_overlap"] = 0
+        samp["carry_i2v_guides"] = False
+        return samp
+
     guides = build_scene_guides_payload(target)
     if guides:
         samp["funpack_scene_guides"] = json.dumps(guides)
@@ -662,8 +702,9 @@ if web is not None and PromptServer is not None:
             if trimmed and all(f == trimmed[0] for f in trimmed)
             else target.num_frames_per_scene
         )
-        media_pack = _prepare_media(target)
-        sampler_inputs = _run_sampler_inputs(target, active_scene_count)
+        guide_refs = _mixed_solo_guide_refs(p, target)
+        media_pack = _prepare_media(target, guide_refs)
+        sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
         _attach_scene_anchors(sampler_inputs, media_pack, target)
         graph, report = builder.build(oi, _project_models(target), {
             "prompt": prompt, "seed": target.seed,

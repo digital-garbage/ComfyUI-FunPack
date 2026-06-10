@@ -606,9 +606,9 @@
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   }
 
-  // Split the active scenes into chain runs. A run starts at an anchored scene
-  // (empty / image / generated_frame); "mixed" and "carry" continue the current run.
-  // so it overlaps the previous scene (one chain-sampler request per run).
+  // Split the active scenes into generation runs. Each anchored scene (empty / image /
+  // generated_frame / mixed) is its own queue request. Only "carry" continues the
+  // previous run (continuous chain overlap). Mixed = solo i2v + prior-scene guides.
   // True if a scene's image anchor still exists in the media bin (deleted image → fall
   // back to carry / i2v guides, not a broken anchor).
   function _anchorAvailable(s) {
@@ -625,8 +625,7 @@
       // Editorial subclips always continue the current run; carry / broken anchors too.
       const isCarry = isGenSubclip(s)
         || t === "carry"
-        || t === "mixed"
-        || ((t === "image" || t === "generated_frame") && !_anchorAvailable(s));
+        || ((t === "image" || t === "generated_frame" || t === "mixed") && !_anchorAvailable(s));
       if (isCarry && runs.length) runs[runs.length - 1].push(s.id);
       else runs.push([s.id]);
     }
@@ -665,9 +664,9 @@
     state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
   }
 
-  // Pixel overlap between two consecutive chain scenes (0 when the next scene is mixed).
+  // Pixel overlap between consecutive scenes inside one carry chain run.
   function _overlapBetweenScenes(prev, curr) {
-    if (!prev || !curr || (curr.source?.type) === "mixed") return 0;
+    if (!prev || !curr) return 0;
     const frames = +(state.project?.sampler_inputs?.frame_overlap ?? 16);
     const fps = state.project?.frame_rate || 25;
     return Math.max(0, frames / fps);

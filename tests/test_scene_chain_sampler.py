@@ -478,6 +478,48 @@ def test_overlap_diagnostics_report_latent_blend_zone():
     assert "overlap_blend=2px" in status
 
 
+def test_mixed_solo_applies_guides_on_first_chunk():
+    import json
+
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    guides = json.dumps({
+        "stack_enabled": True,
+        "accumulate_prior": False,
+        "scenes": [[{"enabled": True, "source": "template", "frame_idx": 0, "apply_at": 0, "strength": 0.35}]],
+    })
+    latent_template = {
+        "samples": torch.zeros(1, 2, 5, 3, 3),
+        "noise_mask": torch.cat([torch.zeros(1, 1, 2, 1, 1), torch.ones(1, 1, 3, 1, 1)], dim=2),
+    }
+    positive = [scene_cond(0)]
+
+    latent, _images, status, scene_count, _report, boundaries_json = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=90,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=0,
+        cfg=1.0,
+        max_scenes=1,
+        funpack_scene_guides=guides,
+        prompt={"n1": {"inputs": {}}},
+        unique_id="test-node",
+    )
+
+    assert scene_count == 1
+    chunk = sample_calls[0]["latent_image"]
+    frames = chunk["samples"].shape[2] if isinstance(chunk, dict) else chunk.shape[2]
+    assert frames == 7
+    parsed = json.loads(boundaries_json)
+    assert "custom_guide_stack" in parsed["scenes"][0]["mechanisms"]
+
+
 def test_mixed_anchor_skips_frame_overlap():
     import json
 

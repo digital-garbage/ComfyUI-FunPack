@@ -16,6 +16,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     Scene,
     STUDIO_DEFAULT_GUIDE,
     build_combined_prompt,
+    build_mixed_solo_guides_payload,
     build_scene_anchors_payload,
     build_scene_guides_payload,
     collapse_generative_units,
@@ -129,6 +130,31 @@ def test_guide_stack_studio_default_per_continuation_scene():
     assert payload["scenes"][0] is None
     assert payload["scenes"][1] == [STUDIO_DEFAULT_GUIDE]
     assert payload["scenes"][2] == [STUDIO_DEFAULT_GUIDE]
+
+
+def test_mixed_solo_guides_borrow_prior_anchor():
+    p = _project(
+        scenes=[
+            {"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}},
+            {"id": "s2", "text": "b", "source": {"type": "mixed", "media_ref": "img2"}},
+        ],
+    )
+    payload = build_mixed_solo_guides_payload(p, p.scenes[1])
+    assert payload is not None
+    guide = payload["scenes"][0][0]
+    assert guide["source"] == "image"
+    assert guide["media_ref"] == "img1"
+
+
+def test_mixed_solo_guides_template_when_prior_is_carry():
+    p = _project(
+        scenes=[
+            {"id": "s1", "text": "a", "source": {"type": "carry"}},
+            {"id": "s2", "text": "b", "source": {"type": "mixed", "media_ref": "img2"}},
+        ],
+    )
+    payload = build_mixed_solo_guides_payload(p, p.scenes[1])
+    assert payload["scenes"][0][0]["source"] == "template"
 
 
 def test_mixed_source_anchors_separate_from_guides():

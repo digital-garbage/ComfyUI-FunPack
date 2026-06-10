@@ -3375,6 +3375,16 @@ class FunPackLTXAVSceneChainSampler:
             anchor_meta = (scene_anchors or {}).get(str(scene_index))
             if output is None:
                 chunk = self._clone_latent(latent_template)
+                custom_guides = None
+                if per_scene_guides and scene_index < len(per_scene_guides):
+                    custom_guides = per_scene_guides[scene_index]
+                if custom_guides:
+                    run_mechanisms.append("custom_guide_stack")
+                    chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
+                        chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
+                        scene_positive, scene_negative, vae,
+                    )
+                    carried_guide_frames = max(carried_guide_frames, carried)
             elif anchor_meta:
                 run_mechanisms.append("mixed_i2v_anchor")
                 effect = self._scene_transition_effect(scene_cond)

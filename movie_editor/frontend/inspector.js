@@ -173,7 +173,7 @@
     if ((root.source?.type) === "mixed") {
       const hint = el("div", "insp-block");
       hint.append(el("div", "insp-hint",
-        "Stays in the same chain run: this image builds a new starting latent via LTX Img2Video (i2v anchor), while prior-scene i2v guides are carried separately (Studio default: scene 1 template guide at frame 0). Enable Custom guide stack in Project to manage guides explicitly."));
+        "Generates as its own i2v run (one sampler call): this image is the starting latent via LTX Img2Video, while hidden guides are borrowed from the previous scene (its anchor image when set, else template frame 0). Not continuous chain overlap — use Carry for that."));
       body.append(hint);
     }
 
