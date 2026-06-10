@@ -177,6 +177,36 @@
   function patchProject(patch) { if (!state.project) return; Object.assign(state.project, patch); notify(); scheduleSave(); }
   function patchProjectQuiet(patch) { if (!state.project) return; Object.assign(state.project, patch); scheduleSaveSilent(); }
 
+  function normCharacterBible(raw) {
+    const b = raw || {};
+    return {
+      name: b.name || "",
+      appearance: b.appearance || "",
+      body: b.body || "",
+      wardrobe: b.wardrobe || "",
+      always_include: b.always_include || "",
+      never_include: b.never_include || "",
+      face_ref: b.face_ref || null,
+      body_ref: b.body_ref || null,
+      detail_ref: b.detail_ref || null,
+      sync_identity_pin: b.sync_identity_pin !== false,
+    };
+  }
+
+  function _characterBiblePinPatch(bible) {
+    if (!bible.sync_identity_pin || !bible.face_ref) return null;
+    return { ...(state.project.continuity_settings || {}), identity_pin_ref: bible.face_ref };
+  }
+
+  function patchCharacterBible(patch, quiet) {
+    if (!state.project) return;
+    const next = { ...normCharacterBible(state.project.character_bible), ...patch };
+    const updates = { character_bible: next };
+    const pin = _characterBiblePinPatch(next);
+    if (pin) updates.continuity_settings = pin;
+    quiet ? patchProjectQuiet(updates) : patchProject(updates);
+  }
+
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
   function genUnitId(sc) { return (sc && sc.gen_unit_id) || (sc && sc.id) || ""; }
@@ -1179,7 +1209,7 @@
   window.Store = {
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
+    patchProject, patchProjectQuiet, patchCharacterBible, normCharacterBible, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,

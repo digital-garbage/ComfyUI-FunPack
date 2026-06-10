@@ -246,6 +246,14 @@
     const label = scene.text || (root && root.text) || (subclip ? "cut" : "empty scene");
     clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" ? "" : " empty"), label));
 
+    const rating = ((root && root.rating) || scene.rating || "").trim();
+    if (rating) {
+      const rated = el("div", "clip-rated");
+      rated.title = "Rated for FunPack Studio conditioning on next generation";
+      rated.textContent = "Rated: " + rating;
+      clip.append(rated);
+    }
+
     const actions = el("div", "clip-actions");
     const mk = (label, title, cls, fn) => { const b = el("button", "ic-btn" + (cls ? " " + cls : ""), label); b.title = title; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
     actions.append(mk("⟈", "Split clip at playhead", "", () => {

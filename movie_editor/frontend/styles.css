@@ -362,6 +362,15 @@ input[type=number] { font-family: var(--font-mono); }
 .insp-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; color: var(--amber); text-transform: uppercase; }
 .insp-hint { font-size: 11px; color: var(--faint); margin: -4px 0 12px; }
 .insp-block { margin-bottom: 16px; }
+.bible-refs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.bible-ref { display: flex; gap: 10px; align-items: flex-start; padding: 8px; background: var(--ink-2);
+  border: 1px solid var(--line); border-radius: 8px; }
+.bible-ref-prev { width: 52px; height: 52px; flex-shrink: 0; border-radius: 6px; overflow: hidden;
+  background: var(--ink-0); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
+.bible-ref-prev img { width: 100%; height: 100%; object-fit: cover; }
+.bible-ref-info { flex: 1; min-width: 0; }
+.bible-ref-name { font-size: 11px; color: var(--muted); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bible-pin { margin-bottom: 12px; }
 
 /* global prompt — first entry in the inspector list (scrolls with content) */
 .insp-global { margin: 0 0 14px; padding: 10px 10px 8px;
@@ -553,6 +562,9 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip-text { font-size: 12px; line-height: 1.35; color: var(--text); overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .clip-text.empty { color: var(--faint); font-style: italic; }
+.clip-rated { font-size: 10px; font-family: var(--font-mono); color: var(--amber-2); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.clip.has-media .clip-rated { position: relative; z-index: 1; }
 .clip-actions { position: absolute; top: 5px; right: 8px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .clip:hover .clip-actions { opacity: 1; }
 .ic-btn { width: 18px; height: 18px; padding: 0; font-size: 11px; line-height: 1; border: 1px solid var(--line);

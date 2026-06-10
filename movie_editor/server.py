@@ -24,6 +24,7 @@ from .backend.timeline import (
     Project,
     build_combined_prompt,
     collapse_generative_units,
+    effective_negative_prompt,
     gen_unit_id,
     group_generative_units,
 )
@@ -235,15 +236,15 @@ def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Projec
     from .backend.timeline import (
         build_auto_continuity_guides,
         build_scene_guides_payload,
+        continuity_settings_for_run,
         is_mixed_source,
-        normalize_continuity_settings,
         normalize_guide_settings,
     )
 
     proj = full or target
     samp = dict(target.sampler_inputs or {})
     active = [s for s in target.scenes if not s.excluded]
-    cs = normalize_continuity_settings(proj.continuity_settings)
+    cs = continuity_settings_for_run(proj)
     manual_stack = normalize_guide_settings(proj.guide_settings)["stack_enabled"]
 
     auto_guides = build_auto_continuity_guides(proj, target) if cs["auto_enabled"] else None
@@ -768,7 +769,7 @@ if web is not None and PromptServer is not None:
             "num_frames_per_scene": effective_frames,
             "frame_rate": target.frame_rate,
             "width": target.width, "height": target.height,
-            "negative_prompt": target.negative_prompt or None,
+            "negative_prompt": effective_negative_prompt(target) or None,
             "max_scenes": active_scene_count,
             "studio_inputs": _run_studio_inputs(target, active_scenes, prompt_changed=prompt_changed),
             "sampler_inputs": sampler_inputs,

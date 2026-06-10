@@ -41,6 +41,86 @@ def normalize_guide_settings(raw: Optional[dict]) -> dict[str, bool]:
     }
 
 
+def normalize_character_bible(raw: Optional[dict]) -> dict[str, Any]:
+    """Structured character profile — text merges into the anchor; face ref can drive identity pin."""
+    raw = raw or {}
+    return {
+        "name": str(raw.get("name", "")).strip(),
+        "appearance": str(raw.get("appearance", "")).strip(),
+        "body": str(raw.get("body", "")).strip(),
+        "wardrobe": str(raw.get("wardrobe", "")).strip(),
+        "always_include": str(raw.get("always_include", "")).strip(),
+        "never_include": str(raw.get("never_include", "")).strip(),
+        "face_ref": raw.get("face_ref") or None,
+        "body_ref": raw.get("body_ref") or None,
+        "detail_ref": raw.get("detail_ref") or None,
+        "sync_identity_pin": bool(raw.get("sync_identity_pin", True)),
+    }
+
+
+def build_character_bible_anchor(bible: Optional[dict]) -> str:
+    """Render bible fields into anchor prose prepended before the manual anchor."""
+    b = normalize_character_bible(bible)
+    parts: list[str] = []
+    if b["name"]:
+        parts.append(f"Character: {b['name']}.")
+    if b["appearance"]:
+        parts.append(f"Appearance: {b['appearance']}.")
+    if b["body"]:
+        parts.append(f"Body: {b['body']}.")
+    if b["wardrobe"]:
+        parts.append(f"Wardrobe: {b['wardrobe']}.")
+    if b["always_include"]:
+        text = b["always_include"].rstrip(".")
+        parts.append(text + ".")
+    return " ".join(parts).strip()
+
+
+def effective_anchor(project: Project) -> str:
+    """Character bible + manual anchor (project.anchor) sent to Studio."""
+    bible_text = build_character_bible_anchor(project.character_bible)
+    manual = (project.anchor or "").strip()
+    if bible_text and manual:
+        return f"{bible_text} {manual}"
+    return bible_text or manual
+
+
+def effective_negative_prompt(project: Project) -> str:
+    """Project negative prompt plus bible never_include (generation only)."""
+    manual = (project.negative_prompt or "").strip()
+    never = normalize_character_bible(project.character_bible)["never_include"]
+    if never and manual:
+        return f"{manual}, {never}"
+    return never or manual
+
+
+def resolve_identity_pin_ref(project: Project) -> Optional[str]:
+    """Face reference from the bible wins when sync_identity_pin is on."""
+    b = normalize_character_bible(project.character_bible)
+    if b["sync_identity_pin"] and b["face_ref"]:
+        return b["face_ref"]
+    return normalize_continuity_settings(project.continuity_settings).get("identity_pin_ref")
+
+
+def character_bible_media_refs(project: Project) -> list[str]:
+    b = normalize_character_bible(project.character_bible)
+    refs: list[str] = []
+    for key in ("face_ref", "body_ref", "detail_ref"):
+        ref = b.get(key)
+        if ref:
+            refs.append(ref)
+    return refs
+
+
+def continuity_settings_for_run(project: Project) -> dict[str, Any]:
+    """Continuity knobs with bible-driven identity pin applied."""
+    cs = normalize_continuity_settings(project.continuity_settings)
+    pin = resolve_identity_pin_ref(project)
+    if pin:
+        cs = {**cs, "identity_pin_ref": pin}
+    return cs
+
+
 def normalize_continuity_settings(raw: Optional[dict]) -> dict[str, Any]:
     """Automated cross-scene stability — guides, mid-scene anchor, identity pin.
 
@@ -104,7 +184,7 @@ def _decayed_strength(base: float, scene_index: int, decay: float) -> float:
 
 def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dict]:
     """Build per-run funpack_scene_guides when auto continuity is on."""
-    cs = normalize_continuity_settings(full.continuity_settings)
+    cs = continuity_settings_for_run(full)
     if not cs["auto_enabled"] or normalize_guide_settings(full.guide_settings)["stack_enabled"]:
         return None
 
@@ -163,8 +243,8 @@ def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dic
 
 def continuity_media_refs(full: Project, target: Project) -> list[str]:
     """Extra media-bin ids to copy for auto continuity (pin + prior anchors)."""
-    cs = normalize_continuity_settings(full.continuity_settings)
-    refs: list[str] = []
+    cs = continuity_settings_for_run(full)
+    refs: list[str] = list(character_bible_media_refs(full))
     if cs["auto_enabled"] and cs["identity_pin_ref"]:
         refs.append(cs["identity_pin_ref"])
     payload = build_auto_continuity_guides(full, target)
@@ -359,7 +439,8 @@ class Scene:
 class Project:
     id: str = field(default_factory=_new_id)
     name: str = "Untitled"
-    anchor: str = ""               # text prepended to every scene (character anchor)
+    anchor: str = ""               # extra anchor text (character bible prepends before this)
+    character_bible: dict = field(default_factory=dict)
     # Optional master prompt in Studio combined syntax. When the user edits it and
     # hits Apply, the editor reparses it into anchor + scenes + transitions (normal
     # Studio behaviour). Stored verbatim so the field round-trips; not used at build.
@@ -408,6 +489,7 @@ class Project:
             id=d.get("id") or _new_id(),
             name=str(d.get("name", "Untitled")),
             anchor=str(d.get("anchor", "")),
+            character_bible=dict(d.get("character_bible") or {}),
             global_prompt=str(d.get("global_prompt", "")),
             negative_prompt=str(d.get("negative_prompt", "")),
             intro_transition=str(d.get("intro_transition", "")),
@@ -519,7 +601,7 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
     scenes = [s for s in project.scenes if include_excluded or not s.excluded]
     units = group_generative_units(scenes)
     parts: list[str] = []
-    anchor = (project.anchor or "").strip()
+    anchor = effective_anchor(project)
     if anchor:
         parts.append(anchor)
     # Only inject separators for a MULTI-unit run: editorial subclips count as one unit.
@@ -551,12 +633,13 @@ def generation_prompt_fingerprint(project: Project, target: Optional[Project] = 
     gen_prompt = build_combined_prompt(tgt, for_generation=True)
     text_hash = hashlib.sha256(gen_prompt.encode("utf-8")).hexdigest()[:24]
     active = [s for s in tgt.scenes if not s.excluded]
-    cs = normalize_continuity_settings(project.continuity_settings)
+    cs = continuity_settings_for_run(project)
     gs = normalize_guide_settings(project.guide_settings)
     run_key = "\n".join([
         text_hash,
         "|".join(_scene_run_fingerprint(s) for s in active),
         cs.get("identity_pin_ref") or "",
+        normalize_character_bible(project.character_bible).get("never_include") or "",
         "stack" if gs["stack_enabled"] else "",
     ])
     run_hash = hashlib.sha256(run_key.encode("utf-8")).hexdigest()[:24]
