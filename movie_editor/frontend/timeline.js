@@ -277,6 +277,18 @@
       clip.append(rated);
     }
 
+    if (hasRender(st, scene.id) && S.renderPromptMismatch) {
+      const mismatch = S.renderPromptMismatch(scene.id);
+      if (mismatch) {
+        clip.classList.add("prompt-mismatch");
+        const gen = el("div", "clip-gen-prompt");
+        gen.title = "Timeline prompt was edited after generation — rate against this text";
+        gen.append(el("span", "clip-gen-prompt-label", "Generated with"));
+        gen.append(el("span", "clip-gen-prompt-text", mismatch.rendered || "(empty)"));
+        clip.append(gen);
+      }
+    }
+
     const actions = el("div", "clip-actions");
     const mk = (label, title, cls, fn) => { const b = el("button", "ic-btn" + (cls ? " " + cls : ""), label); b.title = title; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
     actions.append(mk("⟈", "Split clip at playhead", "", () => {
@@ -553,17 +565,12 @@
       const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
       const rsel = el("select", "tl-rating");
       rsel.title = mismatch
-        ? `Rate against the generated prompt — timeline text was edited after this render`
+        ? `Rate against the generated prompt on the clip — timeline text was edited after this render`
         : "Rate this scene's render — FunPack Studio refines from it next generation";
       rsel.append(new Option("— rate —", ""));
       (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
       rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
       bar.append(rlabel); bar.append(rsel);
-      if (mismatch) {
-        const hint = el("span", "tl-render-prompt", mismatch.rendered);
-        hint.title = "Generated with this prompt — use it when rating (timeline text differs)";
-        bar.append(hint);
-      }
     }
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
