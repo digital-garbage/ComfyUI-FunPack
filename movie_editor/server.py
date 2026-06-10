@@ -132,14 +132,26 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
 
 def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
     """Studio widget overrides for this run, incl. the RLHF rating of the run's last
-    render (Studio refines from it). Uses the run's first user-rated scene; when no scene
-    was rated by the user, send "-Just forget it-" so Studio does NOT learn from a rating
-    it assigned itself."""
+    render (Studio refines from it). Uses the first user-rated scene in the run.
+
+    When no scene was rated: send MOVIE_EDITOR_CONTINUE_RATING so Studio still applies
+    session memory / active repairs but does not treat the run as '-Just forget it-'.
+    refine_v2 uses Initial discovery when there is no previous run to refine from."""
     if target.conditioning_slot != "funpack":
         return {}
     si = dict(target.studio_inputs or {})
     rating = next((s.rating for s in active_scenes if (getattr(s, "rating", "") or "").strip()), None)
-    si["rating"] = rating or "-Just forget it-"
+    if rating:
+        si["rating"] = rating
+    else:
+        try:
+            from conditioning import MOVIE_EDITOR_CONTINUE_RATING
+        except ImportError:
+            try:
+                from ..conditioning import MOVIE_EDITOR_CONTINUE_RATING  # type: ignore
+            except ImportError:
+                MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
+        si["rating"] = MOVIE_EDITOR_CONTINUE_RATING
     return si
 
 

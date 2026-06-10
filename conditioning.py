@@ -5887,8 +5887,16 @@ V2_RATING_LABELS = _BASE_RATING_LABELS + [
     l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
 ]
 
+# Movie Editor sends this when the user did not rate before regenerating: apply session
+# memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
+MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
+
 V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
+    MOVIE_EDITOR_CONTINUE_RATING: {
+        "key": "continue", "reward": 0.0, "level": 4, "missing_axes": [], "skip_learning": True,
+        "label": "Continue refining",
+    },
     "Initial discovery": {"key": "discover", "reward": 0.0, "level": 4, "missing_axes": []},
     "Perfect": {"key": "like", "reward": 1.0, "level": 8, "missing_axes": []},
     "Nailed it": {"key": "nailed_it", "reward": 0.75, "level": 7, "missing_axes": []},
@@ -7544,6 +7552,21 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_axis_feedback(self, rating_profile, previous_missing_axes=None):
         key = rating_profile.get("key", "")
+        if key == "continue":
+            all_axes = set(V2_FEEDBACK_AXES)
+            has_prev = previous_missing_axes is not None
+            previous_missing = set(previous_missing_axes or []) & all_axes if has_prev else set()
+            missing_axes = previous_missing
+            satisfied_axes = all_axes - missing_axes
+            resolved_axes = set() if not has_prev else (previous_missing - missing_axes)
+            regressed_axes = set()
+            return {
+                "missing_axes": self._v2_order_axes(missing_axes),
+                "satisfied_axes": self._v2_order_axes(satisfied_axes),
+                "resolved_axes": self._v2_order_axes(resolved_axes),
+                "regressed_axes": self._v2_order_axes(regressed_axes),
+                "wrong_axes": [],
+            }
         if rating_profile.get("skip_learning") or key == "discover":
             return {
                 "missing_axes": [],
@@ -7603,7 +7626,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             feedback = dict(axis_feedback or {})
             feedback["missing_axes"] = []
             return feedback, "Repair persistence: cleared by Perfect."
-        if not learning_profile.get("skip_learning") and key != "discover":
+        if key == "continue":
+            active |= set(axis_feedback.get("missing_axes", [])) & set(V2_FEEDBACK_AXES)
+        elif not learning_profile.get("skip_learning") and key != "discover":
             active |= set(axis_feedback.get("missing_axes", [])) & set(V2_FEEDBACK_AXES)
             active |= set(axis_feedback.get("wrong_axes", [])) & set(V2_FEEDBACK_AXES)
         ordered = self._v2_order_axes(active)
@@ -7630,6 +7655,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return (
                 "Guidance: first V2 run only seeds the current prompt. "
                 "Set the rating after reviewing this output, then run again with the same refinement key to train."
+            )
+        if learning_profile.get("key") == "continue":
+            return (
+                "Guidance: no new rating — applying existing session memory and active repairs. "
+                "Rate the last render when you want Studio to learn from it."
             )
         if learning_profile.get("skip_learning"):
             return (
@@ -12244,6 +12274,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         if previous_run_refusal:
             learning_reason = "previous prompt was an enhancer refusal"
+        elif learning_profile.get("key") == "continue":
+            learning_reason = "no rating — refining from session memory only"
         elif learning_profile.get("skip_learning"):
             learning_reason = "rating skipped learning"
         elif not has_previous_run:

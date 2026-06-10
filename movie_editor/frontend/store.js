@@ -441,7 +441,7 @@
       const sc = scene(id); if (!sc) continue;
       state.sceneRenders[id] = { media: primary, inSec: inAcc };
       // New render invalidates the prior RLHF rating — UI shows "— rate —"; server
-      // treats empty as "-Just forget it-" on the next Studio run.
+      // uses continue-refinement (session memory, no new rating) on the next Studio run.
       if (sc.rating) { sc.rating = ""; clearedRating = true; }
       inAcc += sceneDurationSec(sc);
     }
