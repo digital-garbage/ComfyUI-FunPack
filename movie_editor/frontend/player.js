@@ -39,6 +39,14 @@
   const _urlFor = (media) => API.resultUrl(S.get().project?.id, media);
   const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || (t + 1)) - 0.02));
 
+  function _segmentSourceBadge(sceneId) {
+    if (!sceneId) return "";
+    const sc = S.scene(sceneId);
+    const t = sc?.source?.type;
+    if (t === "mixed") return "Mixed · ◐ anchor + ⇥ guides";
+    return "";
+  }
+
   function _buildClips(st) {
     if (!st.project || !S.buildPreviewSegments) return [];
     const sr = st.sceneRenders || {};
@@ -188,7 +196,10 @@
     const v = _ensureVideo(_urlFor(clip.media));
     _currentClip = clip; _setActive(v);
     _showSlate("");
-    _showBadge(clip.ghost ? (clip.slate || "Removed — preview only") : "");
+    const badge = clip.ghost ? (clip.slate || "Removed — preview only") : _segmentSourceBadge(clip.sceneId);
+    _showBadge(badge);
+    if (_badgeEl && badge.startsWith("Mixed")) _badgeEl.classList.add("mixed-mode");
+    else if (_badgeEl) _badgeEl.classList.remove("mixed-mode");
     const target = (clip.inSec || 0) + Math.max(0, offset);
     if (v.readyState >= 1) {
       v.currentTime = _clampT(v, target);
@@ -527,10 +538,14 @@
           title = "Removed scene (preview only — not in next run)";
         } else {
           const sc = seg.scene;
+          const stype = sc.source?.type || "empty";
           const rendered = !!((st.sceneRenders || {})[sc.id] || {}).media;
           cls += rendered ? " rendered" : " pending";
+          if (stype === "mixed") { cls += " mixed"; title = "Mixed · anchor + prior guides"; }
+          else if (stype === "carry") { cls += " carry"; title = "Carry · prior guides only"; }
           const idx = (p.scenes || []).indexOf(sc) + 1;
-          title = `Scene ${idx}${rendered ? " (rendered)" : " (not rendered)"}`;
+          if (!title) title = `Scene ${idx}${rendered ? " (rendered)" : " (not rendered)"}`;
+          else title = `Scene ${idx} · ${title}${rendered ? "" : " · not rendered"}`;
         }
         const chip = el("div", cls);
         chip.style.width = (d / _totalSecCur * 100).toFixed(3) + "%";

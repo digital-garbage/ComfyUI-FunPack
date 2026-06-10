@@ -8,6 +8,32 @@
   const meta = document.getElementById("timeline-meta");
 
   const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑" };
+
+  function anchorMediaRef(scene) {
+    const t = scene.source?.type;
+    if (t === "image" || t === "mixed" || t === "generated_frame") return scene.source?.media_ref || null;
+    return null;
+  }
+
+  function appendSrcBadge(head, srcType) {
+    if (srcType === "mixed") {
+      const stack = el("span", "clip-src-stack");
+      stack.title = "Img2Video anchor + prior i2v guides active";
+      stack.append(el("span", "clip-anchor-mark", "◐"));
+      stack.append(el("span", "clip-guide-mark", "⇥"));
+      head.append(stack);
+      head.append(el("span", "clip-src-label", "mixed"));
+      return;
+    }
+    if (srcType === "carry") {
+      const g = el("span", "clip-src carry-only");
+      g.title = "Continues from prior scene — i2v guides only, no new anchor";
+      g.textContent = "⇥";
+      head.append(g);
+      return;
+    }
+    head.append(el("span", "clip-src", SRC_ICON[srcType] || "▦"));
+  }
   const ZOOM_KEY = "funpack_tl_zoom";
   const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom
@@ -130,7 +156,12 @@
   function clipEl(st, p, scene, index, leftPx, widthPx) {
     const unitCuts = (p.scenes || []).filter((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id)).length;
     const subclip = (scene.cut_offset_frames || 0) > 0;
-    const clip = el("div", "clip" + clipSelClass(st, scene.id) + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : "")) + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : ""));
+    const srcType = scene.source?.type || "empty";
+    const clip = el("div", "clip" + clipSelClass(st, scene.id)
+      + (scene.excluded ? " excluded" : "")
+      + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : ""))
+      + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : "")
+      + (srcType === "mixed" ? " src-mixed" : srcType === "carry" ? " src-carry" : srcType === "image" ? " src-image" : ""));
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = (e) => onClipSelect(e, scene.id);
@@ -182,20 +213,29 @@
       if (id) { e.preventDefault(); S.assignMediaToScene(scene.id, id); }
     });
 
-    // media thumbnail badge when an image asset is assigned
-    const mref = scene.source?.type === "image" ? scene.source.media_ref : null;
+    // i2v anchor thumbnail (image + mixed + generated_frame)
+    const mref = anchorMediaRef(scene);
     const asset = mref ? (st.mediaBin || []).find((m) => m.id === mref) : null;
     if (asset) {
       const th = el("div", "clip-thumb");
       if (asset.kind === "image") { const img = el("img"); img.src = window.MovieEditorAPI.mediaUrl(asset.id); img.loading = "lazy"; th.append(img); }
       else th.append(el("span", null, "▶"));
+      if (srcType === "mixed") {
+        const guide = el("div", "clip-thumb-guide");
+        guide.title = "Prior-scene i2v guides carried with this anchor";
+        guide.append(el("span", "clip-thumb-guide-icon", "⇥"));
+        guide.append(el("span", "clip-thumb-guide-txt", "guides"));
+        th.append(guide);
+      }
       clip.append(th);
       clip.classList.add("has-media");
+    } else if (srcType === "mixed") {
+      clip.title = (clip.title ? clip.title + " · " : "") + "Mixed — assign an anchor image (guides stay active)";
     }
 
     const head = el("div", "clip-head");
     head.append(el("span", "clip-no", p2(index + 1)));
-    head.append(el("span", "clip-src", SRC_ICON[scene.source?.type] || "▦"));
+    appendSrcBadge(head, srcType);
     head.append(el("span", "clip-dur", timecode(sDur(scene, p), sFps(scene, p))));
     clip.append(head);
 

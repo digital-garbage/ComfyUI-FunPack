@@ -54,9 +54,14 @@
     const pick = el("select");
     pick.append(new Option("— choose asset —", ""));
     (st.mediaBin || []).forEach((m) => { const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o); });
-    pick.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "image", media_ref: pick.value || null } });
+    const isMixed = (scene.source?.type) === "mixed";
+    pick.onchange = () => S.patchScene(scene.id, {
+      source: { ...(scene.source || {}), type: isMixed ? "mixed" : "image", media_ref: pick.value || null },
+    });
     body.append(field("Media asset", pick));
-    body.append(el("div", "insp-hint", "Feeds the i2v anchor for this scene (image → LTX Img2Video → starting latent). Routing is automatic (→ Studio source image); to send it through a node first, set that node's Input source to Timeline in Models."));
+    body.append(el("div", "insp-hint", isMixed
+      ? "i2v anchor image for this scene (Img2Video → starting latent). Prior-scene i2v guides stay active — shown on the timeline as ◐+⇥."
+      : "Feeds the i2v anchor for this scene (image → LTX Img2Video → starting latent). Routing is automatic (→ Studio source image); to send it through a node first, set that node's Input source to Timeline in Models."));
   }
 
   function renderGeneratedFrameSource(st, scene) {

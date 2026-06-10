@@ -1017,7 +1017,8 @@
   }
   function assignMediaToScene(sceneId, mediaId) {
     const s = scene(sceneId); if (!s) return;
-    patchScene(sceneId, { source: { ...(s.source || {}), type: "image", media_ref: mediaId } });
+    const t = (s.source?.type === "mixed") ? "mixed" : "image";
+    patchScene(sceneId, { source: { ...(s.source || {}), type: t, media_ref: mediaId } });
   }
 
   // ── boot ─────────────────────────────────────────────────────────────────────
