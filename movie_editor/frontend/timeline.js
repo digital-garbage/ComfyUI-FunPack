@@ -28,6 +28,20 @@
 
   const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
 
+  function selectedIds(st) {
+    return st.selectedSceneIds?.length ? st.selectedSceneIds : (st.selectedSceneId ? [st.selectedSceneId] : []);
+  }
+  function clipSelClass(st, sceneId) {
+    const ids = selectedIds(st);
+    let cls = "";
+    if (ids.includes(sceneId)) cls += " selected";
+    if (sceneId === st.selectedSceneId) cls += " focus";
+    return cls;
+  }
+  function onClipSelect(e, sceneId) {
+    S.selectScene(sceneId, { additive: e.metaKey || e.ctrlKey, range: e.shiftKey });
+  }
+
   const p2 = (n) => String(n).padStart(2, "0");
   function timecode(sec, fps) {
     sec = Math.max(0, sec);
@@ -116,10 +130,10 @@
   function clipEl(st, p, scene, index, leftPx, widthPx) {
     const unitCuts = (p.scenes || []).filter((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id)).length;
     const subclip = (scene.cut_offset_frames || 0) > 0;
-    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : "")) + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : ""));
+    const clip = el("div", "clip" + clipSelClass(st, scene.id) + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : "")) + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : ""));
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
-    clip.onclick = () => S.selectScene(scene.id);
+    clip.onclick = (e) => onClipSelect(e, scene.id);
 
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
@@ -347,11 +361,11 @@
   function sceneAudioClip(st, p, scene, index, leftPx, widthPx) {
     const vol = scene.audio_volume != null ? scene.audio_volume : 1;
     const w = Math.max(widthPx, 8);  // match video clip min width — never grow past scene duration
-    const clip = el("div", "tl-aud-clip scene-aud" + (scene.id === st.selectedSceneId ? " selected" : ""));
+    const clip = el("div", "tl-aud-clip scene-aud" + clipSelClass(st, scene.id));
     clip.style.left = leftPx + "px";
     clip.style.width = w + "px";
     clip.style.maxWidth = w + "px";
-    clip.onclick = (e) => { e.stopPropagation(); S.selectScene(scene.id); };
+    clip.onclick = (e) => { e.stopPropagation(); onClipSelect(e, scene.id); };
     clip.append(el("span", "tl-aud-name", `S${index + 1}`));
     const slider = el("input", "tl-aud-vol"); slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
     slider.value = vol; slider.title = `Clip ${index + 1} volume`;
@@ -473,7 +487,8 @@
     }
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
-    const keys = el("span", "tl-keys", "S split · ⌫ remove"); keys.title = "Select a clip, then: S splits it at the playhead · Delete/Backspace removes it";
+    const keys = el("span", "tl-keys", "⌘/⇧ multi-select · S split · ⌫ remove");
+    keys.title = "⌘/Ctrl-click toggles selection · Shift-click extends range · S splits at playhead · Delete removes focus clip";
     bar.append(keys);
     const zlabel = el("span", "tl-zlabel", "zoom"); bar.append(zlabel);
     const zout = el("button", "btn ghost tiny", "−"); zout.onclick = () => setZoom(pxPerSec / 1.4);
@@ -529,7 +544,7 @@
     scroll.addEventListener("scroll", () => { scrollLeft = scroll.scrollLeft; });
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
-      if (st.selectedSceneId && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
+      if ((st.selectedSceneId || (st.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
         S.selectScene(null);
     });
     const stage = el("div", "tl-stage"); stage.style.width = (GUTTER_W + contentW) + "px";
@@ -587,7 +602,8 @@
 
     const active = scenes.filter((s) => !s.excluded).length;
     const ghosts = (st.sceneGhosts || []).length;
-    const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
+    const selN = S.selectedSceneCount ? S.selectedSceneCount() : selectedIds(st).length;
+    const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + (selN > 1 ? ` · ${selN} selected` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
     meta.append(el("span", null, metaTxt));
     return true;
   }

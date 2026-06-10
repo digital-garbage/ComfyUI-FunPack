@@ -133,6 +133,12 @@
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`
       + (unitScenes.length > 1 ? ` · cut ${cutNo}/${unitScenes.length}` : "");
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
+    const selN = S.selectedSceneCount ? S.selectedSceneCount() : 1;
+    if (selN > 1) {
+      const mh = el("div", "insp-hint");
+      mh.textContent = `${selN} clips selected — Generate → Generate Selected Scenes runs each chain segment that includes a selected clip (⌘/Ctrl-click toggle · Shift-click range).`;
+      body.append(mh);
+    }
     if (unitScenes.length > 1) {
       const hint = el("div", "insp-hint");
       hint.textContent = S.isGenSubclip(scene)

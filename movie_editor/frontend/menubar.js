@@ -7,6 +7,7 @@
   let openName = null;
 
   function sel() { return S.get().selectedSceneId; }
+  function selCount() { return S.selectedSceneCount ? S.selectedSceneCount() : (sel() ? 1 : 0); }
   function hasProject() { return !!S.get().project; }
 
   // hidden file input for importing a project file
@@ -73,7 +74,9 @@
       ],
       Generate: [
         { label: "Generate Whole Montage", hint: "▶", disabled: !hasProject(), action: () => S.generate(null) },
-        { label: "Generate Selected Scene", disabled: !sel(), action: () => S.generate(sel()) },
+        { label: selCount() > 1 ? `Generate Selected Scenes (${selCount()})` : "Generate Selected Scene",
+          hint: selCount() > 1 ? "⌘-click" : undefined,
+          disabled: selCount() === 0, action: () => S.generateSelected() },
         { sep: true },
         { label: "Render Final Video", hint: "⧉", disabled: !hasProject(), action: () => S.renderFinal() },
         { sep: true },

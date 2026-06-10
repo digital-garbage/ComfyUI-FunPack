@@ -5,7 +5,8 @@
   const state = {
     projects: [],          // [{id,name,scene_count,updated_at}]
     project: null,         // full Project
-    selectedSceneId: null,
+    selectedSceneId: null,   // focus clip (inspector / toolbar)
+    selectedSceneIds: [],    // multi-select for generate / timeline
     transitions: [],       // library [{trigger/name, visual_effect}]
     health: null,          // {ok, comfy_url, template_exists}
     preview: null,         // {combined_prompt, parsed, warning, parse_error}
@@ -27,6 +28,7 @@
 
   const listeners = new Set();
   let saveTimer = null;
+  let _selectionAnchorId = null;  // shift-click range anchor
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -50,7 +52,10 @@
 
   async function loadProject(id) {
     state.project = await API.getProject(id);
-    state.selectedSceneId = state.project.scenes[0]?.id || null;
+    const first = state.project.scenes[0]?.id || null;
+    state.selectedSceneId = first;
+    state.selectedSceneIds = first ? [first] : [];
+    _selectionAnchorId = first;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = {};  // per-session; not persisted
     state.sceneGhosts = [];
@@ -67,7 +72,8 @@
 
   async function deleteProject(id) {
     await API.deleteProject(id);
-    state.project = null; state.selectedSceneId = null;
+    state.project = null; state.selectedSceneId = null; state.selectedSceneIds = [];
+    _selectionAnchorId = null;
     await refreshProjectList();
     if (state.projects[0]) await loadProject(state.projects[0].id);
     else notify();
@@ -149,11 +155,7 @@
     try {
       state.project = await API.saveProject(state.project.id, state.project);
       state.saving = false;
-      // Preserve selectedSceneId: null means "project settings" — keep it.
-      // Only reset to first scene if a NON-null id is no longer in the scene list.
-      if (state.selectedSceneId !== null &&
-          !state.project.scenes.some((s) => s.id === state.selectedSceneId))
-        state.selectedSceneId = state.project.scenes[0]?.id || null;
+      _pruneSelection();
       notify();
       refreshProjectList();
       refreshPreview();
@@ -191,7 +193,87 @@
     Object.assign(s, patch); scheduleSaveSilent();
   }
 
-  function selectScene(id) { state.selectedSceneId = id; notify(); }
+  function _sceneOrder() { return (state.project?.scenes || []).map((s) => s.id); }
+
+  function _pruneSelection() {
+    if (!state.project) {
+      state.selectedSceneIds = [];
+      state.selectedSceneId = null;
+      _selectionAnchorId = null;
+      return;
+    }
+    const valid = new Set(_sceneOrder());
+    state.selectedSceneIds = (state.selectedSceneIds || []).filter((sid) => valid.has(sid));
+    // null selectedSceneId = project settings view — keep it unless focus id vanished.
+    if (state.selectedSceneId !== null && !valid.has(state.selectedSceneId))
+      state.selectedSceneId = state.selectedSceneIds[0] || state.project.scenes[0]?.id || null;
+    if (state.selectedSceneId && !state.selectedSceneIds.includes(state.selectedSceneId))
+      state.selectedSceneIds = [...state.selectedSceneIds, state.selectedSceneId];
+    if (!state.selectedSceneIds.length && state.selectedSceneId)
+      state.selectedSceneIds = [state.selectedSceneId];
+    if (_selectionAnchorId && !valid.has(_selectionAnchorId))
+      _selectionAnchorId = state.selectedSceneId;
+  }
+
+  // Plain click = single; ⌘/Ctrl = toggle; Shift = range from anchor.
+  function selectScene(id, opts) {
+    opts = opts || {};
+    const additive = !!opts.additive;
+    const range = !!opts.range;
+    const order = _sceneOrder();
+
+    if (id == null) {
+      state.selectedSceneId = null;
+      state.selectedSceneIds = [];
+      _selectionAnchorId = null;
+      notify();
+      return;
+    }
+    if (!scene(id)) return;
+
+    if (range && _selectionAnchorId && order.includes(_selectionAnchorId)) {
+      const a = order.indexOf(_selectionAnchorId);
+      const b = order.indexOf(id);
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      const rangeIds = order.slice(lo, hi + 1);
+      if (additive) {
+        const set = new Set([...(state.selectedSceneIds || []), ...rangeIds]);
+        state.selectedSceneIds = order.filter((sid) => set.has(sid));
+      } else state.selectedSceneIds = rangeIds;
+      state.selectedSceneId = id;
+      notify();
+      return;
+    }
+
+    if (additive) {
+      const set = new Set(state.selectedSceneIds || []);
+      if (set.has(id)) {
+        set.delete(id);
+        if (state.selectedSceneId === id)
+          state.selectedSceneId = [...set].pop() || null;
+      } else {
+        set.add(id);
+        state.selectedSceneId = id;
+      }
+      state.selectedSceneIds = order.filter((sid) => set.has(sid));
+      _selectionAnchorId = id;
+      notify();
+      return;
+    }
+
+    state.selectedSceneId = id;
+    state.selectedSceneIds = [id];
+    _selectionAnchorId = id;
+    notify();
+  }
+
+  function selectedSceneCount() {
+    return (state.selectedSceneIds || []).filter((sid) => {
+      const s = scene(sid);
+      return s && !s.excluded;
+    }).length;
+  }
 
   function addScene() {
     if (!state.project) return;
@@ -244,7 +326,10 @@
     }
     state.project.scenes = arr.filter((s) => s.id !== id);
     delete state.sceneRenders[id];
-    if (state.selectedSceneId === id) state.selectedSceneId = state.project.scenes[0]?.id || null;
+    state.selectedSceneIds = (state.selectedSceneIds || []).filter((sid) => sid !== id);
+    if (state.selectedSceneId === id)
+      state.selectedSceneId = state.selectedSceneIds[0] || state.project.scenes[0]?.id || null;
+    if (_selectionAnchorId === id) _selectionAnchorId = state.selectedSceneId;
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave();
   }
@@ -453,6 +538,8 @@
     state.project.scenes = next;
     state.sceneGhosts = [];  // scene ids changed — old ghosts no longer anchor correctly
     state.selectedSceneId = null;  // show project view so the result is visible
+    state.selectedSceneIds = [];
+    _selectionAnchorId = null;
     notify(); scheduleSave();
   }
 
@@ -543,6 +630,31 @@
       else runs.push([s.id]);
     }
     return runs;
+  }
+
+  // Expand selection to full generative units, then slice each chain run from the
+  // first to last selected scene in that run (keeps carry / overlap context).
+  function _expandSelection(sceneIds) {
+    const wanted = new Set();
+    for (const id of sceneIds || []) {
+      const sc = scene(id);
+      if (!sc || sc.excluded) continue;
+      genUnitSceneIds(genUnitId(sc)).forEach((sid) => wanted.add(sid));
+    }
+    return wanted;
+  }
+
+  function _runsForSceneIds(sceneIds) {
+    const wanted = _expandSelection(sceneIds);
+    if (!wanted.size) return [];
+    const out = [];
+    for (const run of _runs()) {
+      const hit = run.filter((id) => wanted.has(id));
+      if (!hit.length) continue;
+      const idxs = hit.map((id) => run.indexOf(id));
+      out.push(run.slice(Math.min(...idxs), Math.max(...idxs) + 1));
+    }
+    return out;
   }
 
   // Record a completed run's output: map each of the run's scenes to the one source
@@ -695,6 +807,38 @@
       if (!ok) return;  // error already surfaced
     }
     set({ gen: { state: "done", promptId: null, media: state.gen.media, msg: `${runs.length} run(s) generated — use Render Final Video to stitch them.` } });
+  }
+
+  async function generateSelected() {
+    if (!state.project) return;
+    const ids = (state.selectedSceneIds || []).filter((sid) => {
+      const s = scene(sid);
+      return s && !s.excluded;
+    });
+    if (!ids.length) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes selected." } });
+      return;
+    }
+    await flushSave();
+    const runs = _runsForSceneIds(ids);
+    if (!runs.length) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: "No generatable runs in the selection." } });
+      return;
+    }
+    const reset = _resetSessionPending; _resetSessionPending = false;
+    if (reset) state.resetSessionArmed = false;
+    for (let i = 0; i < runs.length; i++) {
+      const prefix = runs.length > 1 ? `Selected run ${i + 1}/${runs.length}` : "Generating selection";
+      const ok = await _generateRun(runs[i], null, prefix, reset && i === 0);
+      if (!ok) return;
+    }
+    const n = ids.length;
+    set({
+      gen: {
+        state: "done", promptId: null, media: state.gen.media,
+        msg: `${runs.length} run(s) generated for ${n} selected scene${n > 1 ? "s" : ""}.`,
+      },
+    });
   }
 
   // Local timestamp for unique export filenames: YYYYMMDD-HHMMSS.
@@ -898,7 +1042,7 @@
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
