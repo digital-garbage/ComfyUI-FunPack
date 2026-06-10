@@ -436,11 +436,16 @@
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
     let inAcc = 0;
+    let clearedRating = false;
     for (const id of targetSceneIds) {
       const sc = scene(id); if (!sc) continue;
       state.sceneRenders[id] = { media: primary, inSec: inAcc };
+      // New render invalidates the prior RLHF rating — UI shows "— rate —"; server
+      // treats empty as "-Just forget it-" on the next Studio run.
+      if (sc.rating) { sc.rating = ""; clearedRating = true; }
       inAcc += sceneDurationSec(sc);
     }
+    if (clearedRating) scheduleSaveSilent();
   }
 
   // Poll a single queued prompt to completion. Resolves true on success, false on error.
