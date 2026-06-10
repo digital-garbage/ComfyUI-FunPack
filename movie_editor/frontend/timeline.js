@@ -9,6 +9,7 @@
 
   const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥" };
   const ZOOM_KEY = "funpack_tl_zoom";
+  const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom
   let scrollLeft = 0;
 
@@ -362,6 +363,31 @@
     return lane;
   }
 
+  function gutterLane(label, title, kind) {
+    const lane = el("div", "tl-gutter-lane " + kind, label);
+    lane.title = title || label;
+    return lane;
+  }
+
+  function timelineGutter(st, p) {
+    const gutter = el("div", "tl-gutter");
+    gutter.style.width = GUTTER_W + "px";
+    gutter.append(el("div", "tl-gutter-ruler"));
+    const gTracks = el("div", "tl-gutter-tracks");
+    gTracks.append(gutterLane("Video", "Video", "video"));
+    const gAud = el("div", "tl-gutter-aud");
+    gAud.append(gutterLane("Audio", "Audio — per-scene volume from generated clips", "audio"));
+    (p.audio_tracks || []).forEach((t) => {
+      const asset = (st.mediaBin || []).find((m) => m.id === t.media_ref);
+      const name = (asset && asset.name) || t.label || "Audio";
+      const short = name.length > 9 ? name.slice(0, 8) + "…" : name;
+      gAud.append(gutterLane(short, name, "audio"));
+    });
+    gTracks.append(gAud);
+    gutter.append(gTracks);
+    return gutter;
+  }
+
   function audioLanes(st, p, lay) {
     const wrap = el("div", "tl-audio-lanes");
     const origLane = el("div", "tl-audio-lane"); origLane.style.height = "36px";
@@ -427,7 +453,7 @@
   }
   function setZoom(v) { pxPerSec = Math.min(600, Math.max(8, v)); localStorage.setItem(ZOOM_KEY, pxPerSec); render(S.get()); }
   function fit(totalSec) {
-    const w = (body.querySelector(".tl-scroll")?.clientWidth || 800) - 40;
+    const w = (body.querySelector(".tl-scroll")?.clientWidth || 800) - GUTTER_W - 8;
     if (totalSec > 0) setZoom(w / totalSec);
   }
 
@@ -468,6 +494,9 @@
       if (st.selectedSceneId && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
         S.selectScene(null);
     });
+    const stage = el("div", "tl-stage"); stage.style.width = (GUTTER_W + contentW) + "px";
+    stage.append(timelineGutter(st, p));
+
     const content = el("div", "tl-content"); content.style.width = contentW + "px";
 
     // ruler
@@ -506,7 +535,8 @@
     tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; tracks.append(tlPhEl);
     content.append(tracks);
 
-    scroll.append(content);
+    stage.append(content);
+    scroll.append(stage);
     body.append(scroll);
     scroll.scrollLeft = scrollLeft;
     tlScrollEl = scroll;
