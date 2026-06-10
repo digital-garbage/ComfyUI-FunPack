@@ -9,9 +9,21 @@
 
   const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑" };
 
-  function anchorMediaRef(scene) {
-    const t = scene.source?.type;
-    if (t === "image" || t === "mixed" || t === "generated_frame") return scene.source?.media_ref || null;
+  function genUnitRootScene(scene, p) {
+    const uid = scene.gen_unit_id || scene.id;
+    return (p.scenes || []).find((s) => (s.gen_unit_id || s.id) === uid && !(s.cut_offset_frames > 0))
+      || scene;
+  }
+
+  function sceneSourceForClip(scene, p) {
+    const root = genUnitRootScene(scene, p);
+    return root.source || scene.source || {};
+  }
+
+  function anchorMediaRef(scene, p) {
+    const src = sceneSourceForClip(scene, p);
+    const t = src.type;
+    if (t === "image" || t === "mixed" || t === "generated_frame") return src.media_ref || null;
     return null;
   }
 
@@ -157,7 +169,8 @@
   function clipEl(st, p, scene, index, leftPx, widthPx) {
     const unitCuts = (p.scenes || []).filter((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id)).length;
     const subclip = (scene.cut_offset_frames || 0) > 0;
-    const srcType = scene.source?.type || "empty";
+    const src = sceneSourceForClip(scene, p);
+    const srcType = src.type || "empty";
     const clip = el("div", "clip" + clipSelClass(st, scene.id)
       + (scene.excluded ? " excluded" : "")
       + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : ""))
@@ -215,7 +228,7 @@
     });
 
     // i2v anchor thumbnail (image + mixed + generated_frame)
-    const mref = anchorMediaRef(scene);
+    const mref = anchorMediaRef(scene, p);
     const asset = mref ? (st.mediaBin || []).find((m) => m.id === mref) : null;
     if (asset) {
       const th = el("div", "clip-thumb");

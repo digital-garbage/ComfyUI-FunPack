@@ -30,6 +30,9 @@
 
   const listeners = new Set();
   let saveTimer = null;
+  let _localDirty = false;       // local edits newer than the in-flight save snapshot
+  let _commitPromise = null;     // avoid overlapping saves stomping newer anchor edits
+  let _commitQueued = false;
   let _selectionAnchorId = null;  // shift-click range anchor
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
@@ -140,6 +143,7 @@
   // to fire every keystroke. Discrete actions (dropdowns, checkboxes) save ~1s after the
   // last change; free typing waits longer and is flushed on blur (see flushSave).
   function scheduleSave() {
+    _localDirty = true;
     state.saving = true; notify();
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, 1200);
@@ -148,6 +152,7 @@
   // For free-text / number fields: update state and queue a save WITHOUT re-rendering,
   // so typing isn't interrupted. Long debounce; blur flushes it (flushSave).
   function scheduleSaveSilent() {
+    _localDirty = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => { saveTimer = null; commit(); }, 6000);
   }
@@ -155,24 +160,38 @@
   // Commit any pending save immediately (field blur / before generate). Returns the
   // commit promise when it flushed, else null.
   function flushSave() {
-    if (!saveTimer) return null;
     clearTimeout(saveTimer); saveTimer = null;
+    if (!_localDirty && !_commitPromise) return null;
     return commit();
   }
 
   async function commit() {
     if (!state.project) return;
-    try {
-      state.project = await API.saveProject(state.project.id, state.project);
-      state.saving = false;
-      _pruneSelection();
-      notify();
-      refreshProjectList();
-      refreshPreview(true);
-    } catch (e) {
-      state.saving = false; notify();
-      console.error("save failed", e);
-    }
+    if (_commitPromise) { _commitQueued = true; return _commitPromise; }
+    _commitPromise = (async () => {
+      const snapshot = JSON.parse(JSON.stringify(state.project));
+      _localDirty = false;
+      try {
+        const saved = await API.saveProject(snapshot.id, snapshot);
+        // If the user edited again while this save was in flight (e.g. dropped a new
+        // anchor), do NOT replace local state with the older snapshot we just wrote.
+        if (_localDirty) scheduleSave();
+        else state.project = saved;
+        state.saving = false;
+        _pruneSelection();
+        notify();
+        refreshProjectList();
+        refreshPreview(true);
+      } catch (e) {
+        _localDirty = true;
+        state.saving = false; notify();
+        console.error("save failed", e);
+      } finally {
+        _commitPromise = null;
+        if (_commitQueued) { _commitQueued = false; commit(); }
+      }
+    })();
+    return _commitPromise;
   }
 
   function patchProject(patch) { if (!state.project) return; Object.assign(state.project, patch); notify(); scheduleSave(); }
@@ -218,22 +237,46 @@
     if (root?.rating) root.rating = "";
   }
 
+  // Source lives on the gen-unit root; editorial subclips must mirror it for UI + saves.
+  function _syncGenUnitSource(root) {
+    if (!root || !state.project) return;
+    const src = JSON.parse(JSON.stringify(root.source || {}));
+    const uid = genUnitId(root);
+    (state.project.scenes || []).forEach((sc) => {
+      if (genUnitId(sc) === uid) sc.source = JSON.parse(JSON.stringify(src));
+    });
+  }
+
   function _applyScenePatch(id, patch, quiet) {
     const t = _patchSceneTarget(id, patch); if (!t) return;
-    if (_anchorPatchChanged(t, patch)) _invalidateSceneAfterAnchorChange(t);
+    const anchorChanged = _anchorPatchChanged(t, patch);
+    if (anchorChanged) _invalidateSceneAfterAnchorChange(t);
     const merged = { ...patch };
     if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
     Object.assign(t, merged);
-    if (quiet) scheduleSaveSilent(); else { notify(); scheduleSave(); }
+    if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
+    if (anchorChanged) {
+      clearTimeout(saveTimer); saveTimer = null;
+      _localDirty = true; state.saving = true; notify();
+      commit();
+    } else if (quiet) scheduleSaveSilent();
+    else { notify(); scheduleSave(); }
   }
 
   function patchScene(id, patch) { _applyScenePatch(id, patch, false); }
   function patchSceneQuiet(id, patch) {
-    const s = scene(id); if (!s) return;
-    if (_anchorPatchChanged(s, patch)) _invalidateSceneAfterAnchorChange(s);
+    const t = _patchSceneTarget(id, patch) || scene(id); if (!t) return;
+    const anchorChanged = _anchorPatchChanged(t, patch);
+    if (anchorChanged) _invalidateSceneAfterAnchorChange(t);
     const merged = { ...patch };
-    if (merged.source) merged.source = { ...(s.source || {}), ...merged.source };
-    Object.assign(s, merged); scheduleSaveSilent();
+    if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
+    Object.assign(t, merged);
+    if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
+    if (anchorChanged) {
+      clearTimeout(saveTimer); saveTimer = null;
+      _localDirty = true; state.saving = true; notify();
+      commit();
+    } else scheduleSaveSilent();
   }
 
   function _sceneOrder() { return (state.project?.scenes || []).map((s) => s.id); }
