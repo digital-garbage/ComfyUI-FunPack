@@ -216,6 +216,8 @@
       body.append(el("div", "insp-hint", "Crossfades overlap the two clips, so the montage gets a little shorter."));
     }
 
+    renderSceneGuides(st, scene);
+
     const p = st.project;
     const lenRow = el("div", "fields-row");
     lenRow.append(lengthControl(scene, "frames"));
@@ -492,6 +494,134 @@
     { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false },
     { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.25, max: 0.5, step: 0.05, dependsOn: "mid_scene_guide" },
   ];
+  const STUDIO_DEFAULT_GUIDE = { enabled: true, source: "template", frame_idx: 0, apply_at: 0, strength: 0.35 };
+
+  function normGuideSettings(p) {
+    const gs = (p && p.guide_settings) || {};
+    return { stack_enabled: !!gs.stack_enabled, accumulate_prior: !!gs.accumulate_prior };
+  }
+
+  function patchGuideSettings(patch) {
+    const p = S.get().project;
+    S.patchProject({ guide_settings: { ...(p.guide_settings || {}), ...patch } });
+  }
+
+  function renderGuideStackSettings(parent, st, multiScene) {
+    const gs = normGuideSettings(st.project);
+    const hint = el("div", "insp-hint");
+    hint.textContent = gs.stack_enabled
+      ? "Custom guide stack — per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
+      : "Studio default: one i2v guide from scene 1, carried to later scenes at frame 0 (same as FunPack Studio).";
+    parent.append(hint);
+    const stackLbl = el("label", "chk");
+    const stackCb = el("input"); stackCb.type = "checkbox"; stackCb.checked = gs.stack_enabled;
+    stackCb.dataset.k = "gs-stack";
+    stackCb.onchange = () => patchGuideSettings({ stack_enabled: stackCb.checked });
+    stackLbl.append(stackCb, el("span", null, "Custom guide stack"));
+    parent.append(stackLbl);
+    if (gs.stack_enabled) {
+      const accLbl = el("label", "chk");
+      const accCb = el("input"); accCb.type = "checkbox"; accCb.checked = gs.accumulate_prior;
+      accCb.dataset.k = "gs-accum";
+      accCb.onchange = () => patchGuideSettings({ accumulate_prior: accCb.checked });
+      accLbl.append(accCb, el("span", null, "Stack guides from all prior scenes"));
+      parent.append(accLbl);
+      parent.append(el("div", "insp-hint", "Negative frame_idx / apply_at count from the end (e.g. −1 = last frame)."));
+    } else if (multiScene) {
+      parent.append(el("div", "insp-hint", "Carry i2v guides is auto-enabled for multi-scene runs."));
+    }
+  }
+
+  function renderSceneGuides(st, scene) {
+    if (!normGuideSettings(st.project).stack_enabled) return;
+    const sceneNo = st.project.scenes.indexOf(scene) + 1;
+    const tag = el("div", "insp-tag"); tag.textContent = "i2v guides"; body.append(tag);
+    if (sceneNo <= 1) {
+      body.append(el("div", "insp-hint", "Scene 1 is the i2v anchor — guides apply from scene 2 onward."));
+      return;
+    }
+    const guides = [...(scene.guides || [])];
+    const wrap = el("div", "insp-block");
+
+    const list = el("div", "guide-list");
+    const persist = (next, quiet) => {
+      quiet ? S.patchSceneQuiet(scene.id, { guides: next }) : S.patchScene(scene.id, { guides: next });
+    };
+    const redraw = () => { /* full inspector rebuild on notify */ };
+
+    const rowFor = (g, idx) => {
+      const row = el("div", "fields-row guide-row");
+      const en = el("input"); en.type = "checkbox"; en.checked = g.enabled !== false; en.title = "Enabled";
+      en.onchange = () => { guides[idx] = { ...g, enabled: en.checked }; persist(guides, true); };
+      row.append(en);
+      const src = el("select");
+      [["template", "Scene 1 template"], ["scene", "Prior scene"], ["image", "Image (bin)"]].forEach(([v, lbl]) => {
+        const o = new Option(lbl, v); if ((g.source || "template") === v) o.selected = true; src.append(o);
+      });
+      src.onchange = () => { guides[idx] = { ...g, source: src.value }; persist(guides); };
+      row.append(src);
+      if ((g.source || "template") === "scene") {
+        const sel = el("select");
+        (st.project.scenes || []).forEach((s, i) => {
+          if (i >= sceneNo - 1) return;
+          const o = new Option(`Scene ${i + 1}`, s.id); if (g.scene_id === s.id) o.selected = true; sel.append(o);
+        });
+        sel.onchange = () => { guides[idx] = { ...g, scene_id: sel.value }; persist(guides); };
+        row.append(sel);
+      }
+      if ((g.source || "template") === "image") {
+        const sel = el("select");
+        sel.append(new Option("— image —", ""));
+        (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
+          const o = new Option(m.name, m.id); if (g.media_ref === m.id) o.selected = true; sel.append(o);
+        });
+        sel.onchange = () => { guides[idx] = { ...g, media_ref: sel.value || null }; persist(guides); };
+        row.append(sel);
+      }
+      const fi = el("input"); fi.type = "number"; fi.value = g.frame_idx != null ? g.frame_idx : 0; fi.title = "Source frame_idx";
+      fi.oninput = () => { guides[idx] = { ...g, frame_idx: parseInt(fi.value || "0", 10) }; persist(guides, true); };
+      const ai = el("input"); ai.type = "number"; ai.value = g.apply_at != null ? g.apply_at : 0; ai.title = "apply_at";
+      ai.oninput = () => { guides[idx] = { ...g, apply_at: parseInt(ai.value || "0", 10) }; persist(guides, true); };
+      const si = el("input"); si.type = "number"; si.min = "0.25"; si.max = "0.5"; si.step = "0.05";
+      si.value = g.strength != null ? g.strength : 0.35; si.title = "Strength";
+      si.oninput = () => { guides[idx] = { ...g, strength: parseFloat(si.value || "0.35") }; persist(guides, true); };
+      row.append(field("frame", fi)); row.append(field("apply", ai)); row.append(field("str", si));
+      const rm = el("button", "btn ghost tiny danger", "✕");
+      rm.onclick = () => { guides.splice(idx, 1); persist(guides); };
+      row.append(rm);
+      return row;
+    };
+
+    guides.forEach((g, i) => list.append(rowFor(g, i)));
+    wrap.append(list);
+
+    const btns = el("div", "fields-row");
+    const addDef = el("button", "btn ghost tiny", "+ Studio default");
+    addDef.title = "Template from scene 1 at frame 0";
+    addDef.onclick = () => { guides.push({ ...STUDIO_DEFAULT_GUIDE }); persist(guides); };
+    const addScene = el("button", "btn ghost tiny", "+ Prior scene");
+    addScene.onclick = () => {
+      const prior = st.project.scenes[sceneNo - 2];
+      guides.push({ enabled: true, source: "scene", scene_id: prior?.id, frame_idx: 0, apply_at: 0, strength: 0.35 });
+      persist(guides);
+    };
+    const addSel = el("button", "btn ghost tiny", "+ From selected");
+    addSel.disabled = !st.selectedSceneId;
+    addSel.onclick = () => {
+      const sid = st.selectedSceneId;
+      const idx = st.project.scenes.findIndex((s) => s.id === sid);
+      if (idx < 0 || idx >= sceneNo - 1) return;
+      guides.push({ enabled: true, source: "scene", scene_id: sid, frame_idx: 0, apply_at: 0, strength: 0.35 });
+      persist(guides);
+    };
+    btns.append(addDef, addScene, addSel);
+    wrap.append(btns);
+    if (!guides.length) {
+      wrap.append(el("div", "insp-hint", "No custom entries — generation uses the Studio default for this scene."));
+    }
+    body.append(wrap);
+  }
+
   const CHAIN_SECTIONS = [
     { id: "chain_timing", title: "Timing", defaultOpen: true, knobs: ["frame_overlap", "transition_duration", "use_same_seed"] },
     { id: "chain_cont", title: "Continuity", defaultOpen: true, knobs: ["carry_i2v_guides"] },
@@ -521,7 +651,8 @@
   function renderSamplerKnob(parent, st, k, si, multiScene) {
     if (!knobVisible(k, si)) return;
     const val = si[k.name] != null ? si[k.name] : k.default;
-    const forced = k.lockMulti && multiScene;
+    const gs = normGuideSettings(st.project);
+    const forced = k.lockMulti && multiScene && !gs.stack_enabled;
     let ctrl;
     if (k.kind === "bool") {
       ctrl = el("input"); ctrl.type = "checkbox";
@@ -566,8 +697,8 @@
         const k = SAMPLER_KNOB_MAP[name];
         if (k) renderSamplerKnob(inner, st, k, si, multiScene);
       });
-      if (sec.id === "chain_cont" && multiScene) {
-        inner.append(el("div", "insp-hint", "Carry i2v guides is forced on when generating 2+ active scenes."));
+      if (sec.id === "chain_cont") {
+        renderGuideStackSettings(inner, st, multiScene);
       }
       if (sec.id === "chain_timing") {
         inner.append(el("div", "insp-hint",

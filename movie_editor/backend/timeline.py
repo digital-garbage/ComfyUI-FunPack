@@ -21,6 +21,53 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+# Studio default: one i2v guide from scene 1's template, applied at pixel frame 0.
+STUDIO_DEFAULT_GUIDE: dict[str, Any] = {
+    "enabled": True,
+    "source": "template",
+    "frame_idx": 0,
+    "apply_at": 0,
+    "strength": 0.35,
+}
+
+
+def normalize_guide_settings(raw: Optional[dict]) -> dict[str, bool]:
+    """Guide stack toggles — all off unless explicitly enabled."""
+    raw = raw or {}
+    return {
+        "stack_enabled": bool(raw.get("stack_enabled", False)),
+        "accumulate_prior": bool(raw.get("accumulate_prior", False)),
+    }
+
+
+@dataclass
+class GuideEntry:
+    """Optional per-scene guide (only used when project guide_settings.stack_enabled)."""
+    enabled: bool = True
+    source: str = "template"   # "template" | "scene" | "image"
+    scene_id: Optional[str] = None
+    media_ref: Optional[str] = None
+    frame_idx: int = 0         # source frame; negative counts from end
+    apply_at: int = 0          # target pixel frame in chunk; negative from end
+    strength: float = 0.35
+
+    @staticmethod
+    def from_dict(d: Optional[dict]) -> "GuideEntry":
+        d = d or {}
+        return GuideEntry(
+            enabled=bool(d.get("enabled", True)),
+            source=str(d.get("source", "template")),
+            scene_id=d.get("scene_id"),
+            media_ref=d.get("media_ref"),
+            frame_idx=int(d.get("frame_idx", 0)),
+            apply_at=int(d.get("apply_at", 0)),
+            strength=float(d.get("strength", 0.35)),
+        )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 @dataclass
 class SceneSource:
     """How a scene's latent is born. V1 ignores this (uniform chain); Phase 2 maps
@@ -87,6 +134,8 @@ class Scene:
     # for generation; subclips are NLE trims of the same output.
     gen_unit_id: Optional[str] = None
     cut_offset_frames: int = 0
+    # Per-scene guide overrides (only when project.guide_settings.stack_enabled).
+    guides: list = field(default_factory=list)
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -109,6 +158,7 @@ class Scene:
             excluded=bool(d.get("excluded", False)),
             gen_unit_id=d.get("gen_unit_id"),
             cut_offset_frames=int(d.get("cut_offset_frames", 0) or 0),
+            guides=list(d.get("guides") or []),
         )
 
     def to_dict(self) -> dict:
@@ -164,6 +214,8 @@ class Project:
     # (same shape as the global models.json). Empty {"slots": []} falls back to the
     # global default at build/read time; the editor seeds new projects from it.
     models: dict = field(default_factory=lambda: {"slots": []})
+    # Guide stack toggles — empty / stack_enabled=false keeps Studio carry behaviour.
+    guide_settings: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -190,6 +242,7 @@ class Project:
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),
             models=dict(d.get("models") or {"slots": []}),
+            guide_settings=dict(d.get("guide_settings") or {}),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )
@@ -299,3 +352,34 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
         if text:
             parts.append(text)
     return " ".join(p for p in parts if p).strip()
+
+
+def build_scene_guides_payload(project: Project) -> Optional[dict]:
+    """Per-scene guide lists for the chain sampler. None when stack_enabled is off
+    (Studio default: carry_i2v_guides from scene 1 template at frame 0)."""
+    gs = normalize_guide_settings(project.guide_settings)
+    if not gs["stack_enabled"]:
+        return None
+    active = [s for s in project.scenes if not s.excluded]
+    per_scene: list[Optional[list[dict]]] = []
+    for i, sc in enumerate(active):
+        if i == 0:
+            per_scene.append(None)
+            continue
+        entries: list[dict] = []
+        for raw in (sc.guides or []):
+            g = GuideEntry.from_dict(raw if isinstance(raw, dict) else {})
+            if g.enabled:
+                entries.append(g.to_dict())
+        if gs["accumulate_prior"]:
+            for j in range(i):
+                ref = active[j]
+                acc = dict(STUDIO_DEFAULT_GUIDE)
+                acc["source"] = "scene"
+                acc["scene_id"] = ref.id
+                acc["scene_index"] = j
+                entries.append(acc)
+        if not entries:
+            entries = [dict(STUDIO_DEFAULT_GUIDE)]
+        per_scene.append(entries)
+    return {"stack_enabled": True, "accumulate_prior": gs["accumulate_prior"], "scenes": per_scene}

@@ -2080,6 +2080,11 @@ class FunPackLTXAVSceneChainSampler:
                     "forceInput": True,
                     "tooltip": "Connect to the same refinement key as your V2 Refiner. When wired, the sampler writes carry_i2v_guides, frame_overlap, and scene count into the refinement state so the Refiner can reason about what changed between rated runs.",
                 }),
+                "funpack_scene_guides": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "Optional JSON from Movie Editor when guide_settings.stack_enabled: per-scene guide lists with source, frame_idx, apply_at, strength. When empty, carry_i2v_guides uses the Studio default (scene 1 template at frame 0).",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2698,6 +2703,171 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _embed_wrapper
         return old_wrapper
 
+    def _resolve_frame_index(self, total, frame_idx):
+        total = max(0, int(total))
+        if total <= 0:
+            return 0
+        idx = int(frame_idx)
+        if idx < 0:
+            idx = total + idx
+        return max(0, min(idx, total - 1))
+
+    def _pixel_frame_idx(self, chunk_frames, apply_at, time_scale):
+        """Map apply_at (pixel index, negative from end) to LTX keyframe pixel index."""
+        F = max(1, int(chunk_frames))
+        time_scale = max(1, int(time_scale))
+        at = self._resolve_frame_index(F, int(apply_at))
+        causal_fix = (at == 0)
+        if causal_fix:
+            return 0, True
+        return 1 + (at - 1) * time_scale, False
+
+    def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae):
+        """Append one guide latent frame with LTX guide attention at apply_at."""
+        try:
+            from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
+        except ImportError:
+            return chunk, positive, negative, 0
+
+        chunk_tensors = self._latent_tensors(chunk)
+        if not chunk_tensors:
+            return chunk, positive, negative, 0
+        guide_frame = guide_frame.to(device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype)
+        F_chunk = self._tensor_frames(chunk_tensors[0])
+        scale_factors = getattr(vae, 'downscale_index_formula', [8, 8, 8])
+        time_scale = int(scale_factors[0]) if hasattr(scale_factors, '__getitem__') else 8
+        pixel_frame_idx, causal_fix = self._pixel_frame_idx(F_chunk, apply_at, time_scale)
+
+        positive = LTXVAddGuide.add_keyframe_index(
+            positive, pixel_frame_idx, guide_frame, scale_factors, causal_fix=causal_fix
+        )
+        negative = LTXVAddGuide.add_keyframe_index(
+            negative, pixel_frame_idx, guide_frame, scale_factors, causal_fix=causal_fix
+        )
+        guide_latent_shape = [guide_frame.shape[2], guide_frame.shape[3], guide_frame.shape[4]]
+        pre_filter_count = guide_frame.shape[2] * guide_frame.shape[3] * guide_frame.shape[4]
+        positive, negative = _append_guide_attention_entry(
+            positive, negative, pre_filter_count, guide_latent_shape, strength=float(strength)
+        )
+
+        result = self._clone_latent(chunk)
+        tensors = self._latent_tensors(result)
+        masks = self._latent_masks(result, len(tensors))
+        if masks[0] is None:
+            masks[0] = torch.ones(
+                tensors[0].shape[0], 1, tensors[0].shape[2], 1, 1,
+                dtype=torch.float32, device=tensors[0].device,
+            )
+        guide_mask = torch.full_like(masks[0][:, :, :1], max(0.0, 1.0 - float(strength)))
+        tensors[0] = torch.cat([tensors[0], guide_frame], dim=2)
+        masks[0] = torch.cat([masks[0], guide_mask.to(masks[0].device, masks[0].dtype)], dim=2)
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+            result["noise_mask"] = comfy.nested_tensor.NestedTensor(masks)
+        else:
+            result["samples"] = tensors[0]
+            result["noise_mask"] = masks[0]
+        return result, positive, negative, 1
+
+    def _append_template_guide_at(self, chunk, template, frame_idx, apply_at, strength, positive, negative, vae):
+        """Studio-default path: template protected prefix at apply_at=0; else LTX guide attention."""
+        template_tensors = self._latent_tensors(template)
+        template_masks = self._latent_masks(template, len(template_tensors))
+        if not template_tensors:
+            return chunk, positive, negative, 0, 0
+        protected = self._protected_prefix_frames(template_masks[0], self._tensor_frames(template_tensors[0]))
+        if protected <= 0:
+            return chunk, positive, negative, 0, 0
+        src_at = self._resolve_frame_index(protected, frame_idx)
+        guide_frame = self._time_slice(template_tensors[0], src_at, src_at + 1)
+        if int(apply_at) == 0 and src_at == 0:
+            chunk_tensors = self._latent_tensors(chunk)
+            if not chunk_tensors:
+                return chunk, positive, negative, 0, 0
+            guide = self._time_slice(template_tensors[0], 0, protected).to(
+                device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype,
+            )
+            guide_mask = self._time_slice(template_masks[0], 0, protected).to(
+                device=chunk_tensors[0].device, dtype=chunk_tensors[0].dtype,
+            )
+            out_tensors = list(chunk_tensors)
+            out_masks = self._latent_masks(chunk, len(out_tensors))
+            if out_masks[0] is None:
+                out_masks[0] = torch.ones_like(out_tensors[0])
+            target_mask = self._time_slice(out_masks[0], 0, protected).to(guide_mask.device, guide_mask.dtype)
+            guide_mask = self._expand_mask_like(guide_mask, target_mask)
+            out_tensors[0] = torch.cat([guide, out_tensors[0]], dim=2)
+            out_masks[0] = torch.cat([guide_mask, out_masks[0].to(guide_mask.device, guide_mask.dtype)], dim=2)
+            if self._is_nested(chunk.get("samples")):
+                chunk["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
+                chunk["noise_mask"] = comfy.nested_tensor.NestedTensor(out_masks)
+            else:
+                chunk["samples"] = out_tensors[0]
+                chunk["noise_mask"] = out_masks[0]
+            return chunk, positive, negative, protected, 0
+        chunk, positive, negative, tail = self._append_guide_latent(
+            chunk, guide_frame, apply_at, strength, positive, negative, vae,
+        )
+        return chunk, positive, negative, 0, tail
+
+    def _append_scene_guide_at(self, chunk, scene_output, frame_idx, apply_at, strength, positive, negative, vae):
+        tensors = self._latent_tensors(scene_output)
+        if not tensors:
+            return chunk, positive, negative, 0, 0
+        total = self._tensor_frames(tensors[0])
+        at = self._resolve_frame_index(total, frame_idx)
+        guide_frame = self._time_slice(tensors[0], at, at + 1)
+        chunk, positive, negative, tail = self._append_guide_latent(
+            chunk, guide_frame, apply_at, strength, positive, negative, vae,
+        )
+        return chunk, positive, negative, 0, tail
+
+    def _parse_scene_guides(self, raw):
+        if not raw or not str(raw).strip():
+            return None
+        try:
+            import json
+            data = json.loads(str(raw))
+        except Exception:
+            return None
+        if not isinstance(data, dict) or not data.get("stack_enabled"):
+            return None
+        return data
+
+    def _apply_configured_guides(self, chunk, scene_index, guide_list, latent_template,
+                                 scene_outputs, positive, negative, vae):
+        head_crop = 0
+        tail_crop = 0
+        for g in guide_list or []:
+            if not g or not g.get("enabled", True):
+                continue
+            source = str(g.get("source", "template"))
+            frame_idx = int(g.get("frame_idx", 0))
+            apply_at = int(g.get("apply_at", 0))
+            strength = float(g.get("strength", 0.35))
+            if source == "template":
+                chunk, positive, negative, head, tail = self._append_template_guide_at(
+                    chunk, latent_template, frame_idx, apply_at, strength, positive, negative, vae,
+                )
+            elif source == "scene":
+                si = g.get("scene_index")
+                if si is None and g.get("scene_id"):
+                    si = scene_index - 1
+                try:
+                    si = int(si)
+                except (TypeError, ValueError):
+                    si = scene_index - 1
+                if si < 0 or si >= len(scene_outputs) or scene_outputs[si] is None:
+                    continue
+                chunk, positive, negative, head, tail = self._append_scene_guide_at(
+                    chunk, scene_outputs[si], frame_idx, apply_at, strength, positive, negative, vae,
+                )
+            else:
+                continue
+            head_crop += head
+            tail_crop += tail
+        return chunk, positive, negative, head_crop, tail_crop
+
     def _append_mid_scene_guide(self, chunk, previous_output, positive, negative, vae, strength):
         """Append the middle frame of the previous scene as a guide for the current chunk
         using LTX's guide attention mechanism (keyframe_idxs + guide_attention_entries).
@@ -2792,7 +2962,8 @@ class FunPackLTXAVSceneChainSampler:
                embed_guidance_source="relative",
                transition_duration=16, decode_tile_size=0,
                decode_noise_scale=0.0, decode_timestep=0.05,
-               refinement_key_input="", unique_id=None, prompt=None):
+               refinement_key_input="", funpack_scene_guides="",
+               unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
@@ -2862,6 +3033,10 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             pass
 
+        scene_guides_cfg = self._parse_scene_guides(funpack_scene_guides)
+        per_scene_guides = (scene_guides_cfg or {}).get("scenes") if scene_guides_cfg else None
+        scene_outputs: list = []
+
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
@@ -2890,16 +3065,25 @@ class FunPackLTXAVSceneChainSampler:
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if video_overlap == 0:
                     chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
-                if carry_i2v_guides:
+                custom_guides = None
+                if per_scene_guides and scene_index < len(per_scene_guides):
+                    custom_guides = per_scene_guides[scene_index]
+                if custom_guides:
+                    chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
+                        chunk, scene_index, custom_guides, latent_template, scene_outputs,
+                        scene_positive, scene_negative, vae,
+                    )
+                    carried_guide_frames = max(carried_guide_frames, carried)
+                elif carry_i2v_guides:
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
-                if mid_scene_guide:
+                if mid_scene_guide and not custom_guides:
                     chunk, scene_positive, scene_negative, guide_tail = self._append_mid_scene_guide(
                         chunk, output, scene_positive, scene_negative, vae, mid_scene_guide_strength,
                     )
-                else:
+                elif not custom_guides:
                     guide_tail = 0
 
             if embed_guidance and _value_fn is not None and _value_fn.is_ready():
@@ -2943,6 +3127,7 @@ class FunPackLTXAVSceneChainSampler:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
                 sampled = self._crop_video_tail(sampled, guide_tail)
+            scene_outputs.append(self._clone_latent(sampled))
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")

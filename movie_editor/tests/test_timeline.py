@@ -14,9 +14,12 @@ sys.path.insert(0, str(ROOT))
 from movie_editor.backend.timeline import (  # noqa: E402
     Project,
     Scene,
+    STUDIO_DEFAULT_GUIDE,
     build_combined_prompt,
+    build_scene_guides_payload,
     collapse_generative_units,
     group_generative_units,
+    normalize_guide_settings,
 )
 
 
@@ -104,6 +107,38 @@ def test_split_subclips_collapse_to_one_generative_unit():
     assert len(collapsed.scenes) == 2
     assert collapsed.scenes[0].frames == 98
     assert collapsed.scenes[0].text == "one long shot"
+
+
+def test_guide_settings_default_off():
+    gs = normalize_guide_settings({})
+    assert gs["stack_enabled"] is False
+    assert gs["accumulate_prior"] is False
+    p = _project(scenes=[{"text": "a"}, {"text": "b"}])
+    assert build_scene_guides_payload(p) is None
+
+
+def test_guide_stack_studio_default_per_continuation_scene():
+    p = _project(
+        guide_settings={"stack_enabled": True},
+        scenes=[{"id": "s1", "text": "a"}, {"id": "s2", "text": "b"}, {"id": "s3", "text": "c"}],
+    )
+    payload = build_scene_guides_payload(p)
+    assert payload is not None
+    assert payload["scenes"][0] is None
+    assert payload["scenes"][1] == [STUDIO_DEFAULT_GUIDE]
+    assert payload["scenes"][2] == [STUDIO_DEFAULT_GUIDE]
+
+
+def test_guide_stack_accumulate_prior():
+    p = _project(
+        guide_settings={"stack_enabled": True, "accumulate_prior": True},
+        scenes=[{"id": "s1", "text": "a"}, {"id": "s2", "text": "b"}, {"id": "s3", "text": "c"}],
+    )
+    payload = build_scene_guides_payload(p)
+    scene3 = payload["scenes"][2]
+    assert len(scene3) == 2
+    assert scene3[0]["source"] == "scene" and scene3[0]["scene_index"] == 0
+    assert scene3[1]["source"] == "scene" and scene3[1]["scene_index"] == 1
 
 
 def test_projects_store_crud(tmp_path, monkeypatch):

@@ -162,12 +162,24 @@ def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
 
 
 def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
-    """Sampler widget overrides for one chain run. Carries inside a multi-scene run
-    must overlap, so carry_i2v_guides is forced on; a 1-scene run leaves it alone."""
+    """Sampler widget overrides for one chain run.
+
+    Default (guide_settings.stack_enabled off): multi-scene runs force carry_i2v_guides
+    — one guide from scene 1's template at frame 0, same as Studio always did.
+
+    Custom guide stack (stack_enabled on): per-scene guide JSON is passed instead;
+    carry_i2v_guides is not auto-forced (avoids double-applying the template guide).
+    """
     if target.sampler_slot != "funpack":
         return {}
+    import json
+    from .backend.timeline import build_scene_guides_payload
+
     samp = dict(target.sampler_inputs or {})
-    if scene_count > 1:
+    guides = build_scene_guides_payload(target)
+    if guides:
+        samp["funpack_scene_guides"] = json.dumps(guides)
+    elif scene_count > 1:
         samp["carry_i2v_guides"] = True
     return samp
 
