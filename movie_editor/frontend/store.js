@@ -190,17 +190,50 @@
     return (state.project?.scenes || []).filter((s) => genUnitId(s) === unitId && !s.excluded).map((s) => s.id);
   }
 
-  function patchScene(id, patch) {
-    const s = scene(id); if (!s) return;
+  function _patchSceneTarget(id, patch) {
+    const s = scene(id); if (!s) return null;
     const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
     const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null || patch.character_ids != null))
       ? root.id : id;
-    const t = scene(targetId); if (!t) return;
-    Object.assign(t, patch); notify(); scheduleSave();
+    return scene(targetId);
   }
+
+  function _anchorPatchChanged(before, patch) {
+    if (!patch.source) return false;
+    const b = before?.source || {};
+    const next = { ...b, ...patch.source };
+    return next.media_ref !== b.media_ref
+      || (patch.source.type != null && next.type !== (b.type || "carry"));
+  }
+
+  // Dropping or picking a new i2v anchor must drop the cached render and rating —
+  // otherwise preview keeps the old video and Studio still refines from the prior rating.
+  function _invalidateSceneAfterAnchorChange(target) {
+    if (!target || !state.project) return;
+    const uid = genUnitId(target);
+    (state.project.scenes || []).filter((sc) => genUnitId(sc) === uid).forEach((sc) => {
+      delete state.sceneRenders[sc.id];
+    });
+    const root = genUnitRoot(uid);
+    if (root?.rating) root.rating = "";
+  }
+
+  function _applyScenePatch(id, patch, quiet) {
+    const t = _patchSceneTarget(id, patch); if (!t) return;
+    if (_anchorPatchChanged(t, patch)) _invalidateSceneAfterAnchorChange(t);
+    const merged = { ...patch };
+    if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
+    Object.assign(t, merged);
+    if (quiet) scheduleSaveSilent(); else { notify(); scheduleSave(); }
+  }
+
+  function patchScene(id, patch) { _applyScenePatch(id, patch, false); }
   function patchSceneQuiet(id, patch) {
     const s = scene(id); if (!s) return;
-    Object.assign(s, patch); scheduleSaveSilent();
+    if (_anchorPatchChanged(s, patch)) _invalidateSceneAfterAnchorChange(s);
+    const merged = { ...patch };
+    if (merged.source) merged.source = { ...(s.source || {}), ...merged.source };
+    Object.assign(s, merged); scheduleSaveSilent();
   }
 
   function _sceneOrder() { return (state.project?.scenes || []).map((s) => s.id); }
@@ -1177,9 +1210,8 @@
 
   function assignMediaToScene(sceneId, mediaId) {
     const s = scene(sceneId); if (!s) return;
-    const t = (s.source?.type === "mixed") ? "mixed"
-      : (_continuesChainRun(s) ? "mixed" : "image");
-    const patch = { source: { ...(s.source || {}), type: t, media_ref: mediaId } };
+    // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides).
+    const patch = { source: { ...(s.source || {}), type: "image", media_ref: mediaId } };
     if ((s.source?.media_ref || null) !== mediaId) patch.guides = [];
     patchScene(sceneId, patch);
   }
