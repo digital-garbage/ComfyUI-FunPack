@@ -10,7 +10,7 @@
     ["image", "Image · i2v anchor"],
     ["generated_frame", "From generated frame"],
     ["carry", "Carry i2v guide · continue previous"],
-    ["mixed", "Mixed · anchor + prior guides"],
+    ["mixed", "Mixed · Img2Video anchor + prior guides"],
   ];
 
   function transitionSelect(value, onChange) {
@@ -56,7 +56,7 @@
     (st.mediaBin || []).forEach((m) => { const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o); });
     pick.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "image", media_ref: pick.value || null } });
     body.append(field("Media asset", pick));
-    body.append(el("div", "insp-hint", "Feeds the i2v anchor for this scene. Routing is automatic (→ Studio source image); to send it through a node first, set that node's Input source to Timeline in Models."));
+    body.append(el("div", "insp-hint", "Feeds the i2v anchor for this scene (image → LTX Img2Video → starting latent). Routing is automatic (→ Studio source image); to send it through a node first, set that node's Input source to Timeline in Models."));
   }
 
   function renderGeneratedFrameSource(st, scene) {
@@ -168,7 +168,7 @@
     if ((root.source?.type) === "mixed") {
       const hint = el("div", "insp-block");
       hint.append(el("div", "insp-hint",
-        "Stays in the same chain run (overlap + prior guides at frame 0) while also applying this scene's image anchor at frame 0. Default: Studio guide from scene 1 plus this anchor — enable Custom guide stack in Project for more control."));
+        "Stays in the same chain run: this image builds a new starting latent via LTX Img2Video (i2v anchor), while prior-scene i2v guides are carried separately (Studio default: scene 1 template guide at frame 0). Enable Custom guide stack in Project to manage guides explicitly."));
       body.append(hint);
     }
 
@@ -518,7 +518,7 @@
     const hint = el("div", "insp-hint");
     hint.textContent = gs.stack_enabled
       ? "Custom guide stack — per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
-      : "Studio default: one i2v guide from scene 1, carried to later scenes at frame 0 (same as FunPack Studio).";
+      : "Studio default: one i2v guide (not anchor) from scene 1's template, carried to later scenes at frame 0. Anchors are separate — image → Img2Video starting latent.";
     parent.append(hint);
     const stackLbl = el("label", "chk");
     const stackCb = el("input"); stackCb.type = "checkbox"; stackCb.checked = gs.stack_enabled;

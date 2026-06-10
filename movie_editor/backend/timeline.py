@@ -72,20 +72,20 @@ def is_mixed_source(scene: Scene) -> bool:
     return (scene.source.type or "carry") == "mixed"
 
 
-def mixed_anchor_entry(scene: Scene, scene_index: int) -> Optional[dict]:
-    """Per-scene i2v anchor for mixed source (applied at frame 0 in the sampler)."""
-    if not is_mixed_source(scene) or not scene.source.media_ref:
-        return None
-    return {
-        "enabled": True,
-        "source": "anchor",
-        "scene_id": scene.id,
-        "scene_index": scene_index,
-        "media_ref": scene.source.media_ref,
-        "frame_idx": 0,
-        "apply_at": 0,
-        "strength": 0.35,
-    }
+def build_scene_anchors_payload(project: Project) -> Optional[dict]:
+    """Per-scene i2v anchors for mixed sources — image → LTXVImgToVideoInplace starting
+    latent, NOT guide attention. Scene 0 uses the graph-level Studio/img2video path."""
+    active = [s for s in project.scenes if not s.excluded]
+    anchors: dict[str, dict] = {}
+    for i, sc in enumerate(active):
+        if i == 0 or not is_mixed_source(sc) or not sc.source.media_ref:
+            continue
+        anchors[str(i)] = {
+            "scene_id": sc.id,
+            "media_ref": sc.source.media_ref,
+            "strength": 1.0,
+        }
+    return anchors if anchors else None
 
 
 @dataclass
@@ -93,7 +93,7 @@ class SceneSource:
     """How a scene's latent is born. V1 ignores this (uniform chain); Phase 2 maps
     it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v)."""
     type: str = "carry"  # "carry" | "empty" | "image" | "generated_frame" | "mixed"
-    media_ref: Optional[str] = None              # asset id, for type == "image"
+    media_ref: Optional[str] = None              # asset id — image/mixed anchor (Img2Video)
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
     target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
 
@@ -377,63 +377,37 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
 def build_scene_guides_payload(project: Project) -> Optional[dict]:
     """Per-scene guide lists for the chain sampler.
 
-    None when stack_enabled is off AND no mixed sources (Studio default:
-    carry_i2v_guides from scene 1 template at frame 0).
-
-    Mixed sources always emit a payload for continuation scenes that need both
-    the Studio prior guide and the scene's own anchor at frame 0.
+    None when stack_enabled is off (Studio default: carry_i2v_guides from scene 1
+    template at frame 0). i2v anchors for mixed scenes are separate — see
+    build_scene_anchors_payload().
     """
     gs = normalize_guide_settings(project.guide_settings)
-    active = [s for s in project.scenes if not s.excluded]
-    has_mixed = any(is_mixed_source(s) and s.source.media_ref for s in active)
-    if not gs["stack_enabled"] and not has_mixed:
+    if not gs["stack_enabled"]:
         return None
-
+    active = [s for s in project.scenes if not s.excluded]
     per_scene: list[Optional[list[dict]]] = []
-    uses_custom = False
     for i, sc in enumerate(active):
         if i == 0:
             per_scene.append(None)
             continue
         entries: list[dict] = []
-        own_anchor = mixed_anchor_entry(sc, i)
-
-        if gs["stack_enabled"]:
-            for raw in (sc.guides or []):
-                g = GuideEntry.from_dict(raw if isinstance(raw, dict) else {})
-                if g.enabled:
-                    entries.append(g.to_dict())
-            if gs["accumulate_prior"]:
-                for j in range(i):
-                    ref = active[j]
-                    acc = dict(STUDIO_DEFAULT_GUIDE)
-                    acc["source"] = "scene"
-                    acc["scene_id"] = ref.id
-                    acc["scene_index"] = j
-                    entries.append(acc)
-
-        if own_anchor:
-            has_prior = any(e.get("source") in ("template", "scene") for e in entries)
-            if not has_prior:
-                entries.insert(0, dict(STUDIO_DEFAULT_GUIDE))
-            entries.append(own_anchor)
-            uses_custom = True
-        elif gs["stack_enabled"] and not entries:
+        for raw in (sc.guides or []):
+            g = GuideEntry.from_dict(raw if isinstance(raw, dict) else {})
+            if g.enabled:
+                entries.append(g.to_dict())
+        if gs["accumulate_prior"]:
+            for j in range(i):
+                ref = active[j]
+                acc = dict(STUDIO_DEFAULT_GUIDE)
+                acc["source"] = "scene"
+                acc["scene_id"] = ref.id
+                acc["scene_index"] = j
+                entries.append(acc)
+        if not entries:
             entries = [dict(STUDIO_DEFAULT_GUIDE)]
-            uses_custom = True
-        elif not entries:
-            per_scene.append(None)
-            continue
-        else:
-            uses_custom = True
-
         per_scene.append(entries)
-
-    if not uses_custom:
-        return None
     return {
-        "stack_enabled": bool(gs["stack_enabled"]),
+        "stack_enabled": True,
         "accumulate_prior": gs["accumulate_prior"],
-        "has_mixed": has_mixed,
         "scenes": per_scene,
     }

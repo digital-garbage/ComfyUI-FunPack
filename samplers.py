@@ -2085,10 +2085,15 @@ class FunPackLTXAVSceneChainSampler:
                     "multiline": True,
                     "tooltip": "Optional JSON from Movie Editor when guide_settings.stack_enabled: per-scene guide lists with source, frame_idx, apply_at, strength. When empty, carry_i2v_guides uses the Studio default (scene 1 template at frame 0).",
                 }),
-                "funpack_scene_media": ("STRING", {
+                "funpack_scene_anchors": ("STRING", {
                     "default": "",
                     "multiline": True,
-                    "tooltip": "Optional JSON map of scene_id → {filename} for mixed-source per-scene i2v anchors (Movie Editor).",
+                    "tooltip": "Optional JSON map of scene_index → {filename, strength} for mixed-source i2v anchors (LTXVImgToVideoInplace starting latent). Distinct from i2v guides.",
+                }),
+                "funpack_scene_media_refs": ("STRING", {
+                    "default": "",
+                    "multiline": True,
+                    "tooltip": "Optional media_ref → filename map for image-type i2v guides in custom guide stacks.",
                 }),
             },
             "hidden": {
@@ -2835,13 +2840,11 @@ class FunPackLTXAVSceneChainSampler:
             data = json.loads(str(raw))
         except Exception:
             return None
-        if not isinstance(data, dict):
-            return None
-        if not data.get("scenes") and not data.get("has_mixed"):
+        if not isinstance(data, dict) or not data.get("stack_enabled"):
             return None
         return data
 
-    def _parse_scene_media(self, raw):
+    def _parse_scene_anchors(self, raw):
         if not raw or not str(raw).strip():
             return {}
         try:
@@ -2850,6 +2853,89 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def _load_image_tensor(self, filename):
+        import os
+        try:
+            import folder_paths
+            import numpy as np
+            from PIL import Image
+        except ImportError:
+            return None
+        path = os.path.join(folder_paths.get_input_directory(), filename)
+        if not os.path.isfile(path):
+            return None
+        try:
+            img = Image.open(path).convert("RGB")
+            arr = np.array(img).astype(np.float32) / 255.0
+            return torch.from_numpy(arr)[None,]
+        except Exception:
+            return None
+
+    def _invoke_img2video_inplace(self, vae, image, latent, strength=1.0):
+        """Run LTXVImgToVideoInplace — image → starting latent (i2v anchor, not a guide)."""
+        try:
+            from comfy_extras.nodes_lt import LTXVImgToVideoInplace
+        except ImportError:
+            return None
+        for method in ("execute", "generate"):
+            fn = getattr(LTXVImgToVideoInplace, method, None)
+            if fn is None:
+                continue
+            for args in (
+                (vae, image, latent, strength, False),
+                (vae, image, latent, strength),
+            ):
+                try:
+                    out = fn(*args)
+                    if hasattr(out, "args") and out.args:
+                        out = out.args[0]
+                    elif isinstance(out, tuple) and out:
+                        out = out[0]
+                    if isinstance(out, dict) and "samples" in out:
+                        return out
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _apply_img2video_to_video_latent(self, vae, image, chunk, strength=1.0):
+        """Apply Img2Video inplace to the video stream of an (optionally nested AV) latent."""
+        if self._is_nested(chunk.get("samples")):
+            tensors = self._latent_tensors(chunk)
+            masks = self._latent_masks(chunk, len(tensors))
+            video_in = {"samples": tensors[0]}
+            if masks[0] is not None:
+                video_in["noise_mask"] = masks[0]
+            video_out = self._invoke_img2video_inplace(vae, image, video_in, strength)
+            if video_out is None:
+                return chunk
+            result = self._clone_latent(chunk)
+            out_tensors = list(tensors)
+            out_masks = list(masks)
+            out_tensors[0] = video_out["samples"]
+            if "noise_mask" in video_out:
+                out_masks[0] = video_out["noise_mask"]
+            result["samples"] = comfy.nested_tensor.NestedTensor(out_tensors)
+            if any(m is not None for m in out_masks):
+                result["noise_mask"] = comfy.nested_tensor.NestedTensor(out_masks)
+            return result
+        out = self._invoke_img2video_inplace(vae, image, chunk, strength)
+        return out if out is not None else chunk
+
+    def _build_mixed_anchor_chunk(self, vae, anchor_meta, latent_template, previous, video_overlap):
+        """Mixed source: Img2Video anchor latent, then chain overlap from previous scene."""
+        filename = (anchor_meta or {}).get("filename")
+        strength = float((anchor_meta or {}).get("strength", 1.0))
+        image = self._load_image_tensor(filename) if filename else None
+        if image is None:
+            if previous is None:
+                return self._clone_latent(latent_template)
+            return self._build_continuation_chunk(latent_template, previous, video_overlap)
+        base = self._clone_latent(latent_template)
+        i2v_chunk = self._apply_img2video_to_video_latent(vae, image, base, strength)
+        if previous is None:
+            return i2v_chunk
+        return self._build_continuation_chunk(i2v_chunk, previous, video_overlap)
 
     def _encode_image_guide_frame(self, filename, vae, ref_tensor):
         import os
@@ -2904,7 +2990,7 @@ class FunPackLTXAVSceneChainSampler:
         ) + (0,)
 
     def _apply_configured_guides(self, chunk, scene_index, guide_list, latent_template,
-                                 scene_outputs, scene_media, positive, negative, vae):
+                                 scene_outputs, scene_media_by_ref, positive, negative, vae):
         head_crop = 0
         tail_crop = 0
         for g in guide_list or []:
@@ -2931,15 +3017,9 @@ class FunPackLTXAVSceneChainSampler:
                 chunk, positive, negative, head, tail = self._append_scene_guide_at(
                     chunk, scene_outputs[si], frame_idx, apply_at, strength, positive, negative, vae,
                 )
-            elif source in ("anchor", "image"):
-                sid = g.get("scene_id")
-                meta = (scene_media or {}).get(sid) if sid else None
-                if not meta and g.get("media_ref"):
-                    for _k, m in (scene_media or {}).items():
-                        if isinstance(m, dict) and m.get("media_ref") == g.get("media_ref"):
-                            meta = m
-                            break
-                fn = (meta or {}).get("filename") if isinstance(meta, dict) else None
+            elif source == "image":
+                ref = g.get("media_ref")
+                fn = (scene_media_by_ref or {}).get(ref) if ref else None
                 if not fn:
                     continue
                 chunk, positive, negative, head, tail = self._append_media_guide_at(
@@ -3046,7 +3126,8 @@ class FunPackLTXAVSceneChainSampler:
                transition_duration=16, decode_tile_size=0,
                decode_noise_scale=0.0, decode_timestep=0.05,
                refinement_key_input="", funpack_scene_guides="",
-               funpack_scene_media="",
+               funpack_scene_anchors="",
+               funpack_scene_media_refs="",
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3119,8 +3200,9 @@ class FunPackLTXAVSceneChainSampler:
 
         scene_guides_cfg = self._parse_scene_guides(funpack_scene_guides)
         per_scene_guides = (scene_guides_cfg or {}).get("scenes") if scene_guides_cfg else None
-        scene_media = self._parse_scene_media(funpack_scene_media)
+        scene_anchors = self._parse_scene_anchors(funpack_scene_anchors)
         scene_outputs: list = []
+        scene_media_by_ref = self._parse_scene_anchors(funpack_scene_media_refs)
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -3134,8 +3216,22 @@ class FunPackLTXAVSceneChainSampler:
             carried = 0
             soft_carried = 0
             guide_tail = 0
+            anchor_meta = (scene_anchors or {}).get(str(scene_index))
             if output is None:
                 chunk = self._clone_latent(latent_template)
+            elif anchor_meta:
+                effect = self._scene_transition_effect(scene_cond)
+                if effect and transition_duration > 0:
+                    boundary_latent = cumulative_latent_frames
+                    boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
+                    boundary_entries.append({
+                        "boundary_latent": boundary_latent,
+                        "pixel_frame": max(0, boundary_pixel),
+                        "effect": effect,
+                    })
+                chunk = self._build_mixed_anchor_chunk(
+                    vae, anchor_meta, latent_template, output, video_overlap,
+                )
             else:
                 # Record boundary before blending
                 effect = self._scene_transition_effect(scene_cond)
@@ -3155,7 +3251,7 @@ class FunPackLTXAVSceneChainSampler:
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
                     chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
-                        chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media,
+                        chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
                         scene_positive, scene_negative, vae,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)

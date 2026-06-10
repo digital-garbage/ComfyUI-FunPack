@@ -16,6 +16,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     Scene,
     STUDIO_DEFAULT_GUIDE,
     build_combined_prompt,
+    build_scene_anchors_payload,
     build_scene_guides_payload,
     collapse_generative_units,
     group_generative_units,
@@ -130,7 +131,7 @@ def test_guide_stack_studio_default_per_continuation_scene():
     assert payload["scenes"][2] == [STUDIO_DEFAULT_GUIDE]
 
 
-def test_mixed_source_emits_anchor_and_studio_default():
+def test_mixed_source_anchors_separate_from_guides():
     p = _project(
         scenes=[
             {"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}},
@@ -138,15 +139,11 @@ def test_mixed_source_emits_anchor_and_studio_default():
         ],
     )
     assert is_mixed_source(p.scenes[1])
-    payload = build_scene_guides_payload(p)
-    assert payload is not None
-    assert payload["has_mixed"] is True
-    scene2 = payload["scenes"][1]
-    assert len(scene2) == 2
-    assert scene2[0] == STUDIO_DEFAULT_GUIDE
-    assert scene2[1]["source"] == "anchor"
-    assert scene2[1]["media_ref"] == "img2"
-    assert scene2[1]["apply_at"] == 0
+    assert build_scene_guides_payload(p) is None
+    anchors = build_scene_anchors_payload(p)
+    assert anchors["1"]["scene_id"] == "s2"
+    assert anchors["1"]["media_ref"] == "img2"
+    assert anchors["1"]["strength"] == 1.0
 
 
 def test_guide_stack_accumulate_prior():

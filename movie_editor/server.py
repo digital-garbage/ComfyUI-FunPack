@@ -203,10 +203,31 @@ def _run_sampler_inputs(target: Project, scene_count: int) -> dict:
     return samp
 
 
-def _attach_scene_media(samp: dict, media_pack: Optional[dict]) -> dict:
+def _attach_scene_anchors(samp: dict, media_pack: Optional[dict], target: Project) -> dict:
+    """Mixed-source i2v anchors (Img2Video starting latents), separate from guides."""
     import json
-    if media_pack and media_pack.get("by_scene"):
-        samp["funpack_scene_media"] = json.dumps(media_pack["by_scene"])
+    from .backend.timeline import build_scene_anchors_payload
+
+    anchors = build_scene_anchors_payload(target)
+    if not anchors or not media_pack:
+        return samp
+    by_scene = media_pack.get("by_scene") or {}
+    enriched: dict = {}
+    for idx, meta in anchors.items():
+        sid = meta.get("scene_id")
+        file_entry = by_scene.get(sid) if sid else None
+        fn = (file_entry or {}).get("filename")
+        if fn:
+            enriched[idx] = {**meta, "filename": fn}
+    if enriched:
+        samp["funpack_scene_anchors"] = json.dumps(enriched)
+    by_ref = {
+        entry["media_ref"]: entry["filename"]
+        for entry in by_scene.values()
+        if isinstance(entry, dict) and entry.get("media_ref") and entry.get("filename")
+    }
+    if by_ref:
+        samp["funpack_scene_media_refs"] = json.dumps(by_ref)
     return samp
 
 
@@ -643,7 +664,7 @@ if web is not None and PromptServer is not None:
         )
         media_pack = _prepare_media(target)
         sampler_inputs = _run_sampler_inputs(target, active_scene_count)
-        _attach_scene_media(sampler_inputs, media_pack)
+        _attach_scene_anchors(sampler_inputs, media_pack, target)
         graph, report = builder.build(oi, _project_models(target), {
             "prompt": prompt, "seed": target.seed,
             "num_frames_per_scene": effective_frames,
