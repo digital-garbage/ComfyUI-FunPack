@@ -410,10 +410,7 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-audio-add { font-size: 12px; padding: 2px 6px; max-width: 200px; }
 .tl-audio-lane { position: relative; height: 36px; border-bottom: 1px solid var(--line-2); }
 .tl-audio-lane:last-child { border-bottom: none; }
-.tl-audio-lane-label { position: absolute; left: 0; top: 0; bottom: 0; width: 72px; display: flex; align-items: center;
-  padding: 0 8px; font-family: var(--font-mono); font-size: 9px; letter-spacing: .5px; text-transform: uppercase;
-  color: var(--faint); background: var(--ink-1); border-right: 1px solid var(--line-2); z-index: 2; pointer-events: none; }
-.tl-audio-lane-body { position: absolute; left: 72px; right: 0; top: 0; bottom: 0; }
+.tl-audio-lane-body { position: absolute; inset: 0; }
 .tl-aud-clip { position: absolute; top: 5px; bottom: 5px; box-sizing: border-box;
   background: linear-gradient(180deg, #1e3a2f, #152820); border: 1px solid #2d5a45; border-radius: 5px;
   display: flex; align-items: center; gap: 6px; padding: 0 8px; min-width: 48px; overflow: hidden; }

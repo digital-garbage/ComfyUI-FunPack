@@ -332,7 +332,6 @@
   function insertedAudioLane(st, p, track, laneH) {
     const lane = el("div", "tl-audio-lane"); lane.style.height = laneH + "px";
     const asset = (st.mediaBin || []).find((m) => m.id === track.media_ref);
-    lane.append(el("div", "tl-audio-lane-label", (asset && asset.name) || track.label || "Track"));
     const body = el("div", "tl-audio-lane-body");
     const startSec = track.start_sec || 0;
     const dur = asset && asset.duration_sec ? asset.duration_sec : Math.max(2, (p.scenes || []).reduce((a, sc) => a + sDur(sc, p), 0) - startSec);
@@ -363,11 +362,10 @@
     return lane;
   }
 
-  function audioLanes(st, p, lay, contentW) {
+  function audioLanes(st, p, lay) {
     const wrap = el("div", "tl-audio-lanes");
     const origLane = el("div", "tl-audio-lane"); origLane.style.height = "36px";
-    origLane.append(el("div", "tl-audio-lane-label", "Clips"));
-    const origBody = el("div", "tl-audio-lane-body"); origBody.style.width = contentW + "px";
+    const origBody = el("div", "tl-audio-lane-body");
     lay.forEach(({ sc, o, d }, i) => origBody.append(sceneAudioClip(st, p, sc, i, o * pxPerSec, d * pxPerSec)));
     origLane.append(origBody);
     wrap.append(origLane);
@@ -503,7 +501,7 @@
     for (let i = 0; i < lay.length - 1; i++) track.append(seamEl(st, p, lay[i].sc, (lay[i].o + lay[i].d) * pxPerSec));
     if (!lay.length) track.append(el("div", "tl-emptyhint", "No clips yet — add one from the toolbar."));
     tracks.append(track);
-    tracks.append(audioLanes(st, p, lay, contentW));
+    tracks.append(audioLanes(st, p, lay));
     const phSec = Math.min(window.Player?.getPlayhead() ?? 0, totalSec);
     tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; tracks.append(tlPhEl);
     content.append(tracks);
