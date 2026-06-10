@@ -179,6 +179,14 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--muted);
 }
 .zone-title::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 9px; border-radius: 1px; background: var(--amber); transform: translateY(-1px); box-shadow: 0 0 7px var(--amber-soft); }
+.transport-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.transport-actions .btn.compact { padding: 3px 10px; font-size: 12px; font-family: var(--font-mono); line-height: 1.35; }
+.transport-actions .btn:disabled { opacity: 0.42; pointer-events: none; cursor: default; }
+.transport-actions .btn.render {
+  background: linear-gradient(#3ab3a8, #2d9a90); color: #0a1a18; border-color: #3ab3a8;
+  font-weight: 600; box-shadow: 0 4px 14px -6px color-mix(in srgb, var(--teal) 55%, transparent);
+}
+.transport-actions .btn.render:hover { filter: brightness(1.08); }
 .zone-head-right { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--faint); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .zone-body { flex: 1; overflow: auto; padding: 12px; min-height: 0; }
 

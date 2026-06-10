@@ -1,4 +1,4 @@
-// Top menu bar: File / Edit / View / Generate / FunPack + status chips.
+// Top menu bar: File / Edit / View / Settings / FunPack + status chips.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
@@ -7,7 +7,6 @@
   let openName = null;
 
   function sel() { return S.get().selectedSceneId; }
-  function selCount() { return S.selectedSceneCount ? S.selectedSceneCount() : (sel() ? 1 : 0); }
   function hasProject() { return !!S.get().project; }
 
   // hidden file input for importing a project file
@@ -72,24 +71,16 @@
         { sep: true },
         { label: "Reset Layout", action: () => { const r = document.documentElement; r.style.removeProperty("--media-w"); r.style.removeProperty("--timeline-h"); } },
       ],
-      Generate: [
+      Settings: [
         { label: "Engine settings…", disabled: !hasProject(), action: () => window.EngineSettingsModal.open() },
         { sep: true },
-        { label: "Generate Whole Montage", hint: "▶", disabled: !hasProject(), action: () => S.generate(null) },
-        { label: selCount() > 1 ? `Generate Selected Scenes (${selCount()})` : "Generate Selected Scene",
-          hint: selCount() > 1 ? "⌘-click" : undefined,
-          disabled: selCount() === 0, action: () => S.generateSelected() },
-        { sep: true },
-        { label: "Render Final Video", hint: "⧉", disabled: !hasProject(), action: () => S.renderFinal() },
+        { label: "Models…", action: () => window.ModelsModal.open() },
+        { label: "Refresh model list", hint: "R", action: async () => { try { await window.MovieEditorAPI.refreshModels(); } catch (_) {} } },
         { sep: true },
         { label: `Conditioning: ${_roleLabel(st.project?.conditioning_slot, "FunPack Studio")}`, disabled: !hasProject(),
           action: () => _pickRole("conditioning_slot", "Conditioning node", st) },
         { label: `Sampler: ${_roleLabel(st.project?.sampler_slot, "FunPack Chain Sampler")}`, disabled: !hasProject(),
           action: () => _pickRole("sampler_slot", "Sampler node", st) },
-      ],
-      Models: [
-        { label: "Settings…", action: () => window.ModelsModal.open() },
-        { label: "Refresh model list", hint: "R", action: async () => { try { await window.MovieEditorAPI.refreshModels(); } catch (_) {} } },
       ],
       FunPack: [
         { label: st.resetSessionArmed ? "Reset Studio session ✓ armed — click to cancel" : "Reset Studio session",

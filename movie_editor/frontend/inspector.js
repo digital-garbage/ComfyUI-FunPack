@@ -145,7 +145,7 @@
     const selN = S.selectedSceneCount ? S.selectedSceneCount() : 1;
     if (selN > 1) {
       const mh = el("div", "insp-hint");
-      mh.textContent = `${selN} clips selected — Generate → Generate Selected Scenes runs each chain segment that includes a selected clip (⌘/Ctrl-click toggle · Shift-click range).`;
+      mh.textContent = `${selN} clips selected — use Selected in the timeline header to generate each chain segment that includes a selected clip (⌘/Ctrl-click toggle · Shift-click range).`;
       body.append(mh);
     }
     if (unitScenes.length > 1) {

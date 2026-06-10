@@ -513,7 +513,7 @@
       const empty = el("div", "program-empty");
       empty.append(el("div", "reel", "🎬"));
       empty.append(el("div", null, p ? "No render yet" : "Open or create a project"));
-      empty.append(el("div", "pj-meta", "Generate from the menu or timeline"));
+      empty.append(el("div", "pj-meta", "Use Generate in the timeline header"));
       canvas.append(empty);
     }
     // generation progress overlay (visible even when there's already media). Built once per
