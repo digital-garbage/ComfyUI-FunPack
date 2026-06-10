@@ -315,6 +315,12 @@ def _install_progress_hook():
         pass
 
 
+def reset_progress() -> None:
+    _progress["value"] = 0
+    _progress["max"] = 0
+    _progress["ts"] = 0.0
+
+
 def current_progress() -> dict:
     _install_progress_hook()
     return {"value": _progress["value"], "max": _progress["max"]}

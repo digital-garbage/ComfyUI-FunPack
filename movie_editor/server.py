@@ -567,6 +567,7 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
+        bridge.reset_progress()
         bridge.current_progress()  # ensure the sampler step-progress hook is installed
         active_scenes = [s for s in target.scenes if not s.excluded]
         active_scene_count = len(active_scenes)

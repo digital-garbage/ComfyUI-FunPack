@@ -2448,7 +2448,8 @@ class FunPackLTXAVSceneChainSampler:
         result.pop("noise_mask", None)
         return result
 
-    def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent):
+    def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
+                      pbar=None, step_offset=0):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -2456,9 +2457,15 @@ class FunPackLTXAVSceneChainSampler:
         latent = self._clone_latent(latent)
         samples = latent["samples"]
         noise = comfy.sample.prepare_noise(samples, int(seed))
+
+        def _progress_cb(step, _denoised, _x, _total_steps):
+            if pbar is not None:
+                pbar.update_absolute(step_offset + int(step) + 1)
+
         sampled = comfy.sample.sample_custom(
             model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
             noise_mask=latent.get("noise_mask"), seed=int(seed),
+            callback=_progress_cb if pbar is not None else None,
         )
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
@@ -2845,6 +2852,16 @@ class FunPackLTXAVSceneChainSampler:
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
+
+        steps_per_scene = max(1, int(len(sigmas)) - 1)
+        total_sampling_steps = scene_count * steps_per_scene
+        pbar = None
+        try:
+            pbar = comfy.utils.ProgressBar(total_sampling_steps)
+            pbar.update_absolute(0)
+        except Exception:
+            pass
+
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
             scene_negative = negative
@@ -2910,6 +2927,7 @@ class FunPackLTXAVSceneChainSampler:
                     _temporal_applied = True
             sampled = self._sample_chunk(
                 model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
+                pbar=pbar, step_offset=scene_index * steps_per_scene,
             )
             if _temporal_applied:
                 if _temporal_prev_wrapper is not None:

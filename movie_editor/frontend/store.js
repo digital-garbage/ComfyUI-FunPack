@@ -459,7 +459,14 @@
         if (_interrupted) return;
         try {
           const pr = await API.progress();
-          if (pr && pr.max > 0) updateGenProgress({ step: pr.value, maxStep: pr.max });
+          if (pr && pr.max > 0) {
+            const head = (state.gen.msg || prefix).replace(/\s*·\s*sampling \d+\/\d+$/, "");
+            updateGenProgress({
+              step: pr.value,
+              maxStep: pr.max,
+              msg: `${head}  ·  sampling ${pr.value}/${pr.max}`,
+            });
+          }
         } catch (_) {}
       }, 700);
       pollTimer = setInterval(async () => {
@@ -491,7 +498,7 @@
               resolve(false);
               return;
             }
-            const step = (state.gen.maxStep > 0) ? `  ·  step ${state.gen.step}/${state.gen.maxStep}` : "";
+            const step = (state.gen.maxStep > 0) ? `  ·  sampling ${state.gen.step}/${state.gen.maxStep}` : "";
             updateGenProgress({ state: s.state, msg: `${prefix} ${_elapsed()}${step}` });
           }
         } catch (e) {
