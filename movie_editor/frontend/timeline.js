@@ -99,10 +99,49 @@
     return 600;
   }
 
-  // ── transition (seam) picker ─────────────────────────────────────────────────
-  function transitionSelect(value, onChange) {
-    const sel = el("select", "seam-type");
-    const none = el("option", null, "cut"); none.value = ""; sel.append(none);
+  const VT_TYPES = [
+    ["", "Hard cut"],
+    ["crossfade", "Dissolve"],
+    ["fadeblack", "Fade black"],
+    ["wipeleft", "Wipe left"],
+    ["wiperight", "Wipe right"],
+  ];
+  const VT_SHORT = { crossfade: "dissolve", fadeblack: "fade ∅", wipeleft: "wipe ←", wiperight: "wipe →" };
+
+  function videoTransitionState(scene, p) {
+    const type = (scene.video_transition || "").trim();
+    const fps = sFps(scene, p);
+    if (!type) return { type: "", frames: 0, fps, sec: 0, active: false };
+    const frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
+    return { type, frames, fps, sec: frames / fps, active: true };
+  }
+
+  function applyVideoTransition(sceneId, type, frames) {
+    if (!type || !frames || frames <= 0) {
+      S.patchScene(sceneId, { video_transition: "", transition_frames: null });
+    } else {
+      S.patchScene(sceneId, { video_transition: type, transition_frames: Math.round(frames) });
+    }
+  }
+
+  function syncVtVisual(seam, bridge, type, frames) {
+    const on = frames > 0 && !!type;
+    bridge.classList.toggle("on", on);
+    seam.classList.toggle("has-vt", on);
+    ["crossfade", "fadeblack", "wipeleft", "wiperight"].forEach((t) => {
+      seam.classList.remove("vt-" + t);
+      bridge.classList.remove("vt-" + t);
+    });
+    if (on) {
+      seam.classList.add("vt-" + type);
+      bridge.classList.add("vt-" + type);
+    }
+  }
+
+  // Prompt transition (Studio split marker) — separate from rendered video transition.
+  function promptTransitionSelect(value, onChange) {
+    const sel = el("select", "seam-prompt-type");
+    const none = el("option", null, "prompt: cut"); none.value = ""; sel.append(none);
     (S.get().transitions || []).forEach((t) => {
       const name = t.trigger || t.name || t.key; if (!name) return;
       const o = el("option", null, name); o.value = name; if (name === value) o.selected = true; sel.append(o);
@@ -110,6 +149,7 @@
     if (value && ![...sel.options].some((o) => o.value === value)) { const o = el("option", null, value); o.value = value; o.selected = true; sel.append(o); }
     sel.onchange = (e) => { e.stopPropagation(); onChange(sel.value); };
     sel.onclick = (e) => e.stopPropagation();
+    sel.title = "Prompt transition to next scene (generation split marker)";
     return sel;
   }
 
@@ -277,6 +317,14 @@
       clip.append(rated);
     }
 
+    const vt = videoTransitionState(scene, p);
+    if (vt.active) {
+      const tail = el("div", "clip-vt-tail vt-" + vt.type);
+      tail.style.width = Math.max(10, vt.sec * pxPerSec) + "px";
+      tail.title = `${VT_SHORT[vt.type] || vt.type} → next · ${vt.frames}f (${vt.sec.toFixed(2)}s)`;
+      clip.append(tail);
+    }
+
     if (hasRender(st, scene.id) && S.renderPromptMismatch) {
       const mismatch = S.renderPromptMismatch(scene.id);
       if (mismatch) {
@@ -332,30 +380,76 @@
     return clip;
   }
 
-  // ── crossfade chip in the seam ──────────────────────────────────────────────────
+  // ── video transition bridge at each scene seam ─────────────────────────────────
   function seamEl(st, p, scene, seamPx) {
-    const seam = el("div", "seam");
+    const vt = videoTransitionState(scene, p);
+    const fps = vt.fps;
+    const seam = el("div", "seam" + (vt.active ? " has-vt vt-" + vt.type : ""));
     seam.style.left = seamPx + "px";
-    const xfFrames = scene.transition_frames || 0;
-    const fps = sFps(scene, p);
-    const w = Math.max(14, (xfFrames / fps) * pxPerSec);
-    const fade = el("div", "xfade" + (xfFrames ? " on" : ""));
-    fade.style.width = w + "px";
-    fade.title = xfFrames ? `Crossfade ${(xfFrames / fps).toFixed(2)}s (${xfFrames}f) — drag to adjust` : "Drag right to add a crossfade";
-    // drag the fade width → transition_frames
-    fade.addEventListener("mousedown", (e) => {
-      const base = (xfFrames / fps) * pxPerSec;
-      const tip = el("div", "trim-tip"); fade.append(tip);
-      let frames = xfFrames;
-      onDrag(e, (dx) => {
-        const sec = Math.max(0, (base + dx) / pxPerSec);
-        frames = Math.round(sec * fps);
-        fade.style.width = Math.max(14, sec * pxPerSec) + "px";
-        tip.textContent = frames ? `${(frames / fps).toFixed(2)}s · ${frames}f` : "no crossfade";
-      }, () => { tip.remove(); S.patchScene(scene.id, { transition_frames: frames || null }); });
+
+    const bridge = el("div", "vt-bridge" + (vt.active ? " on vt-" + vt.type : ""));
+    const wPx = Math.max(18, (vt.active ? vt.sec : 0.35) * pxPerSec);
+    bridge.style.width = wPx + "px";
+    bridge.style.marginLeft = (-wPx / 2) + "px";
+
+    const label = el("div", "vt-label");
+    const syncLabel = (type, frames) => {
+      if (!type || !frames) label.textContent = "drag → add dissolve";
+      else label.textContent = `${VT_SHORT[type] || type} · ${frames}f · ${(frames / fps).toFixed(2)}s`;
+    };
+    syncLabel(vt.type, vt.frames);
+    bridge.append(label);
+
+    const typeSel = el("select", "vt-type");
+    VT_TYPES.forEach(([v, lbl]) => {
+      const o = el("option", null, lbl); o.value = v;
+      if (v === (vt.type || "")) o.selected = true;
+      typeSel.append(o);
     });
-    seam.append(fade);
-    seam.append(transitionSelect(scene.transition_to_next || "", (v) => S.patchScene(scene.id, { transition_to_next: v })));
+    typeSel.title = "Rendered video transition (final stitch / export)";
+    typeSel.onclick = (e) => e.stopPropagation();
+    typeSel.onchange = (e) => {
+      e.stopPropagation();
+      const next = typeSel.value;
+      applyVideoTransition(scene.id, next, next ? (vt.frames || 16) : 0);
+    };
+    bridge.append(typeSel);
+
+    const handle = el("div", "vt-drag-handle");
+    handle.title = "Drag to set transition length (frames)";
+    bridge.title = "Drag to set transition length (frames)";
+    bridge.addEventListener("mousedown", (e) => {
+      if (e.target.closest("select")) return;
+      e.stopPropagation();
+      _seamDragging = true;
+      const baseType = vt.type || "crossfade";
+      const baseFrames = vt.frames || 0;
+      const basePx = (baseFrames > 0 ? baseFrames / fps : 0.35) * pxPerSec;
+      const tip = el("div", "trim-tip"); bridge.append(tip);
+      let type = baseType;
+      let frames = baseFrames;
+      onDrag(e, (dx) => {
+        const sec = Math.max(0, (basePx + dx) / pxPerSec);
+        frames = Math.min(120, Math.round(sec * fps));
+        if (frames > 0 && !type) type = "crossfade";
+        const nextW = Math.max(18, (frames > 0 ? frames / fps : 0.35) * pxPerSec);
+        bridge.style.width = nextW + "px";
+        bridge.style.marginLeft = (-nextW / 2) + "px";
+        syncVtVisual(seam, bridge, frames > 0 ? type : "", frames);
+        syncLabel(frames > 0 ? type : "", frames);
+        tip.textContent = frames > 0 ? `${(frames / fps).toFixed(2)}s · ${frames}f` : "release to clear";
+      }, () => {
+        tip.remove();
+        _seamDragging = false;
+        applyVideoTransition(scene.id, frames > 0 ? (type || "crossfade") : "", frames);
+      });
+    });
+    bridge.append(handle);
+    seam.append(bridge);
+
+    const promptRow = el("div", "seam-prompt-row");
+    promptRow.append(promptTransitionSelect(scene.transition_to_next || "", (v) => S.patchScene(scene.id, { transition_to_next: v })));
+    seam.append(promptRow);
     return seam;
   }
 
@@ -601,9 +695,10 @@
   // (e.g. the rating dropdown) — a store notify (autosave/progress) would close it.
   let _tlEditing = false;
   let _reordering = false;  // a clip is being drag-reordered — never rebuild mid-drag
+  let _seamDragging = false; // adjusting a video transition — never rebuild mid-drag
 
   function render(st) {
-    if (_reordering) return false;
+    if (_reordering || _seamDragging) return false;
     if (_tlEditing) {
       // Only hold off if a control is genuinely still focused; otherwise the flag got
       // stuck (focused element removed without a focusout) — clear it and re-render.

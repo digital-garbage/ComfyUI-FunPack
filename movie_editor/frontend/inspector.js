@@ -265,13 +265,19 @@
      ["wipeleft", "Wipe left"], ["wiperight", "Wipe right"]].forEach(([v, label]) => {
       const o = el("option", null, label); o.value = v; if ((scene.video_transition || "") === v) o.selected = true; vt.append(o);
     });
-    vt.onchange = () => S.patchScene(scene.id, { video_transition: vt.value });
+    vt.onchange = () => {
+      const v = vt.value;
+      const patch = { video_transition: v };
+      if (v) patch.transition_frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
+      else patch.transition_frames = null;
+      S.patchScene(scene.id, patch);
+    };
     body.append(field("Video transition to next", vt));
     if (scene.video_transition) {
-      const tf = _num(scene.transition_frames || 16, "sc-tf", { min: 1, max: 120, step: 1 });
-      tf.oninput = () => S.patchSceneQuiet(scene.id, { transition_frames: parseInt(tf.value || "0", 10) });
+      const tf = _num(scene.transition_frames > 0 ? scene.transition_frames : 16, "sc-tf", { min: 1, max: 120, step: 1 });
+      tf.oninput = () => S.patchScene(scene.id, { transition_frames: parseInt(tf.value || "16", 10) });
       body.append(field("Transition length (frames)", tf));
-      body.append(el("div", "insp-hint", "Crossfades overlap the two clips, so the montage gets a little shorter."));
+      body.append(el("div", "insp-hint", "Also editable on the timeline seam between clips. Overlaps shorten the final montage."));
     }
 
     renderSceneGuides(st, scene);

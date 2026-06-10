@@ -649,13 +649,51 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .trim-tip { position: absolute; bottom: 4px; right: 4px; background: var(--ink-0); border: 1px solid var(--amber);
   color: var(--amber); font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
 
-/* seam: crossfade + transition type */
-.seam { position: absolute; top: 12px; bottom: 12px; transform: translateX(-50%); display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 4px; z-index: 4; }
-.xfade { height: 22px; border-radius: 4px; border: 1px dashed var(--line); cursor: ew-resize; position: relative;
-  background: repeating-linear-gradient(45deg, transparent, transparent 3px, var(--line) 3px, var(--line) 4px); }
-.xfade.on { border-style: solid; border-color: var(--teal); background: linear-gradient(90deg, transparent, var(--teal-soft), transparent); }
-.seam-type { font-size: 10px; padding: 2px 4px; background: var(--ink-2); text-align: center; max-width: 96px; }
+/* seam: rendered video transition + prompt transition */
+.seam {
+  position: absolute; top: 8px; bottom: 8px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 5px; z-index: 5; pointer-events: none;
+}
+.seam.has-vt { z-index: 6; }
+.vt-bridge {
+  pointer-events: auto; position: relative; min-height: 44px; height: calc(100% - 28px); max-height: 72px;
+  border-radius: 8px; border: 1.5px dashed color-mix(in srgb, var(--line) 80%, transparent);
+  background: repeating-linear-gradient(135deg, transparent, transparent 5px, #ffffff08 5px, #ffffff08 6px);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  padding: 4px 6px; box-sizing: border-box; cursor: ew-resize;
+}
+.vt-bridge.on { border-style: solid; box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 25%, transparent); }
+.vt-bridge.vt-crossfade.on { border-color: var(--teal); background: linear-gradient(90deg, #0a1210, var(--teal-soft), #0a1210); }
+.vt-bridge.vt-fadeblack.on { border-color: #888; background: linear-gradient(90deg, #111, #333, #111); }
+.vt-bridge.vt-wipeleft.on { border-color: var(--amber); background: linear-gradient(90deg, transparent 40%, var(--amber-soft) 100%); }
+.vt-bridge.vt-wiperight.on { border-color: var(--amber); background: linear-gradient(270deg, transparent 40%, var(--amber-soft) 100%); }
+.seam.vt-crossfade .vt-bridge.on { border-color: var(--teal); }
+.seam.vt-fadeblack .vt-bridge.on { border-color: #999; }
+.seam.vt-wipeleft .vt-bridge.on, .seam.vt-wiperight .vt-bridge.on { border-color: var(--amber-2); }
+.vt-label { font-family: var(--font-mono); font-size: 9px; letter-spacing: .3px; color: var(--muted); white-space: nowrap; pointer-events: none; }
+.vt-bridge.on .vt-label { color: var(--teal-soft); }
+.seam.vt-fadeblack .vt-label { color: #bbb; }
+.seam.vt-wipeleft .vt-label, .seam.vt-wiperight .vt-label { color: var(--amber-2); }
+.vt-type { font-size: 10px; padding: 1px 4px; background: #000a; border: 1px solid var(--line); border-radius: 4px; max-width: 108px; cursor: default; }
+.vt-drag-handle {
+  position: absolute; right: -5px; top: 50%; transform: translateY(-50%);
+  width: 10px; height: 28px; border-radius: 4px; cursor: ew-resize;
+  border: 1px solid var(--line); background: var(--ink-1);
+}
+.vt-bridge.on .vt-drag-handle { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 20%, var(--ink-1)); }
+.vt-bridge .trim-tip { bottom: auto; top: -22px; right: 50%; transform: translateX(50%); }
+.seam-prompt-row { pointer-events: auto; }
+.seam-prompt-type { font-size: 9px; padding: 2px 4px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; max-width: 110px; color: var(--faint); }
+
+/* transition tail painted on the outgoing clip */
+.clip-vt-tail {
+  position: absolute; top: 0; right: 0; bottom: 0; pointer-events: none; z-index: 2;
+  border-top-right-radius: 7px; border-bottom-right-radius: 7px;
+}
+.clip-vt-tail.vt-crossfade { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--teal) 35%, transparent)); }
+.clip-vt-tail.vt-fadeblack { background: linear-gradient(90deg, transparent, #00000088); }
+.clip-vt-tail.vt-wipeleft { background: linear-gradient(90deg, transparent 20%, color-mix(in srgb, var(--amber) 40%, transparent)); }
+.clip-vt-tail.vt-wiperight { background: linear-gradient(270deg, transparent 20%, color-mix(in srgb, var(--amber) 40%, transparent)); }
 
 /* playhead */
 .tl-playhead { position: absolute; top: -24px; bottom: 0; width: 2px; background: var(--teal); z-index: 6; pointer-events: none; }
