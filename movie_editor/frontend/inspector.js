@@ -653,5 +653,7 @@
     }, 60);
   });
 
+  window.addEventListener("funpack-invalidate-global-prompt", () => { gpDraft = null; });
+
   S.subscribe(render);
 })();

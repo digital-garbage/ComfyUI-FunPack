@@ -52,12 +52,32 @@
   }
   function get() { return state; }
 
+  function _assignedCharacterIds(project) {
+    const ids = new Set();
+    (project?.scenes || []).forEach((s) => (s.character_ids || []).forEach((id) => ids.add(id)));
+    return ids;
+  }
+
+  function _characterPreviewKey(project) {
+    const assigned = _assignedCharacterIds(project);
+    return (state.characters || [])
+      .filter((c) => assigned.has(c.id))
+      .map((c) => [
+        c.id, c.name, c.appearance, c.body, c.wardrobe, c.always_include, c.never_include,
+        c.face_ref, c.body_ref, c.detail_ref,
+      ].join("\x1f"))
+      .sort()
+      .join("|");
+  }
+
   function _promptPreviewKey(project) {
     if (!project) return "";
     return JSON.stringify({
       anchor: project.anchor,
       global_prompt: project.global_prompt,
       intro_transition: project.intro_transition,
+      character_bible: project.character_bible,
+      characters: _characterPreviewKey(project),
       scenes: (project.scenes || []).map((s) => ({
         text: s.text,
         excluded: s.excluded,
@@ -67,6 +87,21 @@
         media_ref: s.source?.media_ref,
       })),
     });
+  }
+
+  let _lastPreviewKey = "";
+
+  function _invalidateGlobalPromptDraft() {
+    try { window.dispatchEvent(new CustomEvent("funpack-invalidate-global-prompt")); } catch (_) {}
+  }
+
+  function _syncPromptPreview() {
+    return (async () => {
+      try {
+        await flushSave();
+        await refreshPreview(true);
+      } catch (e) { console.error("prompt preview sync failed", e); }
+    })();
   }
 
   function _notifySaveChip() {
@@ -215,7 +250,8 @@
         state.saving = false;
         _pruneSelection();
         const selChanged = JSON.stringify(state.selectedSceneIds || []) !== selBefore;
-        const previewStale = _promptPreviewKey(state.project) !== previewKeyBefore;
+        const previewKeyNow = _promptPreviewKey(state.project);
+        const previewStale = previewKeyNow !== previewKeyBefore || previewKeyNow !== _lastPreviewKey;
         const metaChanged = saved.name !== metaBefore.name
           || (saved.scenes || []).length !== metaBefore.scene_count;
         if (metaChanged) refreshProjectList(true);
@@ -290,15 +326,20 @@
 
   function _applyScenePatch(id, patch, quiet) {
     const t = _patchSceneTarget(id, patch); if (!t) return;
+    const charsChanged = patch.character_ids != null;
     const anchorChanged = _anchorPatchChanged(t, patch);
     if (anchorChanged) _invalidateSceneAfterAnchorChange(t);
     const merged = { ...patch };
     if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
     Object.assign(t, merged);
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
+    if (charsChanged) _invalidateGlobalPromptDraft();
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
       _localDirty = true; notify(); commit();
+    } else if (charsChanged) {
+      notify();
+      _syncPromptPreview();
     } else if (quiet) scheduleSaveSilent();
     else { notify(); scheduleSave(); }
   }
@@ -732,8 +773,10 @@
     previewTimer = null;
     const run = async () => {
       if (!state.project) return;
-      try { state.preview = await API.preview(state.project.id, false, true); }
-      catch (e) { state.preview = { parse_error: e.message }; }
+      try {
+        state.preview = await API.preview(state.project.id, false, true);
+        _lastPreviewKey = _promptPreviewKey(state.project);
+      } catch (e) { state.preview = { parse_error: e.message }; }
       notify();
     };
     if (immediate) return run();
@@ -1247,13 +1290,30 @@
   async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
   async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
   async function loadCharacters() { try { state.characters = (await API.characters()).characters || []; } catch (_) { state.characters = []; } notify(); }
+  function _characterAssignedToProject(charId) {
+    if (!charId || !state.project) return false;
+    return (state.project.scenes || []).some((s) => (s.character_ids || []).includes(charId));
+  }
+
   async function saveCharacter(item) {
-    try { state.characters = (await API.saveCharacter(item)).characters || state.characters; notify(); }
-    catch (e) { alert("Save failed: " + e.message); }
+    try {
+      state.characters = (await API.saveCharacter(item)).characters || state.characters;
+      const cid = item.id || item.original_id;
+      if (_characterAssignedToProject(cid)) {
+        _invalidateGlobalPromptDraft();
+        await refreshPreview(true);
+      } else notify();
+    } catch (e) { alert("Save failed: " + e.message); }
   }
   async function deleteCharacter(id) {
-    try { state.characters = (await API.deleteCharacter(id)).characters || []; notify(); }
-    catch (e) { console.error(e); }
+    try {
+      const wasAssigned = _characterAssignedToProject(id);
+      state.characters = (await API.deleteCharacter(id)).characters || [];
+      if (wasAssigned) {
+        _invalidateGlobalPromptDraft();
+        await refreshPreview(true);
+      } else notify();
+    } catch (e) { console.error(e); }
   }
 
   function sceneCharacterIds(sceneId) {
