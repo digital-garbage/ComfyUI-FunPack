@@ -149,6 +149,15 @@
     });
   }
 
+  function renderSaveChip(st, detail) {
+    const sc = document.getElementById("save-chip");
+    if (!sc) return;
+    const saving = detail?.saving ?? st.saving;
+    const unsaved = detail?.unsaved ?? st.unsaved;
+    sc.className = "save-chip" + (saving || unsaved ? " dirty" : "");
+    sc.textContent = saving ? "saving…" : (unsaved ? "unsaved" : (st.project ? "saved" : ""));
+  }
+
   function renderChips(st) {
     const hc = document.getElementById("health-chip");
     const ok = st.health?.ok;
@@ -156,14 +165,13 @@
     clear(hc);
     hc.append(el("span", "led"));
     hc.append(el("span", null, ok ? "ComfyUI live" : "offline"));
-    const sc = document.getElementById("save-chip");
-    sc.className = "save-chip" + (st.saving ? " dirty" : "");
-    sc.textContent = st.saving ? "saving…" : (st.project ? "saved" : "");
+    renderSaveChip(st);
   }
 
   veil.addEventListener("click", closeAll);
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAll(); });
 
+  window.addEventListener("funpack-save-status", (e) => renderSaveChip(S.get(), e.detail));
   S.subscribe((st) => { render(); renderChips(st); });
   render();
 })();

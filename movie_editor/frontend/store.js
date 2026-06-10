@@ -19,6 +19,7 @@
     // neighboring run is regenerated (preview-only; not included in generation/export).
     sceneGhosts: [],
     saving: false,
+    unsaved: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
@@ -29,6 +30,8 @@
   };
 
   const listeners = new Set();
+  const SAVE_DEBOUNCE_MS = 5000;        // discrete edits (dropdowns, toggles)
+  const SAVE_SILENT_DEBOUNCE_MS = 20000; // typing in fields — flushed on blur / generate
   let saveTimer = null;
   let _localDirty = false;       // local edits newer than the in-flight save snapshot
   let _commitPromise = null;     // avoid overlapping saves stomping newer anchor edits
@@ -49,10 +52,37 @@
   }
   function get() { return state; }
 
+  function _promptPreviewKey(project) {
+    if (!project) return "";
+    return JSON.stringify({
+      anchor: project.anchor,
+      global_prompt: project.global_prompt,
+      intro_transition: project.intro_transition,
+      scenes: (project.scenes || []).map((s) => ({
+        text: s.text,
+        excluded: s.excluded,
+        character_ids: s.character_ids,
+        transition_to_next: s.transition_to_next,
+        source_type: s.source?.type,
+        media_ref: s.source?.media_ref,
+      })),
+    });
+  }
+
+  function _notifySaveChip() {
+    state.unsaved = _localDirty || !!saveTimer;
+    try {
+      window.dispatchEvent(new CustomEvent("funpack-save-status", {
+        detail: { saving: !!state.saving, unsaved: !!state.unsaved },
+      }));
+    } catch (_) {}
+  }
+
   // ── project lifecycle ──────────────────────────────────────────────────────
-  async function refreshProjectList() {
+  async function refreshProjectList(quiet) {
     const { projects } = await API.listProjects();
-    state.projects = projects; notify();
+    state.projects = projects;
+    if (!quiet) notify();
   }
 
   async function loadProject(id) {
@@ -139,22 +169,22 @@
   }
 
   // ── editing ────────────────────────────────────────────────────────────────
-  // Autosave just persists the project to disk so edits aren't lost — it does NOT need
-  // to fire every keystroke. Discrete actions (dropdowns, checkboxes) save ~1s after the
-  // last change; free typing waits longer and is flushed on blur (see flushSave).
+  // Autosave persists in the background — scheduling a save must NOT rebuild the UI
+  // (that was closing dropdowns and stealing clicks). Full notify only when the user
+  // edits something visible, or when prompt preview actually needs refreshing.
   function scheduleSave() {
     _localDirty = true;
-    state.saving = true; notify();
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, 1200);
+    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_DEBOUNCE_MS);
+    _notifySaveChip();
   }
 
-  // For free-text / number fields: update state and queue a save WITHOUT re-rendering,
-  // so typing isn't interrupted. Long debounce; blur flushes it (flushSave).
+  // For free-text / number fields: queue a save without re-rendering; blur/generate flush.
   function scheduleSaveSilent() {
     _localDirty = true;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, 6000);
+    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_SILENT_DEBOUNCE_MS);
+    _notifySaveChip();
   }
 
   // Commit any pending save immediately (field blur / before generate). Returns the
@@ -170,7 +200,12 @@
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }
     _commitPromise = (async () => {
       const snapshot = JSON.parse(JSON.stringify(state.project));
+      const previewKeyBefore = _promptPreviewKey(snapshot);
+      const selBefore = JSON.stringify(state.selectedSceneIds || []);
+      const metaBefore = { name: snapshot.name, scene_count: (snapshot.scenes || []).length };
       _localDirty = false;
+      state.saving = true;
+      _notifySaveChip();
       try {
         const saved = await API.saveProject(snapshot.id, snapshot);
         // If the user edited again while this save was in flight (e.g. dropped a new
@@ -179,12 +214,18 @@
         else state.project = saved;
         state.saving = false;
         _pruneSelection();
-        notify();
-        refreshProjectList();
-        refreshPreview(true);
+        const selChanged = JSON.stringify(state.selectedSceneIds || []) !== selBefore;
+        const previewStale = _promptPreviewKey(state.project) !== previewKeyBefore;
+        const metaChanged = saved.name !== metaBefore.name
+          || (saved.scenes || []).length !== metaBefore.scene_count;
+        if (metaChanged) refreshProjectList(true);
+        if (previewStale) refreshPreview(true);
+        else if (selChanged) notify();
+        _notifySaveChip();
       } catch (e) {
         _localDirty = true;
-        state.saving = false; notify();
+        state.saving = false;
+        _notifySaveChip();
         console.error("save failed", e);
       } finally {
         _commitPromise = null;
@@ -257,8 +298,7 @@
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
-      _localDirty = true; state.saving = true; notify();
-      commit();
+      _localDirty = true; notify(); commit();
     } else if (quiet) scheduleSaveSilent();
     else { notify(); scheduleSave(); }
   }
@@ -274,8 +314,7 @@
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
-      _localDirty = true; state.saving = true; notify();
-      commit();
+      _localDirty = true; notify(); commit();
     } else scheduleSaveSilent();
   }
 
