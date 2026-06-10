@@ -28,7 +28,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     generation_prompt_fingerprint,
     normalize_character_bible,
     normalize_continuity_settings,
-    resolve_identity_pin_ref,
+    resolve_scene_identity_pin,
     collapse_generative_units,
     group_generative_units,
     is_mixed_source,
@@ -303,18 +303,42 @@ def test_character_bible_never_include_merges_negative():
     assert "extra limbs" in neg
 
 
-def test_character_bible_face_ref_drives_identity_pin():
+def test_scene_characters_merge_into_prompt(monkeypatch):
+    char_map = {
+        "c1": {"id": "c1", "name": "Nicole", "appearance": "red hair"},
+        "c2": {"id": "c2", "name": "Alex", "appearance": "tall"},
+    }
+    monkeypatch.setattr(
+        "movie_editor.backend.timeline._load_character_map",
+        lambda: char_map,
+    )
+    p = _project(scenes=[
+        {"text": "walks in", "character_ids": ["c1"]},
+        {"text": "sits down", "character_ids": ["c1", "c2"]},
+    ])
+    prompt = build_combined_prompt(p, for_generation=True)
+    assert "Character: Nicole." in prompt
+    assert "Character: Alex." in prompt
+    assert prompt.index("Nicole") < prompt.index("walks")
+    assert prompt.index("Alex") < prompt.index("sits")
+
+
+def test_scene_character_face_ref_drives_identity_pin(monkeypatch):
+    char_map = {"c1": {"id": "c1", "name": "Nicole", "face_ref": "face1"}}
+    monkeypatch.setattr(
+        "movie_editor.backend.timeline._load_character_map",
+        lambda: char_map,
+    )
     p = _project(
-        character_bible={"face_ref": "face1", "sync_identity_pin": True},
         continuity_settings={"identity_pin_ref": "other"},
         scenes=[
             {"id": "s1", "text": "a", "source": {"type": "carry"}},
-            {"id": "s2", "text": "b", "source": {"type": "carry"}},
+            {"id": "s2", "text": "b", "source": {"type": "carry"}, "character_ids": ["c1"]},
         ],
     )
-    assert resolve_identity_pin_ref(p) == "face1"
     cs = continuity_settings_for_run(p)
-    assert cs["identity_pin_ref"] == "face1"
+    sc2 = p.scenes[1]
+    assert resolve_scene_identity_pin(sc2, char_map, cs) == "face1"
     guides = build_auto_continuity_guides(p, p)
     assert guides["scenes"][1][0]["media_ref"] == "face1"
 
@@ -326,6 +350,17 @@ def test_character_bible_refs_in_continuity_media():
     )
     refs = continuity_media_refs(p, p)
     assert refs == ["f1", "b1", "d1"]
+
+
+def test_scene_character_media_refs(monkeypatch):
+    char_map = {"c1": {"id": "c1", "face_ref": "f1", "body_ref": "b1"}}
+    monkeypatch.setattr(
+        "movie_editor.backend.timeline._load_character_map",
+        lambda: char_map,
+    )
+    p = _project(scenes=[{"text": "a", "character_ids": ["c1"]}])
+    from movie_editor.backend.timeline import character_media_refs_for_project
+    assert character_media_refs_for_project(p, char_map) == ["f1", "b1"]
 
 
 def test_character_bible_changes_generation_hash():

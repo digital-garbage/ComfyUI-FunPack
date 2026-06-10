@@ -644,6 +644,30 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
+    @routes.get(UI_PREFIX + "/api/library/characters")
+    async def _characters(_req):
+        try:
+            from .backend import characters as char_lib
+            return web.json_response(char_lib.list_characters())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"characters": [], "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/library/characters")
+    async def _character_save(req):
+        try:
+            from .backend import characters as char_lib
+            return web.json_response(char_lib.save_character(await req.json()))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.delete(UI_PREFIX + "/api/library/characters/{cid}")
+    async def _character_delete(req):
+        try:
+            from .backend import characters as char_lib
+            return web.json_response(char_lib.delete_character(req.match_info["cid"]))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
     @routes.get(UI_PREFIX + "/api/library/shortcuts/export")
     async def _shortcuts_export(_req):
         try:

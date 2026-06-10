@@ -362,15 +362,30 @@ input[type=number] { font-family: var(--font-mono); }
 .insp-tag { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; color: var(--amber); text-transform: uppercase; }
 .insp-hint { font-size: 11px; color: var(--faint); margin: -4px 0 12px; }
 .insp-block { margin-bottom: 16px; }
-.bible-refs { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
-.bible-ref { display: flex; gap: 10px; align-items: flex-start; padding: 8px; background: var(--ink-2);
-  border: 1px solid var(--line); border-radius: 8px; }
-.bible-ref-prev { width: 52px; height: 52px; flex-shrink: 0; border-radius: 6px; overflow: hidden;
-  background: var(--ink-0); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; }
-.bible-ref-prev img { width: 100%; height: 100%; object-fit: cover; }
-.bible-ref-info { flex: 1; min-width: 0; }
-.bible-ref-name { font-size: 11px; color: var(--muted); margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bible-pin { margin-bottom: 12px; }
+.char-hint { margin-bottom: 8px; }
+.char-list { display: flex; flex-direction: column; gap: 6px; }
+.char-row { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--ink-2); cursor: pointer; transition: border-color .12s, background .12s; }
+.char-row:hover { border-color: #4a4334; background: var(--ink-3); }
+.char-row.on-scene { border-color: var(--teal-soft); box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.25); }
+.char-thumb { width: 36px; height: 36px; flex-shrink: 0; border-radius: 6px; overflow: hidden;
+  background: var(--ink-0); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--faint); }
+.char-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.char-info { flex: 1; min-width: 0; }
+.char-name { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.char-sub { font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.char-badge { font-size: 9px; font-family: var(--font-mono); color: var(--teal-soft); text-transform: uppercase; letter-spacing: .04em; }
+.char-actions { display: flex; gap: 2px; flex-shrink: 0; }
+.char-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.char-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 3px 8px;
+  border-radius: 999px; background: var(--ink-2); border: 1px solid var(--line); color: var(--amber-2); }
+.char-chip.empty { color: var(--faint); font-style: italic; border-style: dashed; }
+.char-chip-rm { border: none; background: transparent; color: var(--faint); cursor: pointer; padding: 0 2px; font-size: 10px; }
+.char-chip-rm:hover { color: var(--danger); }
+.clip-chars { display: flex; flex-wrap: wrap; gap: 3px; flex-shrink: 0; }
+.clip-char { font-size: 9px; font-family: var(--font-mono); color: var(--amber-2); background: #2a2418;
+  border: 1px solid #4a4334; border-radius: 4px; padding: 1px 4px; white-space: nowrap; }
+.clip.has-media .clip-chars { position: relative; z-index: 1; }
 
 /* global prompt — first entry in the inspector list (scrolls with content) */
 .insp-global { margin: 0 0 14px; padding: 10px 10px 8px;

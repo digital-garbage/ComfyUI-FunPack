@@ -134,6 +134,28 @@
     return wrap;
   }
 
+  function renderSceneCharacters(st, scene) {
+    const ids = S.sceneCharacterIds(scene.id);
+    const tag = el("div", "insp-tag"); tag.textContent = "Characters"; body.append(tag);
+    const chips = el("div", "char-chips");
+    if (!ids.length) {
+      chips.append(el("span", "char-chip empty", "None — use Characters in the media bin"));
+    } else {
+      ids.forEach((cid) => {
+        const c = (st.characters || []).find((x) => x.id === cid);
+        const chip = el("span", "char-chip");
+        chip.textContent = c?.name || cid;
+        const rm = el("button", "char-chip-rm", "✕");
+        rm.title = "Remove from this scene";
+        rm.onclick = () => S.toggleSceneCharacter(scene.id, cid);
+        chip.append(rm);
+        chips.append(chip);
+      });
+    }
+    body.append(chips);
+    body.append(el("div", "insp-hint", "Open Characters in the left bin and click to toggle who appears in this scene's prompt."));
+  }
+
   function renderScene(st, scene) {
     const root = S.genUnitRoot(S.genUnitId(scene)) || scene;
     const unitScenes = (st.project.scenes || []).filter((s) => S.genUnitId(s) === S.genUnitId(scene))
@@ -141,6 +163,7 @@
     const cutNo = unitScenes.indexOf(scene) + 1;
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`
       + (unitScenes.length > 1 ? ` · cut ${cutNo}/${unitScenes.length}` : "");
+    renderSceneCharacters(st, scene);
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
     const selN = S.selectedSceneCount ? S.selectedSceneCount() : 1;
     if (selN > 1) {
@@ -283,69 +306,6 @@
     body.append(strip);
   }
 
-  function bibleRefPicker(st, label, refKey, bible) {
-    const ref = bible[refKey] || null;
-    const asset = ref ? (st.mediaBin || []).find((m) => m.id === ref) : null;
-    const block = el("div", "bible-ref");
-    const prev = el("div", "bible-ref-prev");
-    if (asset && asset.kind === "image") {
-      const img = el("img"); img.src = window.MovieEditorAPI.mediaUrl(asset.id); img.loading = "lazy"; prev.append(img);
-    } else prev.append(el("span", "media-icon", asset ? "▶" : "◇"));
-    block.append(prev);
-    const info = el("div", "bible-ref-info");
-    info.append(el("div", "bible-ref-name", asset ? asset.name : "No image selected"));
-    const pick = el("select");
-    pick.dataset.k = "bible-ref-" + refKey;
-    pick.append(new Option("— none —", ""));
-    (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
-      const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o);
-    });
-    pick.onchange = () => S.patchCharacterBible({ [refKey]: pick.value || null });
-    info.append(field(label, pick));
-    block.append(info);
-    return block;
-  }
-
-  function renderCharacterBible(st) {
-    const bible = S.normCharacterBible(st.project.character_bible);
-    const tag = el("div", "insp-tag"); tag.textContent = "Character bible"; body.append(tag);
-    body.append(el("div", "insp-hint", "Structured character profile — merged into the anchor on generate. Face ref can drive the identity pin."));
-
-    const name = el("input"); name.value = bible.name; name.dataset.k = "bible-name";
-    name.placeholder = "Character name";
-    name.oninput = () => S.patchCharacterBible({ name: name.value }, true);
-    body.append(field("Name", name));
-
-    const mkTa = (key, label, rows, placeholder) => {
-      const ta = el("textarea"); ta.rows = rows; ta.value = bible[key] || ""; ta.dataset.k = "bible-" + key;
-      ta.placeholder = placeholder;
-      ta.oninput = () => S.patchCharacterBible({ [key]: ta.value }, true);
-      body.append(field(label, ta));
-    };
-    mkTa("appearance", "Appearance", 2, "Face, hair, eyes, skin, distinguishing marks…");
-    mkTa("body", "Body", 2, "Build, height, proportions…");
-    mkTa("wardrobe", "Wardrobe", 2, "Default outfit or style…");
-    mkTa("always_include", "Always include", 2, "Tags and phrases always kept in the anchor");
-    mkTa("never_include", "Never include", 2, "Appended to the negative prompt on generate");
-
-    const refTag = el("div", "insp-tag sp-sub"); refTag.textContent = "Reference images"; body.append(refTag);
-    const refs = el("div", "bible-refs");
-    refs.append(bibleRefPicker(st, "Face (identity pin)", "face_ref", bible));
-    refs.append(bibleRefPicker(st, "Body", "body_ref", bible));
-    refs.append(bibleRefPicker(st, "Detail (tattoo / accessory)", "detail_ref", bible));
-    body.append(refs);
-
-    const pinRow = el("label", "chk bible-pin");
-    const pinCb = el("input"); pinCb.type = "checkbox"; pinCb.checked = bible.sync_identity_pin;
-    pinCb.onchange = () => S.patchCharacterBible({ sync_identity_pin: pinCb.checked });
-    pinRow.append(pinCb);
-    pinRow.append(el("span", null, "Use face ref as identity pin"));
-    body.append(pinRow);
-    if (bible.sync_identity_pin && bible.face_ref) {
-      body.append(el("div", "insp-hint", "Identity pin is synced from the face reference (Engine settings → Continuity)."));
-    }
-  }
-
   function renderProject(st) {
     const p = st.project;
     title.textContent = "Project";
@@ -368,11 +328,9 @@
     body.append(row3);
     body.append(el("div", "insp-hint", "Link FPS / Frames / Width / Height in Models → Linked inputs (Source = Project …)."));
 
-    renderCharacterBible(st);
-
     const promptTag = el("div", "insp-tag"); promptTag.textContent = "Prompt"; body.append(promptTag);
     const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
-    anchor.placeholder = "Extra world / setting context (character bible prepends above this)";
+    anchor.placeholder = "World / setting context prepended to every scene (assign characters per scene in the Characters bin)";
     anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
     body.append(field("Anchor", anchor));
     body.append(field("Opening transition (anchor → scene 1)", transitionSelect(p.intro_transition || "",

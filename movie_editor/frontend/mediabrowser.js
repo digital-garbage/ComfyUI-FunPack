@@ -1,4 +1,4 @@
-// Left zone: projects + tabbed library bins — Media, Shortcuts, Transitions.
+// Left zone: projects + tabbed library bins — Media, Characters, Shortcuts, Transitions.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
@@ -6,9 +6,10 @@
   const body = document.getElementById("media-body");
 
   let tab = "Media";                 // active bin
-  let q = { Shortcuts: "", Transitions: "" };
+  let q = { Characters: "", Shortcuts: "", Transitions: "" };
   let editShortcut = null;           // shortcut item being edited ({} = new), or null
   let editTransition = null;         // transition item being edited ({} = new), or null
+  let editCharacter = null;          // character item being edited ({} = new), or null
 
   // ── library edit helpers ───────────────────────────────────────────────────────
   const splitLines = (v) => String(v || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
@@ -82,6 +83,66 @@
     return box;
   }
 
+  function mediaRefSelect(st, value, onChange) {
+    const sel = el("select", "lib-in");
+    sel.append(new Option("— none —", ""));
+    (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
+      const o = new Option(m.name, m.id); if (m.id === value) o.selected = true; sel.append(o);
+    });
+    sel.onchange = () => onChange(sel.value || null);
+    return sel;
+  }
+
+  function characterForm(st, item) {
+    const isNew = !item.id;
+    const box = el("div", "lib-form");
+    box.append(el("div", "lib-form-title", isNew ? "New character" : `Edit “${item.name || "character"}”`));
+    const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
+    const appearance = el("textarea", "lib-in"); appearance.rows = 2; appearance.placeholder = "Face, hair, eyes, skin…"; appearance.value = item.appearance || "";
+    const body = el("textarea", "lib-in"); body.rows = 2; body.placeholder = "Build, height, proportions…"; body.value = item.body || "";
+    const wardrobe = el("textarea", "lib-in"); wardrobe.rows = 2; wardrobe.placeholder = "Default outfit or style…"; wardrobe.value = item.wardrobe || "";
+    const always = el("textarea", "lib-in"); always.rows = 2; always.placeholder = "Tags always included in this character's prompt"; always.value = item.always_include || "";
+    const never = el("textarea", "lib-in"); never.rows = 2; never.placeholder = "Appended to negative when this character is on a scene"; never.value = item.never_include || "";
+    let faceRef = item.face_ref || null;
+    let bodyRef = item.body_ref || null;
+    let detailRef = item.detail_ref || null;
+    box.append(
+      labeled("Name", name),
+      labeled("Appearance", appearance),
+      labeled("Body", body),
+      labeled("Wardrobe", wardrobe),
+      labeled("Always include", always),
+      labeled("Never include", never),
+      labeled("Face ref (identity pin)", mediaRefSelect(st, faceRef, (v) => { faceRef = v; })),
+      labeled("Body ref", mediaRefSelect(st, bodyRef, (v) => { bodyRef = v; })),
+      labeled("Detail ref", mediaRefSelect(st, detailRef, (v) => { detailRef = v; })),
+    );
+    const actions = el("div", "lib-form-actions");
+    const save = el("button", "btn primary tiny", "Save");
+    save.onclick = async () => {
+      const nm = name.value.trim();
+      if (!nm) { alert("Character name is required."); return; }
+      await S.saveCharacter({
+        id: item.id || undefined,
+        original_id: item.id || undefined,
+        name: nm,
+        appearance: appearance.value,
+        body: body.value,
+        wardrobe: wardrobe.value,
+        always_include: always.value,
+        never_include: never.value,
+        face_ref: faceRef,
+        body_ref: bodyRef,
+        detail_ref: detailRef,
+      });
+      editCharacter = null; render(S.get());
+    };
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = () => { editCharacter = null; render(S.get()); };
+    actions.append(save, cancel); box.append(actions);
+    return box;
+  }
+
   // ── projects ───────────────────────────────────────────────────────────────────
   function projectsSection(st) {
     const sec = el("div", "mb-section");
@@ -140,6 +201,62 @@
     });
     if (!(st.mediaBin || []).length) grid.append(el("div", "pj-meta", "No media yet."));
     wrap.append(grid);
+    return wrap;
+  }
+
+  // ── characters bin ───────────────────────────────────────────────────────────────
+  function charactersTab(st) {
+    if (editCharacter) return characterForm(st, editCharacter);
+    const wrap = el("div", "bin");
+    wrap.append(searchRow("Characters", "Filter characters…", () => render(S.get())));
+    const hint = el("div", "pj-meta char-hint");
+    hint.textContent = st.selectedSceneId
+      ? "Click a character to add/remove it on the selected scene."
+      : "Select a scene, then click characters to assign them.";
+    wrap.append(hint);
+    const head = el("div", "lib-head");
+    const add = el("button", "btn ghost tiny", "＋ New");
+    add.onclick = () => { editCharacter = {}; render(S.get()); };
+    head.append(add); wrap.append(head);
+
+    const assigned = st.selectedSceneId ? new Set(S.sceneCharacterIds(st.selectedSceneId)) : null;
+    const list = el("div", "char-list");
+    const items = filtered(st.characters || [], q.Characters, (c) =>
+      `${c.name} ${c.appearance || ""} ${c.body || ""} ${c.wardrobe || ""}`);
+    items.forEach((c) => {
+      const onScene = assigned && assigned.has(c.id);
+      const row = el("div", "char-row" + (onScene ? " on-scene" : ""));
+      const prev = el("div", "char-thumb");
+      if (c.face_ref) {
+        const img = el("img"); img.src = API.mediaUrl(c.face_ref); img.loading = "lazy"; prev.append(img);
+      } else prev.append(el("span", null, "◎"));
+      row.append(prev);
+      const info = el("div", "char-info");
+      info.append(el("div", "char-name", c.name || "(unnamed)"));
+      const sub = [c.appearance, c.wardrobe].filter(Boolean).join(" · ");
+      if (sub) info.append(el("div", "char-sub", sub));
+      row.append(info);
+      if (onScene) row.append(el("span", "char-badge", "on scene"));
+      row.onclick = () => {
+        if (st.selectedSceneId) S.toggleSceneCharacter(st.selectedSceneId, c.id);
+        else { editCharacter = { ...c }; render(S.get()); }
+      };
+      const edit = el("button", "btn ghost tiny", "✎");
+      edit.title = "Edit character";
+      edit.onclick = (e) => { e.stopPropagation(); editCharacter = { ...c }; render(S.get()); };
+      const del = el("button", "btn ghost tiny danger", "✕");
+      del.title = "Delete character";
+      del.onclick = async (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete character “${c.name}”?`)) await S.deleteCharacter(c.id);
+      };
+      const actions = el("div", "char-actions");
+      actions.append(edit, del);
+      row.append(actions);
+      list.append(row);
+    });
+    if (!items.length) list.append(el("div", "pj-meta", (st.characters || []).length ? "No match." : "No characters yet — create one."));
+    wrap.append(list);
     return wrap;
   }
 
@@ -252,13 +369,18 @@
 
     const sec = el("div", "mb-section");
     const tabs = el("div", "bin-tabs");
-    ["Media", "Shortcuts", "Transitions"].forEach((name) => {
+    ["Media", "Characters", "Shortcuts", "Transitions"].forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
-      b.onclick = () => { tab = name; render(S.get()); };
+      b.onclick = () => { tab = name; editCharacter = null; render(S.get()); };
       tabs.append(b);
     });
     sec.append(tabs);
-    sec.append(tab === "Media" ? mediaTab(st) : tab === "Shortcuts" ? shortcutsTab(st) : transitionsTab(st));
+    sec.append(
+      tab === "Media" ? mediaTab(st)
+        : tab === "Characters" ? charactersTab(st)
+          : tab === "Shortcuts" ? shortcutsTab(st)
+            : transitionsTab(st),
+    );
     body.append(sec);
   }
 

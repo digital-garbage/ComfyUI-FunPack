@@ -47,6 +47,9 @@
     deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),
     exportShortcutsUrl: () => API("/library/shortcuts/export"),
     importShortcuts: (data) => j("POST", API("/library/shortcuts/import"), data),
+    characters: () => j("GET", API("/library/characters")),
+    saveCharacter: (item) => j("POST", API("/library/characters"), item),
+    deleteCharacter: (id) => j("DELETE", API(`/library/characters/${encodeURIComponent(id)}`)),
 
     // media bin
     listMedia: () => j("GET", API("/media")),

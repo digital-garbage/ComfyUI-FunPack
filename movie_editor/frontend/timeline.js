@@ -246,6 +246,16 @@
     const label = scene.text || (root && root.text) || (subclip ? "cut" : "empty scene");
     clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" ? "" : " empty"), label));
 
+    const charIds = S.sceneCharacterIds(scene.id);
+    if (charIds.length) {
+      const chars = el("div", "clip-chars");
+      charIds.forEach((cid) => {
+        const c = (st.characters || []).find((x) => x.id === cid);
+        chars.append(el("span", "clip-char", c?.name || cid));
+      });
+      clip.append(chars);
+    }
+
     const rating = ((root && root.rating) || scene.rating || "").trim();
     if (rating) {
       const rated = el("div", "clip-rated");

@@ -23,6 +23,7 @@
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
     shortcuts: [],           // prompt shortcut library
+    characters: [],          // global character library
     imageTargets: [],        // where an image asset can be wired [{value,label}]
     ratingLabels: [],        // FunPack Studio V2 rating options
   };
@@ -177,36 +178,6 @@
   function patchProject(patch) { if (!state.project) return; Object.assign(state.project, patch); notify(); scheduleSave(); }
   function patchProjectQuiet(patch) { if (!state.project) return; Object.assign(state.project, patch); scheduleSaveSilent(); }
 
-  function normCharacterBible(raw) {
-    const b = raw || {};
-    return {
-      name: b.name || "",
-      appearance: b.appearance || "",
-      body: b.body || "",
-      wardrobe: b.wardrobe || "",
-      always_include: b.always_include || "",
-      never_include: b.never_include || "",
-      face_ref: b.face_ref || null,
-      body_ref: b.body_ref || null,
-      detail_ref: b.detail_ref || null,
-      sync_identity_pin: b.sync_identity_pin !== false,
-    };
-  }
-
-  function _characterBiblePinPatch(bible) {
-    if (!bible.sync_identity_pin || !bible.face_ref) return null;
-    return { ...(state.project.continuity_settings || {}), identity_pin_ref: bible.face_ref };
-  }
-
-  function patchCharacterBible(patch, quiet) {
-    if (!state.project) return;
-    const next = { ...normCharacterBible(state.project.character_bible), ...patch };
-    const updates = { character_bible: next };
-    const pin = _characterBiblePinPatch(next);
-    if (pin) updates.continuity_settings = pin;
-    quiet ? patchProjectQuiet(updates) : patchProject(updates);
-  }
-
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
   function genUnitId(sc) { return (sc && sc.gen_unit_id) || (sc && sc.id) || ""; }
@@ -222,7 +193,7 @@
   function patchScene(id, patch) {
     const s = scene(id); if (!s) return;
     const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
-    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null))
+    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null || patch.character_ids != null))
       ? root.id : id;
     const t = scene(targetId); if (!t) return;
     Object.assign(t, patch); notify(); scheduleSave();
@@ -1120,6 +1091,28 @@
 
   async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
   async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
+  async function loadCharacters() { try { state.characters = (await API.characters()).characters || []; } catch (_) { state.characters = []; } notify(); }
+  async function saveCharacter(item) {
+    try { state.characters = (await API.saveCharacter(item)).characters || state.characters; notify(); }
+    catch (e) { alert("Save failed: " + e.message); }
+  }
+  async function deleteCharacter(id) {
+    try { state.characters = (await API.deleteCharacter(id)).characters || []; notify(); }
+    catch (e) { console.error(e); }
+  }
+
+  function sceneCharacterIds(sceneId) {
+    const s = scene(sceneId); if (!s) return [];
+    const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
+    return [...(root?.character_ids || s.character_ids || [])];
+  }
+
+  function toggleSceneCharacter(sceneId, charId) {
+    const s = scene(sceneId); if (!s || !charId) return;
+    const ids = sceneCharacterIds(sceneId);
+    const next = ids.includes(charId) ? ids.filter((x) => x !== charId) : [...ids, charId];
+    patchScene(sceneId, { character_ids: next });
+  }
   async function saveShortcut(item) { try { state.shortcuts = (await API.saveShortcut(item)).shortcuts || state.shortcuts; notify(); } catch (e) { alert("Save failed: " + e.message); } }
   async function deleteShortcut(name) { try { state.shortcuts = (await API.deleteShortcut(name)).shortcuts || []; notify(); } catch (e) { console.error(e); } }
   async function saveTransition(item) { try { state.transitions = (await API.saveTransition(item)).transitions || state.transitions; notify(); } catch (e) { alert("Save failed: " + e.message); } }
@@ -1196,6 +1189,7 @@
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
     await loadShortcuts();
+    await loadCharacters();
     await loadMedia();
     try { state.ratingLabels = (await API.ratingLabels()).labels || []; } catch (_) { state.ratingLabels = []; }
     await loadModels();
@@ -1209,7 +1203,8 @@
   window.Store = {
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchCharacterBible, normCharacterBible, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
+    sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
@@ -1217,7 +1212,9 @@
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
-    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
+    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
+    loadCharacters, saveCharacter, deleteCharacter,
+    loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,
     setSceneRating: (id, v) => patchScene(id, { rating: v }),
     resetStudioSession,
