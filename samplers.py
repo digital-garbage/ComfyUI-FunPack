@@ -2750,6 +2750,17 @@ class FunPackLTXAVSceneChainSampler:
                 return None
         return None
 
+    def _scene_temporal_mode(self, scene_conditioning):
+        """Per-scene temporal mode tag (e.g. pulse). None when unset."""
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            mode = str(scene_conditioning[1].get("funpack_temporal_mode") or "").strip().lower()
+            return mode or None
+        return None
+
     def _decode_last_frame(self, latent, vae):
         try:
             tensors = self._latent_tensors(latent)
@@ -3449,18 +3460,29 @@ class FunPackLTXAVSceneChainSampler:
             if embed_guidance and _liked_dir is not None:
                 run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
-            # Per-scene temporal style (temporal_style="auto"): layer a frame_rate wrapper on
-            # top of whatever is installed (e.g. embed guidance). Restored right after sampling,
+            # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
+            # whatever is installed (e.g. embed guidance). Restored right after sampling,
             # before the embed-guidance restore, so the wrappers unwind in install order.
             _temporal_applied = False
             _temporal_prev_wrapper = None
+            _scene_mode = self._scene_temporal_mode(scene_cond)
             _scene_mult = self._scene_temporal_mult(scene_cond)
-            if _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
+            _cur_wrapper = model.model_options.get("model_function_wrapper")
+            if _scene_mode == "pulse":
+                try:
+                    from .ltx_enhancements import make_pulse_temporal_wrapper
+                except ImportError:
+                    from ltx_enhancements import make_pulse_temporal_wrapper
+                _tw = make_pulse_temporal_wrapper(_cur_wrapper)
+                if _tw is not None:
+                    _temporal_prev_wrapper = _cur_wrapper
+                    model.model_options["model_function_wrapper"] = _tw
+                    _temporal_applied = True
+            elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
                 try:
                     from .ltx_enhancements import make_temporal_wrapper
                 except ImportError:
                     from ltx_enhancements import make_temporal_wrapper
-                _cur_wrapper = model.model_options.get("model_function_wrapper")
                 _tw = make_temporal_wrapper(_cur_wrapper, _scene_mult)
                 if _tw is not None:
                     _temporal_prev_wrapper = _cur_wrapper

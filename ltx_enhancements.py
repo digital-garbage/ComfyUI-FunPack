@@ -6,7 +6,7 @@ Technique 2: Per-block attention temperature
 
 Technique 3: Temporal RoPE style
   Manipulate frame_rate in the model's positional embedding to change motion character.
-  Styles: natural / accelerate / decelerate / loop / freeze
+  Styles: natural / accelerate / decelerate / loop / freeze / pulse
 
 Technique 4: Denoise creativity mask
   Spatial noise weighting derived from latent variance: high-variance regions get more freedom.
@@ -25,7 +25,7 @@ from hashlib import md5
 
 import torch
 
-TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze"]
+TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"]
 
 # frame_rate multiplier fed to the LTX RoPE per style. >1 => model assumes more
 # frames cover the same wall-clock time => smaller inter-frame deltas => smoother /
@@ -38,6 +38,12 @@ TEMPORAL_STYLE_MULT = {
     "loop": 1.0,   # loop is a separate RoPE coordinate trick (not yet wired); mult is a no-op
     "freeze": 2.0,
 }
+
+# Pulse: repeated ease-down segments per scene. Each segment starts punchy (peak mult)
+# and eases toward a temporal hold (floor mult) before the next segment resets.
+PULSE_SEGMENT_COUNT = 3
+PULSE_PEAK_MULT = 0.88
+PULSE_FLOOR_MULT = 1.65
 
 
 # Keyword -> motion-energy intent for the "auto" director. The classifier scans a
@@ -95,6 +101,43 @@ def classify_temporal_intent(text):
     return {"mult": round(float(mult), 3), "loop": bool(loop), "label": label}
 
 
+def _ease_down(t):
+    """Smooth ease from 0→1 for pulse segment ramps."""
+    t = max(0.0, min(1.0, float(t)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def pulse_mult_for_progress(progress, segment_count=None, peak_mult=None, floor_mult=None):
+    """Map denoise progress [0,1] to a frame_rate multiplier with repeated ease-down segments."""
+    segs = PULSE_SEGMENT_COUNT if segment_count is None else max(1, int(segment_count))
+    peak = PULSE_PEAK_MULT if peak_mult is None else float(peak_mult)
+    floor = PULSE_FLOOR_MULT if floor_mult is None else float(floor_mult)
+    progress = max(0.0, min(1.0, float(progress)))
+    seg_idx = min(int(progress * segs), segs - 1)
+    local_t = progress * segs - seg_idx
+    return peak + (floor - peak) * _ease_down(local_t)
+
+
+def _scale_frame_rate_in_args(args, mult):
+    """Return a shallow-copied args dict with frame_rate scaled by mult (no-op on failure)."""
+    c = args.get("c")
+    if not (isinstance(c, dict) and "frame_rate" in c):
+        return args
+    try:
+        fr_cond = c["frame_rate"]
+        if hasattr(fr_cond, "cond"):
+            original_fr = float(fr_cond.cond)
+            new_cond = type(fr_cond)(original_fr * float(mult))
+            new_c = dict(c)
+            new_c["frame_rate"] = new_cond
+            new_args = dict(args)
+            new_args["c"] = new_c
+            return new_args
+    except Exception:
+        pass
+    return args
+
+
 def make_temporal_wrapper(old_wrapper, mult):
     """Build a model_function_wrapper that scales the LTX `frame_rate` conditioning by
     `mult`, chaining any existing wrapper. Returns None when mult is effectively 1.0
@@ -108,24 +151,42 @@ def make_temporal_wrapper(old_wrapper, mult):
         return None
 
     def _temporal_wrapper(apply_fn, args, _mult=mult, _old=old_wrapper):
-        c = args.get("c")
-        if isinstance(c, dict) and "frame_rate" in c:
-            try:
-                fr_cond = c["frame_rate"]
-                if hasattr(fr_cond, "cond"):
-                    original_fr = float(fr_cond.cond)
-                    new_cond = type(fr_cond)(original_fr * _mult)
-                    new_c = dict(c)
-                    new_c["frame_rate"] = new_cond
-                    args = dict(args)
-                    args["c"] = new_c
-            except Exception:
-                pass
+        args = _scale_frame_rate_in_args(args, _mult)
         if _old is not None:
             return _old(apply_fn, args)
         return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
     return _temporal_wrapper
+
+
+def make_pulse_temporal_wrapper(old_wrapper, segment_count=None, peak_mult=None, floor_mult=None):
+    """Build a model_function_wrapper that cycles ease-down temporal segments per scene.
+
+    Denoise progress (derived from sigma) is divided into `segment_count` segments. Within
+    each segment the frame_rate multiplier eases from `peak_mult` (punchier motion) toward
+    `floor_mult` (temporal hold). A fresh wrapper should be installed per scene so sigma
+    bounds reset between scenes."""
+    segs = PULSE_SEGMENT_COUNT if segment_count is None else max(1, int(segment_count))
+    peak = PULSE_PEAK_MULT if peak_mult is None else float(peak_mult)
+    floor = PULSE_FLOOR_MULT if floor_mult is None else float(floor_mult)
+    sigma_start = [None]
+
+    def _pulse_wrapper(apply_fn, args, _old=old_wrapper, _segs=segs, _peak=peak, _floor=floor):
+        ts = args.get("timestep")
+        try:
+            sigma = float(ts.max().item()) if ts is not None else 1.0
+        except Exception:
+            sigma = 1.0
+        if sigma_start[0] is None:
+            sigma_start[0] = max(sigma, 1e-6)
+        progress = max(0.0, min(1.0, 1.0 - sigma / sigma_start[0]))
+        mult = pulse_mult_for_progress(progress, _segs, _peak, _floor)
+        args = _scale_frame_rate_in_args(args, mult)
+        if _old is not None:
+            return _old(apply_fn, args)
+        return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+    return _pulse_wrapper
 
 # Confirmed semantic focal points (PAG default=14, STG defaults=14,19)
 ANCHOR_BLOCKS = [14, 19]
@@ -963,11 +1024,15 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             print(f"[FunPackEnhancements] Hook setup failed: {e}")
 
     # --- Technique 3: temporal RoPE via model_function_wrapper ---
-    # "auto" is per-scene and owned by the chain sampler (it bakes a per-scene
-    # multiplier into each scene's conditioning and applies it there), so the global
-    # path here only fires for the concrete manual styles. "loop" stays a no-op until
-    # the RoPE coordinate trick is wired.
-    if temporal_style not in ("natural", "auto"):
+    # "auto" and "pulse" are per-scene and owned by the chain sampler (auto bakes a
+    # per-scene multiplier; pulse installs a segmented ease-down wrapper per scene).
+    # The global path here fires for concrete manual styles and pulse on single-scene
+    # workflows. "loop" stays a no-op until the RoPE coordinate trick is wired.
+    if temporal_style == "pulse":
+        wrapper = make_pulse_temporal_wrapper(model.model_options.get("model_function_wrapper"))
+        if wrapper is not None:
+            model.model_options["model_function_wrapper"] = wrapper
+    elif temporal_style not in ("natural", "auto"):
         mult = TEMPORAL_STYLE_MULT.get(temporal_style, 1.0)
         wrapper = make_temporal_wrapper(model.model_options.get("model_function_wrapper"), mult)
         if wrapper is not None:

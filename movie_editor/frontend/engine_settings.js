@@ -74,7 +74,7 @@
     { name: "absolute_strength", label: "Absolute strength", kind: "float", default: 0.6, min: 0, max: 1, step: 0.05,
       dependsOn: "steer_mode", dependsVals: ["absolute", "both"] },
     { name: "temporal_style", label: "Temporal style", kind: "combo",
-      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze"], default: "natural" },
+      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"], default: "natural" },
     { name: "split_transition_placement", label: "Transition placement", kind: "combo",
       choices: ["start", "end", "silent"], default: "start" },
   ];

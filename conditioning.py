@@ -6194,10 +6194,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "default": "",
                     "tooltip": "Optional user feedback describing what was specifically wrong with the previous output (e.g. 'he was supposed to hold her hand, not her head'). Has highest priority in the advisor system prompt.",
                 }),
-                "temporal_style": (["natural", "auto", "accelerate", "decelerate", "loop", "freeze"], {
+                "temporal_style": (["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"], {
                     "default": "natural",
                     "label": "Temporal Style",
-                    "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, auto=per-scene director picks motion energy from each scene's prompt (needs the Scene Chain Sampler), accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time.",
+                    "tooltip": "Controls how the model perceives motion timing via frame_rate RoPE manipulation. natural=no change, auto=per-scene director picks motion energy from each scene's prompt (needs the Scene Chain Sampler), accelerate=faster motion, decelerate=heavier motion, loop=circular temporal coords, freeze=highly compressed time, pulse=repeated ease-down motion holds per scene (needs the Scene Chain Sampler).",
                 }),
                 "split_by_transitions": ("BOOLEAN", {
                     "default": False,
@@ -12945,6 +12945,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
         return out
 
+    def _v2_apply_pulse_temporal(self, conditioning_list, temporal_style):
+        """temporal_style="pulse": tag each scene entry so the Scene Chain Sampler installs
+        a segmented ease-down temporal wrapper per scene."""
+        if str(temporal_style or "natural").strip().lower() != "pulse":
+            return conditioning_list
+        out = []
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            meta["funpack_temporal_mode"] = "pulse"
+            meta["funpack_temporal_label"] = "pulse"
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        return out
+
     def _v2_apply_auto_temporal(self, conditioning_list, temporal_style, fallback_text=""):
         """temporal_style="auto": bake a per-scene frame_rate multiplier into each
         conditioning entry's metadata so the Scene Chain Sampler can apply per-scene motion
@@ -12985,7 +13001,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
         spread to it (the backstop half of the dual auto-cap)."""
         mode = str(steer_mode or "relative").lower()
-        out = self._v2_apply_auto_temporal(conditioning_list, temporal_style, fallback_text=temporal_fallback_text)
+        out = self._v2_apply_pulse_temporal(conditioning_list, temporal_style)
+        out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
         if mode in ("relative", "both"):
             out = self._v2_ascend_conditioning(out, refinement_key, apply=value_guidance)
         if mode in ("absolute", "both"):
