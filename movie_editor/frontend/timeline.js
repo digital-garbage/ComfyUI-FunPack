@@ -482,6 +482,12 @@
     if (totalSec > 0) setZoom(w / totalSec);
   }
 
+  let _pendingAutoFit = false;
+  window.Timeline = {
+    requestAutoFit() { _pendingAutoFit = true; },
+    fit: () => fit(S.previewTotalSec ? S.previewTotalSec() : tlTotalSec),
+  };
+
   // ── render ───────────────────────────────────────────────────────────────────────
   // Don't rebuild the timeline while the user is interacting with one of its controls
   // (e.g. the rating dropdown) — a store notify (autosave/progress) would close it.
@@ -489,16 +495,16 @@
   let _reordering = false;  // a clip is being drag-reordered — never rebuild mid-drag
 
   function render(st) {
-    if (_reordering) return;
+    if (_reordering) return false;
     if (_tlEditing) {
       // Only hold off if a control is genuinely still focused; otherwise the flag got
       // stuck (focused element removed without a focusout) — clear it and re-render.
       const a = document.activeElement;
-      if (a && body.contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName)) return;
+      if (a && body.contains(a) && /^(SELECT|INPUT|TEXTAREA)$/.test(a.tagName)) return false;
       _tlEditing = false;
     }
     clear(body); clear(meta);
-    if (!st.project) { body.append(el("div", "empty-stage", "Open a project to start cutting.")); return; }
+    if (!st.project) { body.append(el("div", "empty-stage", "Open a project to start cutting.")); return true; }
     const p = st.project;
     const scenes = p.scenes || [];
     const segs = S.buildPreviewSegments ? S.buildPreviewSegments() : [];
@@ -577,9 +583,19 @@
     const ghosts = (st.sceneGhosts || []).length;
     const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
     meta.append(el("span", null, metaTxt));
+    return true;
   }
 
-  S.subscribe(render);
+  function onStore(st) {
+    const ok = render(st);
+    if (_pendingAutoFit && ok && st.project) {
+      _pendingAutoFit = false;
+      const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
+      requestAnimationFrame(() => { if (total > 0) fit(total); });
+    }
+  }
+
+  S.subscribe(onStore);
 
   // Pause rebuilds while a timeline control (rating/transition dropdown, trim input) is
   // focused; re-sync shortly after it loses focus.

@@ -185,6 +185,7 @@
     // user picks an anchor/empty. Scene 1 carrying just starts a fresh run.
     const s = { text: "", transition_to_next: "", source: { type: "carry" }, excluded: false };
     state.project.scenes.push(s);
+    window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave(); // server assigns id; reselect after commit
   }
 
@@ -214,6 +215,7 @@
     state.project.scenes = arr.filter((s) => s.id !== id);
     delete state.sceneRenders[id];
     if (state.selectedSceneId === id) state.selectedSceneId = state.project.scenes[0]?.id || null;
+    window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave();
   }
 
