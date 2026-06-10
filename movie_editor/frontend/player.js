@@ -117,7 +117,7 @@
   }
 
   function _syncPool() {
-    const urls = new Set(_clips.map((c) => _urlFor(c.media)));
+    const urls = new Set(_clips.filter((c) => c.media).map((c) => _urlFor(c.media)));
     urls.forEach((u) => _ensureVideo(u));
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
@@ -207,11 +207,18 @@
     const end = _currentClip.startSec + _currentClip.durationSec;
     const next = _clips.find((c) => !c.pending && c.startSec >= end - 0.02 && c !== _currentClip);
     if (!next) { _phSec = end; _pause(); return; }
-    const contiguous = _urlFor(next.media) === _urlFor(_currentClip.media)
-      && Math.abs((next.inSec || 0) - ((_currentClip.inSec || 0) + _currentClip.durationSec)) < 0.05;
+    const prev = _currentClip;
+    const sameSource = next.media && prev.media
+      && _urlFor(next.media) === _urlFor(prev.media);
+    const contiguous = sameSource
+      && Math.abs((next.inSec || 0) - ((prev.inSec || 0) + prev.durationSec)) < 0.05;
     _phSec = next.startSec;
     _currentClip = next;
-    if (!contiguous) _goto(next, 0, _playing);  // jump (different source / non-contiguous)
+    // Reseek on gen-unit / scene boundaries — chain carry scenes overlap in the source file.
+    const needSeek = !sameSource || !contiguous
+      || (next.sceneId && prev.sceneId && next.sceneId !== prev.sceneId)
+      || (next.ghostId && prev.ghostId && next.ghostId !== prev.ghostId);
+    if (needSeek) _goto(next, 0, _playing);
     _notifyPh();
   }
 
@@ -229,7 +236,10 @@
       if (_playing) _raf = requestAnimationFrame(_tick);
       return;
     }
-    if (!_active) return;
+    if (!_active) {
+      if (_playing) _pause();
+      return;
+    }
     const within = _active.currentTime - (_currentClip.inSec || 0);
     if (within >= _currentClip.durationSec - 0.001) { _advance(); }
     else { _phSec = _currentClip.startSec + Math.max(0, within); try { _applyFx(_currentClip, within); } catch (_) {} _notifyPh(); }

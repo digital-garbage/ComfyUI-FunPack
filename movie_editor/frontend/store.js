@@ -552,20 +552,33 @@
     state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
   }
 
+  // Pixel overlap between consecutive chain-sampler scenes (carry/i2v guide runs).
+  function _chainOverlapSec(runSceneCount) {
+    if (!runSceneCount || runSceneCount < 2) return 0;
+    const frames = +(state.project?.sampler_inputs?.frame_overlap ?? 16);
+    const fps = state.project?.frame_rate || 25;
+    return Math.max(0, frames / fps);
+  }
+
   function _recordSegment(mediaList, targetSceneIds) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
-    let inAcc = 0;
+    const overlapSec = _chainOverlapSec(targetSceneIds.length);
+    let sourceEnd = 0;
     let clearedRating = false;
     _pruneGhostsAfterRegen(targetSceneIds);
-    for (const id of targetSceneIds) {
+    for (let i = 0; i < targetSceneIds.length; i++) {
+      const id = targetSceneIds[i];
       const sc = scene(id); if (!sc) continue;
-      state.sceneRenders[id] = { media: primary, inSec: inAcc };
+      const prev = i > 0 ? scene(targetSceneIds[i - 1]) : null;
+      const sameUnit = prev && genUnitId(prev) === genUnitId(sc);
+      const inSec = i === 0 ? 0 : (sameUnit ? sourceEnd : Math.max(0, sourceEnd - overlapSec));
+      state.sceneRenders[id] = { media: primary, inSec };
       // New render invalidates the prior RLHF rating — UI shows "— rate —"; server
       // uses continue-refinement (session memory, no new rating) on the next Studio run.
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
-      inAcc += sceneDurationSec(sc);
+      sourceEnd = inSec + sceneDurationSec(sc);
     }
     if (clearedRating) scheduleSaveSilent();
   }
