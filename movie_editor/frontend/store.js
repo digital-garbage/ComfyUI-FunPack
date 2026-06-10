@@ -167,7 +167,7 @@
       _pruneSelection();
       notify();
       refreshProjectList();
-      refreshPreview();
+      refreshPreview(true);
     } catch (e) {
       state.saving = false; notify();
       console.error("save failed", e);
@@ -544,15 +544,15 @@
   // anchor + one scene per parsed segment + transitions matched from the library.
   // Existing per-scene source / length settings are carried over by index.
   async function applyGlobalPrompt(text) {
-    if (!state.project) return;
+    if (!state.project) return false;
     state.project.global_prompt = text;
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
-    catch (e) { alert("Could not parse the global prompt: " + e.message); return; }
+    catch (e) { alert("Could not parse the global prompt: " + e.message); return false; }
     // The verbatim split is authoritative: correct (shortcut-aware) boundaries, scene
     // text kept exactly as typed, anchor + scenes reproduce the global prompt.
     const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
-    if (!(v.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return; }
+    if (!(v.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return false; }
 
     state.project.anchor = v.anchor || "";
     const old = state.project.scenes || [];
@@ -565,10 +565,32 @@
     _applyDetectedTransitions(next, v.transitions);
     state.project.scenes = next;
     state.sceneGhosts = [];  // scene ids changed — old ghosts no longer anchor correctly
-    state.selectedSceneId = null;  // show project view so the result is visible
-    state.selectedSceneIds = [];
-    _selectionAnchorId = null;
-    notify(); scheduleSave();
+    const firstId = next[0]?.id || null;
+    state.selectedSceneId = firstId;
+    state.selectedSceneIds = firstId ? [firstId] : [];
+    _selectionAnchorId = firstId;
+    // Refresh the inspector immediately — don't wait for save debounce + preview round-trip.
+    state.preview = {
+      ...(state.preview || {}),
+      combined_prompt: text,
+      display_prompt: text,
+      parsed: res.parsed,
+      parsed_raw: res.parsed_raw,
+      parsed_verbatim: res.parsed_verbatim,
+      for_generation: false,
+    };
+    notify();
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    state.saving = true;
+    notify();
+    try {
+      await commit();
+    } catch (e) {
+      console.error("save after apply failed", e);
+      return false;
+    }
+    return true;
   }
 
   // Map detected transitions (visual_effect) onto scene seams via the library (display
@@ -585,14 +607,17 @@
 
   // ── preview ──────────────────────────────────────────────────────────────────
   let previewTimer = null;
-  function refreshPreview() {
+  function refreshPreview(immediate = false) {
     clearTimeout(previewTimer);
-    previewTimer = setTimeout(async () => {
+    previewTimer = null;
+    const run = async () => {
       if (!state.project) return;
       try { state.preview = await API.preview(state.project.id, false, true); }
       catch (e) { state.preview = { parse_error: e.message }; }
       notify();
-    }, 250);
+    };
+    if (immediate) return run();
+    previewTimer = setTimeout(run, 250);
   }
 
   // ── generation ───────────────────────────────────────────────────────────────

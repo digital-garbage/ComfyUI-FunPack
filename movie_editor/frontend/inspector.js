@@ -529,10 +529,18 @@
     apply.title = "Split this prompt into anchor, scenes and transitions on the timeline (overwrites it)";
     apply.disabled = !val.trim();  // clickable whenever there's a prompt to (re)split — not only after edits
     apply.onclick = async () => {
-      apply.disabled = true; apply.textContent = "Applying…";
-      await S.applyGlobalPrompt(gpDraft != null ? gpDraft : live);
-      gpDraft = null;
-      S.set({});  // re-render so the field returns to its live view
+      _editing = false;
+      ta.blur();
+      apply.disabled = true;
+      apply.textContent = "Applying…";
+      try {
+        const ok = await S.applyGlobalPrompt(gpDraft != null ? gpDraft : live);
+        if (ok) gpDraft = null;
+      } finally {
+        apply.disabled = false;
+        apply.textContent = "Apply →";
+        render(S.get());
+      }
     };
     head.append(apply);
     sec.append(head);
