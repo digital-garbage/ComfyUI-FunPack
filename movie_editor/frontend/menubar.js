@@ -73,6 +73,8 @@
         { label: "Reset Layout", action: () => { const r = document.documentElement; r.style.removeProperty("--media-w"); r.style.removeProperty("--timeline-h"); } },
       ],
       Generate: [
+        { label: "Engine settings…", disabled: !hasProject(), action: () => window.EngineSettingsModal.open() },
+        { sep: true },
         { label: "Generate Whole Montage", hint: "▶", disabled: !hasProject(), action: () => S.generate(null) },
         { label: selCount() > 1 ? `Generate Selected Scenes (${selCount()})` : "Generate Selected Scene",
           hint: selCount() > 1 ? "⌘-click" : undefined,

@@ -575,6 +575,9 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .modal-overlay { position: fixed; inset: 0; z-index: 500; background: rgba(6,5,4,.66); backdrop-filter: blur(3px); display: flex; align-items: flex-start; justify-content: center; padding: 7vh 16px; animation: fade .15s ease; }
 @keyframes fade { from { opacity: 0; } }
 .modal { width: min(760px, 96vw); max-height: 82vh; display: flex; flex-direction: column; background: #16140f; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; animation: pop .16s ease; }
+.modal.modal-wide { width: min(920px, 96vw); }
+.engine-modal-content { padding-bottom: 24px; }
+.engine-modal-summary { font-size: 12px; color: var(--muted); font-family: var(--font-mono); margin-bottom: 12px; padding: 8px 10px; background: var(--ink-2); border-radius: 8px; border: 1px solid var(--line); }
 .modal-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(#1b1813, #161410); }
 .modal-title { font-family: var(--font-display); font-weight: 700; font-size: 17px; }
 .modal-head-right { margin-left: auto; display: flex; gap: 8px; }
