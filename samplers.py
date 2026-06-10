@@ -3080,7 +3080,7 @@ class FunPackLTXAVSceneChainSampler:
         return out if out is not None else chunk
 
     def _build_mixed_anchor_chunk(self, vae, anchor_meta, latent_template, previous, video_overlap):
-        """Mixed source: Img2Video anchor latent, then chain overlap from previous scene."""
+        """Mixed source: Img2Video anchor latent only — prior scene overlap is not used."""
         filename = (anchor_meta or {}).get("filename")
         strength = float((anchor_meta or {}).get("strength", 1.0))
         image = self._load_image_tensor(filename) if filename else None
@@ -3089,10 +3089,7 @@ class FunPackLTXAVSceneChainSampler:
                 return self._clone_latent(latent_template)
             return self._build_continuation_chunk(latent_template, previous, video_overlap)
         base = self._clone_latent(latent_template)
-        i2v_chunk = self._apply_img2video_to_video_latent(vae, image, base, strength)
-        if previous is None:
-            return i2v_chunk
-        return self._build_continuation_chunk(i2v_chunk, previous, video_overlap)
+        return self._apply_img2video_to_video_latent(vae, image, base, strength)
 
     def _encode_image_guide_frame(self, filename, vae, ref_tensor):
         import os
@@ -3389,10 +3386,8 @@ class FunPackLTXAVSceneChainSampler:
                     "pixel_frame": max(0, boundary_pixel),
                     "effect": effect if effect and transition_duration > 0 else None,
                 })
-                if video_overlap > 0:
-                    run_mechanisms.append(f"latent_overlap({frame_overlap}px)")
                 chunk = self._build_mixed_anchor_chunk(
-                    vae, anchor_meta, latent_template, output, video_overlap,
+                    vae, anchor_meta, latent_template, output, 0,
                 )
             else:
                 # Record boundary before blending
@@ -3480,7 +3475,8 @@ class FunPackLTXAVSceneChainSampler:
             if guide_tail > 0:
                 sampled = self._crop_video_tail(sampled, guide_tail)
             scene_outputs.append(self._clone_latent(sampled))
-            output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
+            blend_overlap = 0 if anchor_meta else video_overlap
+            output = sampled if output is None else self._blend_latents(output, sampled, blend_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
             scene_meta = self._scene_meta(scene_cond, scene_index)
             scene_runs.append({

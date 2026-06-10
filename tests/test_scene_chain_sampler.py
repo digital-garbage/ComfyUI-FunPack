@@ -476,3 +476,41 @@ def test_overlap_diagnostics_report_latent_blend_zone():
     assert parsed["scene_count"] == 2
     assert "boundaries" in parsed
     assert "overlap_blend=2px" in status
+
+
+def test_mixed_anchor_skips_frame_overlap():
+    import json
+
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    node._load_image_tensor = lambda _fn: torch.ones(1, 8, 8, 3)
+    node._apply_img2video_to_video_latent = lambda _vae, _img, chunk, _strength: node._clone_latent(chunk)
+
+    positive = [scene_cond(0), scene_cond(1)]
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    anchors = json.dumps({"1": {"filename": "anchor.png", "strength": 1.0}})
+
+    latent, _images, status, scene_count, _report, boundaries_json = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=80,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+        funpack_scene_anchors=anchors,
+        prompt={"n1": {"inputs": {}}},
+        unique_id="test-node",
+    )
+
+    assert scene_count == 2
+    assert latent["samples"].shape[2] == 10
+    parsed = json.loads(boundaries_json)
+    mechs = parsed["scenes"][1]["mechanisms"]
+    assert "mixed_i2v_anchor" in mechs
+    assert not any("latent_overlap" in m for m in mechs)

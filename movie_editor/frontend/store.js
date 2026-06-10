@@ -665,9 +665,9 @@
     state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
   }
 
-  // Pixel overlap between consecutive chain-sampler scenes (carry/i2v guide runs).
-  function _chainOverlapSec(runSceneCount) {
-    if (!runSceneCount || runSceneCount < 2) return 0;
+  // Pixel overlap between two consecutive chain scenes (0 when the next scene is mixed).
+  function _overlapBetweenScenes(prev, curr) {
+    if (!prev || !curr || (curr.source?.type) === "mixed") return 0;
     const frames = +(state.project?.sampler_inputs?.frame_overlap ?? 16);
     const fps = state.project?.frame_rate || 25;
     return Math.max(0, frames / fps);
@@ -676,7 +676,6 @@
   function _recordSegment(mediaList, targetSceneIds) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
-    const overlapSec = _chainOverlapSec(targetSceneIds.length);
     let sourceEnd = 0;
     let clearedRating = false;
     _pruneGhostsAfterRegen(targetSceneIds);
@@ -685,7 +684,7 @@
       const sc = scene(id); if (!sc) continue;
       const prev = i > 0 ? scene(targetSceneIds[i - 1]) : null;
       const sameUnit = prev && genUnitId(prev) === genUnitId(sc);
-      const inSec = i === 0 ? 0 : (sameUnit ? sourceEnd : Math.max(0, sourceEnd - overlapSec));
+      const inSec = i === 0 ? 0 : (sameUnit ? sourceEnd : Math.max(0, sourceEnd - _overlapBetweenScenes(prev, sc)));
       state.sceneRenders[id] = { media: primary, inSec };
       // New render invalidates the prior RLHF rating — UI shows "— rate —"; server
       // uses continue-refinement (session memory, no new rating) on the next Studio run.
@@ -1015,9 +1014,23 @@
     const t = (s.text || "").trim();
     patchScene(s.id, { text: t ? `${t} ${trigger}` : trigger }); return true;
   }
+  // True when this scene continues the current chain run (not a new run anchor).
+  function _continuesChainRun(s) {
+    const active = state.project.scenes.filter((sc) => !sc.excluded);
+    const idx = active.findIndex((sc) => sc.id === s.id);
+    if (idx <= 0) return false;
+    const t = (s.source && s.source.type) || "empty";
+    if (t === "empty") return false;
+    if (isGenSubclip(s)) return true;
+    if (t === "carry" || t === "mixed") return true;
+    if ((t === "image" || t === "generated_frame") && _anchorAvailable(s)) return false;
+    return true;
+  }
+
   function assignMediaToScene(sceneId, mediaId) {
     const s = scene(sceneId); if (!s) return;
-    const t = (s.source?.type === "mixed") ? "mixed" : "image";
+    const t = (s.source?.type === "mixed") ? "mixed"
+      : (_continuesChainRun(s) ? "mixed" : "image");
     patchScene(sceneId, { source: { ...(s.source || {}), type: t, media_ref: mediaId } });
   }
 
