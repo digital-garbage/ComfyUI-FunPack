@@ -54,57 +54,16 @@ def parse_timeline_verbatim(prompt: str) -> dict:
 
 
 def validate_generation_prompt(full, target) -> dict:
-    """Check that Studio will see the same anchor/scene texts the timeline stores."""
-    import re
+    """Build the generation prompt and run fingerprint; track changes since last queue."""
     from .timeline import (
         gen_unit_root,
         generation_prompt_fingerprint,
         group_generative_units,
     )
 
-    def _norm(text: str) -> str:
-        return re.sub(r"\s+", " ", str(text or "").strip())
-
     bundle = generation_prompt_fingerprint(full, target)
-    gen_prompt = bundle["generation_prompt"]
-    si = full.sampler_inputs or {}
-    seed = int(si["seed"]) if si.get("seed") is not None else 0
-    parsed = parse_timeline(gen_prompt, seed=seed)
     active = [s for s in target.scenes if not s.excluded]
     expected_roots = [gen_unit_root(group) for _, group in group_generative_units(active)]
-    parsed_scenes = parsed.get("scenes") or []
-
-    warnings: list[str] = []
-    text_mismatches: list[dict] = []
-
-    _, apply_prompt_shortcuts, *_ = _funpack_imports()
-    exp_anchor = _norm(apply_prompt_shortcuts(str(full.anchor or ""), seed=seed)[0])
-    got_anchor = _norm(parsed.get("anchor") or "")
-    anchor_mismatch = bool(exp_anchor) and exp_anchor != got_anchor
-    if anchor_mismatch:
-        warnings.append("Anchor text does not match what Studio will parse from the generation prompt.")
-
-    if len(parsed_scenes) != len(expected_roots):
-        warnings.append(
-            f"Studio split produced {len(parsed_scenes)} scene(s) but the timeline has "
-            f"{len(expected_roots)} generative unit(s). Check transition markers on each seam."
-        )
-
-    for i, (sc, ps) in enumerate(zip(expected_roots, parsed_scenes)):
-        exp_text = _norm(apply_prompt_shortcuts(str(sc.text or ""), seed=seed)[0])
-        got_text = _norm(ps.get("text") or "")
-        if exp_text != got_text:
-            text_mismatches.append({
-                "index": i,
-                "expected": sc.text or "",
-                "parsed": ps.get("text") or "",
-            })
-
-    if text_mismatches:
-        warnings.append(
-            f"{len(text_mismatches)} scene text(s) differ between the timeline and Studio's split "
-            f"of the generation prompt."
-        )
 
     meta = full.generation_meta or {}
     prev_run = meta.get("run_hash") or meta.get("prompt_hash")
@@ -116,20 +75,10 @@ def validate_generation_prompt(full, target) -> dict:
 
     return {
         **bundle,
-        "parsed": parsed,
         "expected_scenes": len(expected_roots),
-        "parsed_scenes": len(parsed_scenes),
-        "text_mismatches": text_mismatches,
-        "anchor_mismatch": anchor_mismatch,
         "prompt_changed_since_last_queue": run_changed,
         "text_changed_since_last_queue": text_changed,
         "anchors_changed_since_last_queue": run_changed and not text_changed,
-        "valid": (
-            len(parsed_scenes) == len(expected_roots)
-            and not text_mismatches
-            and not anchor_mismatch
-        ),
-        "warnings": warnings,
     }
 
 

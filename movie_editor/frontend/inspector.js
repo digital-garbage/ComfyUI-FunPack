@@ -868,14 +868,6 @@
       w.append(el("span", null, `${why} — next run rebuilds guides and clears stale action/detail repairs; Studio training history is kept.`));
       box.append(w);
     }
-    if (val.text_mismatches?.length) {
-      val.text_mismatches.forEach((m) => {
-        const w = el("div", "pv-warn");
-        w.append(el("span", null, "▲"));
-        w.append(el("span", null, `Scene ${m.index + 1}: timeline ≠ Studio parse. Timeline: “${m.expected || "(empty)"}” · Parsed: “${m.parsed || "(empty)"}”`));
-        box.append(w);
-      });
-    }
     if (pv.parse_error) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, "ComfyUI offline — preview paused")); box.append(w); }
     const parsed = pv.parsed || {};
     if (parsed.anchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }

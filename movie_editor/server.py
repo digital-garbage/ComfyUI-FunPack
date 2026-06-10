@@ -207,7 +207,7 @@ def _run_studio_inputs(target: Project, active_scenes: list, *, prompt_changed: 
 
 
 def _shortcut_seed(project: Project) -> int:
-    """Seed for prompt shortcut / wildcard expansion (preview + validation only)."""
+    """Seed for prompt shortcut / wildcard expansion in split preview."""
     si = project.sampler_inputs or {}
     if si.get("seed") is not None:
         return int(si["seed"])
@@ -553,13 +553,12 @@ if web is not None and PromptServer is not None:
                 "validation": validation,
             }
             try:
-                result["parsed"] = validation["parsed"]
+                parsed = bridge.parse_timeline(prompt, seed=_shortcut_seed(p))
+                result["parsed"] = parsed
                 result["parsed_raw"] = bridge.parse_timeline_raw(prompt)
                 result["parsed_verbatim"] = bridge.parse_timeline_verbatim(prompt)
                 result["expected_scenes"] = validation["expected_scenes"]
-                result["parsed_scenes"] = validation["parsed_scenes"]
-                if validation["warnings"]:
-                    result["warning"] = " ".join(validation["warnings"])
+                result["parsed_scenes"] = len(parsed.get("scenes", []))
             except Exception as e:  # noqa: BLE001
                 result["parse_error"] = str(e)
             return web.json_response(result)
@@ -736,9 +735,6 @@ if web is not None and PromptServer is not None:
         prompt = validation["generation_prompt"]
         if not prompt.strip():
             return web.json_response({"detail": "Nothing to generate — no active scene text."}, status=400)
-        if not validation["valid"]:
-            detail = "Prompt validation failed — " + "; ".join(validation["warnings"])
-            return web.json_response({"detail": detail, "validation": validation}, status=400)
         prompt_changed = bool(validation.get("prompt_changed_since_last_queue"))
         reset_session = bool(body.get("reset_session"))
         try:
