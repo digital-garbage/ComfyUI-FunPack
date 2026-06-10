@@ -56,7 +56,16 @@
       const startSec = seg.offsetSec;
       if (seg.kind === "ghost") {
         const g = seg.ghost;
-        if (!g.media) continue;
+        if (!g.media) {
+          if (g.pendingGen) {
+            out.push({
+              pending: true, ghost: true, ghostId: g.id, startSec, durationSec: dur,
+              slate: "Removed — generating…",
+              slateSub: "Preview updates when the in-flight run finishes",
+            });
+          }
+          continue;
+        }
         out.push({
           media: g.media, ghost: true, ghostId: g.id, startSec, durationSec: dur,
           inSec: g.inSec || 0, fx: g.effects || {}, vol: g.audio_volume != null ? g.audio_volume : 1,
@@ -534,8 +543,10 @@
         let cls = "pm-chip";
         let title = "";
         if (seg.kind === "ghost") {
-          cls += " ghost";
-          title = "Removed scene (preview only — not in next run)";
+          cls += " ghost" + (seg.ghost.pendingGen ? " pending" : "");
+          title = seg.ghost.pendingGen
+            ? "Removed scene — generation in flight"
+            : "Removed scene (preview only — not in next run)";
         } else {
           const sc = seg.scene;
           const stype = sc.source?.type || "empty";

@@ -59,6 +59,8 @@
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = {};  // per-session; not persisted
     state.sceneGhosts = [];
+    _genInFlightIds.clear();
+    _removedDuringGen.clear();
     notify();
     refreshPreview();
     loadModels();  // models config is per-project — reload for this project
@@ -113,6 +115,12 @@
     if (!state.project) return;
     const prev = state.project.sampler_inputs || {};
     patchProject({ sampler_inputs: { ...prev, [name]: value } });
+  }
+  function unsetSamplerInput(name) {
+    if (!state.project) return;
+    const prev = { ...(state.project.sampler_inputs || {}) };
+    delete prev[name];
+    patchProjectQuiet({ sampler_inputs: prev });
   }
   function setStudioInput(name, value) {
     if (!state.project) return;
@@ -307,12 +315,19 @@
         });
       }
     }
+    const inFlight = _genInFlightIds.has(id);
+    if (inFlight) _removedDuringGen.add(id);
+    const newAnchor = idx > 0 ? arr[idx - 1].id : null;
+    state.sceneGhosts = (state.sceneGhosts || []).map((g) =>
+      g.afterSceneId === id ? { ...g, afterSceneId: newAnchor } : g
+    );
     const r = state.sceneRenders[id];
-    if (sc && r && r.media) {
+    if (sc && (r?.media || inFlight)) {
       state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
       state.sceneGhosts.push({
         id,
-        afterSceneId: idx > 0 ? arr[idx - 1].id : null,
+        afterSceneId: newAnchor,
+        gen_unit_id: genUnitId(sc),
         text: sc.text || "",
         frames: sc.frames,
         frames_mode: sc.frames_mode,
@@ -320,9 +335,12 @@
         fps_mode: sc.fps_mode,
         effects: sc.effects || {},
         audio_volume: sc.audio_volume,
-        media: r.media,
-        inSec: r.inSec || 0,
+        media: r?.media || null,
+        inSec: r?.inSec || 0,
+        pendingGen: inFlight && !r?.media,
       });
+    } else {
+      state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
     }
     state.project.scenes = arr.filter((s) => s.id !== id);
     delete state.sceneRenders[id];
@@ -336,6 +354,7 @@
 
   function dismissGhost(id) {
     state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
+    _removedDuringGen.delete(id);
     notify();
   }
 
@@ -361,12 +380,20 @@
       if (!byAnchor.has(key)) byAnchor.set(key, []);
       byAnchor.get(key).push(g);
     }
+    const placed = new Set();
     const ordered = [];
-    for (const g of (byAnchor.get("__start__") || [])) ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
+    const pushGhost = (g) => {
+      if (placed.has(g.id)) return;
+      placed.add(g.id);
+      ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
+    };
+    for (const g of (byAnchor.get("__start__") || [])) pushGhost(g);
     for (const sc of (p.scenes || [])) {
       ordered.push({ kind: "scene", scene: sc, id: sc.id });
-      for (const g of (byAnchor.get(sc.id) || [])) ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
+      for (const g of (byAnchor.get(sc.id) || [])) pushGhost(g);
     }
+    // Orphans (stale afterSceneId) still show — appended after live clips.
+    for (const g of ghosts) { if (!placed.has(g.id)) pushGhost(g); }
     let acc = 0;
     return ordered.map((seg) => {
       const durationSec = segmentDurationSec(seg);
@@ -561,7 +588,7 @@
     clearTimeout(previewTimer);
     previewTimer = setTimeout(async () => {
       if (!state.project) return;
-      try { state.preview = await API.preview(state.project.id, false); }
+      try { state.preview = await API.preview(state.project.id, false, true); }
       catch (e) { state.preview = { parse_error: e.message }; }
       notify();
     }, 250);
@@ -590,6 +617,14 @@
   let progressTimer = null;
   let pollStart = 0;
   let _interrupted = false;
+  // Scene ids currently inside an in-flight generate/poll (montage runs included).
+  const _genInFlightIds = new Set();
+  // Removed from the timeline while their run was still generating — completion updates
+  // the ghost only, never sceneRenders, and ghosts are not pruned as "regenerated".
+  const _removedDuringGen = new Set();
+
+  function _markGenInFlight(ids) { (ids || []).forEach((id) => _genInFlightIds.add(id)); }
+  function _clearGenInFlight(ids) { (ids || []).forEach((id) => _genInFlightIds.delete(id)); }
 
   function _clearGenTimers() { clearInterval(pollTimer); clearInterval(progressTimer); }
 
@@ -659,9 +694,22 @@
 
   // Record a completed run's output: map each of the run's scenes to the one source
   // video at its cumulative in-point, so splits/deletes later play the right portions.
-  function _pruneGhostsAfterRegen(targetSceneIds) {
-    const ids = new Set(targetSceneIds || []);
+  function _pruneGhostsAfterRegen(recordedSceneIds) {
+    const ids = new Set(recordedSceneIds || []);
     state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
+  }
+
+  function _ghostDurationSec(g) {
+    const p = state.project;
+    const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
+    const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
+    return (frames || 1) / (fps || 25);
+  }
+
+  function _chainInSec(lastChain, sourceEnd, curr) {
+    if (!lastChain) return 0;
+    const sameUnit = genUnitId(lastChain) === genUnitId(curr);
+    return sameUnit ? sourceEnd : Math.max(0, sourceEnd - _overlapBetweenScenes(lastChain, curr));
   }
 
   // Pixel overlap between consecutive scenes inside one carry chain run.
@@ -676,21 +724,35 @@
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
     let sourceEnd = 0;
+    let lastChain = null;
     let clearedRating = false;
-    _pruneGhostsAfterRegen(targetSceneIds);
+    const recordedSceneIds = [];
     for (let i = 0; i < targetSceneIds.length; i++) {
       const id = targetSceneIds[i];
+      if (_removedDuringGen.has(id)) {
+        const ghosts = state.sceneGhosts || [];
+        const gi = ghosts.findIndex((g) => g.id === id);
+        if (gi >= 0) {
+          const ghost = ghosts[gi];
+          const inSec = _chainInSec(lastChain, sourceEnd, ghost);
+          ghosts[gi] = { ...ghost, media: primary, inSec, pendingGen: false };
+          state.sceneGhosts = ghosts;
+          sourceEnd = inSec + _ghostDurationSec(ghost);
+          lastChain = ghost;
+        }
+        _removedDuringGen.delete(id);
+        continue;
+      }
       const sc = scene(id); if (!sc) continue;
-      const prev = i > 0 ? scene(targetSceneIds[i - 1]) : null;
-      const sameUnit = prev && genUnitId(prev) === genUnitId(sc);
-      const inSec = i === 0 ? 0 : (sameUnit ? sourceEnd : Math.max(0, sourceEnd - _overlapBetweenScenes(prev, sc)));
+      const inSec = _chainInSec(lastChain, sourceEnd, sc);
       state.sceneRenders[id] = { media: primary, inSec };
-      // New render invalidates the prior RLHF rating — UI shows "— rate —"; server
-      // uses continue-refinement (session memory, no new rating) on the next Studio run.
+      recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
       sourceEnd = inSec + sceneDurationSec(sc);
+      lastChain = sc;
     }
+    _pruneGhostsAfterRegen(recordedSceneIds);
     if (clearedRating) scheduleSaveSilent();
   }
 
@@ -767,16 +829,34 @@
   // Generate one run (single scene, or an explicit list of scene ids). Returns success.
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession) {
     _interrupted = false;
+    _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
       const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession);
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
+      if (r.validation && state.project) {
+        state.project.generation_meta = {
+          ...(state.project.generation_meta || {}),
+          prompt_hash: r.validation.prompt_hash,
+          run_hash: r.validation.run_hash,
+        };
+      }
       pollStart = Date.now();
-      set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: `${prefix}: generating…` } });
+      let runMsg = `${prefix}: generating…`;
+      if (r.prompt_repairs_cleared) {
+        const anchorOnly = r.validation?.anchors_changed_since_last_queue && !r.validation?.text_changed_since_last_queue;
+        runMsg += anchorOnly
+          ? " · guides refreshed, stale repairs cleared"
+          : " · stale repairs cleared (training kept)";
+      }
+      else if (r.reset_session) runMsg += " · Studio session reset";
+      set({ gen: { state: "running", promptId: r.prompt_id, media: [], msg: runMsg } });
       return await _pollPromise(r.prompt_id, sceneIds, prefix);
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
       return false;
+    } finally {
+      _clearGenInFlight(sceneIds);
     }
   }
 
@@ -1030,7 +1110,9 @@
     const s = scene(sceneId); if (!s) return;
     const t = (s.source?.type === "mixed") ? "mixed"
       : (_continuesChainRun(s) ? "mixed" : "image");
-    patchScene(sceneId, { source: { ...(s.source || {}), type: t, media_ref: mediaId } });
+    const patch = { source: { ...(s.source || {}), type: t, media_ref: mediaId } };
+    if ((s.source?.media_ref || null) !== mediaId) patch.guides = [];
+    patchScene(sceneId, patch);
   }
 
   // ── boot ─────────────────────────────────────────────────────────────────────
@@ -1057,7 +1139,7 @@
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
-    setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, setStudioInput, setStudioInputNow,
+    setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,

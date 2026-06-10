@@ -170,12 +170,14 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
     return collapse_generative_units(_segment(p, ids))
 
 
-def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
+def _run_studio_inputs(target: Project, active_scenes: list, *, prompt_changed: bool = False) -> dict:
     """Studio widget overrides for this run, incl. the RLHF rating of the run's last
     render (Studio refines from it). Uses the first user-rated scene in the run.
 
     When no scene was rated: send MOVIE_EDITOR_CONTINUE_RATING so Studio still applies
     session memory / active repairs but does not treat the run as '-Just forget it-'.
+    When the generation prompt changed since the last queue, send
+    MOVIE_EDITOR_FRESH_PROMPT_RATING instead — clears stale repairs only, keeps training.
     refine_v2 uses Initial discovery when there is no previous run to refine from."""
     if target.conditioning_slot != "funpack":
         return {}
@@ -185,14 +187,40 @@ def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
         si["rating"] = rating
     else:
         try:
-            from conditioning import MOVIE_EDITOR_CONTINUE_RATING
+            from conditioning import (
+                MOVIE_EDITOR_CONTINUE_RATING,
+                MOVIE_EDITOR_FRESH_PROMPT_RATING,
+            )
         except ImportError:
             try:
-                from ..conditioning import MOVIE_EDITOR_CONTINUE_RATING  # type: ignore
+                from ..conditioning import (  # type: ignore
+                    MOVIE_EDITOR_CONTINUE_RATING,
+                    MOVIE_EDITOR_FRESH_PROMPT_RATING,
+                )
             except ImportError:
                 MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
-        si["rating"] = MOVIE_EDITOR_CONTINUE_RATING
+                MOVIE_EDITOR_FRESH_PROMPT_RATING = "__funpack_fresh_prompt__"
+        si["rating"] = (
+            MOVIE_EDITOR_FRESH_PROMPT_RATING if prompt_changed else MOVIE_EDITOR_CONTINUE_RATING
+        )
     return si
+
+
+def _shortcut_seed(project: Project) -> int:
+    """Seed for prompt shortcut / wildcard expansion (preview + validation only)."""
+    si = project.sampler_inputs or {}
+    if si.get("seed") is not None:
+        return int(si["seed"])
+    return 0
+
+
+def _resolve_run_seed(target: Project) -> int:
+    """Sampler seed for one Generate click — fixed when set in Chain Sampler, else random."""
+    import random
+    si = target.sampler_inputs or {}
+    if si.get("seed") is not None:
+        return int(si["seed"])
+    return random.randint(1, 0xFFFFFFFFFFFFFFFF)
 
 
 def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Project] = None) -> dict:
@@ -226,17 +254,13 @@ def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Projec
         samp["funpack_scene_guides"] = json.dumps(guides)
         samp["carry_i2v_guides"] = False
 
-    solo_mixed = (
-        scene_count == 1 and len(active) == 1 and is_mixed_source(active[0])
-    )
-    solo_after_first = False
-    if scene_count == 1 and len(active) == 1 and cs["auto_enabled"] and cs["solo_scene_guides"]:
-        active_full = [s for s in proj.scenes if not s.excluded]
-        full_idx = next((i for i, s in enumerate(active_full) if s.id == active[0].id), 0)
-        solo_after_first = full_idx > 0
-
-    if solo_mixed or solo_after_first:
+    solo_run = scene_count == 1 and len(active) == 1
+    if solo_run:
         samp["frame_overlap"] = 0
+        if not guides:
+            from .backend.timeline import source_type
+            if source_type(active[0]) in ("image", "generated_frame", "mixed", "empty"):
+                samp["carry_i2v_guides"] = False
 
     if scene_count > 1 and not guides:
         samp["carry_i2v_guides"] = True
@@ -514,10 +538,36 @@ if web is not None and PromptServer is not None:
     async def _preview(req):
         p = _project_or_404(req.match_info["pid"])
         include_excluded = req.query.get("include_excluded") == "true"
+        for_generation = req.query.get("for_generation", "true") == "true"
+        preview_target = p
+        if not include_excluded:
+            preview_target = Project.from_dict(p.to_dict())
+            preview_target.scenes = [s for s in preview_target.scenes if not s.excluded]
+        if for_generation:
+            validation = bridge.validate_generation_prompt(p, preview_target)
+            prompt = validation["generation_prompt"]
+            result = {
+                "combined_prompt": prompt,
+                "display_prompt": validation["display_prompt"],
+                "for_generation": True,
+                "validation": validation,
+            }
+            try:
+                result["parsed"] = validation["parsed"]
+                result["parsed_raw"] = bridge.parse_timeline_raw(prompt)
+                result["parsed_verbatim"] = bridge.parse_timeline_verbatim(prompt)
+                result["expected_scenes"] = validation["expected_scenes"]
+                result["parsed_scenes"] = validation["parsed_scenes"]
+                if validation["warnings"]:
+                    result["warning"] = " ".join(validation["warnings"])
+            except Exception as e:  # noqa: BLE001
+                result["parse_error"] = str(e)
+            return web.json_response(result)
+
         prompt = build_combined_prompt(p, include_excluded=include_excluded)
-        result = {"combined_prompt": prompt}
+        result = {"combined_prompt": prompt, "for_generation": False}
         try:
-            parsed = bridge.parse_timeline(prompt, seed=p.seed)
+            parsed = bridge.parse_timeline(prompt, seed=_shortcut_seed(p))
             result["parsed"] = parsed
             result["parsed_raw"] = bridge.parse_timeline_raw(prompt)
             result["parsed_verbatim"] = bridge.parse_timeline_verbatim(prompt)
@@ -541,7 +591,7 @@ if web is not None and PromptServer is not None:
         body = await req.json() if req.can_read_body else {}
         prompt = str(body.get("prompt", ""))
         try:
-            parsed = bridge.parse_timeline(prompt, seed=p.seed)
+            parsed = bridge.parse_timeline(prompt, seed=_shortcut_seed(p))
             return web.json_response({
                 "parsed": parsed,
                 "parsed_raw": bridge.parse_timeline_raw(prompt),
@@ -682,9 +732,15 @@ if web is not None and PromptServer is not None:
             target = _segment(p, scene_ids)
         else:
             target = _solo(p, body.get("only_scene"))
-        prompt = build_combined_prompt(target, for_generation=True)
+        validation = bridge.validate_generation_prompt(p, target)
+        prompt = validation["generation_prompt"]
         if not prompt.strip():
             return web.json_response({"detail": "Nothing to generate — no active scene text."}, status=400)
+        if not validation["valid"]:
+            detail = "Prompt validation failed — " + "; ".join(validation["warnings"])
+            return web.json_response({"detail": detail, "validation": validation}, status=400)
+        prompt_changed = bool(validation.get("prompt_changed_since_last_queue"))
+        reset_session = bool(body.get("reset_session"))
         try:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
@@ -712,15 +768,15 @@ if web is not None and PromptServer is not None:
         sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
         _attach_scene_anchors(sampler_inputs, media_pack, target)
         graph, report = builder.build(oi, _project_models(target), {
-            "prompt": prompt, "seed": target.seed,
+            "prompt": prompt, "seed": _resolve_run_seed(target),
             "num_frames_per_scene": effective_frames,
             "frame_rate": target.frame_rate,
             "width": target.width, "height": target.height,
             "negative_prompt": target.negative_prompt or None,
             "max_scenes": active_scene_count,
-            "studio_inputs": _run_studio_inputs(target, active_scenes),
+            "studio_inputs": _run_studio_inputs(target, active_scenes, prompt_changed=prompt_changed),
             "sampler_inputs": sampler_inputs,
-            "reset_session": bool(body.get("reset_session")),
+            "reset_session": reset_session,
         }, media=(media_pack or {}).get("primary") if media_pack else None)
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
@@ -729,7 +785,19 @@ if web is not None and PromptServer is not None:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Failed to queue with ComfyUI: {e}"}, status=502)
-        return web.json_response({"prompt_id": result.get("prompt_id"), "report": report})
+        p.generation_meta = {
+            **(p.generation_meta or {}),
+            "prompt_hash": validation["prompt_hash"],
+            "run_hash": validation["run_hash"],
+        }
+        projects.save(p)
+        return web.json_response({
+            "prompt_id": result.get("prompt_id"),
+            "report": report,
+            "validation": validation,
+            "prompt_repairs_cleared": prompt_changed,
+            "reset_session": reset_session,
+        })
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/status/{prompt_id}")
     async def _status(req):

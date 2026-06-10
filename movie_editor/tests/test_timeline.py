@@ -16,6 +16,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     Scene,
     STUDIO_DEFAULT_GUIDE,
     build_combined_prompt,
+    generation_prompt_fingerprint,
     build_auto_continuity_guides,
     build_mixed_solo_guides_payload,
     build_scene_anchors_payload,
@@ -51,6 +52,38 @@ def test_anchor_plus_two_scenes_emits_separators():
     assert "blur" in prompt
     assert prompt.index("cut to") < prompt.index("flying")
     assert prompt.index("blur") < prompt.index("landing")
+
+
+def test_generation_prompt_fingerprint_includes_split_markers():
+    p = _project(
+        anchor="red-haired heroine",
+        intro_transition="cut to",
+        scenes=[
+            {"text": "flying over the city", "transition_to_next": "blur"},
+            {"text": "landing on a rooftop"},
+        ],
+    )
+    fp = generation_prompt_fingerprint(p, p)
+    assert "cut to" in fp["generation_prompt"]
+    assert "blur" in fp["generation_prompt"]
+    assert fp["display_prompt"] != fp["generation_prompt"]
+
+
+def test_generation_prompt_hash_changes_when_text_changes():
+    p = _project(scenes=[{"text": "walks forward"}])
+    h1 = generation_prompt_fingerprint(p, p)["prompt_hash"]
+    p.scenes[0].text = "runs backward"
+    h2 = generation_prompt_fingerprint(p, p)["prompt_hash"]
+    assert h1 != h2
+
+
+def test_generation_run_hash_changes_when_anchor_changes():
+    p = _project(scenes=[{"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}}])
+    r1 = generation_prompt_fingerprint(p, p)
+    p.scenes[0].source.media_ref = "img2"
+    r2 = generation_prompt_fingerprint(p, p)
+    assert r1["prompt_hash"] == r2["prompt_hash"]
+    assert r1["run_hash"] != r2["run_hash"]
 
 
 def test_missing_markers_fall_back_to_scene_labels():
@@ -126,6 +159,18 @@ def test_continuity_defaults_auto_on():
     assert cs["auto_enabled"] is True
     assert cs["prior_scene_guides"] is True
     assert cs["mid_scene_guide"] is True
+
+
+def test_auto_continuity_solo_image_no_prior_guides():
+    p = _project(
+        scenes=[
+            {"id": "s1", "text": "a", "source": {"type": "carry"}},
+            {"id": "s2", "text": "b", "source": {"type": "image", "media_ref": "img2"}},
+        ],
+    )
+    segment = Project.from_dict(p.to_dict())
+    segment.scenes = [p.scenes[1]]
+    assert build_auto_continuity_guides(p, segment) is None
 
 
 def test_auto_continuity_solo_mixed_prior_anchor():

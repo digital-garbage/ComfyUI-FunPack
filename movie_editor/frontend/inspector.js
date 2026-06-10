@@ -55,9 +55,12 @@
     pick.append(new Option("— choose asset —", ""));
     (st.mediaBin || []).forEach((m) => { const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o); });
     const isMixed = (scene.source?.type) === "mixed";
-    pick.onchange = () => S.patchScene(scene.id, {
-      source: { ...(scene.source || {}), type: isMixed ? "mixed" : "image", media_ref: pick.value || null },
-    });
+    pick.onchange = () => {
+      const ref = pick.value || null;
+      const patch = { source: { ...(scene.source || {}), type: isMixed ? "mixed" : "image", media_ref: ref } };
+      if ((scene.source?.media_ref || null) !== ref) patch.guides = [];
+      S.patchScene(scene.id, patch);
+    };
     body.append(field("Media asset", pick));
     body.append(el("div", "insp-hint", isMixed
       ? "i2v anchor image for this scene (Img2Video → starting latent). Prior-scene i2v guides stay active — shown on the timeline as ◐+⇥."
@@ -159,7 +162,16 @@
 
     const src = el("select");
     SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
-    src.onchange = () => S.patchScene(scene.id, { source: { ...(root.source || {}), type: src.value } });
+    src.onchange = () => {
+      const prev = root.source?.type || "carry";
+      const next = src.value;
+      const patch = { source: { ...(root.source || {}), type: next } };
+      if (next === "image" || next === "empty" || next === "generated_frame") patch.guides = [];
+      else if (prev !== next && (prev === "carry" || next === "carry" || prev === "mixed" || next === "mixed")) {
+        patch.guides = [];
+      }
+      S.patchScene(scene.id, patch);
+    };
     body.append(field("Source", src));
 
     if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root);
@@ -327,7 +339,6 @@
     body.append(field("Project name", name));
 
     const row1 = el("div", "fields-row");
-    row1.append(numberField("Seed", p.seed, (v) => S.patchProjectQuiet({ seed: v }), "pj-seed"));
     row1.append(numberField("Frames / scene", p.num_frames_per_scene, (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames"));
     body.append(row1);
     const row2 = el("div", "fields-row");
@@ -384,7 +395,7 @@
   const STUDIO_REFINER_ESSENTIALS = [
     { name: "vision_conditioning", label: "Vision conditioning", default: true },
     { name: "reference_injection", label: "Reference injection", default: false },
-    { name: "prompt_repair", label: "Prompt repair", default: true },
+    { name: "prompt_repair", label: "Prompt repair", default: false },
   ];
   const STUDIO_REFINER_ADVANCED = [
     { name: "value_guidance", label: "Value guidance", kind: "bool", default: true },
@@ -557,7 +568,7 @@
     hint.textContent = cs.auto_enabled
       ? (gs.stack_enabled
         ? "Auto continuity: mid-scene guide only — custom guide stack overrides auto guide lists."
-        : "Auto continuity builds hidden guides per run (carry · mixed · image · empty): identity pin, prior-scene anchors, mid-scene layout anchor on carry chains.")
+        : "Auto continuity builds hidden guides per run: identity pin (all modes), prior-scene guides on carry chains and solo mixed runs, mid-scene anchor on multi-scene carry. Image / empty / generated_frame solo runs use their anchor only.")
       : "Auto continuity off — use manual Chain Sampler knobs and optional custom guide stack below.";
     parent.append(hint);
 
@@ -590,7 +601,8 @@
     const soloCb = el("input"); soloCb.type = "checkbox"; soloCb.checked = cs.solo_scene_guides;
     soloCb.disabled = !cs.auto_enabled;
     soloCb.onchange = () => patchContinuitySettings({ solo_scene_guides: soloCb.checked });
-    soloLbl.append(soloCb, el("span", null, "Guides on solo runs (mixed / image after scene 1)"));
+    soloLbl.title = "Mixed mode only — image/empty/generated_frame solo runs use their anchor only";
+    soloLbl.append(soloCb, el("span", null, "Prior guides on solo mixed runs"));
     adv.append(soloLbl);
     const midLbl = el("label", "chk");
     const midCb = el("input"); midCb.type = "checkbox"; midCb.checked = cs.mid_scene_guide;
@@ -744,10 +756,28 @@
   function countChainChanges(p) {
     const si = p.sampler_inputs || {};
     let n = 0;
+    if (si.seed != null) n++;
     SAMPLER_KNOBS.forEach((k) => {
       if (si[k.name] != null && si[k.name] !== k.default) n++;
     });
     return n;
+  }
+
+  function renderSeedKnob(parent, si) {
+    const ctrl = el("input");
+    ctrl.type = "number";
+    ctrl.min = "0";
+    ctrl.placeholder = "Random each run";
+    ctrl.value = si.seed != null ? String(si.seed) : "";
+    ctrl.dataset.k = "si-seed";
+    ctrl.oninput = () => {
+      const raw = ctrl.value.trim();
+      if (raw === "") S.unsetSamplerInput("seed");
+      else S.setSamplerInput("seed", parseInt(raw, 10));
+    };
+    parent.append(field("Seed (optional)", ctrl));
+    parent.append(el("div", "insp-hint",
+      "Leave empty to randomize on every Generate. Set a fixed value here for reproducible runs (pair with Same seed per scene for multi-scene chains)."));
   }
 
   function knobVisible(k, si) {
@@ -815,6 +845,7 @@
         renderGuideStackSettings(inner, st, multiScene);
       }
       if (sec.id === "chain_timing") {
+        renderSeedKnob(inner, si);
         inner.append(el("div", "insp-hint",
           "Transition duration controls in-decode boundary fades (from transition library). Post-render crossfades are per-clip in the scene inspector."));
       }
@@ -824,9 +855,27 @@
   function renderSplit(st) {
     const pv = st.preview; if (!pv) return;
     const wrap = el("div", "insp-block");
-    const tag = el("div", "insp-tag"); tag.textContent = "Split preview"; wrap.append(tag);
+    const tag = el("div", "insp-tag"); tag.textContent = "Split preview (generation prompt)"; wrap.append(tag);
     const box = el("div", "split-pv");
+    const val = pv.validation || {};
     if (pv.warning) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, pv.warning)); box.append(w); }
+    if (val.prompt_changed_since_last_queue) {
+      const w = el("div", "pv-warn");
+      w.append(el("span", null, "▲"));
+      const why = val.anchors_changed_since_last_queue && !val.text_changed_since_last_queue
+        ? "Anchor or source mode changed since last generate"
+        : "Prompt or anchors changed since last generate";
+      w.append(el("span", null, `${why} — next run rebuilds guides and clears stale action/detail repairs; Studio training history is kept.`));
+      box.append(w);
+    }
+    if (val.text_mismatches?.length) {
+      val.text_mismatches.forEach((m) => {
+        const w = el("div", "pv-warn");
+        w.append(el("span", null, "▲"));
+        w.append(el("span", null, `Scene ${m.index + 1}: timeline ≠ Studio parse. Timeline: “${m.expected || "(empty)"}” · Parsed: “${m.parsed || "(empty)"}”`));
+        box.append(w);
+      });
+    }
     if (pv.parse_error) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, "ComfyUI offline — preview paused")); box.append(w); }
     const parsed = pv.parsed || {};
     if (parsed.anchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }
@@ -839,7 +888,10 @@
       if (t?.visual_effect) l.append(el("span", "pv-badge trans", "→ " + t.visual_effect));
       box.append(l);
     });
-    const raw = el("details", "pv-raw"); raw.append(el("summary", null, "combined prompt")); raw.append(el("pre", null, pv.combined_prompt || "")); box.append(raw);
+    const raw = el("details", "pv-raw"); raw.append(el("summary", null, "generation prompt (sent to Studio)")); raw.append(el("pre", null, pv.combined_prompt || "")); box.append(raw);
+    if (pv.display_prompt && pv.display_prompt !== pv.combined_prompt) {
+      const disp = el("details", "pv-raw"); disp.append(el("summary", null, "display prompt (timeline view)")); disp.append(el("pre", null, pv.display_prompt)); box.append(disp);
+    }
     wrap.append(box);
 
     // Sync button — lets the user push what was parsed back into the scene data

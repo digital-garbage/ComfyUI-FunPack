@@ -5869,6 +5869,10 @@ _V2_PERSISTENT_CACHE_MAX = 4096
 # memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
 # Must appear in V2_RATING_LABELS so ComfyUI /prompt validation accepts editor overrides.
 MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
+# Movie Editor sends this when the prompt changed since the last queue: keep refinement
+# training/history but drop stale active-repair axes so old "missing action" repairs
+# do not override the new prompt. No session reset.
+MOVIE_EDITOR_FRESH_PROMPT_RATING = "__funpack_fresh_prompt__"
 
 _BASE_RATING_LABELS = [
     "-Just forget it-",
@@ -5891,16 +5895,21 @@ _NO_LOVED_LABELS = {
     "-Just forget it-", "Perfect", "Awful", "Missing quality",
     "Missing details + quality", "Missing action + quality", "Wrong action + quality",
     MOVIE_EDITOR_CONTINUE_RATING,
+    MOVIE_EDITOR_FRESH_PROMPT_RATING,
 }
 V2_RATING_LABELS = _BASE_RATING_LABELS + [
     l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
-] + [MOVIE_EDITOR_CONTINUE_RATING]
+] + [MOVIE_EDITOR_CONTINUE_RATING, MOVIE_EDITOR_FRESH_PROMPT_RATING]
 
 V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
     MOVIE_EDITOR_CONTINUE_RATING: {
         "key": "continue", "reward": 0.0, "level": 4, "missing_axes": [], "skip_learning": True,
         "label": "Continue refining",
+    },
+    MOVIE_EDITOR_FRESH_PROMPT_RATING: {
+        "key": "fresh_prompt", "reward": 0.0, "level": 4, "missing_axes": [], "skip_learning": True,
+        "label": "Fresh prompt (keep training)",
     },
     "Initial discovery": {"key": "discover", "reward": 0.0, "level": 4, "missing_axes": []},
     "Perfect": {"key": "like", "reward": 1.0, "level": 8, "missing_axes": []},
@@ -7631,6 +7640,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             feedback = dict(axis_feedback or {})
             feedback["missing_axes"] = []
             return feedback, "Repair persistence: cleared by Perfect."
+        if key == "fresh_prompt":
+            active = set()
+            global_state["active_repair_axes"] = []
+            feedback = dict(axis_feedback or {})
+            feedback["missing_axes"] = []
+            return feedback, "Repair persistence: cleared for prompt edit (session training kept)."
         if key == "continue":
             active |= set(axis_feedback.get("missing_axes", [])) & set(V2_FEEDBACK_AXES)
         elif not learning_profile.get("skip_learning") and key != "discover":
@@ -7665,6 +7680,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return (
                 "Guidance: no new rating — applying existing session memory and active repairs. "
                 "Rate the last render when you want Studio to learn from it."
+            )
+        if learning_profile.get("key") == "fresh_prompt":
+            return (
+                "Guidance: prompt changed — encoding the new text with session training kept; "
+                "stale action/detail repairs were cleared. Rate when you want new learning."
             )
         if learning_profile.get("skip_learning"):
             return (

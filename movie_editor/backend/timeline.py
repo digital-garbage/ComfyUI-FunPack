@@ -11,6 +11,7 @@ project-director-vision). We only assemble text here; ComfyUI does the rest.
 """
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -134,9 +135,10 @@ def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dic
         full_idx = next((i for i, s in enumerate(active_full) if s.id == sc.id), 0)
         if full_idx <= 0 and not pin:
             return None
-        if full_idx > 0 and not cs["solo_scene_guides"] and not pin:
+        wants_prior = cs["solo_scene_guides"] and solo_run_wants_prior_guides(sc)
+        if full_idx > 0 and not wants_prior and not pin:
             return None
-        entries = _entries_for_index(full_idx, 0) if (full_idx > 0 and cs["solo_scene_guides"]) else []
+        entries = _entries_for_index(full_idx, 0) if (full_idx > 0 and wants_prior) else []
         if pin and not any(e.get("media_ref") == pin for e in entries):
             entries.insert(0, _identity_pin_guide(pin, cs["identity_pin_strength"]))
         if not entries:
@@ -204,6 +206,20 @@ class GuideEntry:
 
 def is_mixed_source(scene: Scene) -> bool:
     return (scene.source.type or "carry") == "mixed"
+
+
+def source_type(scene: Scene) -> str:
+    return (scene.source.type if scene.source else None) or "carry"
+
+
+def solo_run_wants_prior_guides(scene: Scene) -> bool:
+    """Solo i2v runs: only mixed borrows prior-scene guides; image/empty/generated_frame are anchor-only."""
+    return is_mixed_source(scene)
+
+
+def scene_accepts_stacked_guides(scene: Scene) -> bool:
+    """Manual guide stack applies to carry/mixed/empty — not pure i2v anchor modes."""
+    return source_type(scene) not in ("image", "generated_frame")
 
 
 def build_mixed_solo_guides_payload(project: Project, mixed_scene: Scene) -> Optional[dict]:
@@ -353,7 +369,7 @@ class Project:
     # close segments[0]=anchor). Defaults resolved at assembly from the library.
     intro_transition: str = ""
     scenes: list[Scene] = field(default_factory=list)
-    # Uniform chain settings (V1).
+    # Uniform chain settings (V1). `seed` is legacy — use sampler_inputs.seed for a fixed seed.
     seed: int = 1
     num_frames_per_scene: int = 97
     frame_rate: int = 25
@@ -380,6 +396,9 @@ class Project:
     # Guide stack toggles — empty / stack_enabled=false keeps Studio carry behaviour.
     guide_settings: dict = field(default_factory=dict)
     continuity_settings: dict = field(default_factory=dict)
+    # Last queued generation prompt fingerprint — used to auto-reset Studio session when
+    # the timeline text changes (avoids stale repair memory overriding new actions).
+    generation_meta: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -408,6 +427,7 @@ class Project:
             models=dict(d.get("models") or {"slots": []}),
             guide_settings=dict(d.get("guide_settings") or {}),
             continuity_settings=dict(d.get("continuity_settings") or {}),
+            generation_meta=dict(d.get("generation_meta") or {}),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )
@@ -519,6 +539,35 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
     return " ".join(p for p in parts if p).strip()
 
 
+def _scene_run_fingerprint(sc: Scene) -> str:
+    """Source mode + media anchor — affects auto guides and i2v paths per run."""
+    ref = (sc.source.media_ref if sc.source else None) or ""
+    return f"{sc.id}:{source_type(sc)}:{ref}"
+
+
+def generation_prompt_fingerprint(project: Project, target: Optional[Project] = None) -> dict[str, Any]:
+    """Build generation/display prompts and run fingerprint (text + anchors + continuity)."""
+    tgt = target or project
+    gen_prompt = build_combined_prompt(tgt, for_generation=True)
+    text_hash = hashlib.sha256(gen_prompt.encode("utf-8")).hexdigest()[:24]
+    active = [s for s in tgt.scenes if not s.excluded]
+    cs = normalize_continuity_settings(project.continuity_settings)
+    gs = normalize_guide_settings(project.guide_settings)
+    run_key = "\n".join([
+        text_hash,
+        "|".join(_scene_run_fingerprint(s) for s in active),
+        cs.get("identity_pin_ref") or "",
+        "stack" if gs["stack_enabled"] else "",
+    ])
+    run_hash = hashlib.sha256(run_key.encode("utf-8")).hexdigest()[:24]
+    return {
+        "generation_prompt": gen_prompt,
+        "display_prompt": build_combined_prompt(tgt, for_generation=False),
+        "prompt_hash": text_hash,
+        "run_hash": run_hash,
+    }
+
+
 def build_scene_guides_payload(project: Project) -> Optional[dict]:
     """Per-scene guide lists for the chain sampler.
 
@@ -532,7 +581,7 @@ def build_scene_guides_payload(project: Project) -> Optional[dict]:
     active = [s for s in project.scenes if not s.excluded]
     per_scene: list[Optional[list[dict]]] = []
     for i, sc in enumerate(active):
-        if i == 0:
+        if i == 0 or not scene_accepts_stacked_guides(sc):
             per_scene.append(None)
             continue
         entries: list[dict] = []

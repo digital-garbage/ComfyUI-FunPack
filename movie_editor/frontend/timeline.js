@@ -142,7 +142,8 @@
     const frames = (ghost.frames_mode !== "project" && ghost.frames != null) ? ghost.frames : p.num_frames_per_scene;
     head.append(el("span", "clip-dur", timecode((frames || 1) / (fps || 25), fps || 25)));
     clip.append(head);
-    clip.append(el("div", "clip-text ghost-label", ghost.text || "removed scene"));
+    const label = ghost.pendingGen ? "removed · generating…" : (ghost.text || "removed scene");
+    clip.append(el("div", "clip-text ghost-label", label));
     const actions = el("div", "clip-actions");
     const dismiss = el("button", "ic-btn", "✕");
     dismiss.title = "Dismiss ghost from preview";
