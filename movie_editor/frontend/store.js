@@ -581,7 +581,11 @@
     const r = state.sceneRenders[id];
     if (r && r.media) {
       const fps = s.fps_mode !== "project" && s.fps != null ? s.fps : state.project.frame_rate;
-      state.sceneRenders[second.id] = { media: r.media, inSec: (r.inSec || 0) + cut / (fps || 25) };
+      state.sceneRenders[second.id] = {
+        media: r.media,
+        inSec: (r.inSec || 0) + cut / (fps || 25),
+        renderPrompt: r.renderPrompt ? { ...r.renderPrompt } : _snapshotRenderPrompt(id),
+      };
     }
     notify(); scheduleSave();
   }
@@ -759,6 +763,9 @@
   let progressTimer = null;
   let pollStart = 0;
   let _interrupted = false;
+  // Prompt text captured when a run was queued — applied to sceneRenders on completion.
+  const _queuedRenderPrompts = {};
+
   // Scene ids currently inside an in-flight generate/poll (montage runs included).
   const _genInFlightIds = new Set();
   // Removed from the timeline while their run was still generating — completion updates
@@ -862,6 +869,36 @@
     return Math.max(0, frames / fps);
   }
 
+  function _snapshotRenderPrompt(sceneId) {
+    const sc = scene(sceneId);
+    if (!sc) return null;
+    const root = genUnitRoot(genUnitId(sc));
+    return {
+      text: (root?.text || "").trim(),
+      anchor: (state.project?.anchor || "").trim(),
+    };
+  }
+
+  function _queueRenderPrompts(sceneIds) {
+    for (const id of sceneIds || []) {
+      const snap = _snapshotRenderPrompt(id);
+      if (snap) _queuedRenderPrompts[id] = snap;
+    }
+  }
+
+  function renderPromptForScene(sceneId) {
+    return state.sceneRenders[sceneId]?.renderPrompt || null;
+  }
+
+  function renderPromptMismatch(sceneId) {
+    const snap = renderPromptForScene(sceneId);
+    if (!snap) return null;
+    const current = (_snapshotRenderPrompt(sceneId)?.text || "");
+    const rendered = (snap.text || "");
+    if (current === rendered) return null;
+    return { current, rendered, anchor: snap.anchor || "" };
+  }
+
   function _recordSegment(mediaList, targetSceneIds) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
@@ -887,7 +924,9 @@
       }
       const sc = scene(id); if (!sc) continue;
       const inSec = _chainInSec(lastChain, sourceEnd, sc);
-      state.sceneRenders[id] = { media: primary, inSec };
+      const renderPrompt = _queuedRenderPrompts[id] || _snapshotRenderPrompt(id);
+      delete _queuedRenderPrompts[id];
+      state.sceneRenders[id] = { media: primary, inSec, renderPrompt };
       recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
@@ -976,6 +1015,7 @@
     try {
       const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession);
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
+      _queueRenderPrompts(sceneIds);
       if (r.validation && state.project) {
         state.project.generation_meta = {
           ...(state.project.generation_meta || {}),
@@ -1320,6 +1360,7 @@
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
+    renderPromptForScene, renderPromptMismatch,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames,

@@ -249,15 +249,13 @@
     autoLbl.append(autoCb, el("span", null, "Auto continuity (recommended)"));
     parent.append(autoLbl);
 
-    const pin = el("select");
-    pin.append(new Option("— no identity pin —", ""));
-    (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
-      const o = new Option(m.name, m.id);
-      if (cs.identity_pin_ref === m.id) o.selected = true;
-      pin.append(o);
+    const pin = window.MediaPicker.create({
+      value: cs.identity_pin_ref,
+      mediaBin: st.mediaBin,
+      noneLabel: "— no identity pin —",
+      onChange: (v) => patchContinuitySettings({ identity_pin_ref: v }),
     });
-    pin.disabled = !cs.auto_enabled;
-    pin.onchange = () => patchContinuitySettings({ identity_pin_ref: pin.value || null });
+    if (!cs.auto_enabled) pin.classList.add("disabled");
     parent.append(field("Identity pin (all scenes)", pin));
 
     const adv = collapsibleSection(parent, "continuity_adv", "Advanced", false);

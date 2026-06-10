@@ -50,17 +50,17 @@
     block.append(prev); block.append(info);
     body.append(block);
 
-    // pick an asset directly
-    const pick = el("select");
-    pick.append(new Option("— choose asset —", ""));
-    (st.mediaBin || []).forEach((m) => { const o = new Option(m.name, m.id); if (m.id === ref) o.selected = true; pick.append(o); });
     const isMixed = (scene.source?.type) === "mixed";
-    pick.onchange = () => {
-      const ref = pick.value || null;
-      const patch = { source: { ...(scene.source || {}), type: isMixed ? "mixed" : "image", media_ref: ref } };
-      if ((scene.source?.media_ref || null) !== ref) patch.guides = [];
-      S.patchScene(scene.id, patch);
-    };
+    const pick = window.MediaPicker.create({
+      value: ref,
+      mediaBin: st.mediaBin,
+      noneLabel: "— choose asset —",
+      onChange: (mediaRef) => {
+        const patch = { source: { ...(scene.source || {}), type: isMixed ? "mixed" : "image", media_ref: mediaRef } };
+        if ((scene.source?.media_ref || null) !== mediaRef) patch.guides = [];
+        S.patchScene(scene.id, patch);
+      },
+    });
     body.append(field("Media asset", pick));
     body.append(el("div", "insp-hint", isMixed
       ? "i2v anchor image for this scene (Img2Video → starting latent). Prior-scene i2v guides stay active — shown on the timeline as ◐+⇥."
@@ -182,6 +182,17 @@
     const ta = el("textarea"); ta.rows = 5; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
+    const promptMismatch = S.renderPromptMismatch ? S.renderPromptMismatch(scene.id) : null;
+    if (promptMismatch) {
+      const warn = el("div", "render-prompt-warn");
+      warn.append(el("div", "render-prompt-warn-title", "Preview was generated with a different prompt"));
+      const prev = el("div", "render-prompt-prev");
+      prev.append(el("span", "render-prompt-label", "Generated with"));
+      prev.append(el("span", "render-prompt-text", promptMismatch.rendered || "(empty)"));
+      warn.append(prev);
+      warn.append(el("div", "insp-hint", "Rate against the generated prompt above — not the edited text in the box."));
+      body.append(warn);
+    }
 
     const src = el("select");
     SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
@@ -386,13 +397,13 @@
         row.append(sel);
       }
       if ((g.source || "template") === "image") {
-        const sel = el("select");
-        sel.append(new Option("— image —", ""));
-        (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
-          const o = new Option(m.name, m.id); if (g.media_ref === m.id) o.selected = true; sel.append(o);
+        const pick = window.MediaPicker.create({
+          value: g.media_ref,
+          mediaBin: st.mediaBin,
+          compact: true,
+          onChange: (mediaRef) => { guides[idx] = { ...g, media_ref: mediaRef }; persist(guides); },
         });
-        sel.onchange = () => { guides[idx] = { ...g, media_ref: sel.value || null }; persist(guides); };
-        row.append(sel);
+        row.append(pick);
       }
       const fi = el("input"); fi.type = "number"; fi.value = g.frame_idx != null ? g.frame_idx : 0; fi.title = "Source frame_idx";
       fi.oninput = () => { guides[idx] = { ...g, frame_idx: parseInt(fi.value || "0", 10) }; persist(guides, true); };

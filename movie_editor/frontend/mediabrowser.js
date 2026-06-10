@@ -83,14 +83,13 @@
     return box;
   }
 
-  function mediaRefSelect(st, value, onChange) {
-    const sel = el("select", "lib-in");
-    sel.append(new Option("— none —", ""));
-    (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
-      const o = new Option(m.name, m.id); if (m.id === value) o.selected = true; sel.append(o);
+  function mediaRefPicker(st, value, onChange) {
+    return window.MediaPicker.create({
+      value,
+      mediaBin: st.mediaBin,
+      onChange,
+      compact: true,
     });
-    sel.onchange = () => onChange(sel.value || null);
-    return sel;
   }
 
   function characterForm(st, item) {
@@ -113,9 +112,9 @@
       labeled("Wardrobe", wardrobe),
       labeled("Always include", always),
       labeled("Never include", never),
-      labeled("Face ref (identity pin)", mediaRefSelect(st, faceRef, (v) => { faceRef = v; })),
-      labeled("Body ref", mediaRefSelect(st, bodyRef, (v) => { bodyRef = v; })),
-      labeled("Detail ref", mediaRefSelect(st, detailRef, (v) => { detailRef = v; })),
+      labeled("Face ref (identity pin)", mediaRefPicker(st, faceRef, (v) => { faceRef = v; })),
+      labeled("Body ref", mediaRefPicker(st, bodyRef, (v) => { bodyRef = v; })),
+      labeled("Detail ref", mediaRefPicker(st, detailRef, (v) => { detailRef = v; })),
     );
     const actions = el("div", "lib-form-actions");
     const save = el("button", "btn primary tiny", "Save");
@@ -367,20 +366,22 @@
     clear(body);
     body.append(projectsSection(st));
 
-    const sec = el("div", "mb-section");
-    const tabs = el("div", "bin-tabs");
+    const sec = el("div", "mb-section mb-bin-shell");
+    const tabs = el("div", "bin-tabs bin-tabs-sticky");
     ["Media", "Characters", "Shortcuts", "Transitions"].forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.onclick = () => { tab = name; editCharacter = null; render(S.get()); };
       tabs.append(b);
     });
     sec.append(tabs);
-    sec.append(
+    const scroll = el("div", "mb-bin-scroll");
+    scroll.append(
       tab === "Media" ? mediaTab(st)
         : tab === "Characters" ? charactersTab(st)
           : tab === "Shortcuts" ? shortcutsTab(st)
             : transitionsTab(st),
     );
+    sec.append(scroll);
     body.append(sec);
   }
 

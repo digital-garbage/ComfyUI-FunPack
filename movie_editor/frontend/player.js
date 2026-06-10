@@ -102,6 +102,7 @@
 
   let _slateEl = null;
   let _badgeEl = null;
+  let _promptEl = null;
   function _showSlate(title, sub) {
     if (!_slateEl) return;
     _slateEl.style.display = title ? "" : "none";
@@ -115,6 +116,18 @@
     if (!_badgeEl) return;
     _badgeEl.textContent = text || "";
     _badgeEl.style.display = text ? "" : "none";
+  }
+  function _showRenderPrompt(sceneId) {
+    if (!_promptEl) return;
+    const mismatch = sceneId && S.renderPromptMismatch ? S.renderPromptMismatch(sceneId) : null;
+    if (!mismatch) {
+      _promptEl.style.display = "none";
+      _promptEl.textContent = "";
+      return;
+    }
+    _promptEl.style.display = "";
+    _promptEl.title = "Timeline prompt was edited after generation — rate against this text";
+    _promptEl.textContent = `Generated with: ${mismatch.rendered}`;
   }
 
   // ── video pool management ─────────────────────────────────────────────────────
@@ -197,6 +210,7 @@
       _currentClip = clip;
       _setActive(null);
       _showBadge("");
+      _showRenderPrompt(null);
       _showSlate(clip.slate || "Not generated yet", clip.slateSub);
       if (play) _startTick();
       return;
@@ -207,6 +221,7 @@
     _showSlate("");
     const badge = clip.ghost ? (clip.slate || "Removed — preview only") : _segmentSourceBadge(clip.sceneId);
     _showBadge(badge);
+    _showRenderPrompt(clip.ghost ? null : clip.sceneId);
     if (_badgeEl && badge.startsWith("Mixed")) _badgeEl.classList.add("mixed-mode");
     else if (_badgeEl) _badgeEl.classList.remove("mixed-mode");
     const target = (clip.inSec || 0) + Math.max(0, offset);
@@ -497,11 +512,14 @@
     _slateEl.append(el("div", "pm-slate-sub"));
     _badgeEl = el("div", "pm-segment-badge");
     _badgeEl.style.display = "none";
+    _promptEl = el("div", "pm-render-prompt");
+    _promptEl.style.display = "none";
 
     if (_clips.length) {
       canvas.append(stage);  // pooled videos live here; only the active one is visible
       canvas.append(_slateEl);
       canvas.append(_badgeEl);
+      canvas.append(_promptEl);
     } else if (previewAsset?.kind === "image") {
       canvas.append(stage);
     } else if (["queuing", "running", "pending"].includes(gen.state)) {

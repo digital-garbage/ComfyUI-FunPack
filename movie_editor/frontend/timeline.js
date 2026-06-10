@@ -549,13 +549,21 @@
     if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
       const sc = S.scene(st.selectedSceneId);
       const sceneNo = p.scenes.indexOf(sc) + 1;
+      const mismatch = S.renderPromptMismatch ? S.renderPromptMismatch(sc.id) : null;
       const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
       const rsel = el("select", "tl-rating");
-      rsel.title = "Rate this scene's render — FunPack Studio refines from it next generation";
+      rsel.title = mismatch
+        ? `Rate against the generated prompt — timeline text was edited after this render`
+        : "Rate this scene's render — FunPack Studio refines from it next generation";
       rsel.append(new Option("— rate —", ""));
       (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
       rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
       bar.append(rlabel); bar.append(rsel);
+      if (mismatch) {
+        const hint = el("span", "tl-render-prompt", mismatch.rendered);
+        hint.title = "Generated with this prompt — use it when rating (timeline text differs)";
+        bar.append(hint);
+      }
     }
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
