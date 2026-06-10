@@ -20,7 +20,13 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     PromptServer = None
 
 from .backend import bridge, builder, config, media, nodes, projects
-from .backend.timeline import Project, build_combined_prompt
+from .backend.timeline import (
+    Project,
+    build_combined_prompt,
+    collapse_generative_units,
+    gen_unit_id,
+    group_generative_units,
+)
 
 UI_PREFIX = "/funpack/movie"
 
@@ -121,13 +127,13 @@ def _project_models(p: Optional[Project]) -> dict:
 
 def _solo(p: Project, only_scene: Optional[str]) -> Project:
     if not only_scene:
-        return p
+        return collapse_generative_units(p)
     scene = next((s for s in p.scenes if s.id == only_scene), None)
     if scene is None:
         raise web.HTTPNotFound(reason=f"Scene {only_scene} not found")
-    clone = Project.from_dict(p.to_dict())
-    clone.scenes = [scene]
-    return clone
+    uid = gen_unit_id(scene)
+    ids = [s.id for s in p.scenes if gen_unit_id(s) == uid and not s.excluded]
+    return collapse_generative_units(_segment(p, ids))
 
 
 def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
@@ -297,7 +303,7 @@ def _segment(p: Project, scene_ids: list) -> Project:
     clone.scenes = [s for s in clone.scenes if s.id in ids]
     if not clone.scenes:
         raise web.HTTPNotFound(reason="No scenes matched the requested segment")
-    return clone
+    return collapse_generative_units(clone)
 
 
 def _serve_static(tail: str) -> "web.Response":

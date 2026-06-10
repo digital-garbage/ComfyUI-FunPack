@@ -168,9 +168,23 @@
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
+  function genUnitId(sc) { return (sc && sc.gen_unit_id) || (sc && sc.id) || ""; }
+  function isGenSubclip(sc) { return !!((sc && sc.cut_offset_frames) > 0); }
+  function genUnitRoot(unitId) {
+    const group = (state.project?.scenes || []).filter((s) => genUnitId(s) === unitId);
+    return group.find((s) => !isGenSubclip(s)) || group[0] || null;
+  }
+  function genUnitSceneIds(unitId) {
+    return (state.project?.scenes || []).filter((s) => genUnitId(s) === unitId && !s.excluded).map((s) => s.id);
+  }
+
   function patchScene(id, patch) {
     const s = scene(id); if (!s) return;
-    Object.assign(s, patch); notify(); scheduleSave();
+    const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
+    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null))
+      ? root.id : id;
+    const t = scene(targetId); if (!t) return;
+    Object.assign(t, patch); notify(); scheduleSave();
   }
   function patchSceneQuiet(id, patch) {
     const s = scene(id); if (!s) return;
@@ -195,6 +209,22 @@
     const idx = arr.findIndex((s) => s.id === id);
     if (idx < 0) return;
     const sc = arr[idx];
+    const unitId = genUnitId(sc);
+    const unitMates = arr.filter((s) => genUnitId(s) === unitId);
+    if (!isGenSubclip(sc) && unitMates.length > 1) {
+      const next = unitMates.find((s) => s.id !== id);
+      if (next) {
+        next.cut_offset_frames = 0;
+        next.text = sc.text || next.text;
+        next.rating = sc.rating || next.rating;
+        next.source = JSON.parse(JSON.stringify(sc.source || next.source || {}));
+        const removedOffset = sc.frames || 0;
+        unitMates.filter((s) => s.id !== id).forEach((s) => {
+          if ((s.cut_offset_frames || 0) > (sc.cut_offset_frames || 0))
+            s.cut_offset_frames = Math.max(0, (s.cut_offset_frames || 0) - removedOffset);
+        });
+      }
+    }
     const r = state.sceneRenders[id];
     if (sc && r && r.media) {
       state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
@@ -290,7 +320,8 @@
     scheduleSaveSilent();
   }
 
-  // Split a clip in two at `atFrames` (defaults to the midpoint).
+  // Split a clip in two at `atFrames` (defaults to the midpoint). Both halves stay one
+  // generative unit — Generate collapses them back into a single uncut scene.
   function splitScene(id, atFrames) {
     if (!state.project) return;
     const arr = state.project.scenes;
@@ -300,13 +331,20 @@
     const frames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
     const cut = snapFrames(atFrames != null ? atFrames : frames / 2);
     if (cut <= 9 || cut >= frames) return;
+    const unitId = genUnitId(s);
+    const baseOffset = s.cut_offset_frames || 0;
     const second = JSON.parse(JSON.stringify(s));
     // Assign a client id up-front (server honors it) so the rendered video can be mapped
     // to BOTH halves immediately — like an NLE, a split yields two clips of one source.
     second.id = "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    second.gen_unit_id = unitId;
+    second.cut_offset_frames = baseOffset + cut;
     second.frames = snapFrames(frames - cut);
+    second.text = "";
+    second.rating = "";
     second.transition_to_next = s.transition_to_next || "";
     second.transition_frames = s.transition_frames || null;
+    s.gen_unit_id = unitId;
     s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
     arr.splice(i + 1, 0, second);
     // Keep the render across the cut: the second half plays the SAME source video starting
@@ -497,8 +535,10 @@
     const runs = [];
     for (const s of active) {
       const t = (s.source && s.source.type) || "empty";
-      // carry OR an anchor whose image is gone -> continue the previous run (i2v guides).
-      const isCarry = t === "carry" || ((t === "image" || t === "generated_frame") && !_anchorAvailable(s));
+      // Editorial subclips always continue the current run; carry / broken anchors too.
+      const isCarry = isGenSubclip(s)
+        || t === "carry"
+        || ((t === "image" || t === "generated_frame") && !_anchorAvailable(s));
       if (isCarry && runs.length) runs[runs.length - 1].push(s.id);
       else runs.push([s.id]);
     }
@@ -523,7 +563,8 @@
       state.sceneRenders[id] = { media: primary, inSec: inAcc };
       // New render invalidates the prior RLHF rating — UI shows "— rate —"; server
       // uses continue-refinement (session memory, no new rating) on the next Studio run.
-      if (sc.rating) { sc.rating = ""; clearedRating = true; }
+      const root = genUnitRoot(genUnitId(sc));
+      if (root && root.rating) { root.rating = ""; clearedRating = true; }
       inAcc += sceneDurationSec(sc);
     }
     if (clearedRating) scheduleSaveSilent();
@@ -621,7 +662,9 @@
     if (!onlyScene) return generateMontage();
     const reset = _resetSessionPending; _resetSessionPending = false;
     if (reset) state.resetSessionArmed = false;
-    await _generateRun([onlyScene], onlyScene, "Generating scene", reset);
+    const sc = scene(onlyScene);
+    const ids = sc ? genUnitSceneIds(genUnitId(sc)) : [onlyScene];
+    await _generateRun(ids, onlyScene, "Generating scene", reset);
   }
 
   // Generate the whole montage: one chain request per run, fired sequentially
@@ -838,6 +881,7 @@
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
+    genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames,

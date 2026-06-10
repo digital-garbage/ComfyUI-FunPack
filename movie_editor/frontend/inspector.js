@@ -126,21 +126,33 @@
   }
 
   function renderScene(st, scene) {
-    title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`;
+    const root = S.genUnitRoot(S.genUnitId(scene)) || scene;
+    const unitScenes = (st.project.scenes || []).filter((s) => S.genUnitId(s) === S.genUnitId(scene))
+      .sort((a, b) => (a.cut_offset_frames || 0) - (b.cut_offset_frames || 0));
+    const cutNo = unitScenes.indexOf(scene) + 1;
+    title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`
+      + (unitScenes.length > 1 ? ` · cut ${cutNo}/${unitScenes.length}` : "");
     const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
+    if (unitScenes.length > 1) {
+      const hint = el("div", "insp-hint");
+      hint.textContent = S.isGenSubclip(scene)
+        ? "Editorial cut of the same generative scene — prompt and source are shared; Generate regens the whole uncut scene, then maps it back to these cuts."
+        : "This scene has editorial cuts on the timeline — Generate collapses them into one uncut scene.";
+      body.append(hint);
+    }
 
-    const ta = el("textarea"); ta.rows = 5; ta.value = scene.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
+    const ta = el("textarea"); ta.rows = 5; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
 
     const src = el("select");
-    SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((scene.source?.type) === v) o.selected = true; src.append(o); });
-    src.onchange = () => S.patchScene(scene.id, { source: { ...(scene.source || {}), type: src.value } });
+    SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
+    src.onchange = () => S.patchScene(scene.id, { source: { ...(root.source || {}), type: src.value } });
     body.append(field("Source", src));
 
-    if ((scene.source?.type) === "image") renderImageSource(st, scene);
-    if ((scene.source?.type) === "generated_frame") renderGeneratedFrameSource(st, scene);
-    if ((scene.source?.type) === "carry") {
+    if ((root.source?.type) === "image") renderImageSource(st, root);
+    if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
+    if ((root.source?.type) === "carry") {
       const hint = el("div", "insp-block");
       hint.append(el("div", "insp-hint",
         "No start frame of its own — this scene continues from the previous scene's i2v guide and overlaps with it (chain-sampler carry behaviour). Use this for a continuous shot; use an Image / generated frame to hard-cut to a new anchor."));

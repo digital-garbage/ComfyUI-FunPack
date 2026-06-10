@@ -499,6 +499,8 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip.ghost { border-style: dashed; border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); opacity: .72; cursor: default; }
 .clip.ghost::before { background: var(--amber); opacity: .35; }
 .clip.ghost .ghost-label { font-style: italic; color: var(--amber-2); }
+.clip.gen-cut::before { background: color-mix(in srgb, var(--teal) 55%, var(--amber)); }
+.clip.subclip { border-left: 2px solid color-mix(in srgb, var(--teal) 70%, transparent); }
 /* a clip that has a rendered video available (in temp) */
 .clip.rendered::after { content: "●"; position: absolute; top: 4px; right: 6px; font-size: 7px;
   color: #57c98e; text-shadow: 0 0 5px rgba(87,201,142,.7); pointer-events: none; z-index: 4; }

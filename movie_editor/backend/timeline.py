@@ -82,6 +82,11 @@ class Scene:
     # scenes are skipped by a full Generate/Render; "generate this scene only" is a
     # transient request handled at the API/route level, not stored here.
     excluded: bool = False
+    # Editorial timeline cuts of one generative scene share `gen_unit_id` (the root
+    # scene's id). Only the root (cut_offset_frames == 0) owns prompt/rating/source
+    # for generation; subclips are NLE trims of the same output.
+    gen_unit_id: Optional[str] = None
+    cut_offset_frames: int = 0
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -102,6 +107,8 @@ class Scene:
             source=SceneSource.from_dict(d.get("source")),
             rating=str(d.get("rating", "")),
             excluded=bool(d.get("excluded", False)),
+            gen_unit_id=d.get("gen_unit_id"),
+            cut_offset_frames=int(d.get("cut_offset_frames", 0) or 0),
         )
 
     def to_dict(self) -> dict:
@@ -192,6 +199,45 @@ class Project:
         return d
 
 
+def gen_unit_id(scene: Scene) -> str:
+    return scene.gen_unit_id or scene.id
+
+
+def group_generative_units(scenes: list[Scene]) -> list[tuple[str, list[Scene]]]:
+    """Consecutive timeline scenes that share a gen_unit_id are one generative unit."""
+    units: list[tuple[str, list[Scene]]] = []
+    for scene in scenes:
+        uid = gen_unit_id(scene)
+        if units and units[-1][0] == uid:
+            units[-1][1].append(scene)
+        else:
+            units.append((uid, [scene]))
+    return units
+
+
+def gen_unit_root(group: list[Scene]) -> Scene:
+    return min(group, key=lambda s: (int(s.cut_offset_frames or 0), s.id))
+
+
+def collapse_generative_units(project: Project) -> Project:
+    """Merge editorial subclips into one Scene per generative unit for ComfyUI runs."""
+    clone = Project.from_dict(project.to_dict())
+    active = [s for s in clone.scenes if not s.excluded]
+    collapsed: list[Scene] = []
+    for uid, group in group_generative_units(active):
+        root = gen_unit_root(group)
+        total_frames = sum(s.eff_frames(clone) for s in group)
+        merged = Scene.from_dict(root.to_dict())
+        merged.id = uid
+        merged.gen_unit_id = None
+        merged.cut_offset_frames = 0
+        merged.frames = total_frames
+        merged.frames_mode = "timeline"
+        collapsed.append(merged)
+    clone.scenes = collapsed
+    return clone
+
+
 _TRIGGER_RE = None
 _TRIGGER_RE_BUILT = False
 
@@ -233,20 +279,20 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
     only what's sent to Studio, never the displayed global prompt.
     """
     scenes = [s for s in project.scenes if include_excluded or not s.excluded]
+    units = group_generative_units(scenes)
     parts: list[str] = []
     anchor = (project.anchor or "").strip()
     if anchor:
         parts.append(anchor)
-    # Only inject separators for a MULTI-scene run: Studio treats text before the first
-    # transition as the (prepended) anchor, so every scene — including the first — needs a
-    # leading trigger or it merges. A single-scene run needs none (the whole prompt is that
-    # one scene), avoiding a leaked 'scene N' marker.
-    inject = for_generation and len(scenes) > 1
+    # Only inject separators for a MULTI-unit run: editorial subclips count as one unit.
+    inject = for_generation and len(units) > 1
     trig_re = _leading_trigger_re() if inject else None
-    for i, scene in enumerate(scenes):
-        text = (scene.text or "").strip()
+    for i, (_uid, group) in enumerate(units):
+        root = gen_unit_root(group)
+        text = (root.text or "").strip()
         if inject and not (text and trig_re and trig_re.match(text)):
-            marker = (project.intro_transition or "").strip() if i == 0 else (scenes[i - 1].transition_to_next or "").strip()
+            prev_root = gen_unit_root(units[i - 1][1]) if i > 0 else None
+            marker = (project.intro_transition or "").strip() if i == 0 else ((prev_root.transition_to_next if prev_root else "") or "").strip()
             if not marker:
                 marker = f"scene {i + 1}"
             parts.append(marker)

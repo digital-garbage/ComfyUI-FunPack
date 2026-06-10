@@ -11,7 +11,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from movie_editor.backend.timeline import Project, Scene, build_combined_prompt  # noqa: E402
+from movie_editor.backend.timeline import (  # noqa: E402
+    Project,
+    Scene,
+    build_combined_prompt,
+    collapse_generative_units,
+    group_generative_units,
+)
 
 
 def _project(**kw):
@@ -78,6 +84,26 @@ def test_project_roundtrip_preserves_forward_compat_fields():
     assert p2.scenes[0].source.type == "image"
     assert p2.scenes[0].source.media_ref == "asset1"
     assert p2.scenes[0].excluded is True
+
+
+def test_split_subclips_collapse_to_one_generative_unit():
+    p = _project(
+        scenes=[
+            {"id": "u1", "text": "one long shot", "frames": 49, "gen_unit_id": "u1", "cut_offset_frames": 0},
+            {"id": "u1b", "text": "", "frames": 49, "gen_unit_id": "u1", "cut_offset_frames": 49},
+            {"id": "s2", "text": "second scene", "frames": 97},
+        ],
+    )
+    units = group_generative_units(p.scenes)
+    assert len(units) == 2
+    assert len(units[0][1]) == 2
+    prompt = build_combined_prompt(p, for_generation=True)
+    assert prompt.count("one long shot") == 1
+    assert "second scene" in prompt
+    collapsed = collapse_generative_units(p)
+    assert len(collapsed.scenes) == 2
+    assert collapsed.scenes[0].frames == 98
+    assert collapsed.scenes[0].text == "one long shot"
 
 
 def test_projects_store_crud(tmp_path, monkeypatch):

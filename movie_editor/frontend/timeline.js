@@ -114,7 +114,9 @@
 
   // ── clip ───────────────────────────────────────────────────────────────────────
   function clipEl(st, p, scene, index, leftPx, widthPx) {
-    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : "")));
+    const unitCuts = (p.scenes || []).filter((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id)).length;
+    const subclip = (scene.cut_offset_frames || 0) > 0;
+    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : "")) + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : ""));
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = () => S.selectScene(scene.id);
@@ -183,7 +185,11 @@
     head.append(el("span", "clip-dur", timecode(sDur(scene, p), sFps(scene, p))));
     clip.append(head);
 
-    clip.append(el("div", "clip-text" + (scene.text ? "" : " empty"), scene.text || "empty scene"));
+    const root = unitCuts > 1
+      ? (p.scenes || []).find((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id) && !(s.cut_offset_frames > 0))
+      : null;
+    const label = scene.text || (root && root.text) || (subclip ? "cut" : "empty scene");
+    clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" ? "" : " empty"), label));
 
     const actions = el("div", "clip-actions");
     const mk = (label, title, cls, fn) => { const b = el("button", "ic-btn" + (cls ? " " + cls : ""), label); b.title = title; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
