@@ -55,30 +55,31 @@
 
   <!-- ───────────────────────── WORKSPACE ───────────────────────── -->
   <div class="workspace" id="workspace">
-    <div class="row-main">
-      <!-- LEFT: media browser -->
-      <aside class="zone media" id="media-zone">
-        <div class="zone-head"><span class="zone-title">Media Browser</span></div>
-        <div class="zone-body" id="media-body"></div>
-      </aside>
+    <section class="dock" id="dock">
+      <div class="dock-panels" id="dock-panels">
+        <aside class="zone media dock-panel" id="media-zone" data-dock="media">
+          <div class="zone-head"><span class="zone-title">Media Browser</span></div>
+          <div class="zone-body" id="media-body"></div>
+        </aside>
 
-      <div class="splitter splitter-v" id="split-left" title="Drag to resize"></div>
+        <div class="splitter splitter-v" id="split-left" title="Drag to resize"></div>
 
-      <!-- RIGHT: preview + inspector -->
-      <section class="right-stack">
-        <div class="zone preview" id="preview-zone">
-          <div class="zone-head">
-            <span class="zone-title">Preview</span>
-            <span class="zone-head-right" id="preview-status"></span>
+        <section class="right-stack" id="right-stack">
+          <div class="zone preview dock-panel" id="preview-zone" data-dock="preview">
+            <div class="zone-head">
+              <span class="zone-title">Preview</span>
+              <span class="zone-head-right" id="preview-status"></span>
+            </div>
+            <div class="zone-body program" id="preview-body"></div>
           </div>
-          <div class="zone-body program" id="preview-body"></div>
-        </div>
-        <div class="zone inspector" id="inspector-zone">
-          <div class="zone-head"><span class="zone-title" id="inspector-title">Inspector</span></div>
-          <div class="zone-body" id="inspector-body"></div>
-        </div>
-      </section>
-    </div>
+          <div class="splitter splitter-h" id="split-mid" title="Drag to resize"></div>
+          <div class="zone inspector dock-panel" id="inspector-zone" data-dock="settings">
+            <div class="zone-head"><span class="zone-title" id="inspector-title">Inspector</span></div>
+            <div class="zone-body" id="inspector-body"></div>
+          </div>
+        </section>
+      </div>
+    </section>
 
     <div class="splitter splitter-h" id="split-bottom" title="Drag to resize"></div>
 
@@ -86,7 +87,10 @@
     <section class="zone timeline" id="timeline-zone">
       <div class="zone-head">
         <span class="zone-title">Timeline</span>
-        <span class="zone-head-right" id="timeline-meta"></span>
+        <div class="zone-head-right">
+          <span id="timeline-meta"></span>
+          <nav class="dock-tabs" id="dock-tabs" aria-label="Workspace panels"></nav>
+        </div>
       </div>
       <div class="zone-body" id="timeline-body"></div>
     </section>
@@ -100,6 +104,7 @@
   <script src="store.js"></script>
   <script src="models.js"></script>
   <script src="menubar.js"></script>
+  <script src="layout.js"></script>
   <script src="mediabrowser.js"></script>
   <script src="log.js"></script>
   <script src="player.js"></script>

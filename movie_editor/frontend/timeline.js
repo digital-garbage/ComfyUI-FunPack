@@ -294,6 +294,87 @@
     return wrap;
   }
 
+  // ── audio (NLE lanes below video) ───────────────────────────────────────────────
+  function audioToolbar(st, p) {
+    const wrap = el("div", "tl-audio-dd");
+    const keepLbl = el("label", "chk");
+    const keepCb = el("input"); keepCb.type = "checkbox";
+    keepCb.checked = p.keep_original_audio !== false;
+    keepCb.title = "Mix generated (LTXAV) audio from each clip at render";
+    keepCb.onchange = () => S.patchProject({ keep_original_audio: keepCb.checked });
+    keepLbl.append(keepCb); keepLbl.append(el("span", null, "Original audio"));
+    wrap.append(keepLbl);
+
+    const audioAssets = (st.mediaBin || []).filter((m) => m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(m.name || ""));
+    const addSel = el("select", "tl-audio-add");
+    addSel.append(new Option(audioAssets.length ? "+ Audio track…" : "+ Upload audio first", ""));
+    audioAssets.forEach((m) => addSel.append(new Option(m.name || m.id, m.id)));
+    addSel.onchange = () => { if (addSel.value) { S.addAudioTrack(addSel.value, 0); addSel.value = ""; } };
+    wrap.append(addSel);
+    return wrap;
+  }
+
+  function sceneAudioClip(st, p, scene, index, leftPx, widthPx) {
+    const vol = scene.audio_volume != null ? scene.audio_volume : 1;
+    const clip = el("div", "tl-aud-clip scene-aud" + (scene.id === st.selectedSceneId ? " selected" : ""));
+    clip.style.left = leftPx + "px";
+    clip.style.width = Math.max(widthPx, 40) + "px";
+    clip.onclick = (e) => { e.stopPropagation(); S.selectScene(scene.id); };
+    clip.append(el("span", "tl-aud-name", `S${index + 1}`));
+    const slider = el("input", "tl-aud-vol"); slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
+    slider.value = vol; slider.title = `Clip ${index + 1} volume`;
+    slider.oninput = (e) => { e.stopPropagation(); S.patchSceneQuiet(scene.id, { audio_volume: parseFloat(slider.value) }); };
+    slider.onclick = (e) => e.stopPropagation();
+    clip.append(slider);
+    return clip;
+  }
+
+  function insertedAudioLane(st, p, track, laneH) {
+    const lane = el("div", "tl-audio-lane"); lane.style.height = laneH + "px";
+    const asset = (st.mediaBin || []).find((m) => m.id === track.media_ref);
+    lane.append(el("div", "tl-audio-lane-label", (asset && asset.name) || track.label || "Track"));
+    const body = el("div", "tl-audio-lane-body");
+    const startSec = track.start_sec || 0;
+    const dur = asset && asset.duration_sec ? asset.duration_sec : Math.max(2, (p.scenes || []).reduce((a, sc) => a + sDur(sc, p), 0) - startSec);
+    const w = Math.max(dur * pxPerSec, 48);
+    const block = el("div", "tl-aud-clip ins");
+    block.style.left = (startSec * pxPerSec) + "px";
+    block.style.width = w + "px";
+    block.append(el("span", "tl-aud-name", (asset && asset.name) || "audio"));
+    const slider = el("input", "tl-aud-vol"); slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
+    slider.value = track.volume != null ? track.volume : 1;
+    slider.oninput = () => S.updateAudioTrack(track.id, { volume: parseFloat(slider.value) }, true);
+    block.append(slider);
+    const startIn = el("input"); startIn.type = "number"; startIn.min = "0"; startIn.step = "0.1";
+    startIn.value = startSec; startIn.title = "Start (s)"; startIn.style.width = "42px";
+    startIn.oninput = (e) => {
+      e.stopPropagation();
+      const v = parseFloat(startIn.value || "0");
+      S.updateAudioTrack(track.id, { start_sec: v }, true);
+      block.style.left = (v * pxPerSec) + "px";
+    };
+    startIn.onclick = (e) => e.stopPropagation();
+    block.append(startIn);
+    const rm = el("button", "ic-btn danger tl-aud-rm", "✕"); rm.title = "Remove track";
+    rm.onclick = (e) => { e.stopPropagation(); S.removeAudioTrack(track.id); };
+    block.append(rm);
+    body.append(block);
+    lane.append(body);
+    return lane;
+  }
+
+  function audioLanes(st, p, lay, contentW) {
+    const wrap = el("div", "tl-audio-lanes");
+    const origLane = el("div", "tl-audio-lane"); origLane.style.height = "36px";
+    origLane.append(el("div", "tl-audio-lane-label", "Clips"));
+    const origBody = el("div", "tl-audio-lane-body"); origBody.style.width = contentW + "px";
+    lay.forEach(({ sc, o, d }, i) => origBody.append(sceneAudioClip(st, p, sc, i, o * pxPerSec, d * pxPerSec)));
+    origLane.append(origBody);
+    wrap.append(origLane);
+    (p.audio_tracks || []).forEach((t) => wrap.append(insertedAudioLane(st, p, t, 36)));
+    return wrap;
+  }
+
   // ── toolbar ─────────────────────────────────────────────────────────────────────
   function toolbar(st, p, totalSec) {
     const bar = el("div", "tl-toolbar");
@@ -318,6 +399,7 @@
     exp.onclick = () => S.exportSelected();
     bar.append(split); bar.append(del); bar.append(exp);
     bar.append(effectsDropdown(st));
+    bar.append(audioToolbar(st, p));
 
     // Scene rating — only when FunPack Studio is the conditioning provider AND the
     // selected clip has a render. Rates that clip's own scene (cut-aware by scene id);
@@ -385,7 +467,7 @@
     scroll.addEventListener("scroll", () => { scrollLeft = scroll.scrollLeft; });
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
-      if (st.selectedSceneId && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2"))
+      if (st.selectedSceneId && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
         S.selectScene(null);
     });
     const content = el("div", "tl-content"); content.style.width = contentW + "px";
@@ -415,17 +497,16 @@
     });
     content.append(ruler);
 
-    // track
+    const tracks = el("div", "tl-tracks");
     const track = el("div", "tl-track2");
     lay.forEach(({ sc, o, d }, i) => track.append(clipEl(st, p, sc, i, o * pxPerSec, d * pxPerSec)));
-    // seams between clips
     for (let i = 0; i < lay.length - 1; i++) track.append(seamEl(st, p, lay[i].sc, (lay[i].o + lay[i].d) * pxPerSec));
     if (!lay.length) track.append(el("div", "tl-emptyhint", "No clips yet — add one from the toolbar."));
-    // playhead — read from Player; keep a ref so the onPlayheadChanged handler
-    // can update just the left position without a full re-render.
+    tracks.append(track);
+    tracks.append(audioLanes(st, p, lay, contentW));
     const phSec = Math.min(window.Player?.getPlayhead() ?? 0, totalSec);
-    tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; track.append(tlPhEl);
-    content.append(track);
+    tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; tracks.append(tlPhEl);
+    content.append(tracks);
 
     scroll.append(content);
     body.append(scroll);
