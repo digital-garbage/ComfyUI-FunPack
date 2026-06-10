@@ -518,7 +518,10 @@
   let gpProjectId = null;
   function renderGlobalPrompt(st) {
     if (st.project.id !== gpProjectId) { gpProjectId = st.project.id; gpDraft = null; }  // drop stale edits on project switch
-    const live = (st.preview && st.preview.combined_prompt) || st.project.global_prompt || "";
+    // display_prompt = verbatim timeline text; combined_prompt may include injected
+    // "scene N" split markers used only when sending to Studio (for_generation).
+    const pv = st.preview;
+    const live = (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || st.project.global_prompt || "";
     const dirty = gpDraft != null && gpDraft !== live;
     const val = gpDraft != null ? gpDraft : live;
 
