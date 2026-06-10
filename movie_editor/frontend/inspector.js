@@ -508,6 +508,38 @@
   ];
   const STUDIO_DEFAULT_GUIDE = { enabled: true, source: "template", frame_idx: 0, apply_at: 0, strength: 0.35 };
 
+  const CONTINUITY_DEFAULTS = {
+    auto_enabled: true,
+    identity_pin_ref: null,
+    identity_pin_strength: 0.35,
+    prior_scene_guides: true,
+    prior_scene_strength: 0.35,
+    mid_scene_guide: true,
+    mid_scene_guide_strength: 0.3,
+    guide_decay: 0.85,
+    solo_scene_guides: true,
+  };
+
+  function normContinuitySettings(p) {
+    const cs = (p && p.continuity_settings) || {};
+    return {
+      auto_enabled: cs.auto_enabled !== false,
+      identity_pin_ref: cs.identity_pin_ref || null,
+      identity_pin_strength: cs.identity_pin_strength != null ? +cs.identity_pin_strength : CONTINUITY_DEFAULTS.identity_pin_strength,
+      prior_scene_guides: cs.prior_scene_guides !== false,
+      prior_scene_strength: cs.prior_scene_strength != null ? +cs.prior_scene_strength : CONTINUITY_DEFAULTS.prior_scene_strength,
+      mid_scene_guide: cs.mid_scene_guide !== false,
+      mid_scene_guide_strength: cs.mid_scene_guide_strength != null ? +cs.mid_scene_guide_strength : CONTINUITY_DEFAULTS.mid_scene_guide_strength,
+      guide_decay: cs.guide_decay != null ? +cs.guide_decay : CONTINUITY_DEFAULTS.guide_decay,
+      solo_scene_guides: cs.solo_scene_guides !== false,
+    };
+  }
+
+  function patchContinuitySettings(patch) {
+    const p = S.get().project;
+    S.patchProject({ continuity_settings: { ...(p.continuity_settings || {}), ...patch } });
+  }
+
   function normGuideSettings(p) {
     const gs = (p && p.guide_settings) || {};
     return { stack_enabled: !!gs.stack_enabled, accumulate_prior: !!gs.accumulate_prior };
@@ -518,12 +550,77 @@
     S.patchProject({ guide_settings: { ...(p.guide_settings || {}), ...patch } });
   }
 
+  function renderContinuitySettings(parent, st, multiScene) {
+    const cs = normContinuitySettings(st.project);
+    const gs = normGuideSettings(st.project);
+    const hint = el("div", "insp-hint");
+    hint.textContent = cs.auto_enabled
+      ? (gs.stack_enabled
+        ? "Auto continuity: mid-scene guide only — custom guide stack overrides auto guide lists."
+        : "Auto continuity builds hidden guides per run (carry · mixed · image · empty): identity pin, prior-scene anchors, mid-scene layout anchor on carry chains.")
+      : "Auto continuity off — use manual Chain Sampler knobs and optional custom guide stack below.";
+    parent.append(hint);
+
+    const autoLbl = el("label", "chk");
+    const autoCb = el("input"); autoCb.type = "checkbox"; autoCb.checked = cs.auto_enabled;
+    autoCb.dataset.k = "cs-auto";
+    autoCb.onchange = () => patchContinuitySettings({ auto_enabled: autoCb.checked });
+    autoLbl.append(autoCb, el("span", null, "Auto continuity (recommended)"));
+    parent.append(autoLbl);
+
+    const pin = el("select");
+    pin.append(new Option("— no identity pin —", ""));
+    (st.mediaBin || []).filter((m) => m.kind === "image").forEach((m) => {
+      const o = new Option(m.name, m.id);
+      if (cs.identity_pin_ref === m.id) o.selected = true;
+      pin.append(o);
+    });
+    pin.disabled = !cs.auto_enabled;
+    pin.onchange = () => patchContinuitySettings({ identity_pin_ref: pin.value || null });
+    parent.append(field("Identity pin (all scenes)", pin));
+
+    const adv = collapsibleSection(parent, "continuity_adv", "Advanced", false);
+    const priorLbl = el("label", "chk");
+    const priorCb = el("input"); priorCb.type = "checkbox"; priorCb.checked = cs.prior_scene_guides;
+    priorCb.disabled = !cs.auto_enabled;
+    priorCb.onchange = () => patchContinuitySettings({ prior_scene_guides: priorCb.checked });
+    priorLbl.append(priorCb, el("span", null, "Borrow prior-scene guides"));
+    adv.append(priorLbl);
+    const soloLbl = el("label", "chk");
+    const soloCb = el("input"); soloCb.type = "checkbox"; soloCb.checked = cs.solo_scene_guides;
+    soloCb.disabled = !cs.auto_enabled;
+    soloCb.onchange = () => patchContinuitySettings({ solo_scene_guides: soloCb.checked });
+    soloLbl.append(soloCb, el("span", null, "Guides on solo runs (mixed / image after scene 1)"));
+    adv.append(soloLbl);
+    const midLbl = el("label", "chk");
+    const midCb = el("input"); midCb.type = "checkbox"; midCb.checked = cs.mid_scene_guide;
+    midCb.disabled = !cs.auto_enabled || !multiScene;
+    midCb.title = multiScene ? "" : "Only applies to multi-scene carry chains";
+    midCb.onchange = () => patchContinuitySettings({ mid_scene_guide: midCb.checked });
+    midLbl.append(midCb, el("span", null, "Mid-scene layout guide (carry chains)"));
+    adv.append(midLbl);
+
+    const num = (label, val, key, min, max, step) => {
+      const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
+      i.value = val; i.disabled = !cs.auto_enabled;
+      i.oninput = () => patchContinuitySettings({ [key]: parseFloat(i.value || "0") });
+      adv.append(field(label, i));
+    };
+    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.25, 0.5, 0.05);
+    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.25, 0.5, 0.05);
+    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.25, 0.5, 0.05);
+    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05);
+  }
+
   function renderGuideStackSettings(parent, st, multiScene) {
     const gs = normGuideSettings(st.project);
+    const cs = normContinuitySettings(st.project);
     const hint = el("div", "insp-hint");
     hint.textContent = gs.stack_enabled
       ? "Custom guide stack — per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
-      : "Studio default: one i2v guide (not anchor) from scene 1's template, carried to later scenes at frame 0. Anchors are separate — image → Img2Video starting latent.";
+      : (cs.auto_enabled
+        ? "Auto continuity supplies guides at generation time (see Auto continuity above)."
+        : "Studio default: one i2v guide from scene 1's template on multi-scene carry runs.");
     parent.append(hint);
     const stackLbl = el("label", "chk");
     const stackCb = el("input"); stackCb.type = "checkbox"; stackCb.checked = gs.stack_enabled;
@@ -635,8 +732,9 @@
   }
 
   const CHAIN_SECTIONS = [
-    { id: "chain_timing", title: "Timing", defaultOpen: true, knobs: ["frame_overlap", "transition_duration", "use_same_seed"] },
-    { id: "chain_cont", title: "Continuity", defaultOpen: true, knobs: ["carry_i2v_guides"] },
+    { id: "chain_auto", title: "Auto continuity", defaultOpen: true, knobs: [] },
+    { id: "chain_timing", title: "Timing", defaultOpen: false, knobs: ["frame_overlap", "transition_duration", "use_same_seed"] },
+    { id: "chain_cont", title: "Manual continuity", defaultOpen: false, knobs: ["carry_i2v_guides"] },
     { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength"] },
     { id: "chain_dec", title: "Decode", defaultOpen: false, knobs: ["decode_noise_scale", "decode_timestep", "decode_tile_size"] },
     { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength"] },
@@ -664,7 +762,8 @@
     if (!knobVisible(k, si)) return;
     const val = si[k.name] != null ? si[k.name] : k.default;
     const gs = normGuideSettings(st.project);
-    const forced = k.lockMulti && multiScene && !gs.stack_enabled;
+    const cs = normContinuitySettings(st.project);
+    const forced = k.lockMulti && multiScene && !gs.stack_enabled && cs.auto_enabled;
     let ctrl;
     if (k.kind === "bool") {
       ctrl = el("input"); ctrl.type = "checkbox";
@@ -673,7 +772,7 @@
       ctrl.dataset.k = "si-" + k.name;
       if (forced) {
         ctrl.disabled = true;
-        ctrl.title = "Auto-enabled for multi-scene montages at generation time";
+        ctrl.title = "Auto-enabled by Auto continuity for multi-scene carry runs";
       } else {
         ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.checked);
       }
@@ -709,6 +808,9 @@
         const k = SAMPLER_KNOB_MAP[name];
         if (k) renderSamplerKnob(inner, st, k, si, multiScene);
       });
+      if (sec.id === "chain_auto") {
+        renderContinuitySettings(inner, st, multiScene);
+      }
       if (sec.id === "chain_cont") {
         renderGuideStackSettings(inner, st, multiScene);
       }

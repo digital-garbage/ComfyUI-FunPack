@@ -40,6 +40,140 @@ def normalize_guide_settings(raw: Optional[dict]) -> dict[str, bool]:
     }
 
 
+def normalize_continuity_settings(raw: Optional[dict]) -> dict[str, Any]:
+    """Automated cross-scene stability — guides, mid-scene anchor, identity pin.
+
+    When auto_enabled (default), the Movie Editor builds sampler guide JSON and
+    continuity knobs per run (carry / mixed / image / empty). Manual guide_settings
+    stack_enabled overrides auto guide lists but mid-scene guide can still apply."""
+    raw = raw or {}
+    return {
+        "auto_enabled": bool(raw.get("auto_enabled", True)),
+        "identity_pin_ref": raw.get("identity_pin_ref") or None,
+        "identity_pin_strength": float(raw.get("identity_pin_strength", 0.35)),
+        "prior_scene_guides": bool(raw.get("prior_scene_guides", True)),
+        "prior_scene_strength": float(raw.get("prior_scene_strength", 0.35)),
+        "mid_scene_guide": bool(raw.get("mid_scene_guide", True)),
+        "mid_scene_guide_strength": float(raw.get("mid_scene_guide_strength", 0.3)),
+        "guide_decay": float(raw.get("guide_decay", 0.85)),
+        "solo_scene_guides": bool(raw.get("solo_scene_guides", True)),
+    }
+
+
+def _anchor_media_ref(scene: Scene) -> Optional[str]:
+    src = scene.source
+    if not src:
+        return None
+    ref = getattr(src, "media_ref", None)
+    stype = src.type or "carry"
+    if ref and stype in ("image", "mixed", "generated_frame"):
+        return ref
+    return None
+
+
+def _identity_pin_guide(media_ref: str, strength: float) -> dict:
+    return {
+        "enabled": True,
+        "source": "image",
+        "media_ref": media_ref,
+        "frame_idx": 0,
+        "apply_at": 0,
+        "strength": max(0.25, min(0.5, float(strength))),
+    }
+
+
+def _prior_scene_guide(prior: Scene, strength: float) -> Optional[dict]:
+    ref = _anchor_media_ref(prior)
+    if ref:
+        return _identity_pin_guide(ref, strength)
+    return {
+        "enabled": True,
+        "source": "template",
+        "frame_idx": 0,
+        "apply_at": 0,
+        "strength": max(0.25, min(0.5, float(strength))),
+    }
+
+
+def _decayed_strength(base: float, scene_index: int, decay: float) -> float:
+    if scene_index <= 0 or decay >= 0.999:
+        return base
+    return max(0.25, min(0.5, base * (decay ** scene_index)))
+
+
+def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dict]:
+    """Build per-run funpack_scene_guides when auto continuity is on."""
+    cs = normalize_continuity_settings(full.continuity_settings)
+    if not cs["auto_enabled"] or normalize_guide_settings(full.guide_settings)["stack_enabled"]:
+        return None
+
+    active_full = [s for s in full.scenes if not s.excluded]
+    active_target = [s for s in target.scenes if not s.excluded]
+    if not active_target:
+        return None
+
+    pin = cs["identity_pin_ref"]
+    decay = cs["guide_decay"]
+
+    def _entries_for_index(full_idx: int, chain_idx: int) -> list[dict]:
+        entries: list[dict] = []
+        if pin:
+            entries.append(_identity_pin_guide(pin, cs["identity_pin_strength"]))
+        if full_idx > 0 and cs["prior_scene_guides"]:
+            prior = active_full[full_idx - 1]
+            strength = _decayed_strength(cs["prior_scene_strength"], chain_idx, decay)
+            entries.append(_prior_scene_guide(prior, strength))
+        elif chain_idx > 0:
+            strength = _decayed_strength(cs["prior_scene_strength"], chain_idx, decay)
+            entries.append({**STUDIO_DEFAULT_GUIDE, "strength": strength})
+        return entries
+
+    # Solo run (mixed, image, empty, generated_frame — one scene per queue request).
+    if len(active_target) == 1:
+        sc = active_target[0]
+        full_idx = next((i for i, s in enumerate(active_full) if s.id == sc.id), 0)
+        if full_idx <= 0 and not pin:
+            return None
+        if full_idx > 0 and not cs["solo_scene_guides"] and not pin:
+            return None
+        entries = _entries_for_index(full_idx, 0) if (full_idx > 0 and cs["solo_scene_guides"]) else []
+        if pin and not any(e.get("media_ref") == pin for e in entries):
+            entries.insert(0, _identity_pin_guide(pin, cs["identity_pin_strength"]))
+        if not entries:
+            return None
+        return {"stack_enabled": True, "accumulate_prior": False, "scenes": [entries]}
+
+    # Multi-scene carry chain.
+    per_scene: list[Optional[list[dict]]] = []
+    for chain_idx, sc in enumerate(active_target):
+        full_idx = next((i for i, s in enumerate(active_full) if s.id == sc.id), chain_idx)
+        if chain_idx == 0:
+            entries = [_identity_pin_guide(pin, cs["identity_pin_strength"])] if pin else []
+            per_scene.append(entries if entries else None)
+            continue
+        entries = _entries_for_index(full_idx, chain_idx)
+        per_scene.append(entries)
+
+    if not pin and all(e is None or not e for e in per_scene[1:]):
+        return None
+    return {"stack_enabled": True, "accumulate_prior": False, "scenes": per_scene}
+
+
+def continuity_media_refs(full: Project, target: Project) -> list[str]:
+    """Extra media-bin ids to copy for auto continuity (pin + prior anchors)."""
+    cs = normalize_continuity_settings(full.continuity_settings)
+    refs: list[str] = []
+    if cs["auto_enabled"] and cs["identity_pin_ref"]:
+        refs.append(cs["identity_pin_ref"])
+    payload = build_auto_continuity_guides(full, target)
+    if payload:
+        for scene_list in payload.get("scenes") or []:
+            for g in scene_list or []:
+                if g.get("source") == "image" and g.get("media_ref"):
+                    refs.append(g["media_ref"])
+    return list(dict.fromkeys(refs))
+
+
 @dataclass
 class GuideEntry:
     """Optional per-scene guide (only used when project guide_settings.stack_enabled)."""
@@ -73,27 +207,11 @@ def is_mixed_source(scene: Scene) -> bool:
 
 
 def build_mixed_solo_guides_payload(project: Project, mixed_scene: Scene) -> Optional[dict]:
-    """Guides for one independent mixed-scene i2v run (max_scenes=1).
-
-    The mixed scene's own anchor image goes through the graph-level Img2Video path;
-    this payload only supplies hidden guides borrowed from the prior timeline scene."""
-    active = [s for s in project.scenes if not s.excluded]
-    idx = next((i for i, sc in enumerate(active) if sc.id == mixed_scene.id), -1)
-    if idx <= 0:
-        return None
-    prior = active[idx - 1]
-    guide = dict(STUDIO_DEFAULT_GUIDE)
-    prior_src = prior.source
-    prior_ref = getattr(prior_src, "media_ref", None) if prior_src else None
-    prior_type = (prior_src.type or "carry") if prior_src else "carry"
-    if prior_ref and prior_type in ("image", "mixed", "generated_frame"):
-        guide["source"] = "image"
-        guide["media_ref"] = prior_ref
-    return {
-        "stack_enabled": True,
-        "accumulate_prior": False,
-        "scenes": [[guide]],
-    }
+    """Backward-compatible alias — delegates to build_auto_continuity_guides."""
+    from dataclasses import replace
+    segment = Project.from_dict(project.to_dict())
+    segment.scenes = [mixed_scene]
+    return build_auto_continuity_guides(project, segment)
 
 
 def build_scene_anchors_payload(project: Project) -> Optional[dict]:
@@ -261,6 +379,7 @@ class Project:
     models: dict = field(default_factory=lambda: {"slots": []})
     # Guide stack toggles — empty / stack_enabled=false keeps Studio carry behaviour.
     guide_settings: dict = field(default_factory=dict)
+    continuity_settings: dict = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -288,6 +407,7 @@ class Project:
             audio_tracks=list(d.get("audio_tracks") or []),
             models=dict(d.get("models") or {"slots": []}),
             guide_settings=dict(d.get("guide_settings") or {}),
+            continuity_settings=dict(d.get("continuity_settings") or {}),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )

@@ -195,51 +195,56 @@ def _run_studio_inputs(target: Project, active_scenes: list) -> dict:
     return si
 
 
-def _mixed_solo_guide_refs(full: Project, target: Project) -> list:
-    """Media-bin ids for prior-scene guide images on a solo mixed run."""
-    from .backend.timeline import build_mixed_solo_guides_payload, is_mixed_source
-
-    active = [s for s in target.scenes if not s.excluded]
-    if len(active) != 1 or not is_mixed_source(active[0]):
-        return []
-    payload = build_mixed_solo_guides_payload(full, active[0])
-    if not payload:
-        return []
-    refs = []
-    for g in (payload.get("scenes") or [[]])[0] or []:
-        if g.get("source") == "image" and g.get("media_ref"):
-            refs.append(g["media_ref"])
-    return refs
-
-
 def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Project] = None) -> dict:
     """Sampler widget overrides for one generation run.
 
-    Mixed timeline scenes are solo i2v (max_scenes=1): anchor via Img2Video, guides from
-    the prior scene — not continuous chain overlap.
-
-    Carry runs (multi-scene): default carry_i2v_guides unless a custom guide stack is on.
+    Auto continuity (project.continuity_settings) builds guides and sampler knobs per run
+    for carry, mixed, image, and empty sources. Manual guide_settings.stack_enabled wins.
     """
     if target.sampler_slot != "funpack":
         return {}
     import json
-    from .backend.timeline import build_mixed_solo_guides_payload, build_scene_guides_payload, is_mixed_source
+    from .backend.timeline import (
+        build_auto_continuity_guides,
+        build_scene_guides_payload,
+        is_mixed_source,
+        normalize_continuity_settings,
+        normalize_guide_settings,
+    )
 
+    proj = full or target
     samp = dict(target.sampler_inputs or {})
     active = [s for s in target.scenes if not s.excluded]
-    if scene_count == 1 and len(active) == 1 and is_mixed_source(active[0]):
-        guides = build_mixed_solo_guides_payload(full or target, active[0])
-        if guides:
-            samp["funpack_scene_guides"] = json.dumps(guides)
-        samp["frame_overlap"] = 0
-        samp["carry_i2v_guides"] = False
-        return samp
+    cs = normalize_continuity_settings(proj.continuity_settings)
+    manual_stack = normalize_guide_settings(proj.guide_settings)["stack_enabled"]
 
-    guides = build_scene_guides_payload(target)
+    auto_guides = build_auto_continuity_guides(proj, target) if cs["auto_enabled"] else None
+    manual_guides = build_scene_guides_payload(target) if manual_stack else None
+    guides = manual_guides or auto_guides
+
     if guides:
         samp["funpack_scene_guides"] = json.dumps(guides)
-    elif scene_count > 1:
+        samp["carry_i2v_guides"] = False
+
+    solo_mixed = (
+        scene_count == 1 and len(active) == 1 and is_mixed_source(active[0])
+    )
+    solo_after_first = False
+    if scene_count == 1 and len(active) == 1 and cs["auto_enabled"] and cs["solo_scene_guides"]:
+        active_full = [s for s in proj.scenes if not s.excluded]
+        full_idx = next((i for i, s in enumerate(active_full) if s.id == active[0].id), 0)
+        solo_after_first = full_idx > 0
+
+    if solo_mixed or solo_after_first:
+        samp["frame_overlap"] = 0
+
+    if scene_count > 1 and not guides:
         samp["carry_i2v_guides"] = True
+
+    if cs["auto_enabled"] and scene_count > 1 and cs["mid_scene_guide"]:
+        samp["mid_scene_guide"] = True
+        samp["mid_scene_guide_strength"] = cs["mid_scene_guide_strength"]
+
     return samp
 
 
@@ -702,8 +707,8 @@ if web is not None and PromptServer is not None:
             if trimmed and all(f == trimmed[0] for f in trimmed)
             else target.num_frames_per_scene
         )
-        guide_refs = _mixed_solo_guide_refs(p, target)
-        media_pack = _prepare_media(target, guide_refs)
+        from .backend.timeline import continuity_media_refs
+        media_pack = _prepare_media(target, continuity_media_refs(p, target))
         sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
         _attach_scene_anchors(sampler_inputs, media_pack, target)
         graph, report = builder.build(oi, _project_models(target), {

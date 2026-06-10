@@ -16,9 +16,12 @@ from movie_editor.backend.timeline import (  # noqa: E402
     Scene,
     STUDIO_DEFAULT_GUIDE,
     build_combined_prompt,
+    build_auto_continuity_guides,
     build_mixed_solo_guides_payload,
     build_scene_anchors_payload,
     build_scene_guides_payload,
+    continuity_media_refs,
+    normalize_continuity_settings,
     collapse_generative_units,
     group_generative_units,
     is_mixed_source,
@@ -116,6 +119,42 @@ def test_guide_settings_default_off():
     gs = normalize_guide_settings({})
     assert gs["stack_enabled"] is False
     assert gs["accumulate_prior"] is False
+
+
+def test_continuity_defaults_auto_on():
+    cs = normalize_continuity_settings({})
+    assert cs["auto_enabled"] is True
+    assert cs["prior_scene_guides"] is True
+    assert cs["mid_scene_guide"] is True
+
+
+def test_auto_continuity_solo_mixed_prior_anchor():
+    p = _project(
+        scenes=[
+            {"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}},
+            {"id": "s2", "text": "b", "source": {"type": "mixed", "media_ref": "img2"}},
+        ],
+    )
+    segment = Project.from_dict(p.to_dict())
+    segment.scenes = [p.scenes[1]]
+    payload = build_auto_continuity_guides(p, segment)
+    assert payload["scenes"][0][0]["media_ref"] == "img1"
+
+
+def test_auto_continuity_identity_pin_and_carry_chain():
+    p = _project(
+        continuity_settings={"identity_pin_ref": "pin1"},
+        scenes=[
+            {"id": "s1", "text": "a"},
+            {"id": "s2", "text": "b", "source": {"type": "carry"}},
+        ],
+    )
+    payload = build_auto_continuity_guides(p, p)
+    assert payload["scenes"][0][0]["media_ref"] == "pin1"
+    assert payload["scenes"][1][0]["media_ref"] == "pin1"
+    assert any(g["source"] == "template" for g in payload["scenes"][1])
+    refs = continuity_media_refs(p, p)
+    assert "pin1" in refs
     p = _project(scenes=[{"text": "a"}, {"text": "b"}])
     assert build_scene_guides_payload(p) is None
 
