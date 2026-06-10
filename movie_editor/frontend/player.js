@@ -485,8 +485,12 @@
 
     clear(body);
 
+    const previewAsset = st.mediaPreviewId
+      ? (st.mediaBin || []).find((m) => m.id === st.mediaPreviewId)
+      : null;
+
     // ── canvas (video + placeholder) ────────────────────────────────────────
-    const canvas = el("div", "pm-canvas");
+    const canvas = el("div", "pm-canvas" + (previewAsset?.kind === "image" ? " media-previewing" : ""));
     _slateEl = el("div", "pm-slate");
     _slateEl.style.display = "none";
     _slateEl.append(el("div", "pm-slate-title"));
@@ -498,6 +502,8 @@
       canvas.append(stage);  // pooled videos live here; only the active one is visible
       canvas.append(_slateEl);
       canvas.append(_badgeEl);
+    } else if (previewAsset?.kind === "image") {
+      canvas.append(stage);
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
       splash.append(el("div", "pm-gen-icon", "⚙"));
@@ -531,6 +537,19 @@
         ro.append(stop);
       }
       canvas.append(ro);
+    }
+    if (previewAsset?.kind === "image") {
+      const layer = el("div", "pm-media-preview");
+      const label = el("div", "pm-media-preview-label", previewAsset.name || "Media preview");
+      const img = el("img", "pm-media-preview-img");
+      img.src = API.mediaUrl(previewAsset.id);
+      img.draggable = false;
+      img.onclick = (e) => e.stopPropagation();
+      layer.append(label, img);
+      canvas.append(layer);
+      canvas.onclick = (e) => {
+        if (!e.target.closest(".pm-media-preview-img")) S.clearMediaPreview();
+      };
     }
     body.append(canvas);
 

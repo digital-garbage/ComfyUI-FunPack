@@ -242,6 +242,7 @@ input[type=number] { font-family: var(--font-mono); }
 .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
 .media-card { position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--ink-0); }
 .media-card:hover { border-color: var(--muted); }
+.media-card.previewing { border-color: var(--teal); box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 35%, transparent); }
 .media-thumb { height: 56px; display: flex; align-items: center; justify-content: center; background: #060606; }
 .media-thumb img { width: 100%; height: 100%; object-fit: cover; }
 .media-icon { font-size: 20px; color: var(--faint); }
@@ -302,6 +303,12 @@ input[type=number] { font-family: var(--font-mono); }
 /* video canvas — fills the zone above transport */
 .pm-canvas { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; overflow: hidden; min-height: 0; background: #060606; }
 .pm-canvas::after { content: ""; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 140px 10px rgba(0,0,0,.65); z-index: 1; }
+.pm-canvas.media-previewing .pm-stage,
+.pm-canvas.media-previewing .pm-slate,
+.pm-canvas.media-previewing .pm-segment-badge { visibility: hidden; }
+.pm-media-preview { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; cursor: default; }
+.pm-media-preview-img { max-width: 100%; max-height: 100%; object-fit: contain; position: relative; z-index: 1; cursor: default; }
+.pm-media-preview-label { position: absolute; top: 10px; left: 10px; z-index: 2; font-size: 10.5px; font-family: var(--font-mono); color: var(--teal); background: #000a; border: 1px solid color-mix(in srgb, var(--teal) 35%, var(--line)); border-radius: 12px; padding: 3px 9px; pointer-events: none; }
 .pm-stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 0; }
 .pm-video { max-width: 100%; max-height: 100%; display: none; object-fit: contain; position: relative; z-index: 0; }
 .pm-video.active { display: block; }

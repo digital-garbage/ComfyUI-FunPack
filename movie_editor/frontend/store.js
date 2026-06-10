@@ -21,6 +21,7 @@
     saving: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
+    mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
     shortcuts: [],           // prompt shortcut library
     imageTargets: [],        // where an image asset can be wired [{value,label}]
     ratingLabels: [],        // FunPack Studio V2 rating options
@@ -1056,7 +1057,11 @@
     for (const f of files) { try { await API.uploadMedia(f); } catch (e) { console.error("upload failed", e); } }
     await loadMedia();
   }
-  async function deleteMedia(id) { try { await API.deleteMedia(id); } catch (_) {} await loadMedia(); }
+  async function deleteMedia(id) {
+    try { await API.deleteMedia(id); } catch (_) {}
+    if (state.mediaPreviewId === id) state.mediaPreviewId = null;
+    await loadMedia();
+  }
 
   async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
   async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
@@ -1106,6 +1111,22 @@
     return true;
   }
 
+  function previewMedia(mediaId) {
+    const m = (state.mediaBin || []).find((x) => x.id === mediaId);
+    if (!m || m.kind !== "image") return;
+    if (state.mediaPreviewId === mediaId) {
+      clearMediaPreview();
+      return;
+    }
+    try { window.Player?.pause?.(); } catch (_) {}
+    set({ mediaPreviewId: mediaId });
+  }
+
+  function clearMediaPreview() {
+    if (!state.mediaPreviewId) return;
+    set({ mediaPreviewId: null });
+  }
+
   function assignMediaToScene(sceneId, mediaId) {
     const s = scene(sceneId); if (!s) return;
     const t = (s.source?.type === "mixed") ? "mixed"
@@ -1140,7 +1161,7 @@
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
-    loadMedia, uploadMedia, deleteMedia, assignMediaToScene,
+    loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, loadTransitions, saveTransition, deleteTransition, importTransitions,
     applyTransitionToSelection, insertShortcutIntoSelection,
     setSceneRating: (id, v) => patchScene(id, { rating: v }),

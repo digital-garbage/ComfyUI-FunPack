@@ -108,7 +108,7 @@
     const drop = el("div", "mediabin");
     drop.append(el("div", "big", "🎞"));
     drop.append(el("div", null, "Drop images & clips here"));
-    drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its source"));
+    drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));
     const file = el("input"); file.type = "file"; file.accept = "image/*,video/*"; file.multiple = true; file.style.display = "none";
     file.onchange = () => { if (file.files.length) S.uploadMedia([...file.files]); file.value = ""; };
     drop.onclick = () => file.click();
@@ -119,10 +119,12 @@
 
     const grid = el("div", "media-grid");
     (st.mediaBin || []).forEach((m) => {
-      const card = el("div", "media-card");
+      const card = el("div", "media-card" + (st.mediaPreviewId === m.id ? " previewing" : ""));
       card.draggable = true;
       card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
-      card.title = `${m.name}\nClick to assign to selected scene · drag onto a clip`;
+      card.title = m.kind === "image"
+        ? `${m.name}\nClick to preview · drag onto a clip to set anchor`
+        : `${m.name}\nDrag onto a clip to set anchor`;
       const thumb = el("div", "media-thumb");
       if (m.kind === "image") { const img = el("img"); img.src = API.mediaUrl(m.id); img.loading = "lazy"; thumb.append(img); }
       else thumb.append(el("span", "media-icon", m.kind === "video" ? "▶" : "◆"));
@@ -131,10 +133,9 @@
       const del = el("button", "media-del", "✕"); del.title = "Delete asset";
       del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
       card.append(del);
-      card.onclick = () => {
-        if (!st.selectedSceneId) { alert("Select a scene first to assign this asset."); return; }
-        S.assignMediaToScene(st.selectedSceneId, m.id);
-      };
+      if (m.kind === "image") {
+        card.onclick = () => S.previewMedia(m.id);
+      }
       grid.append(card);
     });
     if (!(st.mediaBin || []).length) grid.append(el("div", "pj-meta", "No media yet."));
