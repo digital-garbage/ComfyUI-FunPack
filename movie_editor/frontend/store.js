@@ -898,18 +898,38 @@
     return (frames || 1) / (fps || 25);
   }
 
-  function _chainInSec(lastChain, sourceEnd, curr) {
-    if (!lastChain) return 0;
-    const sameUnit = genUnitId(lastChain) === genUnitId(curr);
-    return sameUnit ? sourceEnd : Math.max(0, sourceEnd - _overlapBetweenScenes(lastChain, curr));
+  // Frames per scene inside one chain-sampler run (mirrors server generate effective_frames).
+  function _effectiveRunFrames(scenes) {
+    const p = state.project;
+    if (!p) return 65;
+    const trimmed = (scenes || [])
+      .filter((s) => s && s.frames_mode !== "project" && s.frames != null)
+      .map((s) => s.frames);
+    if (trimmed.length && trimmed.every((f) => f === trimmed[0])) return trimmed[0];
+    return p.num_frames_per_scene || 65;
   }
 
-  // Pixel overlap between consecutive scenes inside one carry chain run.
-  function _overlapBetweenScenes(prev, curr) {
-    if (!prev || !curr) return 0;
-    const frames = +(state.project?.sampler_inputs?.frame_overlap ?? 16);
-    const fps = state.project?.frame_rate || 25;
-    return Math.max(0, frames / fps);
+  // Source layout for mapping one chain output video onto timeline clips.
+  function _chainRunLayout(sceneIds) {
+    const p = state.project;
+    const scenes = (sceneIds || []).map((id) => scene(id)).filter(Boolean);
+    const fps = p?.frame_rate || 25;
+    const frames = _effectiveRunFrames(scenes);
+    const overlapFrames = scenes.length > 1 ? +(p?.sampler_inputs?.frame_overlap ?? 16) : 0;
+    const overlapSec = Math.max(0, overlapFrames / fps);
+    const sourceSpanSec = frames / fps;
+    return { frames, fps, overlapSec, sourceSpanSec };
+  }
+
+  function _recordInSec(lastChain, sourceEnd, curr, layout) {
+    if (!lastChain) return 0;
+    if (genUnitId(lastChain) === genUnitId(curr)) return sourceEnd;
+    return Math.max(0, sourceEnd - layout.overlapSec);
+  }
+
+  function _recordSourceStepSec(lastChain, curr, layout) {
+    if (lastChain && genUnitId(lastChain) === genUnitId(curr)) return sceneDurationSec(curr);
+    return layout.sourceSpanSec;
   }
 
   function _snapshotRenderPrompt(sceneId) {
@@ -945,6 +965,7 @@
   function _recordSegment(mediaList, targetSceneIds) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
+    const layout = _chainRunLayout(targetSceneIds);
     let sourceEnd = 0;
     let lastChain = null;
     let clearedRating = false;
@@ -956,7 +977,7 @@
         const gi = ghosts.findIndex((g) => g.id === id);
         if (gi >= 0) {
           const ghost = ghosts[gi];
-          const inSec = _chainInSec(lastChain, sourceEnd, ghost);
+          const inSec = _recordInSec(lastChain, sourceEnd, ghost, layout);
           ghosts[gi] = { ...ghost, media: primary, inSec, pendingGen: false };
           state.sceneGhosts = ghosts;
           sourceEnd = inSec + _ghostDurationSec(ghost);
@@ -966,14 +987,14 @@
         continue;
       }
       const sc = scene(id); if (!sc) continue;
-      const inSec = _chainInSec(lastChain, sourceEnd, sc);
+      const inSec = _recordInSec(lastChain, sourceEnd, sc, layout);
       const renderPrompt = _queuedRenderPrompts[id] || _snapshotRenderPrompt(id);
       delete _queuedRenderPrompts[id];
       state.sceneRenders[id] = { media: primary, inSec, renderPrompt };
       recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
-      sourceEnd = inSec + sceneDurationSec(sc);
+      sourceEnd = inSec + _recordSourceStepSec(lastChain, sc, layout);
       lastChain = sc;
     }
     _pruneGhostsAfterRegen(recordedSceneIds);
