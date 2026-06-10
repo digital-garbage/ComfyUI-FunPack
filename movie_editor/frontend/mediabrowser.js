@@ -83,12 +83,13 @@
     return box;
   }
 
-  function mediaRefPicker(st, value, onChange) {
+  function mediaRefPicker(st, value, onChange, opts) {
     return window.MediaPicker.create({
       value,
       mediaBin: st.mediaBin,
       onChange,
       compact: true,
+      startOpen: !!(opts && opts.startOpen),
     });
   }
 
@@ -112,9 +113,9 @@
       labeled("Wardrobe", wardrobe),
       labeled("Always include", always),
       labeled("Never include", never),
-      labeled("Face ref (identity pin)", mediaRefPicker(st, faceRef, (v) => { faceRef = v; })),
-      labeled("Body ref", mediaRefPicker(st, bodyRef, (v) => { bodyRef = v; })),
-      labeled("Detail ref", mediaRefPicker(st, detailRef, (v) => { detailRef = v; })),
+      labeled("Face ref (identity pin)", mediaRefPicker(st, faceRef, (v) => { faceRef = v; }, { startOpen: true })),
+      labeled("Body ref", mediaRefPicker(st, bodyRef, (v) => { bodyRef = v; }, { startOpen: true })),
+      labeled("Detail ref", mediaRefPicker(st, detailRef, (v) => { detailRef = v; }, { startOpen: true })),
     );
     const actions = el("div", "lib-form-actions");
     const save = el("button", "btn primary tiny", "Save");
