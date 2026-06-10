@@ -417,3 +417,62 @@ def test_scene_chain_does_not_carry_i2v_guides_by_default():
     assert torch.all(second_call["noise_mask"][:, :, :2] == 0.0)
     assert torch.all(second_call["noise_mask"][:, :, 2:] == 1.0)
     assert "i2v guide" not in status
+
+
+def test_overlap_diagnostics_report_latent_blend_zone():
+    import json
+
+    node = FunPackLTXAVSceneChainSampler()
+    diag = node._build_overlap_diagnostics(
+        scene_count=2,
+        video_frames=97,
+        pixel_overlap=16,
+        latent_overlap=2,
+        time_scale=8,
+        transition_duration=16,
+        boundaries=[{
+            "between": [1, 2],
+            "boundary_latent": 12,
+            "pixel_frame": 89,
+            "effect": "crossfade",
+        }],
+        scene_runs=[
+            {"index": 1, "text": "hero walks", "encode_text": "hero walks", "mechanisms": []},
+            {"index": 2, "text": "hero runs", "encode_text": "hero runs", "mechanisms": ["latent_overlap(16px)"]},
+        ],
+        carry_i2v_guides=True,
+        mid_scene_guide=False,
+        embed_guidance=True,
+        embed_guidance_strength=0.15,
+        embed_guidance_source="absolute",
+    )
+    assert diag["pixel_overlap"] == 16
+    blend = diag["boundaries"][0]["contamination_zones"]["latent_blend"]
+    assert blend["scene_prev_tail"] == [73, 88]
+    assert blend["scene_next_head"] == [89, 104]
+    assert diag["scenes"][0]["whole_scene_steering"] is True
+    assert any(g["mechanism"] == "embed_guidance" for g in diag["global_steering"])
+    # scene_boundaries output is JSON in the full sample() path
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    positive = [scene_cond(0), scene_cond(1)]
+    latent_template = {"samples": torch.zeros(1, 2, 5, 1, 1)}
+    _, _, status, _, _, boundaries_json = node.sample(
+        model=object(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=60,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+        embed_guidance=False,
+    )
+    parsed = json.loads(boundaries_json)
+    assert parsed["scene_count"] == 2
+    assert "boundaries" in parsed
+    assert "overlap_blend=2px" in status

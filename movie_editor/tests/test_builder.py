@@ -81,7 +81,7 @@ def test_core_skeleton_links_and_params():
     assert graph["fps"]["inputs"]["value"] == 24
     assert graph["sampler"]["inputs"]["seed"] == 42
     # with no slots, the open ports are unsatisfied
-    assert any("studio.model" in u for u in report["unsatisfied"])
+    assert any("FunPackStudio" in u and ".model" in u for u in report["unsatisfied"])
 
 
 def test_explicit_wires_and_autowire():
@@ -171,7 +171,7 @@ def test_ambiguous_type_is_reported_not_guessed():
     ]}
     graph, report = builder.build(OI, models, PARAMS)
     assert not isinstance(graph["sampler"]["inputs"].get("vae"), list)  # left unwired
-    assert any("sampler.vae" in a for a in report["ambiguous"])
+    assert any("FunPackLTXAVSceneChainSampler" in a and ".vae" in a for a in report["ambiguous"])
 
 
 def test_extract_widgets_handles_control_and_links():

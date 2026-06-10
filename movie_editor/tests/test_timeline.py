@@ -40,9 +40,9 @@ def test_anchor_plus_two_scenes_emits_separators():
             {"text": "landing on a rooftop"},
         ],
     )
-    prompt = build_combined_prompt(p)
+    prompt = build_combined_prompt(p, for_generation=True)
     # anchor first, intro marker before scene 0, scene marker before scene 1
-    assert prompt.splitlines()[0] == "red-haired heroine"
+    assert prompt.startswith("red-haired heroine")
     assert "cut to" in prompt
     assert "blur" in prompt
     assert prompt.index("cut to") < prompt.index("flying")
@@ -54,10 +54,10 @@ def test_missing_markers_fall_back_to_scene_labels():
         anchor="a knight",
         scenes=[{"text": "in a forest"}, {"text": "at a castle"}],
     )
-    prompt = build_combined_prompt(p)
+    prompt = build_combined_prompt(p, for_generation=True)
     # No explicit markers -> generic "scene N" boundaries so the split still separates.
+    assert "scene 1" in prompt
     assert "scene 2" in prompt
-    assert "scene 3" in prompt
 
 
 def test_excluded_scenes_dropped_unless_requested():
@@ -76,7 +76,7 @@ def test_excluded_scenes_dropped_unless_requested():
 def test_no_anchor_first_scene_has_no_leading_separator():
     p = _project(scenes=[{"text": "opening shot", "transition_to_next": "cut"}, {"text": "second"}])
     prompt = build_combined_prompt(p)
-    assert prompt.splitlines()[0] == "opening shot"
+    assert prompt == "opening shot second"
 
 
 def test_project_roundtrip_preserves_forward_compat_fields():

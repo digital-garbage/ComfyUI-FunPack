@@ -34,7 +34,7 @@ Important: this sampler is resource heavy. Long chains can produce very large fi
 
 ## Outputs
 
-`latent`, `images`, `status`, `scene_count`, `scene_report`, `scene_boundaries`. The `scene_report` and `scene_boundaries` describe how the chain was split and stitched; the boundaries can be used downstream to locate scene cuts in the decoded video.
+`latent`, `images`, `status`, `scene_count`, `scene_report`, `scene_boundaries`. `scene_report` is a per-scene text/seed log. `scene_boundaries` is JSON with overlap diagnostics: per-scene pixel ranges, boundary seam positions, `contamination_zones` (where latent overlap and transition effects can mix scene N+1 into scene N's tail), per-scene mechanisms used, and `global_steering` notes (embed guidance / Studio absolute steer affect **every** scene, not just the seam).
 
 ## Behavior
 

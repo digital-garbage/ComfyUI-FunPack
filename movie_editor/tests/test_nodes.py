@@ -71,7 +71,13 @@ def test_ports_from_input_types_derives_connection_points():
     }
     ports = nodes.ports_from_input_types("Studio", "FunPackStudio", it)
     by_input = {p["input"]: p["type"] for p in ports}
-    assert by_input == {"model": "MODEL", "clip": "CLIP", "source_image": "IMAGE", "latent": "LATENT"}
+    assert by_input == {
+        "model": "MODEL",
+        "clip": "CLIP",
+        "source_image": "IMAGE",
+        "latent": "LATENT",
+        "positive_prompt": "STRING",
+    }
     assert all(p["id"].startswith("FunPackStudio.") for p in ports)  # STRING widgets excluded
 
 

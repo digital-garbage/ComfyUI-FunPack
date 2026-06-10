@@ -2557,6 +2557,163 @@ class FunPackLTXAVSceneChainSampler:
                 return text
         return f"Scene {index + 1}"
 
+    def _scene_meta(self, scene_conditioning, index):
+        """Extract FunPack scene metadata for overlap / contamination diagnostics."""
+        meta = {}
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            meta = dict(scene_conditioning[1])
+        text = str(meta.get("funpack_scene_text") or "").strip() or f"Scene {index + 1}"
+        encode = str(meta.get("funpack_encode_text") or "").strip() or text
+        return {
+            "index": index + 1,
+            "text": text,
+            "encode_text": encode,
+            "seed": meta.get("funpack_scene_seed"),
+            "transition_effect": meta.get("funpack_transition_effect"),
+            "temporal_mult": meta.get("funpack_temporal_mult"),
+        }
+
+    def _latent_to_pixel_frame(self, latent_frame, time_scale):
+        latent_frame = max(0, int(latent_frame))
+        time_scale = max(1, int(time_scale))
+        if time_scale > 1:
+            return int((latent_frame - 1) * time_scale + 1) if latent_frame > 0 else 0
+        return latent_frame
+
+    def _scene_pixel_ranges(self, scene_count, video_frames, pixel_overlap):
+        """Contiguous pixel spans in the stitched output (before transition post-FX)."""
+        if scene_count <= 0:
+            return []
+        pixel_overlap = max(0, int(pixel_overlap))
+        stride = max(1, int(video_frames) - pixel_overlap)
+        ranges = []
+        for i in range(scene_count):
+            start = i * stride
+            end = start + int(video_frames) - 1
+            ranges.append({"scene": i + 1, "start": start, "end": end})
+        return ranges
+
+    def _boundary_contamination_zones(self, boundary_pixel, pixel_overlap, transition_duration, effect):
+        """Pixel ranges where scene N+1 can visibly influence scene N (and vice versa)."""
+        boundary_pixel = max(0, int(boundary_pixel))
+        pixel_overlap = max(0, int(pixel_overlap))
+        zones = {}
+        if pixel_overlap > 0:
+            zones["latent_blend"] = {
+                "scene_prev_tail": [max(0, boundary_pixel - pixel_overlap), max(0, boundary_pixel - 1)],
+                "scene_next_head": [boundary_pixel, boundary_pixel + pixel_overlap - 1],
+                "note": "Previous scene tail is copied into the next chunk, denoised under next-scene conditioning, then slerp-blended back — motion from scene N+1 can appear in scene N's last overlap frames.",
+            }
+        if effect and effect != "none" and transition_duration > 0:
+            half = max(1, int(transition_duration) // 2)
+            lo = max(0, boundary_pixel - half)
+            hi = boundary_pixel + half - 1
+            zones["transition_effect"] = {
+                "effect": effect,
+                "pixel_range": [lo, hi],
+                "note": "Post-decode pixel effect mixes frames across the seam — scene N+1 content can show in scene N's tail (crossfade is strongest).",
+            }
+        return zones
+
+    def _build_overlap_diagnostics(
+        self,
+        *,
+        scene_count,
+        video_frames,
+        pixel_overlap,
+        latent_overlap,
+        time_scale,
+        transition_duration,
+        boundaries,
+        scene_runs,
+        carry_i2v_guides,
+        mid_scene_guide,
+        embed_guidance,
+        embed_guidance_strength,
+        embed_guidance_source,
+    ):
+        """JSON report: where scene conditioning/latent/pixel domains overlap."""
+        pixel_ranges = self._scene_pixel_ranges(scene_count, video_frames, pixel_overlap)
+        boundary_reports = []
+        for entry in boundaries or []:
+            pixel = int(entry.get("pixel_frame") or 0)
+            effect = entry.get("effect")
+            between = entry.get("between") or []
+            zones = self._boundary_contamination_zones(pixel, pixel_overlap, transition_duration, effect)
+            boundary_reports.append({
+                "between_scenes": between,
+                "pixel_frame": pixel,
+                "latent_frame": entry.get("latent_frame"),
+                "effect": effect,
+                "contamination_zones": zones,
+            })
+
+        global_steering = []
+        if embed_guidance:
+            global_steering.append({
+                "mechanism": "embed_guidance",
+                "strength": float(embed_guidance_strength),
+                "source": str(embed_guidance_source or "relative"),
+                "scope": "all_scenes_every_denoise_step",
+                "note": "Steers each scene's conditioning toward the learned liked direction during sampling. "
+                        "Absolute mode uses a prompt-agnostic global taste — action from ANY liked scene can bias scene 1.",
+            })
+        if carry_i2v_guides:
+            global_steering.append({
+                "mechanism": "carry_i2v_guides",
+                "scope": "scene_2_onward",
+                "note": "Scene 1 template frames are prepended as hidden guide tokens in continuation chunks only — "
+                        "does not inject scene 2 into scene 1.",
+            })
+        if mid_scene_guide:
+            global_steering.append({
+                "mechanism": "mid_scene_guide",
+                "scope": "scene_2_onward",
+                "note": "Middle frame of scene N guides scene N+1 denoising — does not retroactively change scene N.",
+            })
+        global_steering.append({
+            "mechanism": "studio_absolute_steer",
+            "scope": "all_scenes_pre_sample",
+            "note": "When Studio steer_mode is absolute/both, the same global taste pull is applied to every "
+                    "scene conditioning entry before the chain sampler runs — can add scene-2-like motion cues to scene 1.",
+        })
+
+        scenes_out = []
+        for run in scene_runs:
+            idx = int(run.get("index") or 0)
+            pr = next((r for r in pixel_ranges if r["scene"] == idx), None)
+            item = dict(run)
+            if pr:
+                item["pixel_range"] = [pr["start"], pr["end"]]
+                tail_zones = []
+                for br in boundary_reports:
+                    between = br.get("between_scenes") or []
+                    if len(between) == 2 and between[0] == idx:
+                        for zone in (br.get("contamination_zones") or {}).values():
+                            if isinstance(zone, dict) and "scene_prev_tail" in zone:
+                                tail_zones.append(zone["scene_prev_tail"])
+                if tail_zones:
+                    item["tail_contamination_pixels"] = tail_zones
+                if idx == 1 and embed_guidance:
+                    item["whole_scene_steering"] = True
+            scenes_out.append(item)
+
+        return {
+            "scene_count": scene_count,
+            "frames_per_scene": int(video_frames),
+            "pixel_overlap": int(pixel_overlap),
+            "latent_overlap": int(latent_overlap),
+            "time_scale": int(time_scale),
+            "scene_pixel_ranges": pixel_ranges,
+            "boundaries": boundary_reports,
+            "global_steering": global_steering,
+            "scenes": scenes_out,
+        }
+
     def _scene_seed(self, scene_conditioning):
         if (
             isinstance(scene_conditioning, (list, tuple))
@@ -3203,6 +3360,7 @@ class FunPackLTXAVSceneChainSampler:
         scene_anchors = self._parse_scene_anchors(funpack_scene_anchors)
         scene_outputs: list = []
         scene_media_by_ref = self._parse_scene_anchors(funpack_scene_media_refs)
+        scene_runs: list = []
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -3216,51 +3374,62 @@ class FunPackLTXAVSceneChainSampler:
             carried = 0
             soft_carried = 0
             guide_tail = 0
+            run_mechanisms: list = []
             anchor_meta = (scene_anchors or {}).get(str(scene_index))
             if output is None:
                 chunk = self._clone_latent(latent_template)
             elif anchor_meta:
+                run_mechanisms.append("mixed_i2v_anchor")
                 effect = self._scene_transition_effect(scene_cond)
-                if effect and transition_duration > 0:
-                    boundary_latent = cumulative_latent_frames
-                    boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
-                    boundary_entries.append({
-                        "boundary_latent": boundary_latent,
-                        "pixel_frame": max(0, boundary_pixel),
-                        "effect": effect,
-                    })
+                boundary_latent = cumulative_latent_frames
+                boundary_pixel = self._latent_to_pixel_frame(boundary_latent, time_scale)
+                boundary_entries.append({
+                    "between": [scene_index, scene_index + 1],
+                    "boundary_latent": boundary_latent,
+                    "pixel_frame": max(0, boundary_pixel),
+                    "effect": effect if effect and transition_duration > 0 else None,
+                })
+                if video_overlap > 0:
+                    run_mechanisms.append(f"latent_overlap({frame_overlap}px)")
                 chunk = self._build_mixed_anchor_chunk(
                     vae, anchor_meta, latent_template, output, video_overlap,
                 )
             else:
                 # Record boundary before blending
                 effect = self._scene_transition_effect(scene_cond)
-                if effect and transition_duration > 0:
-                    boundary_latent = cumulative_latent_frames
-                    boundary_pixel = int((boundary_latent - 1) * time_scale + 1) if time_scale > 1 else boundary_latent
-                    boundary_entries.append({
-                        "boundary_latent": boundary_latent,
-                        "pixel_frame": max(0, boundary_pixel),
-                        "effect": effect,
-                    })
+                boundary_latent = cumulative_latent_frames
+                boundary_pixel = self._latent_to_pixel_frame(boundary_latent, time_scale)
+                boundary_entries.append({
+                    "between": [scene_index, scene_index + 1],
+                    "boundary_latent": boundary_latent,
+                    "pixel_frame": max(0, boundary_pixel),
+                    "effect": effect if effect and transition_duration > 0 else None,
+                })
                 chunk = self._build_continuation_chunk(latent_template, output, video_overlap)
                 if video_overlap == 0:
                     chunk, soft_carried = self._prepend_soft_continuation(chunk, output)
+                    if soft_carried > 0:
+                        run_mechanisms.append(f"soft_continuation({soft_carried})")
+                elif video_overlap > 0:
+                    run_mechanisms.append(f"latent_overlap({frame_overlap}px)")
                 custom_guides = None
                 if per_scene_guides and scene_index < len(per_scene_guides):
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
+                    run_mechanisms.append("custom_guide_stack")
                     chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
                         chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
                         scene_positive, scene_negative, vae,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
                 elif carry_i2v_guides:
+                    run_mechanisms.append("carry_i2v_guides")
                     chunk, scene_positive, scene_negative, carried = self._append_i2v_guides(
                         chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
                 if mid_scene_guide and not custom_guides:
+                    run_mechanisms.append("mid_scene_guide")
                     chunk, scene_positive, scene_negative, guide_tail = self._append_mid_scene_guide(
                         chunk, output, scene_positive, scene_negative, vae, mid_scene_guide_strength,
                     )
@@ -3268,10 +3437,12 @@ class FunPackLTXAVSceneChainSampler:
                     guide_tail = 0
 
             if embed_guidance and _value_fn is not None and _value_fn.is_ready():
+                run_mechanisms.append("embed_guidance_vf_ascend")
                 orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
                 ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
                 scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
             if embed_guidance and _liked_dir is not None:
+                run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             # Per-scene temporal style (temporal_style="auto"): layer a frame_rate wrapper on
             # top of whatever is installed (e.g. embed guidance). Restored right after sampling,
@@ -3311,7 +3482,16 @@ class FunPackLTXAVSceneChainSampler:
             scene_outputs.append(self._clone_latent(sampled))
             output = sampled if output is None else self._blend_latents(output, sampled, video_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
-            report_lines.append(f"Scene {scene_index + 1}: seed={scene_seed}, text={self._scene_text(scene_cond, scene_index)}")
+            scene_meta = self._scene_meta(scene_cond, scene_index)
+            scene_runs.append({
+                **scene_meta,
+                "seed_used": scene_seed,
+                "mechanisms": run_mechanisms,
+            })
+            report_lines.append(
+                f"Scene {scene_index + 1}: seed={scene_seed}, text={scene_meta['text']}"
+                + (f" | encode≠text" if scene_meta["encode_text"] != scene_meta["text"] else "")
+            )
 
         del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
 
@@ -3346,7 +3526,32 @@ class FunPackLTXAVSceneChainSampler:
         )
         if carry_i2v_guides and carried_guide_frames > 0:
             status += f", i2v guide tokens={carried_guide_frames} latent frame(s)"
-        boundaries_out = [{"pixel_frame": e["pixel_frame"], "effect": e["effect"]} for e in boundary_entries]
+        overlap_diag = self._build_overlap_diagnostics(
+            scene_count=scene_count,
+            video_frames=video_frames,
+            pixel_overlap=int(frame_overlap),
+            latent_overlap=int(video_overlap),
+            time_scale=time_scale,
+            transition_duration=int(transition_duration),
+            boundaries=boundary_entries,
+            scene_runs=scene_runs,
+            carry_i2v_guides=bool(carry_i2v_guides),
+            mid_scene_guide=bool(mid_scene_guide),
+            embed_guidance=bool(embed_guidance),
+            embed_guidance_strength=float(embed_guidance_strength),
+            embed_guidance_source=str(embed_guidance_source or "relative"),
+        )
+        if scene_count > 1 and int(frame_overlap) > 0:
+            status += (
+                f", overlap_blend={int(frame_overlap)}px"
+                f" (scene N tail may show scene N+1 motion in last {int(frame_overlap)} frames)"
+            )
+        if embed_guidance:
+            status += (
+                f", embed_guidance={_eg_source}@{embed_guidance_strength}"
+                f" (steers ALL scenes — not boundary-local)"
+            )
+        boundaries_out = overlap_diag
         if refinement_key_input:
             try:
                 try:
