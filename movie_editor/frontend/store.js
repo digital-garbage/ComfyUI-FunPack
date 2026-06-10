@@ -14,6 +14,9 @@
     // within that source video this clip starts at (so split halves / deleted clips play
     // the correct portion). Not persisted to disk; cleared on project switch.
     sceneRenders: {},
+    // Removed scenes that still had a render: shown as timeline/preview ghosts until the
+    // neighboring run is regenerated (preview-only; not included in generation/export).
+    sceneGhosts: [],
     saving: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
@@ -50,6 +53,7 @@
     state.selectedSceneId = state.project.scenes[0]?.id || null;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = {};  // per-session; not persisted
+    state.sceneGhosts = [];
     notify();
     refreshPreview();
     loadModels();  // models config is per-project — reload for this project
@@ -186,10 +190,78 @@
 
   function removeScene(id) {
     if (!state.project) return;
-    state.project.scenes = state.project.scenes.filter((s) => s.id !== id);
-    delete state.sceneRenders[id];  // drop its render mapping (preview/render skip it)
+    const arr = state.project.scenes;
+    const idx = arr.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    const sc = arr[idx];
+    const r = state.sceneRenders[id];
+    if (sc && r && r.media) {
+      state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
+      state.sceneGhosts.push({
+        id,
+        afterSceneId: idx > 0 ? arr[idx - 1].id : null,
+        text: sc.text || "",
+        frames: sc.frames,
+        frames_mode: sc.frames_mode,
+        fps: sc.fps,
+        fps_mode: sc.fps_mode,
+        effects: sc.effects || {},
+        audio_volume: sc.audio_volume,
+        media: r.media,
+        inSec: r.inSec || 0,
+      });
+    }
+    state.project.scenes = arr.filter((s) => s.id !== id);
+    delete state.sceneRenders[id];
     if (state.selectedSceneId === id) state.selectedSceneId = state.project.scenes[0]?.id || null;
     notify(); scheduleSave();
+  }
+
+  function dismissGhost(id) {
+    state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
+    notify();
+  }
+
+  // Duration of a live scene or a removed-scene ghost snapshot.
+  function segmentDurationSec(seg) {
+    const p = state.project;
+    if (!p || !seg) return 0;
+    if (seg.kind === "scene") return sceneDurationSec(seg.scene);
+    const g = seg.ghost;
+    const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
+    const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
+    return (frames || 1) / (fps || 25);
+  }
+
+  // Preview/timeline layout: live scenes interleaved with removed-scene ghosts.
+  function buildPreviewSegments() {
+    const p = state.project;
+    if (!p) return [];
+    const ghosts = state.sceneGhosts || [];
+    const byAnchor = new Map();
+    for (const g of ghosts) {
+      const key = g.afterSceneId || "__start__";
+      if (!byAnchor.has(key)) byAnchor.set(key, []);
+      byAnchor.get(key).push(g);
+    }
+    const ordered = [];
+    for (const g of (byAnchor.get("__start__") || [])) ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
+    for (const sc of (p.scenes || [])) {
+      ordered.push({ kind: "scene", scene: sc, id: sc.id });
+      for (const g of (byAnchor.get(sc.id) || [])) ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
+    }
+    let acc = 0;
+    return ordered.map((seg) => {
+      const durationSec = segmentDurationSec(seg);
+      const out = { ...seg, offsetSec: acc, durationSec };
+      acc += durationSec;
+      return out;
+    });
+  }
+
+  function previewTotalSec() {
+    const segs = buildPreviewSegments();
+    return segs.length ? segs[segs.length - 1].offsetSec + segs[segs.length - 1].durationSec : 0;
   }
 
   // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
@@ -339,6 +411,7 @@
     });
     _applyDetectedTransitions(next, v.transitions);
     state.project.scenes = next;
+    state.sceneGhosts = [];  // scene ids changed — old ghosts no longer anchor correctly
     state.selectedSceneId = null;  // show project view so the result is visible
     notify(); scheduleSave();
   }
@@ -432,11 +505,17 @@
 
   // Record a completed run's output: map each of the run's scenes to the one source
   // video at its cumulative in-point, so splits/deletes later play the right portions.
+  function _pruneGhostsAfterRegen(targetSceneIds) {
+    const ids = new Set(targetSceneIds || []);
+    state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
+  }
+
   function _recordSegment(mediaList, targetSceneIds) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
     let inAcc = 0;
     let clearedRating = false;
+    _pruneGhostsAfterRegen(targetSceneIds);
     for (const id of targetSceneIds) {
       const sc = scene(id); if (!sc) continue;
       state.sceneRenders[id] = { media: primary, inSec: inAcc };
@@ -644,6 +723,7 @@
       // Play the stitched file across the whole timeline (single source, in-point 0).
       const order = state.project.scenes.filter((s) => !s.excluded);
       state.sceneRenders = {};
+      state.sceneGhosts = [];
       let acc = 0;
       for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
       set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} clip(s) — saving…` } });
@@ -755,7 +835,8 @@
   window.Store = {
     get, set, subscribe, init,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, moveScene, moveSceneTo, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
+    buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,

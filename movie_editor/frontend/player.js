@@ -40,18 +40,36 @@
   const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || (t + 1)) - 0.02));
 
   function _buildClips(st) {
-    if (!st.project) return [];
-    const p = st.project;
+    if (!st.project || !S.buildPreviewSegments) return [];
     const sr = st.sceneRenders || {};
-    const sFps = (sc) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : p.frame_rate) || 25;
-    const sFrames = (sc) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
     const out = [];
-    let acc = 0;
-    for (const sc of (p.scenes || [])) {
-      const dur = sFrames(sc) / sFps(sc);
+    for (const seg of S.buildPreviewSegments()) {
+      const dur = seg.durationSec;
+      const startSec = seg.offsetSec;
+      if (seg.kind === "ghost") {
+        const g = seg.ghost;
+        if (!g.media) continue;
+        out.push({
+          media: g.media, ghost: true, ghostId: g.id, startSec, durationSec: dur,
+          inSec: g.inSec || 0, fx: g.effects || {}, vol: g.audio_volume != null ? g.audio_volume : 1,
+          slate: "Removed — preview only",
+        });
+        continue;
+      }
+      const sc = seg.scene;
       const r = sr[sc.id];
-      if (r && r.media) out.push({ media: r.media, sceneId: sc.id, startSec: acc, durationSec: dur, inSec: r.inSec || 0, fx: sc.effects || {}, vol: sc.audio_volume != null ? sc.audio_volume : 1 });
-      acc += dur;  // timeline advances even over ungenerated scenes (gaps)
+      if (r && r.media) {
+        out.push({
+          media: r.media, sceneId: sc.id, startSec, durationSec: dur, inSec: r.inSec || 0,
+          fx: sc.effects || {}, vol: sc.audio_volume != null ? sc.audio_volume : 1,
+        });
+      } else if (!sc.excluded) {
+        out.push({
+          pending: true, sceneId: sc.id, startSec, durationSec: dur,
+          slate: "Not generated yet",
+          slateSub: "Generate this clip to include it in the next run",
+        });
+      }
     }
     return out;
   }
@@ -59,8 +77,27 @@
   function _clipAt(sec) {
     return _clips.find((c) => sec >= c.startSec - 0.05 && sec < c.startSec + c.durationSec - 0.001) || null;
   }
-  function _clipFrom(sec) {  // first clip at/after sec (for play/skip-gap)
-    return _clipAt(sec) || _clips.find((c) => c.startSec >= sec - 0.05) || null;
+  function _clipFrom(sec) {  // first playable clip at/after sec (skip pending gaps)
+    const at = _clipAt(sec);
+    if (at && !at.pending) return at;
+    return _clips.find((c) => !c.pending && c.startSec >= sec - 0.05) || null;
+  }
+
+  let _slateEl = null;
+  let _badgeEl = null;
+  function _showSlate(title, sub) {
+    if (!_slateEl) return;
+    _slateEl.style.display = title ? "" : "none";
+    if (!title) return;
+    const t = _slateEl.querySelector(".pm-slate-title");
+    const s = _slateEl.querySelector(".pm-slate-sub");
+    if (t) t.textContent = title;
+    if (s) { s.textContent = sub || ""; s.style.display = sub ? "" : "none"; }
+  }
+  function _showBadge(text) {
+    if (!_badgeEl) return;
+    _badgeEl.textContent = text || "";
+    _badgeEl.style.display = text ? "" : "none";
   }
 
   // ── video pool management ─────────────────────────────────────────────────────
@@ -138,9 +175,20 @@
   // Show `clip` at `offset` seconds into the clip; play if requested. Seeks to the clip's
   // in-point + offset within the (preloaded) source video.
   function _goto(clip, offset, play) {
-    if (!clip || !clip.media) return;
+    if (!clip) return;
+    if (clip.pending) {
+      _currentClip = clip;
+      _setActive(null);
+      _showBadge("");
+      _showSlate(clip.slate || "Not generated yet", clip.slateSub);
+      if (play) _startTick();
+      return;
+    }
+    if (!clip.media) return;
     const v = _ensureVideo(_urlFor(clip.media));
     _currentClip = clip; _setActive(v);
+    _showSlate("");
+    _showBadge(clip.ghost ? (clip.slate || "Removed — preview only") : "");
     const target = (clip.inSec || 0) + Math.max(0, offset);
     if (v.readyState >= 1) {
       v.currentTime = _clampT(v, target);
@@ -157,7 +205,7 @@
   function _advance() {
     if (!_currentClip) { _pause(); return; }
     const end = _currentClip.startSec + _currentClip.durationSec;
-    const next = _clips.find((c) => c.startSec >= end - 0.02 && c !== _currentClip);
+    const next = _clips.find((c) => !c.pending && c.startSec >= end - 0.02 && c !== _currentClip);
     if (!next) { _phSec = end; _pause(); return; }
     const contiguous = _urlFor(next.media) === _urlFor(_currentClip.media)
       && Math.abs((next.inSec || 0) - ((_currentClip.inSec || 0) + _currentClip.durationSec)) < 0.05;
@@ -173,7 +221,15 @@
   function _stopTick() { if (_raf) { cancelAnimationFrame(_raf); _raf = null; } }
   function _tick() {
     _raf = null;
-    if (!_playing || !_active || !_currentClip) return;
+    if (!_playing || !_currentClip) return;
+    if (_currentClip.pending) {
+      const within = _phSec - _currentClip.startSec + (1 / 60);
+      if (within >= _currentClip.durationSec - 0.001) _advance();
+      else { _phSec = _currentClip.startSec + within; _notifyPh(); }
+      if (_playing) _raf = requestAnimationFrame(_tick);
+      return;
+    }
+    if (!_active) return;
     const within = _active.currentTime - (_currentClip.inSec || 0);
     if (within >= _currentClip.durationSec - 0.001) { _advance(); }
     else { _phSec = _currentClip.startSec + Math.max(0, within); try { _applyFx(_currentClip, within); } catch (_) {} _notifyPh(); }
@@ -185,6 +241,7 @@
     _phSec = Math.max(0, sec);
     const clip = _clipAt(_phSec);
     if (clip) _goto(clip, _phSec - clip.startSec, false);
+    else { _currentClip = null; _setActive(null); _showSlate(""); _showBadge(""); }
     _notifyPh();
   }
 
@@ -382,7 +439,7 @@
     _syncPool();  // preload current clips, drop stale ones (timeline is dynamic)
 
     // Re-resolve the clip under the playhead each render (positions change with edits).
-    const hash = _clips.map((c) => c.media?.filename + "@" + c.startSec.toFixed(2) + "+" + c.inSec.toFixed(2)).join("|");
+    const hash = _clips.map((c) => (c.pending ? "pending:" + c.sceneId : c.ghost ? "ghost:" + c.ghostId : c.media?.filename) + "@" + c.startSec.toFixed(2) + "+" + (c.inSec || 0).toFixed(2)).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
       const clip = _clipAt(_phSec);
@@ -394,18 +451,23 @@
     const gen = st.gen || { state: "idle", media: [] };
     _fpsCur = p?.frame_rate || 25;
 
-    // Compute total duration
-    const sFps = (sc) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : _fpsCur) || 25;
-    const sFrames = (sc) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p?.num_frames_per_scene || 1) || 1;
-    _totalSecCur = 0;
-    for (const sc of (p?.scenes || [])) _totalSecCur += sFrames(sc) / sFps(sc);
+    _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
 
     clear(body);
 
     // ── canvas (video + placeholder) ────────────────────────────────────────
     const canvas = el("div", "pm-canvas");
+    _slateEl = el("div", "pm-slate");
+    _slateEl.style.display = "none";
+    _slateEl.append(el("div", "pm-slate-title"));
+    _slateEl.append(el("div", "pm-slate-sub"));
+    _badgeEl = el("div", "pm-segment-badge");
+    _badgeEl.style.display = "none";
+
     if (_clips.length) {
       canvas.append(stage);  // pooled videos live here; only the active one is visible
+      canvas.append(_slateEl);
+      canvas.append(_badgeEl);
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
       splash.append(el("div", "pm-gen-icon", "⚙"));
@@ -445,15 +507,24 @@
     // ── minibar (segment strips + scrub needle) ──────────────────────────────
     const minibar = el("div", "pm-minibar");
     _minibarEl = minibar;
-    if (p && _totalSecCur > 0) {
-      let acc = 0;
-      (p.scenes || []).forEach((sc) => {
-        const d = sFrames(sc) / sFps(sc);
-        const o = acc; acc += d;
-        const rendered = !!((st.sceneRenders || {})[sc.id] || {}).media;
-        const chip = el("div", "pm-chip" + (rendered ? " rendered" : ""));
+    if (p && _totalSecCur > 0 && S.buildPreviewSegments) {
+      S.buildPreviewSegments().forEach((seg) => {
+        const d = seg.durationSec;
+        let cls = "pm-chip";
+        let title = "";
+        if (seg.kind === "ghost") {
+          cls += " ghost";
+          title = "Removed scene (preview only — not in next run)";
+        } else {
+          const sc = seg.scene;
+          const rendered = !!((st.sceneRenders || {})[sc.id] || {}).media;
+          cls += rendered ? " rendered" : " pending";
+          const idx = (p.scenes || []).indexOf(sc) + 1;
+          title = `Scene ${idx}${rendered ? " (rendered)" : " (not rendered)"}`;
+        }
+        const chip = el("div", cls);
         chip.style.width = (d / _totalSecCur * 100).toFixed(3) + "%";
-        chip.title = `Scene ${(p.scenes || []).indexOf(sc) + 1}${rendered ? " (rendered)" : " (not rendered)"}`;
+        chip.title = title;
         // Drag-to-scrub on minibar
         chip.addEventListener("mousedown", (e) => {
           e.preventDefault();

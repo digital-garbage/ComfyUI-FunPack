@@ -317,7 +317,13 @@ input[type=number] { font-family: var(--font-mono); }
 .pm-minibar { height: 14px; flex: 0 0 auto; display: flex; position: relative; background: var(--ink-2); border-top: 1px solid var(--line); cursor: col-resize; user-select: none; }
 .pm-chip { height: 100%; flex-shrink: 0; background: var(--ink-3); border-right: 1px solid var(--ink-2); transition: opacity .1s; }
 .pm-chip.rendered { background: linear-gradient(180deg, var(--teal), #3ab3a8); opacity: .55; }
+.pm-chip.pending { background: repeating-linear-gradient(-45deg, var(--ink-3), var(--ink-3) 4px, #1a1a1a 4px, #1a1a1a 8px); opacity: .45; }
+.pm-chip.ghost { background: repeating-linear-gradient(-45deg, #2a2418, #2a2418 4px, #3d3420 4px, #3d3420 8px); opacity: .65; }
 .pm-chip:hover { opacity: 1 !important; }
+.pm-slate { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; background: #080808ee; color: var(--muted); pointer-events: none; text-align: center; padding: 16px; }
+.pm-slate-title { font-size: 14px; color: var(--amber-2); font-family: var(--font-mono); }
+.pm-slate-sub { font-size: 11.5px; color: var(--faint); max-width: 280px; }
+.pm-segment-badge { position: absolute; top: 10px; left: 10px; z-index: 3; font-size: 10.5px; font-family: var(--font-mono); color: var(--amber-2); background: #000a; border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--line)); border-radius: 12px; padding: 3px 9px; pointer-events: none; }
 .pm-needle { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .85; transform: translateX(-50%); pointer-events: none; z-index: 2; }
 
 /* transport bar */
@@ -489,6 +495,10 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip.selected::before { background: var(--teal); opacity: 1; }
 .clip.excluded { opacity: .42; }
 .clip.excluded::before { background: var(--faint); }
+.clip.pending:not(.rendered) { border-style: dashed; border-color: color-mix(in srgb, var(--muted) 55%, var(--line)); }
+.clip.ghost { border-style: dashed; border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); opacity: .72; cursor: default; }
+.clip.ghost::before { background: var(--amber); opacity: .35; }
+.clip.ghost .ghost-label { font-style: italic; color: var(--amber-2); }
 /* a clip that has a rendered video available (in temp) */
 .clip.rendered::after { content: "●"; position: absolute; top: 4px; right: 6px; font-size: 7px;
   color: #57c98e; text-shadow: 0 0 5px rgba(87,201,142,.7); pointer-events: none; z-index: 4; }

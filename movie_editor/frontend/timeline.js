@@ -75,7 +75,7 @@
   // Returns {idx, x}: idx = post-removal insertion index among non-dragged clips; x =
   // the boundary's x relative to the track (for the insertion line).
   function _dropTarget(track, dragged, clientX) {
-    const others = [...track.querySelectorAll(".clip")].filter((c) => c !== dragged);
+    const others = [...track.querySelectorAll(".clip:not(.ghost)")].filter((c) => c !== dragged);
     const tr = track.getBoundingClientRect();
     let idx = 0;
     for (const c of others) {
@@ -89,9 +89,32 @@
     return { idx, x };
   }
 
+  // Removed scene — preview-only ghost (still plays last render until regen).
+  function ghostClipEl(st, p, ghost, leftPx, widthPx) {
+    const clip = el("div", "clip ghost");
+    clip.style.left = leftPx + "px";
+    clip.style.width = Math.max(widthPx, 8) + "px";
+    clip.title = "Removed from timeline — shown in preview only; won't generate on the next run";
+    const head = el("div", "clip-head");
+    head.append(el("span", "clip-no", "∅"));
+    head.append(el("span", "clip-src", "👻"));
+    const fps = (ghost.fps_mode !== "project" && ghost.fps != null) ? ghost.fps : p.frame_rate;
+    const frames = (ghost.frames_mode !== "project" && ghost.frames != null) ? ghost.frames : p.num_frames_per_scene;
+    head.append(el("span", "clip-dur", timecode((frames || 1) / (fps || 25), fps || 25)));
+    clip.append(head);
+    clip.append(el("div", "clip-text ghost-label", ghost.text || "removed scene"));
+    const actions = el("div", "clip-actions");
+    const dismiss = el("button", "ic-btn", "✕");
+    dismiss.title = "Dismiss ghost from preview";
+    dismiss.onclick = (e) => { e.stopPropagation(); S.dismissGhost(ghost.id); };
+    actions.append(dismiss);
+    clip.append(actions);
+    return clip;
+  }
+
   // ── clip ───────────────────────────────────────────────────────────────────────
   function clipEl(st, p, scene, index, leftPx, widthPx) {
-    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : ""));
+    const clip = el("div", "clip" + (scene.id === st.selectedSceneId ? " selected" : "") + (scene.excluded ? " excluded" : "") + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : "")));
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = () => S.selectScene(scene.id);
@@ -478,11 +501,12 @@
     if (!st.project) { body.append(el("div", "empty-stage", "Open a project to start cutting.")); return; }
     const p = st.project;
     const scenes = p.scenes || [];
-
-    // layout: cumulative offsets in seconds
-    let acc = 0;
-    const lay = scenes.map((sc) => { const d = sDur(sc, p); const o = acc; acc += d; return { sc, o, d }; });
-    const totalSec = acc;
+    const segs = S.buildPreviewSegments ? S.buildPreviewSegments() : [];
+    const lay = segs.length
+      ? segs.map((seg) => ({ seg, o: seg.offsetSec, d: seg.durationSec }))
+      : scenes.map((sc) => { const d = sDur(sc, p); return { seg: { kind: "scene", scene: sc }, o: 0, d }; });
+    const totalSec = S.previewTotalSec ? S.previewTotalSec() : lay.reduce((a, x) => a + x.d, 0);
+    const sceneLay = lay.filter((x) => x.seg.kind === "scene").map((x) => ({ sc: x.seg.scene, o: x.o, d: x.d }));
     tlTotalSec = totalSec;
     tlFps = p.frame_rate;
     const contentW = Math.max(totalSec * pxPerSec + 40, 480);
@@ -528,11 +552,17 @@
 
     const tracks = el("div", "tl-tracks");
     const track = el("div", "tl-track2");
-    lay.forEach(({ sc, o, d }, i) => track.append(clipEl(st, p, sc, i, o * pxPerSec, d * pxPerSec)));
-    for (let i = 0; i < lay.length - 1; i++) track.append(seamEl(st, p, lay[i].sc, (lay[i].o + lay[i].d) * pxPerSec));
+    lay.forEach(({ seg, o, d }) => {
+      if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
+      else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));
+    });
+    for (let i = 0; i < scenes.length - 1; i++) {
+      const nextSeg = segs.find((s) => s.kind === "scene" && s.scene.id === scenes[i + 1].id);
+      if (nextSeg) track.append(seamEl(st, p, scenes[i], nextSeg.offsetSec * pxPerSec));
+    }
     if (!lay.length) track.append(el("div", "tl-emptyhint", "No clips yet — add one from the toolbar."));
     tracks.append(track);
-    tracks.append(audioLanes(st, p, lay));
+    tracks.append(audioLanes(st, p, sceneLay));
     const phSec = Math.min(window.Player?.getPlayhead() ?? 0, totalSec);
     tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; tracks.append(tlPhEl);
     content.append(tracks);
@@ -544,7 +574,9 @@
     tlScrollEl = scroll;
 
     const active = scenes.filter((s) => !s.excluded).length;
-    meta.append(el("span", null, `${scenes.length} clips · ${active} active · ${timecode(totalSec, p.frame_rate)}`));
+    const ghosts = (st.sceneGhosts || []).length;
+    const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
+    meta.append(el("span", null, metaTxt));
   }
 
   S.subscribe(render);
@@ -567,9 +599,10 @@
     const st = S.get();
     if (!st.project || !st.selectedSceneId) return;
     const p = st.project;
-    let off = 0, target = null;
-    for (const sc of (p.scenes || [])) { if (sc.id === st.selectedSceneId) { target = sc; break; } off += sDur(sc, p); }
-    if (!target) return;
+    const seg = (S.buildPreviewSegments ? S.buildPreviewSegments() : []).find((s) => s.kind === "scene" && s.scene.id === st.selectedSceneId);
+    if (!seg) return;
+    const target = seg.scene;
+    const off = seg.offsetSec;
     const ph = window.Player?.getPlayhead() ?? 0;
     const fps = sFps(target, p), dur = sDur(target, p);
     // Split at the playhead when it's inside the clip; otherwise at the midpoint.
