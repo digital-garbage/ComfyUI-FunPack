@@ -350,6 +350,33 @@ input[type=number] { font-family: var(--font-mono); }
 .insp-seg.active { background: var(--amber-soft); color: var(--amber-2); }
 .insp-seg:disabled { opacity: .4; cursor: default; }
 
+/* engine context strip (scene view → jump to project engine settings) */
+.insp-engine-strip { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 12px; padding: 7px 10px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px; }
+.insp-engine-strip-txt { font-size: 11.5px; color: var(--muted); }
+
+/* collapsible Studio / Chain cards */
+.insp-engine { margin: 10px 0 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--ink-2); overflow: hidden; }
+.insp-engine-head { width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 10px;
+  background: linear-gradient(var(--ink-3, #1e1b15), var(--ink-2)); border: none; cursor: pointer;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--amber); text-align: left; }
+.insp-engine-head:hover { color: var(--amber-2); }
+.insp-engine-chev { font-size: 11px; color: var(--faint); flex: 0 0 auto; }
+.insp-engine-title { flex: 1 1 auto; }
+.insp-engine-badge { flex: 0 0 auto; font-size: 9px; letter-spacing: .4px; color: var(--teal);
+  border: 1px solid var(--teal-soft, #57d0c655); border-radius: 4px; padding: 1px 6px; text-transform: none; }
+.insp-engine-body { padding: 4px 10px 10px; }
+.insp-engine-pickers { margin-bottom: 4px; }
+
+.insp-fold { margin: 6px 0; border: 1px solid var(--line-2); border-radius: 7px; background: var(--ink-0); }
+.insp-fold > summary.insp-fold-sum { cursor: pointer; padding: 6px 9px; font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: .6px; text-transform: uppercase; color: var(--muted); list-style: none; user-select: none; }
+.insp-fold > summary.insp-fold-sum::-webkit-details-marker { display: none; }
+.insp-fold > summary.insp-fold-sum::before { content: "▸ "; color: var(--faint); }
+.insp-fold[open] > summary.insp-fold-sum::before { content: "▾ "; }
+.insp-fold-body { padding: 2px 9px 8px; }
+.insp-fold-body .insp-hint { margin: 4px 0 0; }
+
 /* read-only length/fps value when inheriting */
 .len-readout { font-family: var(--font-mono); font-size: 12px; color: var(--muted); padding: 6px 8px;
   background: var(--ink-0); border: 1px dashed var(--line); border-radius: 7px; }

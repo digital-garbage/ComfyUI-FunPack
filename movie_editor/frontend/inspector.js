@@ -218,22 +218,81 @@
     actions.append(gen); actions.append(del); body.append(actions);
   }
 
+  // ── collapsible engine settings (Studio / Chain cards) ───────────────────────
+  const FOLD_KEY = "funpack_insp_fold_";
+  function foldOpen(id, def) {
+    const v = localStorage.getItem(FOLD_KEY + id);
+    return v === null ? def : v === "1";
+  }
+  function setFoldOpen(id, open) { localStorage.setItem(FOLD_KEY + id, open ? "1" : "0"); }
+
+  function collapsibleSection(parent, id, title, defaultOpen) {
+    const det = el("details", "insp-fold");
+    det.open = foldOpen(id, defaultOpen);
+    det.addEventListener("toggle", () => setFoldOpen(id, det.open));
+    det.append(el("summary", "insp-fold-sum", title));
+    const inner = el("div", "insp-fold-body");
+    det.append(inner);
+    parent.append(det);
+    return inner;
+  }
+
+  function engineCard(parent, id, title, defaultOpen) {
+    const card = el("div", "insp-engine");
+    const head = el("button", "insp-engine-head");
+    head.type = "button";
+    let open = foldOpen(id, defaultOpen);
+    const chev = el("span", "insp-engine-chev", open ? "▾" : "▸");
+    const ttl = el("span", "insp-engine-title", title);
+    const badge = el("span", "insp-engine-badge");
+    badge.hidden = true;
+    head.append(chev, ttl, badge);
+    const cardBody = el("div", "insp-engine-body");
+    cardBody.hidden = !open;
+    head.onclick = () => {
+      open = !open;
+      cardBody.hidden = !open;
+      chev.textContent = open ? "▾" : "▸";
+      setFoldOpen(id, open);
+    };
+    card.append(head, cardBody);
+    parent.append(card);
+    return { body: cardBody, setBadge: (n) => { badge.textContent = n > 0 ? `${n} changed` : ""; badge.hidden = n <= 0; } };
+  }
+
+  function slotLabelFor(st, slotId) {
+    if (!slotId || slotId === "funpack") return null;
+    const slot = (st.models?.slots || []).find((s) => s.id === slotId);
+    return slot ? (slot.label || slot.node_class || slot.id) : slotId;
+  }
+
+  function activeSceneCount(p) {
+    return (p.scenes || []).filter((s) => !s.excluded).length;
+  }
+
+  function renderEngineStrip(st) {
+    const p = st.project;
+    const studioOn = !p.conditioning_slot || p.conditioning_slot === "funpack";
+    const chainOn = !p.sampler_slot || p.sampler_slot === "funpack";
+    const parts = [];
+    parts.push(studioOn ? "FunPack Studio" : (slotLabelFor(st, p.conditioning_slot) || p.conditioning_slot));
+    parts.push(chainOn ? "Chain Sampler" : (slotLabelFor(st, p.sampler_slot) || p.sampler_slot));
+    const strip = el("div", "insp-engine-strip");
+    strip.append(el("span", "insp-engine-strip-txt", "Generating with " + parts.join(" + ")));
+    const btn = el("button", "btn ghost tiny", "Engine settings →");
+    btn.onclick = () => S.selectScene(null);
+    strip.append(btn);
+    body.append(strip);
+  }
+
   function renderProject(st) {
     const p = st.project;
     title.textContent = "Project";
-    const tag = el("div", "insp-tag"); tag.textContent = "Global settings"; body.append(tag);
 
+    const outTag = el("div", "insp-tag"); outTag.textContent = "Output"; body.append(outTag);
     const name = el("input"); name.value = p.name || ""; name.dataset.k = "pj-name";
     name.oninput = () => S.patchProjectQuiet({ name: name.value });
     body.append(field("Project name", name));
-
-    const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
-    anchor.placeholder = "Character / world description prepended to every scene";
-    anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
-    body.append(field("Anchor", anchor));
-
-    body.append(field("Opening transition (anchor → scene 1)", transitionSelect(p.intro_transition || "",
-      (v) => S.patchProject({ intro_transition: v }))));
 
     const row1 = el("div", "fields-row");
     row1.append(numberField("Seed", p.seed, (v) => S.patchProjectQuiet({ seed: v }), "pj-seed"));
@@ -247,128 +306,255 @@
     row3.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
     row3.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
     body.append(row3);
-    body.append(el("div", "insp-hint", "Link FPS / Frames / Width / Height to node inputs in Models → Linked inputs (set Source = Project …)."));
+    body.append(el("div", "insp-hint", "Link FPS / Frames / Width / Height in Models → Linked inputs (Source = Project …)."));
 
+    const promptTag = el("div", "insp-tag"); promptTag.textContent = "Prompt"; body.append(promptTag);
+    const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
+    anchor.placeholder = "Character / world description prepended to every scene";
+    anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
+    body.append(field("Anchor", anchor));
+    body.append(field("Opening transition (anchor → scene 1)", transitionSelect(p.intro_transition || "",
+      (v) => S.patchProject({ intro_transition: v }))));
     const neg = el("textarea"); neg.rows = 2; neg.value = p.negative_prompt || ""; neg.dataset.k = "pj-neg";
     neg.placeholder = "What to avoid in every scene";
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
     body.append(field("Negative prompt", neg));
 
     const slots = (st.models?.slots || []);
-
-    // Conditioning slot selector + its settings panel
-    const condTag = el("div", "insp-tag"); condTag.textContent = "Conditioning"; body.append(condTag);
-    const condSel = el("select");
-    [["funpack", "FunPack Studio (built-in)"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
+    const engTag = el("div", "insp-tag"); engTag.textContent = "Engine"; body.append(engTag);
+    const engRow = el("div", "fields-row insp-engine-pickers");
+    const condSel = el("select"); condSel.dataset.k = "pj-cond";
+    [["funpack", "FunPack Studio"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.conditioning_slot || "funpack") === v) o.selected = true; condSel.append(o); });
     condSel.onchange = () => S.setConditioningSlot(condSel.value);
-    body.append(field("Node", condSel));
-    if (!p.conditioning_slot || p.conditioning_slot === "funpack") renderStudioSettings(st);
-
-    // Sampler slot selector + its settings panel
-    const sampTag = el("div", "insp-tag"); sampTag.textContent = "Sampler"; body.append(sampTag);
-    const sampSel = el("select");
-    [["funpack", "FunPack Chain Sampler (built-in)"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
+    engRow.append(field("Conditioning", condSel));
+    const sampSel = el("select"); sampSel.dataset.k = "pj-samp";
+    [["funpack", "FunPack Chain Sampler"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.sampler_slot || "funpack") === v) o.selected = true; sampSel.append(o); });
     sampSel.onchange = () => S.setSamplerSlot(sampSel.value);
-    body.append(field("Node", sampSel));
-    if (!p.sampler_slot || p.sampler_slot === "funpack") renderSamplerSettings(st);
+    engRow.append(field("Sampler", sampSel));
+    body.append(engRow);
+
+    const studioOn = !p.conditioning_slot || p.conditioning_slot === "funpack";
+    const chainOn = !p.sampler_slot || p.sampler_slot === "funpack";
+    if (!studioOn) {
+      body.append(el("div", "insp-hint", "Custom conditioning node — wire and tune it in Models. FunPack Studio settings are hidden."));
+    } else {
+      renderStudioCard(st);
+    }
+    if (!chainOn) {
+      body.append(el("div", "insp-hint", "Custom sampler node — wire and tune it in Models. Chain Sampler settings are hidden."));
+    } else {
+      renderChainCard(st);
+    }
   }
 
-  // Studio refiner flags (live in studio_settings.refiner). Booleans the editor exposes.
-  const STUDIO_REFINER_FLAGS = [
+  const STUDIO_REFINER_ESSENTIALS = [
     { name: "vision_conditioning", label: "Vision conditioning", default: true },
     { name: "reference_injection", label: "Reference injection", default: false },
     { name: "prompt_repair", label: "Prompt repair", default: true },
   ];
+  const STUDIO_REFINER_ADVANCED = [
+    { name: "value_guidance", label: "Value guidance", kind: "bool", default: true },
+    { name: "steer_mode", label: "Steer mode", kind: "combo", choices: ["relative", "absolute", "both"], default: "relative" },
+    { name: "absolute_strength", label: "Absolute strength", kind: "float", default: 0.6, min: 0, max: 1, step: 0.05,
+      dependsOn: "steer_mode", dependsVals: ["absolute", "both"] },
+    { name: "temporal_style", label: "Temporal style", kind: "combo",
+      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze"], default: "natural" },
+    { name: "split_transition_placement", label: "Transition placement", kind: "combo",
+      choices: ["start", "end", "silent"], default: "start" },
+  ];
 
-  function renderStudioSettings(st) {
-    const p = st.project;
+  function parseStudioSettings(p) {
     const si = p.studio_inputs || {};
-    let curSettings = {};
-    try { curSettings = JSON.parse(si.studio_settings || "{}"); } catch (_) {}
-    const samplers = curSettings.samplers || null;
+    let cur = {};
+    try { cur = JSON.parse(si.studio_settings || "{}"); } catch (_) {}
+    const rf = (cur.refiner && typeof cur.refiner === "object") ? cur.refiner : {};
+    return { si, cur, rf };
+  }
 
-    // Studio refiner toggles
-    const rfTag = el("div", "insp-tag sp-sub"); rfTag.textContent = "Studio · refiner"; body.append(rfTag);
-    const rf = (curSettings.refiner && typeof curSettings.refiner === "object") ? curSettings.refiner : {};
-    STUDIO_REFINER_FLAGS.forEach((f) => {
+  function countStudioChanges(p) {
+    const { rf } = parseStudioSettings(p);
+    let n = 0;
+    [...STUDIO_REFINER_ESSENTIALS, ...STUDIO_REFINER_ADVANCED].forEach((f) => {
       const cur = rf[f.name] != null ? rf[f.name] : f.default;
-      const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur; ctrl.style.width = "auto";
-      ctrl.dataset.k = "rf-" + f.name;
-      ctrl.onchange = () => {
-        const next = { ...curSettings, refiner: { ...rf, [f.name]: ctrl.checked } };
-        S.setStudioInputNow("studio_settings", JSON.stringify(next));
-      };
-      body.append(field(f.label, ctrl));
+      if (cur !== f.default) n++;
     });
+    return n;
+  }
 
-    const tag = el("div", "insp-tag sp-sub"); tag.textContent = "Studio · sampler algorithm"; body.append(tag);
+  function persistStudioRefiner(patch, now) {
+    const { cur } = parseStudioSettings(S.get().project);
+    const rf = (cur.refiner && typeof cur.refiner === "object") ? cur.refiner : {};
+    const next = JSON.stringify({ ...cur, refiner: { ...rf, ...patch } });
+    if (now) S.setStudioInputNow("studio_settings", next);
+    else S.setStudioInput("studio_settings", next);
+  }
 
-    function persist(updatedSamplers, quiet) {
-      const next = JSON.stringify({ ...curSettings, samplers: updatedSamplers });
+  function renderStudioRefinerBool(parent, rf, f) {
+    const cur = rf[f.name] != null ? rf[f.name] : f.default;
+    const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur; ctrl.style.width = "auto";
+    ctrl.dataset.k = "rf-" + f.name;
+    ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.checked }, true);
+    parent.append(field(f.label, ctrl));
+  }
+
+  function renderStudioRefinerField(parent, rf, f) {
+    if (f.dependsOn) {
+      const depVal = rf[f.dependsOn] != null ? rf[f.dependsOn] : STUDIO_REFINER_ADVANCED.find((x) => x.name === f.dependsOn)?.default;
+      if (!(f.dependsVals || []).includes(depVal)) return;
+    }
+    const val = rf[f.name] != null ? rf[f.name] : f.default;
+    let ctrl;
+    if (f.kind === "bool") {
+      ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!val; ctrl.style.width = "auto";
+      ctrl.dataset.k = "rf-" + f.name;
+      ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.checked }, true);
+    } else if (f.kind === "combo") {
+      ctrl = el("select"); ctrl.dataset.k = "rf-" + f.name;
+      (f.choices || []).forEach((c) => { const o = new Option(c, c); if (c === val) o.selected = true; ctrl.append(o); });
+      ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.value }, true);
+    } else {
+      ctrl = el("input"); ctrl.type = "number";
+      if (f.step != null) ctrl.step = String(f.step);
+      if (f.min != null) ctrl.min = String(f.min);
+      if (f.max != null) ctrl.max = String(f.max);
+      ctrl.value = val; ctrl.dataset.k = "rf-" + f.name;
+      ctrl.oninput = () => persistStudioRefiner({ [f.name]: parseFloat(ctrl.value || "0") }, false);
+    }
+    parent.append(field(f.label, ctrl));
+  }
+
+  function renderStudioCard(st) {
+    const p = st.project;
+    const { cur: curSettings, rf } = parseStudioSettings(p);
+    const samplers = curSettings.samplers || null;
+    const card = engineCard(body, "studio_card", "FunPack Studio", true);
+    card.setBadge(countStudioChanges(p));
+
+    const ess = collapsibleSection(card.body, "studio_ess", "Essentials", true);
+    STUDIO_REFINER_ESSENTIALS.forEach((f) => renderStudioRefinerBool(ess, rf, f));
+
+    const refSec = collapsibleSection(card.body, "studio_ref", "Refinement", false);
+    STUDIO_REFINER_ADVANCED.forEach((f) => renderStudioRefinerField(refSec, rf, f));
+
+    const sampSec = collapsibleSection(card.body, "studio_samp", "Sampler algorithm", false);
+    function persistSamplers(updatedSamplers, quiet) {
+      const { cur } = parseStudioSettings(S.get().project);
+      const next = JSON.stringify({ ...cur, samplers: updatedSamplers });
       if (quiet) S.setStudioInput("studio_settings", next);
       else S.setStudioInputNow("studio_settings", next);
     }
-
     try {
-      window.SamplerPanel.render(body, samplers,
-        (s) => persist(s, true),
-        (s) => persist(s, false));
+      window.SamplerPanel.render(sampSec, samplers,
+        (s) => persistSamplers(s, true),
+        (s) => persistSamplers(s, false));
     } catch (e) {
       const err = el("div", "insp-hint"); err.style.color = "var(--err,#e55)";
       err.textContent = "Studio sampler panel failed to render: " + e.message;
-      body.append(err);
+      sampSec.append(err);
     }
+
+    card.body.append(el("div", "insp-hint",
+      "Scene text and transitions come from the timeline. Advisor, LoRA, batch training, and adjustments remain in the ComfyUI Studio popup on the graph."));
   }
 
-  // Key ChainSampler widget inputs exposed as simple form controls.
   const SAMPLER_KNOBS = [
-    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1  },
-    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 97,  step: 1    },
-    { name: "carry_i2v_guides",      label: "Carry i2v guides",     kind: "bool",  default: false },
-    { name: "mid_scene_guide",       label: "Mid-scene guide",      kind: "bool",  default: false },
-    { name: "mid_scene_guide_strength", label: "Guide strength",    kind: "float", default: 0.25,  min: 0, max: 1,   step: 0.05, dependsOn: "mid_scene_guide" },
-    { name: "embed_guidance",        label: "Embed guidance",       kind: "bool",  default: false },
-    { name: "embed_guidance_source", label: "Embed mode",           kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance" },
-    { name: "embed_guidance_strength", label: "Embed strength",     kind: "float", default: 0.02,  min: 0, max: 0.5, step: 0.005, dependsOn: "embed_guidance" },
-    { name: "decode_noise_scale",    label: "Decode noise scale",   kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
-    { name: "decode_timestep",       label: "Decode timestep",      kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
+    { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 512, step: 8 },
+    { name: "transition_duration",   label: "Transition duration",   kind: "int",   default: 16,    min: 0, max: 128, step: 2 },
+    { name: "use_same_seed",         label: "Same seed per scene",   kind: "bool",  default: false },
+    { name: "carry_i2v_guides",      label: "Carry i2v guides",      kind: "bool",  default: false, lockMulti: true },
+    { name: "cfg",                   label: "CFG",                   kind: "float", default: 1.0,   min: 0, max: 20,  step: 0.1 },
+    { name: "embed_guidance",        label: "Embed guidance",        kind: "bool",  default: false },
+    { name: "embed_guidance_source", label: "Embed mode",            kind: "combo", choices: ["relative", "absolute"], default: "relative", dependsOn: "embed_guidance" },
+    { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance" },
+    { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
+    { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
+    { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64 },
+    { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false },
+    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.25, max: 0.5, step: 0.05, dependsOn: "mid_scene_guide" },
   ];
+  const CHAIN_SECTIONS = [
+    { id: "chain_timing", title: "Timing", defaultOpen: true, knobs: ["frame_overlap", "transition_duration", "use_same_seed"] },
+    { id: "chain_cont", title: "Continuity", defaultOpen: true, knobs: ["carry_i2v_guides"] },
+    { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength"] },
+    { id: "chain_dec", title: "Decode", defaultOpen: false, knobs: ["decode_noise_scale", "decode_timestep", "decode_tile_size"] },
+    { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength"] },
+  ];
+  const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
-  function renderSamplerSettings(st) {
+  function countChainChanges(p) {
+    const si = p.sampler_inputs || {};
+    let n = 0;
+    SAMPLER_KNOBS.forEach((k) => {
+      if (si[k.name] != null && si[k.name] !== k.default) n++;
+    });
+    return n;
+  }
+
+  function knobVisible(k, si) {
+    if (k.dependsOn) {
+      const depVal = si[k.dependsOn] != null ? si[k.dependsOn] : SAMPLER_KNOB_MAP[k.dependsOn]?.default;
+      if (!depVal) return false;
+    }
+    return true;
+  }
+
+  function renderSamplerKnob(parent, st, k, si, multiScene) {
+    if (!knobVisible(k, si)) return;
+    const val = si[k.name] != null ? si[k.name] : k.default;
+    const forced = k.lockMulti && multiScene;
+    let ctrl;
+    if (k.kind === "bool") {
+      ctrl = el("input"); ctrl.type = "checkbox";
+      ctrl.checked = forced ? true : !!val;
+      ctrl.style.width = "auto";
+      ctrl.dataset.k = "si-" + k.name;
+      if (forced) {
+        ctrl.disabled = true;
+        ctrl.title = "Auto-enabled for multi-scene montages at generation time";
+      } else {
+        ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.checked);
+      }
+    } else if (k.kind === "combo") {
+      ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
+      (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
+      ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
+    } else {
+      ctrl = el("input"); ctrl.type = "number";
+      if (k.step != null) ctrl.step = String(k.step);
+      if (k.min != null) ctrl.min = String(k.min);
+      if (k.max != null) ctrl.max = String(k.max);
+      ctrl.value = val; ctrl.dataset.k = "si-" + k.name;
+      ctrl.oninput = () => {
+        const v = k.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0");
+        S.setSamplerInput(k.name, v);
+      };
+    }
+    const row = field(k.label + (forced ? " (auto)" : ""), ctrl);
+    parent.append(row);
+  }
+
+  function renderChainCard(st) {
     const p = st.project;
     const si = p.sampler_inputs || {};
-    const tag = el("div", "insp-tag"); tag.textContent = "Sampler settings"; body.append(tag);
+    const multiScene = activeSceneCount(p) > 1;
+    const card = engineCard(body, "chain_card", "Chain Sampler", true);
+    card.setBadge(countChainChanges(p));
 
-    SAMPLER_KNOBS.forEach((k) => {
-      const dep = k.dependsOn;
-      if (dep) {
-        const depVal = si[dep] != null ? si[dep] : SAMPLER_KNOBS.find((x) => x.name === dep)?.default;
-        if (!depVal) return;
+    CHAIN_SECTIONS.forEach((sec) => {
+      const inner = collapsibleSection(card.body, sec.id, sec.title, sec.defaultOpen);
+      sec.knobs.forEach((name) => {
+        const k = SAMPLER_KNOB_MAP[name];
+        if (k) renderSamplerKnob(inner, st, k, si, multiScene);
+      });
+      if (sec.id === "chain_cont" && multiScene) {
+        inner.append(el("div", "insp-hint", "Carry i2v guides is forced on when generating 2+ active scenes."));
       }
-      const val = si[k.name] != null ? si[k.name] : k.default;
-      let ctrl;
-      if (k.kind === "bool") {
-        ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!val; ctrl.style.width = "auto";
-        ctrl.dataset.k = "si-" + k.name;
-        ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.checked);
-      } else if (k.kind === "combo") {
-        ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
-        (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
-        ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
-      } else {
-        ctrl = el("input"); ctrl.type = "number";
-        if (k.step != null) ctrl.step = String(k.step);
-        if (k.min != null) ctrl.min = String(k.min);
-        if (k.max != null) ctrl.max = String(k.max);
-        ctrl.value = val; ctrl.dataset.k = "si-" + k.name;
-        ctrl.oninput = () => {
-          const v = k.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0");
-          S.setSamplerInput(k.name, v);
-        };
+      if (sec.id === "chain_timing") {
+        inner.append(el("div", "insp-hint",
+          "Transition duration controls in-decode boundary fades (from transition library). Post-render crossfades are per-clip in the scene inspector."));
       }
-      body.append(field(k.label, ctrl));
     });
   }
 
@@ -526,7 +712,8 @@
     const scene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
     renderGlobalPrompt(st);
     renderSwitch(st, scene);
-    if (scene) renderScene(st, scene); else renderProject(st);
+    if (scene) { renderEngineStrip(st); renderScene(st, scene); }
+    else renderProject(st);
     renderExposed(st);
     renderSplit(st);
     body.scrollTop = scrollTop;  // restore so editing doesn't jump to the top
