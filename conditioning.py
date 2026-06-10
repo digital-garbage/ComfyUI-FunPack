@@ -5865,6 +5865,11 @@ FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 _V2_PERSISTENT_ENCODE_CACHE = {}
 _V2_PERSISTENT_CACHE_MAX = 4096
 
+# Movie Editor sends this when the user did not rate before regenerating: apply session
+# memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
+# Must appear in V2_RATING_LABELS so ComfyUI /prompt validation accepts editor overrides.
+MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
+
 _BASE_RATING_LABELS = [
     "-Just forget it-",
     "Perfect",
@@ -5882,14 +5887,14 @@ _BASE_RATING_LABELS = [
     "Missing action + quality",
     "Awful",
 ]
-_NO_LOVED_LABELS = {"-Just forget it-", "Perfect", "Awful", "Missing quality", "Missing details + quality", "Missing action + quality", "Wrong action + quality"}
+_NO_LOVED_LABELS = {
+    "-Just forget it-", "Perfect", "Awful", "Missing quality",
+    "Missing details + quality", "Missing action + quality", "Wrong action + quality",
+    MOVIE_EDITOR_CONTINUE_RATING,
+}
 V2_RATING_LABELS = _BASE_RATING_LABELS + [
     l + "|loved" for l in _BASE_RATING_LABELS if l not in _NO_LOVED_LABELS
-]
-
-# Movie Editor sends this when the user did not rate before regenerating: apply session
-# memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
-MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
+] + [MOVIE_EDITOR_CONTINUE_RATING]
 
 V2_RATING_PROFILES = {
     "-Just forget it-": {"key": "forget", "reward": 0.0, "level": 0, "missing_axes": [], "skip_learning": True},
