@@ -54,13 +54,13 @@
     const all = destinations(slot, out.type);
     if (!pipelineLocked()) return all;
     const role = slot.role || "custom";
-    if (role === "custom") {
-      return all.filter((d) => !d.value.startsWith("port:"));
-    }
     const rules = wiringRules.role_targets?.[role] || [];
-    const allowedPorts = rules
+    const chainPorts = wiringRules.type_chain_terminals?.[out.type] || [];
+    const allowedPorts = [...rules
       .filter((r) => r.type === out.type && (r.output_name == null || r.output_name === out.name))
-      .map((r) => "port:" + r.port);
+      .map((r) => "port:" + r.port),
+    ...chainPorts.map((p) => "port:" + p),
+    ].filter((p, i, a) => a.indexOf(p) === i);
     return all.filter((d) => !d.value.startsWith("port:") || allowedPorts.includes(d.value));
   }
 
@@ -608,7 +608,7 @@
     }
     if (pipelineLocked()) {
       sec.append(el("div", "req-hint guided-hint",
-        "Guided wiring is on — loader outputs wire only to their built-in ports. Image processing uses Timeline (scene image) by default. Enable Full control in the built-in pipeline panel to rewire everything manually."));
+        "Guided wiring is on — MODEL/CLIP may chain through LoRA loaders before Studio. Audio latent, image anchor, and VAE ports stay role-locked. Enable Full control to rewire everything manually."));
     }
     sec.append(el("div", "req-title", "Pipeline requirements"));
 
@@ -863,7 +863,7 @@
     }
     if (coreOpen) {
       const hint = pipelineLocked()
-        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). Loader outputs wire through the slots below — internal links are locked until you enable Full control."
+        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). Wire Unet → LoRA → Studio via slot outputs; MODEL/CLIP may chain through patcher nodes. Audio latent, image anchor, and VAE ports stay fixed unless Full control is on."
         : "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it.";
       sec.append(el("div", "links-hint", hint));
       coreNodes.forEach((n) => sec.append(coreCard(n)));

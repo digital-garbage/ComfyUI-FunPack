@@ -14,6 +14,7 @@ from typing import Any, Optional
 ROLE_WIRE_TARGETS: dict[str, list[tuple[str, Optional[str], str]]] = {
     "unet": [("MODEL", None, "FunPackStudio.model")],
     "clip": [("CLIP", None, "FunPackStudio.clip")],
+    "lora": [("MODEL", None, "FunPackStudio.model"), ("CLIP", None, "FunPackStudio.clip")],
     "video_vae": [("VAE", None, "FunPackLTXAVSceneChainSampler.vae")],
     "audio_vae": [("VAE", None, "LTXVAudioVAEDecode.audio_vae")],
     "audio_encoder": [("LATENT", None, "LTXVConcatAVLatent.audio_latent")],
@@ -22,6 +23,13 @@ ROLE_WIRE_TARGETS: dict[str, list[tuple[str, Optional[str], str]]] = {
         ("IMAGE", None, "FunPackStudio.source_image"),
         ("LATENT", None, "FunPackStudio.latent"),
     ],
+}
+
+# MODEL / CLIP may pass through patcher nodes (LoRA, etc.) via node:* wires; these are the
+# only built-in ports they may terminate on in guided mode.
+TYPE_CHAIN_TERMINALS: dict[str, list[str]] = {
+    "MODEL": ["FunPackStudio.model"],
+    "CLIP": ["FunPackStudio.clip"],
 }
 
 DEFAULT_WIRES_BY_ROLE: dict[str, dict[str, str]] = {
@@ -65,14 +73,16 @@ def wiring_locked(models: Any) -> bool:
 
 
 def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None) -> list[str]:
-    rules = ROLE_WIRE_TARGETS.get(role or "", [])
-    out = []
-    for t, name, port in rules:
+    out: list[str] = []
+    for t, name, port in ROLE_WIRE_TARGETS.get(role or "", []):
         if t != out_type:
             continue
         if name is not None and out_name is not None and name != out_name:
             continue
         out.append(port)
+    for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
+        if port not in out:
+            out.append(port)
     return out
 
 
@@ -107,8 +117,11 @@ def validate_port_wire(
                     continue
                 if name is not None and name != out_name:
                     continue
+                if port not in allowed:
+                    allowed.append(port)
+        for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
+            if port not in allowed:
                 allowed.append(port)
-        allowed = list(dict.fromkeys(allowed))
     if not allowed:
         return (
             f"{out_name or out_type} from role '{role}' cannot wire into the built-in pipeline "
@@ -179,6 +192,7 @@ def wiring_rules_payload() -> dict[str, Any]:
         ]
     return {
         "role_targets": role_targets,
+        "type_chain_terminals": TYPE_CHAIN_TERMINALS,
         "default_wires": DEFAULT_WIRES_BY_ROLE,
         "default_input_sources": DEFAULT_INPUT_SOURCES_BY_ROLE,
         "port_labels": PORT_LABELS,

@@ -53,6 +53,30 @@ def test_full_control_allows_any_port():
     assert ok is None
 
 
+def test_lora_model_may_terminate_at_studio():
+    ok = pipeline_wiring.validate_port_wire(
+        role="lora", out_type="MODEL", out_name="MODEL",
+        target="port:FunPackStudio.model", models={"slots": []},
+    )
+    assert ok is None
+
+
+def test_unet_may_chain_to_lora_via_node_wire():
+    ok = pipeline_wiring.validate_port_wire(
+        role="unet", out_type="MODEL", out_name="MODEL",
+        target="node:lora1:model", models={"slots": []},
+    )
+    assert ok is None
+
+
+def test_custom_model_may_terminate_at_studio():
+    ok = pipeline_wiring.validate_port_wire(
+        role="custom", out_type="MODEL", out_name="MODEL",
+        target="port:FunPackStudio.model", models={"slots": []},
+    )
+    assert ok is None
+
+
 def test_duplicate_port_wire_blocked():
     models = {
         "slots": [
