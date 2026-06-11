@@ -79,6 +79,48 @@
   }
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom
   let scrollLeft = 0;
+  let _scrollFromCode = false;      // ignore scroll events we triggered (playback follow)
+  let _playbackScrollFollow = true; // auto-pan during playback until user scrolls manually
+  let _userScrollTimer = null;
+  let _renderDeferred = false;
+
+  function _markManualTimelineScroll() {
+    _playbackScrollFollow = false;
+    clearTimeout(_userScrollTimer);
+    _userScrollTimer = setTimeout(() => {
+      _userScrollTimer = null;
+      if (_renderDeferred) render(S.get());
+    }, 250);
+  }
+
+  function _isUserScrollingTimeline() {
+    return _userScrollTimer != null;
+  }
+
+  function _setTimelineScrollLeft(px) {
+    if (!tlScrollEl) return;
+    _scrollFromCode = true;
+    tlScrollEl.scrollLeft = px;
+    scrollLeft = px;
+    requestAnimationFrame(() => { _scrollFromCode = false; });
+  }
+
+  function _bindTimelineScroll(scroll) {
+    scroll.addEventListener("scroll", () => {
+      scrollLeft = scroll.scrollLeft;
+      if (_scrollFromCode) return;
+      _markManualTimelineScroll();
+    });
+    scroll.addEventListener("wheel", () => { _markManualTimelineScroll(); }, { passive: true });
+    scroll.addEventListener("mousedown", (e) => {
+      const r = scroll.getBoundingClientRect();
+      const barH = Math.max(0, scroll.offsetHeight - scroll.clientHeight);
+      const barW = Math.max(0, scroll.offsetWidth - scroll.clientWidth);
+      const onHBar = barH > 0 && e.clientY >= r.bottom - barH;
+      const onVBar = barW > 0 && e.clientX >= r.right - barW;
+      if (onHBar || onVBar) _markManualTimelineScroll();
+    });
+  }
 
   // Refs updated on each render so the Player playhead listener can update
   // just the needle and timecode without a full re-render.
@@ -1270,6 +1312,8 @@
 
   function render(st) {
     if (_reordering || _seamDragging) return false;
+    if (_isUserScrollingTimeline()) { _renderDeferred = true; return false; }
+    _renderDeferred = false;
     if (_tlEditing) {
       // Only hold off if a control is genuinely still focused; otherwise the flag got
       // stuck (focused element removed without a focusout) — clear it and re-render.
@@ -1294,7 +1338,7 @@
     body.append(toolbar(st, p, totalSec));
 
     const scroll = el("div", "tl-scroll");
-    scroll.addEventListener("scroll", () => { scrollLeft = scroll.scrollLeft; });
+    _bindTimelineScroll(scroll);
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
       const cur = S.get();
@@ -1507,17 +1551,18 @@
   // Update only the playhead needle + timecode during video playback.
   // Runs at video's timeupdate rate (~4–25Hz) — no full re-render needed.
   if (window.Player) {
-    window.Player.onPlayheadChanged((sec) => {
+    window.Player.onPlayheadChanged((sec, playing) => {
       const clamped = Math.min(Math.max(0, sec), tlTotalSec);
       if (tlPhEl) tlPhEl.style.left = (clamped * pxPerSec) + "px";
       if (tlTcEl) tlTcEl.textContent = timecode(clamped, tlFps) + " / " + timecode(tlTotalSec, tlFps);
-      // Auto-scroll to keep the playhead visible during playback
-      if (tlScrollEl && window.Player.isPlaying()) {
+      if (!playing) _playbackScrollFollow = true;
+      // Auto-pan during playback only; manual scrollbar / wheel disables until pause.
+      if (tlScrollEl && playing && _playbackScrollFollow && !_isUserScrollingTimeline()) {
         const phPx = clamped * pxPerSec;
         const vis0 = tlScrollEl.scrollLeft;
         const vis1 = vis0 + tlScrollEl.clientWidth;
         if (phPx > vis1 - 60 || phPx < vis0 + 20) {
-          tlScrollEl.scrollLeft = Math.max(0, phPx - tlScrollEl.clientWidth / 3);
+          _setTimelineScrollLeft(Math.max(0, phPx - tlScrollEl.clientWidth / 3));
         }
       }
     });
