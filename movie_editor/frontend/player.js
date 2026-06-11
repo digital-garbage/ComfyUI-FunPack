@@ -261,18 +261,35 @@
   }
 
   // ── video pool management ─────────────────────────────────────────────────────
+  function _clearFxStyles(v) {
+    if (!v) return;
+    v.style.filter = "";
+    const fx = v._pmFx;
+    if (fx) {
+      fx.zoom.style.transform = "";
+      fx.viewport.style.opacity = "";
+    }
+  }
+
   function _ensureVideo(url) {
     let v = pool.get(url);
     if (v) return v;
+    const viewport = document.createElement("div");
+    viewport.className = "pm-fx-viewport";
+    const zoom = document.createElement("div");
+    zoom.className = "pm-fx-zoom";
     v = document.createElement("video");
     v.className = "pm-video"; v.preload = "auto"; v.playsInline = true; v.src = url;
+    v._pmFx = { viewport, zoom };
+    zoom.append(v);
+    viewport.append(zoom);
     v.addEventListener("loadedmetadata", () => {
       if (v !== _active) return;
       if (_seekPending != null) { v.currentTime = _clampT(v, _seekPending); _seekPending = null; }
       if (_playPending) { _playPending = false; v.play().catch(() => {}); }
     });
     v.addEventListener("ended", () => { if (v === _active) _advance(); });
-    stage.append(v); pool.set(url, v);
+    stage.append(viewport); pool.set(url, v);
     return v;
   }
 
@@ -281,14 +298,19 @@
     urls.forEach((u) => _ensureVideo(u));
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
-      v.pause(); v.remove(); pool.delete(u);
+      v.pause();
+      v._pmFx?.viewport.remove();
+      pool.delete(u);
       if (_active === v) { _active = null; }
     }
   }
 
   function _resetPool() {
     _stopTick();
-    for (const [, v] of pool) { v.pause(); v.remove(); }
+    for (const [, v] of pool) {
+      v.pause();
+      v._pmFx?.viewport.remove();
+    }
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
     _pauseInsAudio();
     for (const a of _insPool.values()) a.removeAttribute("src");
@@ -299,19 +321,25 @@
   function _setActive(v) {
     if (_active === v) return;
     if (_active) {
-      _active.pause(); _active.classList.remove("active");
-      _active.style.filter = ""; _active.style.transform = ""; _active.style.opacity = "";  // drop stale fx
+      _active.pause();
+      _active.classList.remove("active");
+      _active._pmFx?.viewport.classList.remove("active");
+      _clearFxStyles(_active);
     }
-    _active = v; if (v) v.classList.add("active");
+    _active = v;
+    if (v) {
+      v.classList.add("active");
+      v._pmFx?.viewport.classList.add("active");
+    }
   }
 
   // Live preview approximation of a clip's video effects (the render does the real thing).
-  // within = seconds into the clip. Blur -> CSS blur; zoom is VIRTUAL — the frame stays the
-  // canvas size and only the content scales (overflow clipped by the canvas), matching the
-  // render's zoompan: in 1.0->1.2 (push in), out 1.2->1.0 (pull back). fade -> opacity.
-  // Computed from the playhead so it tracks scrubbing too.
+  // within = seconds into the clip. Blur -> CSS blur on the video; zoom uses a clipped
+  // viewport + inner scale layer (matches ffmpeg zoompan: fixed frame, centered crop).
+  // fade -> viewport opacity. Computed from the playhead so it tracks scrubbing too.
   function _applyFx(clip, within) {
     const v = _active; if (!v) return;
+    const fxLayer = v._pmFx;
     const fx = (clip && clip.fx) || {};
     const dur = (clip && clip.durationSec) || 0;
     const t = dur > 0 ? Math.max(0, Math.min(1, within / dur)) : 0;
@@ -320,13 +348,16 @@
     let scale = 1;
     if (fx.zoom === "in") scale = 1 + 0.2 * t;
     else if (fx.zoom === "out") scale = 1.2 - 0.2 * t;
-    v.style.transformOrigin = "center";
-    v.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
+    if (fxLayer?.zoom) {
+      fxLayer.zoom.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
+    }
     let op = 1;
     const fi = +fx.fade_in || 0, fo = +fx.fade_out || 0;
     if (fi > 0 && within < fi) op = Math.max(0, within / fi);
     if (fo > 0 && dur > 0 && within > dur - fo) op = Math.min(op, Math.max(0, (dur - within) / fo));
-    v.style.opacity = op < 1 ? op.toFixed(3) : "";
+    if (fxLayer?.viewport) {
+      fxLayer.viewport.style.opacity = op < 1 ? op.toFixed(3) : "";
+    }
     // audio: per-clip original volume, muted when the project drops original audio. Guarded —
     // a non-finite volume throws on assignment, which (in the rAF tick) would freeze playback.
     const keepOrig = (S.get().project || {}).keep_original_audio !== false;
