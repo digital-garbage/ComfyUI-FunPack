@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, media, nodes, projects
+from .backend import bridge, builder, config, media, nodes, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.timeline import (
     Project,
@@ -1520,6 +1520,38 @@ if web is not None and PromptServer is not None:
         # defer so this 200 flushes to the browser before the process is replaced
         asyncio.get_event_loop().call_later(0.7, _restart_comfy)
         return web.json_response({"restarting": True})
+
+    @routes.post(UI_PREFIX + "/api/workflow/parse")
+    async def _workflow_parse(req):
+        body = await req.json()
+        workflow = body.get("workflow")
+        try:
+            oi = await bridge.object_info()
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+        result = workflow_import.parse_workflow(workflow, oi)
+        if result.get("error"):
+            return web.json_response(result, status=400)
+        return web.json_response(result)
+
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/workflow/apply")
+    async def _workflow_apply(req):
+        p = _project_or_404(req.match_info["pid"])
+        body = await req.json()
+        workflow = body.get("workflow")
+        bindings = body.get("bindings") or {}
+        try:
+            oi = await bridge.object_info()
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadGateway(reason=f"object_info unavailable: {e}")
+        try:
+            config_data = workflow_import.apply_workflow(workflow, bindings, oi)
+        except ValueError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        p.models = config_data
+        projects.save(p)
+        nodes.save_models(config_data)
+        return web.json_response(config_data)
 
     @routes.post(UI_PREFIX + "/api/models/refresh")
     async def _models_refresh(_req):

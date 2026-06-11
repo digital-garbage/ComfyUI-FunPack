@@ -783,6 +783,11 @@
 
   function body() {
     const b = el("div", "models-body");
+    if (config.workflow_import?.name) {
+      const banner = el("div", "wf-import-banner");
+      banner.textContent = `Imported workflow: ${config.workflow_import.name} (${config.workflow_import.node_count || config.slots.length} nodes) · built-in pipeline disabled`;
+      b.append(banner);
+    }
     b.append(requirementsPanel());
     b.append(coreSection());
     b.append(composer());

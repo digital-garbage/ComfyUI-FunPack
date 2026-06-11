@@ -100,6 +100,9 @@
     getModels: (pid) => j("GET", API(pid ? `/projects/${pid}/models` : "/models")),
     saveModels: (pid, data) => j("PUT", API(pid ? `/projects/${pid}/models` : "/models"), data),
     refreshModels: () => j("POST", API("/models/refresh")),
+    parseWorkflow: (workflow) => j("POST", API("/workflow/parse"), { workflow }),
+    applyWorkflow: (pid, workflow, bindings) =>
+      j("POST", API(`/projects/${pid}/workflow/apply`), { workflow, bindings }),
     restart: () => j("POST", API("/restart")),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)

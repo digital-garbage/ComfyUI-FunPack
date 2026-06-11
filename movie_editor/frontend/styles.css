@@ -1040,3 +1040,34 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 }
 .slot-picker-actions { display: flex; gap: 8px; justify-content: flex-end; }
 
+/* workflow import wizard */
+.wf-body { display: flex; flex-direction: column; gap: 16px; }
+.wf-steps { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; font-family: var(--font-mono); color: var(--muted); }
+.wf-step { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); }
+.wf-step.active { color: var(--teal); border-color: var(--teal); background: rgba(80,200,180,.08); }
+.wf-step.done { color: var(--muted); opacity: .7; }
+.wf-panel { display: flex; flex-direction: column; gap: 12px; }
+.wf-lead { font-size: 13px; color: var(--muted); margin: 0; line-height: 1.45; }
+.wf-h3 { margin: 0; font-size: 16px; font-family: var(--font-display); }
+.wf-h4 { margin: 8px 0 0; font-size: 13px; color: var(--muted); }
+.wf-meta { font-size: 11px; color: var(--muted); font-family: var(--font-mono); }
+.wf-warn { font-size: 12px; color: #e8a040; padding: 8px 10px; background: rgba(232,160,64,.08); border-radius: 8px; border: 1px solid rgba(232,160,64,.25); }
+.wf-hint { font-size: 12px; color: var(--muted); padding: 8px 10px; background: var(--ink-2); border-radius: 8px; border: 1px solid var(--line); }
+.wf-drop { border: 2px dashed var(--line); border-radius: 12px; padding: 28px; text-align: center; color: var(--muted); cursor: pointer; transition: border-color .15s, background .15s; }
+.wf-drop.hover, .wf-drop:hover { border-color: var(--teal); background: rgba(80,200,180,.05); }
+.wf-paste { width: 100%; box-sizing: border-box; font-family: var(--font-mono); font-size: 11px; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--ink-0); color: var(--text); resize: vertical; }
+.wf-node-list { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.wf-node-row { display: flex; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.wf-node-row:last-child { border-bottom: none; }
+.wf-node-cls { font-family: var(--font-mono); color: var(--teal); min-width: 140px; }
+.wf-node-lbl { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-link-list { max-height: 120px; overflow: auto; font-size: 11px; font-family: var(--font-mono); color: var(--muted); }
+.wf-link-row { padding: 3px 0; }
+.wf-bind-list { display: flex; flex-direction: column; gap: 10px; }
+.wf-bind-row { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr; gap: 10px; align-items: center; }
+.wf-bind-label { font-size: 13px; }
+.wf-bind-sel { width: 100%; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--ink-0); color: var(--text); }
+.wf-nav { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+.wf-summary { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.wf-import-banner { font-size: 12px; color: var(--teal); padding: 8px 10px; background: rgba(80,200,180,.06); border: 1px solid rgba(80,200,180,.2); border-radius: 8px; margin-bottom: 12px; }
+
