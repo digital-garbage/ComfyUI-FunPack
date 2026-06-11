@@ -2280,6 +2280,48 @@
     return out;
   }
 
+  function _saveableSelectedSceneIds() {
+    return _orderedSelectedSceneIds().filter((id) => clipSaveableToMediaBin(id));
+  }
+
+  function _renderClipsForSceneIds(sceneIds) {
+    const set = new Set(sceneIds);
+    return _renderClips().filter((c) => set.has(c.sceneId));
+  }
+
+  function _renderPayloadFromClips(rc) {
+    return rc.map((c) => ({
+      filename: c.media?.filename, subfolder: c.media?.subfolder || "", type: c.media?.type || "output",
+      bin_media_ref: c.bin_media_ref || "",
+      in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
+      fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
+      volume: c.volume, scene_id: c.sceneId,
+    }));
+  }
+
+  function _combinedSelectionFilename(clipCount) {
+    const proj = (state.project.name || "montage").replace(/[^\w.-]+/g, "_");
+    return `${proj}_${clipCount}clips_${_stamp()}.mp4`;
+  }
+
+  // Trim one clip, or stitch multiple selected clips (same ffmpeg path as Render Final).
+  async function _stitchSelectedClips(saveableIds) {
+    const rc = _renderClipsForSceneIds(saveableIds);
+    if (!rc.length) return null;
+    if (rc.length === 1) {
+      const spec = _clipExportSpecForScene(rc[0].sceneId);
+      if (!spec) return null;
+      const out = await API.exportClip(state.project.id, spec.clip);
+      return { media: out.media, clips: 1, exportName: spec.name };
+    }
+    await flushSave();
+    const queued = await API.renderFinal(state.project.id, _renderPayloadFromClips(rc));
+    const r = queued?.job_id
+      ? await _pollRenderJob(queued.job_id, rc.length)
+      : queued;
+    return { ...r, exportName: _combinedSelectionFilename(rc.length) };
+  }
+
   function _selectedClipFocusId() {
     const ids = state.selectedSceneIds?.length
       ? state.selectedSceneIds
@@ -2354,31 +2396,37 @@
     return !!(state.sceneRenders[sceneId]?.media);
   }
 
-  // Export selected clip(s) via trimmed render (same path as single export).
+  // Export selected clip(s): one file; multi-select is stitched with trim/effects/seams.
   async function exportSelected() {
     if (!state.project) return;
     if (!_hasTimelineClipSelection()) { alert("Select a clip first."); return; }
     const allIds = _orderedSelectedSceneIds();
-    const specs = _selectedClipExportSpecs();
-    if (!specs.length) {
+    const saveableIds = _saveableSelectedSceneIds();
+    if (!saveableIds.length) {
       alert("Generate the clip first, or select a video clip with media.");
       return;
     }
-    const skipped = allIds.length - specs.length;
+    const skipped = allIds.length - saveableIds.length;
     if (skipped > 0 && !confirm(
-      `${skipped} selected clip(s) have no render yet and will be skipped. Export ${specs.length} clip(s)?`
+      `${skipped} selected clip(s) have no render yet and will be skipped. Export ${saveableIds.length} clip(s)?`
     )) return;
+    if (saveableIds.length > 1 && !confirm(
+      `Stitch ${saveableIds.length} selected clips into one file and export?\n\nPer-clip trim, effects, and transitions between selected clips are applied.`
+    )) return;
+    const showProgress = saveableIds.length > 1;
+    if (showProgress) {
+      set({ gen: { state: "running", promptId: null, media: [], msg: `Exporting ${saveableIds.length} clips…` } });
+    }
     try {
-      for (const spec of specs) {
-        const out = await API.exportClip(state.project.id, spec.clip);
-        await _saveBlobAs(API.resultUrl(state.project.id, out.media), spec.name);
-      }
-      if (specs.length > 1) {
-        state.notice = `Exported ${specs.length} clip(s)`;
-        notify();
-      }
+      const r = await _stitchSelectedClips(saveableIds);
+      if (!r?.media) throw new Error("Export produced no media.");
+      await _saveBlobAs(API.resultUrl(state.project.id, r.media), r.exportName);
+      const notice = saveableIds.length === 1
+        ? "Clip exported"
+        : `Exported ${saveableIds.length} clips as one file`;
+      set({ gen: { state: "idle", promptId: null, media: [], msg: "" }, notice });
     } catch (e) {
-      alert("Export failed: " + (e.message || e));
+      set({ gen: { state: "error", promptId: null, media: [], msg: "Export failed: " + _friendlyGenError(e.message) } });
     }
   }
 
@@ -2386,29 +2434,49 @@
     if (!state.project) return;
     if (!_hasTimelineClipSelection()) { alert("Select a clip first."); return; }
     const allIds = _orderedSelectedSceneIds();
-    const specs = _selectedClipExportSpecs();
-    if (!specs.length) {
+    const saveableIds = _saveableSelectedSceneIds();
+    if (!saveableIds.length) {
       alert("Generate the clip first, or select a video clip with media.");
       return;
     }
-    const skipped = allIds.length - specs.length;
+    const skipped = allIds.length - saveableIds.length;
     if (skipped > 0 && !confirm(
-      `${skipped} selected clip(s) have no render yet and will be skipped. Save ${specs.length} clip(s) to Media bin?`
+      `${skipped} selected clip(s) have no render yet and will be skipped. Save ${saveableIds.length} clip(s) to Media bin?`
     )) return;
+    if (saveableIds.length > 1 && !confirm(
+      `Stitch ${saveableIds.length} selected clips into one file and save to Media bin?\n\nPer-clip trim, effects, and transitions between selected clips are applied.`
+    )) return;
+    const showProgress = saveableIds.length > 1;
+    if (showProgress) {
+      set({ gen: { state: "running", promptId: null, media: [], msg: `Saving ${saveableIds.length} clips to Media bin…` } });
+    }
     try {
-      const names = [];
-      for (const spec of specs) {
-        const res = await API.importClipToMediaBin(spec.clip, spec.name);
-        const entry = res?.media || res;
-        if (entry?.name) names.push(entry.name);
+      let clip;
+      let name;
+      if (saveableIds.length === 1) {
+        const spec = _clipExportSpecForScene(saveableIds[0]);
+        if (!spec) throw new Error("Nothing to save.");
+        clip = spec.clip;
+        name = spec.name;
+      } else {
+        const r = await _stitchSelectedClips(saveableIds);
+        if (!r?.media) throw new Error("Stitch produced no media.");
+        clip = {
+          filename: r.media.filename,
+          subfolder: r.media.subfolder || "",
+          type: r.media.type || "temp",
+        };
+        name = r.exportName;
       }
+      const res = await API.importClipToMediaBin(clip, name);
       await loadMedia();
-      state.notice = specs.length === 1
-        ? `Saved to Media bin: ${names[0] || specs[0].name}`
-        : `Saved ${specs.length} clip(s) to Media bin`;
-      notify();
+      const entry = res?.media || res;
+      const notice = saveableIds.length === 1
+        ? `Saved to Media bin: ${entry?.name || name}`
+        : `Saved ${saveableIds.length} clips to Media bin as one file: ${entry?.name || name}`;
+      set({ gen: { state: "idle", promptId: null, media: [], msg: "" }, notice });
     } catch (e) {
-      alert("Save to media bin failed: " + (e.message || e));
+      set({ gen: { state: "error", promptId: null, media: [], msg: "Save to media bin failed: " + _friendlyGenError(e.message) } });
     }
   }
 

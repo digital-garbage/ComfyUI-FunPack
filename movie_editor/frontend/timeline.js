@@ -314,14 +314,14 @@
       ? "Select a clip first"
       : saveable
         ? (multi
-          ? `Export ${saveableN} selected clip(s) with timeline trim (same as render export)`
+          ? `Stitch ${saveableN} selected clips into one file and export (trim, effects, seams)`
           : "Save the selected clip's rendered video to disk (renders are temporary)")
         : "Generate the clip first, or select a video clip with media";
     const binTitle = !hasSel
       ? "Select a clip first"
       : saveable
         ? (multi
-          ? `Save ${saveableN} selected clip(s) to Media bin with timeline trim`
+          ? `Stitch ${saveableN} selected clips into one file and save to Media bin`
           : "Copy the selected clip into the Media bin - add it back as a plain video clip")
         : "Generate the clip first, or select a video clip with media";
     return { exportTitle, binTitle };
