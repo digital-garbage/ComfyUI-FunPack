@@ -216,6 +216,78 @@
     _globalApplyTimer = setTimeout(() => { applyGlobalPromptQuiet(text); }, 500);
   }
 
+  function _normalizeSceneText(t) {
+    return String(t || "").trim().replace(/\s+/g, " ");
+  }
+
+  function _reviveSceneFromGhost(ghost, text) {
+    const sc = {
+      id: ghost.id,
+      gen_unit_id: ghost.gen_unit_id || ghost.id,
+      text: text || ghost.text || "",
+      transition_to_next: "",
+      source: { type: "carry" },
+      excluded: false,
+      frames: ghost.frames,
+      frames_mode: ghost.frames_mode,
+      fps: ghost.fps,
+      fps_mode: ghost.fps_mode,
+      effects: JSON.parse(JSON.stringify(ghost.effects || {})),
+      audio_volume: ghost.audio_volume,
+    };
+    if (ghost.media) {
+      state.sceneRenders[ghost.id] = {
+        media: ghost.media,
+        inSec: ghost.inSec || 0,
+        renderPrompt: state.sceneRenders[ghost.id]?.renderPrompt || null,
+      };
+    }
+    return sc;
+  }
+
+  // Match parsed montage scenes to timeline clips by text (then ghosts), not blind index.
+  function _alignScenesFromParsed(oldScenes, parsedScenes, ghosts) {
+    const old = (oldScenes || []).filter((s) => !s.excluded);
+    const usedOld = new Set();
+    const usedGhost = new Set();
+    const next = [];
+    let orderIdx = 0;
+
+    for (const ps of parsedScenes || []) {
+      const pt = _normalizeSceneText(ps.text);
+
+      let match = old.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt);
+      if (match) {
+        usedOld.add(match.id);
+        next.push({ ...JSON.parse(JSON.stringify(match)), text: ps.text || "" });
+        continue;
+      }
+
+      const ghost = (ghosts || []).find((g) => !usedGhost.has(g.id) && _normalizeSceneText(g.text) === pt);
+      if (ghost) {
+        usedGhost.add(ghost.id);
+        next.push(_reviveSceneFromGhost(ghost, ps.text));
+        continue;
+      }
+
+      if (orderIdx < old.length && !usedOld.has(old[orderIdx].id)
+          && parsedScenes.length === old.length) {
+        match = old[orderIdx++];
+        usedOld.add(match.id);
+        next.push({ ...JSON.parse(JSON.stringify(match)), text: ps.text || "" });
+        continue;
+      }
+
+      next.push({ text: ps.text || "", transition_to_next: "", source: { type: "carry" }, excluded: false });
+    }
+    return { next, usedGhost };
+  }
+
+  function _afterTimelineStructureChange() {
+    _pinnedGlobalPrompt = null;
+    syncGlobalPromptFromTimeline();
+  }
+
   async function _distributeGlobalPrompt(text, res) {
     const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
     if (!(v.scenes || []).length) return false;
@@ -224,15 +296,14 @@
     state.project.global_prompt = trimmed;
     state.project.anchor = v.anchor || "";
     const old = state.project.scenes || [];
-    const next = (v.scenes || []).map((ps, i) => {
-      const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "carry" }, excluded: false };
-      base.text = ps.text || "";
-      base.transition_to_next = "";
-      return base;
-    });
+    const ghosts = state.sceneGhosts || [];
+    const { next, usedGhost } = _alignScenesFromParsed(old, v.scenes, ghosts);
+    for (const sc of next) {
+      sc.transition_to_next = "";
+    }
     _applyDetectedTransitions(next, v.transitions, text);
     state.project.scenes = next;
-    state.sceneGhosts = [];
+    state.sceneGhosts = ghosts.filter((g) => !usedGhost.has(g.id));
     const firstId = next[0]?.id || null;
     state.selectedSceneId = firstId;
     state.selectedSceneIds = firstId ? [firstId] : [];
@@ -781,6 +852,7 @@
     if (!state.project) return;
     _historyRecord();
     _removeSceneNoHistory(id);
+    _afterTimelineStructureChange();
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave();
   }
@@ -797,6 +869,7 @@
       .filter((x) => x.idx >= 0)
       .sort((a, b) => b.idx - a.idx)
       .forEach(({ id }) => _removeSceneNoHistory(id));
+    _afterTimelineStructureChange();
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave();
   }
@@ -1056,14 +1129,19 @@
     if (!parsedScenes.length) return;
 
     state.project.anchor = v.anchor || "";
-
-    // Sync scene texts verbatim (only if count matches to avoid destructive mismatches)
+    const fullPrompt = state.preview.combined_prompt || state.project.global_prompt || "";
     const activeScenes = state.project.scenes.filter((s) => !s.excluded);
-    if (parsedScenes.length === activeScenes.length) {
+
+    if (parsedScenes.length !== activeScenes.length) {
+      const { next, usedGhost } = _alignScenesFromParsed(state.project.scenes, parsedScenes, state.sceneGhosts);
+      for (const sc of next) sc.transition_to_next = "";
+      _applyDetectedTransitions(next, null, fullPrompt);
+      state.project.scenes = next;
+      state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !usedGhost.has(g.id));
+    } else {
       parsedScenes.forEach((ps, i) => { if (ps.text) activeScenes[i].text = ps.text; });
+      _applyDetectedTransitions(activeScenes, null, fullPrompt);
     }
-    _applyDetectedTransitions(activeScenes, null,
-      state.preview.combined_prompt || state.project.global_prompt || "");
 
     notify();
     scheduleSave();
