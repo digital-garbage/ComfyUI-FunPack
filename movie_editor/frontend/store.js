@@ -317,24 +317,53 @@
     return out;
   }
 
-  // Global prompt is authoritative: parsed scenes become the timeline; unmatched clips
-  // are ghosted (if rendered) or dropped. Matching is by normalized text only.
+  function _generativeRoots(oldScenes) {
+    const active = (oldScenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
+    return _groupGenerativeUnits(active).map(([, group]) => _rootFromGroup(group)).filter(Boolean);
+  }
+
+  function _markGenUnitUsed(uid, usedOld, oldAll) {
+    for (const s of oldAll) {
+      if (genUnitId(s) === uid) usedOld.add(s.id);
+    }
+  }
+
+  function _reuseGenerativeRoot(root, text) {
+    const sc = JSON.parse(JSON.stringify(root));
+    sc.text = text || "";
+    sc.cut_offset_frames = 0;
+    sc.gen_unit_id = sc.id;
+    return sc;
+  }
+
+  // Global prompt is authoritative. Parsed scene slots map positionally onto timeline
+  // roots first (scene 1 always reuses the first generative clip), then fall back to
+  // text matching for extras. Unmatched old roots are ghosted or dropped.
   function _alignScenesFromParsed(oldScenes, parsedScenes, ghosts) {
-    const old = (oldScenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
+    const oldAll = (oldScenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
+    const oldRoots = _generativeRoots(oldScenes);
     const usedOld = new Set();
     const usedGhost = new Set();
     const next = [];
     let ghostsOut = [...(ghosts || [])];
 
-    for (const ps of parsedScenes || []) {
+    for (let i = 0; i < (parsedScenes || []).length; i++) {
+      const ps = parsedScenes[i];
       const pt = _normalizeSceneText(ps.text);
+      let match = null;
 
-      let match = pt
-        ? old.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt)
-        : null;
+      if (i < oldRoots.length && !usedOld.has(oldRoots[i].id)) {
+        match = oldRoots[i];
+      }
+
+      if (!match && pt) {
+        match = oldAll.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt);
+      }
+
       if (match) {
-        usedOld.add(match.id);
-        next.push({ ...JSON.parse(JSON.stringify(match)), text: ps.text || "" });
+        const root = isGenSubclip(match) ? (genUnitRoot(genUnitId(match)) || match) : match;
+        _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
+        next.push(_reuseGenerativeRoot(root, ps.text));
         continue;
       }
 
@@ -351,10 +380,11 @@
     }
 
     const keptSceneIds = new Set(next.map((s) => s.id).filter(Boolean));
-    for (const sc of old) {
-      if (usedOld.has(sc.id)) continue;
-      const afterId = _afterAnchorForRemoved(sc, old, keptSceneIds);
-      ghostsOut = _ghostOrDropScene(sc, afterId, ghostsOut);
+    for (const root of oldRoots) {
+      if (usedOld.has(root.id)) continue;
+      _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
+      const afterId = _afterAnchorForRemoved(root, oldRoots, keptSceneIds);
+      ghostsOut = _ghostOrDropScene(root, afterId, ghostsOut);
     }
     ghostsOut = ghostsOut.filter((g) => !usedGhost.has(g.id));
 
