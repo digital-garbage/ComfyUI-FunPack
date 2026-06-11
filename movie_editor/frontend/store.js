@@ -1343,7 +1343,7 @@
   function _uid() { return "a" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36); }
 
   function isOverlayAudioTrack(t) {
-    return !!(t && t.media_ref && t.kind !== "separated");
+    return !!(t && t.kind === "overlay" && (t.media_ref || t.render_media?.filename));
   }
 
   function isSeparatedAudioTrack(t) {
@@ -1396,6 +1396,30 @@
     return (state.project?.audio_tracks || []).find((t) => t.kind === "separated" && t.scene_id === sceneId);
   }
 
+  function separatedTrackMedia(track) {
+    if (!track) return null;
+    if (track.pinned_media?.filename) return track.pinned_media;
+    const r = state.sceneRenders[track.scene_id];
+    return r?.media || null;
+  }
+
+  function separatedTrackInSec(track) {
+    if (!track) return 0;
+    if (track.pinned_in_sec != null) return track.pinned_in_sec;
+    if (track.source_in_sec != null) return track.source_in_sec;
+    const r = state.sceneRenders[track.scene_id];
+    const sc = scene(track.scene_id);
+    return (r?.inSec || 0) + (sc?.source_in || 0);
+  }
+
+  function separatedTrackDurSec(track) {
+    if (!track) return 1;
+    if (track.pinned_dur != null) return track.pinned_dur;
+    if (track.source_dur != null) return track.source_dur;
+    const sc = scene(track.scene_id);
+    return sc ? sceneDurationSec(sc) : 1;
+  }
+
   function separateSceneAudio(sceneId) {
     if (!state.project) return;
     const sc = scene(sceneId);
@@ -1416,6 +1440,9 @@
       start_sec: sceneTimelineOffsetSec(sceneId),
       source_in_sec: inSec,
       source_dur: dur,
+      pinned_media: JSON.parse(JSON.stringify(r.media)),
+      pinned_in_sec: inSec,
+      pinned_dur: dur,
       volume: savedVol,
       label: `S${idx + 1} audio`,
     });
@@ -1431,12 +1458,29 @@
     Object.assign(t, patch);
     notify(); quiet ? scheduleSaveSilent() : scheduleSave();
   }
-  function removeAudioTrack(id) {
+  function _syncSeparatedTracksAfterRegen(recordedIds) {
+    for (const id of recordedIds || []) {
+      const t = separatedTrackForScene(id);
+      if (!t) continue;
+      const sc = scene(id);
+      if (!sc || sc.excluded) continue;
+      t.start_sec = sceneTimelineOffsetSec(id);
+    }
+    _syncSeparatedAudioTracks();
+  }
+
+  function removeAudioTrack(id, opts) {
     if (!state.project) return;
     const t = (state.project?.audio_tracks || []).find((x) => x.id === id);
     if (!t) return;
+    if (!opts?.skipConfirm) {
+      const msg = isSeparatedAudioTrack(t)
+        ? "Remove separated audio? The clip will use embedded audio from its current video render again."
+        : "Remove this overlay audio track?";
+      if (!confirm(msg)) return;
+    }
     _historyRecord();
-    if (t.kind === "separated" && t.scene_id) {
+    if (isSeparatedAudioTrack(t) && t.scene_id) {
       const sc = scene(t.scene_id);
       if (sc) {
         sc.audio_separated = false;
@@ -1901,6 +1945,7 @@
       if (!sameUnit) chainSceneIdx += 1;
     }
     _pruneGhostsAfterRegen(recordedSceneIds);
+    _syncSeparatedTracksAfterRegen(recordedSceneIds);
     if (clearedRating) scheduleSaveSilent();
     if (recordedSceneIds.length) {
       _validateRendersToken++;
@@ -2493,6 +2538,7 @@
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
+    separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,

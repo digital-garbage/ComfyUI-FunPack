@@ -1138,18 +1138,27 @@ if web is not None and PromptServer is not None:
             )
             if is_sep:
                 sid = t.get("scene_id")
+                pinned = t.get("pinned_media") if isinstance(t.get("pinned_media"), dict) else None
+                pth = None
+                if pinned and pinned.get("filename"):
+                    pth = _resolve_comfy_media_path(
+                        pinned.get("filename", ""),
+                        pinned.get("subfolder", ""),
+                        pinned.get("type", "output"),
+                    )
                 c = clip_by_scene.get(sid) if sid else None
-                if not c:
-                    continue
-                pth = _resolve(c)
-                if not os.path.isfile(pth):
-                    continue
-                src_in = t.get("source_in_sec")
+                if not pth or not os.path.isfile(pth):
+                    if not c:
+                        continue
+                    pth = _resolve(c)
+                    if not os.path.isfile(pth):
+                        continue
+                src_in = t.get("pinned_in_sec", t.get("source_in_sec"))
                 if src_in is None:
-                    src_in = c.get("in") or 0
-                src_dur = t.get("source_dur")
+                    src_in = (c.get("in") if c else None) or 0
+                src_dur = t.get("pinned_dur", t.get("source_dur"))
                 if src_dur is None:
-                    src_dur = c.get("dur") or 0
+                    src_dur = (c.get("dur") if c else None) or 0
                 separated_tracks.append({
                     "path": pth,
                     "source_in": float(src_in),

@@ -111,24 +111,34 @@
     const out = [];
     for (const t of (st.project.audio_tracks || [])) {
       if (S.isSeparatedAudioTrack && S.isSeparatedAudioTrack(t)) {
-        const r = sr[t.scene_id];
-        if (!r?.media || !pid) continue;
+        const media = S.separatedTrackMedia ? S.separatedTrackMedia(t) : null;
+        if (!media || !pid) continue;
         out.push({
           id: t.id,
-          url: _urlFor(r.media),
+          url: _urlFor(media),
           startSec: t.start_sec || 0,
-          durSec: t.source_dur || 1,
-          inSec: t.source_in_sec != null ? t.source_in_sec : (r.inSec || 0),
+          durSec: S.separatedTrackDurSec ? S.separatedTrackDurSec(t) : (t.source_dur || 1),
+          inSec: S.separatedTrackInSec ? S.separatedTrackInSec(t) : (t.source_in_sec || 0),
           vol: t.volume != null ? t.volume : 1,
         });
       } else if (S.isOverlayAudioTrack ? S.isOverlayAudioTrack(t) : (t.media_ref && t.kind !== "separated")) {
-        const asset = bin.find((m) => m.id === t.media_ref);
-        if (!asset) continue;
+        const asset = t.media_ref ? bin.find((m) => m.id === t.media_ref) : null;
+        const renderMedia = t.render_media;
+        let url = null;
+        let durSec = t.source_dur || 86400;
+        if (asset) {
+          url = API.mediaUrl(t.media_ref);
+          durSec = t.source_dur || asset.duration_sec || 86400;
+        } else if (renderMedia?.filename && pid) {
+          url = _urlFor(renderMedia);
+          durSec = t.source_dur || 86400;
+        }
+        if (!url) continue;
         out.push({
           id: t.id,
-          url: API.mediaUrl(t.media_ref),
+          url,
           startSec: t.start_sec || 0,
-          durSec: t.source_dur || asset.duration_sec || 86400,
+          durSec,
           inSec: t.source_in_sec || 0,
           vol: t.volume != null ? t.volume : 1,
         });

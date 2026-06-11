@@ -635,7 +635,9 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-aud-clip.sep .tl-aud-controls { background: linear-gradient(90deg, rgba(18,40,32,.92) 0%, rgba(18,40,32,.55) 45%, transparent 100%); }
 .tl-aud-name { font-size: 10px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .tl-aud-vol { width: 56px; max-width: 42%; flex: 0 1 56px; min-width: 0; accent-color: var(--teal); }
-.tl-aud-rm { flex: 0 0 auto; }
+.tl-aud-rm { flex: 0 0 auto; opacity: 0.9; min-width: 22px; }
+.tl-aud-clip.ins:hover .tl-aud-rm,
+.tl-aud-clip.sep:hover .tl-aud-rm { opacity: 1; color: var(--danger); }
 .tl-emptyhint { position: absolute; left: 16px; top: 20px; color: var(--faint); font-style: italic; }
 
 .clip { position: absolute; top: 12px; bottom: 12px; box-sizing: border-box;

@@ -281,7 +281,13 @@
     const sep = bar.querySelector("[data-separate-audio]");
     if (sep) {
       const sc = hasSel ? S.scene(st.selectedSceneId) : null;
-      sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, st.selectedSceneId) && !sc.audio_separated);
+      sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, st.selectedSceneId) && !sc?.audio_separated);
+    }
+    const rmSep = bar.querySelector("[data-remove-sep-audio]");
+    if (rmSep) {
+      const sc = hasSel ? S.scene(st.selectedSceneId) : null;
+      const sepTrack = sc && S.separatedTrackForScene ? S.separatedTrackForScene(sc.id) : null;
+      rmSep.disabled = !sepTrack;
     }
     const oldConv = bar.querySelector("[data-convert-clip]");
     const freshConv = toolbarConvertButton(st);
@@ -289,7 +295,7 @@
       if (freshConv) oldConv.replaceWith(freshConv);
       else oldConv.remove();
     } else if (freshConv) {
-      const anchor = bar.querySelector("[data-separate-audio]") || bar.querySelector("[data-save-mediabin]") || bar.querySelector("[data-export-scene]");
+      const anchor = bar.querySelector("[data-separate-audio]") || bar.querySelector("[data-remove-sep-audio]") || bar.querySelector("[data-save-mediabin]") || bar.querySelector("[data-export-scene]");
       if (anchor?.nextSibling) bar.insertBefore(freshConv, anchor.nextSibling);
       else if (anchor) anchor.after(freshConv);
       else bar.append(freshConv);
@@ -915,13 +921,15 @@
     const lane = el("div", "tl-audio-lane" + (track.kind === "overlay" || (track.media_ref && track.kind !== "separated") ? " overlay-lane" : ""));
     lane.style.height = laneH + "px";
     const isSep = S.isSeparatedAudioTrack ? S.isSeparatedAudioTrack(track) : (track.kind === "separated" && track.scene_id);
-    const isOverlay = S.isOverlayAudioTrack ? S.isOverlayAudioTrack(track) : (!isSep && track.media_ref);
-    const asset = isOverlay ? (st.mediaBin || []).find((m) => m.id === track.media_ref) : null;
+    const isOverlay = S.isOverlayAudioTrack ? S.isOverlayAudioTrack(track) : (!isSep && (track.media_ref || track.render_media?.filename));
+    const asset = isOverlay && track.media_ref ? (st.mediaBin || []).find((m) => m.id === track.media_ref) : null;
     const sepScene = isSep ? p.scenes.find((s) => s.id === track.scene_id) : null;
     const sepIdx = sepScene ? p.scenes.indexOf(sepScene) + 1 : 0;
     const body = el("div", "tl-audio-lane-body");
     const startSec = track.start_sec || 0;
-    let durSec = track.source_dur || asset?.duration_sec || 0;
+    let durSec = isSep
+      ? (S.separatedTrackDurSec ? S.separatedTrackDurSec(track) : (track.pinned_dur || track.source_dur || 0))
+      : (track.source_dur || asset?.duration_sec || 0);
     const w = Math.max((durSec || 2) * pxPerSec, 48);
     const block = el("div", "tl-aud-clip ins" + (isSep ? " sep" : " overlay"));
     block.style.left = (startSec * pxPerSec) + "px";
@@ -932,13 +940,16 @@
     wave.append(canvas);
     block.append(wave);
     if (isSep && sepScene) {
+      const pinned = track.pinned_media;
       const r = (st.sceneRenders || {})[track.scene_id];
-      if (r?.media && st.project?.id) {
-        _attachWaveform(canvas, `sep-aud:${track.scene_id}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
+      const media = pinned || r?.media;
+      if (media && st.project?.id) {
+        const wfKey = `sep-aud:${track.id}:${media.filename || ""}:${track.pinned_in_sec ?? track.source_in_sec ?? 0}`;
+        _attachWaveform(canvas, wfKey, window.MovieEditorAPI.resultUrl(st.project.id, media), {
           width: w,
           color: "rgba(45, 212, 191, 0.55)",
           onDuration: (sec) => {
-            if (sec > 0 && !track.source_dur) {
+            if (sec > 0 && !track.source_dur && !track.pinned_dur) {
               durSec = sec;
               block.style.width = Math.max(sec * pxPerSec, 48) + "px";
             }
@@ -957,6 +968,11 @@
             block.style.width = Math.max(sec * pxPerSec, 48) + "px";
           }
         },
+      });
+    } else if (track.render_media?.filename && st.project?.id) {
+      _attachWaveform(canvas, `aud-render:${track.id}`, window.MovieEditorAPI.resultUrl(st.project.id, track.render_media), {
+        width: w,
+        color: "rgba(96, 165, 250, 0.55)",
       });
     }
 
@@ -979,7 +995,9 @@
     startIn.onclick = (e) => e.stopPropagation();
     controls.append(startIn);
     const rm = el("button", "ic-btn danger tl-aud-rm", "✕");
-    rm.title = isSep ? "Remove track and reunite audio with the clip" : "Remove track";
+    rm.title = isSep
+      ? "Remove separated audio (restores embedded audio on the clip)"
+      : "Remove overlay audio track";
     rm.onclick = (e) => { e.stopPropagation(); S.removeAudioTrack(track.id); };
     controls.append(rm);
     block.append(controls);
@@ -1113,7 +1131,13 @@
     const selSc = hasSel ? S.scene(st.selectedSceneId) : null;
     sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
     sepAud.onclick = () => S.separateSceneAudio(st.selectedSceneId);
-    bar.append(split); bar.append(del); bar.append(exp); bar.append(saveBin); bar.append(sepAud);
+    const sepTrack = selSc && S.separatedTrackForScene ? S.separatedTrackForScene(selSc.id) : null;
+    const rmSepAud = el("button", "btn ghost tiny danger", "Remove audio");
+    rmSepAud.dataset.removeSepAudio = "1";
+    rmSepAud.title = "Remove the separated audio track for this clip";
+    rmSepAud.disabled = !sepTrack;
+    rmSepAud.onclick = () => { if (sepTrack) S.removeAudioTrack(sepTrack.id); };
+    bar.append(split); bar.append(del); bar.append(exp); bar.append(saveBin); bar.append(sepAud); bar.append(rmSepAud);
     const conv = toolbarConvertButton(st);
     if (conv) bar.append(conv);
     bar.append(toolbarRatingBlock(st, p));
