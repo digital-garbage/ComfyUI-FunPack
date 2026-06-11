@@ -45,12 +45,34 @@
   function _segmentSourceBadge(sceneId) {
     if (!sceneId) return "";
     const sc = S.scene(sceneId);
+    if (S.isVideoClip?.(sc)) return "Video clip";
     const t = sc?.source?.type;
     if (t === "mixed") return "Mixed · ◐ anchor + ⇥ guides";
     return "";
   }
 
+  function _videoUsedOnTimeline(st, mediaId) {
+    if (!mediaId || !st.project) return false;
+    return (st.project.scenes || []).some(
+      (s) => !s.excluded && S.isVideoClip?.(s) && s.source?.media_ref === mediaId,
+    );
+  }
+
   function _buildClips(st) {
+    const previewAsset = st.mediaPreviewId
+      ? (st.mediaBin || []).find((m) => m.id === st.mediaPreviewId)
+      : null;
+    if (previewAsset?.kind === "video" && !_videoUsedOnTimeline(st, previewAsset.id)) {
+      return [{
+        binUrl: API.mediaUrl(previewAsset.id),
+        previewMedia: true,
+        startSec: 0,
+        durationSec: previewAsset.duration_sec || 60,
+        inSec: 0,
+        vol: 1,
+        slateLabel: previewAsset.name || "Video preview",
+      }];
+    }
     if (!st.project || !S.buildPreviewSegments) return [];
     const sr = st.sceneRenders || {};
     const out = [];
@@ -214,6 +236,13 @@
     v.className = "pm-video"; v.preload = "auto"; v.playsInline = true; v.src = url;
     v.addEventListener("loadedmetadata", () => {
       if (v !== _active) return;
+      if (_currentClip?.previewMedia && v.duration && isFinite(v.duration)) {
+        _currentClip.durationSec = v.duration;
+        if (_clips.length === 1 && _clips[0].previewMedia) {
+          _clips[0].durationSec = v.duration;
+          _totalSecCur = v.duration;
+        }
+      }
       if (_seekPending != null) { v.currentTime = _clampT(v, _seekPending); _seekPending = null; }
       if (_playPending) { _playPending = false; v.play().catch(() => {}); }
     });
@@ -298,7 +327,9 @@
     const v = _ensureVideo(_clipUrl(clip));
     _currentClip = clip; _setActive(v);
     _showSlate("");
-    const badge = clip.ghost ? (clip.slate || "Removed — preview only") : _segmentSourceBadge(clip.sceneId);
+    const badge = clip.ghost ? (clip.slate || "Removed — preview only")
+      : clip.previewMedia ? (clip.slateLabel || "Video preview")
+        : _segmentSourceBadge(clip.sceneId);
     _showBadge(badge);
     if (_badgeEl && badge.startsWith("Mixed")) _badgeEl.classList.add("mixed-mode");
     else if (_badgeEl) _badgeEl.classList.remove("mixed-mode");
@@ -564,11 +595,17 @@
 
     _clips = _buildClips(st);
     _insTracks = _buildInsTracks(st);
+    if (_clips.length === 1 && _clips[0].previewMedia && _phSec > _clips[0].durationSec) _phSec = 0;
     _syncInsPool();
     _syncPool();  // preload current clips, drop stale ones (timeline is dynamic)
 
     // Re-resolve the clip under the playhead each render (positions change with edits).
-    const hash = _clips.map((c) => (c.pending ? "pending:" + c.sceneId : c.ghost ? "ghost:" + c.ghostId : (_clipUrl(c) || "x")) + "@" + c.startSec.toFixed(2) + "+" + (c.inSec || 0).toFixed(2)).join("|");
+    const hash = _clips.map((c) => {
+      if (c.pending) return "pending:" + (c.sceneId || c.ghostId || "");
+      if (c.ghost) return "ghost:" + c.ghostId;
+      if (c.previewMedia) return "preview:" + (_clipUrl(c) || "x");
+      return (_clipUrl(c) || "x") + "@" + c.startSec.toFixed(2) + "+" + (c.inSec || 0).toFixed(2);
+    }).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
       const clip = _clipAt(_phSec);
@@ -580,16 +617,15 @@
     const gen = st.gen || { state: "idle", media: [] };
     _fpsCur = p?.frame_rate || 25;
 
-    _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
-
     clear(body);
 
     const previewAsset = st.mediaPreviewId
       ? (st.mediaBin || []).find((m) => m.id === st.mediaPreviewId)
       : null;
+    const previewOverlay = previewAsset && (previewAsset.kind === "image" || previewAsset.kind === "audio");
 
     // ── canvas (video + placeholder) ────────────────────────────────────────
-    const canvas = el("div", "pm-canvas" + (previewAsset ? " media-previewing" : ""));
+    const canvas = el("div", "pm-canvas" + (previewOverlay ? " media-previewing" : ""));
     _slateEl = el("div", "pm-slate");
     _slateEl.style.display = "none";
     _slateEl.append(el("div", "pm-slate-title"));
@@ -601,8 +637,8 @@
       canvas.append(stage);  // pooled videos live here; only the active one is visible
       canvas.append(_slateEl);
       canvas.append(_badgeEl);
-    } else if (previewAsset && ["image", "audio", "video"].includes(previewAsset.kind)) {
-      canvas.append(stage);
+    } else if (previewOverlay) {
+      // image/audio still use a lightweight overlay; video uses the pool above
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
       splash.append(el("div", "pm-gen-icon", "⚙"));
@@ -661,26 +697,37 @@
       canvas.onclick = (e) => {
         if (!e.target.closest(".pm-media-preview-aud")) S.clearMediaPreview();
       };
-    } else if (previewAsset?.kind === "video") {
-      const layer = el("div", "pm-media-preview");
-      const label = el("div", "pm-media-preview-label pm-media-preview-label-vid", previewAsset.name || "Video preview");
-      const vid = el("video", "pm-media-preview-vid");
-      vid.src = API.mediaUrl(previewAsset.id);
-      vid.controls = true;
-      vid.playsInline = true;
-      vid.onclick = (e) => e.stopPropagation();
-      layer.append(label, vid);
-      canvas.append(layer);
-      canvas.onclick = (e) => {
-        if (!e.target.closest(".pm-media-preview-vid")) S.clearMediaPreview();
-      };
     }
     body.append(canvas);
 
     // ── minibar (segment strips + scrub needle) ──────────────────────────────
     const minibar = el("div", "pm-minibar");
     _minibarEl = minibar;
-    if (p && _totalSecCur > 0 && S.buildPreviewSegments) {
+    _totalSecCur = (_clips.length === 1 && _clips[0].previewMedia)
+      ? _clips[0].durationSec
+      : (S.previewTotalSec ? S.previewTotalSec() : 0);
+    if (_clips.length === 1 && _clips[0].previewMedia && _totalSecCur > 0) {
+      const chip = el("div", "pm-chip rendered video");
+      chip.style.width = "100%";
+      chip.title = _clips[0].slateLabel || "Video preview";
+      chip.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        const scrub = (ev) => {
+          const r = minibar.getBoundingClientRect();
+          const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+          _seek(frac * _totalSecCur);
+        };
+        scrub(e);
+        const move = (ev) => scrub(ev);
+        const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+        document.addEventListener("mousemove", move);
+        document.addEventListener("mouseup", up);
+      });
+      minibar.append(chip);
+      const needle = el("div", "pm-needle");
+      needle.style.left = (Math.min(_phSec, _totalSecCur) / _totalSecCur * 100).toFixed(3) + "%";
+      minibar.append(needle);
+    } else if (p && _totalSecCur > 0 && S.buildPreviewSegments) {
       S.buildPreviewSegments().forEach((seg) => {
         const d = seg.durationSec;
         let cls = "pm-chip";

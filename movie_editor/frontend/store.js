@@ -2532,6 +2532,31 @@
       clearMediaPreview();
       return;
     }
+    if (m.kind === "video") {
+      const scenes = (state.project?.scenes || []).filter(
+        (s) => !s.excluded && isVideoClip(s) && s.source?.media_ref === mediaId,
+      );
+      if (scenes.length) {
+        const target = state.selectedSceneId && scenes.some((s) => s.id === state.selectedSceneId)
+          ? scenes.find((s) => s.id === state.selectedSceneId)
+          : scenes[0];
+        const segs = buildPreviewSegments();
+        const seg = segs.find((s) => s.kind === "scene" && s.scene.id === target.id);
+        state.mediaPreviewId = null;
+        selectScene(target.id);
+        notify();
+        if (seg && window.Player) {
+          try { window.Player.pause(); } catch (_) {}
+          const ph = window.Player.getPlayhead();
+          const onClip = ph >= seg.offsetSec - 0.05 && ph < seg.offsetSec + seg.durationSec - 0.001;
+          if (!onClip) window.Player.seek(seg.offsetSec);
+        }
+        return;
+      }
+      try { window.Player?.pause?.(); } catch (_) {}
+      set({ mediaPreviewId: mediaId });
+      return;
+    }
     try { window.Player?.pause?.(); } catch (_) {}
     set({ mediaPreviewId: mediaId });
   }

@@ -381,8 +381,14 @@
 
   function _mediaCard(m, st) {
     const picked = mediaSelected.has(m.id);
+    const onTimeline = m.kind === "video" && (st.project?.scenes || []).some(
+      (s) => !s.excluded && S.isVideoClip?.(s) && s.source?.media_ref === m.id,
+    );
+    const selScene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
+    const previewing = st.mediaPreviewId === m.id
+      || (onTimeline && selScene?.source?.media_ref === m.id);
     const card = el("div", "media-card"
-      + (st.mediaPreviewId === m.id ? " previewing" : "")
+      + (previewing ? " previewing" : "")
       + (picked ? " picked" : ""));
     card.draggable = true;
     card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
