@@ -9,6 +9,7 @@
     ["empty", "Empty · text-to-video"],
     ["image", "Image · i2v anchor"],
     ["generated_frame", "From generated frame"],
+    ["v2v", "Video · v2v source"],
     ["carry", "Carry i2v guide · continue previous"],
     ["mixed", "Mixed · Img2Video anchor + prior guides"],
   ];
@@ -143,6 +144,71 @@
     return inner;
   }
 
+  function renderVideoSource(st, scene, parent, label) {
+    parent = parent || body;
+    if (!window.MediaPicker) return;
+    const pick = window.MediaPicker.create({
+      mediaBin: st.mediaBin,
+      value: scene.source?.media_ref,
+      filter: (m) => m.kind === "video",
+      noneLabel: "— pick video —",
+      onChange: (mediaRef) => {
+        S.patchScene(scene.id, {
+          source: { ...(scene.source || {}), type: scene.source?.type || "v2v", media_ref: mediaRef },
+        });
+      },
+    });
+    parent.append(field(label || "V2V source video", pick));
+  }
+
+  function renderVideoClip(st, scene) {
+    title.textContent = "Video clip";
+    body.append(el("div", "insp-hint", "Imported or converted video — plays as-is. Not included in Generate or the global prompt montage."));
+    const ref = scene.source?.media_ref;
+    const asset = ref ? (st.mediaBin || []).find((m) => m.id === ref) : null;
+    body.append(field("Source", el("span", null, asset?.name || ref || "From last render")));
+    renderOutgoingSeam(st, scene);
+
+    const actions = el("div", "insp-block");
+    const toScene = el("button", "btn primary", "Convert to scene");
+    toScene.title = scene.scene_archive
+      ? "Restore prompt, source, guides, and settings from before this was locked as video"
+      : "Make this a generative v2v scene (prompt + Generate)";
+    toScene.onclick = () => S.convertToScene(scene.id);
+    actions.append(toScene);
+    const del = el("button", "btn danger", "Delete");
+    del.style.marginLeft = "8px";
+    del.onclick = () => S.removeScene(scene.id);
+    actions.append(del);
+    body.append(actions);
+
+    foldSection("More editing", false, (more) => {
+      const fx = scene.effects || {};
+      const patchFx = (k, v, quiet) => {
+        const next = { ...(scene.effects || {}), [k]: v };
+        quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
+      };
+      const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
+      blur.value = fx.blur || 0;
+      blur.oninput = () => patchFx("blur", parseFloat(blur.value), true);
+      more.append(field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur));
+      const lenRow = el("div", "fields-row");
+      lenRow.append(lengthControl(scene, "frames"));
+      lenRow.append(lengthControl(scene, "fps"));
+      more.append(lenRow);
+      const r = (st.sceneRenders || {})[scene.id];
+      if (r?.media || ref) {
+        const srcTag = el("div", "insp-tag"); srcTag.textContent = "Source trim (slip)"; more.append(srcTag);
+        const inRow = el("div", "fields-row");
+        const iIn = el("input"); iIn.type = "number"; iIn.min = "0"; iIn.step = "0.05";
+        iIn.value = scene.source_in || 0;
+        iIn.oninput = () => S.setSourceTrim(scene.id, { source_in: parseFloat(iIn.value || 0) });
+        inRow.append(field("Source in (s)", iIn));
+        more.append(inRow);
+      }
+    });
+  }
+
   function renderScene(st, scene) {
     const root = S.genUnitRoot(S.genUnitId(scene)) || scene;
     const unitScenes = (st.project.scenes || []).filter((s) => S.genUnitId(s) === S.genUnitId(scene))
@@ -177,6 +243,7 @@
     body.append(field("Source", src));
     if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root, body);
     if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
+    if ((root.source?.type) === "v2v") renderVideoSource(st, root, body, "V2V source video");
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
     body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · generation splits: global prompt or Outgoing seam below`));
@@ -187,6 +254,11 @@
     const genBtn = el("button", "btn primary", "Generate this scene");
     genBtn.onclick = () => S.generate(scene.id);
     actions.append(genBtn);
+    const toVid = el("button", "btn ghost", "Convert to video");
+    toVid.title = "Lock as a plain video clip — skipped by Generate; settings saved for Convert back to scene";
+    toVid.style.marginLeft = "8px";
+    toVid.onclick = () => S.convertToVideo(scene.id);
+    actions.append(toVid);
     const del = el("button", "btn danger", "Delete"); del.style.marginLeft = "8px"; del.onclick = () => S.removeScene(scene.id);
     actions.append(del);
     body.append(actions);
@@ -638,8 +710,10 @@
     renderGlobalPrompt(st);
     renderSwitch(st, scene);
     renderEngineStrip(st);
-    if (scene) renderScene(st, scene);
-    else renderProject(st);
+    if (scene) {
+      if (S.isVideoClip(scene)) renderVideoClip(st, scene);
+      else renderScene(st, scene);
+    } else renderProject(st);
     renderExposed(st);
     renderSplit(st);
     body.scrollTop = scrollTop;  // restore so editing doesn't jump to the top

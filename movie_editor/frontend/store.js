@@ -146,7 +146,7 @@
     const parts = [];
     const anchor = (project.anchor || "").trim();
     if (anchor) parts.push(anchor);
-    const active = (project.scenes || []).filter((s) => !s.excluded);
+    const active = (project.scenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
     const units = _groupGenerativeUnits(active);
     units.forEach(([, group], i) => {
       const root = _rootFromGroup(group);
@@ -299,10 +299,28 @@
     return out;
   }
 
+  function _mergeGenerativeWithVideoClips(oldScenes, generativeNext) {
+    const oldOrder = (oldScenes || []).filter((s) => !s.excluded);
+    const videoIds = new Set(oldOrder.filter(isVideoClip).map((s) => s.id));
+    if (!videoIds.size) return generativeNext;
+    const byId = new Map((oldScenes || []).map((s) => [s.id, s]));
+    const out = [];
+    let g = 0;
+    for (const sc of oldOrder) {
+      if (videoIds.has(sc.id)) {
+        out.push(JSON.parse(JSON.stringify(byId.get(sc.id) || sc)));
+      } else if (isGenerativeScene(sc)) {
+        if (g < generativeNext.length) out.push(generativeNext[g++]);
+      }
+    }
+    while (g < generativeNext.length) out.push(generativeNext[g++]);
+    return out;
+  }
+
   // Global prompt is authoritative: parsed scenes become the timeline; unmatched clips
   // are ghosted (if rendered) or dropped. Matching is by normalized text only.
   function _alignScenesFromParsed(oldScenes, parsedScenes, ghosts) {
-    const old = (oldScenes || []).filter((s) => !s.excluded);
+    const old = (oldScenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
     const usedOld = new Set();
     const usedGhost = new Set();
     const next = [];
@@ -340,7 +358,8 @@
     }
     ghostsOut = ghostsOut.filter((g) => !usedGhost.has(g.id));
 
-    return { next, ghosts: ghostsOut, usedGhost };
+    const merged = _mergeGenerativeWithVideoClips(oldScenes, next);
+    return { next: merged, ghosts: ghostsOut, usedGhost };
   }
 
   function _normalizeGlobalPromptParse(trimmed, v) {
@@ -676,6 +695,8 @@
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
   function genUnitId(sc) { return (sc && sc.gen_unit_id) || (sc && sc.id) || ""; }
+  function isVideoClip(sc) { return (sc && sc.source && sc.source.type) === "video"; }
+  function isGenerativeScene(sc) { return !!sc && !isVideoClip(sc); }
   function isGenSubclip(sc) { return !!((sc && sc.cut_offset_frames) > 0); }
   function genUnitRoot(unitId) {
     const group = (state.project?.scenes || []).filter((s) => genUnitId(s) === unitId);
@@ -870,6 +891,127 @@
     state.project.scenes.push(s);
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave(); // server assigns id; reselect after commit
+  }
+
+  function _snapshotSceneForArchive(sc) {
+    const r = state.sceneRenders[sc.id];
+    return {
+      text: sc.text || "",
+      source: JSON.parse(JSON.stringify(sc.source || {})),
+      guides: JSON.parse(JSON.stringify(sc.guides || [])),
+      character_ids: [...(sc.character_ids || [])],
+      effects: JSON.parse(JSON.stringify(sc.effects || {})),
+      frames: sc.frames,
+      frames_mode: sc.frames_mode,
+      fps: sc.fps,
+      fps_mode: sc.fps_mode,
+      transition_to_next: sc.transition_to_next || "",
+      video_transition: sc.video_transition || "",
+      transition_frames: sc.transition_frames,
+      rating: sc.rating || "",
+      audio_volume: sc.audio_volume,
+      audio_separated: sc.audio_separated,
+      gen_unit_id: sc.gen_unit_id,
+      cut_offset_frames: sc.cut_offset_frames,
+      source_in: sc.source_in,
+      source_dur: sc.source_dur,
+      width: sc.width,
+      height: sc.height,
+      render: r ? JSON.parse(JSON.stringify(r)) : null,
+    };
+  }
+
+  function _applySceneArchive(sc, archive) {
+    if (!archive) return;
+    sc.text = archive.text || "";
+    sc.source = JSON.parse(JSON.stringify(archive.source || { type: "carry" }));
+    sc.guides = JSON.parse(JSON.stringify(archive.guides || []));
+    sc.character_ids = [...(archive.character_ids || [])];
+    sc.effects = JSON.parse(JSON.stringify(archive.effects || {}));
+    sc.frames = archive.frames;
+    sc.frames_mode = archive.frames_mode;
+    sc.fps = archive.fps;
+    sc.fps_mode = archive.fps_mode;
+    sc.transition_to_next = archive.transition_to_next || "";
+    sc.video_transition = archive.video_transition || "";
+    sc.transition_frames = archive.transition_frames;
+    sc.rating = archive.rating || "";
+    sc.audio_volume = archive.audio_volume;
+    sc.audio_separated = !!archive.audio_separated;
+    sc.gen_unit_id = archive.gen_unit_id;
+    sc.cut_offset_frames = archive.cut_offset_frames || 0;
+    sc.source_in = archive.source_in || 0;
+    sc.source_dur = archive.source_dur;
+    sc.width = archive.width;
+    sc.height = archive.height;
+    sc.scene_archive = null;
+    if (archive.render) state.sceneRenders[sc.id] = JSON.parse(JSON.stringify(archive.render));
+  }
+
+  function convertToVideo(sceneId) {
+    if (!state.project) return;
+    const sc = scene(sceneId);
+    if (!sc || isVideoClip(sc)) return;
+    _historyRecord();
+    const uid = genUnitId(sc);
+    const root = genUnitRoot(uid) || sc;
+    const archive = _snapshotSceneForArchive(root);
+    const mediaRef = (root.source && root.source.media_ref) || null;
+    state.project.scenes = state.project.scenes.filter(
+      (s) => genUnitId(s) !== uid || s.id === root.id
+    );
+    Object.assign(root, {
+      scene_archive: archive,
+      source: { type: "video", media_ref: mediaRef },
+      gen_unit_id: root.id,
+      cut_offset_frames: 0,
+    });
+    if (state.selectedSceneId && !scene(state.selectedSceneId)) {
+      state.selectedSceneId = root.id;
+      state.selectedSceneIds = [root.id];
+      _selectionAnchorId = root.id;
+    }
+    _afterTimelineStructureChange();
+    notify(); scheduleSave();
+  }
+
+  function convertToScene(sceneId) {
+    if (!state.project) return;
+    const sc = scene(sceneId);
+    if (!sc || !isVideoClip(sc)) return;
+    _historyRecord();
+    if (sc.scene_archive) {
+      _applySceneArchive(sc, sc.scene_archive);
+    } else {
+      const mediaRef = sc.source?.media_ref || null;
+      sc.scene_archive = null;
+      sc.source = { type: "v2v", media_ref: mediaRef };
+      if (!sc.text) sc.text = "";
+      sc.gen_unit_id = sc.gen_unit_id || sc.id;
+    }
+    _afterTimelineStructureChange();
+    notify(); scheduleSave();
+  }
+
+  function addVideoClip(mediaId) {
+    if (!state.project || !mediaId) return;
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    if (!asset || asset.kind !== "video") return;
+    _historyRecord();
+    const id = _newSceneId();
+    state.project.scenes.push({
+      id,
+      gen_unit_id: id,
+      text: "",
+      transition_to_next: "",
+      source: { type: "video", media_ref: mediaId },
+      excluded: false,
+    });
+    state.selectedSceneId = id;
+    state.selectedSceneIds = [id];
+    _selectionAnchorId = id;
+    window.Timeline?.requestAutoFit?.();
+    notify(); scheduleSave();
   }
 
   function _removeSceneNoHistory(id) {
@@ -1362,19 +1504,19 @@
   // back to carry / i2v guides, not a broken anchor).
   function _anchorAvailable(s) {
     const t = s.source && s.source.type;
-    if (t !== "image" && t !== "generated_frame" && t !== "mixed") return false;
+    if (t !== "image" && t !== "generated_frame" && t !== "mixed" && t !== "v2v") return false;
     const ref = s.source.media_ref;
     return !!(ref && (state.mediaBin || []).some((m) => m.id === ref));
   }
   function _runs() {
-    const active = state.project.scenes.filter((s) => !s.excluded);
+    const active = state.project.scenes.filter((s) => !s.excluded && isGenerativeScene(s));
     const runs = [];
     for (const s of active) {
       const t = (s.source && s.source.type) || "empty";
       // Editorial subclips always continue the current run; carry / broken anchors too.
       const isCarry = isGenSubclip(s)
         || t === "carry"
-        || ((t === "image" || t === "generated_frame" || t === "mixed") && !_anchorAvailable(s));
+        || ((t === "image" || t === "generated_frame" || t === "mixed" || t === "v2v") && !_anchorAvailable(s));
       if (isCarry && runs.length) runs[runs.length - 1].push(s.id);
       else runs.push([s.id]);
     }
@@ -1716,7 +1858,7 @@
     if (!state.project) return;
     const ids = (state.selectedSceneIds || []).filter((sid) => {
       const s = scene(sid);
-      return s && !s.excluded;
+      return s && !s.excluded && isGenerativeScene(s);
     });
     if (!ids.length) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes selected." } });
@@ -1782,12 +1924,10 @@
     for (const sc of (p.scenes || [])) {
       if (sc.excluded) continue;
       const r = state.sceneRenders[sc.id];
-      if (!(r && r.media)) continue;
       const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
       const tFrames = sc.transition_frames || 0;
-      out.push({
-        media: r.media,
-        inSec: (r.inSec || 0) + (sc.source_in || 0),
+      const base = {
+        inSec: (r?.inSec || 0) + (sc.source_in || 0),
         durationSec: sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc),
         fx: sc.effects || {}, fps,
         w: (sc.width != null ? sc.width : p.width) || null,
@@ -1796,7 +1936,12 @@
         tdur: tFrames > 0 ? tFrames / fps : 0,
         sceneId: sc.id,
         volume: sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1),
-      });
+      };
+      if (r && r.media) {
+        out.push({ media: r.media, ...base });
+      } else if (isVideoClip(sc) && sc.source?.media_ref) {
+        out.push({ bin_media_ref: sc.source.media_ref, ...base });
+      }
     }
     return out;
   }
@@ -1808,9 +1953,15 @@
     if (!id) { alert("Select a clip to export."); return; }
     const sc = scene(id);
     const r = state.sceneRenders[id];
-    if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
     const idx = state.project.scenes.findIndex((s) => s.id === id);
     const proj = (state.project.name || "montage").replace(/[^\w.-]+/g, "_");
+    if (isVideoClip(sc) && sc.source?.media_ref && !r?.media) {
+      const asset = (state.mediaBin || []).find((m) => m.id === sc.source.media_ref);
+      const name = asset?.name || `${proj}_video_${_stamp()}.mp4`;
+      await _saveBlobAs(API.mediaUrl(sc.source.media_ref), name.replace(/[^\w.-]+/g, "_"));
+      return;
+    }
+    if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
     const inSec = (r.inSec || 0) + (sc?.source_in || 0);
     const dur = sc?.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
     try {
@@ -1836,7 +1987,8 @@
       `Stitch ${rc.length} clip(s) into one final video?\n\nThis replaces per-scene renders with a single stitched file on the timeline.`
     )) return;
     const clips = rc.map((c) => ({
-      filename: c.media.filename, subfolder: c.media.subfolder || "", type: c.media.type || "output",
+      filename: c.media?.filename, subfolder: c.media?.subfolder || "", type: c.media?.type || "output",
+      bin_media_ref: c.bin_media_ref || "",
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
       fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
       volume: c.volume, scene_id: c.sceneId,
@@ -2052,6 +2204,15 @@
 
   function assignMediaToScene(sceneId, mediaId) {
     const s = scene(sceneId); if (!s) return;
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    if (asset?.kind === "video") {
+      if (isVideoClip(s)) {
+        patchScene(sceneId, { source: { ...(s.source || {}), type: "video", media_ref: mediaId } });
+      } else if (confirm("Replace this scene with the imported video clip? Use Convert to video in the inspector to keep a backup of scene settings.")) {
+        patchScene(sceneId, { source: { type: "video", media_ref: mediaId } });
+      }
+      return;
+    }
     // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides).
     const patch = { source: { ...(s.source || {}), type: "image", media_ref: mediaId } };
     if ((s.source?.media_ref || null) !== mediaId) patch.guides = [];
@@ -2083,6 +2244,7 @@
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, scene,
+    addVideoClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,

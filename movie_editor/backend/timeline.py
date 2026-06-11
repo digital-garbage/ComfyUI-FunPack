@@ -382,6 +382,15 @@ def source_type(scene: Scene) -> str:
     return (scene.source.type if scene.source else None) or "carry"
 
 
+def is_video_clip(scene: Scene) -> bool:
+    """Locked timeline video — plays as-is, excluded from generation and global prompt."""
+    return source_type(scene) == "video"
+
+
+def is_generative_scene(scene: Scene) -> bool:
+    return not is_video_clip(scene)
+
+
 def solo_run_wants_prior_guides(scene: Scene) -> bool:
     """Solo i2v runs: only mixed borrows prior-scene guides; image/empty/generated_frame are anchor-only."""
     return is_mixed_source(scene)
@@ -420,8 +429,11 @@ def build_scene_anchors_payload(project: Project) -> Optional[dict]:
 @dataclass
 class SceneSource:
     """How a scene's latent is born. V1 ignores this (uniform chain); Phase 2 maps
-    it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v)."""
-    type: str = "carry"  # "carry" | "empty" | "image" | "generated_frame" | "mixed"
+    it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v).
+
+    ``video`` = locked NLE clip (imported or converted from a scene); never generated.
+    ``v2v`` = generative scene using a video file as the source (video-to-video)."""
+    type: str = "carry"  # carry | empty | image | generated_frame | mixed | video | v2v
     media_ref: Optional[str] = None              # asset id — image/mixed anchor (Img2Video)
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
     target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
@@ -493,6 +505,9 @@ class Scene:
     # Source trim inside generated media (slip edit): in-point seconds and optional duration.
     source_in: float = 0.0
     source_dur: Optional[float] = None
+    # Saved generative state when this clip is converted to a locked ``video`` clip.
+    # Restored on Convert to scene (scene → video → scene round-trip).
+    scene_archive: Optional[dict] = None
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -520,6 +535,7 @@ class Scene:
             character_ids=[str(x) for x in (d.get("character_ids") or []) if x],
             source_in=float(d.get("source_in") or 0),
             source_dur=d.get("source_dur"),
+            scene_archive=d.get("scene_archive"),
         )
 
     def to_dict(self) -> dict:
@@ -707,7 +723,10 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
     transition_to_next, else the generic 'scene N' label) to force the split. This affects
     only what's sent to Studio, never the displayed global prompt.
     """
-    scenes = [s for s in project.scenes if include_excluded or not s.excluded]
+    scenes = [
+        s for s in project.scenes
+        if (include_excluded or not s.excluded) and is_generative_scene(s)
+    ]
     units = group_generative_units(scenes)
     char_map = _load_character_map()
     parts: list[str] = []

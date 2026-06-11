@@ -103,6 +103,24 @@ def test_missing_markers_fall_back_to_scene_labels():
     assert "scene 2" in prompt
 
 
+def test_video_clips_excluded_from_combined_prompt():
+    p = _project(scenes=[
+        {"text": "gen scene", "source": {"type": "carry"}},
+        {"text": "", "source": {"type": "video", "media_ref": "vid1"}},
+    ])
+    prompt = build_combined_prompt(p)
+    assert "gen scene" in prompt
+    assert build_combined_prompt(p, include_excluded=True).count("gen scene") >= 1
+
+
+def test_is_video_clip():
+    from movie_editor.backend.timeline import Scene, SceneSource, is_generative_scene, is_video_clip
+
+    sc = Scene(source=SceneSource(type="video", media_ref="v1"))
+    assert is_video_clip(sc)
+    assert not is_generative_scene(sc)
+
+
 def test_excluded_scenes_dropped_unless_requested():
     p = _project(
         anchor="a cat",

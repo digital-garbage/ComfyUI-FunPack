@@ -222,7 +222,9 @@
         ? `${m.name}\nClick to preview · drag onto a clip to set anchor`
         : m.kind === "audio"
           ? `${m.name}\nClick to preview · add via timeline + Add → Audio`
-          : `${m.name}\nDrag onto a clip to set anchor`;
+          : m.kind === "video"
+            ? `${m.name}\nDrag onto timeline · + Add → Video`
+            : `${m.name}\nDrag onto a clip to set anchor`;
       const thumb = el("div", "media-thumb");
       if (m.kind === "image") { const img = el("img"); img.src = API.mediaUrl(m.id); img.loading = "lazy"; thumb.append(img); }
       else if (m.kind === "audio") thumb.append(el("span", "media-icon", "♪"));
@@ -234,6 +236,8 @@
       card.append(del);
       if (m.kind === "image" || m.kind === "audio") {
         card.onclick = () => S.previewMedia(m.id);
+      } else if (m.kind === "video") {
+        card.ondblclick = () => S.addVideoClip(m.id);
       }
       grid.append(card);
     });

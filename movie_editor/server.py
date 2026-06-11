@@ -840,7 +840,7 @@ if web is not None and PromptServer is not None:
             return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
         bridge.reset_progress()
         bridge.current_progress()  # ensure the sampler step-progress hook is installed
-        active_scenes = [s for s in target.scenes if not s.excluded]
+        active_scenes = [s for s in target.scenes if not s.excluded and not is_video_clip(s)]
         active_scene_count = len(active_scenes)
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.
         # This makes the timeline trim handle actually affect generation length,
@@ -856,7 +856,7 @@ if web is not None and PromptServer is not None:
             if trimmed and all(f == trimmed[0] for f in trimmed)
             else target.num_frames_per_scene
         )
-        from .backend.timeline import continuity_media_refs
+        from .backend.timeline import continuity_media_refs, is_video_clip
         media_pack = _prepare_media(target, continuity_media_refs(p, target))
         sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
         _attach_scene_anchors(sampler_inputs, media_pack, target)
@@ -1003,6 +1003,11 @@ if web is not None and PromptServer is not None:
             return web.json_response({"detail": f"Output directory unavailable: {e}"}, status=500)
 
         def _resolve(c):
+            if c.get("bin_media_ref"):
+                mp = media.path_for(c.get("bin_media_ref") or "")
+                if mp is None:
+                    return ""
+                return str(mp)
             base = outdir if c.get("type", "output") == "output" else tempdir
             return os.path.join(base, c.get("subfolder", ""), c.get("filename", ""))
 

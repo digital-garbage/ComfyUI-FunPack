@@ -7,7 +7,7 @@
   const body = document.getElementById("timeline-body");
   const meta = document.getElementById("timeline-meta");
 
-  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑" };
+  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑", video: "▶", v2v: "⟳" };
 
   function genUnitRootScene(scene, p) {
     const uid = scene.gen_unit_id || scene.id;
@@ -23,7 +23,7 @@
   function anchorMediaRef(scene, p) {
     const src = sceneSourceForClip(scene, p);
     const t = src.type;
-    if (t === "image" || t === "mixed" || t === "generated_frame") return src.media_ref || null;
+    if (t === "image" || t === "mixed" || t === "generated_frame" || t === "video" || t === "v2v") return src.media_ref || null;
     return null;
   }
 
@@ -234,7 +234,7 @@
     const sep = bar.querySelector("[data-separate-audio]");
     if (sep) {
       const sc = hasSel ? S.scene(st.selectedSceneId) : null;
-      sep.disabled = !(sc && hasRender(st, st.selectedSceneId) && !sc.audio_separated);
+      sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, st.selectedSceneId) && !sc.audio_separated);
     }
     const oldRating = bar.querySelector(".tl-rating-block");
     const freshRating = toolbarRatingBlock(st, st.project);
@@ -379,11 +379,12 @@
     const src = sceneSourceForClip(scene, p);
     const srcType = src.type || "empty";
     const clip = el("div", "clip" + clipSelClass(st, scene.id)
+      + (S.isVideoClip(scene) ? " clip-video" : "")
       + (scene.excluded ? " excluded" : "")
-      + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : ""))
+      + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded && S.isGenerativeScene(scene) ? " pending" : ""))
       + (hasRender(st, scene.id) && S.renderIsStale?.(scene.id) ? " stale-render" : "")
       + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : "")
-      + (srcType === "mixed" ? " src-mixed" : srcType === "carry" ? " src-carry" : srcType === "image" ? " src-image" : ""));
+      + (srcType === "mixed" ? " src-mixed" : srcType === "carry" ? " src-carry" : srcType === "image" ? " src-image" : srcType === "video" ? " src-video" : srcType === "v2v" ? " src-v2v" : ""));
     clip.dataset.sceneId = scene.id;
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
@@ -464,7 +465,7 @@
     }
 
     const head = el("div", "clip-head");
-    head.append(el("span", "clip-no", p2(index + 1)));
+    head.append(el("span", "clip-no", S.isVideoClip(scene) ? "V" : p2(index + 1)));
     appendSrcBadge(head, srcType);
     head.append(el("span", "clip-dur", timecode(sDur(scene, p), sFps(scene, p))));
     clip.append(head);
@@ -472,8 +473,11 @@
     const root = unitCuts > 1
       ? (p.scenes || []).find((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id) && !(s.cut_offset_frames > 0))
       : null;
-    const label = scene.text || (root && root.text) || (subclip ? "cut" : "empty scene");
-    clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" ? "" : " empty"), label));
+    const mref = anchorMediaRef(scene, p);
+    const label = S.isVideoClip(scene)
+      ? ((mref && (st.mediaBin || []).find((m) => m.id === mref)?.name) || "Video clip")
+      : (scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
+    clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" && label !== "Video clip" ? "" : " empty"), label));
 
     const charIds = S.sceneCharacterIds(scene.id);
     if (charIds.length) {
@@ -690,14 +694,15 @@
       panel.append(row);
     };
 
-    addRow("Clip", "Append a new scene clip to the timeline", () => S.addScene());
+    addRow("Clip", "Append a new generative scene clip to the timeline", () => S.addScene());
+    addRow("Video", "Add an imported video clip from the Media Browser", () => openVideoClipModal(st));
     addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st));
     addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st));
     addRow("Text", "Coming soon", null, true);
     addRow("Image", "Coming soon", null, true);
     addRow("Audio", "Add an audio track from the Media Browser", () => openAudioTrackModal(st));
     const selSc = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
-    const canSepAud = !!(selSc && hasRender(st, st.selectedSceneId) && !selSc.audio_separated);
+    const canSepAud = !!(selSc && hasRender(st, st.selectedSceneId) && !selSc.audio_separated && S.isGenerativeScene(selSc));
     addRow("Separate audio", "Move selected clip's audio to its own track", () => S.separateSceneAudio(st.selectedSceneId), !canSepAud);
 
     btn.onclick = (e) => {
@@ -711,6 +716,66 @@
     };
     wrap.append(btn); wrap.append(panel);
     return wrap;
+  }
+
+  function openVideoClipModal(st) {
+    closeAddModal();
+    const videoAssets = (st.mediaBin || []).filter((m) => m.kind === "video");
+
+    _addModal = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Add video clip"));
+    const headRight = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    closeBtn.onclick = closeAddModal;
+    headRight.append(closeBtn);
+    head.append(headRight);
+    box.append(head);
+
+    const content = el("div", "modal-content");
+    const pick = (mediaId) => {
+      S.addVideoClip(mediaId);
+      closeAddModal();
+    };
+
+    if (!videoAssets.length) {
+      content.append(el("div", "pj-meta", "Upload video in the Media Browser (mp4, mov, webm…), then pick it here."));
+      const uploadBtn = el("button", "btn primary tiny", "Upload video file");
+      const fileIn = el("input");
+      fileIn.type = "file";
+      fileIn.accept = "video/*,.mp4,.mov,.webm,.mkv";
+      fileIn.style.display = "none";
+      uploadBtn.onclick = () => fileIn.click();
+      fileIn.onchange = async () => {
+        const files = [...(fileIn.files || [])];
+        fileIn.value = "";
+        if (!files.length) return;
+        await S.uploadMedia(files);
+        const fresh = S.get();
+        const added = (fresh.mediaBin || []).filter((m) => m.kind === "video");
+        if (added[0]) pick(added[0].id);
+        else closeAddModal();
+      };
+      content.append(uploadBtn);
+      content.append(fileIn);
+    } else {
+      content.append(el("div", "pj-meta", "Video clips play as-is and are skipped by Generate."));
+      videoAssets.forEach((m) => {
+        const row = el("button", "tl-add-row aud-pick-row", m.name || m.id);
+        row.type = "button";
+        row.onclick = () => pick(m.id);
+        content.append(row);
+      });
+    }
+
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = closeAddModal;
+    content.append(cancel);
+    box.append(content);
+    _addModal.append(box);
+    _addModal.addEventListener("click", (e) => { if (e.target === _addModal) closeAddModal(); });
+    document.body.append(_addModal);
   }
 
   // ── audio lanes (NLE-style, below video) ───────────────────────────────────────
@@ -953,7 +1018,7 @@
     const Picker = window.MovieRatingPicker;
     if (!studioCond || !hasSel || !hasRender(st, st.selectedSceneId) || !Picker) return wrap;
     const sc = S.scene(st.selectedSceneId);
-    if (!sc) return wrap;
+    if (!sc || !S.isGenerativeScene(sc)) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
     const raw = sceneRatingRaw(st, sc);
     const rlabel = el("span", "tl-keys", `Scene ${sceneNo}`);
@@ -1000,7 +1065,7 @@
     sepAud.dataset.separateAudio = "1";
     sepAud.title = "Detach this clip's audio onto its own track (video keeps picture only)";
     const selSc = hasSel ? S.scene(st.selectedSceneId) : null;
-    sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated);
+    sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
     sepAud.onclick = () => S.separateSceneAudio(st.selectedSceneId);
     bar.append(split); bar.append(del); bar.append(exp); bar.append(sepAud);
     bar.append(toolbarRatingBlock(st, p));
@@ -1101,6 +1166,23 @@
 
     const tracks = el("div", "tl-tracks");
     const track = el("div", "tl-track2");
+    track.addEventListener("dragover", (e) => {
+      if (e.dataTransfer?.types?.includes("application/funpack-media")) {
+        e.preventDefault();
+        track.classList.add("drop-target-track");
+      }
+    });
+    track.addEventListener("dragleave", () => track.classList.remove("drop-target-track"));
+    track.addEventListener("drop", (e) => {
+      track.classList.remove("drop-target-track");
+      const id = e.dataTransfer?.getData("application/funpack-media");
+      if (!id) return;
+      const asset = (st.mediaBin || []).find((m) => m.id === id);
+      if (asset?.kind === "video") {
+        e.preventDefault();
+        S.addVideoClip(id);
+      }
+    });
     track.addEventListener("click", (e) => {
       const clip = e.target.closest(".clip:not(.ghost)[data-scene-id]");
       if (!clip) return;

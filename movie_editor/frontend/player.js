@@ -39,6 +39,7 @@
   let _currentClip = null;
 
   const _urlFor = (media) => API.resultUrl(S.get().project?.id, media);
+  const _clipUrl = (clip) => clip.binUrl || (clip.media ? _urlFor(clip.media) : "");
   const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || (t + 1)) - 0.02));
 
   function _segmentSourceBadge(sceneId) {
@@ -77,13 +78,21 @@
       }
       const sc = seg.scene;
       const r = sr[sc.id];
+      const fx = sc.effects || {};
+      const vol = sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1);
+      const inSec = (sc.source_in || 0) + (r?.inSec || 0);
       if (r && r.media) {
         out.push({
-          media: r.media, sceneId: sc.id, startSec, durationSec: dur, inSec: r.inSec || 0,
-          fx: sc.effects || {},
-          vol: sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1),
+          media: r.media, sceneId: sc.id, startSec, durationSec: dur, inSec,
+          fx, vol,
         });
-      } else if (!sc.excluded) {
+      } else if (S.isVideoClip && S.isVideoClip(sc) && sc.source?.media_ref) {
+        out.push({
+          binUrl: API.mediaUrl(sc.source.media_ref),
+          sceneId: sc.id, startSec, durationSec: dur, inSec: sc.source_in || 0,
+          fx, vol,
+        });
+      } else if (!sc.excluded && S.isGenerativeScene && S.isGenerativeScene(sc)) {
         out.push({
           pending: true, sceneId: sc.id, startSec, durationSec: dur,
           slate: "Not generated yet",
@@ -204,7 +213,7 @@
   }
 
   function _syncPool() {
-    const urls = new Set(_clips.filter((c) => c.media).map((c) => _urlFor(c.media)));
+    const urls = new Set(_clips.filter((c) => c.media || c.binUrl).map((c) => _clipUrl(c)));
     urls.forEach((u) => _ensureVideo(u));
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
@@ -275,8 +284,8 @@
       if (play) _startTick();
       return;
     }
-    if (!clip.media) return;
-    const v = _ensureVideo(_urlFor(clip.media));
+    if (!clip.media && !clip.binUrl) return;
+    const v = _ensureVideo(_clipUrl(clip));
     _currentClip = clip; _setActive(v);
     _showSlate("");
     const badge = clip.ghost ? (clip.slate || "Removed — preview only") : _segmentSourceBadge(clip.sceneId);
@@ -304,7 +313,8 @@
     const prev = _currentClip;
     const sameSource = next.media && prev.media
       && _urlFor(next.media) === _urlFor(prev.media);
-    const contiguous = sameSource
+    const sameBin = next.binUrl && prev.binUrl && next.binUrl === prev.binUrl;
+    const contiguous = (sameSource || sameBin)
       && Math.abs((next.inSec || 0) - ((prev.inSec || 0) + prev.durationSec)) < 0.05;
     _phSec = next.startSec;
     _currentClip = next;
@@ -548,7 +558,7 @@
     _syncPool();  // preload current clips, drop stale ones (timeline is dynamic)
 
     // Re-resolve the clip under the playhead each render (positions change with edits).
-    const hash = _clips.map((c) => (c.pending ? "pending:" + c.sceneId : c.ghost ? "ghost:" + c.ghostId : c.media?.filename) + "@" + c.startSec.toFixed(2) + "+" + (c.inSec || 0).toFixed(2)).join("|");
+    const hash = _clips.map((c) => (c.pending ? "pending:" + c.sceneId : c.ghost ? "ghost:" + c.ghostId : (_clipUrl(c) || "x")) + "@" + c.startSec.toFixed(2) + "+" + (c.inSec || 0).toFixed(2)).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
       const clip = _clipAt(_phSec);
@@ -660,15 +670,19 @@
         } else {
           const sc = seg.scene;
           const stype = sc.source?.type || "empty";
-          const rendered = !!((st.sceneRenders || {})[sc.id] || {}).media;
-          const stale = rendered && S.renderIsStale?.(sc.id);
+          const isVideo = S.isVideoClip && S.isVideoClip(sc);
+          const rendered = isVideo
+            ? !!(sc.source?.media_ref || ((st.sceneRenders || {})[sc.id] || {}).media)
+            : !!((st.sceneRenders || {})[sc.id] || {}).media;
+          const stale = !isVideo && rendered && S.renderIsStale?.(sc.id);
           cls += rendered ? " rendered" : " pending";
-          if (stale) cls += " stale";
-          if (stype === "mixed") { cls += " mixed"; title = "Mixed · anchor + prior guides"; }
+          if (isVideo) { cls += " video"; title = "Video clip (locked)"; }
+          else if (stale) cls += " stale";
+          else if (stype === "mixed") { cls += " mixed"; title = "Mixed · anchor + prior guides"; }
           else if (stype === "carry") { cls += " carry"; title = "Carry · prior guides only"; }
           const idx = (p.scenes || []).indexOf(sc) + 1;
           if (!title) title = `Scene ${idx}${rendered ? (stale ? " (previous generation)" : " (rendered)") : " (not rendered)"}`;
-          else title = `Scene ${idx} · ${title}${rendered ? (stale ? " · previous generation" : "") : " · not rendered"}`;
+          else if (!isVideo) title = `Scene ${idx} · ${title}${rendered ? (stale ? " · previous generation" : "") : " · not rendered"}`;
         }
         const chip = el("div", cls);
         chip.style.width = (d / _totalSecCur * 100).toFixed(3) + "%";
