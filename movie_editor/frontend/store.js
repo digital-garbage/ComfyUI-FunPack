@@ -2209,6 +2209,15 @@
     if (state.mediaPreviewId === id) state.mediaPreviewId = null;
     await loadMedia();
   }
+  async function deleteMediaMany(ids) {
+    const list = [...new Set(ids || [])].filter(Boolean);
+    if (!list.length) return;
+    for (const id of list) {
+      try { await API.deleteMedia(id); } catch (_) {}
+      if (state.mediaPreviewId === id) state.mediaPreviewId = null;
+    }
+    await loadMedia();
+  }
 
   async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
   async function loadNleLibrary() {
@@ -2405,7 +2414,7 @@
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
-    loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
+    loadMedia, uploadMedia, deleteMedia, deleteMediaMany, previewMedia, clearMediaPreview, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
     loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions,

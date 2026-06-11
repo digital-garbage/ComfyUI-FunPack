@@ -9,6 +9,7 @@
   let q = { Characters: "", Shortcuts: "", Splits: "", Effects: "", Transitions: "" };
   let editCharacter = null;          // character item being edited ({} = new), or null
   let _libModal = null;
+  const mediaSelected = new Set();   // media bin multi-select
 
   // ── library edit helpers ───────────────────────────────────────────────────────
   function closeLibModal() {
@@ -199,7 +200,19 @@
   }
 
   // ── media bin ──────────────────────────────────────────────────────────────────
+  function _pruneMediaSelection(bin) {
+    const ids = new Set((bin || []).map((m) => m.id));
+    for (const id of mediaSelected) {
+      if (!ids.has(id)) mediaSelected.delete(id);
+    }
+  }
+
   function mediaTab(st) {
+    const bin = st.mediaBin || [];
+    _pruneMediaSelection(bin);
+    const total = bin.length;
+    const selN = mediaSelected.size;
+
     const wrap = el("div", "bin");
     const drop = el("div", "mediabin");
     drop.append(el("div", "big", "🎞"));
@@ -213,18 +226,34 @@
     drop.addEventListener("drop", (e) => { const fs = [...(e.dataTransfer?.files || [])]; if (fs.length) S.uploadMedia(fs); });
     wrap.append(drop); wrap.append(file);
 
+    if (selN > 0) {
+      const actions = el("div", "media-bin-actions");
+      const rem = el("button", "btn ghost tiny danger", `Remove selected (${selN})`);
+      rem.onclick = async () => {
+        if (!confirm(`Delete ${selN} selected item${selN > 1 ? "s" : ""}?`)) return;
+        await S.deleteMediaMany([...mediaSelected]);
+        mediaSelected.clear();
+        render(S.get());
+      };
+      actions.append(rem);
+      wrap.append(actions);
+    }
+
     const grid = el("div", "media-grid");
-    (st.mediaBin || []).forEach((m) => {
-      const card = el("div", "media-card" + (st.mediaPreviewId === m.id ? " previewing" : ""));
+    bin.forEach((m) => {
+      const picked = mediaSelected.has(m.id);
+      const card = el("div", "media-card"
+        + (st.mediaPreviewId === m.id ? " previewing" : "")
+        + (picked ? " picked" : ""));
       card.draggable = true;
       card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
       card.title = m.kind === "image"
-        ? `${m.name}\nClick to preview · drag onto a clip to set anchor`
+        ? `${m.name}\nClick to select · double-click to preview · drag onto a clip to set anchor`
         : m.kind === "audio"
-          ? `${m.name}\nClick to preview · add via timeline + Add → Audio`
+          ? `${m.name}\nClick to select · double-click to preview · add via timeline + Add → Audio`
           : m.kind === "video"
-            ? `${m.name}\nDrag onto timeline · + Add → Video`
-            : `${m.name}\nDrag onto a clip to set anchor`;
+            ? `${m.name}\nClick to select · double-click to add to timeline · drag onto timeline`
+            : `${m.name}\nClick to select · drag onto a clip to set anchor`;
       const thumb = el("div", "media-thumb");
       if (m.kind === "image") { const img = el("img"); img.src = API.mediaUrl(m.id); img.loading = "lazy"; thumb.append(img); }
       else if (m.kind === "audio") thumb.append(el("span", "media-icon", "♪"));
@@ -234,15 +263,32 @@
       const del = el("button", "media-del", "✕"); del.title = "Delete asset";
       del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
       card.append(del);
+      card.onclick = () => {
+        if (picked) mediaSelected.delete(m.id);
+        else mediaSelected.add(m.id);
+        render(S.get());
+      };
       if (m.kind === "image" || m.kind === "audio") {
-        card.onclick = () => S.previewMedia(m.id);
+        card.ondblclick = (e) => { e.stopPropagation(); S.previewMedia(m.id); };
       } else if (m.kind === "video") {
-        card.ondblclick = () => S.addVideoClip(m.id);
+        card.ondblclick = (e) => { e.stopPropagation(); S.addVideoClip(m.id); };
       }
       grid.append(card);
     });
-    if (!(st.mediaBin || []).length) grid.append(el("div", "pj-meta", "No media yet."));
+    if (!total) grid.append(el("div", "pj-meta", "No media yet."));
     wrap.append(grid);
+
+    if (total > 0) {
+      const footer = el("div", "media-bin-footer");
+      const all = el("button", "btn ghost tiny", `Select all (${total})`);
+      all.onclick = () => {
+        mediaSelected.clear();
+        bin.forEach((m) => mediaSelected.add(m.id));
+        render(S.get());
+      };
+      footer.append(all);
+      wrap.append(footer);
+    }
     return wrap;
   }
 
