@@ -387,7 +387,6 @@ input[type=number] { font-family: var(--font-mono); }
   border-radius: 10px; padding: 6px 10px; pointer-events: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.pm-render-prompt.anchor-stale { color: #c8fff4; border-color: color-mix(in srgb, var(--teal-soft) 45%, var(--line)); }
 .pm-needle { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .85; transform: translateX(-50%); pointer-events: none; z-index: 2; }
 
 /* transport bar */
@@ -674,6 +673,7 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip.prompt-mismatch { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
 .clip.anchor-mismatch { border-color: color-mix(in srgb, var(--teal-soft) 42%, var(--line)); }
 .clip.stale-render.rendered::after { color: var(--amber-2); text-shadow: 0 0 5px rgba(224, 162, 58, .7); }
+.clip-gen-anchor .clip-gen-prompt-label { color: var(--teal-soft); }
 .clip-gen-anchor .clip-gen-prompt-text { color: #c8fff4; }
 .clip-actions { position: absolute; top: 5px; right: 8px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .clip:hover .clip-actions { opacity: 1; }
