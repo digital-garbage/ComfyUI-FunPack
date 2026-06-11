@@ -64,14 +64,20 @@
 
   function fpPlayer(st) {
     if (!st.project) return "none";
+    const p = st.project;
     return hash({
-      pid: st.project.id,
-      scenes: (st.project.scenes || []).map((s) => [s.id, s.excluded, s.frames, s.fps, s.frames_mode]),
+      pid: p.id,
+      scenes: (p.scenes || []).map((s) => [
+        s.id, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
+        s.audio_volume, s.audio_separated, s.source_in, s.source_dur, s.effects,
+      ]),
       renders: st.sceneRenders,
       ghosts: st.sceneGhosts,
+      audio: p.audio_tracks,
+      keepAud: p.keep_original_audio,
       gen: { state: st.gen?.state, media: st.gen?.media },
       mediaPreview: st.mediaPreviewId,
-      fps: st.project.frame_rate,
+      fps: p.frame_rate,
     });
   }
 

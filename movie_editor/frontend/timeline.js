@@ -912,16 +912,18 @@
   }
 
   function insertedAudioLane(st, p, track, laneH) {
-    const lane = el("div", "tl-audio-lane"); lane.style.height = laneH + "px";
-    const isSep = track.kind === "separated" && track.scene_id;
-    const asset = isSep ? null : (st.mediaBin || []).find((m) => m.id === track.media_ref);
+    const lane = el("div", "tl-audio-lane" + (track.kind === "overlay" || (track.media_ref && track.kind !== "separated") ? " overlay-lane" : ""));
+    lane.style.height = laneH + "px";
+    const isSep = S.isSeparatedAudioTrack ? S.isSeparatedAudioTrack(track) : (track.kind === "separated" && track.scene_id);
+    const isOverlay = S.isOverlayAudioTrack ? S.isOverlayAudioTrack(track) : (!isSep && track.media_ref);
+    const asset = isOverlay ? (st.mediaBin || []).find((m) => m.id === track.media_ref) : null;
     const sepScene = isSep ? p.scenes.find((s) => s.id === track.scene_id) : null;
     const sepIdx = sepScene ? p.scenes.indexOf(sepScene) + 1 : 0;
     const body = el("div", "tl-audio-lane-body");
     const startSec = track.start_sec || 0;
     let durSec = track.source_dur || asset?.duration_sec || 0;
     const w = Math.max((durSec || 2) * pxPerSec, 48);
-    const block = el("div", "tl-aud-clip ins" + (isSep ? " sep" : ""));
+    const block = el("div", "tl-aud-clip ins" + (isSep ? " sep" : " overlay"));
     block.style.left = (startSec * pxPerSec) + "px";
     block.style.width = w + "px";
 
@@ -1014,19 +1016,24 @@
     const gTracks = el("div", "tl-gutter-tracks");
     gTracks.append(gutterLane("Video", "Video", "video"));
     const gAud = el("div", "tl-gutter-aud");
-    gAud.append(gutterLane("Audio", "Audio — per-scene volume from generated clips", "audio"));
+    gAud.append(gutterLane("Original", "Original audio from generated clips and video", "audio orig"));
     (p.audio_tracks || []).forEach((t) => {
       let name, title;
-      if (t.kind === "separated" && t.scene_id) {
+      const isSep = S.isSeparatedAudioTrack ? S.isSeparatedAudioTrack(t) : (t.kind === "separated" && t.scene_id);
+      const isOverlay = S.isOverlayAudioTrack ? S.isOverlayAudioTrack(t) : (!isSep && t.media_ref);
+      if (isSep) {
         name = t.label || "Separated";
-        title = `${name} (detached from generated clip)`;
-      } else {
+        title = `${name} (detached clip audio)`;
+      } else if (isOverlay) {
         const asset = (st.mediaBin || []).find((m) => m.id === t.media_ref);
-        name = (asset && asset.name) || t.label || "Audio";
+        name = t.label || (asset && asset.name) || "Overlay";
+        title = `${name} — mixed on top of original audio`;
+      } else {
+        name = t.label || "Audio";
         title = name;
       }
       const short = name.length > 9 ? name.slice(0, 8) + "…" : name;
-      gAud.append(gutterLane(short, title, "audio"));
+      gAud.append(gutterLane(short, title, "audio" + (isOverlay ? " overlay" : isSep ? " sep" : "")));
     });
     gTracks.append(gAud);
     gutter.append(gTracks);
@@ -1035,7 +1042,7 @@
 
   function audioLanes(st, p, lay) {
     const wrap = el("div", "tl-audio-lanes");
-    const origLane = el("div", "tl-audio-lane"); origLane.style.height = AUDIO_LANE_H + "px";
+    const origLane = el("div", "tl-audio-lane orig-lane"); origLane.style.height = AUDIO_LANE_H + "px";
     const origBody = el("div", "tl-audio-lane-body");
     lay.forEach(({ sc, o, d }, i) => origBody.append(sceneAudioClip(st, p, sc, i, o * pxPerSec, d * pxPerSec)));
     origLane.append(origBody);

@@ -110,7 +110,7 @@
     const bin = st.mediaBin || [];
     const out = [];
     for (const t of (st.project.audio_tracks || [])) {
-      if (t.kind === "separated" && t.scene_id) {
+      if (S.isSeparatedAudioTrack && S.isSeparatedAudioTrack(t)) {
         const r = sr[t.scene_id];
         if (!r?.media || !pid) continue;
         out.push({
@@ -121,15 +121,15 @@
           inSec: t.source_in_sec != null ? t.source_in_sec : (r.inSec || 0),
           vol: t.volume != null ? t.volume : 1,
         });
-      } else if (t.media_ref) {
+      } else if (S.isOverlayAudioTrack ? S.isOverlayAudioTrack(t) : (t.media_ref && t.kind !== "separated")) {
         const asset = bin.find((m) => m.id === t.media_ref);
         if (!asset) continue;
         out.push({
           id: t.id,
           url: API.mediaUrl(t.media_ref),
           startSec: t.start_sec || 0,
-          durSec: asset.duration_sec || 86400,
-          inSec: 0,
+          durSec: t.source_dur || asset.duration_sec || 86400,
+          inSec: t.source_in_sec || 0,
           vol: t.volume != null ? t.volume : 1,
         });
       }

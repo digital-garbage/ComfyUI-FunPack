@@ -584,10 +584,10 @@ class Project:
     studio_inputs: dict = field(default_factory=dict)
     sampler_inputs: dict = field(default_factory=dict)
     # Audio editing (render-time mix). keep_original_audio=False drops the per-clip LTXAV
-    # audio entirely. audio_tracks = inserted tracks mixed over the montage, each:
-    #   {id, media_ref, start_sec, volume, label} for Media Bin assets, or
-    #   {id, kind:"separated", scene_id, start_sec, source_in_sec, source_dur, volume, label}
-    #   for audio detached from a generated clip. With no tracks and original off → silent.
+    # audio entirely. audio_tracks = lanes mixed over the montage:
+    #   overlay — {id, kind:"overlay", media_ref, start_sec, source_in_sec?, source_dur?, volume, label}
+    #   separated — {id, kind:"separated", scene_id, start_sec, source_in_sec, source_dur, volume, label}
+    # Overlay tracks use absolute timeline start_sec and persist across scene edits.
     keep_original_audio: bool = True
     audio_tracks: list = field(default_factory=list)
     # Per-project pipeline config: the configured loader/node slots + linked inputs

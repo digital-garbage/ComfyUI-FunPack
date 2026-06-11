@@ -1133,7 +1133,10 @@ if web is not None and PromptServer is not None:
         media_tracks: list = []
         separated_tracks: list = []
         for t in (getattr(proj, "audio_tracks", None) or []):
-            if t.get("kind") == "separated" or (t.get("scene_id") and not t.get("media_ref")):
+            is_sep = t.get("kind") == "separated" or (
+                t.get("scene_id") and not t.get("media_ref") and t.get("kind") != "overlay"
+            )
+            if is_sep:
                 sid = t.get("scene_id")
                 c = clip_by_scene.get(sid) if sid else None
                 if not c:

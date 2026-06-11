@@ -415,6 +415,7 @@
 
   function _afterTimelineStructureChange() {
     _pinnedGlobalPrompt = null;
+    _syncSeparatedAudioTracks();
     syncGlobalPromptFromTimeline();
   }
 
@@ -613,6 +614,7 @@
     if (window.EditorHistory) window.EditorHistory.clear();
     notify();
     syncGlobalPromptFromTimeline();
+    _syncSeparatedAudioTracks();
     refreshPreview();
     loadModels();
     _validateSceneRenders();
@@ -1263,6 +1265,7 @@
     s.frames = snapFrames(Math.max(1, durationSec) * fps);
     // Dragging the trim handle opts the scene into timeline-driven length.
     if (s.frames_mode == null || s.frames_mode === "project") s.frames_mode = "timeline";
+    _syncSeparatedAudioTracks();
     scheduleSaveSilent();
   }
 
@@ -1306,6 +1309,7 @@
       };
     }
     notify(); scheduleSave();
+    _syncSeparatedAudioTracks();
   }
 
   function moveScene(id, delta) {
@@ -1317,6 +1321,7 @@
     if (i < 0 || j < 0 || j >= arr.length) return;
     [arr[i], arr[j]] = [arr[j], arr[i]];
     notify(); scheduleSave();
+    _syncSeparatedAudioTracks();
   }
 
   // Move a scene to an absolute index (post-removal index). Used by timeline drag-reorder.
@@ -1331,10 +1336,35 @@
     const [it] = arr.splice(from, 1);
     arr.splice(toIndex, 0, it);
     notify(); scheduleSave();
+    _syncSeparatedAudioTracks();
   }
 
   // ── audio editing ─────────────────────────────────────────────────────────────
   function _uid() { return "a" + Math.random().toString(36).slice(2, 9) + Date.now().toString(36); }
+
+  function isOverlayAudioTrack(t) {
+    return !!(t && t.media_ref && t.kind !== "separated");
+  }
+
+  function isSeparatedAudioTrack(t) {
+    return !!(t && t.kind === "separated" && t.scene_id);
+  }
+
+  function _syncSeparatedAudioTracks() {
+    if (!state.project) return;
+    let moved = false;
+    for (const t of state.project.audio_tracks || []) {
+      if (!isSeparatedAudioTrack(t)) continue;
+      const sc = scene(t.scene_id);
+      if (!sc || sc.excluded) continue;
+      const off = sceneTimelineOffsetSec(t.scene_id);
+      if (Math.abs((t.start_sec || 0) - off) > 0.001) {
+        t.start_sec = off;
+        moved = true;
+      }
+    }
+    if (moved) scheduleSaveSilent();
+  }
 
   function addAudioTrack(mediaId, startSec) {
     if (!state.project || !mediaId) return;
@@ -1342,8 +1372,14 @@
     const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
     state.project.audio_tracks = state.project.audio_tracks || [];
     state.project.audio_tracks.push({
-      id: _uid(), media_ref: mediaId, start_sec: +(startSec || 0),
-      volume: 1.0, label: (asset && asset.name) || "track",
+      id: _uid(),
+      kind: "overlay",
+      media_ref: mediaId,
+      start_sec: +(startSec || 0),
+      source_in_sec: 0,
+      source_dur: asset?.duration_sec || null,
+      volume: 1.0,
+      label: (asset && asset.name) || "Overlay",
     });
     notify(); scheduleSave();
   }
@@ -2457,6 +2493,7 @@
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
+    isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,

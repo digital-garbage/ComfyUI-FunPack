@@ -612,6 +612,12 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-audio-head .chk { font-size: 11px; }
 .tl-audio-add { font-size: 12px; padding: 2px 6px; max-width: 200px; }
 .tl-audio-lane { position: relative; height: 44px; border-bottom: 1px solid var(--line-2); }
+.tl-audio-lane.orig-lane { background: color-mix(in srgb, var(--teal) 4%, var(--ink-0)); }
+.tl-audio-lane.overlay-lane { background: color-mix(in srgb, #60a5fa 5%, var(--ink-0)); }
+.tl-gutter-lane.orig { color: var(--teal-soft); }
+.tl-gutter-lane.overlay { color: #93c5fd; }
+.tl-aud-clip.overlay { border-color: color-mix(in srgb, #60a5fa 35%, var(--line)); }
+.tl-aud-clip.overlay .tl-aud-wave canvas { opacity: .95; }
 .tl-audio-lane:last-child { border-bottom: none; }
 .tl-audio-lane-body { position: absolute; inset: 0; }
 .tl-aud-clip { position: absolute; top: 4px; bottom: 4px; box-sizing: border-box;
