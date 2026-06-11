@@ -1,4 +1,4 @@
-// Left zone: projects + tabbed library bins — Media, Characters, Shortcuts, Transitions.
+// Left zone: projects + tabbed library bins — Media, Characters, Shortcuts, Split markers, Effects, Transitions.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
@@ -6,9 +6,9 @@
   const body = document.getElementById("media-body");
 
   let tab = "Media";                 // active bin
-  let q = { Characters: "", Shortcuts: "", Transitions: "" };
+  let q = { Characters: "", Shortcuts: "", "Split markers": "", Effects: "", Transitions: "" };
   let editShortcut = null;           // shortcut item being edited ({} = new), or null
-  let editTransition = null;         // transition item being edited ({} = new), or null
+  let editSplitMarker = null;        // split-marker item being edited ({} = new), or null
   let editCharacter = null;          // character item being edited ({} = new), or null
 
   // ── library edit helpers ───────────────────────────────────────────────────────
@@ -49,22 +49,21 @@
   }
 
   const PLACEMENTS = ["global", "start", "end", "silent"];
-  const EFFECTS = ["none", "fade_to_black", "crossfade", "blur_out_in"];
   function selectFrom(opts, value) {
     const sel = el("select", "lib-in");
     opts.forEach((o) => { const op = el("option", null, o); op.value = o; if (o === value) op.selected = true; sel.append(op); });
     return sel;
   }
-  function transitionForm(item) {
+  function splitMarkerForm(item) {
     const isNew = !item.name && !item.trigger;
     const box = el("div", "lib-form");
-    box.append(el("div", "lib-form-title", isNew ? "New transition" : `Edit “${item.name || item.trigger}”`));
+    box.append(el("div", "lib-form-title", isNew ? "New split marker" : `Edit “${item.name || item.trigger}”`));
     const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
     const trig = el("input", "lib-in"); trig.placeholder = "Trigger phrase (what appears in the prompt)"; trig.value = item.trigger || "";
     const place = selectFrom(PLACEMENTS, item.placement || "global");
-    const fx = selectFrom(EFFECTS, item.visual_effect || "none");
     const en = checkRow("Enabled", item.enabled !== false);
-    box.append(labeled("Name", name), labeled("Trigger", trig), labeled("Placement", place), labeled("Visual effect", fx), en);
+    box.append(labeled("Name", name), labeled("Trigger", trig), labeled("Placement", place), en);
+    box.append(el("div", "insp-hint", "Splits the generation prompt only — not a video dissolve on the timeline."));
     const actions = el("div", "lib-form-actions");
     const save = el("button", "btn primary tiny", "Save");
     save.onclick = async () => {
@@ -72,13 +71,13 @@
       if (!trigger) { alert("A trigger phrase is required."); return; }
       await S.saveTransition({
         name: name.value.trim() || trigger, trigger,
-        placement: place.value, visual_effect: fx.value, enabled: en._cb.checked,
+        placement: place.value, enabled: en._cb.checked,
         original_name: item.name || undefined,
       });
-      editTransition = null; render(S.get());
+      editSplitMarker = null; render(S.get());
     };
     const cancel = el("button", "btn ghost tiny", "Cancel");
-    cancel.onclick = () => { editTransition = null; render(S.get()); };
+    cancel.onclick = () => { editSplitMarker = null; render(S.get()); };
     actions.append(save, cancel); box.append(actions);
     return box;
   }
@@ -305,49 +304,85 @@
     return wrap;
   }
 
-  // ── transitions bin ──────────────────────────────────────────────────────────────
-  function transitionsTab(st) {
+  // ── split markers bin (generation prompt splits) ───────────────────────────────
+  function splitMarkersTab(st) {
     const wrap = el("div", "bin");
-    wrap.append(searchRow("Transitions", "Filter transitions…", () => render(S.get())));
+    wrap.append(searchRow("Split markers", "Filter split markers…", () => render(S.get())));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add");
-    addBtn.onclick = () => { editTransition = {}; render(S.get()); };
+    addBtn.onclick = () => { editSplitMarker = {}; render(S.get()); };
     const expBtn = el("a", "btn ghost tiny", "↓ Export");
-    expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_transitions.json"; expBtn.title = "Download transitions as JSON";
+    expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_promptsplit.json"; expBtn.title = "Download split markers as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
     impFile.onchange = async () => {
       if (!impFile.files[0]) return;
       const n = await S.importTransitions(impFile.files[0]); impFile.value = "";
-      if (n != null) alert(`Imported ${n} transition(s).`);
+      if (n != null) alert(`Imported ${n} split marker(s).`);
     };
-    const impBtn = el("button", "btn ghost tiny", "↑ Import"); impBtn.title = "Import transitions from JSON";
+    const impBtn = el("button", "btn ghost tiny", "↑ Import"); impBtn.title = "Import split markers from JSON";
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
     wrap.append(toolbar);
-    if (editTransition) wrap.append(transitionForm(editTransition));
+    if (editSplitMarker) wrap.append(splitMarkerForm(editSplitMarker));
 
     const list = el("div", "lib-list");
-    const items = filtered(st.transitions || [], q.Transitions, (t) => `${t.name || ""} ${t.trigger || ""} ${t.visual_effect || ""}`);
+    const items = filtered(st.transitions || [], q["Split markers"], (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
     items.forEach((t) => {
       const trig = t.trigger || t.name || t.key;
       const row = el("div", "lib-row");
       const main = el("div", "lib-main");
       main.append(el("div", "lib-name", (t.name || trig) + (t.enabled === false ? " (off)" : "")));
       const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "",
-                   t.placement && t.placement !== "global" ? t.placement : "",
-                   t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
+                   t.placement && t.placement !== "global" ? t.placement : ""].filter(Boolean).join(" · ");
       if (sub) main.append(el("div", "lib-sub", sub));
       row.append(main);
       const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as split marker before the selected scene (generation prompt)";
-      apply.onclick = () => { if (!S.applyTransitionToSelection(trig)) alert("Select a scene first."); };
-      const edit = el("button", "ic-btn", "✎"); edit.title = "Edit transition";
-      edit.onclick = () => { editTransition = t; render(S.get()); };
-      const del = el("button", "ic-btn danger", "✕"); del.title = "Delete transition";
-      del.onclick = () => { if (confirm(`Delete transition "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
+      apply.onclick = () => { if (!S.applySplitMarkerToSelection(trig)) alert("Select a scene first."); };
+      const edit = el("button", "ic-btn", "✎"); edit.title = "Edit split marker";
+      edit.onclick = () => { editSplitMarker = t; render(S.get()); };
+      const del = el("button", "ic-btn danger", "✕"); del.title = "Delete split marker";
+      del.onclick = () => { if (confirm(`Delete split marker "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
       row.append(apply); row.append(edit); row.append(del);
       list.append(row);
     });
-    if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No transitions yet."));
+    if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No split markers yet."));
+    wrap.append(list);
+    return wrap;
+  }
+
+  function nlePresetTab(st, kind) {
+    const isEffect = kind === "effect";
+    const items = isEffect ? (st.nleEffects || []) : (st.nleVideoTransitions || []);
+    const qKey = isEffect ? "Effects" : "Transitions";
+    const wrap = el("div", "bin");
+    wrap.append(searchRow(qKey, `Filter ${qKey.toLowerCase()}…`, () => render(S.get())));
+    wrap.append(el("div", "insp-hint", isEffect
+      ? "Clip effects applied on the timeline after render (zoom, blur, fades)."
+      : "Video blends between clips on the timeline — not prompt split markers."));
+    const list = el("div", "lib-list");
+    const filteredItems = filtered(items, q[qKey], (x) => `${x.name || ""} ${x.id || ""} ${x.description || ""}`);
+    filteredItems.forEach((item) => {
+      const row = el("div", "lib-row");
+      const main = el("div", "lib-main");
+      main.append(el("div", "lib-name", item.name || item.id));
+      const sub = item.description || (item.param ? `${item.param.label} default ${item.param.default}` : "");
+      if (sub) main.append(el("div", "lib-sub", sub));
+      row.append(main);
+      const apply = el("button", "btn ghost tiny", "apply");
+      apply.title = isEffect ? "Add effect to selected clip" : "Set video transition on selected clip";
+      apply.onclick = () => {
+        if (!st.selectedSceneId) { alert("Select a clip first."); return; }
+        if (isEffect) {
+          const v = item.param ? item.param.default : null;
+          if (!S.applyNleEffect(item.id, v)) alert("Could not apply effect.");
+        } else if (!S.applyNleVideoTransition(item.id, item.param?.default)) {
+          alert("Could not apply transition.");
+        }
+      };
+      row.append(apply);
+      list.append(row);
+    });
+    if (!filteredItems.length) list.append(el("div", "pj-meta", items.length ? "No match." : "No presets loaded."));
     wrap.append(list);
     return wrap;
   }
@@ -369,9 +404,9 @@
 
     const sec = el("div", "mb-section mb-bin-shell");
     const tabs = el("div", "bin-tabs bin-tabs-sticky");
-    ["Media", "Characters", "Shortcuts", "Transitions"].forEach((name) => {
+    ["Media", "Characters", "Shortcuts", "Split markers", "Effects", "Transitions"].forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
-      b.onclick = () => { tab = name; editCharacter = null; render(S.get()); };
+      b.onclick = () => { tab = name; editCharacter = null; editSplitMarker = null; render(S.get()); };
       tabs.append(b);
     });
     sec.append(tabs);
@@ -380,7 +415,9 @@
       tab === "Media" ? mediaTab(st)
         : tab === "Characters" ? charactersTab(st)
           : tab === "Shortcuts" ? shortcutsTab(st)
-            : transitionsTab(st),
+            : tab === "Split markers" ? splitMarkersTab(st)
+              : tab === "Effects" ? nlePresetTab(st, "effect")
+                : nlePresetTab(st, "transition"),
     );
     sec.append(scroll);
     body.append(sec);

@@ -50,6 +50,7 @@
     characters: () => j("GET", API("/library/characters")),
     saveCharacter: (item) => j("POST", API("/library/characters"), item),
     deleteCharacter: (id) => j("DELETE", API(`/library/characters/${encodeURIComponent(id)}`)),
+    nleLibrary: () => j("GET", API("/library/nle")),
 
     // media bin
     listMedia: () => j("GET", API("/media")),

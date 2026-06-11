@@ -668,6 +668,14 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
+    @routes.get(UI_PREFIX + "/api/library/nle")
+    async def _nle_library(_req):
+        try:
+            from .backend import nle_library
+            return web.json_response(nle_library.load())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"effects": [], "video_transitions": [], "error": str(e)})
+
     @routes.get(UI_PREFIX + "/api/library/shortcuts/export")
     async def _shortcuts_export(_req):
         try:
@@ -696,7 +704,7 @@ if web is not None and PromptServer is not None:
         try:
             data = bridge.export_transitions()
             return web.json_response(data, headers={
-                "Content-Disposition": "attachment; filename=funpack_transitions.json",
+                "Content-Disposition": "attachment; filename=funpack_promptsplit.json",
                 "Cache-Control": "no-store",
             })
         except Exception as e:  # noqa: BLE001

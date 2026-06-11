@@ -846,6 +846,11 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .clip-fs-cell { flex: 1; min-width: 0; overflow: hidden; }
 .clip-fs-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
 .tl-dd-panel.inline { position: static; box-shadow: none; border: none; padding: 0; margin-top: 6px; }
+.tl-add-panel { min-width: 160px; display: flex; flex-direction: column; gap: 2px; padding: 6px; }
+.tl-add-row { display: block; width: 100%; text-align: left; padding: 6px 10px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text, #e8e0d4); font-size: 12px; cursor: pointer; }
+.tl-add-row:hover:not(:disabled) { background: var(--ink-2, #1e1b16); }
+.tl-add-row:disabled { opacity: .45; cursor: default; }
 .tl-dd-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .insp-fold { margin: 8px 0; border: 1px solid var(--line-2); border-radius: 8px; padding: 0 10px 8px; }
 .insp-fold-sum { cursor: pointer; font-size: 12px; color: var(--muted); padding: 8px 0; list-style: none; }

@@ -527,60 +527,107 @@
     return seam;
   }
 
-  // ── effects / transitions menu (timeline toolbar) ───────────────────────────────
-  // Each writes onto the selected scene, so the inspector's per-scene controls stay the
-  // single source of truth and reflect whatever is added here.
-  const FX_DEFS = [
-    { id: "zoom_in",  label: "Zoom in (push)",      apply: (sc) => ({ effects: { ...(sc.effects || {}), zoom: "in" } }) },
-    { id: "zoom_out", label: "Zoom out (pull back)", apply: (sc) => ({ effects: { ...(sc.effects || {}), zoom: "out" } }) },
-    { id: "blur",     label: "Gaussian blur",       val: { label: "Strength (0–1)", def: 0.3, min: 0, max: 1, step: 0.05 }, apply: (sc, v) => ({ effects: { ...(sc.effects || {}), blur: v } }) },
-    { id: "fade_in",  label: "Fade in",             val: { label: "Seconds", def: 0.5, min: 0, max: 10, step: 0.1 }, apply: (sc, v) => ({ effects: { ...(sc.effects || {}), fade_in: v } }) },
-    { id: "fade_out", label: "Fade out",            val: { label: "Seconds", def: 0.5, min: 0, max: 10, step: 0.1 }, apply: (sc, v) => ({ effects: { ...(sc.effects || {}), fade_out: v } }) },
-    { id: "crossfade", label: "Crossfade → next",   val: { label: "Frames", def: 16, min: 1, max: 120, step: 1 }, apply: (sc, v) => ({ video_transition: "crossfade", transition_frames: Math.round(v) }) },
-    { id: "fadeblack", label: "Fade to black → next", val: { label: "Frames", def: 16, min: 1, max: 120, step: 1 }, apply: (sc, v) => ({ video_transition: "fadeblack", transition_frames: Math.round(v) }) },
-    { id: "wipeleft",  label: "Wipe left → next",   val: { label: "Frames", def: 16, min: 1, max: 120, step: 1 }, apply: (sc, v) => ({ video_transition: "wipeleft", transition_frames: Math.round(v) }) },
-    { id: "wiperight", label: "Wipe right → next",  val: { label: "Frames", def: 16, min: 1, max: 120, step: 1 }, apply: (sc, v) => ({ video_transition: "wiperight", transition_frames: Math.round(v) }) },
-  ];
+  // ── + Add menu (effects, transitions, future: text/image/audio) ───────────────
+  let _addModal = null;
 
-  function effectsDropdown(st, inline) {
+  function closeAddModal() {
+    if (_addModal) { _addModal.remove(); _addModal = null; }
+  }
+
+  function openNleSettingsModal(kind, st) {
+    closeAddModal();
+    const isEffect = kind === "effect";
+    const items = isEffect ? (st.nleEffects || []) : (st.nleVideoTransitions || []);
+    if (!st.selectedSceneId) { alert("Select a clip first."); return; }
+    if (!items.length) { alert("No presets loaded."); return; }
+
+    _addModal = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", isEffect ? "Add effect" : "Add transition"));
+    const headRight = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    closeBtn.onclick = closeAddModal;
+    headRight.append(closeBtn);
+    head.append(headRight);
+    box.append(head);
+    const content = el("div", "modal-content");
+    const sel = el("select", "tl-dd-sel");
+    items.forEach((d) => sel.append(new Option(d.name || d.id, d.id)));
+    const valRow = el("label", "tl-dd-val");
+    const valLbl = el("span", null, "");
+    const valIn = el("input"); valIn.type = "number";
+    valRow.append(valLbl, valIn);
+    const sync = () => {
+      const d = items.find((x) => x.id === sel.value);
+      if (d && d.param) {
+        valRow.hidden = false;
+        valLbl.textContent = d.param.label;
+        valIn.min = d.param.min; valIn.max = d.param.max; valIn.step = d.param.step;
+        valIn.value = d.param.default;
+      } else {
+        valRow.hidden = true;
+        valIn.value = "";
+      }
+    };
+    sel.onchange = sync;
+    sync();
+    const actions = el("div", "lib-form-actions");
+    const applyBtn = el("button", "btn primary tiny", "Apply");
+    applyBtn.onclick = () => {
+      const d = items.find((x) => x.id === sel.value); if (!d) return;
+      const v = d.param ? parseFloat(valIn.value || d.param.default) : null;
+      const ok = isEffect ? S.applyNleEffect(d.id, v) : S.applyNleVideoTransition(d.id, v);
+      if (!ok) alert("Could not apply.");
+      else closeAddModal();
+    };
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = closeAddModal;
+    actions.append(applyBtn, cancel);
+    content.append(sel, valRow, actions);
+    box.append(content);
+    _addModal.append(box);
+    _addModal.addEventListener("click", (e) => { if (e.target === _addModal) closeAddModal(); });
+    document.body.append(_addModal);
+  }
+
+  function addMenuDropdown(st, p) {
     const wrap = el("div", "tl-dd");
     const hasSel = !!st.selectedSceneId;
-    const btn = inline ? null : el("button", "btn ghost tiny", "✨ Effects ▾");
-    if (btn) {
-      btn.disabled = !hasSel;
-      btn.title = hasSel ? "Add a video effect or transition to the selected clip" : "Select a clip first";
-      wrap.append(btn);
-    }
+    const btn = el("button", "btn ghost tiny", "＋ Add");
+    btn.title = hasSel ? "Add effect, transition, and more to the selected clip" : "Select a clip first";
+    btn.disabled = !hasSel;
+    const panel = el("div", "tl-dd-panel tl-add-panel");
+    panel.hidden = true;
 
-    const panel = el("div", "tl-dd-panel" + (inline ? " inline" : ""));
-    if (!inline) panel.hidden = true;
-    panel.append(el("div", "tl-dd-head", "Add to selected clip"));
-    const sel = el("select", "tl-dd-sel");
-    FX_DEFS.forEach((d) => sel.append(new Option(d.label, d.id)));
-    const valRow = el("label", "tl-dd-val");
-    const valLbl = el("span", null, ""); const valIn = el("input"); valIn.type = "number";
-    valRow.append(valLbl, valIn);
-    const addBtn = el("button", "btn primary tiny", "Add");
-    const sync = () => {
-      const d = FX_DEFS.find((x) => x.id === sel.value);
-      if (d && d.val) {
-        valRow.hidden = false; valLbl.textContent = d.val.label;
-        valIn.min = d.val.min; valIn.max = d.val.max; valIn.step = d.val.step;
-        if (valIn.value === "") valIn.value = d.val.def;
-      } else valRow.hidden = true;
+    const addRow = (label, title, onClick, disabled) => {
+      const row = el("button", "tl-add-row" + (disabled ? " disabled" : ""), label);
+      row.type = "button";
+      row.title = title;
+      row.disabled = !!disabled;
+      if (onClick && !disabled) row.onclick = (e) => { e.stopPropagation(); panel.hidden = true; onClick(); };
+      panel.append(row);
     };
-    sel.onchange = () => { valIn.value = ""; sync(); };
-    addBtn.onclick = () => {
-      const d = FX_DEFS.find((x) => x.id === sel.value); if (!d) return;
-      const sc = S.scene(st.selectedSceneId); if (!sc) { alert("Select a clip first."); return; }
-      const v = d.val ? parseFloat(valIn.value || d.val.def) : null;
-      S.patchScene(sc.id, d.apply(sc, v));
-      panel.hidden = true;
-    };
-    panel.append(sel, valRow, addBtn);
-    sync();
-    if (inline) return panel;
-    wrap.append(panel);
+
+    addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st));
+    addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st));
+    addRow("Text", "Coming soon", null, true);
+    addRow("Image", "Coming soon", null, true);
+    addRow("Audio", "Coming soon", null, true);
+
+    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
+    if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
+      const sc = S.scene(st.selectedSceneId);
+      const sceneNo = p.scenes.indexOf(sc) + 1;
+      const row = el("div", "tl-dd-row");
+      row.append(el("span", "tl-keys", `★ Scene ${sceneNo}`));
+      const rsel = el("select", "tl-rating");
+      rsel.append(new Option("— rate —", ""));
+      (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
+      rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
+      panel.append(row);
+      panel.append(rsel);
+    }
 
     btn.onclick = (e) => {
       e.stopPropagation();
@@ -591,6 +638,7 @@
         setTimeout(() => document.addEventListener("mousedown", off, true), 0);
       }
     };
+    wrap.append(btn); wrap.append(panel);
     return wrap;
   }
 
@@ -713,32 +761,6 @@
     return wrap;
   }
 
-  function editToolsDropdown(st, p) {
-    const wrap = el("div", "tl-dd");
-    const btn = el("button", "btn ghost tiny", "Edit tools ▾");
-    const panel = el("div", "tl-dd-panel");
-    panel.hidden = true;
-    btn.onclick = (e) => { e.stopPropagation(); panel.hidden = !panel.hidden; };
-    document.addEventListener("click", () => { panel.hidden = true; }, { once: true });
-    panel.append(effectsDropdown(st, true));
-    const hasSel = !!st.selectedSceneId;
-    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
-    if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
-      const sc = S.scene(st.selectedSceneId);
-      const sceneNo = p.scenes.indexOf(sc) + 1;
-      const row = el("div", "tl-dd-row");
-      row.append(el("span", "tl-keys", `★ Scene ${sceneNo}`));
-      const rsel = el("select", "tl-rating");
-      rsel.append(new Option("— rate —", ""));
-      (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
-      rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
-      row.append(rsel);
-      panel.append(row);
-    }
-    wrap.append(btn); wrap.append(panel);
-    return wrap;
-  }
-
   // ── toolbar ─────────────────────────────────────────────────────────────────────
   function toolbar(st, p, totalSec) {
     const bar = el("div", "tl-toolbar");
@@ -762,7 +784,7 @@
     exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
     exp.onclick = () => S.exportSelected();
     bar.append(split); bar.append(del); bar.append(exp);
-    bar.append(editToolsDropdown(st, p));
+    bar.append(addMenuDropdown(st, p));
     bar.append(audioToolbar(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);

@@ -84,6 +84,8 @@
       chars: st.characters?.length,
       shortcuts: st.shortcuts?.length,
       transitions: st.transitions?.length,
+      nleEffects: st.nleEffects?.length,
+      nleVideoTransitions: st.nleVideoTransitions?.length,
     });
   }
 

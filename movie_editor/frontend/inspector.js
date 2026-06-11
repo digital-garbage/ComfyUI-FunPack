@@ -464,7 +464,7 @@
       l.append(el("span", null, s.text || "(empty)"));
       // Show detected transition after this scene
       const t = (parsed.transitions || []).find((tr) => tr.after_scene === i);
-      if (t?.visual_effect) l.append(el("span", "pv-badge trans", "→ " + t.visual_effect));
+      if (t) l.append(el("span", "pv-badge trans", "→ split"));
       box.append(l);
     });
     const raw = el("details", "pv-raw"); raw.append(el("summary", null, "generation prompt (sent to Studio)")); raw.append(el("pre", null, pv.combined_prompt || "")); box.append(raw);
@@ -476,9 +476,9 @@
     // Sync button — lets the user push what was parsed back into the scene data
     if ((parsed.scenes || []).length > 0) {
       const syncBtn = el("button", "btn ghost tiny sync-preview-btn", "↺ Sync scenes from preview");
-      syncBtn.title = "Distribute the parsed anchor / scene texts / transitions back into the timeline";
+      syncBtn.title = "Distribute the parsed anchor / scene texts / split markers back into the timeline";
       syncBtn.onclick = () => {
-        if (confirm("This will overwrite scene texts and transitions with what the parser detected. Continue?"))
+        if (confirm("This will overwrite scene texts and split markers with what the parser detected. Continue?"))
           S.syncFromPreview();
       };
       wrap.append(syncBtn);

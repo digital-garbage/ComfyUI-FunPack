@@ -7,7 +7,9 @@
     project: null,         // full Project
     selectedSceneId: null,   // focus clip (inspector / toolbar)
     selectedSceneIds: [],    // multi-select for generate / timeline
-    transitions: [],       // library [{trigger/name, visual_effect}]
+    transitions: [],       // prompt split-marker library (FunPack transition DB; generation only)
+    nleEffects: [],        // post-render clip effects (zoom, blur, fades)
+    nleVideoTransitions: [], // post-render seam blends (crossfade, wipe, …)
     health: null,          // {ok, comfy_url, template_exists}
     preview: null,         // {combined_prompt, parsed, warning, parse_error}
     gen: { state: "idle", promptId: null, media: [], msg: "" },
@@ -833,15 +835,48 @@
     if (parsedScenes.length === activeScenes.length) {
       parsedScenes.forEach((ps, i) => { if (ps.text) activeScenes[i].text = ps.text; });
     }
-    _applyDetectedTransitions(activeScenes, v.transitions);
+    _applyDetectedTransitions(activeScenes, null,
+      state.preview.combined_prompt || state.project.global_prompt || "");
 
     notify();
     scheduleSave();
   }
 
-  // ── global prompt → distribute into anchor / scenes / transitions ──────────────
+  // Infer prompt split markers from text between verbatim scene chunks (not visual_effect).
+  function _inferSplitMarkersFromPrompt(scenes, fullPrompt) {
+    if (!fullPrompt || !scenes.length) return;
+    const markers = (state.transitions || []).filter((m) => m.enabled !== false && (m.trigger || m.name));
+    let pos = 0;
+    for (let i = 0; i < scenes.length; i++) {
+      const t = scenes[i].text || "";
+      if (!t) continue;
+      const idx = fullPrompt.indexOf(t, pos);
+      if (idx < 0) continue;
+      const endOfScene = idx + t.length;
+      if (i < scenes.length - 1) {
+        const nextT = scenes[i + 1].text || "";
+        const nextIdx = nextT ? fullPrompt.indexOf(nextT, endOfScene) : endOfScene;
+        const gapEnd = nextIdx >= 0 ? nextIdx : fullPrompt.length;
+        const gap = fullPrompt.slice(endOfScene, gapEnd);
+        for (const m of markers) {
+          const trig = m.trigger || m.name;
+          if (trig && gap.includes(trig)) {
+            scenes[i].transition_to_next = trig;
+            break;
+          }
+        }
+      }
+      pos = endOfScene;
+    }
+  }
+
+  function _applyDetectedTransitions(scenes, _transitions, fullPrompt) {
+    if (fullPrompt) _inferSplitMarkersFromPrompt(scenes, fullPrompt);
+  }
+
+  // ── global prompt → distribute into anchor / scenes / split markers ──────────────
   // Reparses a master prompt (Studio combined syntax) and rebuilds the timeline:
-  // anchor + one scene per parsed segment + transitions matched from the library.
+  // anchor + one scene per parsed segment + split markers inferred from prompt text.
   // Existing per-scene source / length settings are carried over by index.
   async function applyGlobalPrompt(text) {
     if (!state.project) return false;
@@ -863,7 +898,7 @@
       base.transition_to_next = "";
       return base;
     });
-    _applyDetectedTransitions(next, v.transitions);
+    _applyDetectedTransitions(next, v.transitions, text);
     state.project.scenes = next;
     state.sceneGhosts = [];  // scene ids changed — old ghosts no longer anchor correctly
     const firstId = next[0]?.id || null;
@@ -892,18 +927,6 @@
       return false;
     }
     return true;
-  }
-
-  // Map detected transitions (visual_effect) onto scene seams via the library (display
-  // metadata; the trigger word itself already lives verbatim in the scene text).
-  function _applyDetectedTransitions(scenes, transitions) {
-    (transitions || []).forEach((t) => {
-      const idx = t.after_scene;
-      if (idx >= 0 && idx < scenes.length && t.visual_effect) {
-        const lib = (state.transitions || []).find((tr) => (tr.visual_effect || "none") === t.visual_effect);
-        if (lib) scenes[idx].transition_to_next = lib.trigger || lib.name || "";
-      }
-    });
   }
 
   // ── preview ──────────────────────────────────────────────────────────────────
@@ -1455,6 +1478,17 @@
   }
 
   async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
+  async function loadNleLibrary() {
+    try {
+      const lib = await API.nleLibrary();
+      state.nleEffects = lib.effects || [];
+      state.nleVideoTransitions = lib.video_transitions || [];
+    } catch (_) {
+      state.nleEffects = [];
+      state.nleVideoTransitions = [];
+    }
+    notify();
+  }
   async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
   async function loadCharacters() { try { state.characters = (await API.characters()).characters || []; } catch (_) { state.characters = []; } notify(); }
   function _characterAssignedToProject(charId) {
@@ -1497,7 +1531,12 @@
   }
   async function saveShortcut(item) { try { state.shortcuts = (await API.saveShortcut(item)).shortcuts || state.shortcuts; notify(); } catch (e) { alert("Save failed: " + e.message); } }
   async function deleteShortcut(name) { try { state.shortcuts = (await API.deleteShortcut(name)).shortcuts || []; notify(); } catch (e) { console.error(e); } }
-  async function saveTransition(item) { try { state.transitions = (await API.saveTransition(item)).transitions || state.transitions; notify(); } catch (e) { alert("Save failed: " + e.message); } }
+  async function saveTransition(item) {
+    try {
+      state.transitions = (await API.saveTransition(item)).transitions || state.transitions;
+      notify();
+    } catch (e) { alert("Save failed: " + e.message); }
+  }
   async function deleteTransition(name) { try { state.transitions = (await API.deleteTransition(name)).transitions || []; notify(); } catch (e) { console.error(e); } }
   async function importShortcuts(file) {
     try {
@@ -1518,10 +1557,34 @@
     } catch (e) { alert("Import failed: " + e.message); return 0; }
   }
 
-  // Apply a library item to the selected scene.
-  function applyTransitionToSelection(trigger) {
+  // Apply a split-marker library item to the selected scene seam (generation prompt).
+  function applySplitMarkerToSelection(trigger) {
     const s = scene(state.selectedSceneId); if (!s) return false;
     patchScene(s.id, { transition_to_next: trigger }); return true;
+  }
+  function applyTransitionToSelection(trigger) { return applySplitMarkerToSelection(trigger); }
+
+  function applyNleEffect(effectId, paramValue) {
+    const sc = scene(state.selectedSceneId); if (!sc) return false;
+    const patches = {
+      zoom_in: () => ({ effects: { ...(sc.effects || {}), zoom: "in" } }),
+      zoom_out: () => ({ effects: { ...(sc.effects || {}), zoom: "out" } }),
+      blur: (v) => ({ effects: { ...(sc.effects || {}), blur: v } }),
+      fade_in: (v) => ({ effects: { ...(sc.effects || {}), fade_in: v } }),
+      fade_out: (v) => ({ effects: { ...(sc.effects || {}), fade_out: v } }),
+    };
+    const fn = patches[effectId]; if (!fn) return false;
+    patchScene(sc.id, fn(paramValue)); return true;
+  }
+
+  function applyNleVideoTransition(transitionId, paramValue) {
+    const sc = scene(state.selectedSceneId); if (!sc) return false;
+    const item = (state.nleVideoTransitions || []).find((x) => x.id === transitionId);
+    if (!item) return false;
+    const frames = paramValue != null ? Math.round(paramValue)
+      : Math.round(item.param?.default || 16);
+    patchScene(sc.id, { video_transition: item.type || transitionId, transition_frames: frames });
+    return true;
   }
   function insertShortcutIntoSelection(trigger) {
     const s = scene(state.selectedSceneId); if (!s) return false;
@@ -1569,6 +1632,7 @@
   async function init() {
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
+    await loadNleLibrary();
     await loadShortcuts();
     await loadCharacters();
     await loadMedia();
@@ -1599,7 +1663,8 @@
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
     loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions,
-    applyTransitionToSelection, insertShortcutIntoSelection,
+    loadNleLibrary, applyNleEffect, applyNleVideoTransition,
+    applySplitMarkerToSelection, applyTransitionToSelection, insertShortcutIntoSelection,
     setSceneRating: (id, v) => patchScene(id, { rating: v }),
     resetStudioSession,
   };

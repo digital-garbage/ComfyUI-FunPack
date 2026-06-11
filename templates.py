@@ -77,7 +77,24 @@ def shortcut_store_path():
 
 
 def transition_store_path():
+    """On-disk store for custom prompt split markers (formerly transitions.json)."""
+    return os.path.join(template_store_dir(), "promptsplit.json")
+
+
+def _legacy_transition_store_path():
     return os.path.join(template_store_dir(), "transitions.json")
+
+
+def _migrate_transition_store_if_needed() -> None:
+    path = transition_store_path()
+    legacy = _legacy_transition_store_path()
+    if os.path.exists(path) or not os.path.exists(legacy):
+        return
+    try:
+        os.rename(legacy, path)
+    except OSError:
+        import shutil
+        shutil.copy2(legacy, path)
 
 
 def refinement_store_dir():
@@ -408,8 +425,6 @@ def empty_transition_db():
     return {"version": 1, "source": "ComfyUI-FunPack", "transitions": {}}
 
 
-_VISUAL_EFFECTS = ("none", "fade_to_black", "crossfade", "blur_out_in")
-
 
 def normalize_transition_item(item, fallback_name=""):
     if not isinstance(item, dict):
@@ -421,15 +436,11 @@ def normalize_transition_item(item, fallback_name=""):
     placement = str(item.get("placement") or "global").strip().lower()
     if placement not in ("global", "start", "end", "silent"):
         placement = "global"
-    visual_effect = str(item.get("visual_effect") or "none").strip().lower()
-    if visual_effect not in _VISUAL_EFFECTS:
-        visual_effect = "none"
     return {
         "name": name,
         "trigger": trigger,
         "placement": placement,
         "enabled": bool(item.get("enabled", True)),
-        "visual_effect": visual_effect,
     }
 
 
@@ -456,6 +467,7 @@ def normalize_transition_db(data):
 
 
 def load_transition_db():
+    _migrate_transition_store_if_needed()
     path = transition_store_path()
     if not os.path.exists(path):
         return empty_transition_db()
@@ -511,10 +523,9 @@ def delete_transition_item(name):
 
 
 def load_custom_transition_triggers():
-    """Return {trigger: {"placement": override_or_None, "visual_effect": effect}} for enabled custom transitions.
+    """Return {trigger: {"placement": override_or_None}} for enabled custom split markers.
 
     placement is 'start', 'end', 'silent', or None (use global setting).
-    visual_effect is one of 'none', 'fade_to_black', 'crossfade', 'blur_out_in'.
     """
     data = load_transition_db()
     result = {}
@@ -525,12 +536,8 @@ def load_custom_transition_triggers():
         if not trigger:
             continue
         placement = str(item.get("placement") or "global").strip().lower()
-        visual_effect = str(item.get("visual_effect") or "none").strip().lower()
-        if visual_effect not in _VISUAL_EFFECTS:
-            visual_effect = "none"
         result[trigger.lower()] = {
             "placement": placement if placement in ("start", "end", "silent") else None,
-            "visual_effect": visual_effect,
         }
     return result
 
@@ -1507,7 +1514,7 @@ async def funpack_transitions_export(_):
         data,
         headers={
             "Cache-Control": "no-store, max-age=0",
-            "Content-Disposition": "attachment; filename=funpack_transitions.json",
+            "Content-Disposition": "attachment; filename=funpack_promptsplit.json",
         },
     )
 

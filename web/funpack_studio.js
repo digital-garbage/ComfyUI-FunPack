@@ -11,7 +11,7 @@ const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
 const TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"];
 const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
-const TABS = ["Session", "Scene", "Shortcuts", "Transitions", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
+const TABS = ["Session", "Scene", "Shortcuts", "Split markers", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "Normalizing", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
@@ -245,7 +245,7 @@ async function exportTransitions() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "funpack_transitions.json";
+  link.download = "funpack_promptsplit.json";
   document.body.append(link);
   link.click();
   link.remove();
@@ -743,7 +743,7 @@ function openPanel(node) {
     if (name === "Session") renderSession();
     else if (name === "Scene") renderScene();
     else if (name === "Shortcuts") renderShortcuts();
-    else if (name === "Transitions") renderTransitions();
+    else if (name === "Split markers") renderSplitMarkers();
     else if (name === "Refiner") renderRefiner();
     else if (name === "Advisor") renderAdvisor();
     else if (name === "LoRA") renderLora();
@@ -1042,18 +1042,19 @@ function openPanel(node) {
     });
   }
 
-  // TRANSITIONS ──────────────────────────────────────────────────────────────
-  function renderTransitions() {
-    body.append(sectionTitle("Custom Transitions"));
+  // SPLIT MARKERS ────────────────────────────────────────────────────────────
+  function renderSplitMarkers() {
+    body.append(sectionTitle("Custom Split Markers"));
     body.append(el("div", "funpack-studio-hint",
-      "These extend the built-in transition word list. " +
-      "Any phrase listed here will be recognized as a scene boundary when Split by transitions is enabled. " +
-      "To also substitute the phrase in the prompt text, create a Shortcut with the same trigger."
+      "These extend the built-in split word list. " +
+      "Any phrase listed here is recognized as a scene boundary when Split prompt by transitions is enabled. " +
+      "Split markers only divide the generation prompt — they do not add video dissolves on a timeline. " +
+      "To substitute the phrase in prompt text, create a Shortcut with the same trigger."
     ));
 
     if (!studioTransitionData) {
-      body.append(el("div", "funpack-studio-empty", "Loading transitions..."));
-      fetchTransitions().then(() => renderTab("Transitions"));
+      body.append(el("div", "funpack-studio-empty", "Loading split markers..."));
+      fetchTransitions().then(() => renderTab("Split markers"));
       return;
     }
 
@@ -1064,20 +1065,20 @@ function openPanel(node) {
     const drafts = root.__transitionDrafts;
 
     const toolbar = el("div", "funpack-studio-footer");
-    const addBtn = btn("+ Add transition", "primary");
+    const addBtn = btn("+ Add split marker", "primary");
     addBtn.addEventListener("click", () => {
-      drafts.unshift({ name: "", trigger: "", replacement: "", visual_effect: "none", enabled: true });
-      renderTab("Transitions");
+      drafts.unshift({ name: "", trigger: "", enabled: true });
+      renderTab("Split markers");
     });
     const refreshBtn = btn("Refresh");
     refreshBtn.addEventListener("click", async () => {
       await fetchTransitions();
       delete root.__transitionDrafts;
-      renderTab("Transitions");
+      renderTab("Split markers");
     });
     const importBtn = btn("Import");
     importBtn.addEventListener("click", () => importTransitions(
-      () => { delete root.__transitionDrafts; renderTab("Transitions"); },
+      () => { delete root.__transitionDrafts; renderTab("Split markers"); },
       (e) => showError(root, e.message),
     ));
     const exportBtn = btn("Export");
@@ -1091,7 +1092,7 @@ function openPanel(node) {
     const list = el("div", "funpack-studio-shortcut-list");
     body.append(list);
     if (!drafts.length) {
-      list.append(el("div", "funpack-studio-empty", "No custom transitions configured."));
+      list.append(el("div", "funpack-studio-empty", "No custom split markers configured."));
     }
 
     drafts.forEach((item, index) => {
@@ -1104,12 +1105,10 @@ function openPanel(node) {
         const summary = el("div", "funpack-studio-shortcut-summary");
         const label = el("span", "funpack-studio-shortcut-label", item.name || item.trigger || "(unnamed)");
         const trigger = el("span", "funpack-studio-shortcut-trigger", item.trigger || "");
-        const effectLabels = { fade_to_black: "Fade to Black", crossfade: "Crossfade", blur_out_in: "Blur Out → In" };
-        const effectLabel = effectLabels[item.visual_effect] ? el("span", "funpack-studio-shortcut-trigger", effectLabels[item.visual_effect]) : null;
         const badge = el("span", item.enabled !== false ? "funpack-studio-badge-on" : "funpack-studio-badge-off",
           item.enabled !== false ? "on" : "off");
-        summary.append(label, trigger, ...(effectLabel ? [effectLabel] : []), badge);
-        summary.addEventListener("click", () => { item._expanded = true; renderTab("Transitions"); });
+        summary.append(label, trigger, badge);
+        summary.addEventListener("click", () => { item._expanded = true; renderTab("Split markers"); });
         rowEl.append(summary);
         list.append(rowEl);
         return;
@@ -1128,11 +1127,6 @@ function openPanel(node) {
       const placementSel = selectEl(["global", "start", "end", "silent"], item.placement || "global");
       placementSel.addEventListener("change", () => { item.placement = placementSel.value; });
 
-      const visualEffectSel = selectEl(["none", "fade_to_black", "crossfade", "blur_out_in"], item.visual_effect || "none");
-      const visualEffectLabels = { none: "None (cut)", fade_to_black: "Fade to Black", crossfade: "Crossfade", blur_out_in: "Blur Out → In" };
-      Array.from(visualEffectSel.options).forEach(opt => { opt.text = visualEffectLabels[opt.value] || opt.value; });
-      visualEffectSel.addEventListener("change", () => { item.visual_effect = visualEffectSel.value; });;
-
       const actions = el("div", "funpack-studio-shortcut-actions");
       const saveBtn = btn("Save", "primary");
       saveBtn.addEventListener("click", async () => {
@@ -1142,16 +1136,15 @@ function openPanel(node) {
             name: item.name || item.trigger,
             trigger: item.trigger,
             placement: item.placement || "global",
-            visual_effect: item.visual_effect || "none",
             enabled: item.enabled !== false,
           });
           await fetchTransitions();
           delete root.__transitionDrafts;
-          renderTab("Transitions");
+          renderTab("Split markers");
         } catch (e) { showError(root, e.message); }
       });
       const collapseBtn = btn("Collapse");
-      collapseBtn.addEventListener("click", () => { item._expanded = false; renderTab("Transitions"); });
+      collapseBtn.addEventListener("click", () => { item._expanded = false; renderTab("Split markers"); });
       const delBtn = btn("Delete", "danger");
       delBtn.addEventListener("click", async () => {
         try {
@@ -1161,11 +1154,11 @@ function openPanel(node) {
           }
           drafts.splice(index, 1);
           delete root.__transitionDrafts;
-          renderTab("Transitions");
+          renderTab("Split markers");
         } catch (e) { showError(root, e.message); }
       });
       actions.append(saveBtn, collapseBtn, delBtn);
-      rowEl.append(top, triggerInput, row("Placement override", placementSel), row("Visual effect", visualEffectSel), actions);
+      rowEl.append(top, triggerInput, row("Placement override", placementSel), actions);
       list.append(rowEl);
     });
   }
@@ -1227,10 +1220,10 @@ function openPanel(node) {
     const placementSelect = selectEl(["start", "end", "silent"], settings.refiner.split_transition_placement);
     placementSelect.addEventListener("change", () => { settings.refiner.split_transition_placement = placementSelect.value; });
     body.append(el("div", "funpack-studio-hint",
-      "start: transition phrase opens the new scene (\"cut to — she runs\"). " +
-      "end: transition phrase closes the previous scene (\"she walks — cut to\"). " +
-      "silent: split happens but the transition phrase is removed entirely from the output. " +
-      "Custom transitions can override this per-entry in the Transitions tab."));
+      "start: split marker opens the new scene (\"cut to — she runs\"). " +
+      "end: split marker closes the previous scene (\"she walks — cut to\"). " +
+      "silent: split happens but the marker phrase is removed entirely from the output. " +
+      "Custom split markers can override this per-entry in the Split markers tab."));
     body.append(row("Transition placement", placementSelect));
 
     if (settings.refiner.reference_injection === undefined) settings.refiner.reference_injection = false;
@@ -1831,7 +1824,7 @@ function openPanel(node) {
     for (const t of transitions) trByScene[t.after_scene] = t;
 
     body.append(el("div", "funpack-studio-hint",
-      scenes.length === 1 ? "1 scene — no transitions found." : `${scenes.length} scenes detected.`));
+      scenes.length === 1 ? "1 scene — no split markers found." : `${scenes.length} scenes detected.`));
 
     if (anchor) {
       const anchorBox = el("div", "funpack-timeline-anchor");
@@ -1850,7 +1843,7 @@ function openPanel(node) {
       if (tr) {
         const conn = el("div", "funpack-timeline-connector");
         conn.append(el("div", "funpack-timeline-arrow", "→"));
-        const label = tr.visual_effect ? tr.visual_effect.replace(/_/g, " ") : "cut";
+        const label = tr.trigger || "split";
         conn.append(el("div", "funpack-timeline-phrase", label));
         rail.append(conn);
       }
