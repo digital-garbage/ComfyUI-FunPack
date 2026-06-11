@@ -287,7 +287,10 @@ input[type=number] { font-family: var(--font-mono); }
 .media-del:hover { color: var(--danger); }
 .media-card.picked { border-color: var(--amber); box-shadow: 0 0 0 1px color-mix(in srgb, var(--amber) 35%, transparent); }
 .media-bin-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.media-bin-footer { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.media-bin-footer { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; align-items: center; }
+.media-select-btn.active { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); background: color-mix(in srgb, var(--amber) 8%, var(--ink-0)); }
+.media-select-mode .media-card { cursor: default; }
+.media-select-mode .media-card:not(.picked):hover { border-color: var(--amber-2); }
 
 /* media picker (replaces image <select>s) */
 .media-picker { display: flex; flex-direction: column; gap: 8px; width: 100%; }

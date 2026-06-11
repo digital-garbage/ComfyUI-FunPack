@@ -10,6 +10,7 @@
   let editCharacter = null;          // character item being edited ({} = new), or null
   let _libModal = null;
   const mediaSelected = new Set();   // media bin multi-select
+  let mediaSelectMode = false;     // when off, click = preview; when on, click = toggle selection
 
   // ── library edit helpers ───────────────────────────────────────────────────────
   function closeLibModal() {
@@ -298,13 +299,15 @@
         + (picked ? " picked" : ""));
       card.draggable = true;
       card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
-      card.title = m.kind === "image"
-        ? `${m.name}\nImage · click to select · double-click to preview · drag onto a clip to set anchor`
-        : m.kind === "audio"
-          ? `${m.name}\nAudio · click to select · double-click to preview · add via timeline + Add → Audio`
-          : m.kind === "video"
-            ? `${m.name}\nVideo · click to select · double-click to preview · drag onto timeline or + Add → Video`
-            : `${m.name}\nClick to select · drag onto a clip to set anchor`;
+      card.title = mediaSelectMode
+        ? `${m.name}\nClick to toggle selection`
+        : m.kind === "image"
+          ? `${m.name}\nImage · click to preview · drag onto a clip to set anchor`
+          : m.kind === "audio"
+            ? `${m.name}\nAudio · click to preview · add via timeline + Add → Audio`
+            : m.kind === "video"
+              ? `${m.name}\nVideo · click to preview · drag onto timeline or + Add → Video`
+              : `${m.name}\nDrag onto a clip to set anchor`;
       const thumb = el("div", "media-thumb");
       _appendMediaThumb(thumb, m);
       _appendMediaKindBadge(thumb, m);
@@ -314,13 +317,16 @@
       del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
       card.append(del);
       card.onclick = () => {
-        if (picked) mediaSelected.delete(m.id);
-        else mediaSelected.add(m.id);
-        render(S.get());
+        if (mediaSelectMode) {
+          if (picked) mediaSelected.delete(m.id);
+          else mediaSelected.add(m.id);
+          render(S.get());
+          return;
+        }
+        if (m.kind === "image" || m.kind === "audio" || m.kind === "video") {
+          S.previewMedia(m.id);
+        }
       };
-      if (m.kind === "image" || m.kind === "audio" || m.kind === "video") {
-        card.ondblclick = (e) => { e.stopPropagation(); S.previewMedia(m.id); };
-      }
       grid.append(card);
     });
     if (!total) grid.append(el("div", "pj-meta", "No media yet."));
@@ -328,14 +334,25 @@
 
     if (total > 0) {
       const footer = el("div", "media-bin-footer");
-      const hasSelection = selN > 0;
-      const toggle = el("button", "btn ghost tiny", hasSelection ? `Deselect all (${selN})` : `Select all (${total})`);
-      toggle.onclick = () => {
-        if (hasSelection) mediaSelected.clear();
-        else bin.forEach((m) => mediaSelected.add(m.id));
+      const selectBtn = el("button", "btn ghost tiny media-select-btn" + (mediaSelectMode ? " active" : ""), "Select");
+      selectBtn.title = mediaSelectMode
+        ? "Selection mode on — click assets to toggle, then Remove selected"
+        : "Turn on to select multiple assets for bulk remove";
+      selectBtn.onclick = () => {
+        mediaSelectMode = !mediaSelectMode;
         render(S.get());
       };
-      footer.append(toggle);
+      footer.append(selectBtn);
+      if (mediaSelectMode) {
+        const hasSelection = selN > 0;
+        const bulk = el("button", "btn ghost tiny", hasSelection ? `Deselect all (${selN})` : `Select all (${total})`);
+        bulk.onclick = () => {
+          if (hasSelection) mediaSelected.clear();
+          else bin.forEach((m) => mediaSelected.add(m.id));
+          render(S.get());
+        };
+        footer.append(bulk);
+      }
       wrap.append(footer);
     }
     return wrap;
@@ -543,7 +560,13 @@
     ["Media", "Characters", "Shortcuts", "Splits", "Effects", "Transitions"].forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.title = name === "Splits" ? "Split markers (generation prompt)" : name;
-      b.onclick = () => { tab = name; editCharacter = null; closeLibModal(); render(S.get()); };
+      b.onclick = () => {
+        tab = name;
+        editCharacter = null;
+        if (name !== "Media") mediaSelectMode = false;
+        closeLibModal();
+        render(S.get());
+      };
       tabs.append(b);
     });
     sec.append(tabs);
