@@ -2095,11 +2095,6 @@ class FunPackLTXAVSceneChainSampler:
                     "multiline": True,
                     "tooltip": "Optional media_ref → filename map for image-type i2v guides in custom guide stacks.",
                 }),
-                "chain_progress_key": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "tooltip": "Movie Editor only: token for publishing partial scene previews while a multi-scene chain run is in flight.",
-                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3302,7 +3297,6 @@ class FunPackLTXAVSceneChainSampler:
                refinement_key_input="", funpack_scene_guides="",
                funpack_scene_anchors="",
                funpack_scene_media_refs="",
-               chain_progress_key="",
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3530,16 +3524,6 @@ class FunPackLTXAVSceneChainSampler:
                 f"Scene {scene_index + 1}: seed={scene_seed}, text={scene_meta['text']}"
                 + (f" | encode≠text" if scene_meta["encode_text"] != scene_meta["text"] else "")
             )
-            if chain_progress_key and scene_count > 1:
-                self._save_chain_progress_preview(
-                    vae, output, chain_progress_key, scene_index, scene_count,
-                    decode_tile_size=decode_tile_size,
-                    frame_rate=24,
-                    boundary_entries=boundary_entries,
-                    num_frames_per_scene=int(num_frames_per_scene),
-                    frame_overlap=int(frame_overlap),
-                    time_scale=time_scale,
-                )
 
         del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
 
@@ -3666,93 +3650,6 @@ class FunPackLTXAVSceneChainSampler:
         if len(groups) <= 1:
             return None
         return [groups[k] for k in sorted(groups)]
-
-    def _save_chain_progress_preview(self, vae, output, progress_key, scene_index, scene_count,
-                                     decode_tile_size=0, frame_rate=24,
-                                     boundary_entries=None, num_frames_per_scene=0,
-                                     frame_overlap=0, time_scale=1):
-        """Decode cumulative chain output to a small temp mp4 for Movie Editor preview."""
-        if not progress_key or scene_count <= 1 or scene_index >= scene_count - 1:
-            return
-        try:
-            try:
-                from movie_editor.backend import chain_progress as _cp
-            except ImportError:
-                from .movie_editor.backend import chain_progress as _cp  # type: ignore
-        except Exception:
-            return
-        import os
-        import re as _re
-        import shutil
-        import subprocess
-        import tempfile
-        try:
-            import folder_paths
-            base = folder_paths.get_temp_directory()
-        except Exception:
-            return
-        rel_dir = os.path.join("funpack_chain_progress", _re.sub(r"[^A-Za-z0-9_.-]", "_", progress_key))
-        out_dir = os.path.join(base, rel_dir)
-        os.makedirs(out_dir, exist_ok=True)
-        fn = f"partial_s{scene_index + 1}.mp4"
-        out_path = os.path.join(out_dir, fn)
-        try:
-            decoded = self._decode_for_preview(vae, output, decode_tile_size=decode_tile_size or 512)
-            if decoded is None:
-                return
-            t = decoded.detach().float().clamp(0, 1).cpu()
-            if t.dim() == 4 and t.shape[-1] not in (1, 3):
-                t = t.permute(0, 2, 3, 1)
-            frames = t.numpy()
-            tmp = tempfile.mkdtemp(prefix="funpack_chain_prev_")
-            try:
-                from PIL import Image
-                import numpy as _np
-                for i, f in enumerate(frames):
-                    arr = (_np.asarray(f) * 255).astype(_np.uint8)
-                    if arr.shape[-1] == 1:
-                        arr = arr.repeat(3, axis=-1)
-                    Image.fromarray(arr).save(os.path.join(tmp, f"{i:04d}.png"))
-                ff = shutil.which("ffmpeg")
-                if not ff:
-                    return
-                subprocess.run(
-                    [
-                        ff, "-y", "-hide_banner", "-loglevel", "error",
-                        "-framerate", str(max(1, int(frame_rate))),
-                        "-i", os.path.join(tmp, "%04d.png"),
-                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
-                        out_path,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-            scene_layout = None
-            try:
-                try:
-                    from movie_editor.backend.chain_layout import scene_playback_layout
-                except ImportError:
-                    from .movie_editor.backend.chain_layout import scene_playback_layout  # type: ignore
-                scene_layout = scene_playback_layout(
-                    scene_index + 1,
-                    fps=frame_rate,
-                    num_frames_per_scene=num_frames_per_scene,
-                    frame_overlap=frame_overlap,
-                    time_scale=time_scale,
-                    boundaries=boundary_entries,
-                )
-            except Exception:
-                scene_layout = None
-            _cp.update(progress_key, scene_index + 1, {
-                "kind": "videos",
-                "filename": fn,
-                "subfolder": rel_dir.replace("\\", "/"),
-                "type": "temp",
-            }, scene_layout=scene_layout)
-        except Exception as e:
-            print(f"[FunPackSceneChain] chain progress preview failed (scene {scene_index + 1}): {e}")
 
     def _save_batch_preview(self, decoded, path, max_frames=16, width=256):
         """Save a decoded video tensor [T,H,W,C] in 0..1 as a downscaled animated webp."""
