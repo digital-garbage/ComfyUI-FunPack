@@ -272,9 +272,9 @@
       [["none", "None"], ["in", "Zoom in"], ["out", "Zoom out"]].forEach(([v, label]) => {
         const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
       });
-      const effFps = (scene.fps_mode !== "project" && scene.fps != null) ? scene.fps : (p.frame_rate || 25);
+      const effFps = (scene.fps_mode !== "project" && scene.fps != null) ? scene.fps : (st.project.frame_rate || 25);
       const effDur = S.sceneDurationSec ? S.sceneDurationSec(scene) : (
-        ((scene.frames_mode !== "project" && scene.frames != null) ? scene.frames : p.num_frames_per_scene) / effFps
+        ((scene.frames_mode !== "project" && scene.frames != null) ? scene.frames : st.project.num_frames_per_scene) / effFps
       );
       const effFrames = Math.max(1, Math.round(effDur * effFps));
       const defaultZoomLen = Math.min(25, Math.max(1, effFrames));
@@ -312,7 +312,7 @@
         zLen.oninput = () => patchFxObj({ zoom_frames: parseInt(zLen.value || "1", 10) }, true);
         more.append(field("Ramp length (frames)", zLen));
         more.append(el("div", "insp-hint",
-          "Zoom runs only during the ramp window — before/after holds steady at the start/end scale."));
+          "Zoom runs only during the ramp window - before/after holds steady at the start/end scale."));
       }
 
       const lenRow = el("div", "fields-row");

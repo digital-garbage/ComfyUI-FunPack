@@ -111,6 +111,7 @@
     log: (limit) => j("GET", API("/log" + (limit ? `?limit=${limit}` : ""))),
     interrupt: () => j("POST", API("/interrupt")),
     renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
+    renderFinalStatus: (id, jobId) => j("GET", API(`/projects/${id}/render/${encodeURIComponent(jobId)}`)),
     exportClip: (id, clip) => j("POST", API(`/projects/${id}/export-clip`), { clip }),
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +

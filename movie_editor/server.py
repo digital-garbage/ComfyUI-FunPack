@@ -578,6 +578,124 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
     return ";".join(parts), True
 
 
+class RenderJobError(Exception):
+    pass
+
+
+_render_jobs: dict[str, dict] = {}
+
+
+def _ffmpeg_stitch_final(proj, clips: list) -> dict:
+    """Blocking ffmpeg stitch — run via asyncio.to_thread from the render job handler."""
+    import os
+    import shutil
+    import subprocess
+    import time as _time
+
+    if not clips:
+        raise RenderJobError("Nothing to render — no generated clips.")
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise RenderJobError("ffmpeg not found on PATH — install it to render the final video.")
+    try:
+        import folder_paths
+        outdir = folder_paths.get_output_directory()
+        tempdir = folder_paths.get_temp_directory()
+    except Exception as e:  # noqa: BLE001
+        raise RenderJobError(f"Output directory unavailable: {e}") from e
+
+    def _resolve(c):
+        if c.get("bin_media_ref"):
+            mp = media.path_for(c.get("bin_media_ref") or "")
+            if mp is None:
+                return ""
+            return str(mp)
+        base = outdir if c.get("type", "output") == "output" else tempdir
+        return os.path.join(base, c.get("subfolder", ""), c.get("filename", ""))
+
+    paths = [_resolve(c) for c in clips]
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise RenderJobError(f"{len(missing)} clip file(s) not found on disk — regenerate then render.")
+
+    keep_original = bool(getattr(proj, "keep_original_audio", True))
+    clip_by_scene = {c["scene_id"]: c for c in clips if c.get("scene_id")}
+    media_tracks: list = []
+    separated_tracks: list = []
+    for t in (getattr(proj, "audio_tracks", None) or []):
+        is_sep = t.get("kind") == "separated" or (
+            t.get("scene_id") and not t.get("media_ref") and t.get("kind") != "overlay"
+        )
+        if is_sep:
+            sid = t.get("scene_id")
+            pinned = t.get("pinned_media") if isinstance(t.get("pinned_media"), dict) else None
+            pth = None
+            if pinned and pinned.get("filename"):
+                pth = _resolve_comfy_media_path(
+                    pinned.get("filename", ""),
+                    pinned.get("subfolder", ""),
+                    pinned.get("type", "output"),
+                )
+            c = clip_by_scene.get(sid) if sid else None
+            if not pth or not os.path.isfile(pth):
+                if not c:
+                    continue
+                pth = _resolve(c)
+                if not os.path.isfile(pth):
+                    continue
+            src_in = t.get("pinned_in_sec", t.get("source_in_sec"))
+            if src_in is None:
+                src_in = (c.get("in") if c else None) or 0
+            src_dur = t.get("pinned_dur", t.get("source_dur"))
+            if src_dur is None:
+                src_dur = (c.get("dur") if c else None) or 0
+            separated_tracks.append({
+                "path": pth,
+                "source_in": float(src_in),
+                "source_dur": float(src_dur),
+                "start_sec": t.get("start_sec") or 0,
+                "volume": t.get("volume", 1.0),
+            })
+            continue
+        mp = media.path_for(t.get("media_ref") or "")
+        if mp is None:
+            continue
+        media_tracks.append({"path": str(mp), "start_sec": t.get("start_sec") or 0, "volume": t.get("volume", 1.0)})
+
+    out_name = f"funpack_final_{int(_time.time())}.mp4"
+    out_path = os.path.join(tempdir, out_name)
+    cmd = [ff, "-y"]
+    for c, pth in zip(clips, paths):
+        inn, dur = c.get("in"), c.get("dur")
+        if inn is not None:
+            cmd += ["-ss", f"{float(inn):.3f}"]
+        if dur is not None:
+            cmd += ["-t", f"{float(dur):.3f}"]
+        cmd += ["-i", pth]
+    n = len(clips)
+    for t in media_tracks:
+        cmd += ["-i", t["path"]]
+    for t in separated_tracks:
+        cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
+    tracks = media_tracks + separated_tracks
+    filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
+    cmd += ["-filter_complex", filt, "-map", "[vout]"]
+    if has_audio:
+        cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
+    cmd += [
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart", out_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = (proc.stderr or "")[-1000:]
+        raise RenderJobError(f"ffmpeg render failed: {tail}")
+    return {
+        "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
+        "clips": n,
+    }
+
+
 def _segment(p: Project, scene_ids: list) -> Project:
     """Project clone holding only `scene_ids` (in their project order). Used to
     generate one chain run: its first scene supplies the i2v anchor, the rest are
@@ -1126,124 +1244,39 @@ if web is not None and PromptServer is not None:
             raise web.HTTPBadGateway(reason=f"could not fetch result: {e}")
         return web.Response(body=data, content_type=ctype.split(";")[0])
 
-    # --- API: final render (hard-cut concat of kept clips, with per-clip in/out) ---
+    # --- API: final render (async job — ffmpeg can exceed Cloudflare tunnel timeouts) ---
+    import asyncio
+    import uuid as _uuid
+
+    async def _run_render_job(job_id: str, proj, clips: list) -> None:
+        _render_jobs[job_id] = {"state": "running"}
+        try:
+            result = await asyncio.to_thread(_ffmpeg_stitch_final, proj, clips)
+            _render_jobs[job_id] = {"state": "done", **result}
+        except RenderJobError as e:
+            _render_jobs[job_id] = {"state": "error", "detail": str(e)}
+        except Exception as e:  # noqa: BLE001
+            _render_jobs[job_id] = {"state": "error", "detail": f"Render failed: {e}"}
+
     @routes.post(UI_PREFIX + "/api/projects/{pid}/render")
     async def _render_final(req):
         proj = _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
-        clips = body.get("clips") or []  # ordered [{filename, subfolder, type, in?, dur?, volume?}]
+        clips = body.get("clips") or []
         if not clips:
             return web.json_response({"detail": "Nothing to render — no generated clips."}, status=400)
-        import os
-        import shutil
-        import subprocess
-        import time as _time
-        ff = shutil.which("ffmpeg")
-        if not ff:
-            return web.json_response({"detail": "ffmpeg not found on PATH — install it to render the final video."}, status=503)
-        try:
-            import folder_paths
-            outdir = folder_paths.get_output_directory()
-            tempdir = folder_paths.get_temp_directory()
-        except Exception as e:  # noqa: BLE001
-            return web.json_response({"detail": f"Output directory unavailable: {e}"}, status=500)
+        job_id = _uuid.uuid4().hex
+        _render_jobs[job_id] = {"state": "queued"}
+        asyncio.create_task(_run_render_job(job_id, proj, clips))
+        return web.json_response({"job_id": job_id})
 
-        def _resolve(c):
-            if c.get("bin_media_ref"):
-                mp = media.path_for(c.get("bin_media_ref") or "")
-                if mp is None:
-                    return ""
-                return str(mp)
-            base = outdir if c.get("type", "output") == "output" else tempdir
-            return os.path.join(base, c.get("subfolder", ""), c.get("filename", ""))
-
-        paths = [_resolve(c) for c in clips]
-        missing = [p for p in paths if not os.path.isfile(p)]
-        if missing:
-            return web.json_response({"detail": f"{len(missing)} clip file(s) not found on disk — regenerate then render."}, status=400)
-
-        # Inserted audio tracks (project-level): resolve each media asset to a file. Skip any
-        # that no longer exist on disk rather than failing the whole render.
-        keep_original = bool(getattr(proj, "keep_original_audio", True))
-        clip_by_scene = {c["scene_id"]: c for c in clips if c.get("scene_id")}
-        media_tracks: list = []
-        separated_tracks: list = []
-        for t in (getattr(proj, "audio_tracks", None) or []):
-            is_sep = t.get("kind") == "separated" or (
-                t.get("scene_id") and not t.get("media_ref") and t.get("kind") != "overlay"
-            )
-            if is_sep:
-                sid = t.get("scene_id")
-                pinned = t.get("pinned_media") if isinstance(t.get("pinned_media"), dict) else None
-                pth = None
-                if pinned and pinned.get("filename"):
-                    pth = _resolve_comfy_media_path(
-                        pinned.get("filename", ""),
-                        pinned.get("subfolder", ""),
-                        pinned.get("type", "output"),
-                    )
-                c = clip_by_scene.get(sid) if sid else None
-                if not pth or not os.path.isfile(pth):
-                    if not c:
-                        continue
-                    pth = _resolve(c)
-                    if not os.path.isfile(pth):
-                        continue
-                src_in = t.get("pinned_in_sec", t.get("source_in_sec"))
-                if src_in is None:
-                    src_in = (c.get("in") if c else None) or 0
-                src_dur = t.get("pinned_dur", t.get("source_dur"))
-                if src_dur is None:
-                    src_dur = (c.get("dur") if c else None) or 0
-                separated_tracks.append({
-                    "path": pth,
-                    "source_in": float(src_in),
-                    "source_dur": float(src_dur),
-                    "start_sec": t.get("start_sec") or 0,
-                    "volume": t.get("volume", 1.0),
-                })
-                continue
-            mp = media.path_for(t.get("media_ref") or "")
-            if mp is None:
-                continue
-            media_tracks.append({"path": str(mp), "start_sec": t.get("start_sec") or 0, "volume": t.get("volume", 1.0)})
-
-        # The final render is ephemeral (temp dir) — persist it via the Export Save dialog.
-        out_name = f"funpack_final_{int(_time.time())}.mp4"
-        out_path = os.path.join(tempdir, out_name)
-        # Per-clip in/out via -ss/-t before each input, then a filter graph that applies
-        # per-clip video effects + seam transitions and the audio mix (per-clip volume,
-        # original-audio toggle, inserted tracks). Re-encode keeps/mixes the audio.
-        cmd = [ff, "-y"]
-        for c, pth in zip(clips, paths):
-            inn, dur = c.get("in"), c.get("dur")
-            if inn is not None:
-                cmd += ["-ss", f"{float(inn):.3f}"]
-            if dur is not None:
-                cmd += ["-t", f"{float(dur):.3f}"]
-            cmd += ["-i", pth]
-        n = len(clips)
-        for t in media_tracks:  # inserted-audio inputs follow the clip inputs (indices n..)
-            cmd += ["-i", t["path"]]
-        for t in separated_tracks:  # detached clip audio (trimmed per track)
-            cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
-        tracks = media_tracks + separated_tracks
-        filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
-        cmd += ["-filter_complex", filt, "-map", "[vout]"]
-        if has_audio:
-            cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
-        cmd += [
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart", out_path,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            tail = (proc.stderr or "")[-1000:]
-            return web.json_response({"detail": f"ffmpeg render failed: {tail}"}, status=500)
-        return web.json_response({
-            "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
-            "clips": n,
-        })
+    @routes.get(UI_PREFIX + "/api/projects/{pid}/render/{job_id}")
+    async def _render_job_status(req):
+        _project_or_404(req.match_info["pid"])
+        job = _render_jobs.get(req.match_info["job_id"])
+        if not job:
+            return web.json_response({"detail": "Render job not found."}, status=404)
+        return web.json_response(job)
 
     # --- API: export one clip (ffmpeg trim from a chain output using in/dur) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/export-clip")

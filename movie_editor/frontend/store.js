@@ -1681,7 +1681,18 @@
     [/\.clip.*no source/i,       "Missing text encoder — add a CLIP loader in Models."],
     [/not installed/i,           "A configured node class is not installed in ComfyUI — check Models for details."],
     [/Node registry unavailable/i, "ComfyUI is offline or still starting up — wait a moment and try again."],
+    [/HTTP 53[0-9]|HTTP 52[24]|HTTP 502|Failed to fetch|NetworkError|Load failed/i,
+      "Cloudflare tunnel lost contact with the vast.ai instance. GPU work may still be running — wait, refresh, and check ComfyUI output. If it keeps failing, use vast.ai direct port access or restart the tunnel."],
   ];
+
+  function _isTransientTunnelError(err) {
+    const m = String(err?.message || err || "");
+    return /HTTP 53[0-9]|HTTP 52[24]|HTTP 502|Failed to fetch|NetworkError|Load failed|fetch/i.test(m);
+  }
+
+  function _sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   function _friendlyGenError(raw) {
     // "Generation blocked — …" already names the exact input(s); pass it through so the
@@ -1993,6 +2004,7 @@
     return new Promise((resolve) => {
       _clearGenTimers();
       let pendingStreak = 0;
+      let transientStreak = 0;
       // Faster step-progress poll (sampler current/total steps).
       progressTimer = setInterval(async () => {
         if (_interrupted) return;
@@ -2017,6 +2029,7 @@
         }
         try {
           const s = await API.status(state.project.id, promptId);
+          transientStreak = 0;
           if (s.state === "error") {
             _clearGenTimers();
             const msg = s.error ? `ComfyUI error: ${s.error}` : "Generation failed inside ComfyUI — check the ComfyUI terminal for details.";
@@ -2041,12 +2054,48 @@
             updateGenProgress({ state: s.state, msg: `${prefix} ${_elapsed()}${step}` });
           }
         } catch (e) {
+          if (_isTransientTunnelError(e)) {
+            transientStreak++;
+            if (transientStreak < 120) {
+              updateGenProgress({
+                msg: `${prefix} ${_elapsed()} · tunnel reconnect (${transientStreak})…`,
+              });
+              return;
+            }
+          }
           _clearGenTimers();
-          set({ gen: { ...state.gen, state: "error", msg: e.message } });
+          set({ gen: { ...state.gen, state: "error", msg: _friendlyGenError(e.message) } });
           resolve(false);
         }
       }, 2000);
     });
+  }
+
+  async function _pollRenderJob(jobId, clipCount) {
+    let transientStreak = 0;
+    for (;;) {
+      if (_interrupted) throw new Error("Interrupted.");
+      try {
+        const st = await API.renderFinalStatus(state.project.id, jobId);
+        transientStreak = 0;
+        if (st.state === "done") return st;
+        if (st.state === "error") throw new Error(st.detail || "Render failed");
+        updateGenProgress({ msg: `Stitching ${clipCount} clip(s)…` });
+      } catch (e) {
+        if (_isTransientTunnelError(e)) {
+          transientStreak++;
+          if (transientStreak < 120) {
+            updateGenProgress({
+              msg: `Stitching ${clipCount} clip(s) · tunnel reconnect (${transientStreak})…`,
+            });
+            await _sleep(2000);
+            continue;
+          }
+        }
+        throw e;
+      }
+      await _sleep(2000);
+    }
   }
 
   // Toggle a pending Studio session reset — applied to the FIRST run of the next
@@ -2381,7 +2430,10 @@
     await flushSave();  // audio tracks / keep-original live on the project — render reads it from disk
     set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} clip(s)…` } });
     try {
-      const r = await API.renderFinal(state.project.id, clips);
+      const queued = await API.renderFinal(state.project.id, clips);
+      const r = queued?.job_id
+        ? await _pollRenderJob(queued.job_id, clips.length)
+        : queued;
       // Play the stitched file across the whole timeline (single source, in-point 0).
       const order = state.project.scenes.filter((s) => !s.excluded);
       state.sceneRenders = {};
@@ -2393,7 +2445,7 @@
       const name = (state.project.name || "montage").replace(/[^\w.-]+/g, "_") + `_final_${_stamp()}.mp4`;
       await _saveBlobAs(API.resultUrl(state.project.id, r.media), name);
     } catch (e) {
-      set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + e.message } });
+      set({ gen: { state: "error", promptId: null, media: [], msg: "Render failed: " + _friendlyGenError(e.message) } });
     }
   }
 
