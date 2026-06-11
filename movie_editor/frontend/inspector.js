@@ -179,7 +179,9 @@
     if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
-    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · scene splits for generation: edit the global prompt or markers on timeline seams`));
+    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · generation splits: global prompt or Outgoing seam below`));
+
+    renderOutgoingSeam(st, scene);
 
     const actions = el("div", "insp-block");
     const genBtn = el("button", "btn primary", "Generate this scene");
@@ -253,7 +255,53 @@
     });
   }
 
-  function renderSceneCharacters(st, scene, parent) {
+  const VIDEO_TRANSITIONS = [
+    ["", "Hard cut"],
+    ["crossfade", "Dissolve"],
+    ["fadeblack", "Fade through black"],
+    ["wipeleft", "Wipe left"],
+    ["wiperight", "Wipe right"],
+  ];
+
+  function renderOutgoingSeam(st, scene) {
+    const p = st.project;
+    const fps = scene.fps || p.frame_rate || 24;
+    const type = (scene.video_transition || "").trim();
+    const frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
+
+    const tag = el("div", "insp-tag"); tag.textContent = "Outgoing seam"; body.append(tag);
+    body.append(el("div", "insp-hint",
+      "Video blend on the cut to the next clip — drag the colored edge on the timeline to set length."));
+
+    const typeSel = el("select");
+    VIDEO_TRANSITIONS.forEach(([v, lbl]) => {
+      const o = el("option", null, lbl); o.value = v;
+      if (v === type) o.selected = true;
+      typeSel.append(o);
+    });
+    typeSel.onchange = () => {
+      const next = typeSel.value;
+      if (!next) S.patchScene(scene.id, { video_transition: "", transition_frames: null });
+      else S.patchScene(scene.id, { video_transition: next, transition_frames: frames });
+    };
+    body.append(field("Video transition", typeSel));
+
+    const fr = el("input"); fr.type = "number"; fr.min = "1"; fr.max = "120"; fr.step = "1";
+    fr.value = type ? frames : "";
+    fr.disabled = !type;
+    fr.placeholder = type ? "" : "—";
+    fr.oninput = () => {
+      if (!type) return;
+      S.patchScene(scene.id, { transition_frames: Math.max(1, parseInt(fr.value, 10) || 16) });
+    };
+    body.append(field(`Blend length (frames · ${fps} fps)`, fr));
+
+    body.append(field("Generation split marker", splitMarkerSelect(scene.transition_to_next || "",
+      (v) => S.patchScene(scene.id, { transition_to_next: v }),
+      { noneLabel: "— default cut —",
+        title: "Prompt marker before the next scene when Studio splits the montage (not the video blend)" })));
+  }
+
     parent = parent || body;
     const ids = S.sceneCharacterIds(scene.id);
     const tag = el("div", "insp-tag"); tag.textContent = "Characters"; parent.append(tag);
@@ -573,7 +621,7 @@
     sec.append(ta);
     sec.append(el("div", "insp-hint", dirty
       ? "Syncing to timeline…"
-      : "Stays in sync with per-scene prompts. Per-seam tweaks: Split dropdown on timeline seams."));
+      : "Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector."));
     body.append(sec);
   }
 
@@ -651,7 +699,7 @@
     const ta = body.querySelector('[data-k="global-prompt"]');
     if (ta && e.detail?.text != null) ta.value = e.detail.text;
     const hint = body.querySelector(".insp-global .insp-hint");
-    if (hint) hint.textContent = "Stays in sync with per-scene prompts. Per-seam tweaks: Split dropdown on timeline seams.";
+    if (hint) hint.textContent = "Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector.";
   });
 
   if (window.ViewBus) window.ViewBus.subscribeInspector(render);

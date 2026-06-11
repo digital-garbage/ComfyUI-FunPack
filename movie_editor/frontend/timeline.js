@@ -256,13 +256,6 @@
     return 600;
   }
 
-  const VT_TYPES = [
-    ["", "Hard cut"],
-    ["crossfade", "Dissolve"],
-    ["fadeblack", "Fade black"],
-    ["wipeleft", "Wipe left"],
-    ["wiperight", "Wipe right"],
-  ];
   const VT_SHORT = { crossfade: "dissolve", fadeblack: "fade ∅", wipeleft: "wipe ←", wiperight: "wipe →" };
 
   function videoTransitionState(scene, p) {
@@ -281,33 +274,28 @@
     }
   }
 
-  function syncVtVisual(seam, blendZone, type, frames) {
-    const on = frames > 0 && !!type;
-    blendZone.classList.toggle("on", on);
-    seam.classList.toggle("has-vt", on);
-    ["crossfade", "fadeblack", "wipeleft", "wiperight"].forEach((t) => {
-      seam.classList.remove("vt-" + t);
-      blendZone.classList.remove("vt-" + t);
+  function attachVtTailDrag(tail, clip, scene, vt, fps) {
+    tail.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      _seamDragging = true;
+      const baseFrames = vt.frames || 16;
+      const basePx = (baseFrames / fps) * pxPerSec;
+      const tip = el("div", "trim-tip"); clip.append(tip);
+      let frames = baseFrames;
+      let type = vt.type || "crossfade";
+      coalescedDrag(e, (dx) => {
+        const sec = Math.max(0, (basePx + dx) / pxPerSec);
+        frames = Math.min(120, Math.max(0, Math.round(sec * fps)));
+        const w = frames > 0 ? Math.max(10, (frames / fps) * pxPerSec) : 0;
+        tail.style.width = w ? w + "px" : "0";
+        tail.hidden = frames <= 0;
+        tip.textContent = frames > 0 ? `${(frames / fps).toFixed(2)}s · ${frames}f` : "release to clear";
+      }, () => {
+        tip.remove();
+        _seamDragging = false;
+        applyVideoTransition(scene.id, frames > 0 ? type : "", frames);
+      });
     });
-    if (on) {
-      seam.classList.add("vt-" + type);
-      blendZone.classList.add("vt-" + type);
-    }
-  }
-
-  // Prompt transition (Studio split marker) - separate from rendered video transition.
-  function promptTransitionSelect(value, onChange) {
-    const sel = el("select", "seam-field seam-prompt-type");
-    const none = el("option", null, "Default cut"); none.value = ""; sel.append(none);
-    (S.get().transitions || []).forEach((t) => {
-      const name = t.trigger || t.name || t.key; if (!name) return;
-      const o = el("option", null, name); o.value = name; if (name === value) o.selected = true; sel.append(o);
-    });
-    if (value && ![...sel.options].some((o) => o.value === value)) { const o = el("option", null, value); o.value = value; o.selected = true; sel.append(o); }
-    sel.onchange = (e) => { e.stopPropagation(); onChange(sel.value); };
-    sel.onclick = (e) => e.stopPropagation();
-    sel.title = "How generation divides before the next scene (prompt split marker — not a video dissolve). Edit the global prompt to set splits in bulk.";
-    return sel;
   }
 
   // ── drag plumbing ─────────────────────────────────────────────────────────────
@@ -381,7 +369,7 @@
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
     clip.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim, .seam, select, button")) return;
+      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
       const startX = e.clientX;
       let dragging = false, drop = null;
       const track = clip.parentNode;
@@ -487,7 +475,8 @@
     if (vt.active) {
       const tail = el("div", "clip-vt-tail vt-" + vt.type);
       tail.style.width = Math.max(10, vt.sec * pxPerSec) + "px";
-      tail.title = `${VT_SHORT[vt.type] || vt.type} → next · ${vt.frames}f (${vt.sec.toFixed(2)}s)`;
+      tail.title = `${VT_SHORT[vt.type] || vt.type} · drag to adjust length · type in inspector`;
+      attachVtTailDrag(tail, clip, scene, vt, vt.fps);
       clip.append(tail);
     }
 
@@ -588,77 +577,14 @@
     return clip;
   }
 
-  // ── video transition bridge at each scene seam ─────────────────────────────────
+  // ── cut line at each clip boundary (NLE-style; transition lives on clip tail) ──
   function seamEl(st, p, scene, seamPx) {
     const vt = videoTransitionState(scene, p);
-    const fps = vt.fps;
-    const seam = el("div", "seam" + (vt.active ? " has-vt vt-" + vt.type : ""));
+    const seam = el("div", "seam-cut" + (vt.active ? " has-vt vt-" + vt.type : ""));
     seam.style.left = seamPx + "px";
-    seam.append(el("div", "seam-marker"));
-
-    const card = el("div", "seam-card");
-
-    const blendRow = el("div", "seam-row seam-row-blend");
-    blendRow.append(el("span", "seam-row-lbl", "Blend"));
-    const blendZone = el("div", "seam-blend-zone" + (vt.active ? " on vt-" + vt.type : ""));
-
-    const typeSel = el("select", "vt-type seam-field");
-    VT_TYPES.forEach(([v, lbl]) => {
-      const o = el("option", null, lbl); o.value = v;
-      if (v === (vt.type || "")) o.selected = true;
-      typeSel.append(o);
-    });
-    typeSel.title = "Video blend at this seam (pixel dissolve - separate from Split below)";
-    typeSel.onclick = (e) => e.stopPropagation();
-    typeSel.onchange = (e) => {
-      e.stopPropagation();
-      const next = typeSel.value;
-      applyVideoTransition(scene.id, next, next ? (vt.frames || 16) : 0);
-    };
-
-    const durBadge = el("span", "seam-blend-dur");
-    const syncDur = (type, frames) => {
-      const show = !!(type && frames);
-      durBadge.textContent = show ? `${frames}f` : "";
-      durBadge.hidden = !show;
-    };
-    syncDur(vt.type, vt.frames);
-    blendZone.append(typeSel, durBadge);
-    blendRow.append(blendZone);
-
-    blendZone.title = "Drag horizontally to set blend length (frames)";
-    blendZone.addEventListener("mousedown", (e) => {
-      if (e.target.closest("select")) return;
-      e.stopPropagation();
-      _seamDragging = true;
-      const baseType = vt.type || "crossfade";
-      const baseFrames = vt.frames || 0;
-      const basePx = (baseFrames > 0 ? baseFrames / fps : 0.35) * pxPerSec;
-      const tip = el("div", "trim-tip seam-tip"); card.append(tip);
-      let type = baseType;
-      let frames = baseFrames;
-      coalescedDrag(e, (dx) => {
-        const sec = Math.max(0, (basePx + dx) / pxPerSec);
-        frames = Math.min(120, Math.round(sec * fps));
-        if (frames > 0 && !type) type = "crossfade";
-        syncVtVisual(seam, blendZone, frames > 0 ? type : "", frames);
-        syncDur(frames > 0 ? type : "", frames);
-        tip.textContent = frames > 0 ? `${(frames / fps).toFixed(2)}s · ${frames}f` : "release to clear";
-      }, () => {
-        tip.remove();
-        _seamDragging = false;
-        applyVideoTransition(scene.id, frames > 0 ? (type || "crossfade") : "", frames);
-      });
-    });
-    card.append(blendRow);
-
-    const splitRow = el("div", "seam-row seam-row-split");
-    splitRow.title = "Generation split marker - how Studio divides scenes in a long montage";
-    splitRow.append(el("span", "seam-row-lbl", "Split"));
-    splitRow.append(promptTransitionSelect(scene.transition_to_next || "", (v) => S.patchScene(scene.id, { transition_to_next: v })));
-    card.append(splitRow);
-
-    seam.append(card);
+    if (vt.active) {
+      seam.title = `${VT_SHORT[vt.type] || vt.type} · ${vt.frames}f — drag the clip edge or use inspector`;
+    }
     return seam;
   }
 
@@ -1004,7 +930,7 @@
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
       const cur = S.get();
-      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
+      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
         S.selectScene(null);
     });
     const stage = el("div", "tl-stage"); stage.style.width = (GUTTER_W + contentW) + "px";
@@ -1042,7 +968,7 @@
     track.addEventListener("click", (e) => {
       const clip = e.target.closest(".clip:not(.ghost)[data-scene-id]");
       if (!clip) return;
-      if (e.target.closest(".clip-actions, .clip-trim, .seam, select, button")) return;
+      if (e.target.closest(".clip-actions, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
       onClipSelect(e, clip.dataset.sceneId);
     });
     lay.forEach(({ seg, o, d }) => {
