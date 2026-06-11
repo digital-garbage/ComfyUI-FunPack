@@ -370,6 +370,7 @@ input[type=number] { font-family: var(--font-mono); }
 .pm-minibar { height: 14px; flex: 0 0 auto; display: flex; position: relative; background: var(--ink-2); border-top: 1px solid var(--line); cursor: col-resize; user-select: none; }
 .pm-chip { height: 100%; flex-shrink: 0; background: var(--ink-3); border-right: 1px solid var(--ink-2); transition: opacity .1s; }
 .pm-chip.rendered { background: linear-gradient(180deg, var(--teal), #3ab3a8); opacity: .55; }
+.pm-chip.rendered.stale { background: linear-gradient(180deg, var(--amber-2), #3ab3a8); opacity: .62; }
 .pm-chip.pending { background: repeating-linear-gradient(-45deg, var(--ink-3), var(--ink-3) 4px, #1a1a1a 4px, #1a1a1a 8px); opacity: .45; }
 .pm-chip.ghost { background: repeating-linear-gradient(-45deg, #2a2418, #2a2418 4px, #3d3420 4px, #3d3420 8px); opacity: .65; }
 .pm-chip.mixed { background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 55%, #3ab3a8), #2a6a62); opacity: .72; }
@@ -386,6 +387,7 @@ input[type=number] { font-family: var(--font-mono); }
   border-radius: 10px; padding: 6px 10px; pointer-events: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.pm-render-prompt.anchor-stale { color: #c8fff4; border-color: color-mix(in srgb, var(--teal-soft) 45%, var(--line)); }
 .pm-needle { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .85; transform: translateX(-50%); pointer-events: none; z-index: 2; }
 
 /* transport bar */
@@ -670,6 +672,13 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 }
 .clip.has-media .clip-gen-prompt { position: relative; z-index: 1; }
 .clip.prompt-mismatch { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
+.clip.anchor-mismatch { border-color: color-mix(in srgb, var(--teal-soft) 42%, var(--line)); }
+.clip.stale-render.rendered::after { color: var(--amber-2); text-shadow: 0 0 5px rgba(224, 162, 58, .7); }
+.clip-gen-anchor .clip-gen-prompt-label { color: var(--teal-soft); }
+.clip-gen-anchor .clip-gen-prompt-text { color: #c8fff4; }
+.tl-render-anchor { color: #c8fff4; border-color: color-mix(in srgb, var(--teal-soft) 40%, var(--line)); }
+.render-anchor-warn { border-color: color-mix(in srgb, var(--teal-soft) 35%, var(--line)); }
+.render-anchor-warn .render-prompt-warn-title { color: var(--teal-soft); }
 .clip-actions { position: absolute; top: 5px; right: 8px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .clip:hover .clip-actions { opacity: 1; }
 .ic-btn { width: 18px; height: 18px; padding: 0; font-size: 11px; line-height: 1; border: 1px solid var(--line);

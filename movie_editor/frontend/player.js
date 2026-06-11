@@ -119,15 +119,29 @@
   }
   function _showRenderPrompt(sceneId) {
     if (!_promptEl) return;
-    const mismatch = sceneId && S.renderPromptMismatch ? S.renderPromptMismatch(sceneId) : null;
-    if (!mismatch) {
+    const promptMismatch = sceneId && S.renderPromptMismatch ? S.renderPromptMismatch(sceneId) : null;
+    const anchorMismatch = sceneId && S.renderAnchorMismatch ? S.renderAnchorMismatch(sceneId) : null;
+    if (!promptMismatch && !anchorMismatch) {
       _promptEl.style.display = "none";
       _promptEl.textContent = "";
+      _promptEl.classList.remove("anchor-stale");
       return;
     }
     _promptEl.style.display = "";
-    _promptEl.title = "Timeline prompt was edited after generation — rate against this text";
-    _promptEl.textContent = `Generated with: ${mismatch.rendered}`;
+    if (anchorMismatch && !promptMismatch) {
+      _promptEl.classList.add("anchor-stale");
+      _promptEl.title = `Generated with i2v image: ${anchorMismatch.renderedLabel}`;
+      _promptEl.textContent = "i2v image changed · showing previous generation";
+    } else {
+      _promptEl.classList.remove("anchor-stale");
+      if (anchorMismatch && promptMismatch) {
+        _promptEl.title = `i2v: ${anchorMismatch.renderedLabel} · prompt: ${promptMismatch.rendered}`;
+        _promptEl.textContent = `i2v image changed · generated with: ${promptMismatch.rendered}`;
+      } else {
+        _promptEl.title = "Timeline prompt was edited after generation - rate against this text";
+        _promptEl.textContent = `Generated with: ${promptMismatch.rendered}`;
+      }
+    }
   }
 
   // ── video pool management ─────────────────────────────────────────────────────
@@ -588,12 +602,14 @@
           const sc = seg.scene;
           const stype = sc.source?.type || "empty";
           const rendered = !!((st.sceneRenders || {})[sc.id] || {}).media;
+          const stale = rendered && S.renderIsStale?.(sc.id);
           cls += rendered ? " rendered" : " pending";
+          if (stale) cls += " stale";
           if (stype === "mixed") { cls += " mixed"; title = "Mixed · anchor + prior guides"; }
           else if (stype === "carry") { cls += " carry"; title = "Carry · prior guides only"; }
           const idx = (p.scenes || []).indexOf(sc) + 1;
-          if (!title) title = `Scene ${idx}${rendered ? " (rendered)" : " (not rendered)"}`;
-          else title = `Scene ${idx} · ${title}${rendered ? "" : " · not rendered"}`;
+          if (!title) title = `Scene ${idx}${rendered ? (stale ? " (previous generation)" : " (rendered)") : " (not rendered)"}`;
+          else title = `Scene ${idx} · ${title}${rendered ? (stale ? " · previous generation" : "") : " · not rendered"}`;
         }
         const chip = el("div", cls);
         chip.style.width = (d / _totalSecCur * 100).toFixed(3) + "%";

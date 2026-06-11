@@ -321,6 +321,7 @@
     const clip = el("div", "clip" + clipSelClass(st, scene.id)
       + (scene.excluded ? " excluded" : "")
       + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : ""))
+      + (hasRender(st, scene.id) && S.renderIsStale?.(scene.id) ? " stale-render" : "")
       + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : "")
       + (srcType === "mixed" ? " src-mixed" : srcType === "carry" ? " src-carry" : srcType === "image" ? " src-image" : ""));
     clip.dataset.sceneId = scene.id;
@@ -439,15 +440,26 @@
       clip.append(tail);
     }
 
-    if (hasRender(st, scene.id) && S.renderPromptMismatch) {
-      const mismatch = S.renderPromptMismatch(scene.id);
-      if (mismatch) {
-        clip.classList.add("prompt-mismatch");
-        const gen = el("div", "clip-gen-prompt");
-        gen.title = "Timeline prompt was edited after generation — rate against this text";
-        gen.append(el("span", "clip-gen-prompt-label", "Generated with"));
-        gen.append(el("span", "clip-gen-prompt-text", mismatch.rendered || "(empty)"));
+    if (hasRender(st, scene.id)) {
+      const anchorMismatch = S.renderAnchorMismatch ? S.renderAnchorMismatch(scene.id) : null;
+      if (anchorMismatch) {
+        clip.classList.add("anchor-mismatch");
+        const gen = el("div", "clip-gen-prompt clip-gen-anchor");
+        gen.title = "i2v anchor changed after generation - preview shows the previous render";
+        gen.append(el("span", "clip-gen-prompt-label", "i2v image changed"));
+        gen.append(el("span", "clip-gen-prompt-text", `Showing previous generation (${anchorMismatch.renderedLabel})`));
         clip.append(gen);
+      }
+      if (S.renderPromptMismatch) {
+        const mismatch = S.renderPromptMismatch(scene.id);
+        if (mismatch) {
+          clip.classList.add("prompt-mismatch");
+          const gen = el("div", "clip-gen-prompt");
+          gen.title = "Timeline prompt was edited after generation - rate against this text";
+          gen.append(el("span", "clip-gen-prompt-label", "Generated with"));
+          gen.append(el("span", "clip-gen-prompt-text", mismatch.rendered || "(empty)"));
+          clip.append(gen);
+        }
       }
     }
 
@@ -824,12 +836,15 @@
     const sc = S.scene(st.selectedSceneId);
     if (!sc) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
-    const mismatch = S.renderPromptMismatch ? S.renderPromptMismatch(sc.id) : null;
+    const promptMismatch = S.renderPromptMismatch ? S.renderPromptMismatch(sc.id) : null;
+    const anchorMismatch = S.renderAnchorMismatch ? S.renderAnchorMismatch(sc.id) : null;
     const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
     const rsel = el("select", "tl-rating");
-    rsel.title = mismatch
-      ? "Rate against the generated prompt - timeline text was edited after this render"
-      : "Rate this scene's render - FunPack Studio refines from it on next generation";
+    rsel.title = anchorMismatch
+      ? "i2v image changed - rate the previous generation shown in preview"
+      : promptMismatch
+        ? "Rate against the generated prompt - timeline text was edited after this render"
+        : "Rate this scene's render - FunPack Studio refines from it on next generation";
     rsel.append(new Option("- rate -", ""));
     (st.ratingLabels || []).forEach((l) => {
       const o = new Option(l, l);
@@ -839,8 +854,12 @@
     rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
     wrap.append(rlabel);
     wrap.append(rsel);
-    if (mismatch) {
-      const hint = el("span", "tl-render-prompt", mismatch.rendered);
+    if (anchorMismatch) {
+      const hint = el("span", "tl-render-prompt tl-render-anchor", "i2v image changed · showing previous generation");
+      hint.title = `Generated with ${anchorMismatch.renderedLabel}`;
+      wrap.append(hint);
+    } else if (promptMismatch) {
+      const hint = el("span", "tl-render-prompt", promptMismatch.rendered);
       hint.title = "Generated with this prompt - use it when rating (timeline text differs)";
       wrap.append(hint);
     }

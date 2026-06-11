@@ -335,16 +335,28 @@
       || (patch.source.type != null && next.type !== (b.type || "carry"));
   }
 
-  // Dropping or picking a new i2v anchor must drop the cached render and rating —
-  // otherwise preview keeps the old video and Studio still refines from the prior rating.
-  function _invalidateSceneAfterAnchorChange(target) {
+  // Dropping or picking a new i2v anchor keeps the cached render for preview/rating but
+  // stamps the pre-change source on the snapshot so UI can warn (like prompt mismatch).
+  function _stampRenderSourceBeforeAnchorChange(target) {
     if (!target || !state.project) return;
     const uid = genUnitId(target);
+    const root = genUnitRoot(uid) || target;
+    const src = root?.source || {};
+    const sourceType = src.type || "carry";
+    const mediaRef = src.media_ref || null;
+    const text = (root?.text || "").trim();
+    const anchor = (state.project.anchor || "").trim();
     (state.project.scenes || []).filter((sc) => genUnitId(sc) === uid).forEach((sc) => {
-      delete state.sceneRenders[sc.id];
+      const r = state.sceneRenders[sc.id];
+      if (!r?.media) return;
+      const rp = r.renderPrompt || {};
+      r.renderPrompt = {
+        text: rp.text ?? text,
+        anchor: rp.anchor ?? anchor,
+        sourceType: rp.sourceType ?? sourceType,
+        mediaRef: rp.mediaRef !== undefined ? rp.mediaRef : mediaRef,
+      };
     });
-    const root = genUnitRoot(uid);
-    if (root?.rating) root.rating = "";
   }
 
   // Source lives on the gen-unit root; editorial subclips must mirror it for UI + saves.
@@ -361,7 +373,7 @@
     const t = _patchSceneTarget(id, patch); if (!t) return;
     const charsChanged = patch.character_ids != null;
     const anchorChanged = _anchorPatchChanged(t, patch);
-    if (anchorChanged) _invalidateSceneAfterAnchorChange(t);
+    if (anchorChanged) _stampRenderSourceBeforeAnchorChange(t);
     const merged = { ...patch };
     if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
     if (!quiet && !window.EditorHistory?.isApplying()) _historyRecord();
@@ -382,7 +394,7 @@
   function patchSceneQuiet(id, patch) {
     const t = _patchSceneTarget(id, patch) || scene(id); if (!t) return;
     const anchorChanged = _anchorPatchChanged(t, patch);
-    if (anchorChanged) _invalidateSceneAfterAnchorChange(t);
+    if (anchorChanged) _stampRenderSourceBeforeAnchorChange(t);
     const merged = { ...patch };
     if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
     Object.assign(t, merged);
@@ -1071,17 +1083,27 @@
     const sc = scene(sceneId);
     if (!sc) return null;
     const root = genUnitRoot(genUnitId(sc));
+    const src = root?.source || sc.source || {};
     return {
       text: (root?.text || "").trim(),
       anchor: (state.project?.anchor || "").trim(),
+      sourceType: src.type || "carry",
+      mediaRef: src.media_ref || null,
     };
   }
 
-  function _queueRenderPrompts(sceneIds) {
-    for (const id of sceneIds || []) {
-      const snap = _snapshotRenderPrompt(id);
-      if (snap) _queuedRenderPrompts[id] = snap;
-    }
+  function _snapshotRenderSource(sceneId) {
+    const sc = scene(sceneId);
+    if (!sc) return null;
+    const root = genUnitRoot(genUnitId(sc));
+    const src = root?.source || sc.source || {};
+    return { sourceType: src.type || "carry", mediaRef: src.media_ref || null };
+  }
+
+  function renderMediaLabel(mediaRef) {
+    if (!mediaRef) return "(none)";
+    const m = (state.mediaBin || []).find((x) => x.id === mediaRef);
+    return m?.name || mediaRef;
   }
 
   function renderPromptForScene(sceneId) {
@@ -1095,6 +1117,35 @@
     const rendered = (snap.text || "");
     if (current === rendered) return null;
     return { current, rendered, anchor: snap.anchor || "" };
+  }
+
+  function renderAnchorMismatch(sceneId) {
+    const snap = renderPromptForScene(sceneId);
+    if (!snap) return null;
+    const current = _snapshotRenderSource(sceneId);
+    if (!current) return null;
+    const renderedType = snap.sourceType || "carry";
+    const renderedRef = snap.mediaRef || null;
+    if (renderedType === current.sourceType && renderedRef === current.mediaRef) return null;
+    return {
+      renderedType,
+      renderedRef,
+      renderedLabel: renderMediaLabel(renderedRef),
+      currentType: current.sourceType,
+      currentRef: current.mediaRef,
+      currentLabel: renderMediaLabel(current.mediaRef),
+    };
+  }
+
+  function renderIsStale(sceneId) {
+    return !!(renderPromptMismatch(sceneId) || renderAnchorMismatch(sceneId));
+  }
+
+  function _queueRenderPrompts(sceneIds) {
+    for (const id of sceneIds || []) {
+      const snap = _snapshotRenderPrompt(id);
+      if (snap) _queuedRenderPrompts[id] = snap;
+    }
   }
 
   function _recordSegment(mediaList, targetSceneIds) {
@@ -1624,7 +1675,7 @@
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
-    renderPromptForScene, renderPromptMismatch,
+    renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
