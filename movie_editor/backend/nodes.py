@@ -85,6 +85,7 @@ ROLES: dict[str, dict] = {
     "clip_vision":   {"label": "CLIP Vision",             "category": "Loaders",  "output": "CLIP_VISION"},
     "image_processing": {"label": "Input Image Processing", "category": "Pipeline", "output": "IMAGE", "input": "IMAGE"},
     "empty_latent":  {"label": "Empty Latent Generator",  "category": "Pipeline", "output": "LATENT"},
+    "video_latent":  {"label": "Video Latent Source",     "category": "Pipeline", "output": "LATENT"},
     "audio_encoder": {"label": "Audio Encoder",           "category": "Pipeline", "output": "LATENT"},
 }
 

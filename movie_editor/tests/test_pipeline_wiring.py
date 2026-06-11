@@ -77,6 +77,35 @@ def test_custom_model_may_terminate_at_studio():
     assert ok is None
 
 
+def test_latent_chains_to_studio_not_concat_video():
+    ok = pipeline_wiring.validate_port_wire(
+        role="empty_latent", out_type="LATENT", out_name="LATENT",
+        target="port:FunPackStudio.latent", models={"slots": []},
+    )
+    assert ok is None
+
+    err = pipeline_wiring.validate_port_wire(
+        role="empty_latent", out_type="LATENT", out_name="LATENT",
+        target="port:LTXVConcatAVLatent.video_latent", models={"slots": []},
+    )
+    assert err is not None
+    assert "Studio · latent" in err
+
+    ok = pipeline_wiring.validate_port_wire(
+        role="custom", out_type="LATENT", out_name="LATENT",
+        target="port:FunPackStudio.latent", models={"slots": []},
+    )
+    assert ok is None
+
+
+def test_image_chains_to_studio_source_image():
+    ok = pipeline_wiring.validate_port_wire(
+        role="custom", out_type="IMAGE", out_name="IMAGE",
+        target="port:FunPackStudio.source_image", models={"slots": []},
+    )
+    assert ok is None
+
+
 def test_duplicate_port_wire_blocked():
     models = {
         "slots": [

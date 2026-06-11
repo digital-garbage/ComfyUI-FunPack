@@ -19,18 +19,27 @@ ROLE_WIRE_TARGETS: dict[str, list[tuple[str, Optional[str], str]]] = {
     "audio_vae": [("VAE", None, "LTXVAudioVAEDecode.audio_vae")],
     "audio_encoder": [("LATENT", None, "LTXVConcatAVLatent.audio_latent")],
     "empty_latent": [("LATENT", None, "FunPackStudio.latent")],
+    "video_latent": [("LATENT", None, "FunPackStudio.latent")],
     "image_processing": [
         ("IMAGE", None, "FunPackStudio.source_image"),
         ("LATENT", None, "FunPackStudio.latent"),
     ],
 }
 
-# MODEL / CLIP may pass through patcher nodes (LoRA, etc.) via node:* wires; these are the
-# only built-in ports they may terminate on in guided mode.
+# MODEL / CLIP / LATENT / IMAGE may pass through patcher or encode nodes via node:* wires;
+# these are the built-in ports they may terminate on in guided mode.
 TYPE_CHAIN_TERMINALS: dict[str, list[str]] = {
     "MODEL": ["FunPackStudio.model"],
     "CLIP": ["FunPackStudio.clip"],
+    "LATENT": ["FunPackStudio.latent"],
+    "IMAGE": ["FunPackStudio.source_image"],
 }
+
+# Core-internal ports: shown in the full port list but not user-wirable in guided mode
+# (another core node feeds them automatically).
+GUIDED_HIDDEN_PORTS: frozenset[str] = frozenset({
+    "LTXVConcatAVLatent.video_latent",  # Studio output 12 -> concat (CORE_LINKS)
+})
 
 DEFAULT_WIRES_BY_ROLE: dict[str, dict[str, str]] = {
     "unet": {"MODEL": "port:FunPackStudio.model"},
@@ -39,6 +48,7 @@ DEFAULT_WIRES_BY_ROLE: dict[str, dict[str, str]] = {
     "audio_vae": {"VAE": "port:LTXVAudioVAEDecode.audio_vae"},
     "audio_encoder": {"LATENT": "port:LTXVConcatAVLatent.audio_latent"},
     "empty_latent": {"LATENT": "port:FunPackStudio.latent"},
+    "video_latent": {"LATENT": "port:FunPackStudio.latent"},
     "image_processing": {"IMAGE": "port:FunPackStudio.source_image"},
 }
 
@@ -50,8 +60,8 @@ DEFAULT_INPUT_SOURCES_BY_ROLE: dict[str, dict[str, str]] = {
 PORT_LABELS: dict[str, str] = {
     "FunPackStudio.model": "Studio · model",
     "FunPackStudio.clip": "Studio · clip",
+    "FunPackStudio.latent": "Studio · latent (forwards to Concat AV · video_latent)",
     "FunPackStudio.source_image": "Studio · source_image (Img2Video anchor)",
-    "FunPackStudio.latent": "Studio · latent",
     "FunPackLTXAVSceneChainSampler.vae": "Chain Sampler · vae",
     "LTXVConcatAVLatent.audio_latent": "Concat AV Latent · audio_latent",
     "LTXVAudioVAEDecode.audio_vae": "Audio VAE Decode · audio_vae",
@@ -74,15 +84,20 @@ def wiring_locked(models: Any) -> bool:
 
 def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None) -> list[str]:
     out: list[str] = []
-    for t, name, port in ROLE_WIRE_TARGETS.get(role or "", []):
+    role_rules = ROLE_WIRE_TARGETS.get(role or "", [])
+    for t, name, port in role_rules:
         if t != out_type:
             continue
         if name is not None and out_name is not None and name != out_name:
             continue
         out.append(port)
-    for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
-        if port not in out:
-            out.append(port)
+    # Generic chain terminals only when the role has no explicit rule for this type
+    # (e.g. audio_encoder LATENT must stay on Concat · audio_latent, not Studio · latent).
+    has_explicit = any(t == out_type for t, _, _ in role_rules)
+    if not has_explicit:
+        for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
+            if port not in out:
+                out.append(port)
     return out
 
 
@@ -108,6 +123,17 @@ def validate_port_wire(
     if not target.startswith("port:"):
         return f"Unknown wire target '{target}'."
     port_id = target[5:]
+    if port_id in GUIDED_HIDDEN_PORTS:
+        if port_id == "LTXVConcatAVLatent.video_latent":
+            return (
+                f"{out_name} ({out_type}) cannot wire directly to Concat AV Latent · video_latent "
+                f"in guided mode — wire to Studio · latent instead; the built-in pipeline "
+                f"forwards Studio output to Concat automatically."
+            )
+        return (
+            f"{out_name} ({out_type}) cannot wire to {port_label(port_id)} in guided mode "
+            f"(internal core link). Enable Full control to override."
+        )
     allowed = allowed_port_ids(role, out_type, out_name)
     if not allowed and role in ("custom", "", None):
         # Legacy slots without a role: allow canonical built-in ports for this output type.
@@ -193,6 +219,7 @@ def wiring_rules_payload() -> dict[str, Any]:
     return {
         "role_targets": role_targets,
         "type_chain_terminals": TYPE_CHAIN_TERMINALS,
+        "guided_hidden_ports": sorted(GUIDED_HIDDEN_PORTS),
         "default_wires": DEFAULT_WIRES_BY_ROLE,
         "default_input_sources": DEFAULT_INPUT_SOURCES_BY_ROLE,
         "port_labels": PORT_LABELS,

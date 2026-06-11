@@ -56,12 +56,18 @@
     const role = slot.role || "custom";
     const rules = wiringRules.role_targets?.[role] || [];
     const chainPorts = wiringRules.type_chain_terminals?.[out.type] || [];
+    const hidden = new Set(wiringRules.guided_hidden_ports || []);
     const allowedPorts = [...rules
       .filter((r) => r.type === out.type && (r.output_name == null || r.output_name === out.name))
       .map((r) => "port:" + r.port),
     ...chainPorts.map((p) => "port:" + p),
     ].filter((p, i, a) => a.indexOf(p) === i);
-    return all.filter((d) => !d.value.startsWith("port:") || allowedPorts.includes(d.value));
+    return all.filter((d) => {
+      if (!d.value.startsWith("port:")) return true;
+      const id = d.value.slice(5);
+      if (hidden.has(id)) return false;
+      return allowedPorts.includes(d.value);
+    });
   }
 
   function allowedSources(slot, ci) {
@@ -608,7 +614,10 @@
     }
     if (pipelineLocked()) {
       sec.append(el("div", "req-hint guided-hint",
-        "Guided wiring is on — MODEL/CLIP may chain through LoRA loaders before Studio. Audio latent, image anchor, and VAE ports stay role-locked. Enable Full control to rewire everything manually."));
+        "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+        + "IMAGE → Studio · source_image (Input Image Processing defaults to Timeline scene image). "
+        + "MODEL/CLIP may chain through LoRA. Audio latent → Concat · audio_latent only. "
+        + "Enable Full control for manual rewiring."));
     }
     sec.append(el("div", "req-title", "Pipeline requirements"));
 
@@ -863,7 +872,10 @@
     }
     if (coreOpen) {
       const hint = pipelineLocked()
-        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). Wire Unet → LoRA → Studio via slot outputs; MODEL/CLIP may chain through patcher nodes. Audio latent, image anchor, and VAE ports stay fixed unless Full control is on."
+        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). "
+          + "Wire video LATENT to Studio · latent (not Concat · video_latent — that link is internal). "
+          + "Wire IMAGE via Input Image Processing → Studio · source_image (Timeline default). "
+          + "MODEL/CLIP may chain through patchers. Enable Full control to override core links."
         : "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it.";
       sec.append(el("div", "links-hint", hint));
       coreNodes.forEach((n) => sec.append(coreCard(n)));
