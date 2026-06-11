@@ -13,8 +13,11 @@
   let mediaSelectMode = false;     // when off, click = preview; when on, click = toggle selection
   const MF_KEY = "fp_media_filter";
   const MS_KEY = "fp_media_sort";
+  const MC_KEY = "fp_media_grid_cols";
   let mediaFilter = localStorage.getItem(MF_KEY) || "all";
   let mediaSort = localStorage.getItem(MS_KEY) || "name_asc";
+  let mediaGridCols = parseInt(localStorage.getItem(MC_KEY) || "0", 10);
+  if (![0, 1, 2, 3, 4].includes(mediaGridCols)) mediaGridCols = 0;
 
   const MEDIA_FILTERS = [
     { id: "all", label: "All" },
@@ -27,6 +30,13 @@
     { id: "name_desc", label: "Name Z-A" },
     { id: "type", label: "Type" },
     { id: "date_desc", label: "Date added" },
+  ];
+  const MEDIA_GRID_COLS = [
+    { id: 0, label: "Auto" },
+    { id: 1, label: "1×" },
+    { id: 2, label: "2×" },
+    { id: 3, label: "3×" },
+    { id: 4, label: "4×" },
   ];
   const MEDIA_KIND_ORDER = { image: 0, video: 1, audio: 2, other: 3 };
   const MEDIA_GROUP_LABELS = { image: "Images", video: "Video", audio: "Audio", other: "Other" };
@@ -351,6 +361,24 @@
     sortRow.append(sortSel);
     controls.append(sortRow);
 
+    const colsRow = el("div", "media-bin-cols");
+    colsRow.append(el("span", "media-bin-sort-lbl", "Grid"));
+    const colsSeg = el("div", "insp-switch media-bin-cols-switch");
+    MEDIA_GRID_COLS.forEach((c) => {
+      const btn = el("button", "insp-seg" + (mediaGridCols === c.id ? " active" : ""), c.label);
+      btn.title = c.id === 0
+        ? "Column count follows panel width"
+        : `${c.id} column${c.id > 1 ? "s" : ""} (× rows)`;
+      btn.onclick = () => {
+        mediaGridCols = c.id;
+        localStorage.setItem(MC_KEY, String(c.id));
+        render(S.get());
+      };
+      colsSeg.append(btn);
+    });
+    colsRow.append(colsSeg);
+    controls.append(colsRow);
+
     if (total > 0 && shown !== total) {
       controls.append(el("div", "pj-meta media-bin-count", `${shown} of ${total} shown`));
     }
@@ -513,6 +541,7 @@
     }
 
     const grid = el("div", "media-grid");
+    grid.dataset.cols = String(mediaGridCols);
     if (items.length) _appendMediaGrid(grid, items, st);
     else if (total) grid.append(el("div", "pj-meta media-grid-empty", "No items match this filter."));
     else grid.append(el("div", "pj-meta media-grid-empty", "No media yet."));
