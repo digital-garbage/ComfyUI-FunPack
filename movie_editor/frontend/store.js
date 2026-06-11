@@ -791,34 +791,6 @@
     scheduleSave();
   }
 
-  function validateSetup() {
-    const issues = [];
-    const h = state.health || {};
-    if (!h.ok) issues.push("ComfyUI is not reachable — start ComfyUI and reload this page.");
-    if (!h.template_exists) {
-      issues.push("Missing workflow template — export your Studio → Chain Sampler graph to movie_editor/backend/templates/ltxav_chain.api.json (see README).");
-    }
-    const slots = state.models?.slots || [];
-    const roles = { unet: false, clip: false, video_vae: false };
-    slots.forEach((s) => { if (roles[s.role] === false) roles[s.role] = true; });
-    if (!roles.unet) issues.push("Models: add a Unet / diffusion model loader.");
-    if (!roles.clip) issues.push("Models: add a CLIP / text encoder loader.");
-    if (!roles.video_vae) issues.push("Models: add a Video VAE loader.");
-    const active = (state.project?.scenes || []).filter((s) => !s.excluded);
-    if (!active.length) issues.push("Timeline has no active scenes — add a scene or un-exclude one.");
-    return issues;
-  }
-
-  async function _ensureSetup() {
-    try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
-    const issues = validateSetup();
-    if (issues.length) {
-      alert("Setup incomplete:\n• " + issues.join("\n• "));
-      return false;
-    }
-    return true;
-  }
-
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
@@ -1272,7 +1244,6 @@
   async function generate(onlyScene) {
     if (!state.project) return;
     await flushSave();
-    if (!(await _ensureSetup())) return;
     if (!onlyScene) return generateMontage();
     const reset = _resetSessionPending; _resetSessionPending = false;
     if (reset) state.resetSessionArmed = false;
@@ -1287,7 +1258,6 @@
   async function generateMontage() {
     if (!state.project) return;
     await flushSave();
-    if (!(await _ensureSetup())) return;
     const runs = _runs();
     if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
     const reset = _resetSessionPending; _resetSessionPending = false;
@@ -1310,7 +1280,6 @@
       return;
     }
     await flushSave();
-    if (!(await _ensureSetup())) return;
     const runs = _runsForSceneIds(ids);
     if (!runs.length) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "No generatable runs in the selection." } });
@@ -1631,8 +1600,7 @@
   // ── boot ─────────────────────────────────────────────────────────────────────
   async function init() {
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
-    // Clear a stale setup gate from a prior Generate attempt (preview must stay usable).
-    if (state.gen?.state === "error" && String(state.gen.msg || "").startsWith("Setup incomplete:")) {
+    if (state.gen?.state === "error" && /Setup incomplete|Missing workflow template/.test(state.gen.msg || "")) {
       state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     }
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
@@ -1660,7 +1628,7 @@
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
-    validateSetup, applyEnginePreset, ENGINE_PRESETS, undo, redo,
+    applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
