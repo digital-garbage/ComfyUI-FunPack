@@ -179,6 +179,18 @@
   function isSceneFocus(st, sceneId) {
     return normId(sceneId) === normId(st.selectedSceneId);
   }
+  /** Selection state shared by toolbar build + live sync. */
+  function clipToolbarState(st) {
+    const ids = selectedIds(st);
+    const hasSel = ids.length > 0;
+    const focusId = hasSel
+      ? (st.selectedSceneId && ids.some((sid) => normId(sid) === normId(st.selectedSceneId))
+        ? st.selectedSceneId
+        : ids[0])
+      : null;
+    const saveable = !!(focusId && S.clipSaveableToMediaBin?.(focusId));
+    return { ids, hasSel, focusId, saveable };
+  }
   function clipSelClass(st, sceneId) {
     let cls = "";
     if (isSceneSelected(st, sceneId)) cls += " selected";
@@ -272,20 +284,34 @@
   function syncToolbarSelection(st) {
     const bar = body.querySelector(".tl-toolbar");
     if (!bar || !st.project) return;
-    const hasSel = !!st.selectedSceneId;
+    const { hasSel, focusId, saveable } = clipToolbarState(st);
     bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
     const exp = bar.querySelector("[data-export-scene]");
-    if (exp) exp.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
+    if (exp) {
+      exp.disabled = !(hasSel && saveable);
+      exp.title = !hasSel
+        ? "Select a clip first"
+        : saveable
+          ? "Save the selected clip's rendered video to disk (renders are temporary)"
+          : "Generate the clip first, or select a video clip with media";
+    }
     const saveBin = bar.querySelector("[data-save-mediabin]");
-    if (saveBin) saveBin.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
+    if (saveBin) {
+      saveBin.disabled = !(hasSel && saveable);
+      saveBin.title = !hasSel
+        ? "Select a clip first"
+        : saveable
+          ? "Copy the selected clip into the Media bin — add it back as a plain video clip"
+          : "Generate the clip first, or select a video clip with media";
+    }
     const sep = bar.querySelector("[data-separate-audio]");
     if (sep) {
-      const sc = hasSel ? S.scene(st.selectedSceneId) : null;
-      sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, st.selectedSceneId) && !sc?.audio_separated);
+      const sc = focusId ? S.scene(focusId) : null;
+      sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, focusId) && !sc?.audio_separated);
     }
     const rmSep = bar.querySelector("[data-remove-sep-audio]");
     if (rmSep) {
-      const sc = hasSel ? S.scene(st.selectedSceneId) : null;
+      const sc = focusId ? S.scene(focusId) : null;
       const sepTrack = sc && S.separatedTrackForScene ? S.separatedTrackForScene(sc.id) : null;
       rmSep.disabled = !sepTrack;
     }
@@ -1104,33 +1130,42 @@
     bar.append(addMenuDropdown(st, p));
 
     // Clip actions on the selected clip (also bound to S / Delete).
-    const selIds = selectedIds(st);
-    const hasSel = selIds.length > 0;
+    const { hasSel, focusId, saveable } = clipToolbarState(st);
     const split = el("button", "btn ghost tiny", "Split");
     split.dataset.needsSel = "1";
-    split.title = "Split the selected clip at the playhead (S)"; split.disabled = !hasSel;
+    split.title = hasSel ? "Split the selected clip at the playhead (S)" : "Select a clip first";
+    split.disabled = !hasSel;
     split.onclick = () => splitSelectedAtPlayhead();
     const del = el("button", "btn ghost tiny danger", "Remove");
     del.dataset.needsSel = "1";
-    del.title = "Remove selected clip(s) (Delete / Backspace)"; del.disabled = !hasSel;
+    del.title = hasSel ? "Remove selected clip(s) (Delete / Backspace)" : "Select a clip first";
+    del.disabled = !hasSel;
     del.onclick = () => S.removeSelectedScenes();
     const exp = el("button", "btn ghost tiny", "⤓ Export");
     exp.dataset.exportScene = "1";
-    exp.title = "Save the selected clip's rendered video to disk (renders are temporary)";
-    exp.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
+    exp.title = !hasSel
+      ? "Select a clip first"
+      : saveable
+        ? "Save the selected clip's rendered video to disk (renders are temporary)"
+        : "Generate the clip first, or select a video clip with media";
+    exp.disabled = !(hasSel && saveable);
     exp.onclick = () => S.exportSelected();
     const saveBin = el("button", "btn ghost tiny", "Save to media bin");
     saveBin.dataset.saveMediabin = "1";
-    saveBin.title = "Copy the selected clip into the Media bin — add it back as a plain video clip";
-    saveBin.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
+    saveBin.title = !hasSel
+      ? "Select a clip first"
+      : saveable
+        ? "Copy the selected clip into the Media bin — add it back as a plain video clip"
+        : "Generate the clip first, or select a video clip with media";
+    saveBin.disabled = !(hasSel && saveable);
     saveBin.onclick = () => S.saveSelectedToMediaBin();
     const sepAud = el("button", "btn ghost tiny", "⊟ Separate audio");
     sepAud.dataset.needsSel = "1";
     sepAud.dataset.separateAudio = "1";
     sepAud.title = "Detach this clip's audio onto its own track (video keeps picture only)";
-    const selSc = hasSel ? S.scene(st.selectedSceneId) : null;
-    sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
-    sepAud.onclick = () => S.separateSceneAudio(st.selectedSceneId);
+    const selSc = focusId ? S.scene(focusId) : null;
+    sepAud.disabled = !(selSc && hasRender(st, focusId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
+    sepAud.onclick = () => { if (focusId) S.separateSceneAudio(focusId); };
     const sepTrack = selSc && S.separatedTrackForScene ? S.separatedTrackForScene(selSc.id) : null;
     const rmSepAud = el("button", "btn ghost tiny danger", "Remove audio");
     rmSepAud.dataset.removeSepAudio = "1";

@@ -2178,10 +2178,23 @@
     return out;
   }
 
+  function _selectedClipFocusId() {
+    const ids = state.selectedSceneIds?.length
+      ? state.selectedSceneIds
+      : (state.selectedSceneId ? [state.selectedSceneId] : []);
+    if (!ids.length) return null;
+    if (state.selectedSceneId && ids.includes(state.selectedSceneId)) return state.selectedSceneId;
+    return ids[0];
+  }
+
+  function _hasTimelineClipSelection() {
+    return !!_selectedClipFocusId();
+  }
+
   // Build export/import clip spec for the selected scene (render trim or media-bin video).
   function _selectedClipExportSpec() {
     if (!state.project) return null;
-    const id = state.selectedSceneId;
+    const id = _selectedClipFocusId();
     if (!id) return null;
     const sc = scene(id);
     if (!sc) return null;
@@ -2222,10 +2235,12 @@
   // Export the render covering the selected clip via a Save dialog.
   async function exportSelected() {
     if (!state.project) return;
+    if (!_hasTimelineClipSelection()) { alert("Select a clip first."); return; }
     const spec = _selectedClipExportSpec();
-    if (!spec) { alert("Select a clip with a render to export."); return; }
-    const sc = scene(state.selectedSceneId);
-    if (isVideoClip(sc) && sc.source?.media_ref && !state.sceneRenders[state.selectedSceneId]?.media) {
+    if (!spec) { alert("Generate the clip first, or select a video clip with media."); return; }
+    const focusId = _selectedClipFocusId();
+    const sc = scene(focusId);
+    if (isVideoClip(sc) && sc.source?.media_ref && !state.sceneRenders[focusId]?.media) {
       const asset = (state.mediaBin || []).find((m) => m.id === sc.source.media_ref);
       const name = asset?.name || spec.name;
       await _saveBlobAs(API.mediaUrl(sc.source.media_ref), name.replace(/[^\w.-]+/g, "_"));
@@ -2241,9 +2256,10 @@
 
   async function saveSelectedToMediaBin() {
     if (!state.project) return;
+    if (!_hasTimelineClipSelection()) { alert("Select a clip first."); return; }
     const spec = _selectedClipExportSpec();
     if (!spec) {
-      alert("Nothing to save — generate the clip first, or select a video clip.");
+      alert("Generate the clip first, or select a video clip with media.");
       return;
     }
     try {
