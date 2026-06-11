@@ -654,7 +654,6 @@
 
   function addMenuDropdown(st, p) {
     const wrap = el("div", "tl-dd");
-    const hasSel = !!st.selectedSceneId;
     const btn = el("button", "btn ghost tiny", "＋ Add");
     btn.title = "Add clip, effect, transition, and more";
     const panel = el("div", "tl-dd-panel tl-add-panel");
@@ -670,8 +669,8 @@
     };
 
     addRow("Clip", "Append a new scene clip to the timeline", () => S.addScene());
-    addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st), !hasSel);
-    addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st), !hasSel);
+    addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st));
+    addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st));
     addRow("Text", "Coming soon", null, true);
     addRow("Image", "Coming soon", null, true);
     addRow("Audio", "Coming soon", null, true);
