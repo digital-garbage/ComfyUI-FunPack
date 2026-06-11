@@ -242,7 +242,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         graph["vhs"]["inputs"]["save_output"] = False
 
         # 2b. project-level widget overrides for the built-in FunPack nodes.
+        _me_scene_ratings = None
         for k, v in (params.get("studio_inputs") or {}).items():
+            if str(k).startswith("_"):
+                if k == "_movie_editor_scene_ratings":
+                    _me_scene_ratings = v
+                continue
             if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
                 graph["studio"]["inputs"][k] = v
 
@@ -263,6 +268,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # (first run after the user clicks "Reset Studio session"); explicit so it's never
         # left on from a previous run.
         _rf["reset_session"] = bool(params.get("reset_session"))
+        if _me_scene_ratings:
+            _rf["movie_editor_scene_ratings"] = _me_scene_ratings
         _ss["refiner"] = _rf
         graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss)
         for k, v in (params.get("sampler_inputs") or {}).items():

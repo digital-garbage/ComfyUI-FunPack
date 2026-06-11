@@ -507,6 +507,11 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-tc { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
 .tl-zlabel { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
 .tl-keys { font-family: var(--font-mono); font-size: 10px; letter-spacing: .5px; color: var(--faint); margin-right: 10px; opacity: .8; }
+.tl-notice { margin-left: 12px; font-size: 11px; color: var(--amber-2); display: inline-flex; align-items: center; gap: 6px; }
+.tl-notice-dismiss { border: none; background: transparent; color: var(--faint); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.tl-notice-dismiss:hover { color: var(--text); }
+.slot-picker-input { width: 100%; box-sizing: border-box; margin: 8px 0 12px; padding: 8px 10px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font-size: 13px; }
+.slot-picker-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .tl-rating { font-size: 12px; padding: 3px 6px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; color: var(--amber-2); max-width: 200px; }
 .tl-rating-block { display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--line); }
 .tl-render-prompt {
@@ -687,41 +692,51 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .trim-tip { position: absolute; bottom: 4px; right: 4px; background: var(--ink-0); border: 1px solid var(--amber);
   color: var(--amber); font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
 
-/* seam: rendered video transition + prompt transition */
+/* seam: compact card at each clip boundary (blend + split) */
 .seam {
-  position: absolute; top: 8px; bottom: 8px; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 5px; z-index: 5; pointer-events: none;
+  position: absolute; top: 50%; transform: translate(-50%, -50%);
+  z-index: 8; pointer-events: none; width: 118px;
 }
-.seam.has-vt { z-index: 6; }
-.vt-bridge {
-  pointer-events: auto; position: relative; min-height: 44px; height: calc(100% - 28px); max-height: 72px;
-  border-radius: 8px; border: 1.5px dashed color-mix(in srgb, var(--line) 80%, transparent);
-  background: repeating-linear-gradient(135deg, transparent, transparent 5px, #ffffff08 5px, #ffffff08 6px);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
-  padding: 4px 6px; box-sizing: border-box; cursor: ew-resize;
+.seam-marker {
+  position: absolute; left: 50%; top: 10%; bottom: 10%; width: 2px;
+  transform: translateX(-50%); background: var(--line-2); border-radius: 1px;
+  pointer-events: none; z-index: 0;
 }
-.vt-bridge.on { border-style: solid; box-shadow: 0 0 0 1px color-mix(in srgb, var(--teal) 25%, transparent); }
-.vt-bridge.vt-crossfade.on { border-color: var(--teal); background: linear-gradient(90deg, #0a1210, var(--teal-soft), #0a1210); }
-.vt-bridge.vt-fadeblack.on { border-color: #888; background: linear-gradient(90deg, #111, #333, #111); }
-.vt-bridge.vt-wipeleft.on { border-color: var(--amber); background: linear-gradient(90deg, transparent 40%, var(--amber-soft) 100%); }
-.vt-bridge.vt-wiperight.on { border-color: var(--amber); background: linear-gradient(270deg, transparent 40%, var(--amber-soft) 100%); }
-.seam.vt-crossfade .vt-bridge.on { border-color: var(--teal); }
-.seam.vt-fadeblack .vt-bridge.on { border-color: #999; }
-.seam.vt-wipeleft .vt-bridge.on, .seam.vt-wiperight .vt-bridge.on { border-color: var(--amber-2); }
-.vt-label { font-family: var(--font-mono); font-size: 9px; letter-spacing: .3px; color: var(--muted); white-space: nowrap; pointer-events: none; }
-.vt-bridge.on .vt-label { color: var(--teal-soft); }
-.seam.vt-fadeblack .vt-label { color: #bbb; }
-.seam.vt-wipeleft .vt-label, .seam.vt-wiperight .vt-label { color: var(--amber-2); }
-.vt-type { font-size: 10px; padding: 1px 4px; background: #000a; border: 1px solid var(--line); border-radius: 4px; max-width: 108px; cursor: default; }
-.vt-drag-handle {
-  position: absolute; right: -5px; top: 50%; transform: translateY(-50%);
-  width: 10px; height: 28px; border-radius: 4px; cursor: ew-resize;
-  border: 1px solid var(--line); background: var(--ink-1);
+.seam.has-vt .seam-marker { background: color-mix(in srgb, var(--teal) 45%, var(--line)); }
+.seam-card {
+  position: relative; z-index: 1; pointer-events: auto;
+  background: #161410; border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 3px 12px rgba(0,0,0,.55); overflow: hidden;
 }
-.vt-bridge.on .vt-drag-handle { border-color: var(--teal); background: color-mix(in srgb, var(--teal) 20%, var(--ink-1)); }
-.vt-bridge .trim-tip { bottom: auto; top: -22px; right: 50%; transform: translateX(50%); }
-.seam-prompt-row { pointer-events: auto; }
-.seam-prompt-type { font-size: 9px; padding: 2px 4px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; max-width: 110px; color: var(--faint); }
+.seam-row {
+  display: flex; align-items: center; gap: 5px; padding: 4px 6px; min-height: 26px;
+}
+.seam-row-blend { border-bottom: 1px solid var(--line-2); cursor: ew-resize; }
+.seam-row-lbl {
+  flex: 0 0 34px; font-family: var(--font-mono); font-size: 8px; letter-spacing: .45px;
+  text-transform: uppercase; color: var(--faint); line-height: 1;
+}
+.seam-blend-zone {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px;
+  border-radius: 5px; padding: 1px 2px;
+}
+.seam-blend-zone.on { background: color-mix(in srgb, var(--teal) 10%, transparent); }
+.seam-blend-zone.vt-crossfade.on { background: color-mix(in srgb, var(--teal) 14%, transparent); }
+.seam-blend-zone.vt-fadeblack.on { background: color-mix(in srgb, #888 12%, transparent); }
+.seam-blend-zone.vt-wipeleft.on, .seam-blend-zone.vt-wiperight.on {
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.seam-field {
+  flex: 1; min-width: 0; font-size: 10px; padding: 2px 4px;
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; color: var(--text);
+}
+.seam-blend-dur {
+  flex: 0 0 auto; font-family: var(--font-mono); font-size: 9px; color: var(--teal-soft);
+  padding: 0 2px;
+}
+.seam.has-vt.vt-fadeblack .seam-blend-dur { color: #bbb; }
+.seam.has-vt.vt-wipeleft .seam-blend-dur, .seam.has-vt.vt-wiperight .seam-blend-dur { color: var(--amber-2); }
+.seam-card .seam-tip { bottom: auto; top: -24px; left: 50%; right: auto; transform: translateX(-50%); }
 
 /* transition tail painted on the outgoing clip */
 .clip-vt-tail {
@@ -874,8 +889,7 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .timeline { animation-delay: .16s; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
 
-.seam-split-lbl { font-family: var(--font-mono); font-size: 9px; letter-spacing: .4px; text-transform: uppercase;
-  color: var(--faint); margin-right: 4px; white-space: nowrap; }
+.seam-split-lbl { display: none; }
 
 .clip-trim-left { left: 0; right: auto; cursor: ew-resize; }
 .clip-trim-left.locked { cursor: not-allowed; opacity: .35; }
@@ -902,4 +916,10 @@ label.field.linked input, label.field.linked select { opacity: .6; }
   padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--ink-0); color: var(--text); cursor: pointer; }
 .slot-picker-row:hover { border-color: var(--teal); }
 .slot-picker-hint { font-size: 10px; color: var(--teal); font-family: var(--font-mono); }
+.slot-picker-input {
+  width: 100%; box-sizing: border-box; margin: 12px 0;
+  padding: 8px 10px; font-size: 14px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--ink-0); color: var(--text);
+}
+.slot-picker-actions { display: flex; gap: 8px; justify-content: flex-end; }
 

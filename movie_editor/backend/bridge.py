@@ -6,23 +6,50 @@ output handling exactly.
 """
 from __future__ import annotations
 
+import importlib
+import sys
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from . import config
+
+_FUNPACK_ROOT = Path(__file__).resolve().parents[2]
+_FUNPACK_PATH_ENSURED = False
+
+
+def _ensure_funpack_path() -> None:
+    """ComfyUI adds the custom-node folder to sys.path, but unit tests and some load
+    orders do not. Never use relative `from ...conditioning` fallbacks - they mask the
+    real ImportError with 'attempted relative import beyond top-level package'."""
+    global _FUNPACK_PATH_ENSURED
+    if _FUNPACK_PATH_ENSURED:
+        return
+    root = str(_FUNPACK_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    _FUNPACK_PATH_ENSURED = True
+
+
+def format_funpack_error(exc: BaseException) -> str:
+    msg = str(exc).strip()
+    if msg:
+        return f"{type(exc).__name__}: {msg}"
+    return f"{type(exc).__name__} (no message)"
+
+
+def _funpack_attr(module: str, name: str):
+    _ensure_funpack_path()
+    return getattr(importlib.import_module(module), name)
 
 
 # ── In-process FunPack calls (no HTTP) ───────────────────────────────────────
 
 def _funpack_imports():
-    try:
-        from conditioning import parse_timeline_segments
-        from templates import apply_prompt_shortcuts, load_transition_db, transition_items
-    except ImportError:  # imported as a package submodule
-        from ...conditioning import parse_timeline_segments  # type: ignore
-        from ...templates import (  # type: ignore
-            apply_prompt_shortcuts, load_transition_db, transition_items,
-        )
+    parse_timeline_segments = _funpack_attr("conditioning", "parse_timeline_segments")
+    apply_prompt_shortcuts = _funpack_attr("templates", "apply_prompt_shortcuts")
+    load_transition_db = _funpack_attr("templates", "load_transition_db")
+    transition_items = _funpack_attr("templates", "transition_items")
     return parse_timeline_segments, apply_prompt_shortcuts, load_transition_db, transition_items
 
 
@@ -47,10 +74,12 @@ def parse_timeline_verbatim(prompt: str) -> dict:
     but no expansion and no dropped words (anchor + scenes reproduce the prompt). This is
     what the editor uses to map the global prompt onto the timeline."""
     try:
-        from conditioning import split_timeline_verbatim
-    except ImportError:  # package submodule
-        from ...conditioning import split_timeline_verbatim  # type: ignore
-    return split_timeline_verbatim(str(prompt or ""))
+        split_fn = _funpack_attr("conditioning", "split_timeline_verbatim")
+        return split_fn(str(prompt or ""))
+    except Exception:
+        # Fall back to the Studio-style raw split so Apply still works when verbatim
+        # mapping fails (bad shortcut regex, import edge case, etc.).
+        return parse_timeline_raw(prompt)
 
 
 def validate_generation_prompt(full, target) -> dict:
@@ -143,11 +172,8 @@ def recent_log(limit: int = 500) -> list:
 
 def rating_labels() -> dict:
     """FunPack Studio V2 rating labels (for the Scene rating dropdown)."""
-    try:
-        from conditioning import V2_RATING_LABELS
-    except ImportError:  # package submodule
-        from ...conditioning import V2_RATING_LABELS  # type: ignore
-    return {"labels": list(V2_RATING_LABELS)}
+    labels = _funpack_attr("conditioning", "V2_RATING_LABELS")
+    return {"labels": list(labels)}
 
 
 def transitions() -> dict:
@@ -158,18 +184,14 @@ def transitions() -> dict:
 
 def _library_fns():
     """FunPack shortcut/transition CRUD, in-process (no HTTP)."""
-    try:
-        from templates import (  # type: ignore
-            shortcut_items, save_shortcut_item, delete_shortcut_item,
-            transition_items, save_transition_item, delete_transition_item,
-        )
-    except ImportError:
-        from ...templates import (  # type: ignore
-            shortcut_items, save_shortcut_item, delete_shortcut_item,
-            transition_items, save_transition_item, delete_transition_item,
-        )
-    return (shortcut_items, save_shortcut_item, delete_shortcut_item,
-            transition_items, save_transition_item, delete_transition_item)
+    return (
+        _funpack_attr("templates", "shortcut_items"),
+        _funpack_attr("templates", "save_shortcut_item"),
+        _funpack_attr("templates", "delete_shortcut_item"),
+        _funpack_attr("templates", "transition_items"),
+        _funpack_attr("templates", "save_transition_item"),
+        _funpack_attr("templates", "delete_transition_item"),
+    )
 
 
 def shortcuts() -> dict:
@@ -202,22 +224,14 @@ def delete_transition(name: str) -> dict:
 
 
 def export_shortcuts() -> dict:
-    try:
-        from templates import load_shortcut_db  # type: ignore
-    except ImportError:
-        from ...templates import load_shortcut_db  # type: ignore
-    return load_shortcut_db()
+    return _funpack_attr("templates", "load_shortcut_db")()
 
 
 def import_shortcuts(incoming: dict) -> dict:
-    try:
-        from templates import (  # type: ignore
-            shortcut_items, load_shortcut_db, save_shortcut_db, normalize_shortcut_db,
-        )
-    except ImportError:
-        from ...templates import (  # type: ignore
-            shortcut_items, load_shortcut_db, save_shortcut_db, normalize_shortcut_db,
-        )
+    shortcut_items = _funpack_attr("templates", "shortcut_items")
+    load_shortcut_db = _funpack_attr("templates", "load_shortcut_db")
+    save_shortcut_db = _funpack_attr("templates", "save_shortcut_db")
+    normalize_shortcut_db = _funpack_attr("templates", "normalize_shortcut_db")
     imported = normalize_shortcut_db(incoming)
     data = load_shortcut_db()
     shortcuts = data.setdefault("shortcuts", {})
@@ -232,22 +246,14 @@ def import_shortcuts(incoming: dict) -> dict:
 
 
 def export_transitions() -> dict:
-    try:
-        from templates import load_transition_db  # type: ignore
-    except ImportError:
-        from ...templates import load_transition_db  # type: ignore
-    return load_transition_db()
+    return _funpack_attr("templates", "load_transition_db")()
 
 
 def import_transitions(incoming: dict) -> dict:
-    try:
-        from templates import (  # type: ignore
-            transition_items, load_transition_db, save_transition_db, normalize_transition_db,
-        )
-    except ImportError:
-        from ...templates import (  # type: ignore
-            transition_items, load_transition_db, save_transition_db, normalize_transition_db,
-        )
+    transition_items = _funpack_attr("templates", "transition_items")
+    load_transition_db = _funpack_attr("templates", "load_transition_db")
+    save_transition_db = _funpack_attr("templates", "save_transition_db")
+    normalize_transition_db = _funpack_attr("templates", "normalize_transition_db")
     imported = normalize_transition_db(incoming)
     data = load_transition_db()
     transitions = data.setdefault("transitions", {})

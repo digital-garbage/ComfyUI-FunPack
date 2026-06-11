@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
+from movie_editor.backend import bridge
 from movie_editor.backend.timeline import Project, Scene
-from movie_editor.server import _resolve_run_seed, _run_sampler_inputs, _run_studio_inputs, _shortcut_seed
+from movie_editor.server import _parse_has_scenes, _parse_prompt_variants, _resolve_run_seed, _run_sampler_inputs, _run_studio_inputs, _shortcut_seed
 
 CONTINUE = "__funpack_continue__"
 FRESH = "__funpack_fresh_prompt__"
@@ -28,6 +29,28 @@ def test_studio_inputs_user_rating():
     p = _project([], rating="Perfect")
     si = _run_studio_inputs(p, p.scenes)
     assert si["rating"] == "Perfect"
+
+
+def test_studio_inputs_multi_scene_ratings():
+    p = _project(scenes=[
+        {"id": "s1", "text": "a", "rating": "Perfect"},
+        {"id": "s2", "text": "b", "rating": "Missing action"},
+        {"id": "s3", "text": "c"},
+    ])
+    active = p.scenes
+    si = _run_studio_inputs(p, active)
+    assert si["rating"] == CONTINUE
+    assert si["_movie_editor_scene_ratings"] == [
+        {"index": 0, "rating": "Perfect"},
+        {"index": 1, "rating": "Missing action"},
+    ]
+
+
+def test_studio_inputs_single_scene_in_chain_keeps_global_rating():
+    p = _project(scenes=[{"id": "s1", "text": "a", "rating": "Nailed it"}])
+    si = _run_studio_inputs(p, p.scenes)
+    assert si["rating"] == "Nailed it"
+    assert "_movie_editor_scene_ratings" not in si
 
 
 def test_studio_inputs_continue_when_unrated():
@@ -120,3 +143,39 @@ def test_resolve_run_seed_random_when_unset():
     seeds = {_resolve_run_seed(p) for _ in range(8)}
     assert len(seeds) > 1
     assert all(1 <= s <= 0xFFFFFFFFFFFFFFFF for s in seeds)
+
+
+def test_parse_has_scenes():
+    assert _parse_has_scenes({"scenes": [{"text": "a"}]})
+    assert not _parse_has_scenes({"scenes": []})
+    assert not _parse_has_scenes(None)
+
+
+def test_parse_prompt_variants_partial_success(monkeypatch):
+    def ok(_prompt, seed=0):
+        return {"anchor": "", "scenes": [{"index": 0, "text": "a"}], "transitions": []}
+
+    def boom(_prompt):
+        raise RuntimeError("verbatim blew up")
+
+    monkeypatch.setattr(bridge, "parse_timeline", ok)
+    monkeypatch.setattr(bridge, "parse_timeline_raw", ok)
+    monkeypatch.setattr(bridge, "parse_timeline_verbatim", boom)
+
+    payload, errors = _parse_prompt_variants("scene one", seed=0)
+    assert _parse_has_scenes(payload["parsed_raw"])
+    assert errors == {"parsed_verbatim": "RuntimeError: verbatim blew up"}
+
+
+def test_parse_prompt_variants_all_fail(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise KeyError()
+
+    monkeypatch.setattr(bridge, "parse_timeline", boom)
+    monkeypatch.setattr(bridge, "parse_timeline_raw", boom)
+    monkeypatch.setattr(bridge, "parse_timeline_verbatim", boom)
+
+    payload, errors = _parse_prompt_variants("scene one", seed=0)
+    assert payload["parsed"] is None
+    assert len(errors) == 3
+    assert errors["parsed"] == "KeyError (no message)"

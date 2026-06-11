@@ -538,6 +538,7 @@ def load_custom_transition_triggers():
         placement = str(item.get("placement") or "global").strip().lower()
         result[trigger.lower()] = {
             "placement": placement if placement in ("start", "end", "silent") else None,
+            "visual_effect": str(item.get("visual_effect") or "none"),
         }
     return result
 

@@ -152,6 +152,42 @@ def _project_or_404(pid: str) -> Project:
     return p
 
 
+def _parse_has_scenes(parsed: Optional[dict]) -> bool:
+    return isinstance(parsed, dict) and bool(parsed.get("scenes"))
+
+
+def _parse_prompt_variants(prompt: str, seed: int) -> tuple[dict, dict]:
+    """Run Studio/raw/verbatim splits independently; never fail all because one path threw."""
+    parsed = parsed_raw = parsed_verbatim = None
+    errors: dict[str, str] = {}
+    for key, fn in (
+        ("parsed", lambda: bridge.parse_timeline(prompt, seed=seed)),
+        ("parsed_raw", lambda: bridge.parse_timeline_raw(prompt)),
+        ("parsed_verbatim", lambda: bridge.parse_timeline_verbatim(prompt)),
+    ):
+        try:
+            value = fn()
+        except Exception as exc:  # noqa: BLE001
+            errors[key] = bridge.format_funpack_error(exc)
+            continue
+        if key == "parsed":
+            parsed = value
+        elif key == "parsed_raw":
+            parsed_raw = value
+        else:
+            parsed_verbatim = value
+    return (
+        {
+            "parsed": parsed,
+            "parsed_raw": parsed_raw,
+            "parsed_verbatim": parsed_verbatim,
+            "combined_prompt": prompt,
+            **({"parse_errors": errors} if errors else {}),
+        },
+        errors,
+    )
+
+
 def _project_models(p: Optional[Project]) -> dict:
     """The project's own pipeline config, or the global default when it has none yet."""
     m = getattr(p, "models", None) or {}
@@ -173,7 +209,12 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
 
 def _run_studio_inputs(target: Project, active_scenes: list, *, prompt_changed: bool = False) -> dict:
     """Studio widget overrides for this run, incl. the RLHF rating of the run's last
-    render (Studio refines from it). Uses the first user-rated scene in the run.
+    render (Studio refines from it).
+
+    Single-scene runs: one scene rating maps to the Studio rating widget (same as before).
+    Multi-scene chain runs: per-scene ratings are passed in studio_settings.refiner
+    (movie_editor_scene_ratings); the top-level rating is continue/fresh so global learning
+    does not collapse multiple scene ratings into one.
 
     When no scene was rated: send MOVIE_EDITOR_CONTINUE_RATING so Studio still applies
     session memory / active repairs but does not treat the run as '-Just forget it-'.
@@ -183,27 +224,35 @@ def _run_studio_inputs(target: Project, active_scenes: list, *, prompt_changed: 
     if target.conditioning_slot != "funpack":
         return {}
     si = dict(target.studio_inputs or {})
-    rating = next((s.rating for s in active_scenes if (getattr(s, "rating", "") or "").strip()), None)
-    if rating:
-        si["rating"] = rating
-    else:
+    try:
+        from conditioning import (
+            MOVIE_EDITOR_CONTINUE_RATING,
+            MOVIE_EDITOR_FRESH_PROMPT_RATING,
+        )
+    except ImportError:
         try:
-            from conditioning import (
+            from ..conditioning import (  # type: ignore
                 MOVIE_EDITOR_CONTINUE_RATING,
                 MOVIE_EDITOR_FRESH_PROMPT_RATING,
             )
         except ImportError:
-            try:
-                from ..conditioning import (  # type: ignore
-                    MOVIE_EDITOR_CONTINUE_RATING,
-                    MOVIE_EDITOR_FRESH_PROMPT_RATING,
-                )
-            except ImportError:
-                MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
-                MOVIE_EDITOR_FRESH_PROMPT_RATING = "__funpack_fresh_prompt__"
-        si["rating"] = (
-            MOVIE_EDITOR_FRESH_PROMPT_RATING if prompt_changed else MOVIE_EDITOR_CONTINUE_RATING
-        )
+            MOVIE_EDITOR_CONTINUE_RATING = "__funpack_continue__"
+            MOVIE_EDITOR_FRESH_PROMPT_RATING = "__funpack_fresh_prompt__"
+    default_rating = (
+        MOVIE_EDITOR_FRESH_PROMPT_RATING if prompt_changed else MOVIE_EDITOR_CONTINUE_RATING
+    )
+    scene_ratings = []
+    for i, sc in enumerate(active_scenes):
+        label = (getattr(sc, "rating", "") or "").strip()
+        if label:
+            scene_ratings.append({"index": i, "rating": label})
+    if len(active_scenes) > 1 and scene_ratings:
+        si["rating"] = default_rating
+        si["_movie_editor_scene_ratings"] = scene_ratings
+    elif scene_ratings:
+        si["rating"] = scene_ratings[0]["rating"]
+    else:
+        si["rating"] = default_rating
     return si
 
 
@@ -591,16 +640,12 @@ if web is not None and PromptServer is not None:
         p = _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
         prompt = str(body.get("prompt", ""))
-        try:
-            parsed = bridge.parse_timeline(prompt, seed=_shortcut_seed(p))
-            return web.json_response({
-                "parsed": parsed,
-                "parsed_raw": bridge.parse_timeline_raw(prompt),
-                "parsed_verbatim": bridge.parse_timeline_verbatim(prompt),
-                "combined_prompt": prompt,
-            })
-        except Exception as e:  # noqa: BLE001
-            return web.json_response({"detail": f"Parse failed: {e}"}, status=502)
+        payload, errors = _parse_prompt_variants(prompt, _shortcut_seed(p))
+        usable = any(_parse_has_scenes(payload.get(k)) for k in ("parsed", "parsed_raw", "parsed_verbatim"))
+        if errors and not usable:
+            detail = "; ".join(errors.values())
+            return web.json_response({"detail": detail, "parse_errors": errors}, status=502)
+        return web.json_response(payload)
 
     # --- API: library (shortcuts + transitions, FunPack in-process) ---
     @routes.get(UI_PREFIX + "/api/library/transitions")
@@ -972,6 +1017,56 @@ if web is not None and PromptServer is not None:
         return web.json_response({
             "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
             "clips": n,
+        })
+
+    # --- API: export one clip (ffmpeg trim from a chain output using in/dur) ---
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/export-clip")
+    async def _export_clip(req):
+        _project_or_404(req.match_info["pid"])
+        body = await req.json() if req.can_read_body else {}
+        clip = body.get("clip") or {}
+        filename = clip.get("filename", "")
+        if not filename:
+            return web.json_response({"detail": "Missing clip filename."}, status=400)
+        import os
+        import shutil
+        import subprocess
+        import time as _time
+        ff = shutil.which("ffmpeg")
+        if not ff:
+            return web.json_response({"detail": "ffmpeg not found on PATH — install it to export clips."}, status=503)
+        try:
+            import folder_paths
+            outdir = folder_paths.get_output_directory()
+            tempdir = folder_paths.get_temp_directory()
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Output directory unavailable: {e}"}, status=500)
+
+        base = outdir if clip.get("type", "output") == "output" else tempdir
+        src_path = os.path.join(base, clip.get("subfolder", ""), filename)
+        if not os.path.isfile(src_path):
+            return web.json_response({"detail": "Source clip file not found on disk — regenerate then export."}, status=400)
+
+        inn, dur = clip.get("in"), clip.get("dur")
+        out_name = f"funpack_export_{int(_time.time())}.mp4"
+        out_path = os.path.join(tempdir, out_name)
+        cmd = [ff, "-y"]
+        if inn is not None:
+            cmd += ["-ss", f"{float(inn):.3f}"]
+        if dur is not None:
+            cmd += ["-t", f"{float(dur):.3f}"]
+        cmd += [
+            "-i", src_path,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart", out_path,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            tail = (proc.stderr or "")[-1000:]
+            return web.json_response({"detail": f"ffmpeg export failed: {tail}"}, status=500)
+        return web.json_response({
+            "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
         })
 
     # --- API: models / pluggable node slots ---

@@ -189,3 +189,25 @@ def test_extract_widgets_handles_control_and_links():
     # dict widget store (VHS) drops non-input keys
     d = builder.extract_widgets(OI["VHS_VideoCombine"], {"frame_rate": 30, "videopreview": {"x": 1}})
     assert d == {"frame_rate": 30}
+
+
+def test_movie_editor_scene_ratings_in_studio_settings():
+    import json
+    params = {
+        **PARAMS,
+        "studio_inputs": {
+            "rating": "__funpack_continue__",
+            "_movie_editor_scene_ratings": [
+                {"index": 0, "rating": "Perfect"},
+                {"index": 2, "rating": "Missing action"},
+            ],
+        },
+    }
+    graph, _report = builder.build(OI, {"slots": []}, params)
+    settings = json.loads(graph["studio"]["inputs"]["studio_settings"])
+    assert settings["refiner"]["split_by_transitions"] is True
+    assert settings["refiner"]["movie_editor_scene_ratings"] == [
+        {"index": 0, "rating": "Perfect"},
+        {"index": 2, "rating": "Missing action"},
+    ]
+    assert "_movie_editor_scene_ratings" not in graph["studio"]["inputs"]

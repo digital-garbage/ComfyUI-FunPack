@@ -77,6 +77,23 @@
     return lay.map(({ o }) => o * pxPerSec);
   }
 
+  function timelineSnapAnchorsPx(st, p) {
+    const segs = S.buildPreviewSegments ? S.buildPreviewSegments() : [];
+    const anchors = segs.map((s) => s.offsetSec * pxPerSec);
+    const endSec = segs.length ? segs[segs.length - 1].offsetSec + segs[segs.length - 1].durationSec : 0;
+    anchors.push(endSec * pxPerSec);
+    anchors.push((window.Player?.getPlayhead() ?? 0) * pxPerSec);
+    for (let sec = 0; sec <= Math.ceil(endSec); sec++) anchors.push(sec * pxPerSec);
+    return anchors;
+  }
+
+  function coalescedDrag(startEvt, onMove, onUp) {
+    window.EditorHistory?.beginCoalesce(S);
+    onDrag(startEvt, onMove, (dx) => {
+      try { if (onUp) onUp(dx); } finally { window.EditorHistory?.endCoalesce(S); }
+    });
+  }
+
   function appendFilmstrip(clip, st, scene, widthPx) {
     if (!hasRender(st, scene.id)) return;
     if (clip.querySelector(".clip-filmstrip")) return;
@@ -231,23 +248,23 @@
     }
   }
 
-  function syncVtVisual(seam, bridge, type, frames) {
+  function syncVtVisual(seam, blendZone, type, frames) {
     const on = frames > 0 && !!type;
-    bridge.classList.toggle("on", on);
+    blendZone.classList.toggle("on", on);
     seam.classList.toggle("has-vt", on);
     ["crossfade", "fadeblack", "wipeleft", "wiperight"].forEach((t) => {
       seam.classList.remove("vt-" + t);
-      bridge.classList.remove("vt-" + t);
+      blendZone.classList.remove("vt-" + t);
     });
     if (on) {
       seam.classList.add("vt-" + type);
-      bridge.classList.add("vt-" + type);
+      blendZone.classList.add("vt-" + type);
     }
   }
 
-  // Prompt transition (Studio split marker) — separate from rendered video transition.
+  // Prompt transition (Studio split marker) - separate from rendered video transition.
   function promptTransitionSelect(value, onChange) {
-    const sel = el("select", "seam-prompt-type");
+    const sel = el("select", "seam-field seam-prompt-type");
     const none = el("option", null, "default cut"); none.value = ""; sel.append(none);
     (S.get().transitions || []).forEach((t) => {
       const name = t.trigger || t.name || t.key; if (!name) return;
@@ -331,7 +348,7 @@
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
     clip.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim, .seam-prompt-row, select, button")) return;
+      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim, .seam, select, button")) return;
       const startX = e.clientX;
       let dragging = false, drop = null;
       const track = clip.parentNode;
@@ -340,10 +357,14 @@
         if (!dragging) {
           if (Math.abs(dx) < REORDER_PX) return;
           dragging = true; clip.classList.add("reordering"); document.body.classList.add("tl-reordering");
-          _reordering = true;  // hard-block store-driven rebuilds while dragging
+          _reordering = true;
+          window.EditorHistory?.beginCoalesce(S);
         }
         clip.style.transform = `translateX(${dx}px)`;
         drop = _dropTarget(track, clip, ev.clientX);
+        const stNow = S.get();
+        const pNow = stNow.project;
+        if (pNow) drop.x = snapPx(drop.x, timelineSnapAnchorsPx(stNow, pNow), 10);
         let line = track.querySelector(".tl-dropline");
         if (!line) { line = el("div", "tl-dropline"); track.append(line); }
         line.style.left = drop.x + "px";
@@ -354,20 +375,17 @@
         document.body.classList.remove("tl-reordering");
         const line = track.querySelector(".tl-dropline"); if (line) line.remove();
         const dx = ev.clientX - startX;
-        if (dragging && Math.abs(dx) < REORDER_PX) {
-          dragging = false;
-          clip.style.transform = "";
-          clip.classList.remove("reordering");
-          _reordering = false;
+        if (!dragging) return;
+        clip.style.transform = ""; clip.classList.remove("reordering");
+        _reordering = false;
+        if (Math.abs(dx) < REORDER_PX) {
+          window.EditorHistory?.endCoalesce(S);
+          return;
         }
-        if (dragging) {
-          ev.preventDefault();
-          clip.style.transform = ""; clip.classList.remove("reordering");
-          _reordering = false;
-          if (drop) S.moveSceneTo(scene.id, drop.idx);
-          // swallow the click that fires right after the drag so it doesn't re-select
-          track.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
-        }
+        ev.preventDefault();
+        if (drop) S.moveSceneTo(scene.id, drop.idx);
+        window.EditorHistory?.endCoalesce(S);
+        track.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
       };
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
@@ -489,9 +507,11 @@
         e.stopPropagation();
         clip.classList.add("trimming");
         const tip = el("div", "trim-tip"); clip.append(tip);
+        const anchors = timelineSnapAnchorsPx(st, p);
         let finalDelta = 0;
-        onDrag(e, (dx) => {
-          finalDelta = dx / pxPerSec;
+        coalescedDrag(e, (dx) => {
+          const snappedLeft = snapPx(leftPx + dx, anchors, 10);
+          finalDelta = (snappedLeft - leftPx) / pxPerSec;
           tip.textContent = e.altKey && hasRender(st, scene.id)
             ? `slip ${finalDelta >= 0 ? "+" : ""}${finalDelta.toFixed(2)}s`
             : `trim ${(-finalDelta).toFixed(2)}s`;
@@ -516,9 +536,11 @@
     handle.addEventListener("mousedown", (e) => {
       clip.classList.add("trimming");
       const tip = el("div", "trim-tip"); clip.append(tip);
+      const anchors = timelineSnapAnchorsPx(st, p);
       let finalDur = baseDur;
-      onDrag(e, (dx) => {
-        finalDur = Math.max(0.1, baseDur + dx / pxPerSec);
+      coalescedDrag(e, (dx) => {
+        const rightPx = snapPx(leftPx + baseDur * pxPerSec + dx, anchors, 10);
+        finalDur = Math.max(0.1, (rightPx - leftPx) / pxPerSec);
         const w = finalDur * pxPerSec;
         clip.style.width = Math.max(w, 8) + "px";
         const fps = sFps(scene, p);
@@ -539,57 +561,55 @@
     const fps = vt.fps;
     const seam = el("div", "seam" + (vt.active ? " has-vt vt-" + vt.type : ""));
     seam.style.left = seamPx + "px";
+    seam.append(el("div", "seam-marker"));
 
-    const bridge = el("div", "vt-bridge" + (vt.active ? " on vt-" + vt.type : ""));
-    const wPx = Math.max(18, (vt.active ? vt.sec : 0.35) * pxPerSec);
-    bridge.style.width = wPx + "px";
-    bridge.style.marginLeft = (-wPx / 2) + "px";
+    const card = el("div", "seam-card");
 
-    const label = el("div", "vt-label");
-    const syncLabel = (type, frames) => {
-      if (!type || !frames) label.textContent = "drag → add dissolve";
-      else label.textContent = `${VT_SHORT[type] || type} · ${frames}f · ${(frames / fps).toFixed(2)}s`;
-    };
-    syncLabel(vt.type, vt.frames);
-    bridge.append(label);
+    const blendRow = el("div", "seam-row seam-row-blend");
+    blendRow.append(el("span", "seam-row-lbl", "Blend"));
+    const blendZone = el("div", "seam-blend-zone" + (vt.active ? " on vt-" + vt.type : ""));
 
-    const typeSel = el("select", "vt-type");
+    const typeSel = el("select", "vt-type seam-field");
     VT_TYPES.forEach(([v, lbl]) => {
       const o = el("option", null, lbl); o.value = v;
       if (v === (vt.type || "")) o.selected = true;
       typeSel.append(o);
     });
-    typeSel.title = "Video blend at this seam (pixel dissolve — separate from generation split markers above)";
+    typeSel.title = "Video blend at this seam (pixel dissolve - separate from Split below)";
     typeSel.onclick = (e) => e.stopPropagation();
     typeSel.onchange = (e) => {
       e.stopPropagation();
       const next = typeSel.value;
       applyVideoTransition(scene.id, next, next ? (vt.frames || 16) : 0);
     };
-    bridge.append(typeSel);
 
-    const handle = el("div", "vt-drag-handle");
-    handle.title = "Drag to set transition length (frames)";
-    bridge.title = "Drag to set transition length (frames)";
-    bridge.addEventListener("mousedown", (e) => {
+    const durBadge = el("span", "seam-blend-dur");
+    const syncDur = (type, frames) => {
+      const show = !!(type && frames);
+      durBadge.textContent = show ? `${frames}f` : "";
+      durBadge.hidden = !show;
+    };
+    syncDur(vt.type, vt.frames);
+    blendZone.append(typeSel, durBadge);
+    blendRow.append(blendZone);
+
+    blendZone.title = "Drag horizontally to set blend length (frames)";
+    blendZone.addEventListener("mousedown", (e) => {
       if (e.target.closest("select")) return;
       e.stopPropagation();
       _seamDragging = true;
       const baseType = vt.type || "crossfade";
       const baseFrames = vt.frames || 0;
       const basePx = (baseFrames > 0 ? baseFrames / fps : 0.35) * pxPerSec;
-      const tip = el("div", "trim-tip"); bridge.append(tip);
+      const tip = el("div", "trim-tip seam-tip"); card.append(tip);
       let type = baseType;
       let frames = baseFrames;
-      onDrag(e, (dx) => {
+      coalescedDrag(e, (dx) => {
         const sec = Math.max(0, (basePx + dx) / pxPerSec);
         frames = Math.min(120, Math.round(sec * fps));
         if (frames > 0 && !type) type = "crossfade";
-        const nextW = Math.max(18, (frames > 0 ? frames / fps : 0.35) * pxPerSec);
-        bridge.style.width = nextW + "px";
-        bridge.style.marginLeft = (-nextW / 2) + "px";
-        syncVtVisual(seam, bridge, frames > 0 ? type : "", frames);
-        syncLabel(frames > 0 ? type : "", frames);
+        syncVtVisual(seam, blendZone, frames > 0 ? type : "", frames);
+        syncDur(frames > 0 ? type : "", frames);
         tip.textContent = frames > 0 ? `${(frames / fps).toFixed(2)}s · ${frames}f` : "release to clear";
       }, () => {
         tip.remove();
@@ -597,14 +617,15 @@
         applyVideoTransition(scene.id, frames > 0 ? (type || "crossfade") : "", frames);
       });
     });
-    bridge.append(handle);
-    seam.append(bridge);
+    card.append(blendRow);
 
-    const promptRow = el("div", "seam-prompt-row");
-    promptRow.title = "Generation split marker (prompt) — how Studio divides scenes in a long montage";
-    promptRow.append(el("span", "seam-split-lbl", "Split"));
-    promptRow.append(promptTransitionSelect(scene.transition_to_next || "", (v) => S.patchScene(scene.id, { transition_to_next: v })));
-    seam.append(promptRow);
+    const splitRow = el("div", "seam-row seam-row-split");
+    splitRow.title = "Generation split marker - how Studio divides scenes in a long montage";
+    splitRow.append(el("span", "seam-row-lbl", "Split"));
+    splitRow.append(promptTransitionSelect(scene.transition_to_next || "", (v) => S.patchScene(scene.id, { transition_to_next: v })));
+    card.append(splitRow);
+
+    seam.append(card);
     return seam;
   }
 
@@ -779,8 +800,9 @@
       if (e.target.closest("input,button,select")) return;
       e.stopPropagation();
       const baseLeft = startSec * pxPerSec;
-      onDrag(e, (dx) => {
-        const snapped = snapPx(baseLeft + dx, seamAnchorsPx([]), 10);
+      const anchors = timelineSnapAnchorsPx(st, p);
+      coalescedDrag(e, (dx) => {
+        const snapped = snapPx(baseLeft + dx, anchors, 10);
         const sec = Math.max(0, snapped / pxPerSec);
         block.style.left = (sec * pxPerSec) + "px";
         startIn.value = sec.toFixed(1);
@@ -863,15 +885,16 @@
     bar.append(tc);
 
     // Clip actions on the selected clip (also bound to S / Delete).
-    const hasSel = !!st.selectedSceneId;
+    const selIds = selectedIds(st);
+    const hasSel = selIds.length > 0;
     const split = el("button", "btn ghost tiny", "⧅ Split");
     split.dataset.needsSel = "1";
     split.title = "Split the selected clip at the playhead (S)"; split.disabled = !hasSel;
     split.onclick = () => splitSelectedAtPlayhead();
     const del = el("button", "btn ghost tiny danger", "✕ Remove");
     del.dataset.needsSel = "1";
-    del.title = "Remove the selected clip (Delete / Backspace)"; del.disabled = !hasSel;
-    del.onclick = () => { if (st.selectedSceneId) S.removeScene(st.selectedSceneId); };
+    del.title = "Remove selected clip(s) (Delete / Backspace)"; del.disabled = !hasSel;
+    del.onclick = () => S.removeSelectedScenes();
     const exp = el("button", "btn ghost tiny", "⤓ Export");
     exp.dataset.exportScene = "1";
     exp.title = "Save the selected clip's rendered video to disk (renders are temporary)";
@@ -983,7 +1006,7 @@
     track.addEventListener("click", (e) => {
       const clip = e.target.closest(".clip:not(.ghost)[data-scene-id]");
       if (!clip) return;
-      if (e.target.closest(".clip-actions, .clip-trim, .seam-prompt-row, select, button")) return;
+      if (e.target.closest(".clip-actions, .clip-trim, .seam, select, button")) return;
       onClipSelect(e, clip.dataset.sceneId);
     });
     lay.forEach(({ seg, o, d }) => {
@@ -1012,6 +1035,14 @@
     const selN = S.selectedSceneCount ? S.selectedSceneCount() : selectedIds(st).length;
     const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + (selN > 1 ? ` · ${selN} selected` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
     meta.append(el("span", null, metaTxt));
+    if (st.notice) {
+      const note = el("span", "tl-notice", st.notice);
+      const dismiss = el("button", "tl-notice-dismiss", "✕");
+      dismiss.title = "Dismiss";
+      dismiss.onclick = () => S.clearNotice();
+      note.append(dismiss);
+      meta.append(note);
+    }
     return true;
   }
 
@@ -1103,7 +1134,10 @@
       return;
     }
     if (e.key === "s" || e.key === "S") { e.preventDefault(); splitSelectedAtPlayhead(); }
-    else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); S.removeScene(st.selectedSceneId); }
+    else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      if (selectedIds(st).length) S.removeSelectedScenes();
+    }
   });
 
   // Update only the playhead needle + timecode during video playback.

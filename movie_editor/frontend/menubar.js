@@ -38,6 +38,19 @@
     setTimeout(tick, 3500);  // give it a moment to actually go down first
   }
 
+  function promptNewProject() {
+    if (window.SlotPicker?.openPrompt) {
+      window.SlotPicker.openPrompt({
+        title: "New project",
+        value: "Untitled montage",
+        placeholder: "Project name",
+        onPick: (name) => S.newProject(name),
+      });
+      return;
+    }
+    S.newProject(prompt("Project name:", "Untitled montage"));
+  }
+
   function menuSpec() {
     const st = S.get();
     const recent = (st.projects || []).slice(0, 8).map((p) => ({
@@ -45,7 +58,7 @@
     }));
     return {
       File: [
-        { label: "New Project", hint: "⌘N", action: () => S.newProject(prompt("Project name:", "Untitled montage")) },
+        { label: "New Project", hint: "⌘N", action: promptNewProject },
         { sep: true },
         { menulabel: "Open recent" },
         ...(recent.length ? recent : [{ label: "No projects", disabled: true }]),
@@ -62,7 +75,7 @@
         { label: "Redo", hint: "⇧⌘Z", disabled: !window.EditorHistory?.canRedo(), action: () => S.redo() },
         { sep: true },
         { label: "Add Scene", hint: "+", disabled: !hasProject(), action: () => S.addScene() },
-        { label: "Delete Scene", disabled: !sel(), action: () => S.removeScene(sel()) },
+        { label: "Delete Scene", disabled: !(st.selectedSceneIds?.length || st.selectedSceneId), action: () => S.removeSelectedScenes() },
         { sep: true },
         { label: "Move Scene Left", disabled: !sel(), action: () => S.moveScene(sel(), -1) },
         { label: "Move Scene Right", disabled: !sel(), action: () => S.moveScene(sel(), 1) },
@@ -181,6 +194,11 @@
     if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
     const t = document.activeElement;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.key === "n" || e.key === "N") {
+      e.preventDefault();
+      promptNewProject();
+      return;
+    }
     if (e.key === "z" || e.key === "Z") {
       e.preventDefault();
       if (e.shiftKey) S.redo(); else S.undo();

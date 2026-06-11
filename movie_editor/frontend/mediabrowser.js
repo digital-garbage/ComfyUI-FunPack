@@ -148,7 +148,18 @@
     const head = el("div", "mb-section-title");
     head.append(el("span", null, "Projects"));
     const add = el("button", "btn ghost tiny", "＋ New");
-    add.onclick = () => S.newProject(prompt("Project name:", "Untitled montage"));
+    add.onclick = () => {
+      if (window.SlotPicker?.openPrompt) {
+        window.SlotPicker.openPrompt({
+          title: "New project",
+          value: "Untitled montage",
+          placeholder: "Project name",
+          onPick: (name) => S.newProject(name),
+        });
+      } else {
+        S.newProject(prompt("Project name:", "Untitled montage"));
+      }
+    };
     head.append(add);
     sec.append(head);
     (st.projects || []).forEach((p) => {

@@ -4,6 +4,8 @@
   let undoStack = [];
   let redoStack = [];
   let applying = false;
+  let coalesceDepth = 0;
+  let coalesceSnapshot = null;
 
   function snap(store) {
     const st = store.get();
@@ -34,11 +36,33 @@
 
   function record(store) {
     if (applying || !store.get().project) return;
+    if (coalesceDepth > 0) return;
     undoStack.push(snap(store));
     if (undoStack.length > MAX) undoStack.shift();
     redoStack = [];
     store.notifyHistoryState();
   }
+
+  function beginCoalesce(store) {
+    if (applying || !store.get().project) return;
+    if (coalesceDepth === 0) coalesceSnapshot = snap(store);
+    coalesceDepth++;
+  }
+
+  function endCoalesce(store) {
+    if (coalesceDepth <= 0) return;
+    coalesceDepth--;
+    if (coalesceDepth === 0 && coalesceSnapshot) {
+      undoStack.push(coalesceSnapshot);
+      if (undoStack.length > MAX) undoStack.shift();
+      redoStack = [];
+      coalesceSnapshot = null;
+      store.notifyHistoryState();
+      store.scheduleSaveFromHistory?.();
+    }
+  }
+
+  function isCoalescing() { return coalesceDepth > 0; }
 
   function undo(store) {
     if (!undoStack.length) return;
@@ -58,7 +82,7 @@
   }
 
   window.EditorHistory = {
-    record, undo, redo, clear,
+    record, undo, redo, clear, beginCoalesce, endCoalesce, isCoalescing,
     canUndo: () => undoStack.length > 0,
     canRedo: () => redoStack.length > 0,
     isApplying: () => applying,

@@ -20,6 +20,7 @@
     // Removed scenes that still had a render: shown as timeline/preview ghosts until the
     // neighboring run is regenerated (preview-only; not included in generation/export).
     sceneGhosts: [],
+    notice: "",
     saving: false,
     unsaved: false,
     models: { slots: [] },   // pluggable node config (shared with Models modal)
@@ -51,6 +52,7 @@
   }
 
   function _historyRecord() {
+    if (window.EditorHistory?.isCoalescing()) return;
     if (window.EditorHistory && !window.EditorHistory.isApplying()) window.EditorHistory.record(window.Store);
   }
 
@@ -143,8 +145,47 @@
     if (!quiet) notify();
   }
 
+  async function _validateSceneRenders() {
+    if (!state.project) return;
+    const renders = state.sceneRenders || {};
+    const ids = Object.keys(renders);
+    if (!ids.length) return;
+    let missing = 0;
+    await Promise.all(ids.map(async (id) => {
+      const r = renders[id];
+      if (!r?.media?.filename) {
+        delete state.sceneRenders[id];
+        missing++;
+        return;
+      }
+      try {
+        const res = await fetch(API.resultUrl(state.project.id, r.media), { method: "HEAD" });
+        if (!res.ok) {
+          delete state.sceneRenders[id];
+          missing++;
+        }
+      } catch (_) {
+        delete state.sceneRenders[id];
+        missing++;
+      }
+    }));
+    if (missing) {
+      state.notice = `${missing} saved render${missing > 1 ? "s" : ""} missing after restart - regenerate those clips.`;
+      _syncEditorStateToProject();
+      scheduleSave();
+      notify();
+    }
+  }
+
+  function clearNotice() {
+    if (!state.notice) return;
+    state.notice = "";
+    notify();
+  }
+
   async function loadProject(id) {
     state.project = await API.getProject(id);
+    state.notice = "";
     const first = state.project.scenes[0]?.id || null;
     state.selectedSceneId = first;
     state.selectedSceneIds = first ? [first] : [];
@@ -158,6 +199,7 @@
     notify();
     refreshPreview();
     loadModels();
+    _validateSceneRenders();
   }
 
   async function newProject(name) {
@@ -499,9 +541,8 @@
     notify(); scheduleSave(); // server assigns id; reselect after commit
   }
 
-  function removeScene(id) {
+  function _removeSceneNoHistory(id) {
     if (!state.project) return;
-    _historyRecord();
     const arr = state.project.scenes;
     const idx = arr.findIndex((s) => s.id === id);
     if (idx < 0) return;
@@ -555,6 +596,28 @@
     if (state.selectedSceneId === id)
       state.selectedSceneId = state.selectedSceneIds[0] || state.project.scenes[0]?.id || null;
     if (_selectionAnchorId === id) _selectionAnchorId = state.selectedSceneId;
+  }
+
+  function removeScene(id) {
+    if (!state.project) return;
+    _historyRecord();
+    _removeSceneNoHistory(id);
+    window.Timeline?.requestAutoFit?.();
+    notify(); scheduleSave();
+  }
+
+  function removeSelectedScenes() {
+    if (!state.project) return;
+    let ids = [...new Set(state.selectedSceneIds || [])].filter((sid) => scene(sid));
+    if (!ids.length && state.selectedSceneId) ids = [state.selectedSceneId];
+    if (!ids.length) return;
+    if (ids.length > 1 && !confirm(`Remove ${ids.length} selected clips?`)) return;
+    if (ids.length === 1) { removeScene(ids[0]); return; }
+    _historyRecord();
+    ids.map((id) => ({ id, idx: state.project.scenes.findIndex((s) => s.id === id) }))
+      .filter((x) => x.idx >= 0)
+      .sort((a, b) => b.idx - a.idx)
+      .forEach(({ id }) => _removeSceneNoHistory(id));
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave();
   }
@@ -869,7 +932,11 @@
     state.project.global_prompt = text;
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
-    catch (e) { alert("Could not parse the global prompt: " + e.message); return false; }
+    catch (e) {
+      const msg = (e && (e.message || String(e))).trim() || "Unknown error";
+      alert("Could not parse the global prompt: " + msg);
+      return false;
+    }
     // The verbatim split is authoritative: correct (shortcut-aware) boundaries, scene
     // text kept exactly as typed, anchor + scenes reproduce the global prompt.
     const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
@@ -1415,11 +1482,25 @@
     if (!state.project) return;
     const id = state.selectedSceneId;
     if (!id) { alert("Select a clip to export."); return; }
+    const sc = scene(id);
     const r = state.sceneRenders[id];
     if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
     const idx = state.project.scenes.findIndex((s) => s.id === id);
     const proj = (state.project.name || "montage").replace(/[^\w.-]+/g, "_");
-    await _saveBlobAs(API.resultUrl(state.project.id, r.media), `${proj}_scene${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`);
+    const inSec = (r.inSec || 0) + (sc?.source_in || 0);
+    const dur = sc?.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
+    try {
+      const out = await API.exportClip(state.project.id, {
+        filename: r.media.filename,
+        subfolder: r.media.subfolder || "",
+        type: r.media.type || "output",
+        in: +inSec.toFixed(3),
+        dur: +dur.toFixed(3),
+      });
+      await _saveBlobAs(API.resultUrl(state.project.id, out.media), `${proj}_scene${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`);
+    } catch (e) {
+      alert("Export failed: " + (e.message || e));
+    }
   }
 
   // Stitch the kept clips (in/out per clip, hard cut, video + audio) into one final file.
@@ -1427,6 +1508,9 @@
     if (!state.project) return;
     const rc = _renderClips();
     if (!rc.length) { alert("No generated clips to stitch yet — generate first."); return; }
+    if (!confirm(
+      `Stitch ${rc.length} clip(s) into one final video?\n\nThis replaces per-scene renders with a single stitched file on the timeline.`
+    )) return;
     const clips = rc.map((c) => ({
       filename: c.media.filename, subfolder: c.media.subfolder || "", type: c.media.type || "output",
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
@@ -1674,7 +1758,7 @@
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, scene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
@@ -1682,7 +1766,7 @@
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,

@@ -4,6 +4,28 @@
   // Base = the directory this app is served from, e.g. /funpack/movie
   const BASE = window.location.pathname.replace(/\/+$/, "").replace(/\/index\.html$/, "");
   const API = (p) => `${BASE}/api${p}`;
+
+  function readApiError(res, payload) {
+    if (payload && typeof payload === "object") {
+      const detail = payload.detail;
+      if (typeof detail === "string" && detail.trim()) return detail.trim();
+      if (Array.isArray(detail)) {
+        const parts = detail.map((item) => {
+          if (item && typeof item === "object" && item.msg) return String(item.msg);
+          return JSON.stringify(item);
+        }).filter(Boolean);
+        if (parts.length) return parts.join("; ");
+      }
+      if (payload.error) return String(payload.error);
+      if (payload.parse_errors && typeof payload.parse_errors === "object") {
+        return Object.entries(payload.parse_errors).map(([k, v]) => `${k}: ${v}`).join("; ");
+      }
+    }
+    const status = res && res.status ? `HTTP ${res.status}` : "";
+    const statusText = (res && res.statusText ? res.statusText : "").trim();
+    return statusText || status || "Request failed";
+  }
+
   async function j(method, url, body) {
     const opts = { method, headers: {} };
     if (body !== undefined) {
@@ -12,9 +34,9 @@
     }
     const res = await fetch(url, opts);
     if (!res.ok) {
-      let detail = res.statusText;
-      try { detail = (await res.json()).detail || detail; } catch (_) {}
-      throw new Error(detail);
+      let payload = null;
+      try { payload = await res.json(); } catch (_) {}
+      throw new Error(readApiError(res, payload));
     }
     return res.status === 204 ? null : res.json();
   }
@@ -87,6 +109,7 @@
     log: (limit) => j("GET", API("/log" + (limit ? `?limit=${limit}` : ""))),
     interrupt: () => j("POST", API("/interrupt")),
     renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
+    exportClip: (id, clip) => j("POST", API(`/projects/${id}/export-clip`), { clip }),
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +
       `&subfolder=${encodeURIComponent(m.subfolder || "")}&type=${encodeURIComponent(m.type || "output")}`,

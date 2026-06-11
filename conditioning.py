@@ -655,8 +655,13 @@ def _expand_with_map(text):
         return text, whole
     candidates.sort(key=lambda it: len(shortcut_key(it[0])), reverse=True)
     combined = "|".join(f"(?P<t{i}>{pat})" for i, (_, pat, _) in enumerate(candidates))
+    if not combined:
+        return text, whole
     rng = random.Random(int(md5(text.encode("utf-8")).hexdigest()[:12], 16))
-    pattern = re.compile(combined, re.IGNORECASE | re.UNICODE)
+    try:
+        pattern = re.compile(combined, re.IGNORECASE | re.UNICODE)
+    except re.error:
+        return text, whole
 
     pieces, parts, exp_pos, last = [], [], 0, 0
     for m in pattern.finditer(text):
@@ -6699,6 +6704,126 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append((item[0], meta))
         return out
 
+    def _v2_build_scene_learning_run(self, last_run, scene_index, clip, global_state, encode_cache, scene_db):
+        """Slice a multi-scene last_run into one scene for per-scene Movie Editor ratings."""
+        if not isinstance(last_run, dict):
+            return None
+        texts = last_run.get("scene_texts") or []
+        try:
+            scene_index = int(scene_index)
+        except (TypeError, ValueError):
+            return None
+        if scene_index < 0 or scene_index >= len(texts):
+            return None
+        scene_text = self._v2_prompt_key(texts[scene_index])
+        if not scene_text:
+            return None
+        scene_run = dict(last_run)
+        scene_run["prompt"] = scene_text
+        scene_run["encoded_prompt"] = scene_text
+        scene_run["scene_count"] = 1
+        scene_run["scene_index"] = scene_index
+        scene_seeds = last_run.get("scene_seeds") or []
+        if scene_index < len(scene_seeds):
+            try:
+                scene_run["seed"] = int(scene_seeds[scene_index])
+            except (TypeError, ValueError):
+                pass
+        if self._prompt_looks_like_refusal(scene_text) or clip is None:
+            scene_run["phrases"] = []
+        else:
+            scene_run["phrases"] = self._v2_classify_phrases(
+                clip,
+                self._ordered_prompt_phrases(scene_text),
+                global_state,
+                encode_cache=encode_cache,
+                scene_db=scene_db,
+            )
+        return scene_run
+
+    def _v2_apply_movie_editor_scene_ratings(
+        self,
+        global_state,
+        previous_run,
+        scene_ratings,
+        iter_num,
+        *,
+        clip=None,
+        encode_cache=None,
+        scene_db=None,
+        seed_output_connected=False,
+        refinement_key="",
+    ):
+        """Apply Refiner V2 learning once per rated scene (Movie Editor multi-scene chains)."""
+        if not isinstance(previous_run, dict) or not scene_ratings:
+            return "Movie Editor ratings: none.", None
+        scene_count = int(previous_run.get("scene_count") or len(previous_run.get("scene_texts") or []) or 1)
+        if scene_count <= 1:
+            return "Movie Editor ratings: previous run was single-scene.", None
+        encode_cache = encode_cache if encode_cache is not None else {}
+        lines = []
+        profiles = []
+        for item in scene_ratings or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("rating", "") or "").strip()
+            if not label:
+                continue
+            profile = normalize_refiner_v2_rating(label)
+            if profile.get("skip_learning"):
+                continue
+            try:
+                scene_index = int(item.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            scene_run = self._v2_build_scene_learning_run(
+                previous_run, scene_index, clip, global_state, encode_cache, scene_db,
+            )
+            if not scene_run:
+                lines.append(f"Scene {scene_index + 1}: skipped (no scene text in last run)")
+                continue
+            axis_feedback = self._v2_axis_feedback(profile, global_state.get("last_missing_axes", []))
+            self._v2_update_phrase_memory(global_state, scene_run, profile, iter_num, axis_feedback)
+            self._v2_update_concept_delta_memory(global_state, scene_run, profile)
+            self._v2_update_concept_pair_dirs(global_state, scene_run, profile)
+            seed_memory_status = self._v2_update_successful_seed_memory(
+                global_state,
+                scene_run,
+                profile,
+                iter_num,
+                seed_output_connected=bool(seed_output_connected),
+            )
+            self._v2_update_intent_family_memory(
+                global_state, scene_run, profile, iter_num, axis_feedback,
+            )
+            self._v2_update_negative_prompt_memory(global_state, scene_run, profile, axis_feedback)
+            self._v2_update_intent_alignment_memory(
+                global_state, scene_run, profile, iter_num, axis_feedback,
+            )
+            self._v2_update_conditioning_memory(global_state, scene_run, profile, axis_feedback)
+            if refinement_key and not profile.get("skip_learning"):
+                n = self._v2_train_value_function(
+                    refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
+                    scene_run.get("conditioning"),
+                    float(profile.get("reward", 0.0)),
+                )
+                if n is not None:
+                    print(f"[FunPackRefiner] Scene {scene_index + 1} value function updated — {n} samples")
+            self._v2_learn_absolute(scene_run, profile)
+            profiles.append(profile)
+            lines.append(
+                f"Scene {scene_index + 1} ({label}): {seed_memory_status.split(': ', 1)[-1]}"
+            )
+        if not profiles:
+            return "Movie Editor ratings: no learnable scene ratings.", None
+        worst = min(profiles, key=lambda p: float(p.get("reward", 0.0)))
+        summary = f"Movie Editor ratings: learned from {len(profiles)} scene(s)."
+        if lines:
+            summary += "\n" + "\n".join(f"  {line}" for line in lines[:8])
+            if len(lines) > 8:
+                summary += f"\n  … and {len(lines) - 8} more"
+        return summary, worst
+
     def _v2_seed_concepts_from_text(self, text, limit=16):
         stop = {
             "this", "that", "with", "from", "into", "onto", "then", "scene", "shows",
@@ -11698,7 +11823,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   steer_mode="relative", absolute_strength=0.6,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
-                  guess_freeze_seed=True):
+                  guess_freeze_seed=True, movie_editor_scene_ratings=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -11776,75 +11901,119 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if previous_rating_label != "Initial discovery" else
             None
         )
-        axis_feedback = self._v2_axis_feedback(learning_profile, previous_missing_axes)
-
-        memory_status = self._v2_update_phrase_memory(
-            global_state,
-            previous_run,
-            learning_profile,
-            int(global_state.get("total_iterations", 0)) + 1,
-            axis_feedback,
+        me_ratings = [
+            item for item in (movie_editor_scene_ratings or [])
+            if isinstance(item, dict) and str(item.get("rating", "") or "").strip()
+        ]
+        use_me_scene_ratings = (
+            bool(me_ratings)
+            and has_previous_run
+            and int((previous_run or {}).get("scene_count") or len((previous_run or {}).get("scene_texts") or []) or 1) > 1
         )
-        self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
-        self._v2_update_concept_pair_dirs(global_state, previous_run, learning_profile)
-        seed_memory_status = self._v2_update_successful_seed_memory(
-            global_state,
-            previous_run,
-            learning_profile,
-            int(global_state.get("total_iterations", 0)) + 1,
-            seed_output_connected=bool(seed_output_connected),
-        )
-        scene_sync_status = self._v2_sync_scene_builder_memory(
-            state,
-            global_state,
-            previous_run,
-            int(global_state.get("total_iterations", 0)) + 1,
-        )
-        intent_family_status, _ = self._v2_update_intent_family_memory(
-            global_state,
-            previous_run,
-            learning_profile,
-            int(global_state.get("total_iterations", 0)) + 1,
-            axis_feedback,
-        )
-        negative_memory_status = self._v2_update_negative_prompt_memory(
-            global_state,
-            previous_run,
-            learning_profile,
-            axis_feedback,
-        )
-        intent_learning_status = self._v2_update_intent_alignment_memory(
-            global_state,
-            previous_run,
-            learning_profile,
-            int(global_state.get("total_iterations", 0)) + 1,
-            axis_feedback,
-        )
-        memory_status = f"{memory_status}\n{seed_memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
-        self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
-        # Always train the value function in the background (cheap: a small MLP, no diffusion
-        # calls) so the reward asset accumulates regardless of whether guidance is applied.
-        # value_guidance only controls APPLICATION (ascent below) — a user who runs with it
-        # off still builds the VF, so enabling guidance later works immediately.
-        if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
-            n = self._v2_train_value_function(
-                refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
-                (previous_run or {}).get("conditioning"),
-                float(learning_profile.get("reward", 0.0)),
+        if use_me_scene_ratings:
+            learning_profile = dict(rating_profile)
+            learning_profile["skip_learning"] = True
+            axis_feedback = self._v2_axis_feedback(learning_profile, previous_missing_axes)
+            me_status, aggregate_profile = self._v2_apply_movie_editor_scene_ratings(
+                global_state,
+                previous_run,
+                me_ratings,
+                int(global_state.get("total_iterations", 0)) + 1,
+                clip=clip,
+                encode_cache=encode_cache,
+                scene_db=scene_db,
+                seed_output_connected=bool(seed_output_connected),
+                refinement_key=refinement_key,
             )
-            if n is not None:
-                print(f"[FunPackRefiner] Value function updated — {n} samples")
-        # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
-        # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
-        if has_previous_run:
-            self._v2_learn_absolute(previous_run, learning_profile)
-        if has_previous_run and not learning_profile.get("skip_learning"):
-            self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
-        repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
-            global_state,
-            axis_feedback,
-            learning_profile,
-        )
+            memory_status = me_status
+            seed_memory_status = ""
+            scene_sync_status = self._v2_sync_scene_builder_memory(
+                state,
+                global_state,
+                previous_run,
+                int(global_state.get("total_iterations", 0)) + 1,
+            )
+            intent_family_status = ""
+            intent_learning_status = ""
+            negative_memory_status = ""
+            memory_status = f"{memory_status}\n{scene_sync_status}"
+            if aggregate_profile and has_previous_run and not aggregate_profile.get("skip_learning"):
+                self._v2_update_streaks(global_state, aggregate_profile, update_conditioning_strength=not prompt_only_mode)
+            repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
+                global_state,
+                self._v2_axis_feedback(aggregate_profile or learning_profile, previous_missing_axes),
+                aggregate_profile or learning_profile,
+            )
+        else:
+            axis_feedback = self._v2_axis_feedback(learning_profile, previous_missing_axes)
+
+            memory_status = self._v2_update_phrase_memory(
+                global_state,
+                previous_run,
+                learning_profile,
+                int(global_state.get("total_iterations", 0)) + 1,
+                axis_feedback,
+            )
+            self._v2_update_concept_delta_memory(global_state, previous_run, learning_profile)
+            self._v2_update_concept_pair_dirs(global_state, previous_run, learning_profile)
+            seed_memory_status = self._v2_update_successful_seed_memory(
+                global_state,
+                previous_run,
+                learning_profile,
+                int(global_state.get("total_iterations", 0)) + 1,
+                seed_output_connected=bool(seed_output_connected),
+            )
+            scene_sync_status = self._v2_sync_scene_builder_memory(
+                state,
+                global_state,
+                previous_run,
+                int(global_state.get("total_iterations", 0)) + 1,
+            )
+            intent_family_status, _ = self._v2_update_intent_family_memory(
+                global_state,
+                previous_run,
+                learning_profile,
+                int(global_state.get("total_iterations", 0)) + 1,
+                axis_feedback,
+            )
+            negative_memory_status = self._v2_update_negative_prompt_memory(
+                global_state,
+                previous_run,
+                learning_profile,
+                axis_feedback,
+            )
+            intent_learning_status = self._v2_update_intent_alignment_memory(
+                global_state,
+                previous_run,
+                learning_profile,
+                int(global_state.get("total_iterations", 0)) + 1,
+                axis_feedback,
+            )
+            memory_status = f"{memory_status}\n{seed_memory_status}\n{scene_sync_status}\n{intent_family_status}\n{intent_learning_status}"
+            self._v2_update_conditioning_memory(global_state, previous_run, learning_profile, axis_feedback)
+            # Always train the value function in the background (cheap: a small MLP, no diffusion
+            # calls) so the reward asset accumulates regardless of whether guidance is applied.
+            # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
+            # off still builds the VF, so enabling guidance later works immediately.
+            if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+                n = self._v2_train_value_function(
+                    refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
+                    (previous_run or {}).get("conditioning"),
+                    float(learning_profile.get("reward", 0.0)),
+                )
+                if n is not None:
+                    print(f"[FunPackRefiner] Value function updated — {n} samples")
+            # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
+            # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
+            if has_previous_run:
+                self._v2_learn_absolute(previous_run, learning_profile)
+            if has_previous_run and not learning_profile.get("skip_learning"):
+                self._v2_update_streaks(global_state, learning_profile, update_conditioning_strength=not prompt_only_mode)
+            repair_feedback, repair_persistence_status = self._v2_active_repair_feedback(
+                global_state,
+                axis_feedback,
+                learning_profile,
+            )
 
         vision_context, vision_status = self._v2_update_vision_memory(
             global_state,
@@ -12271,6 +12440,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "seed_source": str(_seed_source or "fresh seed"),
                 "seed_output_connected": bool(seed_output_connected),
                 "scene_count": len(split_scene_texts) if split_scene_texts else 1,
+                "scene_texts": list(split_scene_texts) if split_scene_texts else [],
                 "scene_seeds": current_scene_seeds,
                 "gen_context": current_gen_context,
             }
@@ -12301,6 +12471,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             learning_reason = "previous prompt was an enhancer refusal"
         elif learning_profile.get("key") == "continue":
             learning_reason = "no rating — refining from session memory only"
+        elif use_me_scene_ratings:
+            learning_reason = f"trained on {len(me_ratings)} scene rating(s) from previous chain run"
         elif learning_profile.get("skip_learning"):
             learning_reason = "rating skipped learning"
         elif not has_previous_run:
@@ -14192,6 +14364,10 @@ class FunPackStudio:
                 _vk = str(_eff_rkey or "").strip() or "default"
             _vel_commit_keys.append(_vk)
 
+        _me_scene_ratings = rf.get("movie_editor_scene_ratings")
+        if not isinstance(_me_scene_ratings, list):
+            _me_scene_ratings = None
+
         # --- Refiner V2 ---
         cond, status, training_info, loss_graph, encoded_prompts, out_model, video_latent = refiner.refine_v2(
             active_prompt,
@@ -14231,6 +14407,7 @@ class FunPackStudio:
             _seed=seed,
             _seed_source=seed_source,
             _scene_seeds=scene_seed_memory,
+            movie_editor_scene_ratings=_me_scene_ratings,
         )
 
         # --- Conditioning Adjust ---
