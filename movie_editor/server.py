@@ -583,6 +583,76 @@ class RenderJobError(Exception):
 
 
 _render_jobs: dict[str, dict] = {}
+_export_jobs: dict[str, dict] = {}
+
+
+def _ffmpeg_concat_clips_plain(clips: list) -> dict:
+    """Join trimmed clips with hard cuts only — no effects, transitions, or extra audio mix."""
+    import os
+    import shutil
+    import subprocess
+    import time as _time
+
+    if not clips:
+        raise RenderJobError("Nothing to export.")
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise RenderJobError("ffmpeg not found on PATH — install it to export clips.")
+    try:
+        import folder_paths
+        tempdir = folder_paths.get_temp_directory()
+    except Exception as e:  # noqa: BLE001
+        raise RenderJobError(f"Output directory unavailable: {e}") from e
+
+    stamp = int(_time.time())
+    if len(clips) == 1:
+        out_name = f"funpack_export_{stamp}.mp4"
+        out_path = os.path.join(tempdir, out_name)
+        try:
+            src_path = _resolve_clip_src_path(clips[0])
+            _ffmpeg_trim_clip(src_path, out_path, clips[0].get("in"), clips[0].get("dur"))
+        except FileNotFoundError as e:
+            raise RenderJobError(str(e)) from e
+        except RuntimeError as e:
+            raise RenderJobError(str(e)) from e
+        return {
+            "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
+            "clips": 1,
+        }
+
+    seg_paths: list[str] = []
+    for i, c in enumerate(clips):
+        try:
+            src_path = _resolve_clip_src_path(c)
+            seg = os.path.join(tempdir, f"funpack_seg_{stamp}_{i}.mp4")
+            _ffmpeg_trim_clip(src_path, seg, c.get("in"), c.get("dur"))
+            seg_paths.append(seg)
+        except FileNotFoundError as e:
+            raise RenderJobError(str(e)) from e
+        except RuntimeError as e:
+            raise RenderJobError(str(e)) from e
+
+    out_name = f"funpack_export_{stamp}.mp4"
+    out_path = os.path.join(tempdir, out_name)
+    list_path = os.path.join(tempdir, f"funpack_concat_{stamp}.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for p in seg_paths:
+            esc = p.replace("'", "'\\''")
+            f.write(f"file '{esc}'\n")
+    cmd = [
+        ff, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart", out_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = (proc.stderr or "")[-1000:]
+        raise RenderJobError(f"ffmpeg concat failed: {tail}")
+    return {
+        "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
+        "clips": len(clips),
+    }
 
 
 def _ffmpeg_stitch_final(proj, clips: list) -> dict:
@@ -1306,6 +1376,39 @@ if web is not None and PromptServer is not None:
         return web.json_response({
             "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
         })
+
+    import asyncio
+    import uuid as _uuid_export
+
+    async def _run_export_concat_job(job_id: str, clips: list) -> None:
+        _export_jobs[job_id] = {"state": "running"}
+        try:
+            result = await asyncio.to_thread(_ffmpeg_concat_clips_plain, clips)
+            _export_jobs[job_id] = {"state": "done", **result}
+        except RenderJobError as e:
+            _export_jobs[job_id] = {"state": "error", "detail": str(e)}
+        except Exception as e:  # noqa: BLE001
+            _export_jobs[job_id] = {"state": "error", "detail": f"Export failed: {e}"}
+
+    @routes.post(UI_PREFIX + "/api/projects/{pid}/export-clips")
+    async def _export_clips(req):
+        _project_or_404(req.match_info["pid"])
+        body = await req.json() if req.can_read_body else {}
+        clips = body.get("clips") or []
+        if not clips:
+            return web.json_response({"detail": "Nothing to export."}, status=400)
+        job_id = _uuid_export.uuid4().hex
+        _export_jobs[job_id] = {"state": "queued"}
+        asyncio.create_task(_run_export_concat_job(job_id, clips))
+        return web.json_response({"job_id": job_id})
+
+    @routes.get(UI_PREFIX + "/api/projects/{pid}/export-clips/{job_id}")
+    async def _export_clips_status(req):
+        _project_or_404(req.match_info["pid"])
+        job = _export_jobs.get(req.match_info["job_id"])
+        if not job:
+            return web.json_response({"detail": "Export job not found."}, status=404)
+        return web.json_response(job)
 
     # --- API: models / pluggable node slots ---
     @routes.get(UI_PREFIX + "/api/node-roles")

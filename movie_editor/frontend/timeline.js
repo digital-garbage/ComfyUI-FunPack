@@ -314,14 +314,14 @@
       ? "Select a clip first"
       : saveable
         ? (multi
-          ? `Stitch ${saveableN} selected clips into one file and export (trim, effects, seams)`
+          ? `Combine ${saveableN} selected clips into one file (trim only, hard cuts)`
           : "Save the selected clip's rendered video to disk (renders are temporary)")
         : "Generate the clip first, or select a video clip with media";
     const binTitle = !hasSel
       ? "Select a clip first"
       : saveable
         ? (multi
-          ? `Stitch ${saveableN} selected clips into one file and save to Media bin`
+          ? `Combine ${saveableN} selected clips into one file and save to Media bin (trim only)`
           : "Copy the selected clip into the Media bin - add it back as a plain video clip")
         : "Generate the clip first, or select a video clip with media";
     return { exportTitle, binTitle };
@@ -1318,6 +1318,7 @@
     // updates just the needle + timecode element on every mousemove).
     ruler.addEventListener("mousedown", (e) => {
       e.preventDefault();
+      window.Player?.beginScrub?.();
       const scrub = (ev) => {
         const r = ruler.getBoundingClientRect();
         const sec = Math.max(0, Math.min((ev.clientX - r.left) / pxPerSec, totalSec));
@@ -1325,7 +1326,11 @@
       };
       scrub(e);
       const move = (ev) => scrub(ev);
-      const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+      const up = () => {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+        window.Player?.endScrub?.();
+      };
       document.addEventListener("mousemove", move);
       document.addEventListener("mouseup", up);
     });

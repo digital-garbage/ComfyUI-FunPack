@@ -113,6 +113,8 @@
     renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
     renderFinalStatus: (id, jobId) => j("GET", API(`/projects/${id}/render/${encodeURIComponent(jobId)}`)),
     exportClip: (id, clip) => j("POST", API(`/projects/${id}/export-clip`), { clip }),
+    exportClipsCombined: (id, clips) => j("POST", API(`/projects/${id}/export-clips`), { clips }),
+    exportClipsStatus: (id, jobId) => j("GET", API(`/projects/${id}/export-clips/${encodeURIComponent(jobId)}`)),
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +
       `&subfolder=${encodeURIComponent(m.subfolder || "")}&type=${encodeURIComponent(m.type || "output")}`,

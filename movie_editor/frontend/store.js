@@ -2071,22 +2071,22 @@
     });
   }
 
-  async function _pollRenderJob(jobId, clipCount) {
+  async function _pollFfmpegJob(statusFn, jobId, clipCount, busyLabel) {
     let transientStreak = 0;
     for (;;) {
       if (_interrupted) throw new Error("Interrupted.");
       try {
-        const st = await API.renderFinalStatus(state.project.id, jobId);
+        const st = await statusFn(jobId);
         transientStreak = 0;
         if (st.state === "done") return st;
-        if (st.state === "error") throw new Error(st.detail || "Render failed");
-        updateGenProgress({ msg: `Stitching ${clipCount} clip(s)…` });
+        if (st.state === "error") throw new Error(st.detail || `${busyLabel} failed`);
+        updateGenProgress({ msg: `${busyLabel} ${clipCount} clip(s)…` });
       } catch (e) {
         if (_isTransientTunnelError(e)) {
           transientStreak++;
           if (transientStreak < 120) {
             updateGenProgress({
-              msg: `Stitching ${clipCount} clip(s) · tunnel reconnect (${transientStreak})…`,
+              msg: `${busyLabel} ${clipCount} clip(s) · tunnel reconnect (${transientStreak})…`,
             });
             await _sleep(2000);
             continue;
@@ -2096,6 +2096,24 @@
       }
       await _sleep(2000);
     }
+  }
+
+  async function _pollRenderJob(jobId, clipCount) {
+    return _pollFfmpegJob(
+      (id) => API.renderFinalStatus(state.project.id, id),
+      jobId,
+      clipCount,
+      "Stitching",
+    );
+  }
+
+  async function _pollExportClipsJob(jobId, clipCount) {
+    return _pollFfmpegJob(
+      (id) => API.exportClipsStatus(state.project.id, id),
+      jobId,
+      clipCount,
+      "Combining",
+    );
   }
 
   // Toggle a pending Studio session reset — applied to the FIRST run of the next
@@ -2289,13 +2307,11 @@
     return _renderClips().filter((c) => set.has(c.sceneId));
   }
 
-  function _renderPayloadFromClips(rc) {
+  function _plainExportClipsFromRenderClips(rc) {
     return rc.map((c) => ({
       filename: c.media?.filename, subfolder: c.media?.subfolder || "", type: c.media?.type || "output",
       bin_media_ref: c.bin_media_ref || "",
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
-      fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
-      volume: c.volume, scene_id: c.sceneId,
     }));
   }
 
@@ -2304,7 +2320,7 @@
     return `${proj}_${clipCount}clips_${_stamp()}.mp4`;
   }
 
-  // Trim one clip, or stitch multiple selected clips (same ffmpeg path as Render Final).
+  // Trim one clip, or hard-cut concat multiple selected clips (no effects/transitions).
   async function _stitchSelectedClips(saveableIds) {
     const rc = _renderClipsForSceneIds(saveableIds);
     if (!rc.length) return null;
@@ -2314,10 +2330,9 @@
       const out = await API.exportClip(state.project.id, spec.clip);
       return { media: out.media, clips: 1, exportName: spec.name };
     }
-    await flushSave();
-    const queued = await API.renderFinal(state.project.id, _renderPayloadFromClips(rc));
+    const queued = await API.exportClipsCombined(state.project.id, _plainExportClipsFromRenderClips(rc));
     const r = queued?.job_id
-      ? await _pollRenderJob(queued.job_id, rc.length)
+      ? await _pollExportClipsJob(queued.job_id, rc.length)
       : queued;
     return { ...r, exportName: _combinedSelectionFilename(rc.length) };
   }
@@ -2396,7 +2411,7 @@
     return !!(state.sceneRenders[sceneId]?.media);
   }
 
-  // Export selected clip(s): one file; multi-select is stitched with trim/effects/seams.
+  // Export selected clip(s): one file; multi-select is hard-cut concat with trim only.
   async function exportSelected() {
     if (!state.project) return;
     if (!_hasTimelineClipSelection()) { alert("Select a clip first."); return; }
@@ -2411,7 +2426,7 @@
       `${skipped} selected clip(s) have no render yet and will be skipped. Export ${saveableIds.length} clip(s)?`
     )) return;
     if (saveableIds.length > 1 && !confirm(
-      `Stitch ${saveableIds.length} selected clips into one file and export?\n\nPer-clip trim, effects, and transitions between selected clips are applied.`
+      `Combine ${saveableIds.length} selected clips into one file and export?\n\nTimeline trim is applied per clip. No effects, transitions, or extra audio — use Render Final for that.`
     )) return;
     const showProgress = saveableIds.length > 1;
     if (showProgress) {
@@ -2444,7 +2459,7 @@
       `${skipped} selected clip(s) have no render yet and will be skipped. Save ${saveableIds.length} clip(s) to Media bin?`
     )) return;
     if (saveableIds.length > 1 && !confirm(
-      `Stitch ${saveableIds.length} selected clips into one file and save to Media bin?\n\nPer-clip trim, effects, and transitions between selected clips are applied.`
+      `Combine ${saveableIds.length} selected clips into one file and save to Media bin?\n\nTimeline trim is applied per clip. No effects, transitions, or extra audio — use Render Final for that.`
     )) return;
     const showProgress = saveableIds.length > 1;
     if (showProgress) {

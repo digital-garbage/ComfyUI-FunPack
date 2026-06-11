@@ -20,6 +20,14 @@
   let _active = null;        // visible <video>
   let _seekPending = null;   // offset to apply once the active video has metadata
   let _playPending = false;
+  let _seekRaf = null;       // coalesce rapid scrub seeks to one per frame
+  let _pendingSeekSec = null;
+  let _videoSeekTimer = null;
+  let _pendingVideoTarget = null;
+  let _pendingFxClip = null;
+  let _pendingFxOffset = 0;
+  let _seekToken = 0;
+  let _scrubDepth = 0;       // suppress render()-driven re-seek while dragging playhead
   const _insPool = new Map(); // track id -> <audio>
   let _insTracks = [];
 
@@ -41,6 +49,47 @@
   const _urlFor = (media) => API.resultUrl(S.get().project?.id, media);
   const _clipUrl = (clip) => clip.binUrl || (clip.media ? _urlFor(clip.media) : "");
   const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || (t + 1)) - 0.02));
+
+  function _applyVideoTime(v, target, fast) {
+    const t = _clampT(v, target);
+    try {
+      if (fast && typeof v.fastSeek === "function") v.fastSeek(t);
+      else v.currentTime = t;
+    } catch (_) {
+      try { v.currentTime = t; } catch (_) {}
+    }
+  }
+
+  function _flushVideoSeek(force) {
+    if (_videoSeekTimer) {
+      clearTimeout(_videoSeekTimer);
+      _videoSeekTimer = null;
+    }
+    if (_pendingVideoTarget == null || !_active || !_pendingFxClip) return;
+    const v = _active;
+    const target = _pendingVideoTarget;
+    const clip = _pendingFxClip;
+    const offset = _pendingFxOffset;
+    _pendingVideoTarget = null;
+    _pendingFxClip = null;
+    _pendingFxOffset = 0;
+    const token = ++_seekToken;
+    if (v.readyState >= 1) {
+      _applyVideoTime(v, target, force !== true && !_playing);
+      if (token === _seekToken) _applyFx(clip, offset);
+    } else {
+      v._pmSeekPending = target;
+      _seekPending = target;
+    }
+  }
+
+  function _scheduleVideoSeek(target, clip, offset) {
+    _pendingVideoTarget = target;
+    _pendingFxClip = clip;
+    _pendingFxOffset = offset;
+    if (_videoSeekTimer) return;
+    _videoSeekTimer = setTimeout(() => _flushVideoSeek(false), _playing ? 0 : 24);
+  }
 
   function _segmentSourceBadge(sceneId) {
     if (!sceneId) return "";
@@ -284,9 +333,19 @@
     zoom.append(v);
     viewport.append(zoom);
     v.addEventListener("loadedmetadata", () => {
+      const pending = v._pmSeekPending != null ? v._pmSeekPending : (v === _active ? _seekPending : null);
+      if (pending != null) {
+        _applyVideoTime(v, pending, !_playing);
+        v._pmSeekPending = null;
+        if (v === _active) _seekPending = null;
+      }
       if (v !== _active) return;
-      if (_seekPending != null) { v.currentTime = _clampT(v, _seekPending); _seekPending = null; }
       if (_playPending) { _playPending = false; v.play().catch(() => {}); }
+      if (_currentClip) _applyFx(_currentClip, Math.max(0, _phSec - _currentClip.startSec));
+    });
+    v.addEventListener("seeked", () => {
+      if (v !== _active || !_currentClip || _playing) return;
+      _applyFx(_currentClip, Math.max(0, _phSec - _currentClip.startSec));
     });
     v.addEventListener("ended", () => { if (v === _active) _advance(); });
     stage.append(viewport); pool.set(url, v);
@@ -312,6 +371,10 @@
       v._pmFx?.viewport.remove();
     }
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
+    _pendingSeekSec = null;
+    _scrubDepth = 0;
+    if (_seekRaf) { cancelAnimationFrame(_seekRaf); _seekRaf = null; }
+    _flushVideoSeek(true);
     _pauseInsAudio();
     for (const a of _insPool.values()) a.removeAttribute("src");
     _insPool.clear();
@@ -330,6 +393,11 @@
     if (v) {
       v.classList.add("active");
       v._pmFx?.viewport.classList.add("active");
+      if (v._pmSeekPending != null && v.readyState >= 1) {
+        _applyVideoTime(v, v._pmSeekPending, !_playing);
+        v._pmSeekPending = null;
+        _seekPending = null;
+      }
     }
   }
 
@@ -386,6 +454,26 @@
     if (v.volume !== nv) { try { v.volume = nv; } catch (_) {} }
   }
 
+  function _applyClipUi(clip) {
+    if (!clip || clip.pending) {
+      _showBadge("");
+      _showSlate(clip?.slate || "Not generated yet", clip?.slateSub);
+      return;
+    }
+    _showSlate("");
+    const badge = clip.ghost ? (clip.slate || "Removed — preview only")
+      : _segmentSourceBadge(clip.sceneId);
+    _showBadge(badge);
+    if (_badgeEl && badge.startsWith("Mixed")) _badgeEl.classList.add("mixed-mode");
+    else if (_badgeEl) _badgeEl.classList.remove("mixed-mode");
+  }
+
+  function _sameVideoUrl(a, b) {
+    if (!a || !b) return false;
+    const ua = _clipUrl(a), ub = _clipUrl(b);
+    return !!ua && ua === ub;
+  }
+
   // Show `clip` at `offset` seconds into the clip; play if requested. Seeks to the clip's
   // in-point + offset within the (preloaded) source video.
   function _goto(clip, offset, play) {
@@ -393,26 +481,24 @@
     if (clip.pending) {
       _currentClip = clip;
       _setActive(null);
-      _showBadge("");
-      _showSlate(clip.slate || "Not generated yet", clip.slateSub);
+      _applyClipUi(clip);
       if (play) _startTick();
       return;
     }
     if (!clip.media && !clip.binUrl) return;
     const v = _ensureVideo(_clipUrl(clip));
     _currentClip = clip; _setActive(v);
-    _showSlate("");
-    const badge = clip.ghost ? (clip.slate || "Removed — preview only")
-      : _segmentSourceBadge(clip.sceneId);
-    _showBadge(badge);
-    if (_badgeEl && badge.startsWith("Mixed")) _badgeEl.classList.add("mixed-mode");
-    else if (_badgeEl) _badgeEl.classList.remove("mixed-mode");
+    _applyClipUi(clip);
     const target = (clip.inSec || 0) + Math.max(0, offset);
     if (v.readyState >= 1) {
-      v.currentTime = _clampT(v, target);
+      _applyVideoTime(v, target, !play);
+      v._pmSeekPending = null;
+      _seekPending = null;
       if (play) { v.play().catch(() => {}); _startTick(); } else _playPending = false;
     } else {
-      _seekPending = target; _playPending = !!play;
+      v._pmSeekPending = target;
+      _seekPending = target;
+      _playPending = !!play;
       if (play) _startTick();
     }
     _applyFx(clip, Math.max(0, offset));
@@ -467,13 +553,71 @@
   }
 
   // ── transport actions ──────────────────────────────────────────────────────
-  function _seek(sec) {
+  function _seekNow(sec) {
     _phSec = Math.max(0, sec);
     const clip = _clipAt(_phSec);
-    if (clip) _goto(clip, _phSec - clip.startSec, false);
-    else { _currentClip = null; _setActive(null); _showSlate(""); _showBadge(""); }
+    if (!clip) {
+      _flushVideoSeek(true);
+      _currentClip = null;
+      _setActive(null);
+      _showSlate("");
+      _showBadge("");
+      _syncInsAudio();
+      _notifyPh();
+      return;
+    }
+    const offset = _phSec - clip.startSec;
+    const sameClip = _currentClip === clip
+      || (_currentClip && clip && _currentClip.sceneId === clip.sceneId && _sameVideoUrl(_currentClip, clip));
+    const sameVideo = !clip.pending && _active && _sameVideoUrl(_currentClip, clip)
+      && (clip.media || clip.binUrl);
+    if (sameVideo && _active.readyState >= 1) {
+      _currentClip = clip;
+      _applyClipUi(clip);
+      const target = (clip.inSec || 0) + Math.max(0, offset);
+      _scheduleVideoSeek(target, clip, offset);
+    } else if (!sameClip || clip.pending) {
+      _flushVideoSeek(true);
+      _goto(clip, offset, false);
+    } else if (!clip.pending && (clip.media || clip.binUrl)) {
+      const target = (clip.inSec || 0) + Math.max(0, offset);
+      const v = _active;
+      if (v && v.readyState >= 1) _scheduleVideoSeek(target, clip, offset);
+      else _goto(clip, offset, false);
+    }
     _syncInsAudio();
     _notifyPh();
+  }
+
+  function _seek(sec) {
+    _pendingSeekSec = Math.max(0, sec);
+    if (_seekRaf) return;
+    _seekRaf = requestAnimationFrame(() => {
+      _seekRaf = null;
+      const s = _pendingSeekSec;
+      _pendingSeekSec = null;
+      if (s == null) return;
+      _seekNow(s);
+    });
+  }
+
+  function _flushSeek() {
+    if (_seekRaf) {
+      cancelAnimationFrame(_seekRaf);
+      _seekRaf = null;
+    }
+    if (_pendingSeekSec != null) {
+      const s = _pendingSeekSec;
+      _pendingSeekSec = null;
+      _seekNow(s);
+    }
+    _flushVideoSeek(true);
+  }
+
+  function _beginScrub() { _scrubDepth++; }
+  function _endScrub() {
+    _scrubDepth = Math.max(0, _scrubDepth - 1);
+    _flushSeek();
   }
 
   function _play() {
@@ -514,6 +658,9 @@
   // ── public Player API (consumed by timeline.js + inspector) ──────────────
   window.Player = {
     seek: _seek,
+    flushSeek: _flushSeek,
+    beginScrub: _beginScrub,
+    endScrub: _endScrub,
     getPlayhead: () => _phSec,
     play: _play,
     pause: _pause,
@@ -681,7 +828,7 @@
     }).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
-      if (!st.mediaPreviewId) {
+      if (!st.mediaPreviewId && _scrubDepth === 0) {
         const clip = _clipAt(_phSec);
         if (clip) _goto(clip, _phSec - clip.startSec, _playing);
         else if (_clips.length && !_active) _goto(_clips[0], 0, false);
@@ -691,6 +838,12 @@
     const p = st.project;
     const gen = st.gen || { state: "idle", media: [] };
     _fpsCur = p?.frame_rate || 25;
+
+    // While scrubbing, keep the program monitor DOM stable (no clear/rebuild).
+    if (_scrubDepth > 0) {
+      _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
+      return;
+    }
 
     clear(body);
 
@@ -826,6 +979,7 @@
         // Drag-to-scrub on minibar
         chip.addEventListener("mousedown", (e) => {
           e.preventDefault();
+          _beginScrub();
           const scrub = (ev) => {
             const r = minibar.getBoundingClientRect();
             const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
@@ -833,7 +987,11 @@
           };
           scrub(e);
           const move = (ev) => scrub(ev);
-          const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+          const up = () => {
+            document.removeEventListener("mousemove", move);
+            document.removeEventListener("mouseup", up);
+            _endScrub();
+          };
           document.addEventListener("mousemove", move);
           document.addEventListener("mouseup", up);
         });
