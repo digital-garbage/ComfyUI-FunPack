@@ -164,12 +164,12 @@
     bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
     const exp = bar.querySelector("[data-export-scene]");
     if (exp) exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
-    const oldAdd = bar.querySelector(".tl-dd");
-    if (oldAdd) {
-      const fresh = addMenuDropdown(st, st.project);
-      oldAdd.replaceWith(fresh);
-      const addBtn = fresh.querySelector("button");
-      if (addBtn) { addBtn.dataset.needsSel = "1"; addBtn.disabled = !hasSel; }
+    const oldRating = bar.querySelector(".tl-rating-block");
+    const freshRating = toolbarRatingBlock(st, st.project);
+    if (oldRating) oldRating.replaceWith(freshRating);
+    else {
+      const spacer = bar.querySelector(".tl-spacer");
+      if (spacer) bar.insertBefore(freshRating, spacer);
     }
   }
 
@@ -682,20 +682,6 @@
     addRow("Image", "Coming soon", null, true);
     addRow("Audio", "Coming soon", null, true);
 
-    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
-    if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
-      const sc = S.scene(st.selectedSceneId);
-      const sceneNo = p.scenes.indexOf(sc) + 1;
-      const row = el("div", "tl-dd-row");
-      row.append(el("span", "tl-keys", `★ Scene ${sceneNo}`));
-      const rsel = el("select", "tl-rating");
-      rsel.append(new Option("— rate —", ""));
-      (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
-      rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
-      panel.append(row);
-      panel.append(rsel);
-    }
-
     btn.onclick = (e) => {
       e.stopPropagation();
       const show = panel.hidden;
@@ -830,6 +816,37 @@
   }
 
   // ── toolbar ─────────────────────────────────────────────────────────────────────
+  function toolbarRatingBlock(st, p) {
+    const wrap = el("div", "tl-rating-block");
+    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
+    const hasSel = !!st.selectedSceneId;
+    if (!studioCond || !hasSel || !hasRender(st, st.selectedSceneId) || !(st.ratingLabels || []).length) return wrap;
+    const sc = S.scene(st.selectedSceneId);
+    if (!sc) return wrap;
+    const sceneNo = p.scenes.indexOf(sc) + 1;
+    const mismatch = S.renderPromptMismatch ? S.renderPromptMismatch(sc.id) : null;
+    const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
+    const rsel = el("select", "tl-rating");
+    rsel.title = mismatch
+      ? "Rate against the generated prompt - timeline text was edited after this render"
+      : "Rate this scene's render - FunPack Studio refines from it on next generation";
+    rsel.append(new Option("- rate -", ""));
+    (st.ratingLabels || []).forEach((l) => {
+      const o = new Option(l, l);
+      if (l === (sc.rating || "")) o.selected = true;
+      rsel.append(o);
+    });
+    rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
+    wrap.append(rlabel);
+    wrap.append(rsel);
+    if (mismatch) {
+      const hint = el("span", "tl-render-prompt", mismatch.rendered);
+      hint.title = "Generated with this prompt - use it when rating (timeline text differs)";
+      wrap.append(hint);
+    }
+    return wrap;
+  }
+
   function toolbar(st, p, totalSec) {
     const bar = el("div", "tl-toolbar");
     const add = el("button", "btn ghost tiny", "＋ Clip"); add.onclick = () => S.addScene();
@@ -860,6 +877,7 @@
     if (addBtn) { addBtn.dataset.needsSel = "1"; addBtn.disabled = !hasSel; }
     bar.append(addWrap);
     bar.append(audioToolbar(st, p));
+    bar.append(toolbarRatingBlock(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const keys = el("span", "tl-keys", "J/K/L · S split · I/O in/out · +/- zoom");

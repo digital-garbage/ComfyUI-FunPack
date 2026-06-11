@@ -507,6 +507,13 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-zlabel { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
 .tl-keys { font-family: var(--font-mono); font-size: 10px; letter-spacing: .5px; color: var(--faint); margin-right: 10px; opacity: .8; }
 .tl-rating { font-size: 12px; padding: 3px 6px; background: var(--ink-2); border: 1px solid var(--line); border-radius: 6px; color: var(--amber-2); max-width: 200px; }
+.tl-rating-block { display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; padding-left: 8px; border-left: 1px solid var(--line); }
+.tl-render-prompt {
+  font-family: var(--font-mono); font-size: 10px; color: var(--amber-2); opacity: .9;
+  max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, var(--line)); border-radius: 6px; padding: 3px 7px;
+  background: color-mix(in srgb, var(--amber-soft) 35%, var(--ink-2));
+}
 .render-prompt-warn {
   border: 1px solid color-mix(in srgb, var(--amber) 35%, var(--line));
   background: color-mix(in srgb, var(--amber-soft) 25%, var(--ink-1));

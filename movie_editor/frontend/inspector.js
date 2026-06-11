@@ -172,20 +172,6 @@
       body.append(warn);
     }
 
-    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
-    const hasRender = !!((st.sceneRenders || {})[scene.id]?.media);
-    if (studioCond && hasRender && (st.ratingLabels || []).length) {
-      const rsel = el("select");
-      rsel.append(new Option("— rate this scene —", ""));
-      const rated = (root.rating || scene.rating || "").trim();
-      (st.ratingLabels || []).forEach((l) => {
-        const o = new Option(l, l); if (l === rated) o.selected = true; rsel.append(o);
-      });
-      rsel.onchange = () => S.setSceneRating(scene.id, rsel.value);
-      rsel.title = "FunPack Studio conditioning label applied on the next generation of this scene";
-      body.append(field("Studio rating", rsel));
-    }
-
     const src = el("select");
     SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
     src.onchange = () => {
