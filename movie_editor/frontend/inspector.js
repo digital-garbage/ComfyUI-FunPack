@@ -272,8 +272,48 @@
       [["none", "None"], ["in", "Zoom in"], ["out", "Zoom out"]].forEach(([v, label]) => {
         const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
       });
-      zoom.onchange = () => patchFx("zoom", zoom.value);
+      const effFps = (scene.fps_mode !== "project" && scene.fps != null) ? scene.fps : (p.frame_rate || 25);
+      const effDur = S.sceneDurationSec ? S.sceneDurationSec(scene) : (
+        ((scene.frames_mode !== "project" && scene.frames != null) ? scene.frames : p.num_frames_per_scene) / effFps
+      );
+      const effFrames = Math.max(1, Math.round(effDur * effFps));
+      const defaultZoomLen = Math.min(25, Math.max(1, effFrames));
+      const patchFxObj = (patch, quiet) => {
+        const next = { ...(scene.effects || {}), ...patch };
+        quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
+      };
+      zoom.onchange = () => {
+        const v = zoom.value;
+        const patch = { zoom: v };
+        if (v === "in" || v === "out") {
+          if (fx.zoom_ratio == null) patch.zoom_ratio = 0.15;
+          if (fx.zoom_frames == null) patch.zoom_frames = defaultZoomLen;
+          if (fx.zoom_start_frame == null) patch.zoom_start_frame = 0;
+        }
+        patchFxObj(patch);
+      };
       more.append(field("Ken Burns zoom", zoom));
+      const zoomMode = fx.zoom || "none";
+      if (zoomMode === "in" || zoomMode === "out") {
+        const zRow = el("div", "fields-row");
+        const zRatio = el("input"); zRatio.type = "range"; zRatio.min = "5"; zRatio.max = "50"; zRatio.step = "1";
+        zRatio.value = Math.round((fx.zoom_ratio != null ? fx.zoom_ratio : 0.15) * 100);
+        zRatio.oninput = () => patchFxObj({ zoom_ratio: parseFloat(zRatio.value) / 100 }, true);
+        zRow.append(field(`Zoom amount (${zRatio.value}%)`, zRatio));
+        const zStart = _num(fx.zoom_start_frame != null ? fx.zoom_start_frame : 0, "sc-fx-zstart", {
+          min: 0, max: Math.max(0, effFrames - 1), step: 1,
+        });
+        zStart.oninput = () => patchFxObj({ zoom_start_frame: parseInt(zStart.value || "0", 10) }, true);
+        zRow.append(field("Start frame", zStart));
+        more.append(zRow);
+        const zLen = _num(fx.zoom_frames != null ? fx.zoom_frames : defaultZoomLen, "sc-fx-zlen", {
+          min: 1, max: effFrames, step: 1,
+        });
+        zLen.oninput = () => patchFxObj({ zoom_frames: parseInt(zLen.value || "1", 10) }, true);
+        more.append(field("Ramp length (frames)", zLen));
+        more.append(el("div", "insp-hint",
+          "Zoom runs only during the ramp window — before/after holds steady at the start/end scale."));
+      }
 
       const lenRow = el("div", "fields-row");
       lenRow.append(lengthControl(scene, "frames"));

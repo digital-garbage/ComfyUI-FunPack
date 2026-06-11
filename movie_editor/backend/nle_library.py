@@ -10,8 +10,8 @@ from . import config
 NLE_PATH = config.DATA_DIR / "nle_library.json"
 
 DEFAULT_EFFECTS: list[dict[str, Any]] = [
-    {"id": "zoom_in", "name": "Zoom in (push)", "description": "Push in during the clip"},
-    {"id": "zoom_out", "name": "Zoom out (pull back)", "description": "Pull back during the clip"},
+    {"id": "zoom_in", "name": "Zoom in (push)", "description": "Timed push-in (set ratio, length, start in inspector)"},
+    {"id": "zoom_out", "name": "Zoom out (pull back)", "description": "Timed pull-back (set ratio, length, start in inspector)"},
     {
         "id": "blur",
         "name": "Gaussian blur",

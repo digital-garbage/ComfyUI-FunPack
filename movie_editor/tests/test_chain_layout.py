@@ -30,19 +30,15 @@ def test_scene_starts_match_sampler_boundaries():
     assert starts == [0, 97, 185]
 
 
-def test_scene_starts_without_boundaries_uses_latent_math():
-    latent_frames = 13
-    latent_overlap = latent_overlap_frames(16, 8)
-    assert latent_overlap == 2
+def test_scene_starts_without_boundaries_use_full_scene_spans():
     starts = scene_start_pixels(
-        2,
+        3,
         num_frames_per_scene=97,
         frame_overlap=16,
         time_scale=8,
         boundaries=None,
     )
-    assert starts[0] == 0
-    assert starts[1] == latent_to_pixel_frame(latent_frames, 8)
+    assert starts == [0, 97, 194]
 
 
 def test_layout_from_boundaries_json():

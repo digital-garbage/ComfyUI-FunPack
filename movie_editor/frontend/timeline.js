@@ -167,6 +167,11 @@
 
   const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
   const REORDER_PX = 12;
+  const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || "") || /Mac OS/.test(navigator.userAgent || "");
+  function isAdditiveMod(e) { return IS_MAC ? !!e.metaKey : !!(e.ctrlKey || e.metaKey); }
+  function isClipSelectBlocked(e) {
+    return !!e.target.closest(".clip-head-bar, .clip-rm, .clip-trim, .clip-vt-tail, .seam-cut, button, .tl-aud-controls");
+  }
 
   function normId(v) { return v == null ? "" : String(v); }
   function selectedIds(st) {
@@ -188,8 +193,9 @@
         ? st.selectedSceneId
         : ids[0])
       : null;
-    const saveable = !!(focusId && S.clipSaveableToMediaBin?.(focusId));
-    return { ids, hasSel, focusId, saveable };
+    const saveableIds = ids.filter((id) => S.clipSaveableToMediaBin?.(id));
+    const saveable = saveableIds.length > 0;
+    return { ids, hasSel, focusId, saveable, saveableN: saveableIds.length };
   }
   function clipSelClass(st, sceneId) {
     let cls = "";
@@ -201,7 +207,28 @@
     _tlEditing = false;
     const ae = document.activeElement;
     if (ae && /^(SELECT|INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
-    S.selectScene(sceneId, { additive: e.metaKey || e.ctrlKey, range: e.shiftKey });
+    S.selectScene(sceneId, { additive: isAdditiveMod(e), range: e.shiftKey });
+  }
+
+  function attachClipSelect(clip, sceneId) {
+    clip.addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || isClipSelectBlocked(e)) return;
+      // Modifier clicks select immediately — do not start drag-reorder (it eats the gesture).
+      if (e.metaKey || e.shiftKey || isAdditiveMod(e)) {
+        e.preventDefault();
+        clip.dataset.modSelect = "1";
+        onClipSelect(e, sceneId);
+      }
+    });
+    clip.addEventListener("click", (e) => {
+      if (isClipSelectBlocked(e)) return;
+      e.stopPropagation();
+      if (clip.dataset.modSelect) {
+        delete clip.dataset.modSelect;
+        return;
+      }
+      onClipSelect(e, sceneId);
+    });
   }
 
   function syncClipSelection(st) {
@@ -281,28 +308,48 @@
     return null;
   }
 
+  function exportSaveTitles(hasSel, saveable, saveableN, selN) {
+    const multi = selN > 1;
+    const exportTitle = !hasSel
+      ? "Select a clip first"
+      : saveable
+        ? (multi
+          ? `Export ${saveableN} selected clip(s) with timeline trim (same as render export)`
+          : "Save the selected clip's rendered video to disk (renders are temporary)")
+        : "Generate the clip first, or select a video clip with media";
+    const binTitle = !hasSel
+      ? "Select a clip first"
+      : saveable
+        ? (multi
+          ? `Save ${saveableN} selected clip(s) to Media bin with timeline trim`
+          : "Copy the selected clip into the Media bin - add it back as a plain video clip")
+        : "Generate the clip first, or select a video clip with media";
+    return { exportTitle, binTitle };
+  }
+
   function syncToolbarSelection(st) {
     const bar = body.querySelector(".tl-toolbar");
     if (!bar || !st.project) return;
-    const { hasSel, focusId, saveable } = clipToolbarState(st);
+    const { ids, hasSel, focusId, saveable, saveableN } = clipToolbarState(st);
+    const selN = ids.length;
+    const { exportTitle, binTitle } = exportSaveTitles(hasSel, saveable, saveableN, selN);
     bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
+    const badge = bar.querySelector("[data-tl-sel-badge]");
+    if (badge) {
+      if (selN > 0) {
+        badge.hidden = false;
+        badge.textContent = selN === 1 ? "1 clip selected" : `${selN} clips selected`;
+      } else badge.hidden = true;
+    }
     const exp = bar.querySelector("[data-export-scene]");
     if (exp) {
       exp.disabled = !(hasSel && saveable);
-      exp.title = !hasSel
-        ? "Select a clip first"
-        : saveable
-          ? "Save the selected clip's rendered video to disk (renders are temporary)"
-          : "Generate the clip first, or select a video clip with media";
+      exp.title = exportTitle;
     }
     const saveBin = bar.querySelector("[data-save-mediabin]");
     if (saveBin) {
       saveBin.disabled = !(hasSel && saveable);
-      saveBin.title = !hasSel
-        ? "Select a clip first"
-        : saveable
-          ? "Copy the selected clip into the Media bin — add it back as a plain video clip"
-          : "Generate the clip first, or select a video clip with media";
+      saveBin.title = binTitle;
     }
     const sep = bar.querySelector("[data-separate-audio]");
     if (sep) {
@@ -345,7 +392,7 @@
     const totalSec = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
     meta.textContent = `${scenes.length} clips · ${active} active`
       + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "")
-      + (selN > 1 ? ` · ${selN} selected` : "")
+      + (selN > 0 ? ` · ${selN} selected` : "")
       + ` · ${timecode(totalSec, p.frame_rate)}`;
   }
 
@@ -476,8 +523,10 @@
 
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
+    attachClipSelect(clip, scene.id);
     clip.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest(".clip-head-bar, .clip-rm, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
+      if (e.button !== 0 || isClipSelectBlocked(e)) return;
+      if (e.metaKey || e.shiftKey || isAdditiveMod(e)) return;
       const startX = e.clientX;
       let dragging = false, drop = null;
       const track = clip.parentNode;
@@ -915,7 +964,11 @@
     clip.style.left = leftPx + "px";
     clip.style.width = w + "px";
     clip.style.maxWidth = w + "px";
-    clip.onclick = (e) => { if (e.target.closest(".tl-aud-controls")) return; e.stopPropagation(); onClipSelect(e, scene.id); };
+    clip.onclick = (e) => {
+      if (e.target.closest(".tl-aud-controls")) return;
+      e.stopPropagation();
+      onClipSelect(e, scene.id);
+    };
 
     const wave = el("div", "tl-aud-wave");
     const canvas = el("canvas");
@@ -1130,7 +1183,13 @@
     bar.append(addMenuDropdown(st, p));
 
     // Clip actions on the selected clip (also bound to S / Delete).
-    const { hasSel, focusId, saveable } = clipToolbarState(st);
+    const { ids, hasSel, focusId, saveable, saveableN } = clipToolbarState(st);
+    const selN = ids.length;
+    const { exportTitle, binTitle } = exportSaveTitles(hasSel, saveable, saveableN, selN);
+    const selBadge = el("span", "tl-sel-badge");
+    selBadge.dataset.tlSelBadge = "1";
+    selBadge.hidden = selN === 0;
+    if (selN > 0) selBadge.textContent = selN === 1 ? "1 clip selected" : `${selN} clips selected`;
     const split = el("button", "btn ghost tiny", "Split");
     split.dataset.needsSel = "1";
     split.title = hasSel ? "Split the selected clip at the playhead (S)" : "Select a clip first";
@@ -1143,20 +1202,12 @@
     del.onclick = () => S.removeSelectedScenes();
     const exp = el("button", "btn ghost tiny", "⤓ Export");
     exp.dataset.exportScene = "1";
-    exp.title = !hasSel
-      ? "Select a clip first"
-      : saveable
-        ? "Save the selected clip's rendered video to disk (renders are temporary)"
-        : "Generate the clip first, or select a video clip with media";
+    exp.title = exportTitle;
     exp.disabled = !(hasSel && saveable);
     exp.onclick = () => S.exportSelected();
     const saveBin = el("button", "btn ghost tiny", "Save to media bin");
     saveBin.dataset.saveMediabin = "1";
-    saveBin.title = !hasSel
-      ? "Select a clip first"
-      : saveable
-        ? "Copy the selected clip into the Media bin — add it back as a plain video clip"
-        : "Generate the clip first, or select a video clip with media";
+    saveBin.title = binTitle;
     saveBin.disabled = !(hasSel && saveable);
     saveBin.onclick = () => S.saveSelectedToMediaBin();
     const sepAud = el("button", "btn ghost tiny", "⊟ Separate audio");
@@ -1172,14 +1223,16 @@
     rmSepAud.title = "Remove the separated audio track for this clip";
     rmSepAud.disabled = !sepTrack;
     rmSepAud.onclick = () => { if (sepTrack) S.removeAudioTrack(sepTrack.id); };
-    bar.append(split); bar.append(del); bar.append(exp); bar.append(saveBin); bar.append(sepAud); bar.append(rmSepAud);
+    bar.append(split); bar.append(del); bar.append(selBadge); bar.append(exp); bar.append(saveBin); bar.append(sepAud); bar.append(rmSepAud);
     const conv = toolbarConvertButton(st);
     if (conv) bar.append(conv);
     bar.append(toolbarRatingBlock(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
     const keys = el("span", "tl-keys", "J/K/L · S split · I/O in/out · +/- zoom");
-    keys.title = "⌘/Ctrl-click toggles selection · Shift-click extends range · S splits at playhead · Delete removes focus clip";
+    keys.title = IS_MAC
+      ? "⌘-click toggles clip in selection · ⇧-click extends range · plain click replaces selection · S splits at playhead"
+      : "Ctrl-click toggles clip in selection · Shift-click extends range · plain click replaces selection · S splits at playhead";
     bar.append(keys);
     const zlabel = el("span", "tl-zlabel", "zoom"); bar.append(zlabel);
     const zout = el("button", "btn ghost tiny", "−"); zout.onclick = () => setZoom(pxPerSec / 1.4, { manual: true });
@@ -1297,12 +1350,6 @@
         S.addVideoClip(id);
       }
     });
-    track.addEventListener("click", (e) => {
-      const clip = e.target.closest(".clip:not(.ghost)[data-scene-id]");
-      if (!clip) return;
-      if (e.target.closest(".clip-head-bar, .clip-rm, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
-      onClipSelect(e, clip.dataset.sceneId);
-    });
     lay.forEach(({ seg, o, d }) => {
       if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
       else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));
@@ -1327,7 +1374,7 @@
     const active = scenes.filter((s) => !s.excluded).length;
     const ghosts = (st.sceneGhosts || []).length;
     const selN = S.selectedSceneCount ? S.selectedSceneCount() : selectedIds(st).length;
-    const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + (selN > 1 ? ` · ${selN} selected` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
+    const metaTxt = `${scenes.length} clips · ${active} active` + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "") + (selN > 0 ? ` · ${selN} selected` : "") + ` · ${timecode(totalSec, p.frame_rate)}`;
     meta.append(el("span", null, metaTxt));
     if (st.notice) {
       const note = el("span", "tl-notice", st.notice);

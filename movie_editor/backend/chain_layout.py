@@ -59,16 +59,16 @@ def scene_start_pixels(
     """Pixel-frame start index for each scene (0-based), length scene_count."""
     if scene_count <= 0:
         return []
+    pixel_span = max(1, int(num_frames_per_scene))
     starts = [0]
     by_boundary = _boundary_start_pixels(boundaries or [], time_scale)
     for i in range(1, scene_count):
         if i in by_boundary:
             starts.append(by_boundary[i])
             continue
-        latent_frames = expected_latent_frames(num_frames_per_scene, time_scale)
-        latent_overlap = latent_overlap_frames(frame_overlap, time_scale)
-        cum = latent_frames + (i - 1) * max(1, latent_frames - latent_overlap)
-        starts.append(latent_to_pixel_frame(cum, time_scale))
+        # Playback split: one full scene-length per index. Overlap is internal to the
+        # chain sampler only — never subtract it when mapping the finished decode.
+        starts.append(i * pixel_span)
     return starts
 
 

@@ -20,6 +20,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     PromptServer = None
 
 from .backend import bridge, builder, config, media, nodes, projects
+from .backend.nle_effects import zoompan_z_expr
 from .backend.timeline import (
     Project,
     build_combined_prompt,
@@ -500,11 +501,8 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
         ]
         zoom = fx.get("zoom")
         if zoom in ("in", "out") and dur > 0:
-            # VIRTUAL zoom: zoompan keeps the output fixed at the canvas size and scales the
-            # content within it (never changes the actual frame size). in: 1.0->1.2 (push in);
-            # out: 1.2->1.0 (pull back). Centered.
             nframes = max(1, round(dur * cfps))
-            z = f"1+0.20*on/{nframes}" if zoom == "in" else f"1.20-0.20*on/{nframes}"
+            z = zoompan_z_expr(zoom, fx, nframes)
             vf.append(
                 f"zoompan=z='{z}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
                 f":s={cw}x{ch}:fps={cfps:g}"

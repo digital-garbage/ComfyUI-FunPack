@@ -65,6 +65,17 @@
   function fpPlayer(st) {
     if (!st.project) return "none";
     const p = st.project;
+    // While the media bin preview overlay is open, ignore timeline/render churn so the
+    // preview video/image is not torn down on every generation tick.
+    if (st.mediaPreviewId) {
+      const m = (st.mediaBin || []).find((x) => x.id === st.mediaPreviewId);
+      return hash({
+        pid: p.id,
+        mediaPreview: st.mediaPreviewId,
+        previewAsset: m ? [m.id, m.kind, m.name] : null,
+        gen: { state: st.gen?.state, msg: st.gen?.msg },
+      });
+    }
     return hash({
       pid: p.id,
       scenes: (p.scenes || []).map((s) => [
@@ -94,6 +105,7 @@
       pid: st.project?.id,
       projects: st.projects?.length,
       media: st.mediaBin?.length,
+      mediaPreview: st.mediaPreviewId,
       chars: st.characters?.length,
       shortcuts: st.shortcuts?.length,
       transitions: st.transitions?.length,

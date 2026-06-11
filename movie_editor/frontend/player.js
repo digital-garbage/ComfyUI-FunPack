@@ -333,6 +333,28 @@
     }
   }
 
+  function _zoomEffectParams(fx, durSec, fps) {
+    const nframes = Math.max(1, Math.round(durSec * fps));
+    const ratio = Math.max(0.01, Math.min(0.5, +(fx.zoom_ratio ?? 0.15)));
+    let start = Math.max(0, Math.min(Math.round(+(fx.zoom_start_frame ?? 0)), Math.max(0, nframes - 1)));
+    const defaultLen = Math.min(Math.max(1, Math.floor(nframes / 4)), 25);
+    let length = Math.round(+(fx.zoom_frames ?? defaultLen));
+    length = Math.max(1, Math.min(length, Math.max(1, nframes - start)));
+    return { ratio, start, length, nframes };
+  }
+
+  function _zoomScale(fx, withinSec, durSec, fps) {
+    const mode = fx.zoom;
+    if (!mode || mode === "none") return 1;
+    const { ratio, start, length, nframes } = _zoomEffectParams(fx, durSec, fps);
+    const frame = Math.max(0, Math.min(nframes - 1, Math.round(withinSec * fps)));
+    const end = 1 + ratio;
+    if (frame < start) return mode === "in" ? 1 : end;
+    if (frame >= start + length) return mode === "in" ? end : 1;
+    const t = (frame - start) / length;
+    return mode === "in" ? 1 + ratio * t : end - ratio * t;
+  }
+
   // Live preview approximation of a clip's video effects (the render does the real thing).
   // within = seconds into the clip. Blur -> CSS blur on the video; zoom uses a clipped
   // viewport + inner scale layer (matches ffmpeg zoompan: fixed frame, centered crop).
@@ -342,12 +364,9 @@
     const fxLayer = v._pmFx;
     const fx = (clip && clip.fx) || {};
     const dur = (clip && clip.durationSec) || 0;
-    const t = dur > 0 ? Math.max(0, Math.min(1, within / dur)) : 0;
     const blur = +fx.blur || 0;
     v.style.filter = blur > 0 ? `blur(${(blur * 8).toFixed(1)}px)` : "";
-    let scale = 1;
-    if (fx.zoom === "in") scale = 1 + 0.2 * t;
-    else if (fx.zoom === "out") scale = 1.2 - 0.2 * t;
+    const scale = _zoomScale(fx, within, dur, _fpsCur || 25);
     if (fxLayer?.zoom) {
       fxLayer.zoom.style.transform = scale !== 1 ? `scale(${scale.toFixed(4)})` : "";
     }
@@ -662,9 +681,11 @@
     }).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;
-      const clip = _clipAt(_phSec);
-      if (clip) _goto(clip, _phSec - clip.startSec, _playing);
-      else if (_clips.length && !_active) _goto(_clips[0], 0, false);
+      if (!st.mediaPreviewId) {
+        const clip = _clipAt(_phSec);
+        if (clip) _goto(clip, _phSec - clip.startSec, _playing);
+        else if (_clips.length && !_active) _goto(_clips[0], 0, false);
+      }
     }
 
     const p = st.project;

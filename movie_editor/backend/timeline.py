@@ -466,7 +466,8 @@ class Scene:
     # rendered/previewed pixels at the seam.
     video_transition: str = ""
     # Per-scene post-decode video effects applied to this clip (pixel ops), keys:
-    #   {blur: 0..1, fade_in: sec, fade_out: sec, zoom: "none"|"in"|"out"}.
+    #   {blur: 0..1, fade_in: sec, fade_out: sec, zoom: "none"|"in"|"out",
+    #    zoom_ratio: 0..0.5, zoom_frames: int, zoom_start_frame: int}.
     effects: dict = field(default_factory=dict)
     # Gain applied to this clip's ORIGINAL (LTXAV) audio at render. 1.0 = unchanged, 0 = mute.
     audio_volume: float = 1.0
