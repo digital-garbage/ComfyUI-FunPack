@@ -544,7 +544,9 @@
     // display_prompt = verbatim timeline text; combined_prompt may include injected
     // "scene N" split markers used only when sending to Studio (for_generation).
     const pv = st.preview;
-    const live = (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || st.project.global_prompt || "";
+    const live = st.project.global_prompt
+      || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt))
+      || "";
     const dirty = gpDraft != null && gpDraft !== live;
     const val = gpDraft != null ? gpDraft : live;
 
@@ -560,7 +562,8 @@
       apply.disabled = true;
       apply.textContent = "Applying…";
       try {
-        const ok = await S.applyGlobalPrompt(gpDraft != null ? gpDraft : live);
+        const text = gpDraft != null ? gpDraft : live;
+        const ok = await S.applyGlobalPrompt(text);
         if (ok) gpDraft = null;
       } finally {
         apply.disabled = false;
@@ -640,10 +643,7 @@
       if (_editing) return;
       const k = t.dataset?.k;
       if (k === "global-prompt") {
-        const draft = gpDraft;
         S.flushSave();
-        if (draft != null) S.applyGlobalPromptQuiet(draft);
-        gpDraft = null;
         render(S.get());
         return;
       }

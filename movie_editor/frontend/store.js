@@ -176,8 +176,23 @@
   }
 
   let _timelinePromptTimer = null;
+  let _pinnedGlobalPrompt = null;
+
+  function _restorePinnedGlobalPrompt() {
+    const pin = (_pinnedGlobalPrompt || "").trim();
+    if (!pin || !state.project) return;
+    state.project.global_prompt = pin;
+    state.preview = {
+      ...(state.preview || {}),
+      display_prompt: pin,
+      combined_prompt: pin,
+    };
+    _dispatchGlobalPromptUpdated(pin);
+  }
+
   function syncGlobalPromptFromTimeline() {
     if (!state.project) return;
+    _pinnedGlobalPrompt = null;
     const built = buildGlobalPromptFromTimeline(state.project);
     const prev = (state.project.global_prompt || "").trim();
     if (built === prev && (state.preview?.display_prompt || "") === built) return;
@@ -204,7 +219,9 @@
   async function _distributeGlobalPrompt(text, res) {
     const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
     if (!(v.scenes || []).length) return false;
-    state.project.global_prompt = text;
+    const trimmed = String(text || "").trim();
+    _pinnedGlobalPrompt = trimmed;
+    state.project.global_prompt = trimmed;
     state.project.anchor = v.anchor || "";
     const old = state.project.scenes || [];
     const next = (v.scenes || []).map((ps, i) => {
@@ -222,8 +239,8 @@
     _selectionAnchorId = firstId;
     state.preview = {
       ...(state.preview || {}),
-      combined_prompt: text,
-      display_prompt: text,
+      combined_prompt: trimmed,
+      display_prompt: trimmed,
       parsed: res.parsed,
       parsed_raw: res.parsed_raw,
       parsed_verbatim: res.parsed_verbatim,
@@ -231,7 +248,7 @@
     };
     _lastPreviewKey = _promptPreviewKey(state.project);
     _invalidateGlobalPromptDraft();
-    _dispatchGlobalPromptUpdated(text);
+    _dispatchGlobalPromptUpdated(trimmed);
     notify();
     return true;
   }
@@ -240,7 +257,7 @@
     if (!state.project) return false;
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;
-    if (trimmed === buildGlobalPromptFromTimeline(state.project)) return true;
+    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) return true;
     let res;
     try { res = await API.parsePrompt(state.project.id, trimmed); }
     catch (e) {
@@ -443,9 +460,10 @@
     return commit();
   }
 
-  async function commit() {
+  async function commit(opts = {}) {
     if (!state.project) return;
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }
+    const skipPreviewRefresh = !!opts.skipPreviewRefresh;
     _commitPromise = (async () => {
       const snapshot = JSON.parse(JSON.stringify(state.project));
       _syncEditorStateToProject();
@@ -471,7 +489,7 @@
         const metaChanged = saved.name !== metaBefore.name
           || (saved.scenes || []).length !== metaBefore.scene_count;
         if (metaChanged) refreshProjectList(true);
-        if (previewStale) refreshPreview(true);
+        if (previewStale && !skipPreviewRefresh) refreshPreview(true);
         else if (selChanged) notify();
         _notifySaveChip();
       } catch (e) {
@@ -1088,6 +1106,8 @@
   // Existing per-scene source / length settings are carried over by index.
   async function applyGlobalPrompt(text) {
     if (!state.project) return false;
+    clearTimeout(_globalApplyTimer);
+    clearTimeout(_timelinePromptTimer);
     _historyRecord();
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
@@ -1105,7 +1125,10 @@
     state.saving = true;
     notify();
     try {
-      await commit();
+      await commit({ skipPreviewRefresh: true });
+      await refreshPreview(true);
+      _restorePinnedGlobalPrompt();
+      notify();
     } catch (e) {
       console.error("save after apply failed", e);
       return false;
@@ -1123,6 +1146,7 @@
       try {
         state.preview = await API.preview(state.project.id, false, true);
         _lastPreviewKey = _promptPreviewKey(state.project);
+        _restorePinnedGlobalPrompt();
       } catch (e) { state.preview = { parse_error: e.message }; }
       notify();
     };
