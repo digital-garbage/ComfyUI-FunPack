@@ -265,7 +265,7 @@
     const total = bin.length;
     const selN = mediaSelected.size;
 
-    const wrap = el("div", "bin");
+    const wrap = el("div", "bin" + (mediaSelectMode ? " media-select-mode" : ""));
     const drop = el("div", "mediabin");
     drop.append(el("div", "big", "🎞"));
     drop.append(el("div", null, "Drop images, video & audio here"));
