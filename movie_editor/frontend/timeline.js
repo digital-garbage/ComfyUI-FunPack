@@ -473,7 +473,6 @@
     const root = unitCuts > 1
       ? (p.scenes || []).find((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id) && !(s.cut_offset_frames > 0))
       : null;
-    const mref = anchorMediaRef(scene, p);
     const label = S.isVideoClip(scene)
       ? ((mref && (st.mediaBin || []).find((m) => m.id === mref)?.name) || "Video clip")
       : (scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
