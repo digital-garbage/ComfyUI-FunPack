@@ -149,6 +149,40 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur) -> None:
         raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
 
 
+def _scene_playback_clip_spec(project: Project, scene_id: str) -> dict:
+    """Export-matching trim spec for one scene's preview segment."""
+    scene = next((s for s in project.scenes if s.id == scene_id), None)
+    if not scene or scene.excluded:
+        raise KeyError(f"scene {scene_id}")
+    render = (project.scene_renders or {}).get(scene_id) or {}
+    media = render.get("media") or {}
+    if not media.get("filename"):
+        raise KeyError(f"no render for {scene_id}")
+    in_sec = float(scene.source_in or 0) + float(render.get("inSec") or 0)
+    if scene.source_dur is not None:
+        dur = float(scene.source_dur)
+    else:
+        fps = scene.eff_fps(project) or 25
+        dur = scene.eff_frames(project) / float(fps)
+    return {
+        "filename": media.get("filename", ""),
+        "subfolder": media.get("subfolder") or "",
+        "type": media.get("type") or "output",
+        "in": in_sec,
+        "dur": dur,
+    }
+
+
+_preview_segment_cache: dict[str, str] = {}
+
+
+def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
+    return (
+        f"{pid}:{scene_id}:{clip.get('filename')}:{clip.get('subfolder') or ''}:"
+        f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}"
+    )
+
+
 def _clip_bytes_for_media(clip: dict) -> bytes:
     """Read (and optionally trim) a clip spec into bytes for the media bin."""
     import os
@@ -1390,6 +1424,41 @@ if web is not None and PromptServer is not None:
         if not job:
             return web.json_response({"detail": "Render job not found."}, status=404)
         return web.json_response(job)
+
+    # --- API: preview segment (ffmpeg trim + faststart, same as export per scene) ---
+    @routes.get(UI_PREFIX + "/api/projects/{pid}/preview-segment/{scene_id}")
+    async def _preview_segment(req):
+        import os
+        pid = req.match_info["pid"]
+        scene_id = req.match_info["scene_id"]
+        proj = _project_or_404(pid)
+        try:
+            clip = _scene_playback_clip_spec(proj, scene_id)
+        except KeyError as e:
+            return web.json_response({"detail": str(e)}, status=404)
+        key = _preview_segment_cache_key(pid, scene_id, clip)
+        cached = _preview_segment_cache.get(key)
+        if cached and os.path.isfile(cached):
+            return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=3600"})
+        try:
+            import folder_paths
+            tempdir = folder_paths.get_temp_directory()
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Temp directory unavailable: {e}"}, status=500)
+        import time as _time
+        out_path = os.path.join(
+            tempdir,
+            f"funpack_preview_{pid[:8]}_{scene_id}_{int(_time.time() * 1000)}.mp4",
+        )
+        try:
+            src_path = _resolve_clip_src_path(clip)
+            _ffmpeg_trim_clip(src_path, out_path, clip.get("in"), clip.get("dur"))
+        except FileNotFoundError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        except RuntimeError as e:
+            return web.json_response({"detail": str(e)}, status=503)
+        _preview_segment_cache[key] = out_path
+        return web.FileResponse(out_path, headers={"Cache-Control": "private, max-age=3600"})
 
     # --- API: export one clip (ffmpeg trim from a chain output using in/dur) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/export-clip")

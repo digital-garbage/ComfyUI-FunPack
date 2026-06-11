@@ -48,7 +48,13 @@
   let _currentClip = null;
 
   const _urlFor = (media) => API.resultUrl(S.get().project?.id, media);
-  const _clipUrl = (clip) => clip.binUrl || (clip.media ? _urlFor(clip.media) : "");
+  const _clipUrl = (clip) => (clip && clip.streamUrl) || clip.binUrl || (clip.media ? _urlFor(clip.media) : "");
+  const _clipInSec = (clip) => ((clip && clip.streamUrl) ? 0 : ((clip && clip.inSec) || 0));
+  const _mediaChainKey = (clip) => {
+    if (!clip?.media?.filename) return null;
+    const m = clip.media;
+    return `${m.type || "output"}:${m.subfolder || ""}:${m.filename}`;
+  };
   const _clampT = (v, t) => Math.max(0, Math.min(t, (v.duration || (t + 1)) - 0.02));
 
   function _applyVideoTime(v, target, fast) {
@@ -103,7 +109,26 @@
 
   function _clipWithinSec() {
     if (!_active || !_currentClip || _currentClip.pending) return 0;
-    return _active.currentTime - (_currentClip.inSec || 0);
+    return _active.currentTime - _clipInSec(_currentClip);
+  }
+
+  // Multi-scene chain outputs share one ComfyUI file; deep seeks fail in the browser
+  // unless the MP4 is faststart-trimmed like export. Serve per-scene segments instead.
+  function _assignChainPreviewSegments(st, clips) {
+    const pid = st.project?.id;
+    if (!pid || !API.previewSegmentUrl) return;
+    const groups = new Map();
+    for (const c of clips) {
+      if (c.pending || c.ghost || c.binUrl || !c.sceneId) continue;
+      const k = _mediaChainKey(c);
+      if (!k) continue;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(c);
+    }
+    for (const list of groups.values()) {
+      if (list.length < 2) continue;
+      for (const c of list) c.streamUrl = API.previewSegmentUrl(pid, c.sceneId);
+    }
   }
 
   function _onVideoSeeked(v) {
@@ -226,6 +251,7 @@
         });
       }
     }
+    _assignChainPreviewSegments(st, out);
     return out;
   }
 
@@ -376,7 +402,7 @@
   }
 
   function _syncPool() {
-    const urls = new Set(_clips.filter((c) => c.media || c.binUrl).map((c) => _clipUrl(c)));
+    const urls = new Set(_clips.filter((c) => c.media || c.binUrl || c.streamUrl).map((c) => _clipUrl(c)));
     urls.forEach((u) => _ensureVideo(u));
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
@@ -509,11 +535,11 @@
       if (play) _startTick();
       return;
     }
-    if (!clip.media && !clip.binUrl) return;
+    if (!clip.media && !clip.binUrl && !clip.streamUrl) return;
     const v = _ensureVideo(_clipUrl(clip));
     _currentClip = clip; _setActive(v);
     _applyClipUi(clip);
-    const target = (clip.inSec || 0) + Math.max(0, offset);
+    const target = _clipInSec(clip) + Math.max(0, offset);
     if (v.readyState >= 1) {
       if (play && Math.abs(v.currentTime - _clampT(v, target)) > 0.04) _clipBoundaryToken++;
       _applyVideoTime(v, target, !play);
@@ -542,8 +568,8 @@
       && _urlFor(next.media) === _urlFor(prev.media);
     const sameBin = next.binUrl && prev.binUrl && next.binUrl === prev.binUrl;
     const sharedSource = sameSource || sameBin;
-    const contiguous = sharedSource
-      && Math.abs((next.inSec || 0) - ((prev.inSec || 0) + prev.durationSec)) < 0.05;
+    const contiguous = sharedSource && !prev.streamUrl && !next.streamUrl
+      && Math.abs(_clipInSec(next) - (_clipInSec(prev) + prev.durationSec)) < 0.05;
     _phSec = next.startSec;
     _currentClip = next;
     const crossClip = next.sceneId !== prev.sceneId || next.ghostId !== prev.ghostId;
@@ -580,7 +606,7 @@
       return;
     }
     if (!_active) {
-      if (_currentClip.media || _currentClip.binUrl) {
+      if (_currentClip.media || _currentClip.binUrl || _currentClip.streamUrl) {
         _goto(_currentClip, Math.max(0, _phSec - _currentClip.startSec), true);
         if (_playing) _raf = requestAnimationFrame(_tick);
         return;
@@ -616,17 +642,17 @@
       && (clip.media || clip.binUrl);
     if (sameVideo && _active.readyState >= 1) {
       const crossScene = prevClip && clip && prevClip !== clip
-        && (prevClip.sceneId !== clip.sceneId || Math.abs((prevClip.inSec || 0) - (clip.inSec || 0)) > 0.05);
+        && (prevClip.sceneId !== clip.sceneId || Math.abs(_clipInSec(prevClip) - _clipInSec(clip)) > 0.05);
       _currentClip = clip;
       _applyClipUi(clip);
-      const target = (clip.inSec || 0) + Math.max(0, offset);
+      const target = _clipInSec(clip) + Math.max(0, offset);
       if (crossScene) _flushVideoSeek(true);
       _scheduleVideoSeek(target, clip, offset);
     } else if (!sameClip || clip.pending) {
       _flushVideoSeek(true);
       _goto(clip, offset, false);
     } else if (!clip.pending && (clip.media || clip.binUrl)) {
-      const target = (clip.inSec || 0) + Math.max(0, offset);
+      const target = _clipInSec(clip) + Math.max(0, offset);
       const v = _active;
       if (v && v.readyState >= 1) _scheduleVideoSeek(target, clip, offset);
       else _goto(clip, offset, false);
@@ -873,7 +899,7 @@
     const hash = _clips.map((c) => {
       if (c.pending) return "pending:" + (c.sceneId || c.ghostId || "");
       if (c.ghost) return "ghost:" + c.ghostId;
-      return (_clipUrl(c) || "x") + "@" + c.startSec.toFixed(2) + "+" + (c.inSec || 0).toFixed(2);
+      return (_clipUrl(c) || "x") + "@" + c.startSec.toFixed(2) + "+" + _clipInSec(c).toFixed(2);
     }).join("|");
     if (hash !== _lastSegHash) {
       _lastSegHash = hash;

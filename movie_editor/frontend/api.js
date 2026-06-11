@@ -121,6 +121,8 @@
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +
       `&subfolder=${encodeURIComponent(m.subfolder || "")}&type=${encodeURIComponent(m.type || "output")}`,
+    previewSegmentUrl: (id, sceneId) =>
+      API(`/projects/${id}/preview-segment/${encodeURIComponent(sceneId)}`),
   };
 
   window.MovieEditorAPI = ClientAPI;

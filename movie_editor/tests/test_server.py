@@ -12,6 +12,7 @@ from movie_editor.server import (
     _resolve_run_seed,
     _run_sampler_inputs,
     _run_studio_inputs,
+    _scene_playback_clip_spec,
     _shortcut_seed,
 )
 
@@ -281,3 +282,25 @@ def test_clip_bytes_copy_from_media_bin(tmp_path, monkeypatch):
     assert _clip_needs_trim({"bin_media_ref": entry["id"]}) is False
     assert _clip_bytes_for_media({"bin_media_ref": entry["id"]}) == b"MP4DATA"
     assert _clip_needs_trim({"bin_media_ref": entry["id"], "in": 1.0}) is True
+
+
+def test_scene_playback_clip_spec_chain_offsets():
+    p = _project(scenes=[
+        {"id": "s1", "text": "a"},
+        {"id": "s2", "text": "b", "source_in": 0.5},
+        {"id": "s3", "text": "c", "source_dur": 2.5},
+    ], frame_rate=25, num_frames_per_scene=97)
+    p.scene_renders = {
+        "s1": {"inSec": 0, "media": {"filename": "chain.mp4", "subfolder": "", "type": "output"}},
+        "s2": {"inSec": 3.88, "media": {"filename": "chain.mp4", "subfolder": "", "type": "output"}},
+        "s3": {"inSec": 7.4, "media": {"filename": "chain.mp4", "subfolder": "", "type": "output"}},
+    }
+    c1 = _scene_playback_clip_spec(p, "s1")
+    c2 = _scene_playback_clip_spec(p, "s2")
+    c3 = _scene_playback_clip_spec(p, "s3")
+    assert c1["in"] == 0
+    assert c1["dur"] == 97 / 25
+    assert c2["in"] == 3.88 + 0.5
+    assert c3["in"] == 7.4
+    assert c3["dur"] == 2.5
+    assert c1["filename"] == c2["filename"] == c3["filename"] == "chain.mp4"
