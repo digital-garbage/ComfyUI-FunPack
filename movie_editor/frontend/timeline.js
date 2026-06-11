@@ -46,6 +46,18 @@
     }
     head.append(el("span", "clip-src", SRC_ICON[srcType] || "▦"));
   }
+
+  function appendClipHeadBar(head, durSec, fps, onRemove, removeTitle) {
+    const bar = el("div", "clip-head-bar");
+    bar.append(el("span", "clip-dur", timecode(durSec, fps)));
+    const rm = el("button", "clip-rm btn ghost tiny danger", "Remove");
+    rm.type = "button";
+    rm.title = removeTitle || "Remove clip (Delete / Backspace)";
+    rm.onclick = (e) => { e.stopPropagation(); onRemove(); };
+    bar.append(rm);
+    head.append(bar);
+  }
+
   const ZOOM_KEY = "funpack_tl_zoom";
   const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
   const AUDIO_LANE_H = 44;
@@ -368,16 +380,11 @@
     head.append(el("span", "clip-src", "👻"));
     const fps = (ghost.fps_mode !== "project" && ghost.fps != null) ? ghost.fps : p.frame_rate;
     const frames = (ghost.frames_mode !== "project" && ghost.frames != null) ? ghost.frames : p.num_frames_per_scene;
-    head.append(el("span", "clip-dur", timecode((frames || 1) / (fps || 25), fps || 25)));
+    appendClipHeadBar(head, (frames || 1) / (fps || 25), fps || 25,
+      () => S.dismissGhost(ghost.id), "Remove ghost from preview");
     clip.append(head);
     const label = ghost.pendingGen ? "removed · generating…" : (ghost.text || "removed scene");
     clip.append(el("div", "clip-text ghost-label", label));
-    const actions = el("div", "clip-actions");
-    const dismiss = el("button", "ic-btn", "✕");
-    dismiss.title = "Dismiss ghost from preview";
-    dismiss.onclick = (e) => { e.stopPropagation(); S.dismissGhost(ghost.id); };
-    actions.append(dismiss);
-    clip.append(actions);
     return clip;
   }
 
@@ -401,7 +408,7 @@
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
     clip.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
+      if (e.button !== 0 || e.target.closest(".clip-head-bar, .clip-rm, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
       const startX = e.clientX;
       let dragging = false, drop = null;
       const track = clip.parentNode;
@@ -476,7 +483,7 @@
     const head = el("div", "clip-head");
     head.append(el("span", "clip-no", S.isVideoClip(scene) ? "V" : p2(index + 1)));
     appendSrcBadge(head, srcType);
-    head.append(el("span", "clip-dur", timecode(sDur(scene, p), sFps(scene, p))));
+    appendClipHeadBar(head, sDur(scene, p), sFps(scene, p), () => S.removeScene(scene.id));
     clip.append(head);
 
     const root = unitCuts > 1
@@ -538,21 +545,6 @@
         }
       }
     }
-
-    const actions = el("div", "clip-actions");
-    const mk = (label, title, cls, fn) => { const b = el("button", "ic-btn" + (cls ? " " + cls : ""), label); b.title = title; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
-    actions.append(mk("⟈", "Split clip at playhead", "", () => {
-      const offsetSec = leftPx / pxPerSec, durSec = sDur(scene, p), fps = sFps(scene, p);
-      const ph = window.Player?.getPlayhead() ?? 0;
-      let at = null;
-      if (ph > offsetSec + 0.05 && ph < offsetSec + durSec - 0.05)
-        at = Math.round((ph - offsetSec) * fps);
-      S.splitScene(scene.id, at);
-    }));
-    actions.append(mk("‹", "Move left", "", () => S.moveScene(scene.id, -1)));
-    actions.append(mk("›", "Move right", "", () => S.moveScene(scene.id, 1)));
-    actions.append(mk("✕", "Delete clip", "danger", () => S.removeScene(scene.id)));
-    clip.append(actions);
 
     // right-edge trim → new duration → frames recomputed (duration × fps).
     const locked = scene.frames_mode === "custom";
@@ -1055,11 +1047,11 @@
     // Clip actions on the selected clip (also bound to S / Delete).
     const selIds = selectedIds(st);
     const hasSel = selIds.length > 0;
-    const split = el("button", "btn ghost tiny", "⧅ Split");
+    const split = el("button", "btn ghost tiny", "Split");
     split.dataset.needsSel = "1";
     split.title = "Split the selected clip at the playhead (S)"; split.disabled = !hasSel;
     split.onclick = () => splitSelectedAtPlayhead();
-    const del = el("button", "btn ghost tiny danger", "✕ Remove");
+    const del = el("button", "btn ghost tiny danger", "Remove");
     del.dataset.needsSel = "1";
     del.title = "Remove selected clip(s) (Delete / Backspace)"; del.disabled = !hasSel;
     del.onclick = () => S.removeSelectedScenes();
@@ -1194,7 +1186,7 @@
     track.addEventListener("click", (e) => {
       const clip = e.target.closest(".clip:not(.ghost)[data-scene-id]");
       if (!clip) return;
-      if (e.target.closest(".clip-actions, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
+      if (e.target.closest(".clip-head-bar, .clip-rm, .clip-trim, .clip-vt-tail, .seam-cut, button")) return;
       onClipSelect(e, clip.dataset.sceneId);
     });
     lay.forEach(({ seg, o, d }) => {

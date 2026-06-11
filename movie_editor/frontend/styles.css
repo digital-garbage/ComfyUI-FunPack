@@ -687,13 +687,15 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip-src.carry-only { font-size: 12px; color: var(--teal-soft); opacity: .85; }
 .pm-segment-badge.mixed-mode { color: #c8fff4; border-color: color-mix(in srgb, var(--teal-soft) 45%, var(--line)); }
 /* a clip that has a rendered video available (in temp) */
-.clip.rendered::after { content: "●"; position: absolute; top: 4px; right: 6px; font-size: 7px;
-  color: #57c98e; text-shadow: 0 0 5px rgba(87,201,142,.7); pointer-events: none; z-index: 4; }
+.clip.rendered::after { content: "●"; position: absolute; bottom: 5px; right: 10px; top: auto; font-size: 7px;
+  color: #57c98e; text-shadow: 0 0 5px rgba(87,201,142,.7); pointer-events: none; z-index: 1; }
 .clip.trimming { border-color: var(--amber); z-index: 5; }
-.clip-head { display: flex; align-items: center; gap: 6px; }
-.clip-no { font-family: var(--font-mono); font-size: 11px; color: var(--amber); font-weight: 600; }
-.clip-src { font-size: 12px; color: var(--faint); }
-.clip-dur { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+.clip-head { display: flex; align-items: center; gap: 6px; min-width: 0; flex-shrink: 0; position: relative; z-index: 2; }
+.clip-head-bar { margin-left: auto; display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.clip-no { font-family: var(--font-mono); font-size: 11px; color: var(--amber); font-weight: 600; flex-shrink: 0; }
+.clip-src { font-size: 12px; color: var(--faint); flex-shrink: 0; }
+.clip-dur { font-family: var(--font-mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
+.clip-rm.btn.tiny { padding: 1px 6px; font-size: 10px; line-height: 1.25; flex-shrink: 0; }
 .clip-text { font-size: 12px; line-height: 1.35; color: var(--text); overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .clip-text.empty { color: var(--faint); font-style: italic; }
@@ -722,8 +724,6 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip.stale-render.rendered::after { color: var(--amber-2); text-shadow: 0 0 5px rgba(224, 162, 58, .7); }
 .clip-gen-anchor .clip-gen-prompt-label { color: var(--teal-soft); }
 .clip-gen-anchor .clip-gen-prompt-text { color: #c8fff4; }
-.clip-actions { position: absolute; top: 5px; right: 8px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
-.clip:hover .clip-actions { opacity: 1; }
 .ic-btn { width: 18px; height: 18px; padding: 0; font-size: 11px; line-height: 1; border: 1px solid var(--line);
   background: var(--ink-1); color: var(--muted); border-radius: 4px; cursor: pointer; }
 .ic-btn:hover { color: var(--text); border-color: var(--muted); }
