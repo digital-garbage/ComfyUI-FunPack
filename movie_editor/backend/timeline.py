@@ -325,24 +325,38 @@ def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dic
 
 
 def continuity_media_refs(full: Project, target: Project) -> list[str]:
-    """Extra media-bin ids to copy for auto continuity (pin + prior anchors)."""
+    """Media-bin ids that must exist for the active continuity/guide path."""
     cs = continuity_settings_for_run(full)
     char_map = _load_character_map()
-    refs: list[str] = list(character_media_refs_for_project(full, char_map))
-    if cs["auto_enabled"] and cs["identity_pin_ref"]:
-        refs.append(cs["identity_pin_ref"])
-    for sc in full.scenes:
-        if sc.excluded:
-            continue
-        pin = resolve_scene_identity_pin(sc, char_map, cs)
-        if pin:
-            refs.append(pin)
-    payload = build_auto_continuity_guides(full, target)
-    if payload:
-        for scene_list in payload.get("scenes") or []:
-            for g in scene_list or []:
-                if g.get("source") == "image" and g.get("media_ref"):
-                    refs.append(g["media_ref"])
+    refs: list[str] = []
+
+    if cs["auto_enabled"]:
+        refs.extend(character_media_refs_for_project(full, char_map))
+        if cs["identity_pin_ref"]:
+            refs.append(cs["identity_pin_ref"])
+        for sc in full.scenes:
+            if sc.excluded:
+                continue
+            pin = resolve_scene_identity_pin(sc, char_map, cs)
+            if pin:
+                refs.append(pin)
+        payload = build_auto_continuity_guides(full, target)
+        if payload:
+            for scene_list in payload.get("scenes") or []:
+                for g in scene_list or []:
+                    if g.get("source") == "image" and g.get("media_ref"):
+                        refs.append(g["media_ref"])
+
+    gs = normalize_guide_settings(full.guide_settings)
+    if gs["stack_enabled"]:
+        for sc in full.scenes:
+            if sc.excluded:
+                continue
+            for raw in (sc.guides or []):
+                g = GuideEntry.from_dict(raw if isinstance(raw, dict) else {})
+                if g.enabled and g.source == "image" and g.media_ref:
+                    refs.append(g.media_ref)
+
     return list(dict.fromkeys(refs))
 
 

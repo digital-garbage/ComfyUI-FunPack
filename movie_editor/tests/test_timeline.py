@@ -368,6 +368,16 @@ def test_character_bible_refs_in_continuity_media():
     )
     refs = continuity_media_refs(p, p)
     assert refs == ["f1", "b1", "d1"]
+    p.continuity_settings = {"auto_enabled": False}
+    assert continuity_media_refs(p, p) == []
+
+
+def test_stale_identity_pin_ignored_when_auto_off():
+    p = _project(
+        continuity_settings={"auto_enabled": False, "identity_pin_ref": "stale_pin"},
+        scenes=[{"text": "a"}, {"text": "b", "source": {"type": "carry"}}],
+    )
+    assert continuity_media_refs(p, p) == []
 
 
 def test_scene_character_media_refs(monkeypatch):

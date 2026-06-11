@@ -424,7 +424,7 @@ def _scene_media_ref_map(media_pack: Optional[dict]) -> dict[str, str]:
 
 
 def _missing_continuity_media(full: Project, target: Project) -> list[str]:
-    """Media-bin ids referenced by continuity guides/pins that are missing on disk."""
+    """Media-bin ids referenced by active continuity or manual guide stacks."""
     from .backend.timeline import continuity_media_refs
 
     missing: list[str] = []
@@ -1171,7 +1171,7 @@ if web is not None and PromptServer is not None:
         if missing_media:
             ids = ", ".join(missing_media)
             return web.json_response(
-                {"detail": f"Missing media for identity pin or continuity guides ({ids}). Re-upload or pick another image."},
+                {"detail": f"Missing media for continuity or guide stack ({ids}). Re-upload or clear the reference in Engine settings / Scene inspector."},
                 status=400,
             )
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.
