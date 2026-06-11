@@ -280,11 +280,21 @@ input[type=number] { font-family: var(--font-mono); }
 .media-kind-badge.kind-video { color: var(--amber-2); border-color: color-mix(in srgb, var(--amber-2) 35%, transparent); }
 .media-kind-badge.kind-audio { color: #c4b0ff; border-color: color-mix(in srgb, #b8a0ff 35%, transparent); }
 .media-kind-badge.kind-other { color: var(--muted); }
-.media-name { font-size: 10px; color: var(--muted); padding: 3px 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.media-del { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; padding: 0; font-size: 10px; line-height: 1;
-  border: none; border-radius: 4px; background: #000a; color: #fff8; cursor: pointer; opacity: 0; transition: opacity .12s; }
-.media-card:hover .media-del { opacity: 1; }
-.media-del:hover { color: var(--danger); }
+.media-name-row { display: flex; align-items: center; gap: 2px; padding: 2px 3px 3px; min-height: 22px; }
+.media-name { flex: 1; min-width: 0; font-size: 10px; color: var(--muted); padding: 1px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.media-name-actions { display: flex; flex-shrink: 0; gap: 1px; opacity: 0; transition: opacity .12s; }
+.media-card:hover .media-name-actions,
+.media-card:focus-within .media-name-actions { opacity: 1; }
+.media-act {
+  width: 16px; height: 16px; padding: 0; font-size: 10px; line-height: 1; flex-shrink: 0;
+  border: none; border-radius: 3px; background: var(--ink-2); color: var(--muted); cursor: pointer;
+}
+.media-act:hover { color: var(--amber-2); background: var(--ink-3); }
+.media-act.media-del:hover { color: var(--danger); }
+.media-name-edit {
+  flex: 1; min-width: 0; box-sizing: border-box; margin: 0; padding: 2px 4px; font-size: 10px;
+  background: var(--ink-0); border: 1px solid var(--amber); border-radius: 4px; color: var(--text);
+}
 .media-card.picked { border-color: var(--amber); box-shadow: 0 0 0 1px color-mix(in srgb, var(--amber) 35%, transparent); }
 .media-bin-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .media-bin-footer { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 2px; align-items: center; }
@@ -301,18 +311,6 @@ input[type=number] { font-family: var(--font-mono); }
   color: var(--faint); padding: 6px 2px 2px; margin-top: 2px;
 }
 .media-group-hdr:first-child { margin-top: 0; padding-top: 2px; }
-.media-exp { position: absolute; top: 2px; right: 20px; width: 16px; height: 16px; padding: 0; font-size: 10px; line-height: 1;
-  border: none; border-radius: 4px; background: #000a; color: #fff8; cursor: pointer; opacity: 0; transition: opacity .12s; }
-.media-ren { position: absolute; top: 2px; right: 38px; width: 16px; height: 16px; padding: 0; font-size: 10px; line-height: 1;
-  border: none; border-radius: 4px; background: #000a; color: #fff8; cursor: pointer; opacity: 0; transition: opacity .12s; }
-.media-card:hover .media-exp,
-.media-card:hover .media-ren { opacity: 1; }
-.media-exp:hover { color: var(--amber-2); }
-.media-ren:hover { color: var(--amber-2); }
-.media-name-edit {
-  width: 100%; box-sizing: border-box; margin: 0; padding: 2px 4px; font-size: 10px;
-  background: var(--ink-0); border: 1px solid var(--amber); border-radius: 4px; color: var(--text);
-}
 .media-select-btn.active { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); background: color-mix(in srgb, var(--amber) 8%, var(--ink-0)); }
 .media-select-mode .media-card { cursor: default; }
 .media-select-mode .media-card:not(.picked):hover { border-color: var(--amber-2); }

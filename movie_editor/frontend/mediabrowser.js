@@ -399,27 +399,32 @@
     _appendMediaThumb(thumb, m);
     _appendMediaKindBadge(thumb, m);
     card.append(thumb);
+    const nameRow = el("div", "media-name-row");
     const nameEl = el("div", "media-name", m.name);
     nameEl.title = "Double-click to rename";
     nameEl.ondblclick = (e) => { e.stopPropagation(); _beginMediaRename(m, nameEl); };
-    card.append(nameEl);
-    const ren = el("button", "media-ren", "✎");
+    nameRow.append(nameEl);
+    const actions = el("div", "media-name-actions");
+    const ren = el("button", "media-act media-ren", "✎");
     ren.title = "Rename";
     ren.onclick = (e) => {
       e.stopPropagation();
       const cur = card.querySelector(".media-name");
       if (cur) _beginMediaRename(m, cur);
     };
-    card.append(ren);
+    actions.append(ren);
     if (m.kind === "image" || m.kind === "video") {
-      const exp = el("button", "media-exp", "⤓");
+      const exp = el("button", "media-act media-exp", "⤓");
       exp.title = "Export to disk";
       exp.onclick = (e) => { e.stopPropagation(); S.exportMediaAsset(m.id); };
-      card.append(exp);
+      actions.append(exp);
     }
-    const del = el("button", "media-del", "✕"); del.title = "Delete asset";
+    const del = el("button", "media-act media-del", "✕");
+    del.title = "Delete asset";
     del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
-    card.append(del);
+    actions.append(del);
+    nameRow.append(actions);
+    card.append(nameRow);
     card.onclick = () => {
       if (mediaSelectMode) {
         if (picked) mediaSelected.delete(m.id);
