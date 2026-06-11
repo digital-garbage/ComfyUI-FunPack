@@ -152,6 +152,8 @@ def layout_from_boundaries_json(data: dict, fps: float) -> Optional[list[dict[st
 
 
 def layout_from_history_entry(entry: dict, fps: float) -> Optional[list[dict[str, Any]]]:
+    """Pick the richest scene_boundaries JSON from ComfyUI history (longest layout wins)."""
+    best: Optional[list[dict[str, Any]]] = None
     for node_out in (entry.get("outputs") or {}).values():
         for text in node_out.get("text") or []:
             if not isinstance(text, str):
@@ -164,6 +166,6 @@ def layout_from_history_entry(entry: dict, fps: float) -> Optional[list[dict[str
             except json.JSONDecodeError:
                 continue
             layout = layout_from_boundaries_json(data, fps)
-            if layout:
-                return layout
-    return None
+            if layout and (best is None or len(layout) > len(best)):
+                best = layout
+    return best

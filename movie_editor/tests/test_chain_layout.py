@@ -1,7 +1,10 @@
+import json
+
 from movie_editor.backend.chain_layout import (
     latent_overlap_frames,
     latent_to_pixel_frame,
     layout_from_boundaries_json,
+    layout_from_history_entry,
     scene_playback_layout,
     scene_start_pixels,
 )
@@ -69,3 +72,50 @@ def test_scene_playback_layout_fps():
     )
     assert len(layout) == 2
     assert layout[1]["in_sec"] == round(97 / 24.0, 6)
+
+
+def test_three_scene_playback_in_sec():
+    layout = scene_playback_layout(
+        3,
+        fps=25.0,
+        num_frames_per_scene=97,
+        frame_overlap=16,
+        time_scale=8,
+        boundaries=[
+            {"between": [1], "pixel_frame": 97},
+            {"between": [2], "pixel_frame": 185},
+        ],
+    )
+    assert len(layout) == 3
+    assert layout[2]["start_frame"] == 185
+    assert abs(layout[2]["in_sec"] - 185 / 25.0) < 1e-6
+
+
+def test_layout_from_history_picks_longest():
+    two_scene = {
+        "scene_count": 2,
+        "frames_per_scene_pixel": 97,
+        "pixel_overlap": 16,
+        "time_scale": 8,
+        "boundaries": [{"between_scenes": [1, 2], "pixel_frame": 97}],
+    }
+    three_scene = {
+        "scene_count": 3,
+        "frames_per_scene_pixel": 97,
+        "pixel_overlap": 16,
+        "time_scale": 8,
+        "boundaries": [
+            {"between_scenes": [1, 2], "pixel_frame": 97},
+            {"between_scenes": [2, 3], "pixel_frame": 185},
+        ],
+    }
+    entry = {
+        "outputs": {
+            "a": {"text": [json.dumps(two_scene)]},
+            "b": {"text": [json.dumps(three_scene)]},
+        }
+    }
+    layout = layout_from_history_entry(entry, fps=25.0)
+    assert layout is not None
+    assert len(layout) == 3
+    assert layout[2]["start_frame"] == 185

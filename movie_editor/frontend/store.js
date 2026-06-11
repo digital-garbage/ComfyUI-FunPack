@@ -1663,20 +1663,90 @@
     const overlapFrames = scenes.length > 1 ? +(p?.sampler_inputs?.frame_overlap ?? 16) : 0;
     const overlapSec = Math.max(0, overlapFrames / fps);
     const sourceSpanSec = frames / fps;
-    return { frames, fps, overlapSec, sourceSpanSec };
+    return { frames, fps, overlapSec, sourceSpanSec, overlapFrames };
+  }
+
+  // Chain units in a run (subclips share one layout slot).
+  function _chainUnitCount(sceneIds) {
+    let n = 0;
+    let lastUid = null;
+    for (const id of sceneIds || []) {
+      const sc = scene(id);
+      if (!sc) continue;
+      const uid = genUnitId(sc);
+      if (uid !== lastUid) { n += 1; lastUid = uid; }
+    }
+    return n;
+  }
+
+  // Mirrors movie_editor/backend/chain_layout.py for client-side fallback.
+  function _latentToPixelFrame(latentFrame, timeScale) {
+    const lf = Math.max(0, Math.floor(latentFrame));
+    const ts = Math.max(1, Math.floor(timeScale));
+    if (ts > 1) return lf > 0 ? (lf - 1) * ts + 1 : 0;
+    return lf;
+  }
+  function _expectedLatentFrames(pixelFrames, timeScale) {
+    return Math.floor((Math.max(1, pixelFrames) - 1) / Math.max(1, timeScale)) + 1;
+  }
+  function _latentOverlapFrames(frameOverlap, timeScale) {
+    if (frameOverlap <= 0) return 0;
+    return _expectedLatentFrames(frameOverlap + 1, timeScale) - 1;
+  }
+  function _fallbackChainPlaybackLayout(sceneIds) {
+    const unitCount = _chainUnitCount(sceneIds);
+    if (unitCount <= 1) return null;
+    const run = _chainRunLayout(sceneIds);
+    const timeScale = 8; // LTX VAE default; sampler boundaries JSON carries the authoritative value
+    const latentFrames = _expectedLatentFrames(run.frames, timeScale);
+    const latentOverlap = _latentOverlapFrames(run.overlapFrames, timeScale);
+    const starts = [0];
+    for (let i = 1; i < unitCount; i++) {
+      const cum = latentFrames + (i - 1) * Math.max(1, latentFrames - latentOverlap);
+      starts.push(_latentToPixelFrame(cum, timeScale));
+    }
+    return starts.map((start, i) => ({
+      scene_index: i,
+      start_frame: start,
+      in_sec: Math.round(start / run.fps * 1e6) / 1e6,
+    }));
+  }
+  function _resolveSceneLayout(sceneIds, sceneLayout) {
+    const need = _chainUnitCount(sceneIds);
+    if (need <= 1) return sceneLayout;
+    const fallback = _fallbackChainPlaybackLayout(sceneIds);
+    if (!sceneLayout || !sceneLayout.length) return fallback;
+    if (sceneLayout.length >= need) return sceneLayout;
+    if (!fallback) return sceneLayout;
+    const out = sceneLayout.slice();
+    for (let i = out.length; i < need; i++) {
+      if (fallback[i]) out.push(fallback[i]);
+    }
+    return out;
+  }
+  function _layoutSlot(sceneLayout, chainSceneIdx) {
+    if (!sceneLayout || !sceneLayout.length) return null;
+    const byIndex = sceneLayout.find((s) => (s.scene_index ?? s.sceneIndex) === chainSceneIdx);
+    if (byIndex) return byIndex;
+    return sceneLayout[chainSceneIdx] || null;
   }
 
   function _recordInSec(lastChain, sourceEnd, curr, sceneLayout, chainSceneIdx) {
+    const slot = _layoutSlot(sceneLayout, chainSceneIdx);
+    if (slot) return slot.inSec != null ? slot.inSec : (slot.in_sec != null ? slot.in_sec : 0);
     if (!lastChain) return 0;
     if (genUnitId(lastChain) === genUnitId(curr)) return sourceEnd;
-    const slot = sceneLayout && sceneLayout[chainSceneIdx];
-    if (slot) return slot.inSec != null ? slot.inSec : (slot.in_sec != null ? slot.in_sec : 0);
     // Decoded chain output advances by full scene spans; overlap is blended in latent space only.
     return Math.max(0, sourceEnd);
   }
 
-  function _recordSourceStepSec(lastChain, curr, layout) {
+  function _recordSourceStepSec(lastChain, curr, layout, sceneLayout, chainSceneIdx, inSec) {
     if (lastChain && genUnitId(lastChain) === genUnitId(curr)) return sceneDurationSec(curr);
+    const nextSlot = _layoutSlot(sceneLayout, chainSceneIdx + 1);
+    if (nextSlot) {
+      const nextIn = nextSlot.inSec != null ? nextSlot.inSec : (nextSlot.in_sec != null ? nextSlot.in_sec : 0);
+      return Math.max(0, nextIn - inSec);
+    }
     return layout.sourceSpanSec;
   }
 
@@ -1756,7 +1826,7 @@
     const ids = targetSceneIds.slice(0, Math.max(0, completedScenes));
     if (!ids.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
-    const sceneLayout = opts?.sceneLayout || null;
+    const sceneLayout = _resolveSceneLayout(ids, opts?.sceneLayout || null);
     const layout = _chainRunLayout(ids);
     let sourceEnd = 0;
     let lastChain = null;
@@ -1790,7 +1860,7 @@
       recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
-      sourceEnd = inSec + _recordSourceStepSec(lastChain, sc, layout);
+      sourceEnd = inSec + _recordSourceStepSec(lastChain, sc, layout, sceneLayout, chainSceneIdx, inSec);
       lastChain = sc;
       if (!sameUnit) chainSceneIdx += 1;
     }
