@@ -1,0 +1,20 @@
+---
+description: No duplicated functionality — implement each behavior in one place only
+alwaysApply: true
+---
+
+# Single-place functionality
+
+Where something can be done in one place and functionality remains absolutely the same, it must be done in that single place.
+
+Duplicated functionality is prohibited unless strictly required for the process.
+
+## Examples
+
+- UI state that belongs on a timeline clip (e.g. "Generated with" stale-prompt hint) lives on the clip only — not repeated on the player overlay, inspector, or toolbar.
+- Shared logic belongs in one module/function; views call it instead of re-implementing.
+- If two call sites need the same behavior, extract once and reuse — do not copy-paste with drift.
+
+## When duplication is allowed
+
+Only when the process genuinely requires it (e.g. server validation mirroring client hints for security, or ComfyUI node vs Movie Editor entry points that cannot share a runtime).

@@ -164,13 +164,6 @@
     const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
-    const promptMismatch = S.renderPromptMismatch ? S.renderPromptMismatch(scene.id) : null;
-    if (promptMismatch) {
-      const warn = el("div", "render-prompt-warn");
-      warn.append(el("div", "render-prompt-warn-title", "Preview was generated with a different prompt"));
-      warn.append(el("div", "render-prompt-text", promptMismatch.rendered || "(empty)"));
-      body.append(warn);
-    }
     const src = el("select");
     SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
     src.onchange = () => {
