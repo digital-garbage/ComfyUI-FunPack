@@ -2127,24 +2127,43 @@
   // Fetch a render and offer a Save dialog (File System Access API where available,
   // else a normal download). Renders live in ComfyUI's temp dir, so persisting one
   // is the user's job — this is how they do it.
-  async function _saveBlobAs(url, name) {
+  async function _saveBlobAs(url, name, opts) {
+    opts = opts || {};
+    const pickTypes = opts.types || [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }];
     let blob;
     try { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); blob = await r.blob(); }
-    catch (e) { alert("Could not fetch the render: " + e.message); return; }
+    catch (e) { alert("Could not fetch the file: " + e.message); return; }
     if (window.showSaveFilePicker) {
       try {
-        const h = await window.showSaveFilePicker({
-          suggestedName: name,
-          types: [{ description: "MP4 video", accept: { "video/mp4": [".mp4"] } }],
-        });
+        const h = await window.showSaveFilePicker({ suggestedName: name, types: pickTypes });
         const w = await h.createWritable(); await w.write(blob); await w.close();
         return;
-      } catch (e) { if (e && e.name === "AbortError") return; }  // cancelled, or unsupported → fall through
+      } catch (e) { if (e && e.name === "AbortError") return; }
     }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  }
+
+  function _exportMediaFilename(m) {
+    let name = (m.name || m.filename || m.id || "export").trim();
+    const fileExt = (m.filename || "").match(/(\.[^.]+)$/)?.[1] || "";
+    if (fileExt && !/\.\w+$/.test(name)) name += fileExt;
+    return name;
+  }
+
+  async function exportMediaAsset(mediaId) {
+    const m = (state.mediaBin || []).find((x) => x.id === mediaId);
+    if (!m || (m.kind !== "image" && m.kind !== "video")) {
+      alert("Only images and videos can be exported.");
+      return;
+    }
+    const name = _exportMediaFilename(m);
+    const types = m.kind === "video"
+      ? [{ description: "Video", accept: { "video/mp4": [".mp4"], "video/webm": [".webm"], "video/quicktime": [".mov"] } }]
+      : [{ description: "Image", accept: { "image/png": [".png"], "image/jpeg": [".jpg", ".jpeg"], "image/webp": [".webp"] } }];
+    await _saveBlobAs(API.mediaUrl(mediaId), name, { types });
   }
 
   // Ordered list of rendered clips in timeline order: {media, inSec, durationSec} for
@@ -2560,7 +2579,7 @@
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
-    loadMedia, uploadMedia, deleteMedia, deleteMediaMany, previewMedia, clearMediaPreview, assignMediaToScene,
+    loadMedia, uploadMedia, deleteMedia, deleteMediaMany, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
     loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions,

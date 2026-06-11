@@ -11,6 +11,25 @@
   let _libModal = null;
   const mediaSelected = new Set();   // media bin multi-select
   let mediaSelectMode = false;     // when off, click = preview; when on, click = toggle selection
+  const MF_KEY = "fp_media_filter";
+  const MS_KEY = "fp_media_sort";
+  let mediaFilter = localStorage.getItem(MF_KEY) || "all";
+  let mediaSort = localStorage.getItem(MS_KEY) || "name_asc";
+
+  const MEDIA_FILTERS = [
+    { id: "all", label: "All" },
+    { id: "video", label: "Video" },
+    { id: "audio", label: "Audio" },
+    { id: "image", label: "Images" },
+  ];
+  const MEDIA_SORTS = [
+    { id: "name_asc", label: "Name A-Z" },
+    { id: "name_desc", label: "Name Z-A" },
+    { id: "type", label: "Type" },
+    { id: "date_desc", label: "Date added" },
+  ];
+  const MEDIA_KIND_ORDER = { image: 0, video: 1, audio: 2, other: 3 };
+  const MEDIA_GROUP_LABELS = { image: "Images", video: "Video", audio: "Audio", other: "Other" };
 
   // ── library edit helpers ───────────────────────────────────────────────────────
   function closeLibModal() {
@@ -259,11 +278,148 @@
     }
   }
 
+  function _filterMediaBin(bin) {
+    if (mediaFilter === "all") return bin;
+    if (mediaFilter === "image") return bin.filter((m) => m.kind === "image");
+    if (mediaFilter === "video") return bin.filter((m) => m.kind === "video");
+    if (mediaFilter === "audio") return bin.filter((m) => m.kind === "audio");
+    return bin;
+  }
+
+  function _sortMediaBin(items) {
+    const arr = [...items];
+    const byName = (a, b) => (a.name || "").localeCompare(b.name || "", undefined, { sensitivity: "base" });
+    switch (mediaSort) {
+      case "name_desc":
+        return arr.sort((a, b) => byName(b, a));
+      case "type":
+        return arr.sort((a, b) => {
+          const ka = MEDIA_KIND_ORDER[a.kind] ?? 99;
+          const kb = MEDIA_KIND_ORDER[b.kind] ?? 99;
+          if (ka !== kb) return ka - kb;
+          return byName(a, b);
+        });
+      case "date_desc":
+        return arr.sort((a, b) => (b.added || 0) - (a.added || 0));
+      default:
+        return arr.sort(byName);
+    }
+  }
+
+  function _exportableMediaId(st, items) {
+    let id = null;
+    if (mediaSelected.size === 1) id = [...mediaSelected][0];
+    else if (st.mediaPreviewId) id = st.mediaPreviewId;
+    if (!id) return null;
+    const m = items.find((x) => x.id === id);
+    return m && (m.kind === "image" || m.kind === "video") ? id : null;
+  }
+
+  function _mediaFilterSortControls(st, shown, total) {
+    const controls = el("div", "media-bin-controls");
+    const typeRow = el("div", "insp-switch media-bin-type");
+    MEDIA_FILTERS.forEach((f) => {
+      const btn = el("button", "insp-seg" + (mediaFilter === f.id ? " active" : ""), f.label);
+      btn.onclick = () => {
+        mediaFilter = f.id;
+        localStorage.setItem(MF_KEY, mediaFilter);
+        render(S.get());
+      };
+      typeRow.append(btn);
+    });
+    controls.append(typeRow);
+
+    const sortRow = el("div", "media-bin-sort");
+    sortRow.append(el("span", "media-bin-sort-lbl", "Sort by"));
+    const sortSel = el("select", "lib-in media-bin-sort-sel");
+    MEDIA_SORTS.forEach((s) => {
+      const op = el("option", null, s.label);
+      op.value = s.id;
+      if (mediaSort === s.id) op.selected = true;
+      sortSel.append(op);
+    });
+    sortSel.onchange = () => {
+      mediaSort = sortSel.value;
+      localStorage.setItem(MS_KEY, mediaSort);
+      render(S.get());
+    };
+    sortRow.append(sortSel);
+    controls.append(sortRow);
+
+    if (total > 0 && shown !== total) {
+      controls.append(el("div", "pj-meta media-bin-count", `${shown} of ${total} shown`));
+    }
+    return controls;
+  }
+
+  function _mediaCard(m, st) {
+    const picked = mediaSelected.has(m.id);
+    const card = el("div", "media-card"
+      + (st.mediaPreviewId === m.id ? " previewing" : "")
+      + (picked ? " picked" : ""));
+    card.draggable = true;
+    card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
+    card.title = mediaSelectMode
+      ? `${m.name}\nClick to toggle selection`
+      : m.kind === "image"
+        ? `${m.name}\nImage · click to preview · drag onto a clip to set anchor`
+        : m.kind === "audio"
+          ? `${m.name}\nAudio · click to preview · add via timeline + Add → Audio`
+          : m.kind === "video"
+            ? `${m.name}\nVideo · click to preview · drag onto timeline or + Add → Video`
+            : `${m.name}\nDrag onto a clip to set anchor`;
+    const thumb = el("div", "media-thumb");
+    _appendMediaThumb(thumb, m);
+    _appendMediaKindBadge(thumb, m);
+    card.append(thumb);
+    card.append(el("div", "media-name", m.name));
+    if (m.kind === "image" || m.kind === "video") {
+      const exp = el("button", "media-exp", "⤓");
+      exp.title = "Export to disk";
+      exp.onclick = (e) => { e.stopPropagation(); S.exportMediaAsset(m.id); };
+      card.append(exp);
+    }
+    const del = el("button", "media-del", "✕"); del.title = "Delete asset";
+    del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
+    card.append(del);
+    card.onclick = () => {
+      if (mediaSelectMode) {
+        if (picked) mediaSelected.delete(m.id);
+        else mediaSelected.add(m.id);
+        render(S.get());
+        return;
+      }
+      if (m.kind === "image" || m.kind === "audio" || m.kind === "video") {
+        S.previewMedia(m.id);
+      }
+    };
+    return card;
+  }
+
+  function _appendMediaGrid(grid, items, st) {
+    const showGroups = mediaSort === "type" && mediaFilter === "all";
+    if (!showGroups) {
+      items.forEach((m) => grid.append(_mediaCard(m, st)));
+      return;
+    }
+    let lastKind = null;
+    items.forEach((m) => {
+      if (m.kind !== lastKind) {
+        grid.append(el("div", "media-group-hdr", MEDIA_GROUP_LABELS[m.kind] || MEDIA_GROUP_LABELS.other));
+        lastKind = m.kind;
+      }
+      grid.append(_mediaCard(m, st));
+    });
+  }
+
   function mediaTab(st) {
     const bin = st.mediaBin || [];
     _pruneMediaSelection(bin);
     const total = bin.length;
+    const items = _sortMediaBin(_filterMediaBin(bin));
+    const shown = items.length;
     const selN = mediaSelected.size;
+    const exportId = _exportableMediaId(st, items);
 
     const wrap = el("div", "bin" + (mediaSelectMode ? " media-select-mode" : ""));
     const drop = el("div", "mediabin");
@@ -278,58 +434,33 @@
     drop.addEventListener("drop", (e) => { const fs = [...(e.dataTransfer?.files || [])]; if (fs.length) S.uploadMedia(fs); });
     wrap.append(drop); wrap.append(file);
 
-    if (selN > 0) {
+    if (total > 0) wrap.append(_mediaFilterSortControls(st, shown, total));
+
+    if (selN > 0 || exportId) {
       const actions = el("div", "media-bin-actions");
-      const rem = el("button", "btn ghost tiny danger", `Remove selected (${selN})`);
-      rem.onclick = async () => {
-        if (!confirm(`Delete ${selN} selected item${selN > 1 ? "s" : ""}?`)) return;
-        await S.deleteMediaMany([...mediaSelected]);
-        mediaSelected.clear();
-        render(S.get());
-      };
-      actions.append(rem);
+      if (exportId) {
+        const expBtn = el("button", "btn ghost tiny", "⤓ Export");
+        expBtn.title = "Save this image or video to your computer";
+        expBtn.onclick = () => S.exportMediaAsset(exportId);
+        actions.append(expBtn);
+      }
+      if (selN > 0) {
+        const rem = el("button", "btn ghost tiny danger", `Remove selected (${selN})`);
+        rem.onclick = async () => {
+          if (!confirm(`Delete ${selN} selected item${selN > 1 ? "s" : ""}?`)) return;
+          await S.deleteMediaMany([...mediaSelected]);
+          mediaSelected.clear();
+          render(S.get());
+        };
+        actions.append(rem);
+      }
       wrap.append(actions);
     }
 
     const grid = el("div", "media-grid");
-    bin.forEach((m) => {
-      const picked = mediaSelected.has(m.id);
-      const card = el("div", "media-card"
-        + (st.mediaPreviewId === m.id ? " previewing" : "")
-        + (picked ? " picked" : ""));
-      card.draggable = true;
-      card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
-      card.title = mediaSelectMode
-        ? `${m.name}\nClick to toggle selection`
-        : m.kind === "image"
-          ? `${m.name}\nImage · click to preview · drag onto a clip to set anchor`
-          : m.kind === "audio"
-            ? `${m.name}\nAudio · click to preview · add via timeline + Add → Audio`
-            : m.kind === "video"
-              ? `${m.name}\nVideo · click to preview · drag onto timeline or + Add → Video`
-              : `${m.name}\nDrag onto a clip to set anchor`;
-      const thumb = el("div", "media-thumb");
-      _appendMediaThumb(thumb, m);
-      _appendMediaKindBadge(thumb, m);
-      card.append(thumb);
-      card.append(el("div", "media-name", m.name));
-      const del = el("button", "media-del", "✕"); del.title = "Delete asset";
-      del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
-      card.append(del);
-      card.onclick = () => {
-        if (mediaSelectMode) {
-          if (picked) mediaSelected.delete(m.id);
-          else mediaSelected.add(m.id);
-          render(S.get());
-          return;
-        }
-        if (m.kind === "image" || m.kind === "audio" || m.kind === "video") {
-          S.previewMedia(m.id);
-        }
-      };
-      grid.append(card);
-    });
-    if (!total) grid.append(el("div", "pj-meta", "No media yet."));
+    if (items.length) _appendMediaGrid(grid, items, st);
+    else if (total) grid.append(el("div", "pj-meta media-grid-empty", "No items match this filter."));
+    else grid.append(el("div", "pj-meta media-grid-empty", "No media yet."));
     wrap.append(grid);
 
     if (total > 0) {
@@ -345,10 +476,10 @@
       footer.append(selectBtn);
       if (mediaSelectMode) {
         const hasSelection = selN > 0;
-        const bulk = el("button", "btn ghost tiny", hasSelection ? `Deselect all (${selN})` : `Select all (${total})`);
+        const bulk = el("button", "btn ghost tiny", hasSelection ? `Deselect all (${selN})` : `Select all (${shown})`);
         bulk.onclick = () => {
           if (hasSelection) mediaSelected.clear();
-          else bin.forEach((m) => mediaSelected.add(m.id));
+          else items.forEach((m) => mediaSelected.add(m.id));
           render(S.get());
         };
         footer.append(bulk);
