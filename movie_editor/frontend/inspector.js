@@ -143,6 +143,47 @@
     body.append(det);
     return inner;
   }
+  const PC = () => window.PipelineCaps;
+
+  function availableSourceOptions(st) {
+    if (PC()?.usesChainSampler(st)) return SRC;
+    return SRC.filter(([v]) => v === "empty" || v === "image");
+  }
+
+  function renderSourceField(st, root, scene) {
+    const chain = PC()?.usesChainSampler(st);
+    const stored = root.source?.type || (chain ? "carry" : "empty");
+    const opts = availableSourceOptions(st);
+    if (!opts.some(([v]) => v === stored) && PC()?.isChainOnlySource(stored)) {
+      const note = el("div", "insp-hint");
+      note.textContent = `Stored source “${PC().sourceLabel(stored)}” needs Chain Sampler — runs as text-to-video unless you pick an input image.`;
+      body.append(note);
+    }
+    const src = el("select");
+    opts.forEach(([v, label]) => {
+      const o = el("option", null, label);
+      o.value = v;
+      if (v === stored || (!opts.some(([vv]) => vv === stored) && v === "empty")) o.selected = true;
+      src.append(o);
+    });
+    if (stored && !opts.some(([v]) => v === stored)) {
+      const o = el("option", null, PC()?.sourceLabel(stored) + " (unavailable)");
+      o.value = stored;
+      o.selected = true;
+      src.append(o);
+    }
+    src.onchange = () => {
+      const prev = root.source?.type || (chain ? "carry" : "empty");
+      const next = src.value;
+      const patch = { source: { ...(root.source || {}), type: next } };
+      if (next === "image" || next === "empty") patch.guides = [];
+      else if (chain && (prev === "carry" || next === "carry" || prev === "mixed" || next === "mixed")) patch.guides = [];
+      S.patchScene(scene.id, patch);
+    };
+    body.append(field("Source", src));
+    const eff = PC()?.effectiveSourceType(root, st) || stored;
+    if (eff === "image") renderImageSource(st, root, body);
+  }
 
   function renderVideoSource(st, scene, parent, label) {
     parent = parent || body;
@@ -217,20 +258,11 @@
     const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
-    const src = el("select");
-    SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
-    src.onchange = () => {
-      const prev = root.source?.type || "carry";
-      const next = src.value;
-      const patch = { source: { ...(root.source || {}), type: next } };
-      if (next === "image" || next === "empty" || next === "generated_frame") patch.guides = [];
-      else if (prev !== next && (prev === "carry" || next === "carry" || prev === "mixed" || next === "mixed")) patch.guides = [];
-      S.patchScene(scene.id, patch);
-    };
-    body.append(field("Source", src));
-    if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root, body);
-    if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
-    if ((root.source?.type) === "v2v") renderVideoSource(st, root, body, "V2V source video");
+    renderSourceField(st, root, scene);
+    if (PC()?.usesChainSampler(st)) {
+      if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
+      if ((root.source?.type) === "v2v") renderVideoSource(st, root, body, "V2V source video");
+    }
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
     body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · Convert to video on the timeline toolbar · generation splits: global prompt or Outgoing seam below`));
@@ -244,7 +276,7 @@
     body.append(actions);
 
     foldSection("More editing", false, (more) => {
-      renderSceneCharacters(st, scene, more);
+      if (PC()?.usesFunpackStudio(st)) renderSceneCharacters(st, scene, more);
 
       const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; more.append(fxTag);
       const fx = scene.effects || {};
@@ -337,7 +369,7 @@
         more.append(reset);
       }
 
-      renderSceneGuides(st, scene, more);
+      if (PC()?.usesChainSampler(st)) renderSceneGuides(st, scene, more);
 
       const row = el("div", "insp-block");
       const chk = el("label", "chk"); const cb = el("input"); cb.type = "checkbox"; cb.checked = !!scene.excluded;
@@ -423,16 +455,28 @@
 
   function renderEngineStrip(st) {
     const p = st.project;
-    const studioOn = !p.conditioning_slot || p.conditioning_slot === "funpack";
-    const chainOn = !p.sampler_slot || p.sampler_slot === "funpack";
+    const strip = el("div", "insp-engine-strip");
+    const c = PC()?.caps(st) || {};
+    if (c.disable_core || c.imported_workflow) {
+      const name = st.models?.workflow_import?.name || "Custom workflow";
+      strip.append(el("span", "insp-engine-strip-txt", `Generating with imported workflow (${name})`));
+      const btn = el("button", "btn ghost tiny", "Models →");
+      btn.onclick = () => window.ModelsModal.open();
+      strip.append(btn);
+      body.append(strip);
+      return;
+    }
+    const studioOn = PC()?.usesFunpackStudio(st);
+    const chainOn = PC()?.usesChainSampler(st);
     const parts = [];
     parts.push(studioOn ? "FunPack Studio" : (slotLabelFor(st, p.conditioning_slot) || p.conditioning_slot));
     parts.push(chainOn ? "Chain Sampler" : (slotLabelFor(st, p.sampler_slot) || p.sampler_slot));
-    const strip = el("div", "insp-engine-strip");
     strip.append(el("span", "insp-engine-strip-txt", "Generating with " + parts.join(" + ")));
-    const btn = el("button", "btn ghost tiny", "Engine settings →");
-    btn.onclick = () => window.EngineSettingsModal.open();
-    strip.append(btn);
+    if (studioOn || chainOn) {
+      const btn = el("button", "btn ghost tiny", "Engine settings →");
+      btn.onclick = () => window.EngineSettingsModal.open();
+      strip.append(btn);
+    }
     body.append(strip);
   }
 
@@ -483,6 +527,7 @@
 
   function renderSceneGuides(st, scene, parent) {
     parent = parent || body;
+    if (!PC()?.usesChainSampler(st)) return;
     if (!normGuideSettings(st.project).stack_enabled) return;
     const sceneNo = st.project.scenes.indexOf(scene) + 1;
     const tag = el("div", "insp-tag"); tag.textContent = "i2v guides"; parent.append(tag);
@@ -585,7 +630,10 @@
       const why = val.anchors_changed_since_last_queue && !val.text_changed_since_last_queue
         ? "Anchor or source mode changed since last generate"
         : "Prompt or anchors changed since last generate";
-      w.append(el("span", null, `${why} — next run rebuilds guides and clears stale action/detail repairs; Studio training history is kept.`));
+      const studioNote = PC()?.usesFunpackStudio(st)
+        ? " — next run rebuilds guides and clears stale action/detail repairs; Studio training history is kept."
+        : ".";
+      w.append(el("span", null, why + studioNote));
       box.append(w);
     }
     if (pv.parse_error) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, "ComfyUI offline — preview paused")); box.append(w); }

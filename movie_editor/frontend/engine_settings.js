@@ -430,20 +430,39 @@
       container.append(el("div", "pj-meta", "No project open."));
       return;
     }
-    const presetBar = el("div", "engine-preset-bar");
-    presetBar.append(el("span", "engine-preset-label", "Preset"));
-    Object.entries(S.ENGINE_PRESETS || {}).forEach(([key, p]) => {
-      const b = el("button", "btn ghost tiny", p.label || key);
-      b.onclick = () => S.applyEnginePreset(key);
-      presetBar.append(b);
-    });
-    container.append(presetBar);
+    const PC = window.PipelineCaps;
+    const studioOn = PC?.usesFunpackStudio(st);
+    const chainOn = PC?.usesChainSampler(st);
+    if (st.models?.disable_core) {
+      container.append(el("div", "insp-hint",
+        "Built-in FunPack pipeline is disabled — Studio and Chain Sampler settings are unavailable. Tune your workflow in Models."));
+      const foot = el("div", "insp-hint");
+      foot.append(el("span", null, "Workflow nodes: "));
+      const modelsLink = el("button", "btn ghost tiny", "Models & Pipeline…");
+      modelsLink.type = "button";
+      modelsLink.onclick = () => window.ModelsModal.open();
+      foot.append(modelsLink);
+      container.append(foot);
+      return;
+    }
+    if (!studioOn && !chainOn) {
+      container.append(el("div", "insp-hint",
+        "Neither FunPack Studio nor Chain Sampler is active — pick them under Pipeline nodes or use Models to wire custom nodes."));
+    }
+    if (studioOn || chainOn) {
+      const presetBar = el("div", "engine-preset-bar");
+      presetBar.append(el("span", "engine-preset-label", "Preset"));
+      Object.entries(S.ENGINE_PRESETS || {}).forEach(([key, p]) => {
+        const b = el("button", "btn ghost tiny", p.label || key);
+        b.onclick = () => S.applyEnginePreset(key);
+        presetBar.append(b);
+      });
+      container.append(presetBar);
+    }
     const p = st.project;
     const slots = (st.models?.slots || []);
 
     const summary = el("div", "engine-modal-summary");
-    const studioOn = !p.conditioning_slot || p.conditioning_slot === "funpack";
-    const chainOn = !p.sampler_slot || p.sampler_slot === "funpack";
     const parts = [];
     parts.push(studioOn ? "FunPack Studio" : (slotLabelFor(st, p.conditioning_slot) || p.conditioning_slot));
     parts.push(chainOn ? "Chain Sampler" : (slotLabelFor(st, p.sampler_slot) || p.sampler_slot));

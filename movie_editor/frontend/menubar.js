@@ -53,6 +53,10 @@
 
   function menuSpec() {
     const st = S.get();
+    const PC = window.PipelineCaps;
+    const studioOn = PC?.usesFunpackStudio(st);
+    const chainOn = PC?.usesChainSampler(st);
+    const customPipe = !!(st.models?.disable_core);
     const recent = (st.projects || []).slice(0, 8).map((p) => ({
       label: p.name, hint: `${p.scene_count}▦`, action: () => S.loadProject(p.id),
     }));
@@ -88,21 +92,24 @@
         { label: "Reset Layout", action: () => { const r = document.documentElement; r.style.removeProperty("--media-w"); r.style.removeProperty("--timeline-h"); } },
       ],
       Settings: [
-        { label: "Engine settings…", disabled: !hasProject(), action: () => window.EngineSettingsModal.open() },
+        { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
+          action: () => window.EngineSettingsModal.open() },
         { sep: true },
         { label: "Models…", action: () => window.ModelsModal.open() },
         { label: "Import ComfyUI Workflow…", disabled: !hasProject(),
           action: () => window.WorkflowImportWizard?.open() },
         { label: "Refresh model list", hint: "R", action: async () => { try { await window.MovieEditorAPI.refreshModels(); } catch (_) {} } },
         { sep: true },
-        { label: `Conditioning: ${_roleLabel(st.project?.conditioning_slot, "FunPack Studio")}`, disabled: !hasProject(),
+        { label: `Conditioning: ${_roleLabel(st.project?.conditioning_slot, "FunPack Studio")}`,
+          disabled: !hasProject() || customPipe,
           action: () => _pickRole("conditioning_slot", "Conditioning node", st) },
-        { label: `Sampler: ${_roleLabel(st.project?.sampler_slot, "FunPack Chain Sampler")}`, disabled: !hasProject(),
+        { label: `Sampler: ${_roleLabel(st.project?.sampler_slot, "FunPack Chain Sampler")}`,
+          disabled: !hasProject() || customPipe,
           action: () => _pickRole("sampler_slot", "Sampler node", st) },
       ],
       FunPack: [
         { label: st.resetSessionArmed ? "Reset Studio session ✓ armed — click to cancel" : "Reset Studio session",
-          disabled: !hasProject(), action: () => S.resetStudioSession() },
+          disabled: !hasProject() || !studioOn, action: () => S.resetStudioSession() },
         { sep: true },
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },

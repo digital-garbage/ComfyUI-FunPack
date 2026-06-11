@@ -543,6 +543,12 @@
 
   function requirementsPanel() {
     const sec = el("div", "req-panel");
+    if (config.disable_core) {
+      sec.append(el("div", "req-title", "Custom workflow"));
+      sec.append(el("div", "req-empty",
+        "Built-in FunPack pipeline is off. Wire your workflow nodes below; FunPack loader requirements do not apply."));
+      return sec;
+    }
     sec.append(el("div", "req-title", "Pipeline requirements"));
 
     if (!requirements.length) {

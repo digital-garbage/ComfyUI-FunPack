@@ -233,7 +233,7 @@
       gen_unit_id: id,
       text: ps.text || "",
       transition_to_next: "",
-      source: { type: "carry" },
+      source: { type: window.PipelineCaps?.defaultSceneSourceType(state) || "carry" },
       excluded: false,
     };
   }
@@ -246,7 +246,7 @@
       gen_unit_id: id,
       text: text || ghost.text || "",
       transition_to_next: "",
-      source: { type: "carry" },
+      source: { type: window.PipelineCaps?.defaultSceneSourceType(state) || "carry" },
       excluded: false,
       frames: ghost.frames,
       frames_mode: ghost.frames_mode,
@@ -973,9 +973,8 @@
   function addScene() {
     if (!state.project) return;
     _historyRecord();
-    // Default to "carry": a new scene continues the previous one (overlap) unless the
-    // user picks an anchor/empty. Scene 1 carrying just starts a fresh run.
-    const s = { text: "", transition_to_next: "", source: { type: "carry" }, excluded: false };
+    const srcType = window.PipelineCaps?.defaultSceneSourceType(state) || "carry";
+    const s = { text: "", transition_to_next: "", source: { type: srcType }, excluded: false };
     state.project.scenes.push(s);
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave(); // server assigns id; reselect after commit
@@ -1771,6 +1770,9 @@
   }
   function _runs() {
     const active = state.project.scenes.filter((s) => !s.excluded && isGenerativeScene(s));
+    if (window.PipelineCaps && !window.PipelineCaps.usesChainSampler(state)) {
+      return active.length ? [active.map((s) => s.id)] : [];
+    }
     const runs = [];
     for (const s of active) {
       const t = (s.source && s.source.type) || "empty";
@@ -2578,6 +2580,10 @@
   // ── pluggable models / exposed controls ──────────────────────────────────────
   async function loadModels() {
     try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+    if (window.PipelineCaps && !window.PipelineCaps.usesFunpackStudio(state)) {
+      _resetSessionPending = false;
+      state.resetSessionArmed = false;
+    }
     notify();
     loadImageTargets();
   }
@@ -2779,6 +2785,7 @@
   }
   // True when this scene continues the current chain run (not a new run anchor).
   function _continuesChainRun(s) {
+    if (window.PipelineCaps && !window.PipelineCaps.usesChainSampler(state)) return false;
     const active = state.project.scenes.filter((sc) => !sc.excluded);
     const idx = active.findIndex((sc) => sc.id === s.id);
     if (idx <= 0) return false;

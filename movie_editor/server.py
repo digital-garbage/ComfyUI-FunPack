@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, media, nodes, projects, workflow_import
+from .backend import bridge, builder, config, media, nodes, pipeline_caps, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.timeline import (
     Project,
@@ -184,7 +184,7 @@ def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     return fn
 
 
-def _prepare_media(proj: Project, extra_refs: Optional[list] = None) -> Optional[dict]:
+def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_available: bool = True) -> Optional[dict]:
     """Copy scene image assets into ComfyUI's input folder.
 
     Returns {"primary": {filename, target}, "by_scene": {scene_id: {filename, media_ref, target}}}
@@ -223,7 +223,7 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None) -> Optional
         src = sc.source
         ref = getattr(src, "media_ref", None)
         tgt = getattr(src, "target", None)
-        stype = getattr(src, "type", "") if src else ""
+        stype = pipeline_caps.effective_source_type(sc, chain_available)
         if stype not in ("image", "generated_frame", "mixed") or not ref:
             continue
         _add_ref(ref, tgt, sc.id, set_primary=True)
@@ -297,7 +297,13 @@ def _solo(p: Project, only_scene: Optional[str]) -> Project:
     return collapse_generative_units(_segment(p, ids))
 
 
-def _run_studio_inputs(target: Project, active_scenes: list, *, prompt_changed: bool = False) -> dict:
+def _run_studio_inputs(
+    target: Project,
+    active_scenes: list,
+    *,
+    prompt_changed: bool = False,
+    models: Optional[dict] = None,
+) -> dict:
     """Studio widget overrides for this run, incl. the RLHF rating of the run's last
     render (Studio refines from it).
 
@@ -311,7 +317,7 @@ def _run_studio_inputs(target: Project, active_scenes: list, *, prompt_changed: 
     When the generation prompt changed since the last queue, send
     MOVIE_EDITOR_FRESH_PROMPT_RATING instead — clears stale repairs only, keeps training.
     refine_v2 uses Initial discovery when there is no previous run to refine from."""
-    if target.conditioning_slot != "funpack":
+    if not pipeline_caps.uses_funpack_studio(target, models):
         return {}
     si = dict(target.studio_inputs or {})
     try:
@@ -363,13 +369,19 @@ def _resolve_run_seed(target: Project) -> int:
     return random.randint(1, 0xFFFFFFFFFFFFFFFF)
 
 
-def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Project] = None) -> dict:
+def _run_sampler_inputs(
+    target: Project,
+    scene_count: int,
+    full: Optional[Project] = None,
+    *,
+    models: Optional[dict] = None,
+) -> dict:
     """Sampler widget overrides for one generation run.
 
     Auto continuity (project.continuity_settings) builds guides and sampler knobs per run
     for carry, mixed, image, and empty sources. Manual guide_settings.stack_enabled wins.
     """
-    if target.sampler_slot != "funpack":
+    if not pipeline_caps.uses_chain_sampler(target, models):
         return {}
     import json
     from .backend.timeline import (
@@ -434,8 +446,10 @@ def _missing_continuity_media(full: Project, target: Project) -> list[str]:
     return missing
 
 
-def _missing_scene_anchor_media(target: Project) -> list[str]:
+def _missing_scene_anchor_media(target: Project, *, chain_available: bool = True) -> list[str]:
     """i2v anchor images referenced on scenes but missing from the media bin."""
+    if not chain_available:
+        return []
     from .backend.timeline import scene_anchor_media_refs
 
     missing: list[str] = []
@@ -1169,6 +1183,10 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Node registry unavailable: {e}"}, status=502)
+        models_cfg = _project_models(p)
+        caps = pipeline_caps.capabilities(p, models_cfg)
+        if not caps["studio"]:
+            reset_session = False
         bridge.reset_progress()
         bridge.current_progress()  # ensure the sampler step-progress hook is installed
         active_scenes = [s for s in target.scenes if not s.excluded and not is_video_clip(s)]
@@ -1178,14 +1196,14 @@ if web is not None and PromptServer is not None:
                 {"detail": "Nothing to generate — all clips are video-only or excluded."},
                 status=400,
             )
-        missing_media = _missing_continuity_media(p, target)
+        missing_media = _missing_continuity_media(p, target) if caps["chain_sampler"] else []
         if missing_media:
             ids = ", ".join(missing_media)
             return web.json_response(
                 {"detail": f"Missing media for continuity or guide stack ({ids}). Re-upload or clear the reference in Engine settings / Scene inspector."},
                 status=400,
             )
-        missing_anchors = _missing_scene_anchor_media(target)
+        missing_anchors = _missing_scene_anchor_media(target, chain_available=caps["chain_sampler"])
         if missing_anchors:
             ids = ", ".join(missing_anchors)
             return web.json_response(
@@ -1207,17 +1225,24 @@ if web is not None and PromptServer is not None:
             else target.num_frames_per_scene
         )
         try:
-            media_pack = _prepare_media(target, continuity_media_refs(p, target))
-            sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
-            _attach_scene_anchors(sampler_inputs, media_pack, target)
-            graph, report = builder.build(oi, _project_models(target), {
+            media_pack = _prepare_media(
+                target,
+                continuity_media_refs(p, target) if caps["chain_sampler"] else [],
+                chain_available=caps["chain_sampler"],
+            )
+            sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p, models=models_cfg)
+            if caps["chain_sampler"]:
+                _attach_scene_anchors(sampler_inputs, media_pack, target)
+            graph, report = builder.build(oi, models_cfg, {
                 "prompt": prompt, "seed": _resolve_run_seed(target),
                 "num_frames_per_scene": effective_frames,
                 "frame_rate": target.frame_rate,
                 "width": target.width, "height": target.height,
                 "negative_prompt": effective_negative_prompt(target) or None,
                 "max_scenes": active_scene_count,
-                "studio_inputs": _run_studio_inputs(target, active_scenes, prompt_changed=prompt_changed),
+                "studio_inputs": _run_studio_inputs(
+                    target, active_scenes, prompt_changed=prompt_changed, models=models_cfg,
+                ),
                 "sampler_inputs": sampler_inputs,
                 "reset_session": reset_session,
             }, media=(media_pack or {}).get("primary") if media_pack else None)
@@ -1573,6 +1598,11 @@ if web is not None and PromptServer is not None:
     # Per-project pipeline config (slots + links). Falls back to the global default
     # when the project has none yet; saving also updates the global default so the
     # next NEW project inherits your latest loaders.
+    @routes.get(UI_PREFIX + "/api/projects/{pid}/pipeline-caps")
+    async def _pipeline_caps(req):
+        p = _project_or_404(req.match_info["pid"])
+        return web.json_response(pipeline_caps.capabilities(p, _project_models(p)))
+
     @routes.get(UI_PREFIX + "/api/projects/{pid}/models")
     async def _project_models_get(req):
         return web.json_response(_project_models(_project_or_404(req.match_info["pid"])))

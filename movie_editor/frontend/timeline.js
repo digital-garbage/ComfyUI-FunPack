@@ -1151,10 +1151,10 @@
   // ── toolbar ─────────────────────────────────────────────────────────────────────
   function toolbarRatingBlock(st, p) {
     const wrap = el("div", "tl-rating-block");
-    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
+    const studioOn = window.PipelineCaps?.usesFunpackStudio(st);
     const hasSel = !!st.selectedSceneId;
     const Picker = window.MovieRatingPicker;
-    if (!studioCond || !hasSel || !hasRender(st, st.selectedSceneId) || !Picker) return wrap;
+    if (!studioOn || !hasSel || !hasRender(st, st.selectedSceneId) || !Picker) return wrap;
     const sc = S.scene(st.selectedSceneId);
     if (!sc || !S.isGenerativeScene(sc)) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
