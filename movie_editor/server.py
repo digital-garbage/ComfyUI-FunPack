@@ -855,6 +855,11 @@ if web is not None and PromptServer is not None:
         media_pack = _prepare_media(target, continuity_media_refs(p, target))
         sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
         _attach_scene_anchors(sampler_inputs, media_pack, target)
+        progress_key = ""
+        if active_scene_count > 1:
+            import uuid
+            progress_key = uuid.uuid4().hex
+            sampler_inputs["chain_progress_key"] = progress_key
         graph, report = builder.build(oi, _project_models(target), {
             "prompt": prompt, "seed": _resolve_run_seed(target),
             "num_frames_per_scene": effective_frames,
@@ -873,6 +878,10 @@ if web is not None and PromptServer is not None:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Failed to queue with ComfyUI: {e}"}, status=502)
+        prompt_id = result.get("prompt_id")
+        if progress_key and prompt_id:
+            from .backend import chain_progress
+            chain_progress.begin(prompt_id, progress_key, active_scene_count)
         p.generation_meta = {
             **(p.generation_meta or {}),
             "prompt_hash": validation["prompt_hash"],
@@ -907,6 +916,8 @@ if web is not None and PromptServer is not None:
                     exec_error = f"{node_type}: {exc}"
                     break
             is_error = raw_status.get("status_str") == "error"
+            from .backend import chain_progress
+            chain_progress.finish(prompt_id)
             return web.json_response({
                 "state": "error" if (is_error and not media) else "completed",
                 "media": media,
@@ -917,7 +928,12 @@ if web is not None and PromptServer is not None:
             running = await bridge.is_running(prompt_id)
         except Exception:  # noqa: BLE001
             running = True
-        return web.json_response({"state": "running" if running else "pending", "media": []})
+        from .backend import chain_progress
+        partial = chain_progress.read_for_prompt(prompt_id)
+        payload = {"state": "running" if running else "pending", "media": []}
+        if partial:
+            payload["partial"] = partial
+        return web.json_response(payload)
 
     @routes.get(UI_PREFIX + "/api/rating-labels")
     async def _rating_labels(_req):

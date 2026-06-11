@@ -1338,16 +1338,19 @@
     }
   }
 
-  function _recordSegment(mediaList, targetSceneIds) {
+  function _recordSegment(mediaList, targetSceneIds, opts) {
     if (!mediaList || !mediaList.length || !targetSceneIds || !targetSceneIds.length) return;
+    const completedScenes = opts?.completedScenes ?? targetSceneIds.length;
+    const ids = targetSceneIds.slice(0, Math.max(0, completedScenes));
+    if (!ids.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
-    const layout = _chainRunLayout(targetSceneIds);
+    const layout = _chainRunLayout(ids);
     let sourceEnd = 0;
     let lastChain = null;
     let clearedRating = false;
     const recordedSceneIds = [];
-    for (let i = 0; i < targetSceneIds.length; i++) {
-      const id = targetSceneIds[i];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
       if (_removedDuringGen.has(id)) {
         const ghosts = state.sceneGhosts || [];
         const gi = ghosts.findIndex((g) => g.id === id);
@@ -1384,6 +1387,7 @@
   // Poll a single queued prompt to completion. Resolves true on success, false on error.
   function _pollPromise(promptId, targetSceneIds, prefix) {
     prefix = prefix || "Generating…";
+    let lastPartialScenes = 0;
     return new Promise((resolve) => {
       _clearGenTimers();
       let pendingStreak = 0;
@@ -1424,6 +1428,15 @@
           } else {
             // "pending" after "running" means the job left the queue without a history
             // entry — it likely crashed or was interrupted by ComfyUI.
+            if (s.partial?.media?.length && s.partial.completed_scenes > lastPartialScenes) {
+              lastPartialScenes = s.partial.completed_scenes;
+              _recordSegment(s.partial.media, targetSceneIds, { completedScenes: lastPartialScenes });
+              notify();
+              const step = (state.gen.maxStep > 0) ? `  ·  sampling ${state.gen.step}/${state.gen.maxStep}` : "";
+              updateGenProgress({
+                msg: `${prefix} ${_elapsed()} · ${lastPartialScenes}/${targetSceneIds.length} scene(s) ready${step}`,
+              });
+            }
             if (s.state === "pending") pendingStreak++; else pendingStreak = 0;
             if (pendingStreak >= 3) {
               _clearGenTimers();
