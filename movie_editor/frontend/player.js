@@ -591,7 +591,7 @@
       canvas.append(stage);  // pooled videos live here; only the active one is visible
       canvas.append(_slateEl);
       canvas.append(_badgeEl);
-    } else if (previewAsset?.kind === "image" || previewAsset?.kind === "audio") {
+    } else if (previewAsset && ["image", "audio", "video"].includes(previewAsset.kind)) {
       canvas.append(stage);
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
@@ -650,6 +650,19 @@
       canvas.append(layer);
       canvas.onclick = (e) => {
         if (!e.target.closest(".pm-media-preview-aud")) S.clearMediaPreview();
+      };
+    } else if (previewAsset?.kind === "video") {
+      const layer = el("div", "pm-media-preview");
+      const label = el("div", "pm-media-preview-label pm-media-preview-label-vid", previewAsset.name || "Video preview");
+      const vid = el("video", "pm-media-preview-vid");
+      vid.src = API.mediaUrl(previewAsset.id);
+      vid.controls = true;
+      vid.playsInline = true;
+      vid.onclick = (e) => e.stopPropagation();
+      layer.append(label, vid);
+      canvas.append(layer);
+      canvas.onclick = (e) => {
+        if (!e.target.closest(".pm-media-preview-vid")) S.clearMediaPreview();
       };
     }
     body.append(canvas);

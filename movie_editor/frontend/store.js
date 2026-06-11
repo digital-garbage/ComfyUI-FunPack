@@ -2097,35 +2097,82 @@
     return out;
   }
 
-  // Export the render covering the selected clip via a Save dialog.
-  async function exportSelected() {
-    if (!state.project) return;
+  // Build export/import clip spec for the selected scene (render trim or media-bin video).
+  function _selectedClipExportSpec() {
+    if (!state.project) return null;
     const id = state.selectedSceneId;
-    if (!id) { alert("Select a clip to export."); return; }
+    if (!id) return null;
     const sc = scene(id);
+    if (!sc) return null;
     const r = state.sceneRenders[id];
     const idx = state.project.scenes.findIndex((s) => s.id === id);
     const proj = (state.project.name || "montage").replace(/[^\w.-]+/g, "_");
     if (isVideoClip(sc) && sc.source?.media_ref && !r?.media) {
-      const asset = (state.mediaBin || []).find((m) => m.id === sc.source.media_ref);
-      const name = asset?.name || `${proj}_video_${_stamp()}.mp4`;
-      await _saveBlobAs(API.mediaUrl(sc.source.media_ref), name.replace(/[^\w.-]+/g, "_"));
-      return;
+      return {
+        clip: {
+          bin_media_ref: sc.source.media_ref,
+          in: sc.source_in || 0,
+          dur: sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc),
+        },
+        name: `${proj}_video_${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`,
+      };
     }
-    if (!r || !r.media) { alert("That clip hasn't been generated yet — generate it first."); return; }
-    const inSec = (r.inSec || 0) + (sc?.source_in || 0);
-    const dur = sc?.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
-    try {
-      const out = await API.exportClip(state.project.id, {
+    if (!r?.media) return null;
+    return {
+      clip: {
         filename: r.media.filename,
         subfolder: r.media.subfolder || "",
         type: r.media.type || "output",
-        in: +inSec.toFixed(3),
-        dur: +dur.toFixed(3),
-      });
-      await _saveBlobAs(API.resultUrl(state.project.id, out.media), `${proj}_scene${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`);
+        in: (r.inSec || 0) + (sc.source_in || 0),
+        dur: sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc),
+      },
+      name: `${proj}_scene${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`,
+    };
+  }
+
+  function clipSaveableToMediaBin(sceneId) {
+    if (!sceneId || !state.project) return false;
+    const sc = scene(sceneId);
+    if (!sc) return false;
+    if (isVideoClip(sc) && sc.source?.media_ref) return true;
+    return !!(state.sceneRenders[sceneId]?.media);
+  }
+
+  // Export the render covering the selected clip via a Save dialog.
+  async function exportSelected() {
+    if (!state.project) return;
+    const spec = _selectedClipExportSpec();
+    if (!spec) { alert("Select a clip with a render to export."); return; }
+    const sc = scene(state.selectedSceneId);
+    if (isVideoClip(sc) && sc.source?.media_ref && !state.sceneRenders[state.selectedSceneId]?.media) {
+      const asset = (state.mediaBin || []).find((m) => m.id === sc.source.media_ref);
+      const name = asset?.name || spec.name;
+      await _saveBlobAs(API.mediaUrl(sc.source.media_ref), name.replace(/[^\w.-]+/g, "_"));
+      return;
+    }
+    try {
+      const out = await API.exportClip(state.project.id, spec.clip);
+      await _saveBlobAs(API.resultUrl(state.project.id, out.media), spec.name);
     } catch (e) {
       alert("Export failed: " + (e.message || e));
+    }
+  }
+
+  async function saveSelectedToMediaBin() {
+    if (!state.project) return;
+    const spec = _selectedClipExportSpec();
+    if (!spec) {
+      alert("Nothing to save — generate the clip first, or select a video clip.");
+      return;
+    }
+    try {
+      const res = await API.importClipToMediaBin(spec.clip, spec.name);
+      await loadMedia();
+      const entry = res?.media || res;
+      state.notice = `Saved to Media bin: ${entry?.name || spec.name}`;
+      notify();
+    } catch (e) {
+      alert("Save to media bin failed: " + (e.message || e));
     }
   }
 
@@ -2348,7 +2395,7 @@
 
   function previewMedia(mediaId) {
     const m = (state.mediaBin || []).find((x) => x.id === mediaId);
-    if (!m || (m.kind !== "image" && m.kind !== "audio")) return;
+    if (!m || (m.kind !== "image" && m.kind !== "audio" && m.kind !== "video")) return;
     if (state.mediaPreviewId === mediaId) {
       clearMediaPreview();
       return;
@@ -2412,7 +2459,7 @@
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, previewMedia, clearMediaPreview, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,

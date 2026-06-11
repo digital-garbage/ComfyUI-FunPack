@@ -101,6 +101,74 @@ def _resolve_comfy_media_path(filename: str, subfolder: str = "", type_: str = "
     return os.path.join(base, subfolder or "", filename)
 
 
+def _resolve_clip_src_path(clip: dict) -> str:
+    """Absolute path to a render or media-bin file referenced by an export/import clip spec."""
+    import os
+    ref = clip.get("bin_media_ref")
+    if ref:
+        mp = media.path_for(ref)
+        if mp is None:
+            raise FileNotFoundError("Media bin file not found — it may have been deleted.")
+        return str(mp)
+    fp = _resolve_comfy_media_path(
+        clip.get("filename", ""),
+        clip.get("subfolder", ""),
+        clip.get("type", "output"),
+    )
+    if not fp or not os.path.isfile(fp):
+        raise FileNotFoundError("Source clip file not found on disk — regenerate then try again.")
+    return fp
+
+
+def _clip_needs_trim(clip: dict) -> bool:
+    inn = float(clip.get("in") or 0)
+    dur = clip.get("dur")
+    return inn > 0.001 or dur is not None
+
+
+def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur) -> None:
+    import shutil
+    import subprocess
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise RuntimeError("ffmpeg not found on PATH — install it to export or import clips.")
+    cmd = [ff, "-y"]
+    if inn is not None and float(inn) > 0:
+        cmd += ["-ss", f"{float(inn):.3f}"]
+    if dur is not None:
+        cmd += ["-t", f"{float(dur):.3f}"]
+    cmd += [
+        "-i", src_path,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart", out_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
+
+
+def _clip_bytes_for_media(clip: dict) -> bytes:
+    """Read (and optionally trim) a clip spec into bytes for the media bin."""
+    import os
+    import time
+    from pathlib import Path
+    src = _resolve_clip_src_path(clip)
+    if not _clip_needs_trim(clip):
+        return Path(src).read_bytes()
+    try:
+        import folder_paths
+        tempdir = folder_paths.get_temp_directory()
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"Temp directory unavailable: {e}") from e
+    out_path = os.path.join(tempdir, f"funpack_import_{int(time.time())}.mp4")
+    try:
+        _ffmpeg_trim_clip(src, out_path, clip.get("in"), clip.get("dur"))
+        return Path(out_path).read_bytes()
+    finally:
+        Path(out_path).unlink(missing_ok=True)
+
+
 def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     import os
     import shutil
@@ -832,6 +900,24 @@ if web is not None and PromptServer is not None:
             raise web.HTTPNotFound()
         return web.json_response({"deleted": req.match_info["mid"]})
 
+    @routes.post(UI_PREFIX + "/api/media/import-clip")
+    async def _media_import_clip(req):
+        body = await req.json() if req.can_read_body else {}
+        clip = body.get("clip") or {}
+        name = (body.get("name") or "clip.mp4").strip() or "clip.mp4"
+        if not clip.get("bin_media_ref") and not clip.get("filename"):
+            return web.json_response({"detail": "Missing clip source."}, status=400)
+        if not name.lower().endswith((".mp4", ".webm", ".mov", ".mkv", ".avi")):
+            name = f"{name}.mp4"
+        try:
+            data = _clip_bytes_for_media(clip)
+        except FileNotFoundError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        except RuntimeError as e:
+            return web.json_response({"detail": str(e)}, status=503)
+        entry = media.save_upload(name, data)
+        return web.json_response({"media": entry})
+
     # --- API: generate / status / result ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/generate")
     async def _generate(req):
@@ -1117,46 +1203,25 @@ if web is not None and PromptServer is not None:
         _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
         clip = body.get("clip") or {}
-        filename = clip.get("filename", "")
-        if not filename:
+        if not clip.get("filename") and not clip.get("bin_media_ref"):
             return web.json_response({"detail": "Missing clip filename."}, status=400)
         import os
-        import shutil
-        import subprocess
         import time as _time
-        ff = shutil.which("ffmpeg")
-        if not ff:
-            return web.json_response({"detail": "ffmpeg not found on PATH — install it to export clips."}, status=503)
         try:
             import folder_paths
-            outdir = folder_paths.get_output_directory()
             tempdir = folder_paths.get_temp_directory()
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Output directory unavailable: {e}"}, status=500)
 
-        base = outdir if clip.get("type", "output") == "output" else tempdir
-        src_path = os.path.join(base, clip.get("subfolder", ""), filename)
-        if not os.path.isfile(src_path):
-            return web.json_response({"detail": "Source clip file not found on disk — regenerate then export."}, status=400)
-
-        inn, dur = clip.get("in"), clip.get("dur")
         out_name = f"funpack_export_{int(_time.time())}.mp4"
         out_path = os.path.join(tempdir, out_name)
-        cmd = [ff, "-y"]
-        if inn is not None:
-            cmd += ["-ss", f"{float(inn):.3f}"]
-        if dur is not None:
-            cmd += ["-t", f"{float(dur):.3f}"]
-        cmd += [
-            "-i", src_path,
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart", out_path,
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            tail = (proc.stderr or "")[-1000:]
-            return web.json_response({"detail": f"ffmpeg export failed: {tail}"}, status=500)
+        try:
+            src_path = _resolve_clip_src_path(clip)
+            _ffmpeg_trim_clip(src_path, out_path, clip.get("in"), clip.get("dur"))
+        except FileNotFoundError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        except RuntimeError as e:
+            return web.json_response({"detail": str(e)}, status=503)
         return web.json_response({
             "media": {"filename": out_name, "subfolder": "", "type": "temp", "kind": "videos"},
         })

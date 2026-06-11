@@ -200,6 +200,57 @@
   }
 
   // ── media bin ──────────────────────────────────────────────────────────────────
+  const MEDIA_KIND_META = {
+    image: { icon: "◐", label: "Image", short: "IMG", cls: "kind-image" },
+    video: { icon: "▶", label: "Video", short: "VID", cls: "kind-video" },
+    audio: { icon: "♪", label: "Audio", short: "AUD", cls: "kind-audio" },
+    other: { icon: "◆", label: "File", short: "FILE", cls: "kind-other" },
+  };
+
+  function _mediaKindMeta(kind) {
+    return MEDIA_KIND_META[kind] || MEDIA_KIND_META.other;
+  }
+
+  function _appendMediaThumb(thumb, m) {
+    const url = API.mediaUrl(m.id);
+    if (m.kind === "image") {
+      const img = el("img");
+      img.src = url;
+      img.loading = "lazy";
+      thumb.append(img);
+      return;
+    }
+    if (m.kind === "video") {
+      const ph = el("span", "media-icon media-vid-ph", "▶");
+      thumb.append(ph);
+      const vid = document.createElement("video");
+      vid.className = "media-vid-thumb";
+      vid.muted = true;
+      vid.preload = "metadata";
+      vid.playsInline = true;
+      vid.src = url;
+      vid.onloadeddata = () => {
+        if (!thumb.isConnected) return;
+        ph.remove();
+        if (!thumb.querySelector("video")) thumb.append(vid);
+      };
+      return;
+    }
+    if (m.kind === "audio") {
+      thumb.append(el("span", "media-icon media-aud-ph", "♪"));
+      return;
+    }
+    thumb.append(el("span", "media-icon", "◆"));
+  }
+
+  function _appendMediaKindBadge(thumb, m) {
+    const meta = _mediaKindMeta(m.kind);
+    const badge = el("span", "media-kind-badge " + meta.cls);
+    badge.title = meta.label;
+    badge.append(el("span", "media-kind-ico", meta.icon), el("span", "media-kind-lbl", meta.short));
+    thumb.append(badge);
+  }
+
   function _pruneMediaSelection(bin) {
     const ids = new Set((bin || []).map((m) => m.id));
     for (const id of mediaSelected) {
@@ -248,16 +299,15 @@
       card.draggable = true;
       card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
       card.title = m.kind === "image"
-        ? `${m.name}\nClick to select · double-click to preview · drag onto a clip to set anchor`
+        ? `${m.name}\nImage · click to select · double-click to preview · drag onto a clip to set anchor`
         : m.kind === "audio"
-          ? `${m.name}\nClick to select · double-click to preview · add via timeline + Add → Audio`
+          ? `${m.name}\nAudio · click to select · double-click to preview · add via timeline + Add → Audio`
           : m.kind === "video"
-            ? `${m.name}\nClick to select · double-click to add to timeline · drag onto timeline`
+            ? `${m.name}\nVideo · click to select · double-click to preview · drag onto timeline or + Add → Video`
             : `${m.name}\nClick to select · drag onto a clip to set anchor`;
       const thumb = el("div", "media-thumb");
-      if (m.kind === "image") { const img = el("img"); img.src = API.mediaUrl(m.id); img.loading = "lazy"; thumb.append(img); }
-      else if (m.kind === "audio") thumb.append(el("span", "media-icon", "♪"));
-      else thumb.append(el("span", "media-icon", m.kind === "video" ? "▶" : "◆"));
+      _appendMediaThumb(thumb, m);
+      _appendMediaKindBadge(thumb, m);
       card.append(thumb);
       card.append(el("div", "media-name", m.name));
       const del = el("button", "media-del", "✕"); del.title = "Delete asset";
@@ -268,10 +318,8 @@
         else mediaSelected.add(m.id);
         render(S.get());
       };
-      if (m.kind === "image" || m.kind === "audio") {
+      if (m.kind === "image" || m.kind === "audio" || m.kind === "video") {
         card.ondblclick = (e) => { e.stopPropagation(); S.previewMedia(m.id); };
-      } else if (m.kind === "video") {
-        card.ondblclick = (e) => { e.stopPropagation(); S.addVideoClip(m.id); };
       }
       grid.append(card);
     });

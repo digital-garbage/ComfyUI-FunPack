@@ -275,7 +275,9 @@
     const hasSel = !!st.selectedSceneId;
     bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
     const exp = bar.querySelector("[data-export-scene]");
-    if (exp) exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
+    if (exp) exp.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
+    const saveBin = bar.querySelector("[data-save-mediabin]");
+    if (saveBin) saveBin.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
     const sep = bar.querySelector("[data-separate-audio]");
     if (sep) {
       const sc = hasSel ? S.scene(st.selectedSceneId) : null;
@@ -287,7 +289,7 @@
       if (freshConv) oldConv.replaceWith(freshConv);
       else oldConv.remove();
     } else if (freshConv) {
-      const anchor = bar.querySelector("[data-separate-audio]") || bar.querySelector("[data-export-scene]");
+      const anchor = bar.querySelector("[data-separate-audio]") || bar.querySelector("[data-save-mediabin]") || bar.querySelector("[data-export-scene]");
       if (anchor?.nextSibling) bar.insertBefore(freshConv, anchor.nextSibling);
       else if (anchor) anchor.after(freshConv);
       else bar.append(freshConv);
@@ -1090,8 +1092,13 @@
     const exp = el("button", "btn ghost tiny", "⤓ Export");
     exp.dataset.exportScene = "1";
     exp.title = "Save the selected clip's rendered video to disk (renders are temporary)";
-    exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
+    exp.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
     exp.onclick = () => S.exportSelected();
+    const saveBin = el("button", "btn ghost tiny", "Save to media bin");
+    saveBin.dataset.saveMediabin = "1";
+    saveBin.title = "Copy the selected clip into the Media bin — add it back as a plain video clip";
+    saveBin.disabled = !(hasSel && S.clipSaveableToMediaBin?.(st.selectedSceneId));
+    saveBin.onclick = () => S.saveSelectedToMediaBin();
     const sepAud = el("button", "btn ghost tiny", "⊟ Separate audio");
     sepAud.dataset.needsSel = "1";
     sepAud.dataset.separateAudio = "1";
@@ -1099,7 +1106,7 @@
     const selSc = hasSel ? S.scene(st.selectedSceneId) : null;
     sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
     sepAud.onclick = () => S.separateSceneAudio(st.selectedSceneId);
-    bar.append(split); bar.append(del); bar.append(exp); bar.append(sepAud);
+    bar.append(split); bar.append(del); bar.append(exp); bar.append(saveBin); bar.append(sepAud);
     const conv = toolbarConvertButton(st);
     if (conv) bar.append(conv);
     bar.append(toolbarRatingBlock(st, p));

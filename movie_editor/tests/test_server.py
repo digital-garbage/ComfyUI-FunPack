@@ -4,7 +4,16 @@ from pathlib import Path
 
 from movie_editor.backend import bridge
 from movie_editor.backend.timeline import Project, Scene
-from movie_editor.server import _parse_has_scenes, _parse_prompt_variants, _resolve_run_seed, _run_sampler_inputs, _run_studio_inputs, _shortcut_seed
+from movie_editor.server import (
+    _clip_bytes_for_media,
+    _clip_needs_trim,
+    _parse_has_scenes,
+    _parse_prompt_variants,
+    _resolve_run_seed,
+    _run_sampler_inputs,
+    _run_studio_inputs,
+    _shortcut_seed,
+)
 
 CONTINUE = "__funpack_continue__"
 FRESH = "__funpack_fresh_prompt__"
@@ -214,3 +223,14 @@ def test_generate_filters_video_clips():
     active = [s for s in p.scenes if not s.excluded and not is_video_clip(s)]
     assert len(active) == 1
     assert active[0].text == "gen"
+
+
+def test_clip_bytes_copy_from_media_bin(tmp_path, monkeypatch):
+    from movie_editor.backend import config, media
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
+    entry = media.save_upload("take.mp4", b"MP4DATA")
+    assert _clip_needs_trim({"bin_media_ref": entry["id"]}) is False
+    assert _clip_bytes_for_media({"bin_media_ref": entry["id"]}) == b"MP4DATA"
+    assert _clip_needs_trim({"bin_media_ref": entry["id"], "in": 1.0}) is True

@@ -78,6 +78,7 @@
     listMedia: () => j("GET", API("/media")),
     mediaUrl: (id) => API(`/media/${encodeURIComponent(id)}`),
     deleteMedia: (id) => j("DELETE", API(`/media/${encodeURIComponent(id)}`)),
+    importClipToMediaBin: (clip, name) => j("POST", API("/media/import-clip"), { clip, name: name || null }),
     async uploadMedia(file) {
       const fd = new FormData(); fd.append("file", file, file.name);
       const res = await fetch(API("/media"), { method: "POST", body: fd });
