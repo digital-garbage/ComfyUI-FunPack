@@ -573,11 +573,11 @@
 
     const ta = el("textarea", "insp-global-ta"); ta.rows = 3; ta.value = val; ta.dataset.k = "global-prompt";
     ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
-    ta.oninput = () => { gpDraft = ta.value; apply.disabled = !ta.value.trim(); };
+    ta.oninput = () => { gpDraft = ta.value; apply.disabled = !ta.value.trim(); S.scheduleGlobalPromptApply(ta.value); };
     sec.append(ta);
     sec.append(el("div", "insp-hint", dirty
-      ? "Edited — press Apply to (re)split onto the timeline."
-      : "Primary way to control how long videos divide into scenes. Per-seam tweaks: Split dropdown on timeline seams (video blends are separate, on the same seam)."));
+      ? "Syncing to timeline…"
+      : "Stays in sync with per-scene prompts. Per-seam tweaks: Split dropdown on timeline seams."));
     body.append(sec);
   }
 
@@ -638,11 +638,28 @@
     // manual render when there was nothing pending.
     setTimeout(() => {
       if (_editing) return;
+      const k = t.dataset?.k;
+      if (k === "global-prompt") {
+        const draft = gpDraft;
+        S.flushSave();
+        if (draft != null) S.applyGlobalPromptQuiet(draft);
+        gpDraft = null;
+        render(S.get());
+        return;
+      }
       if (!S.flushSave()) render(S.get());
     }, 60);
   });
 
   window.addEventListener("funpack-invalidate-global-prompt", () => { gpDraft = null; });
+  window.addEventListener("funpack-global-prompt-updated", (e) => {
+    if (_editing && document.activeElement?.dataset?.k === "global-prompt") return;
+    gpDraft = null;
+    const ta = body.querySelector('[data-k="global-prompt"]');
+    if (ta && e.detail?.text != null) ta.value = e.detail.text;
+    const hint = body.querySelector(".insp-global .insp-hint");
+    if (hint) hint.textContent = "Stays in sync with per-scene prompts. Per-seam tweaks: Split dropdown on timeline seams.";
+  });
 
   if (window.ViewBus) window.ViewBus.subscribeInspector(render);
   else S.subscribe(render);

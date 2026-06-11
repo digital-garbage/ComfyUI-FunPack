@@ -120,6 +120,142 @@
     try { window.dispatchEvent(new CustomEvent("funpack-invalidate-global-prompt")); } catch (_) {}
   }
 
+  function _dispatchGlobalPromptUpdated(text) {
+    try {
+      window.dispatchEvent(new CustomEvent("funpack-global-prompt-updated", { detail: { text: text || "" } }));
+    } catch (_) {}
+  }
+
+  function _groupGenerativeUnits(scenes) {
+    const units = [];
+    for (const sc of scenes || []) {
+      const uid = genUnitId(sc);
+      if (units.length && units[units.length - 1][0] === uid) units[units.length - 1][1].push(sc);
+      else units.push([uid, [sc]]);
+    }
+    return units;
+  }
+
+  function _rootFromGroup(group) {
+    return (group || []).find((s) => !isGenSubclip(s)) || group[0] || null;
+  }
+
+  // Verbatim montage text rebuilt from timeline fields (display mode — transitions between scenes).
+  function buildGlobalPromptFromTimeline(project) {
+    if (!project) return "";
+    const parts = [];
+    const anchor = (project.anchor || "").trim();
+    if (anchor) parts.push(anchor);
+    const active = (project.scenes || []).filter((s) => !s.excluded);
+    const units = _groupGenerativeUnits(active);
+    units.forEach(([, group], i) => {
+      const root = _rootFromGroup(group);
+      if (!root) return;
+      if (i === 0) {
+        const intro = (project.intro_transition || "").trim();
+        if (intro && anchor) parts.push(intro);
+      } else {
+        const prevRoot = _rootFromGroup(units[i - 1][1]);
+        const tr = (prevRoot?.transition_to_next || "").trim();
+        if (tr) parts.push(tr);
+      }
+      const text = (root.text || "").trim();
+      if (text) parts.push(text);
+    });
+    return parts.join(" ").trim();
+  }
+
+  function _patchAffectsCombinedPrompt(patch) {
+    if (!patch || typeof patch !== "object") return false;
+    return patch.text != null
+      || patch.transition_to_next != null
+      || patch.excluded != null
+      || patch.anchor != null
+      || patch.intro_transition != null
+      || patch.scenes != null;
+  }
+
+  let _timelinePromptTimer = null;
+  function syncGlobalPromptFromTimeline() {
+    if (!state.project) return;
+    const built = buildGlobalPromptFromTimeline(state.project);
+    const prev = (state.project.global_prompt || "").trim();
+    if (built === prev && (state.preview?.display_prompt || "") === built) return;
+    state.project.global_prompt = built;
+    state.preview = {
+      ...(state.preview || {}),
+      display_prompt: built,
+      combined_prompt: built,
+    };
+    _lastPreviewKey = _promptPreviewKey(state.project);
+    _invalidateGlobalPromptDraft();
+    _dispatchGlobalPromptUpdated(built);
+    notify();
+    clearTimeout(_timelinePromptTimer);
+    _timelinePromptTimer = setTimeout(() => refreshPreview(true), 300);
+  }
+
+  let _globalApplyTimer = null;
+  function scheduleGlobalPromptApply(text) {
+    clearTimeout(_globalApplyTimer);
+    _globalApplyTimer = setTimeout(() => { applyGlobalPromptQuiet(text); }, 500);
+  }
+
+  async function _distributeGlobalPrompt(text, res) {
+    const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
+    if (!(v.scenes || []).length) return false;
+    state.project.global_prompt = text;
+    state.project.anchor = v.anchor || "";
+    const old = state.project.scenes || [];
+    const next = (v.scenes || []).map((ps, i) => {
+      const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "carry" }, excluded: false };
+      base.text = ps.text || "";
+      base.transition_to_next = "";
+      return base;
+    });
+    _applyDetectedTransitions(next, v.transitions, text);
+    state.project.scenes = next;
+    state.sceneGhosts = [];
+    const firstId = next[0]?.id || null;
+    state.selectedSceneId = firstId;
+    state.selectedSceneIds = firstId ? [firstId] : [];
+    _selectionAnchorId = firstId;
+    state.preview = {
+      ...(state.preview || {}),
+      combined_prompt: text,
+      display_prompt: text,
+      parsed: res.parsed,
+      parsed_raw: res.parsed_raw,
+      parsed_verbatim: res.parsed_verbatim,
+      for_generation: false,
+    };
+    _lastPreviewKey = _promptPreviewKey(state.project);
+    _invalidateGlobalPromptDraft();
+    _dispatchGlobalPromptUpdated(text);
+    notify();
+    return true;
+  }
+
+  async function applyGlobalPromptQuiet(text) {
+    if (!state.project) return false;
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return false;
+    if (trimmed === buildGlobalPromptFromTimeline(state.project)) return true;
+    let res;
+    try { res = await API.parsePrompt(state.project.id, trimmed); }
+    catch (e) {
+      console.warn("Global prompt parse failed:", e);
+      return false;
+    }
+    if (!await _distributeGlobalPrompt(trimmed, res)) return false;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    _localDirty = true;
+    scheduleSaveSilent();
+    refreshPreview(true);
+    return true;
+  }
+
   function _syncPromptPreview() {
     return (async () => {
       try {
@@ -197,6 +333,7 @@
     _removedDuringGen.clear();
     if (window.EditorHistory) window.EditorHistory.clear();
     notify();
+    syncGlobalPromptFromTimeline();
     refreshPreview();
     loadModels();
     _validateSceneRenders();
@@ -344,10 +481,16 @@
     if (!state.project) return;
     _historyRecord();
     Object.assign(state.project, patch);
+    if (_patchAffectsCombinedPrompt(patch)) syncGlobalPromptFromTimeline();
     notify();
     scheduleSave();
   }
-  function patchProjectQuiet(patch) { if (!state.project) return; Object.assign(state.project, patch); scheduleSaveSilent(); }
+  function patchProjectQuiet(patch) {
+    if (!state.project) return;
+    Object.assign(state.project, patch);
+    if (_patchAffectsCombinedPrompt(patch)) syncGlobalPromptFromTimeline();
+    scheduleSaveSilent();
+  }
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
@@ -429,6 +572,10 @@
     } else if (charsChanged) {
       notify();
       _syncPromptPreview();
+    } else if (_patchAffectsCombinedPrompt(merged)) {
+      syncGlobalPromptFromTimeline();
+      if (quiet) scheduleSaveSilent();
+      else { notify(); scheduleSave(); }
     } else if (quiet) scheduleSaveSilent();
     else { notify(); scheduleSave(); }
   }
@@ -445,7 +592,10 @@
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
       _localDirty = true; notify(); commit();
-    } else scheduleSaveSilent();
+    } else {
+      if (_patchAffectsCombinedPrompt(merged)) syncGlobalPromptFromTimeline();
+      scheduleSaveSilent();
+    }
   }
 
   function _sceneOrder() { return (state.project?.scenes || []).map((s) => s.id); }
@@ -929,7 +1079,6 @@
   async function applyGlobalPrompt(text) {
     if (!state.project) return false;
     _historyRecord();
-    state.project.global_prompt = text;
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
     catch (e) {
@@ -937,37 +1086,10 @@
       alert("Could not parse the global prompt: " + msg);
       return false;
     }
-    // The verbatim split is authoritative: correct (shortcut-aware) boundaries, scene
-    // text kept exactly as typed, anchor + scenes reproduce the global prompt.
-    const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
-    if (!(v.scenes || []).length) { alert("Nothing parsed — no scenes detected."); return false; }
-
-    state.project.anchor = v.anchor || "";
-    const old = state.project.scenes || [];
-    const next = (v.scenes || []).map((ps, i) => {
-      const base = old[i] ? JSON.parse(JSON.stringify(old[i])) : { source: { type: "carry" }, excluded: false };
-      base.text = ps.text || "";          // verbatim chunk of the global prompt
-      base.transition_to_next = "";
-      return base;
-    });
-    _applyDetectedTransitions(next, v.transitions, text);
-    state.project.scenes = next;
-    state.sceneGhosts = [];  // scene ids changed — old ghosts no longer anchor correctly
-    const firstId = next[0]?.id || null;
-    state.selectedSceneId = firstId;
-    state.selectedSceneIds = firstId ? [firstId] : [];
-    _selectionAnchorId = firstId;
-    // Refresh the inspector immediately — don't wait for save debounce + preview round-trip.
-    state.preview = {
-      ...(state.preview || {}),
-      combined_prompt: text,
-      display_prompt: text,
-      parsed: res.parsed,
-      parsed_raw: res.parsed_raw,
-      parsed_verbatim: res.parsed_verbatim,
-      for_generation: false,
-    };
-    notify();
+    if (!(await _distributeGlobalPrompt(text, res))) {
+      alert("Nothing parsed — no scenes detected.");
+      return false;
+    }
     clearTimeout(saveTimer);
     saveTimer = null;
     state.saving = true;
@@ -1766,7 +1888,7 @@
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPrompt, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,

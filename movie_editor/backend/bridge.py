@@ -173,7 +173,18 @@ def recent_log(limit: int = 500) -> list:
 def rating_labels() -> dict:
     """FunPack Studio V2 rating labels (for the Scene rating dropdown)."""
     labels = _funpack_attr("conditioning", "V2_RATING_LABELS")
-    return {"labels": list(labels)}
+    try:
+        internal = {
+            _funpack_attr("conditioning", "MOVIE_EDITOR_CONTINUE_RATING"),
+            _funpack_attr("conditioning", "MOVIE_EDITOR_FRESH_PROMPT_RATING"),
+        }
+    except Exception:
+        internal = {"__funpack_continue__", "__funpack_fresh_prompt__"}
+    out = [
+        str(l) for l in (labels or [])
+        if l and str(l) not in internal and not str(l).startswith("__funpack_")
+    ]
+    return {"labels": out}
 
 
 def transitions() -> dict:
