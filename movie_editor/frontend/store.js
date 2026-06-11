@@ -780,6 +780,12 @@
   function isVideoClip(sc) { return (sc && sc.source && sc.source.type) === "video"; }
   function isGenerativeScene(sc) { return !!sc && !isVideoClip(sc); }
   function isGenSubclip(sc) { return !!((sc && sc.cut_offset_frames) > 0); }
+  /** Timeline clip whose preview is driven by source_in on a media-bin file (not render inSec alone). */
+  function playsFromSourceMedia(sc) {
+    if (!sc?.source) return false;
+    if (isVideoClip(sc)) return !!sc.source.media_ref;
+    return sc.source.type === "v2v" && !!sc.source.media_ref;
+  }
   function genUnitRoot(unitId) {
     const group = (state.project?.scenes || []).filter((s) => genUnitId(s) === unitId);
     return group.find((s) => !isGenSubclip(s)) || group[0] || null;
@@ -1049,6 +1055,11 @@
       cut_offset_frames: 0,
       rating: "",
     });
+    const asset = mediaRef ? (state.mediaBin || []).find((m) => m.id === mediaRef) : null;
+    if (asset?.kind === "video") {
+      root.source_dur = asset.duration_sec || root.source_dur || null;
+      if (!asset.duration_sec) _probeVideoClipDuration(root.id, mediaRef);
+    }
     if (state.selectedSceneId && !scene(state.selectedSceneId)) {
       state.selectedSceneId = root.id;
       state.selectedSceneIds = [root.id];
@@ -1082,12 +1093,17 @@
     if (!asset || asset.kind !== "video") return;
     _historyRecord();
     const id = _newSceneId();
+    const fps = state.project.frame_rate || 25;
+    const dur = asset.duration_sec || null;
     state.project.scenes.push({
       id,
       gen_unit_id: id,
       text: "",
       transition_to_next: "",
       source: { type: "video", media_ref: mediaId },
+      source_dur: dur,
+      frames_mode: dur != null ? "timeline" : "project",
+      frames: dur != null ? snapFrames(dur * fps) : null,
       excluded: false,
     });
     state.selectedSceneId = id;
@@ -1095,6 +1111,30 @@
     _selectionAnchorId = id;
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave();
+    if (!dur) _probeVideoClipDuration(id, mediaId);
+  }
+
+  function _applyVideoClipDuration(sceneId, durSec) {
+    const sc = scene(sceneId);
+    if (!sc || !isVideoClip(sc) || !durSec || !isFinite(durSec)) return;
+    const fps = (sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : (state.project?.frame_rate || 25);
+    patchSceneQuiet(sceneId, {
+      source_dur: durSec,
+      frames: snapFrames(durSec * fps),
+      frames_mode: sc.frames_mode === "custom" ? "custom" : "timeline",
+    });
+  }
+
+  function _probeVideoClipDuration(sceneId, mediaId) {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.src = API.mediaUrl(mediaId);
+    v.onloadedmetadata = () => {
+      if (!v.duration || !isFinite(v.duration)) return;
+      const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+      if (asset && !asset.duration_sec) asset.duration_sec = v.duration;
+      _applyVideoClipDuration(sceneId, v.duration);
+    };
   }
 
   function _removeSceneNoHistory(id) {
@@ -1112,6 +1152,16 @@
         next.text = sc.text || next.text;
         next.rating = sc.rating || next.rating;
         next.source = JSON.parse(JSON.stringify(sc.source || next.source || {}));
+        if (playsFromSourceMedia(next)) {
+          const fps = (sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : (state.project.frame_rate || 25);
+          const removedDur = (isVideoClip(sc) && sc.source_dur != null)
+            ? sc.source_dur
+            : ((sc.frames != null ? sc.frames : state.project.num_frames_per_scene) / fps);
+          // Legacy splits never bumped source_in — advance the kept half past the deleted head.
+          if ((next.source_in || 0) <= (sc.source_in || 0) + 0.001) {
+            next.source_in = (sc.source_in || 0) + removedDur;
+          }
+        }
         const removedOffset = sc.frames || 0;
         unitMates.filter((s) => s.id !== id).forEach((s) => {
           if ((s.cut_offset_frames || 0) > (sc.cut_offset_frames || 0))
@@ -1169,7 +1219,11 @@
   function segmentDurationSec(seg) {
     const p = state.project;
     if (!p || !seg) return 0;
-    if (seg.kind === "scene") return sceneDurationSec(seg.scene);
+    if (seg.kind === "scene") {
+      const sc = seg.scene;
+      if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
+      return sceneDurationSec(sc);
+    }
     const g = seg.ghost;
     const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
     const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
@@ -1249,6 +1303,7 @@
   // A scene's duration in seconds (respecting per-scene frames/fps modes).
   function sceneDurationSec(sc) {
     const p = state.project; if (!p || !sc) return 0;
+    if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
     const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
     const frames = (sc.frames_mode !== "project" && sc.frames != null ? sc.frames : p.num_frames_per_scene) || 1;
     return frames / fps;
@@ -1277,10 +1332,12 @@
     const arr = state.project.scenes;
     const i = arr.findIndex((s) => s.id === id); if (i < 0) return;
     const s = arr[i];
-    const fps = s.fps != null ? s.fps : state.project.frame_rate;
-    const frames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
+    const effFps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
+    let frames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
+    if (isVideoClip(s) && s.source_dur != null) frames = snapFrames(s.source_dur * effFps);
     const cut = snapFrames(atFrames != null ? atFrames : frames / 2);
     if (cut <= 9 || cut >= frames) return;
+    const cutSec = cut / effFps;
     const unitId = genUnitId(s);
     const baseOffset = s.cut_offset_frames || 0;
     const second = JSON.parse(JSON.stringify(s));
@@ -1296,15 +1353,22 @@
     second.transition_frames = s.transition_frames || null;
     s.gen_unit_id = unitId;
     s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
+    if (playsFromSourceMedia(s)) {
+      const srcIn = s.source_in || 0;
+      const totalDur = s.source_dur != null ? s.source_dur : (frames / effFps);
+      const secondDur = second.frames / effFps;
+      s.source_dur = cutSec;
+      second.source_in = srcIn + cutSec;
+      second.source_dur = Math.max(0.1, Math.min(secondDur, totalDur - cutSec));
+    }
     arr.splice(i + 1, 0, second);
     // Keep the render across the cut: the second half plays the SAME source video starting
     // at the first half's out-point (its in-point + first-half duration).
     const r = state.sceneRenders[id];
     if (r && r.media) {
-      const fps = s.fps_mode !== "project" && s.fps != null ? s.fps : state.project.frame_rate;
       state.sceneRenders[second.id] = {
         media: r.media,
-        inSec: (r.inSec || 0) + cut / (fps || 25),
+        inSec: (r.inSec || 0) + cutSec,
         renderPrompt: r.renderPrompt ? { ...r.renderPrompt } : _snapshotRenderPrompt(id),
       };
     }
@@ -2533,24 +2597,12 @@
       return;
     }
     if (m.kind === "video") {
-      const scenes = (state.project?.scenes || []).filter(
+      const onTimeline = (state.project?.scenes || []).some(
         (s) => !s.excluded && isVideoClip(s) && s.source?.media_ref === mediaId,
       );
-      if (scenes.length) {
-        const target = state.selectedSceneId && scenes.some((s) => s.id === state.selectedSceneId)
-          ? scenes.find((s) => s.id === state.selectedSceneId)
-          : scenes[0];
-        const segs = buildPreviewSegments();
-        const seg = segs.find((s) => s.kind === "scene" && s.scene.id === target.id);
+      if (onTimeline) {
         state.mediaPreviewId = null;
-        selectScene(target.id);
         notify();
-        if (seg && window.Player) {
-          try { window.Player.pause(); } catch (_) {}
-          const ph = window.Player.getPlayhead();
-          const onClip = ph >= seg.offsetSec - 0.05 && ph < seg.offsetSec + seg.durationSec - 0.001;
-          if (!onClip) window.Player.seek(seg.offsetSec);
-        }
         return;
       }
       try { window.Player?.pause?.(); } catch (_) {}
@@ -2571,10 +2623,17 @@
     const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
     if (asset?.kind === "video") {
       if (isVideoClip(s)) {
-        patchScene(sceneId, { source: { ...(s.source || {}), type: "video", media_ref: mediaId } });
+        patchScene(sceneId, {
+          source: { ...(s.source || {}), type: "video", media_ref: mediaId },
+          source_dur: asset.duration_sec || s.source_dur || null,
+        });
       } else if (confirm("Replace this scene with the imported video clip? Use Convert to video in the inspector to keep a backup of scene settings.")) {
-        patchScene(sceneId, { source: { type: "video", media_ref: mediaId } });
+        patchScene(sceneId, {
+          source: { type: "video", media_ref: mediaId },
+          source_dur: asset.duration_sec || null,
+        });
       }
+      if (!asset.duration_sec) _probeVideoClipDuration(sceneId, mediaId);
       return;
     }
     // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides).
@@ -2612,7 +2671,7 @@
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
-    buildPreviewSegments, previewTotalSec, segmentDurationSec,
+    buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
     isOverlayAudioTrack, isSeparatedAudioTrack,

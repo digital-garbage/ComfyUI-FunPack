@@ -58,6 +58,21 @@
     );
   }
 
+  function _binVideoAsset(st, mediaRef) {
+    if (!mediaRef) return null;
+    const asset = (st.mediaBin || []).find((m) => m.id === mediaRef);
+    return asset?.kind === "video" ? asset : null;
+  }
+
+  function _binVideoUrl(st, mediaRef) {
+    return _binVideoAsset(st, mediaRef) ? API.mediaUrl(mediaRef) : null;
+  }
+
+  function _clipDurationSec(sc, segDur) {
+    if (sc.source_dur != null) return sc.source_dur;
+    return segDur;
+  }
+
   function _buildClips(st) {
     const previewAsset = st.mediaPreviewId
       ? (st.mediaBin || []).find((m) => m.id === st.mediaPreviewId)
@@ -102,16 +117,54 @@
       const r = sr[sc.id];
       const fx = sc.effects || {};
       const vol = sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1);
+      const clipDur = _clipDurationSec(sc, dur);
+      const srcType = sc.source?.type || "carry";
+      const mediaRef = sc.source?.media_ref || null;
+      const binUrl = _binVideoUrl(st, mediaRef);
+
+      // Locked / imported video clips always play from the media bin (playhead-driven pool).
+      if (S.isVideoClip?.(sc) && binUrl) {
+        out.push({
+          binUrl,
+          sceneId: sc.id,
+          startSec,
+          durationSec: clipDur,
+          inSec: sc.source_in || 0,
+          fx,
+          vol,
+        });
+        continue;
+      }
+      // Converted-back v2v scenes preview their source file until a render exists.
+      if (srcType === "v2v" && binUrl && !r?.media) {
+        out.push({
+          binUrl,
+          sceneId: sc.id,
+          startSec,
+          durationSec: clipDur,
+          inSec: sc.source_in || 0,
+          fx,
+          vol,
+        });
+        continue;
+      }
+      if (S.isVideoClip?.(sc) && r?.media) {
+        out.push({
+          media: r.media,
+          sceneId: sc.id,
+          startSec,
+          durationSec: clipDur,
+          inSec: sc.source_in || 0,
+          fx,
+          vol,
+        });
+        continue;
+      }
+
       const inSec = (sc.source_in || 0) + (r?.inSec || 0);
       if (r && r.media) {
         out.push({
           media: r.media, sceneId: sc.id, startSec, durationSec: dur, inSec,
-          fx, vol,
-        });
-      } else if (S.isVideoClip && S.isVideoClip(sc) && sc.source?.media_ref) {
-        out.push({
-          binUrl: API.mediaUrl(sc.source.media_ref),
-          sceneId: sc.id, startSec, durationSec: dur, inSec: sc.source_in || 0,
           fx, vol,
         });
       } else if (!sc.excluded && S.isGenerativeScene && S.isGenerativeScene(sc)) {
@@ -355,12 +408,13 @@
     const sameSource = next.media && prev.media
       && _urlFor(next.media) === _urlFor(prev.media);
     const sameBin = next.binUrl && prev.binUrl && next.binUrl === prev.binUrl;
-    const contiguous = (sameSource || sameBin)
+    const sharedSource = sameSource || sameBin;
+    const contiguous = sharedSource
       && Math.abs((next.inSec || 0) - ((prev.inSec || 0) + prev.durationSec)) < 0.05;
     _phSec = next.startSec;
     _currentClip = next;
     // Reseek on gen-unit / scene boundaries — chain carry scenes overlap in the source file.
-    const needSeek = !sameSource || !contiguous
+    const needSeek = !sharedSource || !contiguous
       || (next.sceneId && prev.sceneId && next.sceneId !== prev.sceneId)
       || (next.ghostId && prev.ghostId && next.ghostId !== prev.ghostId);
     if (needSeek) _goto(next, 0, _playing);

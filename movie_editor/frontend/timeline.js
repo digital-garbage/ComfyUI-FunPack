@@ -91,7 +91,7 @@
   // ── helpers ──────────────────────────────────────────────────────────────────
   const sFps = (sc, p) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : p.frame_rate) || 25;
   const sFrames = (sc, p) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
-  const sDur = (sc, p) => sFrames(sc, p) / sFps(sc, p);
+  const sDur = (sc, p) => (S.sceneDurationSec ? S.sceneDurationSec(sc) : (sFrames(sc, p) / sFps(sc, p)));
 
   function snapPx(x, anchors, threshold) {
     threshold = threshold || 10;
