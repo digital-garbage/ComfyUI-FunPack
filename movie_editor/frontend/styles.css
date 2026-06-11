@@ -726,7 +726,8 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 /* seam: compact card at each clip boundary (blend + split) */
 .seam {
   position: absolute; top: 50%; transform: translate(-50%, -50%);
-  z-index: 8; pointer-events: none; width: 118px;
+  z-index: 8; pointer-events: none;
+  width: max-content; min-width: 156px; max-width: 220px;
 }
 .seam-marker {
   position: absolute; left: 50%; top: 10%; bottom: 10%; width: 2px;
@@ -738,10 +739,16 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
   position: relative; z-index: 1; pointer-events: auto;
   background: #161410; border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 3px 12px rgba(0,0,0,.55); overflow: hidden;
+  min-width: 156px;
 }
 .seam-row {
   display: flex; align-items: center; gap: 5px; padding: 4px 6px; min-height: 26px;
 }
+.seam-row-split {
+  flex-direction: column; align-items: stretch; gap: 3px; padding-top: 5px; padding-bottom: 5px;
+}
+.seam-row-split .seam-row-lbl { flex: none; }
+.seam-row-split .seam-field { flex: none; width: 100%; min-width: 0; }
 .seam-row-blend { border-bottom: 1px solid var(--line-2); cursor: ew-resize; }
 .seam-row-lbl {
   flex: 0 0 34px; font-family: var(--font-mono); font-size: 8px; letter-spacing: .45px;
@@ -758,7 +765,7 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
   background: color-mix(in srgb, var(--amber) 12%, transparent);
 }
 .seam-field {
-  flex: 1; min-width: 0; font-size: 10px; padding: 2px 4px;
+  flex: 1; min-width: 72px; font-size: 10px; padding: 2px 18px 2px 4px;
   background: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; color: var(--text);
 }
 .seam-blend-dur {

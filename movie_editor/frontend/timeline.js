@@ -298,7 +298,7 @@
   // Prompt transition (Studio split marker) - separate from rendered video transition.
   function promptTransitionSelect(value, onChange) {
     const sel = el("select", "seam-field seam-prompt-type");
-    const none = el("option", null, "default cut"); none.value = ""; sel.append(none);
+    const none = el("option", null, "Default cut"); none.value = ""; sel.append(none);
     (S.get().transitions || []).forEach((t) => {
       const name = t.trigger || t.name || t.key; if (!name) return;
       const o = el("option", null, name); o.value = name; if (name === value) o.selected = true; sel.append(o);
