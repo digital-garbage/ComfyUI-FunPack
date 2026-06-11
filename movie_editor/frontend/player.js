@@ -182,14 +182,14 @@
           sceneId: sc.id,
           startSec,
           durationSec: clipDur,
-          inSec: sc.source_in || 0,
+          inSec: S.clipSourceInSec ? S.clipSourceInSec(sc, r) : (sc.source_in || 0),
           fx,
           vol,
         });
         continue;
       }
 
-      const inSec = (sc.source_in || 0) + (r?.inSec || 0);
+      const inSec = S.clipSourceInSec ? S.clipSourceInSec(sc, r) : ((sc.source_in || 0) + (r?.inSec || 0));
       if (r && r.media) {
         out.push({
           media: r.media, sceneId: sc.id, startSec, durationSec: dur, inSec,
@@ -567,14 +567,18 @@
       return;
     }
     const offset = _phSec - clip.startSec;
-    const sameClip = _currentClip === clip
-      || (_currentClip && clip && _currentClip.sceneId === clip.sceneId && _sameVideoUrl(_currentClip, clip));
-    const sameVideo = !clip.pending && _active && _sameVideoUrl(_currentClip, clip)
+    const prevClip = _currentClip;
+    const sameClip = prevClip === clip
+      || (prevClip && clip && prevClip.sceneId === clip.sceneId && _sameVideoUrl(prevClip, clip));
+    const sameVideo = !clip.pending && _active && _sameVideoUrl(prevClip || clip, clip)
       && (clip.media || clip.binUrl);
     if (sameVideo && _active.readyState >= 1) {
+      const crossScene = prevClip && clip && prevClip !== clip
+        && (prevClip.sceneId !== clip.sceneId || Math.abs((prevClip.inSec || 0) - (clip.inSec || 0)) > 0.05);
       _currentClip = clip;
       _applyClipUi(clip);
       const target = (clip.inSec || 0) + Math.max(0, offset);
+      if (crossScene) _flushVideoSeek(true);
       _scheduleVideoSeek(target, clip, offset);
     } else if (!sameClip || clip.pending) {
       _flushVideoSeek(true);

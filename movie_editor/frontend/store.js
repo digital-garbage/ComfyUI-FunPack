@@ -1492,7 +1492,7 @@
     if (separatedTrackForScene(sceneId)) return;
     _historyRecord();
     const idx = state.project.scenes.indexOf(sc);
-    const inSec = (r.inSec || 0) + (sc.source_in || 0);
+    const inSec = clipSourceInSec(sc, r);
     const dur = sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
     const savedVol = sc.audio_volume != null ? sc.audio_volume : 1;
     state.project.audio_tracks = state.project.audio_tracks || [];
@@ -2312,6 +2312,14 @@
     await _saveBlobAs(API.mediaUrl(mediaId), name, { types });
   }
 
+  // Source in-point for preview/export: chain segment offset + per-scene trim.
+  function clipSourceInSec(sc, render) {
+    if (!sc) return 0;
+    const trim = sc.source_in || 0;
+    if (render?.media) return trim + (render.inSec || 0);
+    return trim;
+  }
+
   // Ordered list of rendered clips in timeline order: {media, inSec, durationSec} for
   // each non-excluded scene that has a render. This is what plays/exports — so splits
   // and deletes are honoured (deleted scenes simply aren't here).
@@ -2324,7 +2332,7 @@
       const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
       const tFrames = sc.transition_frames || 0;
       const base = {
-        inSec: (r?.inSec || 0) + (sc.source_in || 0),
+        inSec: clipSourceInSec(sc, r),
         durationSec: sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc),
         fx: sc.effects || {}, fps,
         w: (sc.width != null ? sc.width : p.width) || null,
@@ -2431,7 +2439,7 @@
         filename: r.media.filename,
         subfolder: r.media.subfolder || "",
         type: r.media.type || "output",
-        in: (r.inSec || 0) + (sc.source_in || 0),
+        in: clipSourceInSec(sc, r),
         dur: sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc),
       },
       name: `${proj}_scene${idx >= 0 ? idx + 1 : "x"}_${_stamp()}.mp4`,
@@ -2866,7 +2874,7 @@
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
-    buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec,
+    buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec, clipSourceInSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
     isOverlayAudioTrack, isSeparatedAudioTrack,

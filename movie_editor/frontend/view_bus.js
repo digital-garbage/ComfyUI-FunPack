@@ -81,6 +81,7 @@
       scenes: (p.scenes || []).map((s) => [
         s.id, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
         s.audio_volume, s.audio_separated, s.source_in, s.source_dur, s.effects,
+        s.source?.type, s.source?.media_ref,
       ]),
       renders: st.sceneRenders,
       ghosts: st.sceneGhosts,
