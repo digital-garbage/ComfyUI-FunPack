@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
+from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.timeline import (
     Project,
@@ -149,12 +149,35 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur) -> None:
         raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
 
 
-def _scene_playback_clip_spec(project: Project, scene_id: str) -> dict:
+def _playback_render_from_query(query) -> Optional[dict]:
+    """Optional live render override from preview-segment query params."""
+    filename = query.get("filename") if query else None
+    if not filename:
+        return None
+    return {
+        "inSec": float(query.get("render_in") or 0),
+        "media": {
+            "filename": filename,
+            "subfolder": query.get("subfolder") or "",
+            "type": query.get("type") or "output",
+        },
+    }
+
+
+def _scene_playback_clip_spec(
+    project: Project,
+    scene_id: str,
+    *,
+    render_override: Optional[dict] = None,
+) -> dict:
     """Export-matching trim spec for one scene's preview segment."""
     scene = next((s for s in project.scenes if s.id == scene_id), None)
     if not scene or scene.excluded:
         raise KeyError(f"scene {scene_id}")
-    render = (project.scene_renders or {}).get(scene_id) or {}
+    if render_override is not None:
+        render = render_override
+    else:
+        render = (project.scene_renders or {}).get(scene_id) or {}
     media = render.get("media") or {}
     if not media.get("filename"):
         raise KeyError(f"no render for {scene_id}")
@@ -314,8 +337,11 @@ def _parse_prompt_variants(prompt: str, seed: int) -> tuple[dict, dict]:
 
 def _project_models(p: Optional[Project]) -> dict:
     """The project's own pipeline config, or the global default when it has none yet."""
-    m = getattr(p, "models", None) or {}
-    if m.get("slots") or m.get("links") or m.get("core_overrides") or m.get("disable_core"):
+    m = getattr(p, "models", None)
+    if not isinstance(m, dict):
+        return nodes.load_models()
+    # Treat slots: [] as intentional (user removed all loaders) — do not fall back to global.
+    if "slots" in m or m.get("links") or m.get("core_overrides") or m.get("disable_core") or m.get("full_control"):
         return m
     return nodes.load_models()
 
@@ -1432,8 +1458,9 @@ if web is not None and PromptServer is not None:
         pid = req.match_info["pid"]
         scene_id = req.match_info["scene_id"]
         proj = _project_or_404(pid)
+        render_override = _playback_render_from_query(req.query)
         try:
-            clip = _scene_playback_clip_spec(proj, scene_id)
+            clip = _scene_playback_clip_spec(proj, scene_id, render_override=render_override)
         except KeyError as e:
             return web.json_response({"detail": str(e)}, status=404)
         key = _preview_segment_cache_key(pid, scene_id, clip)
@@ -1608,6 +1635,36 @@ if web is not None and PromptServer is not None:
         if spec is None:
             raise web.HTTPNotFound(reason="Unknown node class")
         return web.json_response(spec)
+
+    @routes.get(UI_PREFIX + "/api/git/status")
+    async def _git_status(_req):
+        return web.json_response(git_update.status())
+
+    @routes.post(UI_PREFIX + "/api/git/update")
+    async def _git_update(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        branch = body.get("branch")
+        try:
+            result = git_update.pull(str(branch).strip() if branch else None)
+        except git_update.GitUpdateError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        asyncio.get_event_loop().call_later(0.7, _restart_comfy)
+        return web.json_response({"restarting": True, **result})
+
+    @routes.post(UI_PREFIX + "/api/git/checkout")
+    async def _git_checkout(req):
+        import asyncio
+        body = await req.json() if req.can_read_body else {}
+        branch = str(body.get("branch") or "").strip()
+        if not branch:
+            return web.json_response({"detail": "Branch name is required."}, status=400)
+        try:
+            result = git_update.checkout(branch, pull_after=True)
+        except git_update.GitUpdateError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        asyncio.get_event_loop().call_later(0.7, _restart_comfy)
+        return web.json_response({"restarting": True, **result})
 
     @routes.post(UI_PREFIX + "/api/restart")
     async def _restart(_req):

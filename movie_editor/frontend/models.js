@@ -70,6 +70,63 @@
     });
   }
 
+  function portToOpenCore(portId) {
+    const hit = (wiringRules.open_core_ports || []).find((p) => p.port === portId);
+    return hit ? [hit.core_id, hit.input] : null;
+  }
+
+  function _clearPortWires(portId, exceptSlotId, exceptOut) {
+    const portTarget = "port:" + portId;
+    for (const slot of config.slots) {
+      slot.wires = slot.wires || {};
+      for (const outName of Object.keys(slot.wires)) {
+        if (slot.id === exceptSlotId && outName === exceptOut) continue;
+        slot.wires[outName] = wireTargets(slot.wires[outName]).filter((t) => t !== portTarget);
+      }
+    }
+  }
+
+  // Keep core_overrides and slot port wires in sync so loader wiring survives reload.
+  function reconcileOpenPortWiring() {
+    config.core_overrides = config.core_overrides || {};
+    for (const slot of config.slots) {
+      for (const [outName, raw] of Object.entries(slot.wires || {})) {
+        for (const t of wireTargets(raw)) {
+          if (!t.startsWith("port:")) continue;
+          const portId = t.slice(5);
+          const map = portToOpenCore(portId);
+          if (!map) continue;
+          const [cid, inp] = map;
+          config.core_overrides[cid] = config.core_overrides[cid] || {};
+          config.core_overrides[cid][inp] = `out:${slot.id}:${outName}`;
+        }
+      }
+    }
+    for (const entry of wiringRules.open_core_ports || []) {
+      const portId = entry.port;
+      const cid = entry.core_id;
+      const inp = entry.input;
+      const src = config.core_overrides?.[cid]?.[inp];
+      const parsed = _parseOutSource(src);
+      if (!parsed) continue;
+      _clearPortWires(portId, parsed.slotId, parsed.out);
+      _addWire(parsed.slotId, parsed.out, "port:" + portId);
+    }
+  }
+
+  function clearInternalCoreOverrides() {
+    if (!config.core_overrides) return;
+    const open = new Set(
+      (wiringRules.open_core_ports || []).map((p) => `${p.core_id}.${p.input}`),
+    );
+    for (const cid of Object.keys(config.core_overrides)) {
+      for (const inp of Object.keys(config.core_overrides[cid] || {})) {
+        if (!open.has(`${cid}.${inp}`)) delete config.core_overrides[cid][inp];
+      }
+      if (!Object.keys(config.core_overrides[cid] || {}).length) delete config.core_overrides[cid];
+    }
+  }
+
   function allowedSources(slot, ci) {
     const all = sources(slot, ci.type);
     if (!pipelineLocked()) return all;
@@ -476,10 +533,10 @@
         const sel = el("select", "wire-select");
         dests.forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === t) o.selected = true; sel.append(o); });
         if (t && !dests.some((d) => d.value === t)) { const o = el("option", null, t + " (not allowed)"); o.value = t; o.selected = true; sel.append(o); }
-        sel.onchange = async () => { _setWireTarget(slot, out.name, targets[i], sel.value); targets[i] = sel.value; await persist(); render(); };
+        sel.onchange = async () => { _setWireTarget(slot, out.name, targets[i], sel.value); targets[i] = sel.value; reconcileOpenPortWiring(); await persist(); render(); };
         const rm = el("button", "btn ghost tiny wire-rm", "×");
         rm.title = "Remove this wire";
-        rm.onclick = async () => { _setWireTarget(slot, out.name, targets[i], ""); targets.splice(i, 1); await persist(); render(); };
+        rm.onclick = async () => { _setWireTarget(slot, out.name, targets[i], ""); targets.splice(i, 1); reconcileOpenPortWiring(); await persist(); render(); };
         row.append(sel, rm);
         wrap.append(row);
       });
@@ -790,8 +847,29 @@
   function setCoreOverride(cid, inp, value) {
     config.core_overrides = config.core_overrides || {};
     config.core_overrides[cid] = config.core_overrides[cid] || {};
+    const prev = config.core_overrides[cid][inp];
     if (value) config.core_overrides[cid][inp] = value;
     else delete config.core_overrides[cid][inp];
+    const parsed = _parseOutSource(value);
+    if (parsed) {
+      for (const entry of wiringRules.open_core_ports || []) {
+        if (entry.core_id === cid && entry.input === inp) {
+          _clearPortWires(entry.port, parsed.slotId, parsed.out);
+          _addWire(parsed.slotId, parsed.out, "port:" + entry.port);
+          break;
+        }
+      }
+    } else if (prev) {
+      const old = _parseOutSource(prev);
+      if (old) {
+        for (const entry of wiringRules.open_core_ports || []) {
+          if (entry.core_id === cid && entry.input === inp) {
+            _removeWire(old.slotId, old.out, "port:" + entry.port);
+            break;
+          }
+        }
+      }
+    }
   }
   function coreCard(n) {
     const card = el("div", "slot-card open" + (n.installed ? "" : " slot-bad"));
@@ -852,7 +930,7 @@
         : "Guided wiring ON — loaders wire only to their built-in ports. Click for full manual control.";
       fc.onclick = async () => {
         config.full_control = !config.full_control;
-        if (!config.full_control) config.core_overrides = {};
+        if (!config.full_control) clearInternalCoreOverrides();
         await persist();
         try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
         render();
@@ -935,6 +1013,7 @@
       wiringRules = pp.wiring || {};
     } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; }
     try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
+    reconcileOpenPortWiring();
     try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();
 

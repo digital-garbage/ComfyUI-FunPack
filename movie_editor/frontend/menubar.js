@@ -18,25 +18,108 @@
     return inp;
   })();
 
-  async function restartComfy() {
-    if (!confirm("Restart ComfyUI now?\n\nThe server will be down for ~10–40s and any running generation will be lost. This page reloads automatically when it's back.")) return;
+  async function refreshGitStatus() {
+    try { _gitStatus = await window.MovieEditorAPI.gitStatus(); }
+    catch (_) { _gitStatus = { ok: false }; }
+    if (openName === "FunPack") render();
+  }
+
+  function _restartOverlay(message) {
     const ov = el("div", "restart-overlay");
     const card = el("div", "restart-card");
     card.append(el("div", "restart-spin"));
-    const msg = el("div", "restart-msg", "Restarting ComfyUI…\nThis page will reload when it's back.");
+    const msg = el("div", "restart-msg", message);
     card.append(msg); ov.append(card); document.body.append(ov);
-    try { await window.MovieEditorAPI.restart(); } catch (_) { /* connection drops as it execv's — expected */ }
-    const start = Date.now();
+    return msg;
+  }
+
+  function _waitForComfyReload(msgEl, startMs) {
+    const start = startMs || Date.now();
     const tick = async () => {
       try {
         const h = await window.MovieEditorAPI.health();
         if (h && h.ok) { location.reload(); return; }
       } catch (_) { /* still down */ }
-      if (Date.now() - start > 90000) msg.textContent = "Still waiting on ComfyUI…\nIt may need a manual restart — check the console.";
+      if (Date.now() - start > 90000) {
+        msgEl.textContent = "Still waiting on ComfyUI…\nIt may need a manual restart - check the console.";
+      }
       setTimeout(tick, 2000);
     };
-    setTimeout(tick, 3500);  // give it a moment to actually go down first
+    setTimeout(tick, 3500);
   }
+
+  async function restartComfy() {
+    if (!confirm("Restart ComfyUI now?\n\nThe server will be down for ~10-40s and any running generation will be lost. This page reloads automatically when it's back.")) return;
+    const msg = _restartOverlay("Restarting ComfyUI…\nThis page will reload when it's back.");
+    try { await window.MovieEditorAPI.restart(); } catch (_) { /* connection drops as it execv's - expected */ }
+    _waitForComfyReload(msg, Date.now());
+  }
+
+  async function updateFunpackAndReload() {
+    let gs = _gitStatus;
+    if (!gs?.ok) {
+      try { gs = await window.MovieEditorAPI.gitStatus(); _gitStatus = gs; } catch (e) { alert(String(e.message || e)); return; }
+    }
+    if (!gs?.ok) { alert(gs?.detail || "Git status unavailable for this install."); return; }
+    if (gs.dirty) {
+      alert("Local changes detected in the FunPack folder.\nCommit or stash them before updating from git.");
+      return;
+    }
+    const branch = gs.branch || "dev";
+    const behind = gs.behind > 0 ? `\n\n${gs.behind} commit(s) available on origin/${branch}.` : "";
+    if (!confirm(`Pull latest "${branch}" from origin and restart ComfyUI?\n\nAny running generation will be lost.${behind}`)) return;
+    const msg = _restartOverlay(`Pulling origin/${branch}…\nComfyUI will restart when the pull finishes.`);
+    try {
+      const res = await window.MovieEditorAPI.gitUpdate(branch);
+      msg.textContent = res.updated
+        ? `Updated ${res.before} → ${res.after}.\nRestarting ComfyUI…`
+        : "Already up to date.\nRestarting ComfyUI…";
+    } catch (e) {
+      document.querySelector(".restart-overlay")?.remove();
+      alert("Update failed: " + (e.message || e));
+      return;
+    }
+    _waitForComfyReload(msg, Date.now());
+  }
+
+  async function switchFunpackBranch() {
+    closeAll();
+    let gs = _gitStatus;
+    if (!gs?.ok) {
+      try { gs = await window.MovieEditorAPI.gitStatus(); _gitStatus = gs; } catch (e) { alert(String(e.message || e)); return; }
+    }
+    if (!gs?.ok) { alert(gs?.detail || "Git status unavailable for this install."); return; }
+    if (gs.dirty) {
+      alert("Local changes detected in the FunPack folder.\nCommit or stash them before switching branches.");
+      return;
+    }
+    const branches = gs.branches || [];
+    if (!branches.length) { alert("No git branches found."); return; }
+    const cur = gs.branch;
+    if (!window.SlotPicker) return;
+    window.SlotPicker.open({
+      title: "Switch FunPack branch",
+      options: branches.map((b) => ({ value: b, label: b, hint: b === cur ? "current" : "" })),
+      onPick: async (branch) => {
+        if (branch === cur) return;
+        if (!confirm(`Switch to "${branch}", pull from origin, and restart ComfyUI?\n\nAny running generation will be lost.`)) return;
+        const msg = _restartOverlay(`Switching to ${branch}…\nComfyUI will restart when ready.`);
+        try {
+          const res = await window.MovieEditorAPI.gitCheckout(branch);
+          msg.textContent = res.updated
+            ? `Switched to ${branch} (${res.before} → ${res.after}).\nRestarting ComfyUI…`
+            : `On ${branch}, already up to date.\nRestarting ComfyUI…`;
+        } catch (e) {
+          document.querySelector(".restart-overlay")?.remove();
+          alert("Branch switch failed: " + (e.message || e));
+          return;
+        }
+        _waitForComfyReload(msg, Date.now());
+      },
+    });
+  }
+
+  let _gitStatus = null;
 
   function promptNewProject() {
     if (window.SlotPicker?.openPrompt) {
@@ -60,6 +143,12 @@
     const recent = (st.projects || []).slice(0, 8).map((p) => ({
       label: p.name, hint: `${p.scene_count}▦`, action: () => S.loadProject(p.id),
     }));
+    const git = _gitStatus;
+    const gitOk = !!git?.ok;
+    const gitBranchLine = gitOk
+      ? `Branch: ${git.branch}${git.commit ? " @ " + git.commit : ""}${git.dirty ? " (local changes)" : ""}`
+      : (git?.detail ? `Git: ${git.detail}` : "Git: unavailable");
+    const updateHint = gitOk && git.behind > 0 ? `${git.behind}↓` : "⬇⟳";
     return {
       File: [
         { label: "New Project", hint: "⌘N", action: promptNewProject },
@@ -111,6 +200,12 @@
         { label: st.resetSessionArmed ? "Reset Studio session ✓ armed — click to cancel" : "Reset Studio session",
           disabled: !hasProject() || !studioOn, action: () => S.resetStudioSession() },
         { sep: true },
+        { menulabel: "Code updates" },
+        { label: gitBranchLine, disabled: true },
+        { label: "Switch branch…", disabled: !gitOk || git?.dirty, action: switchFunpackBranch },
+        { label: gitOk && git.behind > 0 ? `Update FunPack and reload (${git.behind} new)` : "Update FunPack and reload",
+          hint: updateHint, disabled: !gitOk || git?.dirty, action: updateFunpackAndReload },
+        { sep: true },
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },
         { label: "Restart ComfyUI", hint: "⟳", danger: true, action: restartComfy },
@@ -147,7 +242,7 @@
 
   function closeAll() { openName = null; veil.hidden = true; render(); }
 
-  function openMenu(name) { openName = name; veil.hidden = false; render(); }
+  function openMenu(name) { openName = name; veil.hidden = false; if (name === "FunPack") refreshGitStatus(); render(); }
 
   function render() {
     const spec = menuSpec();

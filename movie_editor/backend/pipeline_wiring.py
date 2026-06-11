@@ -67,6 +67,28 @@ PORT_LABELS: dict[str, str] = {
     "LTXVAudioVAEDecode.audio_vae": "Audio VAE Decode · audio_vae",
 }
 
+# Built-in core inputs fed by user loaders (not fixed internal core links).
+# core_overrides for these apply even in guided mode; internal links stay fixed.
+OPEN_CORE_INPUTS: frozenset[tuple[str, str]] = frozenset({
+    ("studio", "model"),
+    ("studio", "clip"),
+    ("studio", "source_image"),
+    ("studio", "latent"),
+    ("sampler", "vae"),
+    ("concat", "audio_latent"),
+    ("audiodec", "audio_vae"),
+})
+
+PORT_TO_OPEN_CORE: dict[str, tuple[str, str]] = {
+    "FunPackStudio.model": ("studio", "model"),
+    "FunPackStudio.clip": ("studio", "clip"),
+    "FunPackStudio.source_image": ("studio", "source_image"),
+    "FunPackStudio.latent": ("studio", "latent"),
+    "FunPackLTXAVSceneChainSampler.vae": ("sampler", "vae"),
+    "LTXVConcatAVLatent.audio_latent": ("concat", "audio_latent"),
+    "LTXVAudioVAEDecode.audio_vae": ("audiodec", "audio_vae"),
+}
+
 
 def models_dict(models: Any) -> dict:
     return models if isinstance(models, dict) else {}
@@ -223,6 +245,10 @@ def wiring_rules_payload() -> dict[str, Any]:
         "default_wires": DEFAULT_WIRES_BY_ROLE,
         "default_input_sources": DEFAULT_INPUT_SOURCES_BY_ROLE,
         "port_labels": PORT_LABELS,
+        "open_core_ports": [
+            {"core_id": cid, "input": inp, "port": port}
+            for port, (cid, inp) in PORT_TO_OPEN_CORE.items()
+        ],
     }
 
 

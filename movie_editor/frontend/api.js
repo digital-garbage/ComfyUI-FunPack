@@ -104,6 +104,9 @@
     applyWorkflow: (pid, workflow, bindings) =>
       j("POST", API(`/projects/${pid}/workflow/apply`), { workflow, bindings }),
     restart: () => j("POST", API("/restart")),
+    gitStatus: () => j("GET", API("/git/status")),
+    gitUpdate: (branch) => j("POST", API("/git/update"), branch ? { branch } : {}),
+    gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
     generate: (id, onlyScene, sceneIds, resetSession) =>
@@ -121,8 +124,20 @@
     resultUrl: (id, m) =>
       API(`/projects/${id}/result?filename=${encodeURIComponent(m.filename)}`) +
       `&subfolder=${encodeURIComponent(m.subfolder || "")}&type=${encodeURIComponent(m.type || "output")}`,
-    previewSegmentUrl: (id, sceneId) =>
-      API(`/projects/${id}/preview-segment/${encodeURIComponent(sceneId)}`),
+    previewSegmentUrl: (id, sceneId, spec) => {
+      let u = API(`/projects/${id}/preview-segment/${encodeURIComponent(sceneId)}`);
+      const m = spec?.media;
+      if (m?.filename) {
+        const q = new URLSearchParams({
+          filename: m.filename,
+          subfolder: m.subfolder || "",
+          type: m.type || "output",
+          render_in: String(spec.renderIn != null ? spec.renderIn : 0),
+        });
+        u += "?" + q.toString();
+      }
+      return u;
+    },
   };
 
   window.MovieEditorAPI = ClientAPI;

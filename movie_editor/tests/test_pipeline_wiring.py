@@ -119,7 +119,30 @@ def test_duplicate_port_wire_blocked():
     assert any("already wired" in e for e in errs)
 
 
-def test_core_overrides_ignored_when_guided():
+def test_core_overrides_open_port_apply_when_guided():
+    models = {
+        "full_control": False,
+        "core_overrides": {"studio": {"latent": "out:custom:LATENT"}},
+        "slots": [
+            {"id": "u", "node_class": "UnetLoader", "inputs": {}, "role": "unet",
+             "wires": {"MODEL": "port:FunPackStudio.model"}},
+            {"id": "c", "node_class": "ClipLoader", "inputs": {}, "role": "clip",
+             "wires": {"CLIP": "port:FunPackStudio.clip"}},
+            {"id": "v", "node_class": "VaeLoader", "inputs": {}, "role": "video_vae",
+             "wires": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"}},
+            {"id": "av", "node_class": "VaeLoader", "inputs": {}, "role": "audio_vae",
+             "wires": {"VAE": "port:LTXVAudioVAEDecode.audio_vae"}},
+            {"id": "ae", "node_class": "ImgProc", "inputs": {}, "role": "audio_encoder",
+             "wires": {"Latent": "port:LTXVConcatAVLatent.audio_latent"}},
+            {"id": "custom", "node_class": "EmptyLatent", "inputs": {}, "role": "custom",
+             "wires": {"LATENT": "port:FunPackStudio.latent"}},
+        ],
+    }
+    graph, _report = builder.build(OI, models, PARAMS)
+    assert graph["studio"]["inputs"]["latent"] == ["slot_custom", 0]
+
+
+def test_core_overrides_internal_still_ignored_when_guided():
     models = {
         "full_control": False,
         "core_overrides": {"sampler": {"vae": "out:bad:0"}},
@@ -143,8 +166,9 @@ def test_core_overrides_ignored_when_guided():
 def test_core_graph_marks_locked_inputs():
     nodes = builder.core_graph(OI, {"slots": [], "full_control": False})
     studio = next(n for n in nodes if n["id"] == "studio")
-    sampler_in = next(i for i in studio["inputs"] if i["name"] == "model")
-    assert sampler_in["locked"] is True
-    concat = next(n for n in nodes if n["id"] == "concat")
-    aud = next(i for i in concat["inputs"] if i["name"] == "audio_latent")
-    assert aud["locked"] is True
+    model_in = next(i for i in studio["inputs"] if i["name"] == "model")
+    latent_in = next(i for i in studio["inputs"] if i["name"] == "latent")
+    pos_in = next(i for i in studio["inputs"] if i["name"] == "positive_prompt")
+    assert model_in["locked"] is False
+    assert latent_in["locked"] is False
+    assert pos_in["locked"] is True

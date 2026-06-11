@@ -406,20 +406,24 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 graph[dnode]["inputs"][dinput] = [sid, oidx]
                 report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
 
-    # 4b. core input overrides (full-control only — guided mode keeps the fixed core path).
-    if not pipeline_wiring.wiring_locked(models_config):
-        for cid, ovs in ((models_config or {}).get("core_overrides") or {}).items():
-            if cid not in graph:
+    # 4b. core input overrides. In guided mode only loader-facing open ports may be
+    # overridden (e.g. Studio · latent from a custom node); internal core links stay fixed.
+    for cid, ovs in ((models_config or {}).get("core_overrides") or {}).items():
+        if cid not in graph:
+            continue
+        locked = pipeline_wiring.wiring_locked(models_config)
+        for inp, source in (ovs or {}).items():
+            if not source:
                 continue
-            for inp, source in (ovs or {}).items():
-                if not source:
-                    continue
-                src = _resolve_source(source, slot_node_id, slot_def, object_info)
-                if src:
-                    graph[cid]["inputs"][inp] = list(src)
-                    report["wired"].append(f"{source} -> {cid}.{inp} (core override)")
-                else:
-                    report["unsatisfied"].append(f"core override {cid}.{inp}: '{source}' could not be resolved.")
+            if locked and (cid, inp) not in pipeline_wiring.OPEN_CORE_INPUTS:
+                continue
+            src = _resolve_source(source, slot_node_id, slot_def, object_info)
+            if src:
+                graph[cid]["inputs"][inp] = list(src)
+                report["wired"].append(f"{source} -> {cid}.{inp} (core override)")
+            else:
+                report["unsatisfied"].append(
+                    f"core override {cid}.{inp}: '{source}' could not be resolved.")
 
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
@@ -519,7 +523,6 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
         for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
             t = _input_type(cid, inp) or "*"
             builtin = f"{src} · {_out_name(src, idx)}"
-            is_internal = True
             inputs.append({"name": inp, "type": t, "from": "internal", "detail": builtin,
                            "value": ov.get(inp, ""), "options": _options(t, builtin, cid),
                            "locked": locked})
@@ -528,7 +531,7 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
             inputs.append({"name": inp, "type": t, "from": "loader", "required": req,
                            "detail": builtin + ("" if req else " (optional)"),
                            "value": ov.get(inp, ""), "options": _options(t, "(auto-wire from loaders)", cid),
-                           "locked": locked})
+                           "locked": False})
         outputs = []
         for i, o in enumerate(node_outputs(nd or {})):
             dests = [f"{d} · {di}" for (oi, d, di) in rev.get(cid, []) if oi == i]

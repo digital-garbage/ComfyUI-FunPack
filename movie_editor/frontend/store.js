@@ -49,6 +49,9 @@
     if (!state.project) return;
     state.project.scene_renders = JSON.parse(JSON.stringify(state.sceneRenders || {}));
     state.project.scene_ghosts = JSON.parse(JSON.stringify(state.sceneGhosts || []));
+    // Keep project.models aligned with the Models modal / saveModels API so timeline
+    // autosave (commit before generate) cannot resurrect deleted pipeline nodes.
+    state.project.models = JSON.parse(JSON.stringify(state.models || { slots: [] }));
   }
 
   function _historyRecord() {
@@ -605,6 +608,7 @@
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
     state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
+    state.models = JSON.parse(JSON.stringify(state.project.models || { slots: [] }));
     if (_clearOrphanRatings()) {
       _syncEditorStateToProject();
       scheduleSaveSilent();
@@ -616,7 +620,7 @@
     syncGlobalPromptFromTimeline();
     _syncSeparatedAudioTracks();
     refreshPreview();
-    loadModels();
+    await loadModels();
     _validateSceneRenders();
   }
 
@@ -2022,6 +2026,8 @@
     if (recordedSceneIds.length) {
       _validateRendersToken++;
       state.notice = "";
+      _syncEditorStateToProject();
+      scheduleSaveSilent();
     }
   }
 
@@ -2588,6 +2594,9 @@
   // ── pluggable models / exposed controls ──────────────────────────────────────
   async function loadModels() {
     try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
+    if (state.project) {
+      state.project.models = JSON.parse(JSON.stringify(state.models || { slots: [] }));
+    }
     if (window.PipelineCaps && !window.PipelineCaps.usesFunpackStudio(state)) {
       _resetSessionPending = false;
       state.resetSessionArmed = false;

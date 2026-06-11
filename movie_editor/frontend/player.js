@@ -17,6 +17,7 @@
   // ── preloaded video pool ─────────────────────────────────────────────────────
   const stage = document.createElement("div"); stage.className = "pm-stage";
   const pool = new Map();    // url -> <video>
+  const _urlClips = new Map(); // url -> Set<clip> (for segment load fallback)
   let _active = null;        // visible <video>
   let _seekPending = null;   // offset to apply once the active video has metadata
   let _playPending = false;
@@ -112,6 +113,32 @@
     return _active.currentTime - _clipInSec(_currentClip);
   }
 
+  function _registerUrlClip(url, clip) {
+    if (!url || !clip) return;
+    if (!_urlClips.has(url)) _urlClips.set(url, new Set());
+    _urlClips.get(url).add(clip);
+  }
+
+  function _unregisterUrlClip(url, clip) {
+    const set = _urlClips.get(url);
+    if (!set) return;
+    set.delete(clip);
+    if (!set.size) _urlClips.delete(url);
+  }
+
+  function _fallbackSegmentClip(clip) {
+    if (!clip?.streamUrl || clip._segFallback) return;
+    clip._segFallback = true;
+    const badUrl = clip.streamUrl;
+    clip.streamUrl = null;
+    _unregisterUrlClip(badUrl, clip);
+    if (_currentClip === clip) {
+      const offset = Math.max(0, _phSec - clip.startSec);
+      _goto(clip, offset, _playing);
+    }
+    _lastSegHash = "";
+  }
+
   // Multi-scene chain outputs share one ComfyUI file; deep seeks fail in the browser
   // unless the MP4 is faststart-trimmed like export. Serve per-scene segments instead.
   function _assignChainPreviewSegments(st, clips) {
@@ -119,7 +146,7 @@
     if (!pid || !API.previewSegmentUrl) return;
     const groups = new Map();
     for (const c of clips) {
-      if (c.pending || c.ghost || c.binUrl || !c.sceneId) continue;
+      if (c.pending || c.ghost || c.binUrl || !c.sceneId || !c.media) continue;
       const k = _mediaChainKey(c);
       if (!k) continue;
       if (!groups.has(k)) groups.set(k, []);
@@ -127,7 +154,12 @@
     }
     for (const list of groups.values()) {
       if (list.length < 2) continue;
-      for (const c of list) c.streamUrl = API.previewSegmentUrl(pid, c.sceneId);
+      for (const c of list) {
+        const sc = S.scene(c.sceneId);
+        const sourceIn = sc?.source_in || 0;
+        const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
+        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, { media: c.media, renderIn });
+      }
     }
   }
 
@@ -369,9 +401,12 @@
     }
   }
 
-  function _ensureVideo(url) {
+  function _ensureVideo(url, clip) {
     let v = pool.get(url);
-    if (v) return v;
+    if (v) {
+      if (clip) _registerUrlClip(url, clip);
+      return v;
+    }
     const viewport = document.createElement("div");
     viewport.className = "pm-fx-viewport";
     const zoom = document.createElement("div");
@@ -393,17 +428,26 @@
       if (_currentClip) _applyFx(_currentClip, Math.max(0, _phSec - _currentClip.startSec));
     });
     v.addEventListener("seeked", () => { _onVideoSeeked(v); });
+    v.addEventListener("error", () => {
+      const clips = _urlClips.get(url);
+      if (clips) [...clips].forEach((c) => _fallbackSegmentClip(c));
+    });
     v.addEventListener("ended", () => {
       if (v !== _active || _isSeeking() || _clipBoundaryToken) return;
       _advance();
     });
     stage.append(viewport); pool.set(url, v);
+    if (clip) _registerUrlClip(url, clip);
     return v;
   }
 
   function _syncPool() {
+    _urlClips.clear();
     const urls = new Set(_clips.filter((c) => c.media || c.binUrl || c.streamUrl).map((c) => _clipUrl(c)));
-    urls.forEach((u) => _ensureVideo(u));
+    urls.forEach((u) => {
+      const clip = _clips.find((c) => _clipUrl(c) === u);
+      _ensureVideo(u, clip);
+    });
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
       v.pause();
@@ -420,6 +464,7 @@
       v._pmFx?.viewport.remove();
     }
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
+    _urlClips.clear();
     _clipBoundaryToken = 0;
     _pendingSeekSec = null;
     _scrubDepth = 0;
@@ -536,7 +581,7 @@
       return;
     }
     if (!clip.media && !clip.binUrl && !clip.streamUrl) return;
-    const v = _ensureVideo(_clipUrl(clip));
+    const v = _ensureVideo(_clipUrl(clip), clip);
     _currentClip = clip; _setActive(v);
     _applyClipUi(clip);
     const target = _clipInSec(clip) + Math.max(0, offset);
@@ -881,6 +926,17 @@
   let _lastSegHash = "";
   let _lastProjectId = null;
 
+  function _ensureStageMounted() {
+    if (!_clips.length || !body) return;
+    if (body.contains(stage)) return;
+    let canvas = body.querySelector(".pm-canvas");
+    if (!canvas) {
+      canvas = el("div", "pm-canvas");
+      body.append(canvas);
+    }
+    if (!canvas.contains(stage)) canvas.insertBefore(stage, canvas.firstChild);
+  }
+
   // ── full render (store subscription) ──────────────────────────────────────
   function render(st) {
     // Project switch: drop the whole pool and reset.
@@ -917,7 +973,10 @@
 
     // Rebuilding the monitor DOM during playback detaches <video> nodes and kills multi-scene
     // chain preview mid-stream (often visible from scene 3 onward once store ticks catch up).
-    if (_scrubDepth > 0 || _playing) return;
+    if (_scrubDepth > 0 || _playing) {
+      _ensureStageMounted();
+      return;
+    }
 
     clear(body);
 

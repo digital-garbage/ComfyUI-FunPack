@@ -9,6 +9,8 @@ from movie_editor.server import (
     _clip_needs_trim,
     _parse_has_scenes,
     _parse_prompt_variants,
+    _playback_render_from_query,
+    _project_models,
     _resolve_run_seed,
     _run_sampler_inputs,
     _run_studio_inputs,
@@ -304,3 +306,29 @@ def test_scene_playback_clip_spec_chain_offsets():
     assert c3["in"] == 7.4
     assert c3["dur"] == 2.5
     assert c1["filename"] == c2["filename"] == c3["filename"] == "chain.mp4"
+
+
+def test_scene_playback_clip_spec_live_render_query():
+    p = _project(scenes=[{"id": "s1", "text": "a"}, {"id": "s2", "text": "b", "source_in": 0.5}])
+    p.scene_renders = {}
+    override = _playback_render_from_query({
+        "filename": "fresh.mp4",
+        "subfolder": "out",
+        "type": "output",
+        "render_in": "3.88",
+    })
+    c = _scene_playback_clip_spec(p, "s2", render_override=override)
+    assert c["filename"] == "fresh.mp4"
+    assert c["subfolder"] == "out"
+    assert c["in"] == 3.88 + 0.5
+    assert _playback_render_from_query({}) is None
+
+
+def test_project_models_keeps_empty_slots(monkeypatch):
+    from movie_editor.backend import nodes
+
+    monkeypatch.setattr(nodes, "load_models", lambda: {"slots": [{"id": "global", "role": "unet"}]})
+    p = _project(scenes=[{"id": "s1", "text": "a"}])
+    p.models = {"slots": [], "full_control": False}
+    assert _project_models(p)["slots"] == []
+    assert _project_models(p)["slots"] != nodes.load_models()["slots"]
