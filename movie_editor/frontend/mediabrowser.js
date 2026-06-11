@@ -328,13 +328,14 @@
 
     if (total > 0) {
       const footer = el("div", "media-bin-footer");
-      const all = el("button", "btn ghost tiny", `Select all (${total})`);
-      all.onclick = () => {
-        mediaSelected.clear();
-        bin.forEach((m) => mediaSelected.add(m.id));
+      const hasSelection = selN > 0;
+      const toggle = el("button", "btn ghost tiny", hasSelection ? `Deselect all (${selN})` : `Select all (${total})`);
+      toggle.onclick = () => {
+        if (hasSelection) mediaSelected.clear();
+        else bin.forEach((m) => mediaSelected.add(m.id));
         render(S.get());
       };
-      footer.append(all);
+      footer.append(toggle);
       wrap.append(footer);
     }
     return wrap;
