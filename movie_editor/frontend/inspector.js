@@ -302,6 +302,7 @@
         title: "Prompt marker before the next scene when Studio splits the montage (not the video blend)" })));
   }
 
+  function renderSceneCharacters(st, scene, parent) {
     parent = parent || body;
     const ids = S.sceneCharacterIds(scene.id);
     const tag = el("div", "insp-tag"); tag.textContent = "Characters"; parent.append(tag);
