@@ -278,6 +278,11 @@
     }
   }
 
+  function _setMediaSelectMode(on) {
+    mediaSelectMode = !!on;
+    if (!mediaSelectMode) mediaSelected.clear();
+  }
+
   function _filterMediaBin(bin) {
     if (mediaFilter === "all") return bin;
     if (mediaFilter === "image") return bin.filter((m) => m.kind === "image");
@@ -308,7 +313,7 @@
 
   function _exportableMediaId(st, items) {
     let id = null;
-    if (mediaSelected.size === 1) id = [...mediaSelected][0];
+    if (mediaSelectMode && mediaSelected.size === 1) id = [...mediaSelected][0];
     else if (st.mediaPreviewId) id = st.mediaPreviewId;
     if (!id) return null;
     const m = items.find((x) => x.id === id);
@@ -380,7 +385,7 @@
   }
 
   function _mediaCard(m, st) {
-    const picked = mediaSelected.has(m.id);
+    const picked = mediaSelectMode && mediaSelected.has(m.id);
     const onTimeline = m.kind === "video" && (st.project?.scenes || []).some(
       (s) => !s.excluded && S.isVideoClip?.(s) && s.source?.media_ref === m.id,
     );
@@ -431,7 +436,8 @@
     actions.append(del);
     nameRow.append(actions);
     card.append(nameRow);
-    card.onclick = () => {
+    card.onclick = (e) => {
+      if (e.target.closest(".media-name-actions, .media-act, .media-name input")) return;
       if (mediaSelectMode) {
         if (picked) mediaSelected.delete(m.id);
         else mediaSelected.add(m.id);
@@ -485,7 +491,7 @@
 
     if (total > 0) wrap.append(_mediaFilterSortControls(st, shown, total));
 
-    if (selN > 0 || exportId) {
+    if ((mediaSelectMode && selN > 0) || exportId) {
       const actions = el("div", "media-bin-actions");
       if (exportId) {
         const expBtn = el("button", "btn ghost tiny", "⤓ Export");
@@ -493,7 +499,7 @@
         expBtn.onclick = () => S.exportMediaAsset(exportId);
         actions.append(expBtn);
       }
-      if (selN > 0) {
+      if (mediaSelectMode && selN > 0) {
         const rem = el("button", "btn ghost tiny danger", `Remove selected (${selN})`);
         rem.onclick = async () => {
           if (!confirm(`Delete ${selN} selected item${selN > 1 ? "s" : ""}?`)) return;
@@ -519,7 +525,7 @@
         ? "Selection mode on — click assets to toggle, then Remove selected"
         : "Turn on to select multiple assets for bulk remove";
       selectBtn.onclick = () => {
-        mediaSelectMode = !mediaSelectMode;
+        _setMediaSelectMode(!mediaSelectMode);
         render(S.get());
       };
       footer.append(selectBtn);
@@ -743,7 +749,7 @@
       b.onclick = () => {
         tab = name;
         editCharacter = null;
-        if (name !== "Media") mediaSelectMode = false;
+        if (name !== "Media") _setMediaSelectMode(false);
         closeLibModal();
         render(S.get());
       };
