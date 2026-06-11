@@ -293,6 +293,7 @@ input[type=number] { font-family: var(--font-mono); }
 .lib-search { width: 100%; }
 /* library add/edit form */
 .lib-form { border: 1px solid var(--amber); border-radius: 8px; background: var(--ink-2); padding: 10px; margin: 8px 0; display: flex; flex-direction: column; gap: 8px; }
+.lib-form.lib-form-modal { border: none; background: transparent; padding: 0; margin: 0; }
 .lib-form-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
 .lib-field { display: flex; flex-direction: column; gap: 3px; }
 .lib-field > span { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .8px; text-transform: uppercase; color: var(--faint); }

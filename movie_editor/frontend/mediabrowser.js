@@ -7,11 +7,34 @@
 
   let tab = "Media";                 // active bin
   let q = { Characters: "", Shortcuts: "", Splits: "", Effects: "", Transitions: "" };
-  let editShortcut = null;           // shortcut item being edited ({} = new), or null
-  let editSplitMarker = null;        // split-marker item being edited ({} = new), or null
   let editCharacter = null;          // character item being edited ({} = new), or null
+  let _libModal = null;
 
   // ── library edit helpers ───────────────────────────────────────────────────────
+  function closeLibModal() {
+    if (_libModal) { _libModal.remove(); _libModal = null; }
+  }
+
+  function openLibModal(title, buildContent) {
+    closeLibModal();
+    const overlay = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", title));
+    const headRight = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    closeBtn.onclick = closeLibModal;
+    headRight.append(closeBtn);
+    head.append(headRight);
+    box.append(head);
+    const content = el("div", "modal-content");
+    buildContent(content, closeLibModal);
+    box.append(content);
+    overlay.append(box);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeLibModal(); });
+    document.body.append(overlay);
+    _libModal = overlay;
+  }
   const splitLines = (v) => String(v || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
   function labeled(label, ctrl) {
     const l = el("label", "lib-field"); l.append(el("span", null, label)); l.append(ctrl); return l;
@@ -21,31 +44,32 @@
     row.append(cb); row.append(el("span", null, label)); row._cb = cb; return row;
   }
 
-  function shortcutForm(item) {
+  function openShortcutEditor(item) {
     const isNew = !item.name;
-    const box = el("div", "lib-form");
-    box.append(el("div", "lib-form-title", isNew ? "New shortcut" : `Edit “${item.name}”`));
-    const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
-    const trig = el("textarea", "lib-in"); trig.rows = 2; trig.placeholder = "Triggers — one per line or comma-separated"; trig.value = (item.triggers || []).join("\n");
-    const reps = el("textarea", "lib-in"); reps.rows = 3; reps.placeholder = "Replacement(s) — one per line; multiple = random pick"; reps.value = (item.replacements || []).join("\n");
-    const en = checkRow("Enabled", item.enabled !== false);
-    box.append(labeled("Name", name), labeled("Triggers", trig), labeled("Replacements", reps), en);
-    const actions = el("div", "lib-form-actions");
-    const save = el("button", "btn primary tiny", "Save");
-    save.onclick = async () => {
-      const triggers = splitLines(trig.value);
-      if (!triggers.length) { alert("At least one trigger is required."); return; }
-      await S.saveShortcut({
-        name: name.value.trim() || triggers[0], triggers,
-        replacements: splitLines(reps.value), enabled: en._cb.checked,
-        original_name: item.name || undefined,
-      });
-      editShortcut = null; render(S.get());
-    };
-    const cancel = el("button", "btn ghost tiny", "Cancel");
-    cancel.onclick = () => { editShortcut = null; render(S.get()); };
-    actions.append(save, cancel); box.append(actions);
-    return box;
+    openLibModal(isNew ? "New shortcut" : `Edit “${item.name}”`, (content, close) => {
+      const box = el("div", "lib-form lib-form-modal");
+      const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
+      const trig = el("textarea", "lib-in"); trig.rows = 3; trig.placeholder = "Triggers — one per line or comma-separated"; trig.value = (item.triggers || []).join("\n");
+      const reps = el("textarea", "lib-in"); reps.rows = 4; reps.placeholder = "Replacement(s) — one per line; multiple = random pick"; reps.value = (item.replacements || []).join("\n");
+      const en = checkRow("Enabled", item.enabled !== false);
+      box.append(labeled("Name", name), labeled("Triggers", trig), labeled("Replacements", reps), en);
+      const actions = el("div", "lib-form-actions");
+      const save = el("button", "btn primary tiny", "Save");
+      save.onclick = async () => {
+        const triggers = splitLines(trig.value);
+        if (!triggers.length) { alert("At least one trigger is required."); return; }
+        await S.saveShortcut({
+          name: name.value.trim() || triggers[0], triggers,
+          replacements: splitLines(reps.value), enabled: en._cb.checked,
+          original_name: item.name || undefined,
+        });
+        close(); render(S.get());
+      };
+      const cancel = el("button", "btn ghost tiny", "Cancel");
+      cancel.onclick = close;
+      actions.append(save, cancel); box.append(actions);
+      content.append(box);
+    });
   }
 
   const PLACEMENTS = ["global", "start", "end", "silent"];
@@ -54,32 +78,33 @@
     opts.forEach((o) => { const op = el("option", null, o); op.value = o; if (o === value) op.selected = true; sel.append(op); });
     return sel;
   }
-  function splitMarkerForm(item) {
+  function openSplitMarkerEditor(item) {
     const isNew = !item.name && !item.trigger;
-    const box = el("div", "lib-form");
-    box.append(el("div", "lib-form-title", isNew ? "New split marker" : `Edit “${item.name || item.trigger}”`));
-    const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
-    const trig = el("input", "lib-in"); trig.placeholder = "Trigger phrase (what appears in the prompt)"; trig.value = item.trigger || "";
-    const place = selectFrom(PLACEMENTS, item.placement || "global");
-    const en = checkRow("Enabled", item.enabled !== false);
-    box.append(labeled("Name", name), labeled("Trigger", trig), labeled("Placement", place), en);
-    box.append(el("div", "insp-hint", "Splits the generation prompt only — not a video dissolve on the timeline."));
-    const actions = el("div", "lib-form-actions");
-    const save = el("button", "btn primary tiny", "Save");
-    save.onclick = async () => {
-      const trigger = trig.value.trim();
-      if (!trigger) { alert("A trigger phrase is required."); return; }
-      await S.saveTransition({
-        name: name.value.trim() || trigger, trigger,
-        placement: place.value, enabled: en._cb.checked,
-        original_name: item.name || undefined,
-      });
-      editSplitMarker = null; render(S.get());
-    };
-    const cancel = el("button", "btn ghost tiny", "Cancel");
-    cancel.onclick = () => { editSplitMarker = null; render(S.get()); };
-    actions.append(save, cancel); box.append(actions);
-    return box;
+    openLibModal(isNew ? "New split marker" : `Edit “${item.name || item.trigger}”`, (content, close) => {
+      const box = el("div", "lib-form lib-form-modal");
+      const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
+      const trig = el("input", "lib-in"); trig.placeholder = "Trigger phrase (what appears in the prompt)"; trig.value = item.trigger || "";
+      const place = selectFrom(PLACEMENTS, item.placement || "global");
+      const en = checkRow("Enabled", item.enabled !== false);
+      box.append(labeled("Name", name), labeled("Trigger", trig), labeled("Placement", place), en);
+      box.append(el("div", "insp-hint", "Splits the generation prompt only — not a video dissolve on the timeline."));
+      const actions = el("div", "lib-form-actions");
+      const save = el("button", "btn primary tiny", "Save");
+      save.onclick = async () => {
+        const trigger = trig.value.trim();
+        if (!trigger) { alert("A trigger phrase is required."); return; }
+        await S.saveTransition({
+          name: name.value.trim() || trigger, trigger,
+          placement: place.value, enabled: en._cb.checked,
+          original_name: item.name || undefined,
+        });
+        close(); render(S.get());
+      };
+      const cancel = el("button", "btn ghost tiny", "Cancel");
+      cancel.onclick = close;
+      actions.append(save, cancel); box.append(actions);
+      content.append(box);
+    });
   }
 
   function mediaRefPicker(st, value, onChange, opts) {
@@ -276,7 +301,7 @@
     wrap.append(searchRow("Shortcuts", "Filter shortcuts…", () => render(S.get())));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add");
-    addBtn.onclick = () => { editShortcut = {}; render(S.get()); };
+    addBtn.onclick = () => openShortcutEditor({});
     const expBtn = el("a", "btn ghost tiny", "↓ Export");
     expBtn.href = API.exportShortcutsUrl(); expBtn.download = "funpack_shortcuts.json"; expBtn.title = "Download shortcuts as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
@@ -289,7 +314,6 @@
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
     wrap.append(toolbar);
-    if (editShortcut) wrap.append(shortcutForm(editShortcut));
 
     const list = el("div", "lib-list");
     const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
@@ -304,7 +328,7 @@
       const ins = el("button", "btn ghost tiny", "insert"); ins.title = "Append to selected scene's prompt";
       ins.onclick = () => { if (!S.insertShortcutIntoSelection(trig)) alert("Select a scene first."); };
       const edit = el("button", "ic-btn", "✎"); edit.title = "Edit shortcut";
-      edit.onclick = () => { editShortcut = s; render(S.get()); };
+      edit.onclick = () => openShortcutEditor(s);
       const del = el("button", "ic-btn danger", "✕"); del.title = "Delete shortcut";
       del.onclick = () => { if (confirm(`Delete shortcut "${s.name}"?`)) S.deleteShortcut(s.name); };
       row.append(ins); row.append(edit); row.append(del);
@@ -321,7 +345,7 @@
     wrap.append(searchRow("Splits", "Filter split markers…", () => render(S.get())));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add");
-    addBtn.onclick = () => { editSplitMarker = {}; render(S.get()); };
+    addBtn.onclick = () => openSplitMarkerEditor({});
     const expBtn = el("a", "btn ghost tiny", "↓ Export");
     expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_promptsplit.json"; expBtn.title = "Download split markers as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
@@ -334,7 +358,6 @@
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn); toolbar.append(expBtn); toolbar.append(impBtn); toolbar.append(impFile);
     wrap.append(toolbar);
-    if (editSplitMarker) wrap.append(splitMarkerForm(editSplitMarker));
 
     const list = el("div", "lib-list");
     const items = filtered(st.transitions || [], q.Splits, (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
@@ -350,7 +373,7 @@
       const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as split marker before the selected scene (generation prompt)";
       apply.onclick = () => { if (!S.applySplitMarkerToSelection(trig)) alert("Select a scene first."); };
       const edit = el("button", "ic-btn", "✎"); edit.title = "Edit split marker";
-      edit.onclick = () => { editSplitMarker = t; render(S.get()); };
+      edit.onclick = () => openSplitMarkerEditor(t);
       const del = el("button", "ic-btn danger", "✕"); del.title = "Delete split marker";
       del.onclick = () => { if (confirm(`Delete split marker "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
       row.append(apply); row.append(edit); row.append(del);
@@ -418,7 +441,7 @@
     ["Media", "Characters", "Shortcuts", "Splits", "Effects", "Transitions"].forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.title = name === "Splits" ? "Split markers (generation prompt)" : name;
-      b.onclick = () => { tab = name; editCharacter = null; editSplitMarker = null; render(S.get()); };
+      b.onclick = () => { tab = name; editCharacter = null; closeLibModal(); render(S.get()); };
       tabs.append(b);
     });
     sec.append(tabs);
