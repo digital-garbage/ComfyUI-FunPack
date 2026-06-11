@@ -730,7 +730,7 @@
       state.saving = true;
       _notifySaveChip();
       try {
-        const saved = await API.saveProject(snapshot.id, snapshot);
+        const saved = await _retryOnTunnel(() => API.saveProject(snapshot.id, snapshot));
         // If the user edited again while this save was in flight (e.g. dropped a new
         // anchor), do NOT replace local state with the older snapshot we just wrote.
         if (_localDirty) scheduleSave();
@@ -1690,6 +1690,31 @@
     return /HTTP 53[0-9]|HTTP 52[24]|HTTP 502|Failed to fetch|NetworkError|Load failed|fetch/i.test(m);
   }
 
+  async function _retryOnTunnel(fn, attempts) {
+    attempts = attempts || 8;
+    let last;
+    for (let i = 0; i < attempts; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        last = e;
+        if (!_isTransientTunnelError(e) || i >= attempts - 1) throw e;
+        await _sleep(1500 + i * 500);
+      }
+    }
+    throw last;
+  }
+
+  async function _flushSaveForGenerate() {
+    await flushSave();
+    if (_localDirty) {
+      throw new Error(
+        "Could not save your latest edits before generate (tunnel may have dropped). "
+        + "Wait for the save indicator to clear, then try again."
+      );
+    }
+  }
+
   function _sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -2130,7 +2155,10 @@
     _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
-      const r = await API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession);
+      const r = await _retryOnTunnel(
+        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession),
+        10,
+      );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
       _queueRenderPrompts(sceneIds);
       if (r.validation && state.project) {
@@ -2161,7 +2189,12 @@
 
   async function generate(onlyScene) {
     if (!state.project) return;
-    await flushSave();
+    try {
+      await _flushSaveForGenerate();
+    } catch (e) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
+      return;
+    }
     if (!onlyScene) return generateMontage();
     const reset = _resetSessionPending; _resetSessionPending = false;
     if (reset) state.resetSessionArmed = false;
@@ -2175,7 +2208,12 @@
   // session reset applies to the FIRST run only.
   async function generateMontage() {
     if (!state.project) return;
-    await flushSave();
+    try {
+      await _flushSaveForGenerate();
+    } catch (e) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
+      return;
+    }
     const runs = _runs();
     if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
     const reset = _resetSessionPending; _resetSessionPending = false;
@@ -2197,7 +2235,12 @@
       set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes selected." } });
       return;
     }
-    await flushSave();
+    try {
+      await _flushSaveForGenerate();
+    } catch (e) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
+      return;
+    }
     const runs = _runsForSceneIds(ids);
     if (!runs.length) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "No generatable runs in the selection." } });

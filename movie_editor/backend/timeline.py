@@ -360,8 +360,20 @@ def continuity_media_refs(full: Project, target: Project) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
-@dataclass
-class GuideEntry:
+def scene_anchor_media_refs(target: Project) -> list[str]:
+    """Media-bin ids required as i2v anchors on generative scenes."""
+    refs: list[str] = []
+    for sc in target.scenes:
+        if sc.excluded or is_video_clip(sc):
+            continue
+        src = sc.source
+        if not src:
+            continue
+        stype = source_type(sc)
+        ref = src.media_ref
+        if ref and stype in ("image", "generated_frame", "mixed"):
+            refs.append(ref)
+    return list(dict.fromkeys(refs))
     """Optional per-scene guide (only used when project guide_settings.stack_enabled)."""
     enabled: bool = True
     source: str = "template"   # "template" | "scene" | "image"

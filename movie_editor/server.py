@@ -434,6 +434,17 @@ def _missing_continuity_media(full: Project, target: Project) -> list[str]:
     return missing
 
 
+def _missing_scene_anchor_media(target: Project) -> list[str]:
+    """i2v anchor images referenced on scenes but missing from the media bin."""
+    from .backend.timeline import scene_anchor_media_refs
+
+    missing: list[str] = []
+    for ref in scene_anchor_media_refs(target):
+        if not media.path_for(ref):
+            missing.append(ref)
+    return missing
+
+
 def _attach_scene_anchors(samp: dict, media_pack: Optional[dict], target: Project) -> dict:
     """Mixed-source i2v anchors (Img2Video starting latents), separate from guides."""
     import json
@@ -1172,6 +1183,13 @@ if web is not None and PromptServer is not None:
             ids = ", ".join(missing_media)
             return web.json_response(
                 {"detail": f"Missing media for continuity or guide stack ({ids}). Re-upload or clear the reference in Engine settings / Scene inspector."},
+                status=400,
+            )
+        missing_anchors = _missing_scene_anchor_media(target)
+        if missing_anchors:
+            ids = ", ".join(missing_anchors)
+            return web.json_response(
+                {"detail": f"Missing i2v anchor image in Media bin ({ids}). Re-save the frame or pick another anchor."},
                 status=400,
             )
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.

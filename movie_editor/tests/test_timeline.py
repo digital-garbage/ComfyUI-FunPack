@@ -380,6 +380,18 @@ def test_stale_identity_pin_ignored_when_auto_off():
     assert continuity_media_refs(p, p) == []
 
 
+def test_scene_anchor_media_refs():
+    p = _project(
+        scenes=[
+            {"text": "a", "source": {"type": "generated_frame", "media_ref": "frame1"}},
+            {"text": "b", "source": {"type": "carry"}},
+        ],
+    )
+    from movie_editor.backend.timeline import scene_anchor_media_refs
+
+    assert scene_anchor_media_refs(p) == ["frame1"]
+
+
 def test_scene_character_media_refs(monkeypatch):
     char_map = {"c1": {"id": "c1", "face_ref": "f1", "body_ref": "b1"}}
     monkeypatch.setattr(
