@@ -576,14 +576,11 @@
     body.append(wrap);
   }
 
-  // Pinned global-prompt editor (always on top). Backed by the live combined prompt
-  // so editing any scene flows into it; `gpDraft` holds unapplied direct edits.
+  // Pinned global-prompt editor (always on top). Edits debounce into the timeline via store.
   let gpDraft = null;
   let gpProjectId = null;
   function renderGlobalPrompt(st) {
-    if (st.project.id !== gpProjectId) { gpProjectId = st.project.id; gpDraft = null; }  // drop stale edits on project switch
-    // display_prompt = verbatim timeline text; combined_prompt may include injected
-    // "scene N" split markers used only when sending to Studio (for_generation).
+    if (st.project.id !== gpProjectId) { gpProjectId = st.project.id; gpDraft = null; }
     const pv = st.preview;
     const live = st.project.global_prompt
       || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt))
@@ -592,36 +589,15 @@
     const val = gpDraft != null ? gpDraft : live;
 
     const sec = el("div", "insp-global");
-    const head = el("div", "insp-global-head");
-    head.append(el("span", "insp-global-title", "Global prompt"));
-    const apply = el("button", "btn primary tiny", "Apply →");
-    apply.title = "Split this prompt into anchor, scenes, and split markers on the timeline";
-    apply.disabled = !val.trim();  // clickable whenever there's a prompt to (re)split — not only after edits
-    apply.onclick = async () => {
-      _editing = false;
-      ta.blur();
-      apply.disabled = true;
-      apply.textContent = "Applying…";
-      try {
-        const text = gpDraft != null ? gpDraft : live;
-        const ok = await S.applyGlobalPrompt(text);
-        if (ok) gpDraft = null;
-      } finally {
-        apply.disabled = false;
-        apply.textContent = "Apply →";
-        render(S.get());
-      }
-    };
-    head.append(apply);
-    sec.append(head);
+    sec.append(el("div", "insp-global-title", "Global prompt"));
 
     const ta = el("textarea", "insp-global-ta"); ta.rows = 3; ta.value = val; ta.dataset.k = "global-prompt";
     ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
-    ta.oninput = () => { gpDraft = ta.value; apply.disabled = !ta.value.trim(); S.scheduleGlobalPromptApply(ta.value); };
+    ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); };
     sec.append(ta);
     sec.append(el("div", "insp-hint", dirty
-      ? "Syncing to timeline…"
-      : "Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector."));
+      ? "Applying to timeline…"
+      : "Edits apply automatically. Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector."));
     body.append(sec);
   }
 
@@ -699,7 +675,7 @@
     const ta = body.querySelector('[data-k="global-prompt"]');
     if (ta && e.detail?.text != null) ta.value = e.detail.text;
     const hint = body.querySelector(".insp-global .insp-hint");
-    if (hint) hint.textContent = "Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector.";
+    if (hint) hint.textContent = "Edits apply automatically. Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector.";
   });
 
   if (window.ViewBus) window.ViewBus.subscribeInspector(render);

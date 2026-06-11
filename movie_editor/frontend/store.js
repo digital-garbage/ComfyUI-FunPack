@@ -258,6 +258,7 @@
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;
     if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) return true;
+    _historyRecord();
     let res;
     try { res = await API.parsePrompt(state.project.id, trimmed); }
     catch (e) {
@@ -1100,42 +1101,6 @@
     if (fullPrompt) _inferSplitMarkersFromPrompt(scenes, fullPrompt);
   }
 
-  // ── global prompt → distribute into anchor / scenes / split markers ──────────────
-  // Reparses a master prompt (Studio combined syntax) and rebuilds the timeline:
-  // anchor + one scene per parsed segment + split markers inferred from prompt text.
-  // Existing per-scene source / length settings are carried over by index.
-  async function applyGlobalPrompt(text) {
-    if (!state.project) return false;
-    clearTimeout(_globalApplyTimer);
-    clearTimeout(_timelinePromptTimer);
-    _historyRecord();
-    let res;
-    try { res = await API.parsePrompt(state.project.id, text); }
-    catch (e) {
-      const msg = (e && (e.message || String(e))).trim() || "Unknown error";
-      alert("Could not parse the global prompt: " + msg);
-      return false;
-    }
-    if (!(await _distributeGlobalPrompt(text, res))) {
-      alert("Nothing parsed — no scenes detected.");
-      return false;
-    }
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    state.saving = true;
-    notify();
-    try {
-      await commit({ skipPreviewRefresh: true });
-      await refreshPreview(true);
-      _restorePinnedGlobalPrompt();
-      notify();
-    } catch (e) {
-      console.error("save after apply failed", e);
-      return false;
-    }
-    return true;
-  }
-
   // ── preview ──────────────────────────────────────────────────────────────────
   let previewTimer = null;
   function refreshPreview(immediate = false) {
@@ -1926,7 +1891,7 @@
     addAudioTrack, updateAudioTrack, removeAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPrompt, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,

@@ -422,8 +422,7 @@ input[type=number] { font-family: var(--font-mono); }
 /* global prompt — first entry in the inspector list (scrolls with content) */
 .insp-global { margin: 0 0 14px; padding: 10px 10px 8px;
   background: var(--ink-2); border: 1px solid var(--line); border-radius: 9px; }
-.insp-global-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-.insp-global-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
+.insp-global-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); margin-bottom: 6px; }
 .insp-global-ta { width: 100%; background: var(--ink-0); border: 1px solid var(--line); border-radius: 7px;
   color: var(--ink-text, #e9e2d2); font-size: 12.5px; padding: 7px 8px; resize: vertical; font-family: var(--font-mono); line-height: 1.45; }
 .insp-global .insp-hint { margin: 6px 0 0; }
