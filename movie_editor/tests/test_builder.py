@@ -85,7 +85,7 @@ def test_core_skeleton_links_and_params():
 
 
 def test_explicit_wires_and_autowire():
-    models = {"slots": [
+    models = {"full_control": True, "slots": [
         {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"},
          "wires": {"MODEL": "port:FunPackStudio.model"}},
         {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
@@ -152,7 +152,7 @@ def test_media_injects_loadimage_wired_to_target():
 
 def test_optional_open_ports_do_not_block():
     # loaders + vae + audio handled, no image source: source_image/latent optional -> ok
-    models = {"slots": [
+    models = {"full_control": True, "slots": [
         {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
         {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
         {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},

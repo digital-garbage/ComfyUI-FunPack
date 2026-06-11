@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, media, nodes, pipeline_caps, projects, workflow_import
+from .backend import bridge, builder, config, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.timeline import (
     Project,
@@ -1483,6 +1483,7 @@ if web is not None and PromptServer is not None:
             "ports": nodes.pipeline_ports(oi),
             "core_producers": nodes.core_producers(),
             "requirements": nodes.pipeline_requirements(),
+            "wiring": pipeline_wiring.wiring_rules_payload(),
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")

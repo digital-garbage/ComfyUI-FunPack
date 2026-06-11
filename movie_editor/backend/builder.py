@@ -23,6 +23,7 @@ import json
 from typing import Any, Optional
 
 from . import config
+from . import pipeline_wiring
 from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs, _combo_default
 
 # ── fixed core ────────────────────────────────────────────────────────────────
@@ -405,20 +406,20 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 graph[dnode]["inputs"][dinput] = [sid, oidx]
                 report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
 
-    # 4b. core input overrides: redirect a built-in core node input to a chosen source
-    # ("core:<coreId>:<idx>" or "out:<slotId>:<outName>"). Overrides the default wiring.
-    for cid, ovs in ((models_config or {}).get("core_overrides") or {}).items():
-        if cid not in graph:
-            continue
-        for inp, source in (ovs or {}).items():
-            if not source:
+    # 4b. core input overrides (full-control only — guided mode keeps the fixed core path).
+    if not pipeline_wiring.wiring_locked(models_config):
+        for cid, ovs in ((models_config or {}).get("core_overrides") or {}).items():
+            if cid not in graph:
                 continue
-            src = _resolve_source(source, slot_node_id, slot_def, object_info)
-            if src:
-                graph[cid]["inputs"][inp] = list(src)
-                report["wired"].append(f"{source} -> {cid}.{inp} (core override)")
-            else:
-                report["unsatisfied"].append(f"core override {cid}.{inp}: '{source}' could not be resolved.")
+            for inp, source in (ovs or {}).items():
+                if not source:
+                    continue
+                src = _resolve_source(source, slot_node_id, slot_def, object_info)
+                if src:
+                    graph[cid]["inputs"][inp] = list(src)
+                    report["wired"].append(f"{source} -> {cid}.{inp} (core override)")
+                else:
+                    report["unsatisfied"].append(f"core override {cid}.{inp}: '{source}' could not be resolved.")
 
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
@@ -444,6 +445,10 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 active_slots.add(src.split(":", 2)[1])
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
 
+    for msg in pipeline_wiring.validate_models_wiring(models_config):
+        report["blocking"].append(msg)
+        report["unsatisfied"].append(msg)
+
     # With the built-in pipeline disabled, the result must come from the global outputs (or a
     # save node the user wired). Warn (non-blocking) if nothing will surface to the editor.
     if disable_core and "global_out" not in graph:
@@ -462,6 +467,7 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
     object_info = object_info or {}
     overrides = (models_config or {}).get("core_overrides") or {}
     slots = (models_config or {}).get("slots", []) or []
+    locked = pipeline_wiring.wiring_locked(models_config)
 
     rev: dict[str, list] = {}
     for cid, links in CORE_LINKS.items():
@@ -513,13 +519,16 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
         for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
             t = _input_type(cid, inp) or "*"
             builtin = f"{src} · {_out_name(src, idx)}"
+            is_internal = True
             inputs.append({"name": inp, "type": t, "from": "internal", "detail": builtin,
-                           "value": ov.get(inp, ""), "options": _options(t, builtin, cid)})
+                           "value": ov.get(inp, ""), "options": _options(t, builtin, cid),
+                           "locked": locked})
         for inp, (t, req) in open_by_node.get(cid, {}).items():
             builtin = f"a {t} from your loaders"
             inputs.append({"name": inp, "type": t, "from": "loader", "required": req,
                            "detail": builtin + ("" if req else " (optional)"),
-                           "value": ov.get(inp, ""), "options": _options(t, "(auto-wire from loaders)", cid)})
+                           "value": ov.get(inp, ""), "options": _options(t, "(auto-wire from loaders)", cid),
+                           "locked": locked})
         outputs = []
         for i, o in enumerate(node_outputs(nd or {})):
             dests = [f"{d} · {di}" for (oi, d, di) in rev.get(cid, []) if oi == i]

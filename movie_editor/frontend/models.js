@@ -14,6 +14,7 @@
   let coreOpen = false;           // built-in pipeline panel expanded?
   let coreProducers = [];          // [{id,type,label}]
   let requirements = [];           // [{id,type,label,required,role_hint,hint}]
+  let wiringRules = {};            // guided wiring rules from /pipeline-ports
   let overlay = null;
   const expanded = new Set();     // slot ids currently expanded (collapsed by default)
   let linkMode = false;           // selecting inputs to bind into one shared control
@@ -28,6 +29,49 @@
     return rl && rl !== nn ? `${rl} · ${nn}` : nn;
   }
   function slotById(id) { return config.slots.find((s) => s.id === id); }
+
+  function pipelineLocked() {
+    return !config.disable_core && !config.full_control;
+  }
+
+  function defaultExtrasForRole(role, cand) {
+    if (!pipelineLocked() || !cand) return {};
+    const extras = {};
+    const wires = wiringRules.default_wires?.[role];
+    if (wires) {
+      extras.wires = {};
+      (cand.outputs || []).forEach((o) => {
+        const t = wires[o.name] || wires[o.type];
+        if (t) extras.wires[o.name] = t;
+      });
+    }
+    const srcs = wiringRules.default_input_sources?.[role];
+    if (srcs) extras.input_sources = { ...srcs };
+    return extras;
+  }
+
+  function allowedDestinations(slot, out) {
+    const all = destinations(slot, out.type);
+    if (!pipelineLocked()) return all;
+    const role = slot.role || "custom";
+    if (role === "custom") {
+      return all.filter((d) => !d.value.startsWith("port:"));
+    }
+    const rules = wiringRules.role_targets?.[role] || [];
+    const allowedPorts = rules
+      .filter((r) => r.type === out.type && (r.output_name == null || r.output_name === out.name))
+      .map((r) => "port:" + r.port);
+    return all.filter((d) => !d.value.startsWith("port:") || allowedPorts.includes(d.value));
+  }
+
+  function allowedSources(slot, ci) {
+    const all = sources(slot, ci.type);
+    if (!pipelineLocked()) return all;
+    if (slot.role === "image_processing" && ci.name === "image" && ci.type === "IMAGE") {
+      return all.filter((s) => !s.value || s.value === "timeline" || s.value.startsWith("out:"));
+    }
+    return all.filter((s) => !s.value || s.value.startsWith("out:") || s.value === "timeline");
+  }
 
   // ── linked inputs (one control drives several node inputs) ────────────────────
   function ensureLinks() { if (!config.links) config.links = []; return config.links; }
@@ -145,7 +189,7 @@
     if (outs.length && !outs.some((o) => wireTargets(wires[o.name]).some(Boolean))) {
       issues.push({ level: "warn", msg: "No outputs wired — this node feeds nothing." });
     }
-    const dests = (o) => destinations(slot, o.type);
+    const dests = (o) => allowedDestinations(slot, o);
     outs.forEach((o) => {
       wireTargets(wires[o.name]).filter(Boolean).forEach((t) => {
         if (!dests(o).some((d) => d.value === t))
@@ -300,11 +344,15 @@
         const row = el("div", "wire-row");
         row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
         row.append(el("span", "wire-arrow", "←"));
-        const srcs = sources(slot, ci.type);
+        const srcs = allowedSources(slot, ci);
         const sel = el("select", "wire-select");
         const cur = slot.input_sources[ci.name] || "";
         srcs.forEach((s) => { const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o); });
         if (cur && !srcs.some((s) => s.value === cur)) { const o = el("option", null, cur + " (missing)"); o.value = cur; o.selected = true; sel.append(o); }
+        if (pipelineLocked() && slot.role === "image_processing" && ci.name === "image" && !cur) {
+          slot.input_sources[ci.name] = "timeline";
+          sel.value = "timeline";
+        }
         sel.onchange = async () => { _setInputSource(slot, ci.name, sel.value); await persist(); render(); };
         row.append(sel);
         sbox.append(row);
@@ -416,12 +464,12 @@
 
     function renderRows() {
       clear(wrap);
-      const dests = destinations(slot, out.type);
+      const dests = allowedDestinations(slot, out);
       targets.forEach((t, i) => {
         const row = el("div", "wire-multi-row");
         const sel = el("select", "wire-select");
         dests.forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === t) o.selected = true; sel.append(o); });
-        if (t && !dests.some((d) => d.value === t)) { const o = el("option", null, t + " (missing)"); o.value = t; o.selected = true; sel.append(o); }
+        if (t && !dests.some((d) => d.value === t)) { const o = el("option", null, t + " (not allowed)"); o.value = t; o.selected = true; sel.append(o); }
         sel.onchange = async () => { _setWireTarget(slot, out.name, targets[i], sel.value); targets[i] = sel.value; await persist(); render(); };
         const rm = el("button", "btn ghost tiny wire-rm", "×");
         rm.title = "Remove this wire";
@@ -429,9 +477,12 @@
         row.append(sel, rm);
         wrap.append(row);
       });
-      const add = el("button", "btn ghost tiny wire-add", "+ Add");
-      add.onclick = () => { targets.push(""); renderRows(); };
-      wrap.append(add);
+      const portOpts = dests.filter((d) => d.value.startsWith("port:"));
+      if (!pipelineLocked() || portOpts.length > 1 || (portOpts.length === 1 && !targets.some((t) => t.startsWith("port:")))) {
+        const add = el("button", "btn ghost tiny wire-add", "+ Add");
+        add.onclick = () => { targets.push(""); renderRows(); };
+        wrap.append(add);
+      }
     }
 
     renderRows();
@@ -513,7 +564,13 @@
     addBtn.onclick = async () => {
       if (!curCand) return;
       const role = curRole === "__any__" ? "custom" : curRole;
-      config.slots.push({ id: uid(), role, node_class: curCand.class, inputs: preview._draft || defaultsFor(curCand), wires: {} });
+      const extras = defaultExtrasForRole(role, curCand);
+      config.slots.push({
+        id: uid(), role, node_class: curCand.class,
+        inputs: preview._draft || defaultsFor(curCand),
+        wires: extras.wires || {},
+        input_sources: extras.input_sources || {},
+      });
       await persist();
       typeSel.value = ""; nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); nodeSel.disabled = true;
       search.style.display = "none"; search.value = "";
@@ -548,6 +605,10 @@
       sec.append(el("div", "req-empty",
         "Built-in FunPack pipeline is off. Wire your workflow nodes below; FunPack loader requirements do not apply."));
       return sec;
+    }
+    if (pipelineLocked()) {
+      sec.append(el("div", "req-hint guided-hint",
+        "Guided wiring is on — loader outputs wire only to their built-in ports. Image processing uses Timeline (scene image) by default. Enable Full control in the built-in pipeline panel to rewire everything manually."));
     }
     sec.append(el("div", "req-title", "Pipeline requirements"));
 
@@ -737,11 +798,17 @@
         const row = el("div", "wire-row");
         row.append(el("span", "wire-out", `${inp.name} (${inp.type})`));
         row.append(el("span", "wire-arrow", "←"));
-        const sel = el("select", "wire-select");
-        (inp.options || []).forEach((o) => { const op = el("option", null, o.label); op.value = o.value; if (o.value === (inp.value || "")) op.selected = true; sel.append(op); });
-        if (inp.value && !(inp.options || []).some((o) => o.value === inp.value)) { const op = el("option", null, inp.value + " (missing)"); op.value = inp.value; op.selected = true; sel.append(op); }
-        sel.onchange = async () => { setCoreOverride(n.id, inp.name, sel.value); await persist(); coreNodes = (await API.coreGraph(window.Store?.get().project?.id).catch(() => ({}))).nodes || coreNodes; render(); };
-        row.append(sel);
+        if (inp.locked) {
+          const lbl = el("span", "wire-locked", inp.detail || "Fixed built-in link");
+          lbl.title = "Guided wiring — enable Full control to override this input";
+          row.append(lbl);
+        } else {
+          const sel = el("select", "wire-select");
+          (inp.options || []).forEach((o) => { const op = el("option", null, o.label); op.value = o.value; if (o.value === (inp.value || "")) op.selected = true; sel.append(op); });
+          if (inp.value && !(inp.options || []).some((o) => o.value === inp.value)) { const op = el("option", null, inp.value + " (missing)"); op.value = inp.value; op.selected = true; sel.append(op); }
+          sel.onchange = async () => { setCoreOverride(n.id, inp.name, sel.value); await persist(); coreNodes = (await API.coreGraph(window.Store?.get().project?.id).catch(() => ({}))).nodes || coreNodes; render(); };
+          row.append(sel);
+        }
         box.append(row);
       });
       card.append(box);
@@ -769,6 +836,20 @@
     toggle.onclick = () => { coreOpen = !coreOpen; render(); };
     head.append(toggle);
     head.append(el("span", "lib-sub", disabled ? "disabled" : `${coreNodes.length} fixed nodes`));
+    if (!disabled) {
+      const fc = el("button", "btn ghost tiny" + (config.full_control ? " active" : ""), config.full_control ? "Full control" : "Guided wiring");
+      fc.title = config.full_control
+        ? "Full control ON — every core socket can be rewired manually (advanced)."
+        : "Guided wiring ON — loaders wire only to their built-in ports. Click for full manual control.";
+      fc.onclick = async () => {
+        config.full_control = !config.full_control;
+        if (!config.full_control) config.core_overrides = {};
+        await persist();
+        try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
+        render();
+      };
+      head.append(fc);
+    }
     const dis = el("button", "btn ghost tiny" + (disabled ? " danger" : ""), disabled ? "↺ Enable built-in pipeline" : "⏻ Disable built-in pipeline");
     dis.title = disabled
       ? "Re-enable the built-in FunPack Studio → Chain Sampler → decode → combine pipeline."
@@ -781,7 +862,10 @@
       return sec;
     }
     if (coreOpen) {
-      sec.append(el("div", "links-hint", "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it."));
+      const hint = pipelineLocked()
+        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). Loader outputs wire through the slots below — internal links are locked until you enable Full control."
+        : "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it.";
+      sec.append(el("div", "links-hint", hint));
       coreNodes.forEach((n) => sec.append(coreCard(n)));
     }
     return sec;
@@ -831,7 +915,13 @@
   async function open() {
     if (overlay) return;  // already open — don't stack a second modal (orphans handlers)
     await ensureRoles();
-    try { const pp = await API.pipelinePorts(); ports = pp.ports || []; coreProducers = pp.core_producers || []; requirements = pp.requirements || []; } catch (_) { ports = []; coreProducers = []; requirements = []; }
+    try {
+      const pp = await API.pipelinePorts();
+      ports = pp.ports || [];
+      coreProducers = pp.core_producers || [];
+      requirements = pp.requirements || [];
+      wiringRules = pp.wiring || {};
+    } catch (_) { ports = []; coreProducers = []; requirements = []; wiringRules = {}; }
     try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
     try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();

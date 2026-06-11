@@ -1070,4 +1070,6 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .wf-nav { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
 .wf-summary { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
 .wf-import-banner { font-size: 12px; color: var(--teal); padding: 8px 10px; background: rgba(80,200,180,.06); border: 1px solid rgba(80,200,180,.2); border-radius: 8px; margin-bottom: 12px; }
+.guided-hint { font-size: 11.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.45; }
+.wire-locked { font-size: 11.5px; color: var(--faint); font-style: italic; padding: 4px 8px; background: var(--ink-2); border-radius: 6px; border: 1px solid var(--line); }
 
