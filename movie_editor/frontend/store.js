@@ -42,6 +42,27 @@
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
   function set(patch) { Object.assign(state, patch); notify(); }
 
+  function _syncEditorStateToProject() {
+    if (!state.project) return;
+    state.project.scene_renders = JSON.parse(JSON.stringify(state.sceneRenders || {}));
+    state.project.scene_ghosts = JSON.parse(JSON.stringify(state.sceneGhosts || []));
+  }
+
+  function _historyRecord() {
+    if (window.EditorHistory && !window.EditorHistory.isApplying()) window.EditorHistory.record(window.Store);
+  }
+
+  function notifyHistoryState() {
+    try { window.dispatchEvent(new CustomEvent("funpack-history-state")); } catch (_) {}
+  }
+
+  function scheduleSaveFromHistory() {
+    _localDirty = true;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; commit(); }, SAVE_DEBOUNCE_MS);
+    _notifySaveChip();
+  }
+
   // Update generation progress WITHOUT a full notify(): a store notify rebuilds the whole
   // editor (inspector/timeline/player), which during a long generation kept interrupting the
   // user (couldn't save frames to the bin or add effects). Progress ticks instead mutate
@@ -127,13 +148,14 @@
     state.selectedSceneIds = first ? [first] : [];
     _selectionAnchorId = first;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
-    state.sceneRenders = {};  // per-session; not persisted
-    state.sceneGhosts = [];
+    state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
+    state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
     _genInFlightIds.clear();
     _removedDuringGen.clear();
+    if (window.EditorHistory) window.EditorHistory.clear();
     notify();
     refreshPreview();
-    loadModels();  // models config is per-project — reload for this project
+    loadModels();
   }
 
   async function newProject(name) {
@@ -235,6 +257,9 @@
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }
     _commitPromise = (async () => {
       const snapshot = JSON.parse(JSON.stringify(state.project));
+      _syncEditorStateToProject();
+      snapshot.scene_renders = state.project.scene_renders;
+      snapshot.scene_ghosts = state.project.scene_ghosts;
       const previewKeyBefore = _promptPreviewKey(snapshot);
       const selBefore = JSON.stringify(state.selectedSceneIds || []);
       const metaBefore = { name: snapshot.name, scene_count: (snapshot.scenes || []).length };
@@ -271,7 +296,13 @@
     return _commitPromise;
   }
 
-  function patchProject(patch) { if (!state.project) return; Object.assign(state.project, patch); notify(); scheduleSave(); }
+  function patchProject(patch) {
+    if (!state.project) return;
+    _historyRecord();
+    Object.assign(state.project, patch);
+    notify();
+    scheduleSave();
+  }
   function patchProjectQuiet(patch) { if (!state.project) return; Object.assign(state.project, patch); scheduleSaveSilent(); }
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
@@ -331,6 +362,7 @@
     if (anchorChanged) _invalidateSceneAfterAnchorChange(t);
     const merged = { ...patch };
     if (merged.source) merged.source = { ...(t.source || {}), ...merged.source };
+    if (!quiet && !window.EditorHistory?.isApplying()) _historyRecord();
     Object.assign(t, merged);
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
     if (charsChanged) _invalidateGlobalPromptDraft();
@@ -443,6 +475,7 @@
 
   function addScene() {
     if (!state.project) return;
+    _historyRecord();
     // Default to "carry": a new scene continues the previous one (overlap) unless the
     // user picks an anchor/empty. Scene 1 carrying just starts a fresh run.
     const s = { text: "", transition_to_next: "", source: { type: "carry" }, excluded: false };
@@ -453,6 +486,7 @@
 
   function removeScene(id) {
     if (!state.project) return;
+    _historyRecord();
     const arr = state.project.scenes;
     const idx = arr.findIndex((s) => s.id === id);
     if (idx < 0) return;
@@ -569,6 +603,34 @@
   // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
   function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
 
+  function trimSceneLeft(id, trimSec) {
+    if (!state.project) return;
+    const s = scene(id); if (!s || s.frames_mode === "custom") return;
+    const fps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
+    const curFrames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
+    const trimFrames = snapFrames(Math.max(0.05, trimSec) * fps);
+    if (trimFrames >= curFrames - 8) return;
+    _historyRecord();
+    s.frames = snapFrames(curFrames - trimFrames);
+    s.source_in = (s.source_in || 0) + trimFrames / fps;
+    if (s.frames_mode == null || s.frames_mode === "project") s.frames_mode = "timeline";
+    notify();
+    scheduleSave();
+  }
+
+  function slipScene(id, deltaSec) {
+    if (!state.project) return;
+    const s = scene(id); if (!s) return;
+    _historyRecord();
+    s.source_in = Math.max(0, (s.source_in || 0) + deltaSec);
+    notify();
+    scheduleSave();
+  }
+
+  function undo() { window.EditorHistory?.undo(window.Store); }
+  function redo() { window.EditorHistory?.redo(window.Store); }
+
+
   // A scene's duration in seconds (respecting per-scene frames/fps modes).
   function sceneDurationSec(sc) {
     const p = state.project; if (!p || !sc) return 0;
@@ -582,7 +644,8 @@
   function resizeScene(id, durationSec) {
     if (!state.project) return;
     const s = scene(id); if (!s) return;
-    if (s.frames_mode === "custom") return;  // custom length is locked against trim
+    if (s.frames_mode === "custom") return;
+    _historyRecord();
     const fps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
     s.frames = snapFrames(Math.max(1, durationSec) * fps);
     // Dragging the trim handle opts the scene into timeline-driven length.
@@ -594,6 +657,7 @@
   // generative unit — Generate collapses them back into a single uncut scene.
   function splitScene(id, atFrames) {
     if (!state.project) return;
+    _historyRecord();
     const arr = state.project.scenes;
     const i = arr.findIndex((s) => s.id === id); if (i < 0) return;
     const s = arr[i];
@@ -633,6 +697,7 @@
 
   function moveScene(id, delta) {
     if (!state.project) return;
+    _historyRecord();
     const arr = state.project.scenes;
     const i = arr.findIndex((s) => s.id === id);
     const j = i + delta;
@@ -644,6 +709,7 @@
   // Move a scene to an absolute index (post-removal index). Used by timeline drag-reorder.
   function moveSceneTo(id, toIndex) {
     if (!state.project) return;
+    _historyRecord();
     const arr = state.project.scenes;
     const from = arr.findIndex((s) => s.id === id);
     if (from < 0) return;
@@ -659,6 +725,7 @@
 
   function addAudioTrack(mediaId, startSec) {
     if (!state.project || !mediaId) return;
+    _historyRecord();
     const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
     state.project.audio_tracks = state.project.audio_tracks || [];
     state.project.audio_tracks.push({
@@ -670,18 +737,90 @@
   function updateAudioTrack(id, patch, quiet) {
     const t = (state.project?.audio_tracks || []).find((x) => x.id === id);
     if (!t) return;
+    if (!quiet) _historyRecord();
     Object.assign(t, patch);
     notify(); quiet ? scheduleSaveSilent() : scheduleSave();
   }
   function removeAudioTrack(id) {
     if (!state.project) return;
+    _historyRecord();
     state.project.audio_tracks = (state.project.audio_tracks || []).filter((x) => x.id !== id);
     notify(); scheduleSave();
+  }
+
+  function setSourceTrim(id, patch) {
+    if (!state.project) return;
+    const p = {};
+    if (patch.source_in != null) p.source_in = Math.max(0, +patch.source_in);
+    if (patch.source_dur !== undefined) p.source_dur = patch.source_dur == null ? null : Math.max(0.1, +patch.source_dur);
+    if (Object.keys(p).length) patchScene(id, p);
+  }
+
+  const ENGINE_PRESETS = {
+    draft: {
+      label: "Fast draft",
+      studio_inputs: { "refiner.split_by_transitions": false },
+      sampler_inputs: { steps: 20 },
+    },
+    quality: {
+      label: "Quality",
+      studio_inputs: { "refiner.split_by_transitions": true },
+      sampler_inputs: { steps: 40 },
+    },
+    continuity: {
+      label: "Continuity-heavy",
+      guide_settings: { stack_enabled: true, auto_guides: true, identity_pins: true },
+      continuity_settings: { enabled: true },
+      sampler_inputs: { steps: 36 },
+    },
+  };
+
+  function applyEnginePreset(key) {
+    const preset = ENGINE_PRESETS[key];
+    if (!preset || !state.project) return;
+    _historyRecord();
+    const patch = {};
+    if (preset.studio_inputs) patch.studio_inputs = { ...(state.project.studio_inputs || {}), ...preset.studio_inputs };
+    if (preset.sampler_inputs) patch.sampler_inputs = { ...(state.project.sampler_inputs || {}), ...preset.sampler_inputs };
+    if (preset.guide_settings) patch.guide_settings = { ...(state.project.guide_settings || {}), ...preset.guide_settings };
+    if (preset.continuity_settings) patch.continuity_settings = { ...(state.project.continuity_settings || {}), ...preset.continuity_settings };
+    Object.assign(state.project, patch);
+    notify();
+    scheduleSave();
+  }
+
+  function validateSetup() {
+    const issues = [];
+    const h = state.health || {};
+    if (!h.ok) issues.push("ComfyUI is not reachable — start ComfyUI and reload this page.");
+    if (!h.template_exists) {
+      issues.push("Missing workflow template — export your Studio → Chain Sampler graph to movie_editor/backend/templates/ltxav_chain.api.json (see README).");
+    }
+    const slots = state.models?.slots || [];
+    const roles = { unet: false, clip: false, video_vae: false };
+    slots.forEach((s) => { if (roles[s.role] === false) roles[s.role] = true; });
+    if (!roles.unet) issues.push("Models: add a Unet / diffusion model loader.");
+    if (!roles.clip) issues.push("Models: add a CLIP / text encoder loader.");
+    if (!roles.video_vae) issues.push("Models: add a Video VAE loader.");
+    const active = (state.project?.scenes || []).filter((s) => !s.excluded);
+    if (!active.length) issues.push("Timeline has no active scenes — add a scene or un-exclude one.");
+    return issues;
+  }
+
+  async function _ensureSetup() {
+    try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
+    const issues = validateSetup();
+    if (issues.length) {
+      set({ gen: { state: "error", promptId: null, media: [], msg: "Setup incomplete:\n• " + issues.join("\n• ") } });
+      return false;
+    }
+    return true;
   }
 
   // ── sync scenes from preview (distribute parsed anchor/transitions back) ──────
   function syncFromPreview() {
     if (!state.project || !state.preview) return;
+    _historyRecord();
     // Authoritative lossless split (verbatim text, shortcut-aware boundaries).
     const v = state.preview.parsed_verbatim || state.preview.parsed_raw || state.preview.parsed || {};
     const parsedScenes = v.scenes || [];
@@ -706,6 +845,7 @@
   // Existing per-scene source / length settings are carried over by index.
   async function applyGlobalPrompt(text) {
     if (!state.project) return false;
+    _historyRecord();
     state.project.global_prompt = text;
     let res;
     try { res = await API.parsePrompt(state.project.id, text); }
@@ -1108,7 +1248,8 @@
 
   async function generate(onlyScene) {
     if (!state.project) return;
-    await flushSave();  // ensure the server has the latest edits before generating
+    await flushSave();
+    if (!(await _ensureSetup())) return;
     if (!onlyScene) return generateMontage();
     const reset = _resetSessionPending; _resetSessionPending = false;
     if (reset) state.resetSessionArmed = false;
@@ -1122,7 +1263,8 @@
   // session reset applies to the FIRST run only.
   async function generateMontage() {
     if (!state.project) return;
-    await flushSave();  // persist pending edits before reading scenes/runs
+    await flushSave();
+    if (!(await _ensureSetup())) return;
     const runs = _runs();
     if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
     const reset = _resetSessionPending; _resetSessionPending = false;
@@ -1145,6 +1287,7 @@
       return;
     }
     await flushSave();
+    if (!(await _ensureSetup())) return;
     const runs = _runsForSceneIds(ids);
     if (!runs.length) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "No generatable runs in the selection." } });
@@ -1208,7 +1351,9 @@
       const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
       const tFrames = sc.transition_frames || 0;
       out.push({
-        media: r.media, inSec: r.inSec || 0, durationSec: sceneDurationSec(sc),
+        media: r.media,
+        inSec: (r.inSec || 0) + (sc.source_in || 0),
+        durationSec: sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc),
         fx: sc.effects || {}, fps,
         w: (sc.width != null ? sc.width : p.width) || null,
         h: (sc.height != null ? sc.height : p.height) || null,
@@ -1251,6 +1396,7 @@
       const order = state.project.scenes.filter((s) => !s.excluded);
       state.sceneRenders = {};
       state.sceneGhosts = [];
+      _syncEditorStateToProject();
       let acc = 0;
       for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
       set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} clip(s) — saving…` } });
@@ -1436,7 +1582,8 @@
   }
 
   window.Store = {
-    get, set, subscribe, init,
+    get, set, subscribe, notify, init,
+    scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, dismissGhost, moveScene, moveSceneTo, scene,
     sceneCharacterIds, toggleSceneCharacter,
@@ -1444,7 +1591,8 @@
     renderPromptForScene, renderPromptMismatch,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack,
-    resizeScene, splitScene, snapFrames,
+    resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
+    validateSetup, applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPrompt, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, previewMedia, clearMediaPreview, assignMediaToScene,

@@ -631,5 +631,6 @@
     if (gen.promptId) statusEl.append(el("span", null, gen.state.toUpperCase()));
   }
 
-  S.subscribe(render);
+  if (window.ViewBus) window.ViewBus.subscribePlayer(render);
+  else S.subscribe(render);
 })();

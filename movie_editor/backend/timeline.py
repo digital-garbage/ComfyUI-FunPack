@@ -487,6 +487,9 @@ class Scene:
     guides: list = field(default_factory=list)
     # Character library ids assigned to this scene (merged into its prompt on generate).
     character_ids: list = field(default_factory=list)
+    # Source trim inside generated media (slip edit): in-point seconds and optional duration.
+    source_in: float = 0.0
+    source_dur: Optional[float] = None
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -511,6 +514,8 @@ class Scene:
             cut_offset_frames=int(d.get("cut_offset_frames", 0) or 0),
             guides=list(d.get("guides") or []),
             character_ids=[str(x) for x in (d.get("character_ids") or []) if x],
+            source_in=float(d.get("source_in") or 0),
+            source_dur=d.get("source_dur"),
         )
 
     def to_dict(self) -> dict:
@@ -573,6 +578,9 @@ class Project:
     # Last queued generation prompt fingerprint — used to auto-reset Studio session when
     # the timeline text changes (avoids stale repair memory overriding new actions).
     generation_meta: dict = field(default_factory=dict)
+    # Persisted editor session: generated clip refs + preview ghosts (survive reload).
+    scene_renders: dict = field(default_factory=dict)
+    scene_ghosts: list = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -603,6 +611,8 @@ class Project:
             guide_settings=dict(d.get("guide_settings") or {}),
             continuity_settings=dict(d.get("continuity_settings") or {}),
             generation_meta=dict(d.get("generation_meta") or {}),
+            scene_renders=dict(d.get("scene_renders") or {}),
+            scene_ghosts=list(d.get("scene_ghosts") or []),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )

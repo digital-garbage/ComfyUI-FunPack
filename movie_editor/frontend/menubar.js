@@ -58,6 +58,9 @@
           action: () => { const p = S.get().project; if (p && confirm(`Delete "${p.name}"?`)) S.deleteProject(p.id); } },
       ],
       Edit: [
+        { label: "Undo", hint: "⌘Z", disabled: !window.EditorHistory?.canUndo(), action: () => S.undo() },
+        { label: "Redo", hint: "⇧⌘Z", disabled: !window.EditorHistory?.canRedo(), action: () => S.redo() },
+        { sep: true },
         { label: "Add Scene", hint: "+", disabled: !hasProject(), action: () => S.addScene() },
         { label: "Delete Scene", disabled: !sel(), action: () => S.removeScene(sel()) },
         { sep: true },
@@ -109,14 +112,15 @@
     const cur = st.project?.[field] || "funpack";
     const opts = [{ id: "funpack", label: field === "conditioning_slot" ? "FunPack Studio (built-in)" : "FunPack Chain Sampler (built-in)" },
       ...slots.map((s) => ({ id: s.id, label: s.label || s.node_class || s.id }))];
-    const chosen = window.prompt(
-      `${title}\n\nOptions:\n${opts.map((o, i) => `${i}: ${o.label}${o.id === cur ? " ✓" : ""}`).join("\n")}\n\nEnter number:`,
-      String(opts.findIndex((o) => o.id === cur)));
-    if (chosen == null || chosen === "") return;
-    const idx = parseInt(chosen, 10);
-    if (isNaN(idx) || idx < 0 || idx >= opts.length) return;
-    if (field === "conditioning_slot") S.setConditioningSlot(opts[idx].id);
-    else S.setSamplerSlot(opts[idx].id);
+    if (!window.SlotPicker) return;
+    window.SlotPicker.open({
+      title,
+      options: opts.map((o) => ({ value: o.id, label: o.label, hint: o.id === cur ? "current" : "" })),
+      onPick: (id) => {
+        if (field === "conditioning_slot") S.setConditioningSlot(id);
+        else S.setSamplerSlot(id);
+      },
+    });
   }
 
   function closeAll() { openName = null; veil.hidden = true; render(); }
@@ -172,6 +176,17 @@
   window.addEventListener("keydown", (e) => { if (e.key === "Escape") closeAll(); });
 
   window.addEventListener("funpack-save-status", (e) => renderSaveChip(S.get(), e.detail));
+  window.addEventListener("funpack-history-state", () => render());
+  window.addEventListener("keydown", (e) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const t = document.activeElement;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (e.key === "z" || e.key === "Z") {
+      e.preventDefault();
+      if (e.shiftKey) S.redo(); else S.undo();
+      render();
+    }
+  });
   S.subscribe((st) => { render(); renderChips(st); });
   render();
 })();

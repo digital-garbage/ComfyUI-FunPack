@@ -430,6 +430,14 @@
       container.append(el("div", "pj-meta", "No project open."));
       return;
     }
+    const presetBar = el("div", "engine-preset-bar");
+    presetBar.append(el("span", "engine-preset-label", "Preset"));
+    Object.entries(S.ENGINE_PRESETS || {}).forEach(([key, p]) => {
+      const b = el("button", "btn ghost tiny", p.label || key);
+      b.onclick = () => S.applyEnginePreset(key);
+      presetBar.append(b);
+    });
+    container.append(presetBar);
     const p = st.project;
     const slots = (st.models?.slots || []);
 

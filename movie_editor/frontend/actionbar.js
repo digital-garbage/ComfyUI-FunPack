@@ -34,6 +34,8 @@
     mount.append(renderBtn);
   }
 
-  S.subscribe(render);
+  if (window.ViewBus) window.ViewBus.subscribeActionbar(render);
+  else S.subscribe(render);
+  render(S.get());
   render(S.get());
 })();

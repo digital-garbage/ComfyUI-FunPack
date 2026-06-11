@@ -134,26 +134,15 @@
     return wrap;
   }
 
-  function renderSceneCharacters(st, scene) {
-    const ids = S.sceneCharacterIds(scene.id);
-    const tag = el("div", "insp-tag"); tag.textContent = "Characters"; body.append(tag);
-    const chips = el("div", "char-chips");
-    if (!ids.length) {
-      chips.append(el("span", "char-chip empty", "None — use Characters in the media bin"));
-    } else {
-      ids.forEach((cid) => {
-        const c = (st.characters || []).find((x) => x.id === cid);
-        const chip = el("span", "char-chip");
-        chip.textContent = c?.name || cid;
-        const rm = el("button", "char-chip-rm", "✕");
-        rm.title = "Remove from this scene";
-        rm.onclick = () => S.toggleSceneCharacter(scene.id, cid);
-        chip.append(rm);
-        chips.append(chip);
-      });
-    }
-    body.append(chips);
-    body.append(el("div", "insp-hint", "Open Characters in the left bin and click to toggle who appears in this scene's prompt."));
+  function foldSection(title, openDefault, buildFn) {
+    const det = el("details", "insp-fold");
+    det.open = openDefault;
+    det.append(el("summary", "insp-fold-sum", title));
+    const inner = el("div", "insp-fold-body");
+    buildFn(inner);
+    det.append(inner);
+    body.append(det);
+    return inner;
   }
 
   function renderScene(st, scene) {
@@ -163,34 +152,25 @@
     const cutNo = unitScenes.indexOf(scene) + 1;
     title.textContent = `Scene · ${st.project.scenes.indexOf(scene) + 1}`
       + (unitScenes.length > 1 ? ` · cut ${cutNo}/${unitScenes.length}` : "");
-    renderSceneCharacters(st, scene);
-    const tag = el("div", "insp-tag"); tag.textContent = "Clip properties"; body.append(tag);
     const selN = S.selectedSceneCount ? S.selectedSceneCount() : 1;
     if (selN > 1) {
-      const mh = el("div", "insp-hint");
-      mh.textContent = `${selN} clips selected — use Selected in the timeline header to generate each chain segment that includes a selected clip (⌘/Ctrl-click toggle · Shift-click range).`;
-      body.append(mh);
+      body.append(el("div", "insp-hint",
+        `${selN} clips selected — use Selected in the timeline header to generate each chain segment.`));
     }
     if (unitScenes.length > 1) {
-      const hint = el("div", "insp-hint");
-      hint.textContent = S.isGenSubclip(scene)
-        ? "Editorial cut of the same generative scene — prompt and source are shared; Generate regens the whole uncut scene, then maps it back to these cuts."
-        : "This scene has editorial cuts on the timeline — Generate collapses them into one uncut scene.";
-      body.append(hint);
+      body.append(el("div", "insp-hint", S.isGenSubclip(scene)
+        ? "Editorial cut — prompt and source are shared with the root clip."
+        : "This scene has editorial cuts — Generate regens the whole uncut scene."));
     }
 
-    const ta = el("textarea"); ta.rows = 5; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
+    const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
     const promptMismatch = S.renderPromptMismatch ? S.renderPromptMismatch(scene.id) : null;
     if (promptMismatch) {
       const warn = el("div", "render-prompt-warn");
       warn.append(el("div", "render-prompt-warn-title", "Preview was generated with a different prompt"));
-      const prev = el("div", "render-prompt-prev");
-      prev.append(el("span", "render-prompt-label", "Generated with"));
-      prev.append(el("span", "render-prompt-text", promptMismatch.rendered || "(empty)"));
-      warn.append(prev);
-      warn.append(el("div", "insp-hint", "Rate against the generated prompt above — not the edited text in the box."));
+      warn.append(el("div", "render-prompt-text", promptMismatch.rendered || "(empty)"));
       body.append(warn);
     }
 
@@ -201,105 +181,128 @@
       const next = src.value;
       const patch = { source: { ...(root.source || {}), type: next } };
       if (next === "image" || next === "empty" || next === "generated_frame") patch.guides = [];
-      else if (prev !== next && (prev === "carry" || next === "carry" || prev === "mixed" || next === "mixed")) {
-        patch.guides = [];
-      }
+      else if (prev !== next && (prev === "carry" || next === "carry" || prev === "mixed" || next === "mixed")) patch.guides = [];
       S.patchScene(scene.id, patch);
     };
     body.append(field("Source", src));
-
     if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root);
     if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
-    if ((root.source?.type) === "carry") {
-      const hint = el("div", "insp-block");
-      hint.append(el("div", "insp-hint",
-        "No start frame of its own — this scene continues from the previous scene's i2v guide and overlaps with it (chain-sampler carry behaviour). Use this for a continuous shot; use Mixed or Image to supply a new anchor while keeping prior guides."));
-      body.append(hint);
-    }
-    if ((root.source?.type) === "mixed") {
-      const hint = el("div", "insp-block");
-      hint.append(el("div", "insp-hint",
-        "Generates as its own i2v run (one sampler call): this image is the starting latent via LTX Img2Video, while hidden guides are borrowed from the previous scene (its anchor image when set, else template frame 0). Not continuous chain overlap — use Carry for that."));
-      body.append(hint);
-    }
 
-    body.append(field("Transition to next scene", transitionSelect(scene.transition_to_next || "",
-      (v) => S.patchScene(scene.id, { transition_to_next: v }))));
-
-    // ── Video effects (post-decode pixel ops; applied at render + approximated in preview)
-    const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; body.append(fxTag);
-    const fx = scene.effects || {};
-    const patchFx = (k, v, quiet) => {
-      const next = { ...(scene.effects || {}), [k]: v };
-      quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
-    };
-    const _num = (val, k, opts) => {
-      const i = el("input"); i.type = "number"; i.value = val; i.dataset.k = k;
-      if (opts) Object.assign(i, opts);
-      return i;
-    };
-
-    const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
-    blur.value = fx.blur || 0; blur.dataset.k = "sc-fx-blur";
-    blur.oninput = () => patchFx("blur", parseFloat(blur.value), true);
-    body.append(field(`Gaussian blur (${Math.round((fx.blur || 0) * 100)}%)`, blur));
-
-    const fadeRow = el("div", "fields-row");
-    const fi = _num(fx.fade_in || 0, "sc-fx-fi", { min: 0, max: 10, step: 0.1 });
-    fi.oninput = () => patchFx("fade_in", parseFloat(fi.value || "0"), true);
-    const fo = _num(fx.fade_out || 0, "sc-fx-fo", { min: 0, max: 10, step: 0.1 });
-    fo.oninput = () => patchFx("fade_out", parseFloat(fo.value || "0"), true);
-    fadeRow.append(field("Fade in (s)", fi)); fadeRow.append(field("Fade out (s)", fo));
-    body.append(fadeRow);
-
-    const zoom = el("select"); zoom.dataset.k = "sc-fx-zoom";
-    [["none", "None"], ["in", "Zoom in (push)"], ["out", "Zoom out (pull back)"]].forEach(([v, label]) => {
-      const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
-    });
-    zoom.onchange = () => patchFx("zoom", zoom.value);
-    body.append(field("Zoom (Ken Burns)", zoom));
-
-    // ── Seam transition (rendered crossfade / fade — overlaps & shortens total)
-    const vt = el("select"); vt.dataset.k = "sc-vt";
-    [["", "Hard cut"], ["crossfade", "Crossfade (dissolve)"], ["fadeblack", "Fade through black"],
-     ["wipeleft", "Wipe left"], ["wiperight", "Wipe right"]].forEach(([v, label]) => {
-      const o = el("option", null, label); o.value = v; if ((scene.video_transition || "") === v) o.selected = true; vt.append(o);
-    });
-    vt.onchange = () => {
-      const v = vt.value;
-      const patch = { video_transition: v };
-      if (v) patch.transition_frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
-      else patch.transition_frames = null;
-      S.patchScene(scene.id, patch);
-    };
-    body.append(field("Video transition to next", vt));
-    if (scene.video_transition) {
-      const tf = _num(scene.transition_frames > 0 ? scene.transition_frames : 16, "sc-tf", { min: 1, max: 120, step: 1 });
-      tf.oninput = () => S.patchScene(scene.id, { transition_frames: parseInt(tf.value || "16", 10) });
-      body.append(field("Transition length (frames)", tf));
-      body.append(el("div", "insp-hint", "Also editable on the timeline seam between clips. Overlaps shorten the final montage."));
-    }
-
-    renderSceneGuides(st, scene);
-
-    const p = st.project;
-    const lenRow = el("div", "fields-row");
-    lenRow.append(lengthControl(scene, "frames"));
-    lenRow.append(lengthControl(scene, "fps"));
-    body.append(lenRow);
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
-    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s`));
-
-    const row = el("div", "insp-block");
-    const chk = el("label", "chk"); const cb = el("input"); cb.type = "checkbox"; cb.checked = !!scene.excluded;
-    cb.onchange = () => S.patchScene(scene.id, { excluded: cb.checked });
-    chk.append(cb); chk.append(el("span", null, "Exclude from full generation"));
-    row.append(chk); body.append(row);
+    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · slip with Alt+drag left edge when rendered`));
 
     const actions = el("div", "insp-block");
-    const gen = el("button", "btn primary", "Generate this scene"); gen.onclick = () => S.generate(scene.id);
+    const genBtn = el("button", "btn primary", "Generate this scene");
+    genBtn.onclick = () => S.generate(scene.id);
+    actions.append(genBtn);
     const del = el("button", "btn danger", "Delete"); del.style.marginLeft = "8px"; del.onclick = () => S.removeScene(scene.id);
-    actions.append(gen); actions.append(del); body.append(actions);
+    actions.append(del);
+    body.append(actions);
+
+    foldSection("More editing", false, (more) => {
+      renderSceneCharacters(st, scene, more);
+      more.append(field("Story transition to next", transitionSelect(scene.transition_to_next || "",
+        (v) => S.patchScene(scene.id, { transition_to_next: v }))));
+
+      const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; more.append(fxTag);
+      const fx = scene.effects || {};
+      const patchFx = (k, v, quiet) => {
+        const next = { ...(scene.effects || {}), [k]: v };
+        quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
+      };
+      const _num = (val, k, opts) => {
+        const i = el("input"); i.type = "number"; i.value = val; i.dataset.k = k;
+        if (opts) Object.assign(i, opts);
+        return i;
+      };
+      const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
+      blur.value = fx.blur || 0; blur.dataset.k = "sc-fx-blur";
+      blur.oninput = () => patchFx("blur", parseFloat(blur.value), true);
+      more.append(field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur));
+      const fadeRow = el("div", "fields-row");
+      const fi = _num(fx.fade_in || 0, "sc-fx-fi", { min: 0, max: 10, step: 0.1 });
+      fi.oninput = () => patchFx("fade_in", parseFloat(fi.value || "0"), true);
+      const fo = _num(fx.fade_out || 0, "sc-fx-fo", { min: 0, max: 10, step: 0.1 });
+      fo.oninput = () => patchFx("fade_out", parseFloat(fo.value || "0"), true);
+      fadeRow.append(field("Fade in (s)", fi)); fadeRow.append(field("Fade out (s)", fo));
+      more.append(fadeRow);
+      const zoom = el("select"); zoom.dataset.k = "sc-fx-zoom";
+      [["none", "None"], ["in", "Zoom in"], ["out", "Zoom out"]].forEach(([v, label]) => {
+        const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
+      });
+      zoom.onchange = () => patchFx("zoom", zoom.value);
+      more.append(field("Ken Burns zoom", zoom));
+
+      const vt = el("select"); vt.dataset.k = "sc-vt";
+      [["", "Hard cut"], ["crossfade", "Dissolve"], ["fadeblack", "Fade through black"],
+       ["wipeleft", "Wipe left"], ["wiperight", "Wipe right"]].forEach(([v, label]) => {
+        const o = el("option", null, label); o.value = v; if ((scene.video_transition || "") === v) o.selected = true; vt.append(o);
+      });
+      vt.onchange = () => {
+        const v = vt.value;
+        const patch = { video_transition: v };
+        if (v) patch.transition_frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
+        else patch.transition_frames = null;
+        S.patchScene(scene.id, patch);
+      };
+      more.append(field("Blend to next (video)", vt));
+      if (scene.video_transition) {
+        const tf = _num(scene.transition_frames > 0 ? scene.transition_frames : 16, "sc-tf", { min: 1, max: 120, step: 1 });
+        tf.oninput = () => S.patchScene(scene.id, { transition_frames: parseInt(tf.value || "16", 10) });
+        more.append(field("Blend length (frames)", tf));
+      }
+
+      const lenRow = el("div", "fields-row");
+      lenRow.append(lengthControl(scene, "frames"));
+      lenRow.append(lengthControl(scene, "fps"));
+      more.append(lenRow);
+
+      const r = (st.sceneRenders || {})[scene.id];
+      if (r && r.media) {
+        const srcTag = el("div", "insp-tag"); srcTag.textContent = "Source trim (slip)"; more.append(srcTag);
+        const inRow = el("div", "fields-row");
+        const iIn = _num(scene.source_in || 0, "src-in", { min: 0, step: 0.05 });
+        iIn.oninput = () => S.setSourceTrim(scene.id, { source_in: parseFloat(iIn.value || 0) });
+        inRow.append(field("Source in (s)", iIn));
+        const iDur = _num(scene.source_dur != null ? scene.source_dur : "", "src-dur", { min: 0.1, step: 0.05 });
+        iDur.placeholder = "full";
+        iDur.oninput = () => S.setSourceTrim(scene.id, { source_dur: iDur.value ? parseFloat(iDur.value) : null });
+        inRow.append(field("Source dur (s)", iDur));
+        more.append(inRow);
+        const reset = el("button", "btn ghost tiny", "Reset source trim");
+        reset.onclick = () => S.setSourceTrim(scene.id, { source_in: 0, source_dur: null });
+        more.append(reset);
+      }
+
+      renderSceneGuides(st, scene, more);
+
+      const row = el("div", "insp-block");
+      const chk = el("label", "chk"); const cb = el("input"); cb.type = "checkbox"; cb.checked = !!scene.excluded;
+      cb.onchange = () => S.patchScene(scene.id, { excluded: cb.checked });
+      chk.append(cb); chk.append(el("span", null, "Exclude from full generation"));
+      row.append(chk); more.append(row);
+    });
+  }
+
+  function renderSceneCharacters(st, scene, parent) {
+    parent = parent || body;
+    const ids = S.sceneCharacterIds(scene.id);
+    const tag = el("div", "insp-tag"); tag.textContent = "Characters"; parent.append(tag);
+    const chips = el("div", "char-chips");
+    if (!ids.length) {
+      chips.append(el("span", "char-chip empty", "None — assign in Characters bin"));
+    } else {
+      ids.forEach((cid) => {
+        const c = (st.characters || []).find((x) => x.id === cid);
+        const chip = el("span", "char-chip");
+        chip.textContent = c?.name || cid;
+        const rm = el("button", "char-chip-rm", "✕");
+        rm.onclick = () => S.toggleSceneCharacter(scene.id, cid);
+        chip.append(rm);
+        chips.append(chip);
+      });
+    }
+    parent.append(chips);
   }
 
   function slotLabelFor(st, slotId) {
@@ -337,17 +340,11 @@
     body.append(row1);
     const row2 = el("div", "fields-row");
     row2.append(numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps"));
-    row2.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
     body.append(row2);
-    const row3 = el("div", "fields-row");
-    row3.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
-    row3.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
-    body.append(row3);
-    body.append(el("div", "insp-hint", "Link FPS / Frames / Width / Height in Models → Linked inputs (Source = Project …)."));
 
     const promptTag = el("div", "insp-tag"); promptTag.textContent = "Prompt"; body.append(promptTag);
     const anchor = el("textarea"); anchor.rows = 2; anchor.value = p.anchor || ""; anchor.dataset.k = "pj-anchor";
-    anchor.placeholder = "World / setting context prepended to every scene (assign characters per scene in the Characters bin)";
+    anchor.placeholder = "World / setting context prepended to every scene";
     anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
     body.append(field("Anchor", anchor));
     body.append(field("Opening transition (anchor → scene 1)", transitionSelect(p.intro_transition || "",
@@ -356,6 +353,14 @@
     neg.placeholder = "What to avoid in every scene";
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
     body.append(field("Negative prompt", neg));
+
+    foldSection("Advanced project settings", false, (adv) => {
+      adv.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
+      const row3 = el("div", "fields-row");
+      row3.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
+      row3.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
+      adv.append(row3);
+    });
   }
 
   const STUDIO_DEFAULT_GUIDE = { enabled: true, source: "template", frame_idx: 0, apply_at: 0, strength: 0.35 };
@@ -365,12 +370,13 @@
     return { stack_enabled: !!gs.stack_enabled, accumulate_prior: !!gs.accumulate_prior };
   }
 
-  function renderSceneGuides(st, scene) {
+  function renderSceneGuides(st, scene, parent) {
+    parent = parent || body;
     if (!normGuideSettings(st.project).stack_enabled) return;
     const sceneNo = st.project.scenes.indexOf(scene) + 1;
-    const tag = el("div", "insp-tag"); tag.textContent = "i2v guides"; body.append(tag);
+    const tag = el("div", "insp-tag"); tag.textContent = "i2v guides"; parent.append(tag);
     if (sceneNo <= 1) {
-      body.append(el("div", "insp-hint", "Scene 1 is the i2v anchor — guides apply from scene 2 onward."));
+      parent.append(el("div", "insp-hint", "Scene 1 is the i2v anchor — guides apply from scene 2 onward."));
       return;
     }
     const guides = [...(scene.guides || [])];
@@ -452,7 +458,7 @@
     if (!guides.length) {
       wrap.append(el("div", "insp-hint", "No custom entries — generation uses the Studio default for this scene."));
     }
-    body.append(wrap);
+    parent.append(wrap);
   }
 
   function renderSplit(st) {
@@ -661,5 +667,6 @@
 
   window.addEventListener("funpack-invalidate-global-prompt", () => { gpDraft = null; });
 
-  S.subscribe(render);
+  if (window.ViewBus) window.ViewBus.subscribeInspector(render);
+  else S.subscribe(render);
 })();

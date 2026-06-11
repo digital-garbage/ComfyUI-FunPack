@@ -64,6 +64,53 @@
   const sFrames = (sc, p) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
   const sDur = (sc, p) => sFrames(sc, p) / sFps(sc, p);
 
+  function snapPx(x, anchors, threshold) {
+    threshold = threshold || 10;
+    let best = x;
+    for (const a of anchors) {
+      if (Math.abs(x - a) < threshold) best = a;
+    }
+    return best;
+  }
+
+  function seamAnchorsPx(lay) {
+    return lay.map(({ o }) => o * pxPerSec);
+  }
+
+  function appendFilmstrip(clip, st, scene, widthPx) {
+    if (!hasRender(st, scene.id)) return;
+    const r = st.sceneRenders[scene.id];
+    if (!r?.media || widthPx < 40) return;
+    const strip = el("div", "clip-filmstrip");
+    const n = Math.min(10, Math.max(3, Math.floor(widthPx / 28)));
+    const url = window.MovieEditorAPI.resultUrl(st.project.id, r.media);
+    const vid = document.createElement("video");
+    vid.muted = true; vid.preload = "auto"; vid.src = url;
+    vid.onloadeddata = () => {
+      const dur = vid.duration || sDur(scene, st.project);
+      const inSec = (r.inSec || 0) + (scene.source_in || 0);
+      for (let i = 0; i < n; i++) {
+        const cell = el("div", "clip-fs-cell");
+        const t = inSec + (dur * (i + 0.5) / n);
+        const c = document.createElement("canvas");
+        c.width = 48; c.height = 27;
+        const ctx = c.getContext("2d");
+        const thumb = el("img", "clip-fs-thumb");
+        thumb.alt = "";
+        const capture = (time) => {
+          vid.currentTime = Math.min(time, dur - 0.01);
+          vid.onseeked = () => {
+            try { ctx.drawImage(vid, 0, 0, 48, 27); thumb.src = c.toDataURL("image/jpeg", 0.55); } catch (_) {}
+            cell.append(thumb);
+            strip.append(cell);
+          };
+        };
+        capture(t);
+      }
+    };
+    clip.append(strip);
+  }
+
   const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
 
   function selectedIds(st) {
@@ -353,8 +400,32 @@
     clip.append(actions);
 
     // right-edge trim → new duration → frames recomputed (duration × fps).
-    // Locked when length is "custom" (the inspector value wins over the timeline).
     const locked = scene.frames_mode === "custom";
+    const leftHandle = el("div", "clip-trim clip-trim-left" + (locked ? " locked" : ""));
+    leftHandle.title = locked ? "Length locked (custom mode)" : "Drag to trim start · Alt+drag to slip source when rendered";
+    if (!locked) {
+      leftHandle.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        clip.classList.add("trimming");
+        const tip = el("div", "trim-tip"); clip.append(tip);
+        let finalDelta = 0;
+        onDrag(e, (dx) => {
+          finalDelta = dx / pxPerSec;
+          tip.textContent = e.altKey && hasRender(st, scene.id)
+            ? `slip ${finalDelta >= 0 ? "+" : ""}${finalDelta.toFixed(2)}s`
+            : `trim ${(-finalDelta).toFixed(2)}s`;
+        }, () => {
+          clip.classList.remove("trimming"); tip.remove();
+          if (e.altKey && hasRender(st, scene.id)) {
+            if (Math.abs(finalDelta) > 0.02) S.slipScene(scene.id, finalDelta);
+          } else if (finalDelta > 0.02) {
+            S.trimSceneLeft(scene.id, finalDelta);
+          }
+        });
+      });
+    }
+    clip.append(leftHandle);
+
     const handle = el("div", "clip-trim" + (locked ? " locked" : ""));
     handle.title = locked
       ? "Length is Custom — change it in the inspector (set Frames to Inherit timeline to trim here)"
@@ -377,6 +448,7 @@
       });
     });
     clip.append(handle);
+    appendFilmstrip(clip, st, scene, widthPx);
     return clip;
   }
 
@@ -468,15 +540,18 @@
     { id: "wiperight", label: "Wipe right → next",  val: { label: "Frames", def: 16, min: 1, max: 120, step: 1 }, apply: (sc, v) => ({ video_transition: "wiperight", transition_frames: Math.round(v) }) },
   ];
 
-  function effectsDropdown(st) {
+  function effectsDropdown(st, inline) {
     const wrap = el("div", "tl-dd");
     const hasSel = !!st.selectedSceneId;
-    const btn = el("button", "btn ghost tiny", "✨ Effects ▾");
-    btn.disabled = !hasSel;
-    btn.title = hasSel ? "Add a video effect or transition to the selected clip" : "Select a clip first";
-    wrap.append(btn);
+    const btn = inline ? null : el("button", "btn ghost tiny", "✨ Effects ▾");
+    if (btn) {
+      btn.disabled = !hasSel;
+      btn.title = hasSel ? "Add a video effect or transition to the selected clip" : "Select a clip first";
+      wrap.append(btn);
+    }
 
-    const panel = el("div", "tl-dd-panel"); panel.hidden = true;
+    const panel = el("div", "tl-dd-panel" + (inline ? " inline" : ""));
+    if (!inline) panel.hidden = true;
     panel.append(el("div", "tl-dd-head", "Add to selected clip"));
     const sel = el("select", "tl-dd-sel");
     FX_DEFS.forEach((d) => sel.append(new Option(d.label, d.id)));
@@ -502,6 +577,7 @@
     };
     panel.append(sel, valRow, addBtn);
     sync();
+    if (inline) return panel;
     wrap.append(panel);
 
     btn.onclick = (e) => {
@@ -581,6 +657,19 @@
     const rm = el("button", "ic-btn danger tl-aud-rm", "✕"); rm.title = "Remove track";
     rm.onclick = (e) => { e.stopPropagation(); S.removeAudioTrack(track.id); };
     block.append(rm);
+    block.addEventListener("mousedown", (e) => {
+      if (e.target.closest("input,button,select")) return;
+      e.stopPropagation();
+      const baseLeft = startSec * pxPerSec;
+      onDrag(e, (dx) => {
+        const snapped = snapPx(baseLeft + dx, seamAnchorsPx([]), 10);
+        const sec = Math.max(0, snapped / pxPerSec);
+        block.style.left = (sec * pxPerSec) + "px";
+        startIn.value = sec.toFixed(1);
+      }, () => {
+        S.updateAudioTrack(track.id, { start_sec: parseFloat(startIn.value || "0") });
+      });
+    });
     body.append(block);
     lane.append(body);
     return lane;
@@ -622,6 +711,32 @@
     return wrap;
   }
 
+  function editToolsDropdown(st, p) {
+    const wrap = el("div", "tl-dd");
+    const btn = el("button", "btn ghost tiny", "Edit tools ▾");
+    const panel = el("div", "tl-dd-panel");
+    panel.hidden = true;
+    btn.onclick = (e) => { e.stopPropagation(); panel.hidden = !panel.hidden; };
+    document.addEventListener("click", () => { panel.hidden = true; }, { once: true });
+    panel.append(effectsDropdown(st, true));
+    const hasSel = !!st.selectedSceneId;
+    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
+    if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
+      const sc = S.scene(st.selectedSceneId);
+      const sceneNo = p.scenes.indexOf(sc) + 1;
+      const row = el("div", "tl-dd-row");
+      row.append(el("span", "tl-keys", `★ Scene ${sceneNo}`));
+      const rsel = el("select", "tl-rating");
+      rsel.append(new Option("— rate —", ""));
+      (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
+      rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
+      row.append(rsel);
+      panel.append(row);
+    }
+    wrap.append(btn); wrap.append(panel);
+    return wrap;
+  }
+
   // ── toolbar ─────────────────────────────────────────────────────────────────────
   function toolbar(st, p, totalSec) {
     const bar = el("div", "tl-toolbar");
@@ -645,30 +760,11 @@
     exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
     exp.onclick = () => S.exportSelected();
     bar.append(split); bar.append(del); bar.append(exp);
-    bar.append(effectsDropdown(st));
+    bar.append(editToolsDropdown(st, p));
     bar.append(audioToolbar(st, p));
 
-    // Scene rating — only when FunPack Studio is the conditioning provider AND the
-    // selected clip has a render. Rates that clip's own scene (cut-aware by scene id);
-    // fed into Studio at the next generation of its run.
-    const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
-    if (studioCond && hasSel && hasRender(st, st.selectedSceneId) && (st.ratingLabels || []).length) {
-      const sc = S.scene(st.selectedSceneId);
-      const sceneNo = p.scenes.indexOf(sc) + 1;
-      const mismatch = S.renderPromptMismatch ? S.renderPromptMismatch(sc.id) : null;
-      const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
-      const rsel = el("select", "tl-rating");
-      rsel.title = mismatch
-        ? `Rate against the generated prompt on the clip — timeline text was edited after this render`
-        : "Rate this scene's render — FunPack Studio refines from it next generation";
-      rsel.append(new Option("— rate —", ""));
-      (st.ratingLabels || []).forEach((l) => { const o = new Option(l, l); if (l === (sc.rating || "")) o.selected = true; rsel.append(o); });
-      rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
-      bar.append(rlabel); bar.append(rsel);
-    }
-
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
-    const keys = el("span", "tl-keys", "⌘/⇧ multi-select · S split · ⌫ remove");
+    const keys = el("span", "tl-keys", "J/K/L · S split · I/O in/out · +/- zoom");
     keys.title = "⌘/Ctrl-click toggles selection · Shift-click extends range · S splits at playhead · Delete removes focus clip";
     bar.append(keys);
     const zlabel = el("span", "tl-zlabel", "zoom"); bar.append(zlabel);
@@ -799,7 +895,8 @@
     }
   }
 
-  S.subscribe(onStore);
+  if (window.ViewBus) window.ViewBus.subscribeTimeline(onStore);
+  else S.subscribe(onStore);
 
   // Pause rebuilds while a timeline control (rating/transition dropdown, trim input) is
   // focused; re-sync shortly after it loses focus.
@@ -835,7 +932,29 @@
     if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const st = S.get();
-    if (!st.project || !st.selectedSceneId) return;
+    if (!st.project) return;
+    const ph = window.Player?.getPlayhead() ?? 0;
+    const fps = st.project.frame_rate || 25;
+    if (e.key === "j" || e.key === "J") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1)); return; }
+    if (e.key === "k" || e.key === "K") { e.preventDefault(); window.Player?.pause?.(); return; }
+    if (e.key === "l" || e.key === "L") { e.preventDefault(); window.Player?.play?.(); return; }
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); setZoom(pxPerSec * 1.2); return; }
+    if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(pxPerSec / 1.2); return; }
+    if (e.key === "ArrowLeft") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1 / fps)); return; }
+    if (e.key === "ArrowRight") { e.preventDefault(); window.Player?.seek(ph + 1 / fps); return; }
+    if (!st.selectedSceneId) return;
+    if (e.key === "i" || e.key === "I") {
+      e.preventDefault();
+      const seg = (S.buildPreviewSegments ? S.buildPreviewSegments() : []).find((s) => s.kind === "scene" && s.scene.id === st.selectedSceneId);
+      if (seg) window.Player?.seek(seg.offsetSec);
+      return;
+    }
+    if (e.key === "o" || e.key === "O") {
+      e.preventDefault();
+      const seg = (S.buildPreviewSegments ? S.buildPreviewSegments() : []).find((s) => s.kind === "scene" && s.scene.id === st.selectedSceneId);
+      if (seg) window.Player?.seek(seg.offsetSec + seg.durationSec);
+      return;
+    }
     if (e.key === "s" || e.key === "S") { e.preventDefault(); splitSelectedAtPlayhead(); }
     else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); S.removeScene(st.selectedSceneId); }
   });

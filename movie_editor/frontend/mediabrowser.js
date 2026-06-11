@@ -386,5 +386,6 @@
     body.append(sec);
   }
 
-  S.subscribe(render);
+  if (window.ViewBus) window.ViewBus.subscribeMediabrowser(render);
+  else S.subscribe(render);
 })();
