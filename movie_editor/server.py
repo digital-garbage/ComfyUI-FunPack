@@ -24,9 +24,11 @@ from .backend.timeline import (
     Project,
     build_combined_prompt,
     collapse_generative_units,
+    continuity_media_refs,
     effective_negative_prompt,
     gen_unit_id,
     group_generative_units,
+    is_video_clip,
 )
 
 UI_PREFIX = "/funpack/movie"
@@ -566,7 +568,10 @@ if web is not None and PromptServer is not None:
         body.pop("id", None)
         body["created_at"] = _time.time()
         body["updated_at"] = _time.time()
-        p = projects.save(Project.from_dict(body))
+        try:
+            p = projects.save(Project.from_dict(body))
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Invalid project file: {e}"}, status=400)
         return web.json_response(p.to_dict())
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}")
@@ -837,7 +842,10 @@ if web is not None and PromptServer is not None:
             target = _segment(p, scene_ids)
         else:
             target = _solo(p, body.get("only_scene"))
-        validation = bridge.validate_generation_prompt(p, target)
+        try:
+            validation = bridge.validate_generation_prompt(p, target)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Prompt validation failed: {e}"}, status=400)
         prompt = validation["generation_prompt"]
         if not prompt.strip():
             return web.json_response({"detail": "Nothing to generate — no active scene text."}, status=400)
@@ -851,6 +859,11 @@ if web is not None and PromptServer is not None:
         bridge.current_progress()  # ensure the sampler step-progress hook is installed
         active_scenes = [s for s in target.scenes if not s.excluded and not is_video_clip(s)]
         active_scene_count = len(active_scenes)
+        if not active_scene_count:
+            return web.json_response(
+                {"detail": "Nothing to generate — all clips are video-only or excluded."},
+                status=400,
+            )
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.
         # This makes the timeline trim handle actually affect generation length,
         # provided the user has linked EmptyLTXVLatent.num_frames → Project Frames
@@ -865,21 +878,23 @@ if web is not None and PromptServer is not None:
             if trimmed and all(f == trimmed[0] for f in trimmed)
             else target.num_frames_per_scene
         )
-        from .backend.timeline import continuity_media_refs, is_video_clip
-        media_pack = _prepare_media(target, continuity_media_refs(p, target))
-        sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
-        _attach_scene_anchors(sampler_inputs, media_pack, target)
-        graph, report = builder.build(oi, _project_models(target), {
-            "prompt": prompt, "seed": _resolve_run_seed(target),
-            "num_frames_per_scene": effective_frames,
-            "frame_rate": target.frame_rate,
-            "width": target.width, "height": target.height,
-            "negative_prompt": effective_negative_prompt(target) or None,
-            "max_scenes": active_scene_count,
-            "studio_inputs": _run_studio_inputs(target, active_scenes, prompt_changed=prompt_changed),
-            "sampler_inputs": sampler_inputs,
-            "reset_session": reset_session,
-        }, media=(media_pack or {}).get("primary") if media_pack else None)
+        try:
+            media_pack = _prepare_media(target, continuity_media_refs(p, target))
+            sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p)
+            _attach_scene_anchors(sampler_inputs, media_pack, target)
+            graph, report = builder.build(oi, _project_models(target), {
+                "prompt": prompt, "seed": _resolve_run_seed(target),
+                "num_frames_per_scene": effective_frames,
+                "frame_rate": target.frame_rate,
+                "width": target.width, "height": target.height,
+                "negative_prompt": effective_negative_prompt(target) or None,
+                "max_scenes": active_scene_count,
+                "studio_inputs": _run_studio_inputs(target, active_scenes, prompt_changed=prompt_changed),
+                "sampler_inputs": sampler_inputs,
+                "reset_session": reset_session,
+            }, media=(media_pack or {}).get("primary") if media_pack else None)
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"detail": f"Workflow build failed: {e}"}, status=502)
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)

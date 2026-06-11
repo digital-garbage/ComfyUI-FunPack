@@ -45,7 +45,11 @@ def get(project_id: str) -> Optional[Project]:
 def save(project: Project) -> Project:
     config.ensure_dirs()
     project.updated_at = time.time()
-    _path(project.id).write_text(json.dumps(project.to_dict(), indent=2))
+    path = _path(project.id)
+    payload = json.dumps(project.to_dict(), indent=2)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(payload)
+    tmp.replace(path)
     return project
 
 

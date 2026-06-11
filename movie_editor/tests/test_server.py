@@ -200,3 +200,17 @@ def test_parse_prompt_variants_all_fail(monkeypatch):
     assert payload["parsed"] is None
     assert len(errors) == 3
     assert errors["parsed"] == "KeyError (no message)"
+
+
+def test_generate_filters_video_clips():
+    from movie_editor.backend.timeline import Project, Scene, SceneSource, is_video_clip
+    from movie_editor import server
+
+    assert server.is_video_clip is is_video_clip
+    p = Project(scenes=[
+        Scene(text="gen", source=SceneSource(type="carry")),
+        Scene(text="", source=SceneSource(type="video", media_ref="v1")),
+    ])
+    active = [s for s in p.scenes if not s.excluded and not is_video_clip(s)]
+    assert len(active) == 1
+    assert active[0].text == "gen"
