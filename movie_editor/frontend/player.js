@@ -28,6 +28,7 @@
   let _pendingFxOffset = 0;
   let _seekToken = 0;
   let _scrubDepth = 0;       // suppress render()-driven re-seek while dragging playhead
+  let _clipBoundaryToken = 0; // suppress double-advance while a boundary seek is in flight
   const _insPool = new Map(); // track id -> <audio>
   let _insTracks = [];
 
@@ -91,7 +92,27 @@
     _videoSeekTimer = setTimeout(() => _flushVideoSeek(false), _playing ? 0 : 24);
   }
 
-  function _segmentSourceBadge(sceneId) {
+  function _isSeeking() {
+    if (_seekPending != null || _playPending) return true;
+    const v = _active;
+    if (!v) return false;
+    if (v._pmSeekPending != null) return true;
+    try { if (v.seeking) return true; } catch (_) {}
+    return false;
+  }
+
+  function _clipWithinSec() {
+    if (!_active || !_currentClip || _currentClip.pending) return 0;
+    return _active.currentTime - (_currentClip.inSec || 0);
+  }
+
+  function _onVideoSeeked(v) {
+    if (v !== _active || !_currentClip) return;
+    _clipBoundaryToken = 0;
+    const within = Math.max(0, _clipWithinSec());
+    try { _applyFx(_currentClip, within); } catch (_) {}
+    if (_playing && v.paused) v.play().catch(() => {});
+  }
     if (!sceneId) return "";
     const sc = S.scene(sceneId);
     if (S.isVideoClip?.(sc)) return "Video clip";
@@ -343,11 +364,11 @@
       if (_playPending) { _playPending = false; v.play().catch(() => {}); }
       if (_currentClip) _applyFx(_currentClip, Math.max(0, _phSec - _currentClip.startSec));
     });
-    v.addEventListener("seeked", () => {
-      if (v !== _active || !_currentClip || _playing) return;
-      _applyFx(_currentClip, Math.max(0, _phSec - _currentClip.startSec));
+    v.addEventListener("seeked", () => { _onVideoSeeked(v); });
+    v.addEventListener("ended", () => {
+      if (v !== _active || _isSeeking() || _clipBoundaryToken) return;
+      _advance();
     });
-    v.addEventListener("ended", () => { if (v === _active) _advance(); });
     stage.append(viewport); pool.set(url, v);
     return v;
   }
@@ -371,6 +392,7 @@
       v._pmFx?.viewport.remove();
     }
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
+    _clipBoundaryToken = 0;
     _pendingSeekSec = null;
     _scrubDepth = 0;
     if (_seekRaf) { cancelAnimationFrame(_seekRaf); _seekRaf = null; }
@@ -491,15 +513,17 @@
     _applyClipUi(clip);
     const target = (clip.inSec || 0) + Math.max(0, offset);
     if (v.readyState >= 1) {
+      if (play && Math.abs(v.currentTime - _clampT(v, target)) > 0.04) _clipBoundaryToken++;
       _applyVideoTime(v, target, !play);
       v._pmSeekPending = null;
       _seekPending = null;
-      if (play) { v.play().catch(() => {}); _startTick(); } else _playPending = false;
+      if (play) { v.play().catch(() => {}); _startTick(); } else { _playPending = false; _clipBoundaryToken = 0; }
     } else {
       v._pmSeekPending = target;
       _seekPending = target;
       _playPending = !!play;
-      if (play) _startTick();
+      if (play) { _clipBoundaryToken++; _startTick(); }
+      else _clipBoundaryToken = 0;
     }
     _applyFx(clip, Math.max(0, offset));
   }
@@ -520,11 +544,18 @@
       && Math.abs((next.inSec || 0) - ((prev.inSec || 0) + prev.durationSec)) < 0.05;
     _phSec = next.startSec;
     _currentClip = next;
-    // Reseek on gen-unit / scene boundaries — chain carry scenes overlap in the source file.
-    const needSeek = !sharedSource || !contiguous
-      || (next.sceneId && prev.sceneId && next.sceneId !== prev.sceneId)
-      || (next.ghostId && prev.ghostId && next.ghostId !== prev.ghostId);
+    const crossClip = next.sceneId !== prev.sceneId || next.ghostId !== prev.ghostId;
+    const needSeek = !sharedSource || !contiguous || crossClip;
     if (needSeek) _goto(next, 0, _playing);
+    else {
+      _clipBoundaryToken = 0;
+      _applyClipUi(next);
+      if (_active) {
+        const within = Math.max(0, _clipWithinSec());
+        try { _applyFx(next, within); } catch (_) {}
+      }
+      if (_playing) _startTick();
+    }
     _notifyPh();
   }
 
@@ -542,11 +573,20 @@
       if (_playing) _raf = requestAnimationFrame(_tick);
       return;
     }
+    if (_isSeeking()) {
+      if (_playing) _raf = requestAnimationFrame(_tick);
+      return;
+    }
     if (!_active) {
+      if (_currentClip.media || _currentClip.binUrl) {
+        _goto(_currentClip, Math.max(0, _phSec - _currentClip.startSec), true);
+        if (_playing) _raf = requestAnimationFrame(_tick);
+        return;
+      }
       if (_playing) _pause();
       return;
     }
-    const within = _active.currentTime - (_currentClip.inSec || 0);
+    const within = _clipWithinSec();
     if (within >= _currentClip.durationSec - 0.001) { _advance(); }
     else { _phSec = _currentClip.startSec + Math.max(0, within); try { _applyFx(_currentClip, within); } catch (_) {} _syncInsAudio(); _notifyPh(); }
     if (_playing) _raf = requestAnimationFrame(_tick);
@@ -639,12 +679,15 @@
 
   function _pause() {
     if (_active) _active.pause();
+    const wasPlaying = _playing;
     _playing = false;
     _playPending = false;
+    _clipBoundaryToken = 0;
     _stopTick();
     _pauseInsAudio();
     _notifyPh();
     _renderTransport();
+    if (wasPlaying) render(S.get());
   }
 
   function _stop() {
@@ -842,12 +885,11 @@
     const p = st.project;
     const gen = st.gen || { state: "idle", media: [] };
     _fpsCur = p?.frame_rate || 25;
+    _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
 
-    // While scrubbing, keep the program monitor DOM stable (no clear/rebuild).
-    if (_scrubDepth > 0) {
-      _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
-      return;
-    }
+    // Rebuilding the monitor DOM during playback detaches <video> nodes and kills multi-scene
+    // chain preview mid-stream (often visible from scene 3 onward once store ticks catch up).
+    if (_scrubDepth > 0 || _playing) return;
 
     clear(body);
 
