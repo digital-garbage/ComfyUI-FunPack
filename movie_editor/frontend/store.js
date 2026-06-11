@@ -2596,19 +2596,6 @@
       clearMediaPreview();
       return;
     }
-    if (m.kind === "video") {
-      const onTimeline = (state.project?.scenes || []).some(
-        (s) => !s.excluded && isVideoClip(s) && s.source?.media_ref === mediaId,
-      );
-      if (onTimeline) {
-        state.mediaPreviewId = null;
-        notify();
-        return;
-      }
-      try { window.Player?.pause?.(); } catch (_) {}
-      set({ mediaPreviewId: mediaId });
-      return;
-    }
     try { window.Player?.pause?.(); } catch (_) {}
     set({ mediaPreviewId: mediaId });
   }

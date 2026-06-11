@@ -1182,14 +1182,21 @@
     keys.title = "⌘/Ctrl-click toggles selection · Shift-click extends range · S splits at playhead · Delete removes focus clip";
     bar.append(keys);
     const zlabel = el("span", "tl-zlabel", "zoom"); bar.append(zlabel);
-    const zout = el("button", "btn ghost tiny", "−"); zout.onclick = () => setZoom(pxPerSec / 1.4);
-    const zin = el("button", "btn ghost tiny", "＋"); zin.onclick = () => setZoom(pxPerSec * 1.4);
+    const zout = el("button", "btn ghost tiny", "−"); zout.onclick = () => setZoom(pxPerSec / 1.4, { manual: true });
+    const zin = el("button", "btn ghost tiny", "＋"); zin.onclick = () => setZoom(pxPerSec * 1.4, { manual: true });
     const zfit = el("button", "btn ghost tiny", "fit"); zfit.onclick = () => fit(totalSec);
     bar.append(zout); bar.append(zin); bar.append(zfit);
     return bar;
   }
-  function setZoom(v) { pxPerSec = Math.min(600, Math.max(8, v)); localStorage.setItem(ZOOM_KEY, pxPerSec); render(S.get()); }
+  let _autoFitEnabled = true;
+  function setZoom(v, opts) {
+    pxPerSec = Math.min(600, Math.max(8, v));
+    localStorage.setItem(ZOOM_KEY, pxPerSec);
+    if (opts?.manual) _autoFitEnabled = false;
+    render(S.get());
+  }
   function fit(totalSec) {
+    _autoFitEnabled = true;
     const w = (body.querySelector(".tl-scroll")?.clientWidth || 800) - GUTTER_W - 8;
     if (totalSec > 0) setZoom(w / totalSec);
   }
@@ -1358,8 +1365,10 @@
       const ok = render(st);
       if (_pendingAutoFit && ok && st.project) {
         _pendingAutoFit = false;
-        const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
-        requestAnimationFrame(() => { if (total > 0) fit(total); });
+        if (_autoFitEnabled) {
+          const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
+          requestAnimationFrame(() => { if (total > 0) fit(total); });
+        }
       }
       return;
     }
@@ -1419,8 +1428,8 @@
     if (e.key === "j" || e.key === "J") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1)); return; }
     if (e.key === "k" || e.key === "K") { e.preventDefault(); window.Player?.pause?.(); return; }
     if (e.key === "l" || e.key === "L") { e.preventDefault(); window.Player?.play?.(); return; }
-    if (e.key === "+" || e.key === "=") { e.preventDefault(); setZoom(pxPerSec * 1.2); return; }
-    if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(pxPerSec / 1.2); return; }
+    if (e.key === "+" || e.key === "=") { e.preventDefault(); setZoom(pxPerSec * 1.2, { manual: true }); return; }
+    if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(pxPerSec / 1.2, { manual: true }); return; }
     if (e.key === "ArrowLeft") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1 / fps)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); window.Player?.seek(ph + 1 / fps); return; }
     if (!st.selectedSceneId) return;
