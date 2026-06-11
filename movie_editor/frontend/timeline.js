@@ -445,9 +445,11 @@
       if (anchorMismatch) {
         clip.classList.add("anchor-mismatch");
         const gen = el("div", "clip-gen-prompt clip-gen-anchor");
-        gen.title = "i2v anchor changed after generation - preview shows the previous render";
+        gen.title = anchorMismatch.renderedLabel
+          ? `Generated with i2v image: ${anchorMismatch.renderedLabel}`
+          : "i2v anchor changed after generation - preview shows the previous render";
         gen.append(el("span", "clip-gen-prompt-label", "i2v image changed"));
-        gen.append(el("span", "clip-gen-prompt-text", `Showing previous generation (${anchorMismatch.renderedLabel})`));
+        gen.append(el("span", "clip-gen-prompt-text", "Showing previous generation"));
         clip.append(gen);
       }
       if (S.renderPromptMismatch) {
@@ -836,15 +838,9 @@
     const sc = S.scene(st.selectedSceneId);
     if (!sc) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
-    const promptMismatch = S.renderPromptMismatch ? S.renderPromptMismatch(sc.id) : null;
-    const anchorMismatch = S.renderAnchorMismatch ? S.renderAnchorMismatch(sc.id) : null;
     const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
     const rsel = el("select", "tl-rating");
-    rsel.title = anchorMismatch
-      ? "i2v image changed - rate the previous generation shown in preview"
-      : promptMismatch
-        ? "Rate against the generated prompt - timeline text was edited after this render"
-        : "Rate this scene's render - FunPack Studio refines from it on next generation";
+    rsel.title = "Rate this scene's render - FunPack Studio refines from it on next generation";
     rsel.append(new Option("- rate -", ""));
     (st.ratingLabels || []).forEach((l) => {
       const o = new Option(l, l);
@@ -854,15 +850,6 @@
     rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
     wrap.append(rlabel);
     wrap.append(rsel);
-    if (anchorMismatch) {
-      const hint = el("span", "tl-render-prompt tl-render-anchor", "i2v image changed · showing previous generation");
-      hint.title = `Generated with ${anchorMismatch.renderedLabel}`;
-      wrap.append(hint);
-    } else if (promptMismatch) {
-      const hint = el("span", "tl-render-prompt", promptMismatch.rendered);
-      hint.title = "Generated with this prompt - use it when rating (timeline text differs)";
-      wrap.append(hint);
-    }
     return wrap;
   }
 

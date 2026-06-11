@@ -119,29 +119,15 @@
   }
   function _showRenderPrompt(sceneId) {
     if (!_promptEl) return;
-    const promptMismatch = sceneId && S.renderPromptMismatch ? S.renderPromptMismatch(sceneId) : null;
-    const anchorMismatch = sceneId && S.renderAnchorMismatch ? S.renderAnchorMismatch(sceneId) : null;
-    if (!promptMismatch && !anchorMismatch) {
+    const mismatch = sceneId && S.renderPromptMismatch ? S.renderPromptMismatch(sceneId) : null;
+    if (!mismatch) {
       _promptEl.style.display = "none";
       _promptEl.textContent = "";
-      _promptEl.classList.remove("anchor-stale");
       return;
     }
     _promptEl.style.display = "";
-    if (anchorMismatch && !promptMismatch) {
-      _promptEl.classList.add("anchor-stale");
-      _promptEl.title = `Generated with i2v image: ${anchorMismatch.renderedLabel}`;
-      _promptEl.textContent = "i2v image changed · showing previous generation";
-    } else {
-      _promptEl.classList.remove("anchor-stale");
-      if (anchorMismatch && promptMismatch) {
-        _promptEl.title = `i2v: ${anchorMismatch.renderedLabel} · prompt: ${promptMismatch.rendered}`;
-        _promptEl.textContent = `i2v image changed · generated with: ${promptMismatch.rendered}`;
-      } else {
-        _promptEl.title = "Timeline prompt was edited after generation - rate against this text";
-        _promptEl.textContent = `Generated with: ${promptMismatch.rendered}`;
-      }
-    }
+    _promptEl.title = "Timeline prompt was edited after generation - rate against this text";
+    _promptEl.textContent = `Generated with: ${mismatch.rendered}`;
   }
 
   // ── video pool management ─────────────────────────────────────────────────────

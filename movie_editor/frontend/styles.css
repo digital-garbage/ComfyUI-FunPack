@@ -674,11 +674,7 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip.prompt-mismatch { border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
 .clip.anchor-mismatch { border-color: color-mix(in srgb, var(--teal-soft) 42%, var(--line)); }
 .clip.stale-render.rendered::after { color: var(--amber-2); text-shadow: 0 0 5px rgba(224, 162, 58, .7); }
-.clip-gen-anchor .clip-gen-prompt-label { color: var(--teal-soft); }
 .clip-gen-anchor .clip-gen-prompt-text { color: #c8fff4; }
-.tl-render-anchor { color: #c8fff4; border-color: color-mix(in srgb, var(--teal-soft) 40%, var(--line)); }
-.render-anchor-warn { border-color: color-mix(in srgb, var(--teal-soft) 35%, var(--line)); }
-.render-anchor-warn .render-prompt-warn-title { color: var(--teal-soft); }
 .clip-actions { position: absolute; top: 5px; right: 8px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .clip:hover .clip-actions { opacity: 1; }
 .ic-btn { width: 18px; height: 18px; padding: 0; font-size: 11px; line-height: 1; border: 1px solid var(--line);

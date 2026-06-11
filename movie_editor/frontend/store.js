@@ -355,6 +355,7 @@
         anchor: rp.anchor ?? anchor,
         sourceType: rp.sourceType ?? sourceType,
         mediaRef: rp.mediaRef !== undefined ? rp.mediaRef : mediaRef,
+        sourceSnapshotted: true,
       };
     });
   }
@@ -1089,6 +1090,7 @@
       anchor: (state.project?.anchor || "").trim(),
       sourceType: src.type || "carry",
       mediaRef: src.media_ref || null,
+      sourceSnapshotted: true,
     };
   }
 
@@ -1121,7 +1123,7 @@
 
   function renderAnchorMismatch(sceneId) {
     const snap = renderPromptForScene(sceneId);
-    if (!snap) return null;
+    if (!snap?.sourceSnapshotted) return null;
     const current = _snapshotRenderSource(sceneId);
     if (!current) return null;
     const renderedType = snap.sourceType || "carry";
@@ -1130,10 +1132,10 @@
     return {
       renderedType,
       renderedRef,
-      renderedLabel: renderMediaLabel(renderedRef),
+      renderedLabel: renderedRef ? renderMediaLabel(renderedRef) : null,
       currentType: current.sourceType,
       currentRef: current.mediaRef,
-      currentLabel: renderMediaLabel(current.mediaRef),
+      currentLabel: current.mediaRef ? renderMediaLabel(current.mediaRef) : null,
     };
   }
 

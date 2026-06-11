@@ -171,14 +171,6 @@
       warn.append(el("div", "render-prompt-text", promptMismatch.rendered || "(empty)"));
       body.append(warn);
     }
-    const anchorMismatch = S.renderAnchorMismatch ? S.renderAnchorMismatch(scene.id) : null;
-    if (anchorMismatch) {
-      const warn = el("div", "render-prompt-warn render-anchor-warn");
-      warn.append(el("div", "render-prompt-warn-title", "i2v image changed · showing previous generation"));
-      warn.append(el("div", "render-prompt-text", anchorMismatch.renderedLabel || "(none)"));
-      body.append(warn);
-    }
-
     const src = el("select");
     SRC.forEach(([v, label]) => { const o = el("option", null, label); o.value = v; if ((root.source?.type) === v) o.selected = true; src.append(o); });
     src.onchange = () => {
