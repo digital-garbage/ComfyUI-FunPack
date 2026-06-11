@@ -79,36 +79,44 @@
 
   function appendFilmstrip(clip, st, scene, widthPx) {
     if (!hasRender(st, scene.id)) return;
+    if (clip.querySelector(".clip-filmstrip")) return;
     const r = st.sceneRenders[scene.id];
     if (!r?.media || widthPx < 40) return;
     const strip = el("div", "clip-filmstrip");
+    clip.append(strip);
     const n = Math.min(10, Math.max(3, Math.floor(widthPx / 28)));
     const url = window.MovieEditorAPI.resultUrl(st.project.id, r.media);
     const vid = document.createElement("video");
     vid.muted = true; vid.preload = "auto"; vid.src = url;
-    vid.onloadeddata = () => {
+    const captureAt = (time) => new Promise((resolve) => {
+      if (!strip.isConnected) { resolve(); return; }
+      const cell = el("div", "clip-fs-cell");
+      const c = document.createElement("canvas");
+      c.width = 48; c.height = 27;
+      const ctx = c.getContext("2d");
+      const thumb = el("img", "clip-fs-thumb");
+      thumb.alt = "";
+      const done = () => {
+        if (!strip.isConnected) { resolve(); return; }
+        try { ctx.drawImage(vid, 0, 0, 48, 27); thumb.src = c.toDataURL("image/jpeg", 0.55); } catch (_) {}
+        cell.append(thumb);
+        strip.append(cell);
+        resolve();
+      };
+      vid.onseeked = done;
+      const dur = vid.duration || sDur(scene, st.project);
+      vid.currentTime = Math.max(0, Math.min(time, dur - 0.01));
+    });
+    vid.onloadeddata = async () => {
+      if (!strip.isConnected) return;
       const dur = vid.duration || sDur(scene, st.project);
       const inSec = (r.inSec || 0) + (scene.source_in || 0);
       for (let i = 0; i < n; i++) {
-        const cell = el("div", "clip-fs-cell");
+        if (!strip.isConnected) return;
         const t = inSec + (dur * (i + 0.5) / n);
-        const c = document.createElement("canvas");
-        c.width = 48; c.height = 27;
-        const ctx = c.getContext("2d");
-        const thumb = el("img", "clip-fs-thumb");
-        thumb.alt = "";
-        const capture = (time) => {
-          vid.currentTime = Math.min(time, dur - 0.01);
-          vid.onseeked = () => {
-            try { ctx.drawImage(vid, 0, 0, 48, 27); thumb.src = c.toDataURL("image/jpeg", 0.55); } catch (_) {}
-            cell.append(thumb);
-            strip.append(cell);
-          };
-        };
-        capture(t);
+        await captureAt(t);
       }
     };
-    clip.append(strip);
   }
 
   const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
@@ -124,7 +132,42 @@
     return cls;
   }
   function onClipSelect(e, sceneId) {
+    _tlEditing = false;
+    const ae = document.activeElement;
+    if (ae && body.contains(ae) && /^(SELECT|INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
     S.selectScene(sceneId, { additive: e.metaKey || e.ctrlKey, range: e.shiftKey });
+  }
+
+  function syncClipSelection(st) {
+    const ids = selectedIds(st);
+    body.querySelectorAll(".clip[data-scene-id], .tl-aud-clip.scene-aud[data-scene-id]").forEach((node) => {
+      const id = node.dataset.sceneId;
+      node.classList.toggle("selected", ids.includes(id));
+      node.classList.toggle("focus", id === st.selectedSceneId);
+    });
+  }
+
+  function syncToolbarSelection(st) {
+    const bar = body.querySelector(".tl-toolbar");
+    if (!bar) return;
+    const hasSel = !!st.selectedSceneId;
+    bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
+    const exp = bar.querySelector("[data-export-scene]");
+    if (exp) exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
+  }
+
+  function syncMetaSelection(st) {
+    if (!meta || !st.project) return;
+    const p = st.project;
+    const scenes = p.scenes || [];
+    const active = scenes.filter((s) => !s.excluded).length;
+    const ghosts = (st.sceneGhosts || []).length;
+    const selN = S.selectedSceneCount ? S.selectedSceneCount() : selectedIds(st).length;
+    const totalSec = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
+    meta.textContent = `${scenes.length} clips · ${active} active`
+      + (ghosts ? ` · ${ghosts} ghost${ghosts > 1 ? "s" : ""}` : "")
+      + (selN > 1 ? ` · ${selN} selected` : "")
+      + ` · ${timecode(totalSec, p.frame_rate)}`;
   }
 
   const p2 = (n) => String(n).padStart(2, "0");
@@ -263,6 +306,7 @@
       + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded ? " pending" : ""))
       + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : "")
       + (srcType === "mixed" ? " src-mixed" : srcType === "carry" ? " src-carry" : srcType === "image" ? " src-image" : ""));
+    clip.dataset.sceneId = scene.id;
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
     clip.onclick = (e) => onClipSelect(e, scene.id);
@@ -270,14 +314,14 @@
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
     clip.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim")) return;
+      if (e.button !== 0 || e.target.closest(".clip-actions, .clip-trim, .seam-prompt-row, select, button")) return;
       const startX = e.clientX;
       let dragging = false, drop = null;
       const track = clip.parentNode;
       const onMove = (ev) => {
         const dx = ev.clientX - startX;
         if (!dragging) {
-          if (Math.abs(dx) < 5) return;
+          if (Math.abs(dx) < 8) return;
           dragging = true; clip.classList.add("reordering"); document.body.classList.add("tl-reordering");
           _reordering = true;  // hard-block store-driven rebuilds while dragging
         }
@@ -666,6 +710,7 @@
     const vol = scene.audio_volume != null ? scene.audio_volume : 1;
     const w = Math.max(widthPx, 8);  // match video clip min width — never grow past scene duration
     const clip = el("div", "tl-aud-clip scene-aud" + clipSelClass(st, scene.id));
+    clip.dataset.sceneId = scene.id;
     clip.style.left = leftPx + "px";
     clip.style.width = w + "px";
     clip.style.maxWidth = w + "px";
@@ -774,17 +819,23 @@
     // Clip actions on the selected clip (also bound to S / Delete).
     const hasSel = !!st.selectedSceneId;
     const split = el("button", "btn ghost tiny", "⧅ Split");
+    split.dataset.needsSel = "1";
     split.title = "Split the selected clip at the playhead (S)"; split.disabled = !hasSel;
     split.onclick = () => splitSelectedAtPlayhead();
     const del = el("button", "btn ghost tiny danger", "✕ Remove");
+    del.dataset.needsSel = "1";
     del.title = "Remove the selected clip (Delete / Backspace)"; del.disabled = !hasSel;
     del.onclick = () => { if (st.selectedSceneId) S.removeScene(st.selectedSceneId); };
     const exp = el("button", "btn ghost tiny", "⤓ Export");
+    exp.dataset.exportScene = "1";
     exp.title = "Save the selected clip's rendered video to disk (renders are temporary)";
     exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
     exp.onclick = () => S.exportSelected();
     bar.append(split); bar.append(del); bar.append(exp);
-    bar.append(addMenuDropdown(st, p));
+    const addWrap = addMenuDropdown(st, p);
+    const addBtn = addWrap.querySelector("button");
+    if (addBtn) { addBtn.dataset.needsSel = "1"; addBtn.disabled = !hasSel; }
+    bar.append(addWrap);
     bar.append(audioToolbar(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
@@ -846,7 +897,8 @@
     scroll.addEventListener("scroll", () => { scrollLeft = scroll.scrollLeft; });
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
-      if ((st.selectedSceneId || (st.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
+      const cur = S.get();
+      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
         S.selectScene(null);
     });
     const stage = el("div", "tl-stage"); stage.style.width = (GUTTER_W + contentW) + "px";
@@ -910,12 +962,30 @@
     return true;
   }
 
+  let _lastDataFp = null;
+  let _lastSelFp = null;
+
   function onStore(st) {
-    const ok = render(st);
-    if (_pendingAutoFit && ok && st.project) {
-      _pendingAutoFit = false;
-      const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
-      requestAnimationFrame(() => { if (total > 0) fit(total); });
+    const fpData = window.ViewBus?.fingerprints?.fpTimelineData?.(st)
+      ?? JSON.stringify(st.project?.id);
+    const fpSel = window.ViewBus?.fingerprints?.fpTimelineSel?.(st)
+      ?? JSON.stringify({ sel: st.selectedSceneId, sels: st.selectedSceneIds });
+    if (fpData !== _lastDataFp) {
+      _lastDataFp = fpData;
+      _lastSelFp = fpSel;
+      const ok = render(st);
+      if (_pendingAutoFit && ok && st.project) {
+        _pendingAutoFit = false;
+        const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
+        requestAnimationFrame(() => { if (total > 0) fit(total); });
+      }
+      return;
+    }
+    if (fpSel !== _lastSelFp) {
+      _lastSelFp = fpSel;
+      syncClipSelection(st);
+      syncToolbarSelection(st);
+      syncMetaSelection(st);
     }
   }
 

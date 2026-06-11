@@ -4,7 +4,7 @@
     try { return JSON.stringify(obj); } catch (_) { return String(Date.now()); }
   }
 
-  function fpTimeline(st) {
+  function fpTimelineData(st) {
     if (!st.project) return "none";
     const p = st.project;
     return hash({
@@ -15,8 +15,6 @@
         s.gen_unit_id, s.cut_offset_frames, s.source?.type, s.source?.media_ref,
         s.source_in, s.source_dur, s.rating, s.audio_volume,
       ]),
-      sel: st.selectedSceneId,
-      sels: st.selectedSceneIds,
       renders: st.sceneRenders,
       ghosts: st.sceneGhosts,
       audio: p.audio_tracks,
@@ -24,6 +22,14 @@
       gen: st.gen?.state,
       labels: (st.ratingLabels || []).length,
     });
+  }
+
+  function fpTimelineSel(st) {
+    return hash({ sel: st.selectedSceneId, sels: st.selectedSceneIds });
+  }
+
+  function fpTimeline(st) {
+    return hash({ d: fpTimelineData(st), s: fpTimelineSel(st) });
   }
 
   function fpInspector(st) {
@@ -107,6 +113,6 @@
     subscribePlayer: (fn) => subscribeZone("player", fn, fpPlayer),
     subscribeActionbar: (fn) => subscribeZone("actionbar", fn, fpActionbar),
     subscribeMediabrowser: (fn) => subscribeZone("mediabrowser", fn, fpMediabrowser),
-    fingerprints: { fpTimeline, fpInspector, fpPlayer, fpActionbar, fpMediabrowser },
+    fingerprints: { fpTimeline, fpTimelineData, fpTimelineSel, fpInspector, fpPlayer, fpActionbar, fpMediabrowser },
   };
 })();
