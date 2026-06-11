@@ -81,6 +81,11 @@ def _media_from_history(hist_entry: dict) -> list[dict]:
     return out
 
 
+def _scene_layout_from_history(hist_entry: dict, fps: float) -> Optional[list]:
+    from .backend.chain_layout import layout_from_history_entry
+    return layout_from_history_entry(hist_entry, fps)
+
+
 def _resolve_comfy_media_path(filename: str, subfolder: str = "", type_: str = "output") -> Optional[str]:
     """Absolute path to a ComfyUI output/temp media file (None if dirs unavailable)."""
     import os
@@ -899,6 +904,8 @@ if web is not None and PromptServer is not None:
     @routes.get(UI_PREFIX + "/api/projects/{pid}/status/{prompt_id}")
     async def _status(req):
         prompt_id = req.match_info["prompt_id"]
+        proj = _project_or_404(req.match_info["pid"])
+        run_fps = float(getattr(proj, "frame_rate", None) or 25.0)
         try:
             hist = await bridge.history(prompt_id)
         except Exception as e:  # noqa: BLE001
@@ -907,6 +914,7 @@ if web is not None and PromptServer is not None:
             entry = hist[prompt_id]
             raw_status = entry.get("status") or {}
             media = _media_from_history(entry)
+            scene_layout = _scene_layout_from_history(entry, run_fps)
             # Extract ComfyUI execution errors from history so the frontend can show them.
             exec_error: Optional[str] = None
             for _kind, payload in raw_status.get("messages") or []:
@@ -918,12 +926,15 @@ if web is not None and PromptServer is not None:
             is_error = raw_status.get("status_str") == "error"
             from .backend import chain_progress
             chain_progress.finish(prompt_id)
-            return web.json_response({
+            payload = {
                 "state": "error" if (is_error and not media) else "completed",
                 "media": media,
                 "error": exec_error,
                 "status": raw_status,
-            })
+            }
+            if scene_layout:
+                payload["scene_layout"] = scene_layout
+            return web.json_response(payload)
         try:
             running = await bridge.is_running(prompt_id)
         except Exception:  # noqa: BLE001

@@ -2589,16 +2589,17 @@ class FunPackLTXAVSceneChainSampler:
             return int((latent_frame - 1) * time_scale + 1) if latent_frame > 0 else 0
         return latent_frame
 
-    def _scene_pixel_ranges(self, scene_count, video_frames, pixel_overlap):
+    def _scene_pixel_ranges(self, scene_count, pixel_frames_per_scene, pixel_overlap):
         """Contiguous pixel spans in the stitched output (before transition post-FX)."""
         if scene_count <= 0:
             return []
         pixel_overlap = max(0, int(pixel_overlap))
-        stride = max(1, int(video_frames) - pixel_overlap)
+        pixel_frames_per_scene = max(1, int(pixel_frames_per_scene))
+        stride = max(1, pixel_frames_per_scene - pixel_overlap)
         ranges = []
         for i in range(scene_count):
             start = i * stride
-            end = start + int(video_frames) - 1
+            end = start + pixel_frames_per_scene - 1
             ranges.append({"scene": i + 1, "start": start, "end": end})
         return ranges
 
@@ -2629,6 +2630,7 @@ class FunPackLTXAVSceneChainSampler:
         *,
         scene_count,
         video_frames,
+        num_frames_per_scene,
         pixel_overlap,
         latent_overlap,
         time_scale,
@@ -2642,7 +2644,7 @@ class FunPackLTXAVSceneChainSampler:
         embed_guidance_source,
     ):
         """JSON report: where scene conditioning/latent/pixel domains overlap."""
-        pixel_ranges = self._scene_pixel_ranges(scene_count, video_frames, pixel_overlap)
+        pixel_ranges = self._scene_pixel_ranges(scene_count, num_frames_per_scene, pixel_overlap)
         boundary_reports = []
         for entry in boundaries or []:
             pixel = int(entry.get("pixel_frame") or 0)
@@ -2652,7 +2654,7 @@ class FunPackLTXAVSceneChainSampler:
             boundary_reports.append({
                 "between_scenes": between,
                 "pixel_frame": pixel,
-                "latent_frame": entry.get("latent_frame"),
+                "latent_frame": entry.get("latent_frame") or entry.get("boundary_latent"),
                 "effect": effect,
                 "contamination_zones": zones,
             })
@@ -2710,6 +2712,8 @@ class FunPackLTXAVSceneChainSampler:
         return {
             "scene_count": scene_count,
             "frames_per_scene": int(video_frames),
+            "frames_per_scene_pixel": int(num_frames_per_scene),
+            "num_frames_per_scene": int(num_frames_per_scene),
             "pixel_overlap": int(pixel_overlap),
             "latent_overlap": int(latent_overlap),
             "time_scale": int(time_scale),
@@ -3531,6 +3535,10 @@ class FunPackLTXAVSceneChainSampler:
                     vae, output, chain_progress_key, scene_index, scene_count,
                     decode_tile_size=decode_tile_size,
                     frame_rate=24,
+                    boundary_entries=boundary_entries,
+                    num_frames_per_scene=int(num_frames_per_scene),
+                    frame_overlap=int(frame_overlap),
+                    time_scale=time_scale,
                 )
 
         del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
@@ -3569,6 +3577,7 @@ class FunPackLTXAVSceneChainSampler:
         overlap_diag = self._build_overlap_diagnostics(
             scene_count=scene_count,
             video_frames=video_frames,
+            num_frames_per_scene=int(num_frames_per_scene),
             pixel_overlap=int(frame_overlap),
             latent_overlap=int(video_overlap),
             time_scale=time_scale,
@@ -3581,6 +3590,22 @@ class FunPackLTXAVSceneChainSampler:
             embed_guidance_strength=float(embed_guidance_strength),
             embed_guidance_source=str(embed_guidance_source or "relative"),
         )
+        try:
+            from movie_editor.backend.chain_layout import scene_playback_layout
+        except ImportError:
+            try:
+                from .movie_editor.backend.chain_layout import scene_playback_layout  # type: ignore
+            except ImportError:
+                scene_playback_layout = None
+        if scene_playback_layout is not None:
+            overlap_diag["scene_playback"] = scene_playback_layout(
+                scene_count,
+                fps=24.0,
+                num_frames_per_scene=int(num_frames_per_scene),
+                frame_overlap=int(frame_overlap),
+                time_scale=time_scale,
+                boundaries=boundary_entries,
+            )
         if scene_count > 1 and int(frame_overlap) > 0:
             status += (
                 f", overlap_blend={int(frame_overlap)}px"
@@ -3643,7 +3668,9 @@ class FunPackLTXAVSceneChainSampler:
         return [groups[k] for k in sorted(groups)]
 
     def _save_chain_progress_preview(self, vae, output, progress_key, scene_index, scene_count,
-                                     decode_tile_size=0, frame_rate=24):
+                                     decode_tile_size=0, frame_rate=24,
+                                     boundary_entries=None, num_frames_per_scene=0,
+                                     frame_overlap=0, time_scale=1):
         """Decode cumulative chain output to a small temp mp4 for Movie Editor preview."""
         if not progress_key or scene_count <= 1 or scene_index >= scene_count - 1:
             return
@@ -3702,12 +3729,28 @@ class FunPackLTXAVSceneChainSampler:
                 )
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
+            scene_layout = None
+            try:
+                try:
+                    from movie_editor.backend.chain_layout import scene_playback_layout
+                except ImportError:
+                    from .movie_editor.backend.chain_layout import scene_playback_layout  # type: ignore
+                scene_layout = scene_playback_layout(
+                    scene_index + 1,
+                    fps=frame_rate,
+                    num_frames_per_scene=num_frames_per_scene,
+                    frame_overlap=frame_overlap,
+                    time_scale=time_scale,
+                    boundaries=boundary_entries,
+                )
+            except Exception:
+                scene_layout = None
             _cp.update(progress_key, scene_index + 1, {
                 "kind": "videos",
                 "filename": fn,
                 "subfolder": rel_dir.replace("\\", "/"),
                 "type": "temp",
-            })
+            }, scene_layout=scene_layout)
         except Exception as e:
             print(f"[FunPackSceneChain] chain progress preview failed (scene {scene_index + 1}): {e}")
 

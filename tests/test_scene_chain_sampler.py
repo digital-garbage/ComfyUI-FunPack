@@ -425,7 +425,8 @@ def test_overlap_diagnostics_report_latent_blend_zone():
     node = FunPackLTXAVSceneChainSampler()
     diag = node._build_overlap_diagnostics(
         scene_count=2,
-        video_frames=97,
+        video_frames=13,
+        num_frames_per_scene=97,
         pixel_overlap=16,
         latent_overlap=2,
         time_scale=8,

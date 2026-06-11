@@ -27,7 +27,7 @@ def begin(prompt_id: str, progress_key: str, scene_count: int) -> None:
         }
 
 
-def update(progress_key: str, completed_scenes: int, media: dict) -> None:
+def update(progress_key: str, completed_scenes: int, media: dict, scene_layout: Optional[list] = None) -> None:
     if not progress_key or not media:
         return
     with _lock:
@@ -36,6 +36,8 @@ def update(progress_key: str, completed_scenes: int, media: dict) -> None:
             return
         slot["completed_scenes"] = max(int(completed_scenes), int(slot.get("completed_scenes") or 0))
         slot["media"] = dict(media)
+        if scene_layout:
+            slot["scene_layout"] = list(scene_layout)
         slot["ts"] = time.time()
 
 
@@ -51,12 +53,16 @@ def read_for_prompt(prompt_id: str) -> Optional[dict]:
         total = int(slot.get("scene_count") or 0)
         if completed <= 0 or total <= 1 or completed >= total:
             return None
-        return {
+        out = {
             "partial": True,
             "completed_scenes": completed,
             "scene_count": total,
             "media": [dict(slot["media"])],
         }
+        layout = slot.get("scene_layout")
+        if layout:
+            out["scene_layout"] = list(layout)
+        return out
 
 
 def finish(prompt_id: str) -> None:

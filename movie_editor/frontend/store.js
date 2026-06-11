@@ -1257,10 +1257,13 @@
     return { frames, fps, overlapSec, sourceSpanSec };
   }
 
-  function _recordInSec(lastChain, sourceEnd, curr, layout) {
+  function _recordInSec(lastChain, sourceEnd, curr, sceneLayout, chainSceneIdx) {
     if (!lastChain) return 0;
     if (genUnitId(lastChain) === genUnitId(curr)) return sourceEnd;
-    return Math.max(0, sourceEnd - layout.overlapSec);
+    const slot = sceneLayout && sceneLayout[chainSceneIdx];
+    if (slot) return slot.inSec != null ? slot.inSec : (slot.in_sec != null ? slot.in_sec : 0);
+    // Decoded chain output advances by full scene spans; overlap is blended in latent space only.
+    return Math.max(0, sourceEnd);
   }
 
   function _recordSourceStepSec(lastChain, curr, layout) {
@@ -1344,9 +1347,11 @@
     const ids = targetSceneIds.slice(0, Math.max(0, completedScenes));
     if (!ids.length) return;
     const primary = mediaList.find((m) => m.kind === "videos" || m.kind === "gifs") || mediaList[0];
+    const sceneLayout = opts?.sceneLayout || null;
     const layout = _chainRunLayout(ids);
     let sourceEnd = 0;
     let lastChain = null;
+    let chainSceneIdx = 0;
     let clearedRating = false;
     const recordedSceneIds = [];
     for (let i = 0; i < ids.length; i++) {
@@ -1356,17 +1361,20 @@
         const gi = ghosts.findIndex((g) => g.id === id);
         if (gi >= 0) {
           const ghost = ghosts[gi];
-          const inSec = _recordInSec(lastChain, sourceEnd, ghost, layout);
+          const sameUnit = lastChain && genUnitId(lastChain) === genUnitId(ghost);
+          const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, ghost, sceneLayout, chainSceneIdx);
           ghosts[gi] = { ...ghost, media: primary, inSec, pendingGen: false };
           state.sceneGhosts = ghosts;
           sourceEnd = inSec + _ghostDurationSec(ghost);
           lastChain = ghost;
+          if (!sameUnit) chainSceneIdx += 1;
         }
         _removedDuringGen.delete(id);
         continue;
       }
       const sc = scene(id); if (!sc) continue;
-      const inSec = _recordInSec(lastChain, sourceEnd, sc, layout);
+      const sameUnit = lastChain && genUnitId(lastChain) === genUnitId(sc);
+      const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, sc, sceneLayout, chainSceneIdx);
       const renderPrompt = _queuedRenderPrompts[id] || _snapshotRenderPrompt(id);
       delete _queuedRenderPrompts[id];
       state.sceneRenders[id] = { media: primary, inSec, renderPrompt };
@@ -1375,6 +1383,7 @@
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
       sourceEnd = inSec + _recordSourceStepSec(lastChain, sc, layout);
       lastChain = sc;
+      if (!sameUnit) chainSceneIdx += 1;
     }
     _pruneGhostsAfterRegen(recordedSceneIds);
     if (clearedRating) scheduleSaveSilent();
@@ -1422,7 +1431,7 @@
             resolve(false);
           } else if (s.state === "completed") {
             _clearGenTimers();
-            _recordSegment(s.media, targetSceneIds);
+            _recordSegment(s.media, targetSceneIds, { sceneLayout: s.scene_layout });
             set({ gen: { state: "done", promptId, media: s.media, msg: s.media.length ? "" : "Completed but no output media found — check ComfyUI terminal." } });
             resolve(true);
           } else {
@@ -1430,7 +1439,10 @@
             // entry — it likely crashed or was interrupted by ComfyUI.
             if (s.partial?.media?.length && s.partial.completed_scenes > lastPartialScenes) {
               lastPartialScenes = s.partial.completed_scenes;
-              _recordSegment(s.partial.media, targetSceneIds, { completedScenes: lastPartialScenes });
+              _recordSegment(s.partial.media, targetSceneIds, {
+                completedScenes: lastPartialScenes,
+                sceneLayout: s.partial.scene_layout,
+              });
               notify();
               const step = (state.gen.maxStep > 0) ? `  ·  sampling ${state.gen.step}/${state.gen.maxStep}` : "";
               updateGenProgress({
