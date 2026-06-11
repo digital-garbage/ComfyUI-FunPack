@@ -467,6 +467,7 @@ if web is not None and PromptServer is not None:
         return web.json_response({
             "ok": True,
             "comfy_url": config.comfy_base_url(),
+            "template_exists": config.TEMPLATE_PATH.is_file(),
             "reference_loaded": bool(builder.load_reference().get("nodes")),
             "configured_slots": len(nodes.load_models().get("slots", [])),
         })

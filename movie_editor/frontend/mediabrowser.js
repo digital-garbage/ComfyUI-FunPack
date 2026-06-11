@@ -6,7 +6,7 @@
   const body = document.getElementById("media-body");
 
   let tab = "Media";                 // active bin
-  let q = { Characters: "", Shortcuts: "", "Split markers": "", Effects: "", Transitions: "" };
+  let q = { Characters: "", Shortcuts: "", Splits: "", Effects: "", Transitions: "" };
   let editShortcut = null;           // shortcut item being edited ({} = new), or null
   let editSplitMarker = null;        // split-marker item being edited ({} = new), or null
   let editCharacter = null;          // character item being edited ({} = new), or null
@@ -307,7 +307,7 @@
   // ── split markers bin (generation prompt splits) ───────────────────────────────
   function splitMarkersTab(st) {
     const wrap = el("div", "bin");
-    wrap.append(searchRow("Split markers", "Filter split markers…", () => render(S.get())));
+    wrap.append(searchRow("Splits", "Filter split markers…", () => render(S.get())));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add");
     addBtn.onclick = () => { editSplitMarker = {}; render(S.get()); };
@@ -326,7 +326,7 @@
     if (editSplitMarker) wrap.append(splitMarkerForm(editSplitMarker));
 
     const list = el("div", "lib-list");
-    const items = filtered(st.transitions || [], q["Split markers"], (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
+    const items = filtered(st.transitions || [], q.Splits, (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
     items.forEach((t) => {
       const trig = t.trigger || t.name || t.key;
       const row = el("div", "lib-row");
@@ -362,7 +362,7 @@
     const list = el("div", "lib-list");
     const filteredItems = filtered(items, q[qKey], (x) => `${x.name || ""} ${x.id || ""} ${x.description || ""}`);
     filteredItems.forEach((item) => {
-      const row = el("div", "lib-row");
+      const row = el("div", "lib-row lib-row-nle");
       const main = el("div", "lib-main");
       main.append(el("div", "lib-name", item.name || item.id));
       const sub = item.description || (item.param ? `${item.param.label} default ${item.param.default}` : "");
@@ -404,8 +404,9 @@
 
     const sec = el("div", "mb-section mb-bin-shell");
     const tabs = el("div", "bin-tabs bin-tabs-sticky");
-    ["Media", "Characters", "Shortcuts", "Split markers", "Effects", "Transitions"].forEach((name) => {
+    ["Media", "Characters", "Shortcuts", "Splits", "Effects", "Transitions"].forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
+      b.title = name === "Splits" ? "Split markers (generation prompt)" : name;
       b.onclick = () => { tab = name; editCharacter = null; editSplitMarker = null; render(S.get()); };
       tabs.append(b);
     });
@@ -415,7 +416,7 @@
       tab === "Media" ? mediaTab(st)
         : tab === "Characters" ? charactersTab(st)
           : tab === "Shortcuts" ? shortcutsTab(st)
-            : tab === "Split markers" ? splitMarkersTab(st)
+            : tab === "Splits" ? splitMarkersTab(st)
               : tab === "Effects" ? nlePresetTab(st, "effect")
                 : nlePresetTab(st, "transition"),
     );

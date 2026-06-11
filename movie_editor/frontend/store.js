@@ -813,7 +813,7 @@
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
     const issues = validateSetup();
     if (issues.length) {
-      set({ gen: { state: "error", promptId: null, media: [], msg: "Setup incomplete:\n• " + issues.join("\n• ") } });
+      alert("Setup incomplete:\n• " + issues.join("\n• "));
       return false;
     }
     return true;
@@ -1631,6 +1631,10 @@
   // ── boot ─────────────────────────────────────────────────────────────────────
   async function init() {
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
+    // Clear a stale setup gate from a prior Generate attempt (preview must stay usable).
+    if (state.gen?.state === "error" && String(state.gen.msg || "").startsWith("Setup incomplete:")) {
+      state.gen = { state: "idle", promptId: null, media: [], msg: "" };
+    }
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
     await loadNleLibrary();
     await loadShortcuts();
