@@ -200,7 +200,7 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None) -> Optional
     by_scene: dict = {}
     seen_refs: set = set()
 
-    def _add_ref(ref: str, tgt=None, sid: Optional[str] = None) -> None:
+    def _add_ref(ref: str, tgt=None, sid: Optional[str] = None, *, set_primary: bool = True) -> None:
         nonlocal primary
         if not ref or ref in seen_refs:
             return
@@ -213,7 +213,7 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None) -> Optional
             by_scene[sid] = entry
         else:
             by_scene[f"_ref_{ref}"] = entry
-        if primary is None:
+        if set_primary and primary is None:
             primary = {"filename": fn, "target": tgt}
 
     for sc in proj.scenes:
@@ -225,9 +225,10 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None) -> Optional
         stype = getattr(src, "type", "") if src else ""
         if stype not in ("image", "generated_frame", "mixed") or not ref:
             continue
-        _add_ref(ref, tgt, sc.id)
+        _add_ref(ref, tgt, sc.id, set_primary=True)
     for ref in (extra_refs or []):
-        _add_ref(str(ref))
+        # Guide-only assets (identity pin, prior-scene borrow) must not become the run anchor.
+        _add_ref(str(ref), set_primary=False)
     if not by_scene:
         return None
     return {"primary": primary, "by_scene": by_scene}
@@ -410,10 +411,36 @@ def _run_sampler_inputs(target: Project, scene_count: int, full: Optional[Projec
     return samp
 
 
+def _scene_media_ref_map(media_pack: Optional[dict]) -> dict[str, str]:
+    if not media_pack:
+        return {}
+    by_scene = media_pack.get("by_scene") or {}
+    return {
+        entry["media_ref"]: entry["filename"]
+        for entry in by_scene.values()
+        if isinstance(entry, dict) and entry.get("media_ref") and entry.get("filename")
+    }
+
+
+def _missing_continuity_media(full: Project, target: Project) -> list[str]:
+    """Media-bin ids referenced by continuity guides/pins that are missing on disk."""
+    from .backend.timeline import continuity_media_refs
+
+    missing: list[str] = []
+    for ref in continuity_media_refs(full, target):
+        if not media.path_for(ref):
+            missing.append(ref)
+    return missing
+
+
 def _attach_scene_anchors(samp: dict, media_pack: Optional[dict], target: Project) -> dict:
     """Mixed-source i2v anchors (Img2Video starting latents), separate from guides."""
     import json
     from .backend.timeline import build_scene_anchors_payload
+
+    by_ref = _scene_media_ref_map(media_pack)
+    if by_ref:
+        samp["funpack_scene_media_refs"] = json.dumps(by_ref)
 
     anchors = build_scene_anchors_payload(target)
     if not anchors or not media_pack:
@@ -428,13 +455,6 @@ def _attach_scene_anchors(samp: dict, media_pack: Optional[dict], target: Projec
             enriched[idx] = {**meta, "filename": fn}
     if enriched:
         samp["funpack_scene_anchors"] = json.dumps(enriched)
-    by_ref = {
-        entry["media_ref"]: entry["filename"]
-        for entry in by_scene.values()
-        if isinstance(entry, dict) and entry.get("media_ref") and entry.get("filename")
-    }
-    if by_ref:
-        samp["funpack_scene_media_refs"] = json.dumps(by_ref)
     return samp
 
 
@@ -948,6 +968,13 @@ if web is not None and PromptServer is not None:
         if not active_scene_count:
             return web.json_response(
                 {"detail": "Nothing to generate — all clips are video-only or excluded."},
+                status=400,
+            )
+        missing_media = _missing_continuity_media(p, target)
+        if missing_media:
+            ids = ", ".join(missing_media)
+            return web.json_response(
+                {"detail": f"Missing media for identity pin or continuity guides ({ids}). Re-upload or pick another image."},
                 status=400,
             )
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.

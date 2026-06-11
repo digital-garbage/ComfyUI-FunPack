@@ -126,6 +126,53 @@ def test_carry_chain_auto_mid_scene_guide():
     assert guides["scenes"][1][0]["source"] == "template"
 
 
+def test_identity_pin_media_refs_without_mixed_anchors():
+    import json
+    from movie_editor.server import _attach_scene_anchors
+
+    full = _project(
+        continuity_settings={"identity_pin_ref": "pin1"},
+        scenes=[{"id": "s1", "text": "a"}, {"id": "s2", "text": "b", "source": {"type": "carry"}}],
+    )
+    samp = _run_sampler_inputs(full, 2, full=full)
+    assert "funpack_scene_guides" in samp
+    media_pack = {
+        "primary": None,
+        "by_scene": {"_ref_pin1": {"filename": "funpack_movie_pin1.png", "media_ref": "pin1"}},
+    }
+    _attach_scene_anchors(samp, media_pack, full)
+    refs = json.loads(samp["funpack_scene_media_refs"])
+    assert refs["pin1"] == "funpack_movie_pin1.png"
+    assert "funpack_scene_anchors" not in samp
+
+
+def test_prepare_media_extra_refs_do_not_become_primary(monkeypatch, tmp_path):
+    from movie_editor import server
+    from movie_editor.backend import config, media
+
+    indir = tmp_path / "input"
+    indir.mkdir()
+    mediadir = tmp_path / "media"
+    mediadir.mkdir()
+    (mediadir / "pin1.png").write_bytes(b"fake")
+
+    monkeypatch.setattr(config, "MEDIA_DIR", mediadir)
+    monkeypatch.setattr(media, "path_for", lambda mid: mediadir / "pin1.png" if mid == "pin1" else None)
+
+    class FP:
+        @staticmethod
+        def get_input_directory():
+            return str(indir)
+
+    monkeypatch.setitem(__import__("sys").modules, "folder_paths", FP)
+
+    p = _project(scenes=[{"id": "s1", "text": "a", "source": {"type": "carry"}}])
+    pack = server._prepare_media(p, ["pin1"])
+    assert pack is not None
+    assert pack["primary"] is None
+    assert pack["by_scene"]["_ref_pin1"]["filename"].startswith("funpack_movie_pin1")
+
+
 def test_studio_inputs_skips_custom_conditioning():
     p = _project([])
     p.conditioning_slot = "custom"
