@@ -656,8 +656,7 @@
     const wrap = el("div", "tl-dd");
     const hasSel = !!st.selectedSceneId;
     const btn = el("button", "btn ghost tiny", "＋ Add");
-    btn.title = hasSel ? "Add effect, transition, and more to the selected clip" : "Select a clip first";
-    btn.disabled = !hasSel;
+    btn.title = "Add clip, effect, transition, and more";
     const panel = el("div", "tl-dd-panel tl-add-panel");
     panel.hidden = true;
 
@@ -670,8 +669,9 @@
       panel.append(row);
     };
 
-    addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st));
-    addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st));
+    addRow("Clip", "Append a new scene clip to the timeline", () => S.addScene());
+    addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st), !hasSel);
+    addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st), !hasSel);
     addRow("Text", "Coming soon", null, true);
     addRow("Image", "Coming soon", null, true);
     addRow("Audio", "Coming soon", null, true);
@@ -838,12 +838,11 @@
 
   function toolbar(st, p, totalSec) {
     const bar = el("div", "tl-toolbar");
-    const add = el("button", "btn ghost tiny", "＋ Clip"); add.onclick = () => S.addScene();
-    bar.append(add);
     const ph = window.Player?.getPlayhead() ?? 0;
     const tc = el("span", "tl-tc", timecode(Math.min(ph, totalSec), p.frame_rate) + " / " + timecode(totalSec, p.frame_rate));
     tlTcEl = tc;  // keep ref for Player's onPlayheadChanged updates
     bar.append(tc);
+    bar.append(addMenuDropdown(st, p));
 
     // Clip actions on the selected clip (also bound to S / Delete).
     const selIds = selectedIds(st);
@@ -862,10 +861,6 @@
     exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
     exp.onclick = () => S.exportSelected();
     bar.append(split); bar.append(del); bar.append(exp);
-    const addWrap = addMenuDropdown(st, p);
-    const addBtn = addWrap.querySelector("button");
-    if (addBtn) { addBtn.dataset.needsSel = "1"; addBtn.disabled = !hasSel; }
-    bar.append(addWrap);
     bar.append(audioToolbar(st, p));
     bar.append(toolbarRatingBlock(st, p));
 
