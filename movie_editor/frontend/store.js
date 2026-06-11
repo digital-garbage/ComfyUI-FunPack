@@ -1896,7 +1896,10 @@
     loadTransitions, saveTransition, deleteTransition, importTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,
     applySplitMarkerToSelection, applyTransitionToSelection, insertShortcutIntoSelection,
-    setSceneRating: (id, v) => patchScene(id, { rating: v }),
+    setSceneRating: (id, v) => {
+      patchScene(id, { rating: v || "" });
+      if (window.Timeline?.syncClipRatings) window.Timeline.syncClipRatings(get());
+    },
     resetStudioSession,
   };
 })();

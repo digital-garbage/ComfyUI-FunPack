@@ -174,6 +174,39 @@
     });
   }
 
+  function sceneRatingRaw(st, scene) {
+    const root = S.genUnitRoot(S.genUnitId(scene)) || scene;
+    return ((root && root.rating) || scene.rating || "").trim();
+  }
+
+  function sceneRatingDisplay(st, scene) {
+    const raw = sceneRatingRaw(st, scene);
+    if (!raw) return "";
+    return window.MovieRatingPicker?.formatLabel(raw) || raw;
+  }
+
+  function syncClipRatings(st) {
+    if (!st?.project) return;
+    body.querySelectorAll(".clip[data-scene-id]").forEach((clipEl) => {
+      const sc = S.scene(clipEl.dataset.sceneId);
+      if (!sc) return;
+      const label = sceneRatingDisplay(st, sc);
+      let badge = clipEl.querySelector(".clip-rated");
+      if (!label) {
+        badge?.remove();
+        return;
+      }
+      if (!badge) {
+        badge = el("div", "clip-rated");
+        const anchor = clipEl.querySelector(".clip-chars") || clipEl.querySelector(".clip-text");
+        if (anchor && anchor.nextSibling) clipEl.insertBefore(badge, anchor.nextSibling);
+        else clipEl.append(badge);
+      }
+      badge.title = "Rated for FunPack Studio on next generation";
+      badge.textContent = "★ " + label;
+    });
+  }
+
   function syncToolbarSelection(st) {
     const bar = body.querySelector(".tl-toolbar");
     if (!bar || !st.project) return;
@@ -442,11 +475,11 @@
       clip.append(chars);
     }
 
-    const rating = ((root && root.rating) || scene.rating || "").trim();
+    const rating = sceneRatingDisplay(st, scene);
     if (rating) {
       const rated = el("div", "clip-rated");
       rated.title = "Rated for FunPack Studio conditioning on next generation";
-      rated.textContent = "Rated: " + rating;
+      rated.textContent = "★ " + rating;
       clip.append(rated);
     }
 
@@ -856,22 +889,24 @@
     const wrap = el("div", "tl-rating-block");
     const studioCond = !st.project.conditioning_slot || st.project.conditioning_slot === "funpack";
     const hasSel = !!st.selectedSceneId;
-    if (!studioCond || !hasSel || !hasRender(st, st.selectedSceneId) || !(st.ratingLabels || []).length) return wrap;
+    const Picker = window.MovieRatingPicker;
+    if (!studioCond || !hasSel || !hasRender(st, st.selectedSceneId) || !Picker) return wrap;
     const sc = S.scene(st.selectedSceneId);
     if (!sc) return wrap;
     const sceneNo = p.scenes.indexOf(sc) + 1;
-    const rlabel = el("span", "tl-keys", `★ Scene ${sceneNo}`);
-    const rsel = el("select", "tl-rating");
-    rsel.title = "Rate this scene's render - FunPack Studio refines from it on next generation";
-    rsel.append(new Option("- rate -", ""));
-    (st.ratingLabels || []).forEach((l) => {
-      const o = new Option(l, l);
-      if (l === (sc.rating || "")) o.selected = true;
-      rsel.append(o);
-    });
-    rsel.onchange = () => S.setSceneRating(sc.id, rsel.value);
+    const raw = sceneRatingRaw(st, sc);
+    const rlabel = el("span", "tl-keys", `Scene ${sceneNo}`);
+    const btn = el("button", "btn ghost tiny tl-rate-btn" + (raw ? " has-rating" : ""), Picker.buttonLabel(raw));
+    btn.title = "Rate this scene's render — FunPack Studio refines from it on next generation";
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      Picker.open(e, raw, (label) => {
+        const val = label === Picker.FORGET_LABEL ? "" : label;
+        S.setSceneRating(sc.id, val);
+      });
+    };
     wrap.append(rlabel);
-    wrap.append(rsel);
+    wrap.append(btn);
     return wrap;
   }
 
@@ -929,6 +964,7 @@
   window.Timeline = {
     requestAutoFit() { _pendingAutoFit = true; },
     fit: () => fit(S.previewTotalSec ? S.previewTotalSec() : tlTotalSec),
+    syncClipRatings,
   };
 
   // ── render ───────────────────────────────────────────────────────────────────────
@@ -1048,15 +1084,26 @@
 
   let _lastDataFp = null;
   let _lastSelFp = null;
+  let _lastRatFp = null;
+
+  function _ratingsFingerprint(st) {
+    if (!st.project) return "";
+    return JSON.stringify((st.project.scenes || []).map((s) => {
+      const root = S.genUnitRoot(S.genUnitId(s)) || s;
+      return [s.id, (root.rating || s.rating || "")];
+    }));
+  }
 
   function onStore(st) {
     const fpData = window.ViewBus?.fingerprints?.fpTimelineData?.(st)
       ?? JSON.stringify(st.project?.id);
     const fpSel = window.ViewBus?.fingerprints?.fpTimelineSel?.(st)
       ?? JSON.stringify({ sel: st.selectedSceneId, sels: st.selectedSceneIds });
+    const fpRat = _ratingsFingerprint(st);
     if (fpData !== _lastDataFp) {
       _lastDataFp = fpData;
       _lastSelFp = fpSel;
+      _lastRatFp = fpRat;
       const ok = render(st);
       if (_pendingAutoFit && ok && st.project) {
         _pendingAutoFit = false;
@@ -1064,6 +1111,11 @@
         requestAnimationFrame(() => { if (total > 0) fit(total); });
       }
       return;
+    }
+    if (fpRat !== _lastRatFp) {
+      _lastRatFp = fpRat;
+      syncClipRatings(st);
+      syncToolbarSelection(st);
     }
     if (fpSel !== _lastSelFp) {
       _lastSelFp = fpSel;
