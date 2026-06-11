@@ -836,7 +836,9 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .timeline { animation-delay: .16s; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
 
-/* NLE foundation: trim, filmstrip, slot picker, engine presets */
+.seam-split-lbl { font-family: var(--font-mono); font-size: 9px; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--faint); margin-right: 4px; white-space: nowrap; }
+
 .clip-trim-left { left: 0; right: auto; cursor: ew-resize; }
 .clip-trim-left.locked { cursor: not-allowed; opacity: .35; }
 .clip-filmstrip { position: absolute; left: 0; right: 0; bottom: 2px; height: 14px; display: flex; gap: 1px;

@@ -13,19 +13,26 @@
     ["mixed", "Mixed · Img2Video anchor + prior guides"],
   ];
 
-  function transitionSelect(value, onChange) {
+  function splitMarkerSelect(value, onChange, opts) {
+    opts = opts || {};
     const sel = el("select");
-    const none = el("option", null, "— none —"); none.value = ""; sel.append(none);
+    const noneLabel = opts.noneLabel || "— default cut —";
+    const none = el("option", null, noneLabel); none.value = ""; sel.append(none);
     (S.get().transitions || []).forEach((t) => {
       const name = t.trigger || t.name || t.key; if (!name) return;
-      const o = el("option", null, t.visual_effect && t.visual_effect !== "none" ? `${name} (${t.visual_effect})` : name);
-      o.value = name; if (name === value) o.selected = true; sel.append(o);
+      const o = el("option", null, name); o.value = name; if (name === value) o.selected = true; sel.append(o);
     });
     if (value && ![...sel.options].some((o) => o.value === value)) {
       const o = el("option", null, value); o.value = value; o.selected = true; sel.append(o);
     }
     sel.onchange = () => onChange(sel.value);
+    sel.title = opts.title || "Prompt marker: how Studio splits the montage before the next scene when generating";
     return sel;
+  }
+
+  // Legacy alias used in a few call sites
+  function transitionSelect(value, onChange) {
+    return splitMarkerSelect(value, onChange);
   }
 
   function field(labelText, control) {
@@ -38,33 +45,24 @@
     return field(labelText, i);
   }
 
-  function renderImageSource(st, scene) {
-    const block = el("div", "insp-block img-src");
+  function renderImageSource(st, scene, parent) {
+    parent = parent || body;
     const ref = scene.source?.media_ref;
-    const asset = (st.mediaBin || []).find((m) => m.id === ref);
-    const prev = el("div", "img-src-prev");
-    if (asset && asset.kind === "image") { const img = el("img"); img.src = window.MovieEditorAPI.mediaUrl(asset.id); prev.append(img); }
-    else prev.append(el("span", "media-icon", asset ? "▶" : "◇"));
-    const info = el("div", "img-src-info");
-    info.append(el("div", "img-src-name", asset ? asset.name : "No asset — drag from the Media bin onto the clip, or pick below"));
-    block.append(prev); block.append(info);
-    body.append(block);
-
     const isMixed = (scene.source?.type) === "mixed";
     const pick = window.MediaPicker.create({
       value: ref,
       mediaBin: st.mediaBin,
-      noneLabel: "— choose asset —",
+      noneLabel: "— choose anchor image —",
       onChange: (mediaRef) => {
         const patch = { source: { ...(scene.source || {}), type: isMixed ? "mixed" : "image", media_ref: mediaRef } };
         if ((scene.source?.media_ref || null) !== mediaRef) patch.guides = [];
         S.patchScene(scene.id, patch);
       },
     });
-    body.append(field("Media asset", pick));
-    body.append(el("div", "insp-hint", isMixed
-      ? "i2v anchor image for this scene (Img2Video → starting latent). Prior-scene i2v guides stay active — shown on the timeline as ◐+⇥."
-      : "Feeds the i2v anchor for this scene (image → LTX Img2Video → starting latent). Routing is automatic (→ Studio source image); to send it through a node first, set that node's Input source to Timeline in Models."));
+    parent.append(field(isMixed ? "Anchor image (mixed i2v)" : "Anchor image", pick));
+    parent.append(el("div", "insp-hint", isMixed
+      ? "Starting frame for this scene; prior-scene guides stay active (◐+⇥ on the timeline)."
+      : "Image-to-video anchor for this scene. Drag from the Media bin onto the clip, or Browse here."));
   }
 
   function renderGeneratedFrameSource(st, scene) {
@@ -185,11 +183,11 @@
       S.patchScene(scene.id, patch);
     };
     body.append(field("Source", src));
-    if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root);
+    if ((root.source?.type) === "image" || (root.source?.type) === "mixed") renderImageSource(st, root, body);
     if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
-    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · slip with Alt+drag left edge when rendered`));
+    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · scene splits for generation: edit the global prompt or markers on timeline seams`));
 
     const actions = el("div", "insp-block");
     const genBtn = el("button", "btn primary", "Generate this scene");
@@ -201,8 +199,6 @@
 
     foldSection("More editing", false, (more) => {
       renderSceneCharacters(st, scene, more);
-      more.append(field("Story transition to next", transitionSelect(scene.transition_to_next || "",
-        (v) => S.patchScene(scene.id, { transition_to_next: v }))));
 
       const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; more.append(fxTag);
       const fx = scene.effects || {};
@@ -232,25 +228,6 @@
       });
       zoom.onchange = () => patchFx("zoom", zoom.value);
       more.append(field("Ken Burns zoom", zoom));
-
-      const vt = el("select"); vt.dataset.k = "sc-vt";
-      [["", "Hard cut"], ["crossfade", "Dissolve"], ["fadeblack", "Fade through black"],
-       ["wipeleft", "Wipe left"], ["wiperight", "Wipe right"]].forEach(([v, label]) => {
-        const o = el("option", null, label); o.value = v; if ((scene.video_transition || "") === v) o.selected = true; vt.append(o);
-      });
-      vt.onchange = () => {
-        const v = vt.value;
-        const patch = { video_transition: v };
-        if (v) patch.transition_frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
-        else patch.transition_frames = null;
-        S.patchScene(scene.id, patch);
-      };
-      more.append(field("Blend to next (video)", vt));
-      if (scene.video_transition) {
-        const tf = _num(scene.transition_frames > 0 ? scene.transition_frames : 16, "sc-tf", { min: 1, max: 120, step: 1 });
-        tf.oninput = () => S.patchScene(scene.id, { transition_frames: parseInt(tf.value || "16", 10) });
-        more.append(field("Blend length (frames)", tf));
-      }
 
       const lenRow = el("div", "fields-row");
       lenRow.append(lengthControl(scene, "frames"));
@@ -347,8 +324,9 @@
     anchor.placeholder = "World / setting context prepended to every scene";
     anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
     body.append(field("Anchor", anchor));
-    body.append(field("Opening transition (anchor → scene 1)", transitionSelect(p.intro_transition || "",
-      (v) => S.patchProject({ intro_transition: v }))));
+    body.append(field("Split before scene 1 (generation prompt)", splitMarkerSelect(p.intro_transition || "",
+      (v) => S.patchProject({ intro_transition: v }),
+      { noneLabel: "— default cut —", title: "Prompt marker between anchor and scene 1 when Studio splits a long montage" })));
     const neg = el("textarea"); neg.rows = 2; neg.value = p.negative_prompt || ""; neg.dataset.k = "pj-neg";
     neg.placeholder = "What to avoid in every scene";
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
@@ -575,7 +553,7 @@
     const head = el("div", "insp-global-head");
     head.append(el("span", "insp-global-title", "Global prompt"));
     const apply = el("button", "btn primary tiny", "Apply →");
-    apply.title = "Split this prompt into anchor, scenes and transitions on the timeline (overwrites it)";
+    apply.title = "Split this prompt into anchor, scenes, and split markers on the timeline";
     apply.disabled = !val.trim();  // clickable whenever there's a prompt to (re)split — not only after edits
     apply.onclick = async () => {
       _editing = false;
@@ -595,12 +573,12 @@
     sec.append(head);
 
     const ta = el("textarea", "insp-global-ta"); ta.rows = 3; ta.value = val; ta.dataset.k = "global-prompt";
-    ta.placeholder = "Anchor, then scene texts joined by transition markers — the whole montage as one prompt.";
+    ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
     ta.oninput = () => { gpDraft = ta.value; apply.disabled = !ta.value.trim(); };
     sec.append(ta);
     sec.append(el("div", "insp-hint", dirty
-      ? "Edited — press Apply to (re)split this prompt onto the timeline."
-      : "Live view of the assembled prompt. Edit a scene below and it updates here; press Apply to split this prompt into scenes."));
+      ? "Edited — press Apply to (re)split onto the timeline."
+      : "Primary way to control how long videos divide into scenes. Per-seam tweaks: Split dropdown on timeline seams (video blends are separate, on the same seam)."));
     body.append(sec);
   }
 

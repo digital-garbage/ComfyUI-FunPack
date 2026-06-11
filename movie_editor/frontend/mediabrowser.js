@@ -338,7 +338,7 @@
                    t.visual_effect && t.visual_effect !== "none" ? t.visual_effect : ""].filter(Boolean).join(" · ");
       if (sub) main.append(el("div", "lib-sub", sub));
       row.append(main);
-      const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as the selected scene's transition";
+      const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as split marker before the selected scene (generation prompt)";
       apply.onclick = () => { if (!S.applyTransitionToSelection(trig)) alert("Select a scene first."); };
       const edit = el("button", "ic-btn", "✎"); edit.title = "Edit transition";
       edit.onclick = () => { editTransition = t; render(S.get()); };

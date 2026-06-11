@@ -188,7 +188,7 @@
   // Prompt transition (Studio split marker) — separate from rendered video transition.
   function promptTransitionSelect(value, onChange) {
     const sel = el("select", "seam-prompt-type");
-    const none = el("option", null, "prompt: cut"); none.value = ""; sel.append(none);
+    const none = el("option", null, "default cut"); none.value = ""; sel.append(none);
     (S.get().transitions || []).forEach((t) => {
       const name = t.trigger || t.name || t.key; if (!name) return;
       const o = el("option", null, name); o.value = name; if (name === value) o.selected = true; sel.append(o);
@@ -196,7 +196,7 @@
     if (value && ![...sel.options].some((o) => o.value === value)) { const o = el("option", null, value); o.value = value; o.selected = true; sel.append(o); }
     sel.onchange = (e) => { e.stopPropagation(); onChange(sel.value); };
     sel.onclick = (e) => e.stopPropagation();
-    sel.title = "Prompt transition to next scene (generation split marker)";
+    sel.title = "How generation divides before the next scene (prompt split marker — not a video dissolve). Edit the global prompt to set splits in bulk.";
     return sel;
   }
 
@@ -478,7 +478,7 @@
       if (v === (vt.type || "")) o.selected = true;
       typeSel.append(o);
     });
-    typeSel.title = "Rendered video transition (final stitch / export)";
+    typeSel.title = "Video blend at this seam (pixel dissolve — separate from generation split markers above)";
     typeSel.onclick = (e) => e.stopPropagation();
     typeSel.onchange = (e) => {
       e.stopPropagation();
@@ -520,6 +520,8 @@
     seam.append(bridge);
 
     const promptRow = el("div", "seam-prompt-row");
+    promptRow.title = "Generation split marker (prompt) — how Studio divides scenes in a long montage";
+    promptRow.append(el("span", "seam-split-lbl", "Split"));
     promptRow.append(promptTransitionSelect(scene.transition_to_next || "", (v) => S.patchScene(scene.id, { transition_to_next: v })));
     seam.append(promptRow);
     return seam;
