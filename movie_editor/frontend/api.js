@@ -4,6 +4,22 @@
   // Base = the directory this app is served from, e.g. /funpack/movie
   const BASE = window.location.pathname.replace(/\/+$/, "").replace(/\/index\.html$/, "");
   const API = (p) => `${BASE}/api${p}`;
+  const FUNPACK = "/funpack";
+
+  async function funpackFetch(method, path, body) {
+    const opts = { method, headers: {}, cache: "no-store" };
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    if (!res.ok) {
+      let payload = null;
+      try { payload = await res.json(); } catch (_) {}
+      throw new Error(readApiError(res, payload));
+    }
+    return res;
+  }
 
   function readApiError(res, payload) {
     if (payload && typeof payload === "object") {
@@ -137,6 +153,36 @@
         u += "?" + q.toString();
       }
       return u;
+    },
+
+    // FunPack refinement keys (ComfyUI root routes, same as Studio / Refinement Key Loader)
+    refinementKeys: async () => {
+      const res = await funpackFetch("GET", `${FUNPACK}/refinement_keys?cache_bust=${Date.now()}`);
+      return res.json();
+    },
+    importRefinementKey: async (data) => {
+      const res = await funpackFetch("POST", `${FUNPACK}/refinement_keys/import`, data);
+      return res.json();
+    },
+    async exportRefinementKeyFile(key) {
+      const res = await fetch(
+        `${FUNPACK}/refinement_keys/export?key=${encodeURIComponent(key)}&cache_bust=${Date.now()}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) {
+        let payload = null;
+        try { payload = await res.json(); } catch (_) {}
+        throw new Error(readApiError(res, payload));
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `funpack_refinement_${key}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
     },
   };
 

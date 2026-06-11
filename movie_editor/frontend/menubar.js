@@ -18,6 +18,59 @@
     return inp;
   })();
 
+  const refinementKeyImportInput = (function () {
+    const inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".json,application/json"; inp.style.display = "none";
+    inp.onchange = async () => {
+      const file = inp.files?.[0];
+      inp.value = "";
+      if (!file) return;
+      try {
+        const data = JSON.parse(await file.text());
+        const res = await window.MovieEditorAPI.importRefinementKey(data);
+        alert(`Imported refinement key "${res.imported || file.name}".`);
+      } catch (e) {
+        alert("Refinement key import failed: " + (e.message || e));
+      }
+    };
+    document.body.appendChild(inp);
+    return inp;
+  })();
+
+  function _projectRefinementKey() {
+    const st = S.get();
+    const raw = st.project?.studio_inputs?.studio_settings;
+    if (!raw) return "";
+    try {
+      const parsed = JSON.parse(raw);
+      return String(parsed?.refinement_key || "").trim();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function exportRefinementKey() {
+    closeAll();
+    let payload;
+    try { payload = await window.MovieEditorAPI.refinementKeys(); }
+    catch (e) { alert("Could not list refinement keys: " + (e.message || e)); return; }
+    const names = (payload.keys || []).filter((k) => k && k !== "-None-");
+    if (!names.length) { alert("No refinement keys on disk yet."); return; }
+    const cur = _projectRefinementKey();
+    if (!window.SlotPicker) return;
+    window.SlotPicker.open({
+      title: "Export refinement key",
+      options: names.map((k) => ({ value: k, label: k, hint: k === cur ? "project session" : "" })),
+      onPick: async (key) => {
+        try {
+          await window.MovieEditorAPI.exportRefinementKeyFile(key);
+        } catch (e) {
+          alert("Refinement key export failed: " + (e.message || e));
+        }
+      },
+    });
+  }
+
   async function refreshGitStatus() {
     try { _gitStatus = await window.MovieEditorAPI.gitStatus(); }
     catch (_) { _gitStatus = { ok: false }; }
@@ -199,6 +252,10 @@
       FunPack: [
         { label: st.resetSessionArmed ? "Reset Studio session ✓ armed — click to cancel" : "Reset Studio session",
           disabled: !hasProject() || !studioOn, action: () => S.resetStudioSession() },
+        { sep: true },
+        { menulabel: "Refinement key" },
+        { label: "Export refinement key…", hint: "⬇", action: exportRefinementKey },
+        { label: "Import refinement key…", action: () => refinementKeyImportInput.click() },
         { sep: true },
         { menulabel: "Code updates" },
         { label: gitBranchLine, disabled: true },
