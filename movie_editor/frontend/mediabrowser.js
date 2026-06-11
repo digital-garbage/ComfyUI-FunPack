@@ -203,9 +203,9 @@
     const wrap = el("div", "bin");
     const drop = el("div", "mediabin");
     drop.append(el("div", "big", "🎞"));
-    drop.append(el("div", null, "Drop images & clips here"));
+    drop.append(el("div", null, "Drop images, video & audio here"));
     drop.append(el("div", "pj-meta", "or click to browse · drag onto a clip to set its anchor"));
-    const file = el("input"); file.type = "file"; file.accept = "image/*,video/*"; file.multiple = true; file.style.display = "none";
+    const file = el("input"); file.type = "file"; file.accept = "image/*,video/*,audio/*"; file.multiple = true; file.style.display = "none";
     file.onchange = () => { if (file.files.length) S.uploadMedia([...file.files]); file.value = ""; };
     drop.onclick = () => file.click();
     ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("drag"); }));
@@ -220,16 +220,19 @@
       card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("application/funpack-media", m.id); e.dataTransfer.effectAllowed = "copy"; });
       card.title = m.kind === "image"
         ? `${m.name}\nClick to preview · drag onto a clip to set anchor`
-        : `${m.name}\nDrag onto a clip to set anchor`;
+        : m.kind === "audio"
+          ? `${m.name}\nClick to preview · add via timeline + Add → Audio`
+          : `${m.name}\nDrag onto a clip to set anchor`;
       const thumb = el("div", "media-thumb");
       if (m.kind === "image") { const img = el("img"); img.src = API.mediaUrl(m.id); img.loading = "lazy"; thumb.append(img); }
+      else if (m.kind === "audio") thumb.append(el("span", "media-icon", "♪"));
       else thumb.append(el("span", "media-icon", m.kind === "video" ? "▶" : "◆"));
       card.append(thumb);
       card.append(el("div", "media-name", m.name));
       const del = el("button", "media-del", "✕"); del.title = "Delete asset";
       del.onclick = (e) => { e.stopPropagation(); if (confirm(`Delete "${m.name}"?`)) S.deleteMedia(m.id); };
       card.append(del);
-      if (m.kind === "image") {
+      if (m.kind === "image" || m.kind === "audio") {
         card.onclick = () => S.previewMedia(m.id);
       }
       grid.append(card);

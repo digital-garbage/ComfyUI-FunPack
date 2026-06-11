@@ -220,10 +220,28 @@
     return String(t || "").trim().replace(/\s+/g, " ");
   }
 
-  function _reviveSceneFromGhost(ghost, text) {
+  function _newSceneId() {
+    return "s" + Math.random().toString(36).slice(2, 11);
+  }
+
+  function _newSceneFromParsed(ps) {
+    const id = _newSceneId();
+    return {
+      id,
+      gen_unit_id: id,
+      text: ps.text || "",
+      transition_to_next: "",
+      source: { type: "carry" },
+      excluded: false,
+    };
+  }
+
+  // Restore a ghost as a fresh timeline clip (new id — never reuse the ghost's id).
+  function _materializeSceneFromGhost(ghost, text) {
+    const id = _newSceneId();
     const sc = {
-      id: ghost.id,
-      gen_unit_id: ghost.gen_unit_id || ghost.id,
+      id,
+      gen_unit_id: id,
       text: text || ghost.text || "",
       transition_to_next: "",
       source: { type: "carry" },
@@ -234,53 +252,95 @@
       fps_mode: ghost.fps_mode,
       effects: JSON.parse(JSON.stringify(ghost.effects || {})),
       audio_volume: ghost.audio_volume,
+      audio_separated: false,
     };
     if (ghost.media) {
-      state.sceneRenders[ghost.id] = {
+      state.sceneRenders[id] = {
         media: ghost.media,
         inSec: ghost.inSec || 0,
-        renderPrompt: state.sceneRenders[ghost.id]?.renderPrompt || null,
       };
     }
     return sc;
   }
 
-  // Match parsed montage scenes to timeline clips by text (then ghosts), not blind index.
+  function _afterAnchorForRemoved(removedSc, oldActive, keptSceneIds) {
+    const idx = oldActive.findIndex((s) => s.id === removedSc.id);
+    for (let j = idx - 1; j >= 0; j--) {
+      if (keptSceneIds.has(oldActive[j].id)) return oldActive[j].id;
+    }
+    return null;
+  }
+
+  // Ghost a removed scene when it had a render; otherwise drop it entirely.
+  function _ghostOrDropScene(sc, afterSceneId, ghosts) {
+    const r = state.sceneRenders[sc.id];
+    const inFlight = _genInFlightIds.has(sc.id);
+    state.project.audio_tracks = (state.project.audio_tracks || []).filter(
+      (t) => !(t.kind === "separated" && t.scene_id === sc.id)
+    );
+    delete state.sceneRenders[sc.id];
+    let out = (ghosts || []).filter((g) => g.id !== sc.id);
+    if (!r?.media && !inFlight) return out;
+    out.push({
+      id: sc.id,
+      afterSceneId: afterSceneId || null,
+      gen_unit_id: genUnitId(sc),
+      text: sc.text || "",
+      frames: sc.frames,
+      frames_mode: sc.frames_mode,
+      fps: sc.fps,
+      fps_mode: sc.fps_mode,
+      effects: JSON.parse(JSON.stringify(sc.effects || {})),
+      audio_volume: sc.audio_volume,
+      media: r?.media || null,
+      inSec: r?.inSec || 0,
+      pendingGen: inFlight && !r?.media,
+    });
+    return out;
+  }
+
+  // Global prompt is authoritative: parsed scenes become the timeline; unmatched clips
+  // are ghosted (if rendered) or dropped. Matching is by normalized text only.
   function _alignScenesFromParsed(oldScenes, parsedScenes, ghosts) {
     const old = (oldScenes || []).filter((s) => !s.excluded);
     const usedOld = new Set();
     const usedGhost = new Set();
     const next = [];
-    let orderIdx = 0;
+    let ghostsOut = [...(ghosts || [])];
 
     for (const ps of parsedScenes || []) {
       const pt = _normalizeSceneText(ps.text);
 
-      let match = old.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt);
+      let match = pt
+        ? old.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt)
+        : null;
       if (match) {
         usedOld.add(match.id);
         next.push({ ...JSON.parse(JSON.stringify(match)), text: ps.text || "" });
         continue;
       }
 
-      const ghost = (ghosts || []).find((g) => !usedGhost.has(g.id) && _normalizeSceneText(g.text) === pt);
+      const ghost = pt
+        ? ghostsOut.find((g) => !usedGhost.has(g.id) && _normalizeSceneText(g.text) === pt)
+        : null;
       if (ghost) {
         usedGhost.add(ghost.id);
-        next.push(_reviveSceneFromGhost(ghost, ps.text));
+        next.push(_materializeSceneFromGhost(ghost, ps.text));
         continue;
       }
 
-      if (orderIdx < old.length && !usedOld.has(old[orderIdx].id)
-          && parsedScenes.length === old.length) {
-        match = old[orderIdx++];
-        usedOld.add(match.id);
-        next.push({ ...JSON.parse(JSON.stringify(match)), text: ps.text || "" });
-        continue;
-      }
-
-      next.push({ text: ps.text || "", transition_to_next: "", source: { type: "carry" }, excluded: false });
+      next.push(_newSceneFromParsed(ps));
     }
-    return { next, usedGhost };
+
+    const keptSceneIds = new Set(next.map((s) => s.id).filter(Boolean));
+    for (const sc of old) {
+      if (usedOld.has(sc.id)) continue;
+      const afterId = _afterAnchorForRemoved(sc, old, keptSceneIds);
+      ghostsOut = _ghostOrDropScene(sc, afterId, ghostsOut);
+    }
+    ghostsOut = ghostsOut.filter((g) => !usedGhost.has(g.id));
+
+    return { next, ghosts: ghostsOut, usedGhost };
   }
 
   function _afterTimelineStructureChange() {
@@ -297,14 +357,16 @@
     state.project.anchor = v.anchor || "";
     const old = state.project.scenes || [];
     const ghosts = state.sceneGhosts || [];
-    const { next, usedGhost } = _alignScenesFromParsed(old, v.scenes, ghosts);
+    const { next, ghosts: ghostsOut } = _alignScenesFromParsed(old, v.scenes, ghosts);
     for (const sc of next) {
       sc.transition_to_next = "";
     }
     _applyDetectedTransitions(next, v.transitions, text);
     state.project.scenes = next;
-    state.sceneGhosts = ghosts.filter((g) => !usedGhost.has(g.id));
-    const firstId = next[0]?.id || null;
+    state.sceneGhosts = ghostsOut;
+    const prevSel = state.selectedSceneId;
+    const stillSel = prevSel && next.some((s) => s.id === prevSel);
+    const firstId = stillSel ? prevSel : (next[0]?.id || null);
     state.selectedSceneId = firstId;
     state.selectedSceneIds = firstId ? [firstId] : [];
     _selectionAnchorId = firstId;
@@ -819,29 +881,8 @@
     state.sceneGhosts = (state.sceneGhosts || []).map((g) =>
       g.afterSceneId === id ? { ...g, afterSceneId: newAnchor } : g
     );
-    const r = state.sceneRenders[id];
-    if (sc && (r?.media || inFlight)) {
-      state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
-      state.sceneGhosts.push({
-        id,
-        afterSceneId: newAnchor,
-        gen_unit_id: genUnitId(sc),
-        text: sc.text || "",
-        frames: sc.frames,
-        frames_mode: sc.frames_mode,
-        fps: sc.fps,
-        fps_mode: sc.fps_mode,
-        effects: sc.effects || {},
-        audio_volume: sc.audio_volume,
-        media: r?.media || null,
-        inSec: r?.inSec || 0,
-        pendingGen: inFlight && !r?.media,
-      });
-    } else {
-      state.sceneGhosts = (state.sceneGhosts || []).filter((g) => g.id !== id);
-    }
+    state.sceneGhosts = _ghostOrDropScene(sc, newAnchor, state.sceneGhosts);
     state.project.scenes = arr.filter((s) => s.id !== id);
-    delete state.sceneRenders[id];
     state.selectedSceneIds = (state.selectedSceneIds || []).filter((sid) => sid !== id);
     if (state.selectedSceneId === id)
       state.selectedSceneId = state.selectedSceneIds[0] || state.project.scenes[0]?.id || null;
@@ -1064,6 +1105,47 @@
     });
     notify(); scheduleSave();
   }
+
+  function sceneTimelineOffsetSec(sceneId) {
+    if (!state.project) return 0;
+    for (const seg of buildPreviewSegments()) {
+      if (seg.kind === "scene" && seg.scene.id === sceneId) return seg.offsetSec;
+    }
+    return 0;
+  }
+
+  function separatedTrackForScene(sceneId) {
+    return (state.project?.audio_tracks || []).find((t) => t.kind === "separated" && t.scene_id === sceneId);
+  }
+
+  function separateSceneAudio(sceneId) {
+    if (!state.project) return;
+    const sc = scene(sceneId);
+    if (!sc || sc.audio_separated) return;
+    const r = state.sceneRenders[sceneId];
+    if (!r?.media) { alert("Generate this clip first."); return; }
+    if (separatedTrackForScene(sceneId)) return;
+    _historyRecord();
+    const idx = state.project.scenes.indexOf(sc);
+    const inSec = (r.inSec || 0) + (sc.source_in || 0);
+    const dur = sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
+    const savedVol = sc.audio_volume != null ? sc.audio_volume : 1;
+    state.project.audio_tracks = state.project.audio_tracks || [];
+    state.project.audio_tracks.push({
+      id: _uid(),
+      kind: "separated",
+      scene_id: sceneId,
+      start_sec: sceneTimelineOffsetSec(sceneId),
+      source_in_sec: inSec,
+      source_dur: dur,
+      volume: savedVol,
+      label: `S${idx + 1} audio`,
+    });
+    sc.audio_separated = true;
+    sc.audio_volume = 0;
+    notify(); scheduleSave();
+  }
+
   function updateAudioTrack(id, patch, quiet) {
     const t = (state.project?.audio_tracks || []).find((x) => x.id === id);
     if (!t) return;
@@ -1073,7 +1155,16 @@
   }
   function removeAudioTrack(id) {
     if (!state.project) return;
+    const t = (state.project?.audio_tracks || []).find((x) => x.id === id);
+    if (!t) return;
     _historyRecord();
+    if (t.kind === "separated" && t.scene_id) {
+      const sc = scene(t.scene_id);
+      if (sc) {
+        sc.audio_separated = false;
+        if (t.volume != null) sc.audio_volume = t.volume;
+      }
+    }
     state.project.audio_tracks = (state.project.audio_tracks || []).filter((x) => x.id !== id);
     notify(); scheduleSave();
   }
@@ -1130,18 +1221,15 @@
 
     state.project.anchor = v.anchor || "";
     const fullPrompt = state.preview.combined_prompt || state.project.global_prompt || "";
-    const activeScenes = state.project.scenes.filter((s) => !s.excluded);
-
-    if (parsedScenes.length !== activeScenes.length) {
-      const { next, usedGhost } = _alignScenesFromParsed(state.project.scenes, parsedScenes, state.sceneGhosts);
-      for (const sc of next) sc.transition_to_next = "";
-      _applyDetectedTransitions(next, null, fullPrompt);
-      state.project.scenes = next;
-      state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !usedGhost.has(g.id));
-    } else {
-      parsedScenes.forEach((ps, i) => { if (ps.text) activeScenes[i].text = ps.text; });
-      _applyDetectedTransitions(activeScenes, null, fullPrompt);
-    }
+    const { next, ghosts: ghostsOut } = _alignScenesFromParsed(
+      state.project.scenes, parsedScenes, state.sceneGhosts
+    );
+    for (const sc of next) sc.transition_to_next = "";
+    _applyDetectedTransitions(next, null, fullPrompt);
+    state.project.scenes = next;
+    state.sceneGhosts = ghostsOut;
+    _pinnedGlobalPrompt = null;
+    syncGlobalPromptFromTimeline();
 
     notify();
     scheduleSave();
@@ -1686,7 +1774,8 @@
         h: (sc.height != null ? sc.height : p.height) || null,
         transition: sc.video_transition || "",
         tdur: tFrames > 0 ? tFrames / fps : 0,
-        volume: sc.audio_volume != null ? sc.audio_volume : 1,
+        sceneId: sc.id,
+        volume: sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1),
       });
     }
     return out;
@@ -1730,7 +1819,7 @@
       filename: c.media.filename, subfolder: c.media.subfolder || "", type: c.media.type || "output",
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
       fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
-      volume: c.volume,
+      volume: c.volume, scene_id: c.sceneId,
     }));
     await flushSave();  // audio tracks / keep-original live on the project — render reads it from disk
     set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} clip(s)…` } });
@@ -1927,7 +2016,7 @@
 
   function previewMedia(mediaId) {
     const m = (state.mediaBin || []).find((x) => x.id === mediaId);
-    if (!m || m.kind !== "image") return;
+    if (!m || (m.kind !== "image" && m.kind !== "audio")) return;
     if (state.mediaPreviewId === mediaId) {
       clearMediaPreview();
       return;
@@ -1978,7 +2067,7 @@
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, segmentDurationSec,
-    addAudioTrack, updateAudioTrack, removeAudioTrack,
+    addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,

@@ -48,6 +48,23 @@
   }
   const ZOOM_KEY = "funpack_tl_zoom";
   const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
+  const AUDIO_LANE_H = 44;
+
+  function isAudioAsset(m) {
+    return !!m && (m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac|opus|weba)$/i.test(m.name || ""));
+  }
+
+  function _audioTrackStartSec() {
+    const ph = window.Player?.getPlayhead?.();
+    return ph != null && ph >= 0 ? ph : 0;
+  }
+
+  function _attachWaveform(canvas, key, url, opts) {
+    const WF = window.FunPackWaveform;
+    if (!WF || !canvas) return;
+    if (url) WF.attach(canvas, key, url, opts || {});
+    else WF.paintPlaceholder(canvas, opts || {});
+  }
   let pxPerSec = parseFloat(localStorage.getItem(ZOOM_KEY)) || 80;  // zoom
   let scrollLeft = 0;
 
@@ -214,6 +231,11 @@
     bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
     const exp = bar.querySelector("[data-export-scene]");
     if (exp) exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
+    const sep = bar.querySelector("[data-separate-audio]");
+    if (sep) {
+      const sc = hasSel ? S.scene(st.selectedSceneId) : null;
+      sep.disabled = !(sc && hasRender(st, st.selectedSceneId) && !sc.audio_separated);
+    }
     const oldRating = bar.querySelector(".tl-rating-block");
     const freshRating = toolbarRatingBlock(st, st.project);
     if (oldRating) oldRating.replaceWith(freshRating);
@@ -673,7 +695,10 @@
     addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st));
     addRow("Text", "Coming soon", null, true);
     addRow("Image", "Coming soon", null, true);
-    addRow("Audio", "Coming soon", null, true);
+    addRow("Audio", "Add an audio track from the Media Browser", () => openAudioTrackModal(st));
+    const selSc = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
+    const canSepAud = !!(selSc && hasRender(st, st.selectedSceneId) && !selSc.audio_separated);
+    addRow("Separate audio", "Move selected clip's audio to its own track", () => S.separateSceneAudio(st.selectedSceneId), !canSepAud);
 
     btn.onclick = (e) => {
       e.stopPropagation();
@@ -688,61 +713,162 @@
     return wrap;
   }
 
-  // ── audio (NLE lanes below video) ───────────────────────────────────────────────
-  function audioToolbar(st, p) {
-    const wrap = el("div", "tl-audio-dd");
-    const keepLbl = el("label", "chk");
-    const keepCb = el("input"); keepCb.type = "checkbox";
-    keepCb.checked = p.keep_original_audio !== false;
-    keepCb.title = "Mix generated (LTXAV) audio from each clip at render";
-    keepCb.onchange = () => S.patchProject({ keep_original_audio: keepCb.checked });
-    keepLbl.append(keepCb); keepLbl.append(el("span", null, "Original audio"));
-    wrap.append(keepLbl);
+  // ── audio lanes (NLE-style, below video) ───────────────────────────────────────
+  function openAudioTrackModal(st) {
+    closeAddModal();
+    const audioAssets = (st.mediaBin || []).filter(isAudioAsset);
 
-    const audioAssets = (st.mediaBin || []).filter((m) => m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(m.name || ""));
-    const addSel = el("select", "tl-audio-add");
-    addSel.append(new Option(audioAssets.length ? "+ Audio track…" : "+ Upload audio first", ""));
-    audioAssets.forEach((m) => addSel.append(new Option(m.name || m.id, m.id)));
-    addSel.onchange = () => { if (addSel.value) { S.addAudioTrack(addSel.value, 0); addSel.value = ""; } };
-    wrap.append(addSel);
-    return wrap;
+    _addModal = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Add audio track"));
+    const headRight = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    closeBtn.onclick = closeAddModal;
+    headRight.append(closeBtn);
+    head.append(headRight);
+    box.append(head);
+
+    const content = el("div", "modal-content");
+    const pick = (mediaId) => {
+      S.addAudioTrack(mediaId, _audioTrackStartSec());
+      closeAddModal();
+    };
+
+    if (!audioAssets.length) {
+      content.append(el("div", "pj-meta", "Upload audio in the Media Browser (wav, mp3, m4a, ogg, flac…), then pick it here."));
+      const uploadBtn = el("button", "btn primary tiny", "Upload audio file");
+      const fileIn = el("input");
+      fileIn.type = "file";
+      fileIn.accept = "audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.opus";
+      fileIn.style.display = "none";
+      uploadBtn.onclick = () => fileIn.click();
+      fileIn.onchange = async () => {
+        const files = [...(fileIn.files || [])];
+        fileIn.value = "";
+        if (!files.length) return;
+        await S.uploadMedia(files);
+        const fresh = S.get();
+        const added = (fresh.mediaBin || []).filter(isAudioAsset);
+        const last = added[0];
+        if (last) pick(last.id);
+        else closeAddModal();
+      };
+      content.append(uploadBtn);
+      content.append(fileIn);
+    } else {
+      content.append(el("div", "pj-meta", "Inserts at the playhead. Upload more in the Media Browser."));
+      audioAssets.forEach((m) => {
+        const row = el("button", "tl-add-row aud-pick-row", m.name || m.id);
+        row.type = "button";
+        row.onclick = () => pick(m.id);
+        content.append(row);
+      });
+    }
+
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = closeAddModal;
+    content.append(cancel);
+    box.append(content);
+    _addModal.append(box);
+    _addModal.addEventListener("click", (e) => { if (e.target === _addModal) closeAddModal(); });
+    document.body.append(_addModal);
   }
 
   function sceneAudioClip(st, p, scene, index, leftPx, widthPx) {
+    if (scene.audio_separated) return el("span");  // audio lives on its own lane
     const vol = scene.audio_volume != null ? scene.audio_volume : 1;
-    const w = Math.max(widthPx, 8);  // match video clip min width — never grow past scene duration
+    const w = Math.max(widthPx, 8);
     const clip = el("div", "tl-aud-clip scene-aud" + clipSelClass(st, scene.id));
     clip.dataset.sceneId = scene.id;
     clip.style.left = leftPx + "px";
     clip.style.width = w + "px";
     clip.style.maxWidth = w + "px";
-    clip.onclick = (e) => { e.stopPropagation(); onClipSelect(e, scene.id); };
-    clip.append(el("span", "tl-aud-name", `S${index + 1}`));
+    clip.onclick = (e) => { if (e.target.closest(".tl-aud-controls")) return; e.stopPropagation(); onClipSelect(e, scene.id); };
+
+    const wave = el("div", "tl-aud-wave");
+    const canvas = el("canvas");
+    wave.append(canvas);
+    clip.append(wave);
+
+    const r = (st.sceneRenders || {})[scene.id];
+    if (r?.media && st.project?.id) {
+      _attachWaveform(canvas, `scene-aud:${scene.id}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
+        width: w,
+        color: "rgba(45, 212, 191, 0.5)",
+      });
+    } else {
+      _attachWaveform(canvas, null, null, { color: "rgba(45, 138, 106, 0.28)" });
+    }
+
+    const controls = el("div", "tl-aud-controls");
+    controls.append(el("span", "tl-aud-name", `S${index + 1}`));
     const slider = el("input", "tl-aud-vol"); slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
     slider.value = vol; slider.title = `Clip ${index + 1} volume`;
     slider.oninput = (e) => { e.stopPropagation(); S.patchSceneQuiet(scene.id, { audio_volume: parseFloat(slider.value) }); };
     slider.onclick = (e) => e.stopPropagation();
-    clip.append(slider);
+    controls.append(slider);
+    clip.append(controls);
     return clip;
   }
 
   function insertedAudioLane(st, p, track, laneH) {
     const lane = el("div", "tl-audio-lane"); lane.style.height = laneH + "px";
-    const asset = (st.mediaBin || []).find((m) => m.id === track.media_ref);
+    const isSep = track.kind === "separated" && track.scene_id;
+    const asset = isSep ? null : (st.mediaBin || []).find((m) => m.id === track.media_ref);
+    const sepScene = isSep ? p.scenes.find((s) => s.id === track.scene_id) : null;
+    const sepIdx = sepScene ? p.scenes.indexOf(sepScene) + 1 : 0;
     const body = el("div", "tl-audio-lane-body");
     const startSec = track.start_sec || 0;
-    const dur = asset && asset.duration_sec ? asset.duration_sec : Math.max(2, (p.scenes || []).reduce((a, sc) => a + sDur(sc, p), 0) - startSec);
-    const w = Math.max(dur * pxPerSec, 48);
-    const block = el("div", "tl-aud-clip ins");
+    let durSec = track.source_dur || asset?.duration_sec || 0;
+    const w = Math.max((durSec || 2) * pxPerSec, 48);
+    const block = el("div", "tl-aud-clip ins" + (isSep ? " sep" : ""));
     block.style.left = (startSec * pxPerSec) + "px";
     block.style.width = w + "px";
-    block.append(el("span", "tl-aud-name", (asset && asset.name) || "audio"));
+
+    const wave = el("div", "tl-aud-wave");
+    const canvas = el("canvas");
+    wave.append(canvas);
+    block.append(wave);
+    if (isSep && sepScene) {
+      const r = (st.sceneRenders || {})[track.scene_id];
+      if (r?.media && st.project?.id) {
+        _attachWaveform(canvas, `sep-aud:${track.scene_id}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
+          width: w,
+          color: "rgba(45, 212, 191, 0.55)",
+          onDuration: (sec) => {
+            if (sec > 0 && !track.source_dur) {
+              durSec = sec;
+              block.style.width = Math.max(sec * pxPerSec, 48) + "px";
+            }
+          },
+        });
+      } else {
+        _attachWaveform(canvas, null, null, { color: "rgba(45, 138, 106, 0.28)" });
+      }
+    } else if (asset) {
+      _attachWaveform(canvas, `aud:${asset.id}`, window.MovieEditorAPI.mediaUrl(asset.id), {
+        width: w,
+        color: "rgba(96, 165, 250, 0.55)",
+        onDuration: (sec) => {
+          if (sec > 0 && !asset.duration_sec) {
+            durSec = sec;
+            block.style.width = Math.max(sec * pxPerSec, 48) + "px";
+          }
+        },
+      });
+    }
+
+    const controls = el("div", "tl-aud-controls");
+    const label = isSep ? (track.label || `S${sepIdx} audio`) : ((asset && asset.name) || "audio");
+    controls.append(el("span", "tl-aud-name", label));
     const slider = el("input", "tl-aud-vol"); slider.type = "range"; slider.min = "0"; slider.max = "2"; slider.step = "0.05";
     slider.value = track.volume != null ? track.volume : 1;
     slider.oninput = () => S.updateAudioTrack(track.id, { volume: parseFloat(slider.value) }, true);
-    block.append(slider);
+    slider.onclick = (e) => e.stopPropagation();
+    controls.append(slider);
     const startIn = el("input"); startIn.type = "number"; startIn.min = "0"; startIn.step = "0.1";
-    startIn.value = startSec; startIn.title = "Start (s)"; startIn.style.width = "42px";
+    startIn.value = startSec; startIn.title = "Start (s)"; startIn.className = "tl-aud-start";
     startIn.oninput = (e) => {
       e.stopPropagation();
       const v = parseFloat(startIn.value || "0");
@@ -750,10 +876,13 @@
       block.style.left = (v * pxPerSec) + "px";
     };
     startIn.onclick = (e) => e.stopPropagation();
-    block.append(startIn);
-    const rm = el("button", "ic-btn danger tl-aud-rm", "✕"); rm.title = "Remove track";
+    controls.append(startIn);
+    const rm = el("button", "ic-btn danger tl-aud-rm", "✕");
+    rm.title = isSep ? "Remove track and reunite audio with the clip" : "Remove track";
     rm.onclick = (e) => { e.stopPropagation(); S.removeAudioTrack(track.id); };
-    block.append(rm);
+    controls.append(rm);
+    block.append(controls);
+
     block.addEventListener("mousedown", (e) => {
       if (e.target.closest("input,button,select")) return;
       e.stopPropagation();
@@ -788,10 +917,17 @@
     const gAud = el("div", "tl-gutter-aud");
     gAud.append(gutterLane("Audio", "Audio — per-scene volume from generated clips", "audio"));
     (p.audio_tracks || []).forEach((t) => {
-      const asset = (st.mediaBin || []).find((m) => m.id === t.media_ref);
-      const name = (asset && asset.name) || t.label || "Audio";
+      let name, title;
+      if (t.kind === "separated" && t.scene_id) {
+        name = t.label || "Separated";
+        title = `${name} (detached from generated clip)`;
+      } else {
+        const asset = (st.mediaBin || []).find((m) => m.id === t.media_ref);
+        name = (asset && asset.name) || t.label || "Audio";
+        title = name;
+      }
       const short = name.length > 9 ? name.slice(0, 8) + "…" : name;
-      gAud.append(gutterLane(short, name, "audio"));
+      gAud.append(gutterLane(short, title, "audio"));
     });
     gTracks.append(gAud);
     gutter.append(gTracks);
@@ -800,12 +936,12 @@
 
   function audioLanes(st, p, lay) {
     const wrap = el("div", "tl-audio-lanes");
-    const origLane = el("div", "tl-audio-lane"); origLane.style.height = "36px";
+    const origLane = el("div", "tl-audio-lane"); origLane.style.height = AUDIO_LANE_H + "px";
     const origBody = el("div", "tl-audio-lane-body");
     lay.forEach(({ sc, o, d }, i) => origBody.append(sceneAudioClip(st, p, sc, i, o * pxPerSec, d * pxPerSec)));
     origLane.append(origBody);
     wrap.append(origLane);
-    (p.audio_tracks || []).forEach((t) => wrap.append(insertedAudioLane(st, p, t, 36)));
+    (p.audio_tracks || []).forEach((t) => wrap.append(insertedAudioLane(st, p, t, AUDIO_LANE_H)));
     return wrap;
   }
 
@@ -859,8 +995,14 @@
     exp.title = "Save the selected clip's rendered video to disk (renders are temporary)";
     exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
     exp.onclick = () => S.exportSelected();
-    bar.append(split); bar.append(del); bar.append(exp);
-    bar.append(audioToolbar(st, p));
+    const sepAud = el("button", "btn ghost tiny", "⊟ Separate audio");
+    sepAud.dataset.needsSel = "1";
+    sepAud.dataset.separateAudio = "1";
+    sepAud.title = "Detach this clip's audio onto its own track (video keeps picture only)";
+    const selSc = hasSel ? S.scene(st.selectedSceneId) : null;
+    sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated);
+    sepAud.onclick = () => S.separateSceneAudio(st.selectedSceneId);
+    bar.append(split); bar.append(del); bar.append(exp); bar.append(sepAud);
     bar.append(toolbarRatingBlock(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);

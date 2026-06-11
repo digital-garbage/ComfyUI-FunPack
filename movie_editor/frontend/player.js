@@ -20,6 +20,8 @@
   let _active = null;        // visible <video>
   let _seekPending = null;   // offset to apply once the active video has metadata
   let _playPending = false;
+  const _insPool = new Map(); // track id -> <audio>
+  let _insTracks = [];
 
   // ── playhead state ─────────────────────────────────────────────────────────
   let _phSec = 0;
@@ -78,7 +80,8 @@
       if (r && r.media) {
         out.push({
           media: r.media, sceneId: sc.id, startSec, durationSec: dur, inSec: r.inSec || 0,
-          fx: sc.effects || {}, vol: sc.audio_volume != null ? sc.audio_volume : 1,
+          fx: sc.effects || {},
+          vol: sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1),
         });
       } else if (!sc.excluded) {
         out.push({
@@ -89,6 +92,73 @@
       }
     }
     return out;
+  }
+
+  function _buildInsTracks(st) {
+    if (!st.project) return [];
+    const sr = st.sceneRenders || {};
+    const pid = st.project.id;
+    const bin = st.mediaBin || [];
+    const out = [];
+    for (const t of (st.project.audio_tracks || [])) {
+      if (t.kind === "separated" && t.scene_id) {
+        const r = sr[t.scene_id];
+        if (!r?.media || !pid) continue;
+        out.push({
+          id: t.id,
+          url: _urlFor(r.media),
+          startSec: t.start_sec || 0,
+          durSec: t.source_dur || 1,
+          inSec: t.source_in_sec != null ? t.source_in_sec : (r.inSec || 0),
+          vol: t.volume != null ? t.volume : 1,
+        });
+      } else if (t.media_ref) {
+        const asset = bin.find((m) => m.id === t.media_ref);
+        if (!asset) continue;
+        out.push({
+          id: t.id,
+          url: API.mediaUrl(t.media_ref),
+          startSec: t.start_sec || 0,
+          durSec: asset.duration_sec || 86400,
+          inSec: 0,
+          vol: t.volume != null ? t.volume : 1,
+        });
+      }
+    }
+    return out;
+  }
+
+  function _syncInsPool() {
+    const active = new Set(_insTracks.map((t) => t.id));
+    for (const [id, a] of [..._insPool]) {
+      if (active.has(id)) continue;
+      a.pause(); _insPool.delete(id);
+    }
+  }
+
+  function _pauseInsAudio() {
+    for (const a of _insPool.values()) a.pause();
+  }
+
+  function _syncInsAudio() {
+    for (const tr of _insTracks) {
+      let a = _insPool.get(tr.id);
+      if (!a) {
+        a = document.createElement("audio");
+        a.preload = "auto";
+        _insPool.set(tr.id, a);
+      }
+      if (a.src !== tr.url) a.src = tr.url;
+      const inRange = _phSec >= tr.startSec - 0.02 && _phSec < tr.startSec + tr.durSec;
+      if (!_playing || !inRange) { a.pause(); continue; }
+      const offset = tr.inSec + (_phSec - tr.startSec);
+      const vol = Math.max(0, Math.min(1, +tr.vol || 0));
+      if (Math.abs(a.currentTime - offset) > 0.12) {
+        try { a.currentTime = Math.max(0, offset); } catch (_) {}
+      }
+      if (a.volume !== vol) a.volume = vol;
+      if (a.paused) a.play().catch(() => {});
+    }
   }
 
   function _clipAt(sec) {
@@ -147,6 +217,10 @@
     _stopTick();
     for (const [, v] of pool) { v.pause(); v.remove(); }
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
+    _pauseInsAudio();
+    for (const a of _insPool.values()) a.removeAttribute("src");
+    _insPool.clear();
+    _insTracks = [];
   }
 
   function _setActive(v) {
@@ -252,7 +326,7 @@
     if (_currentClip.pending) {
       const within = _phSec - _currentClip.startSec + (1 / 60);
       if (within >= _currentClip.durationSec - 0.001) _advance();
-      else { _phSec = _currentClip.startSec + within; _notifyPh(); }
+      else { _phSec = _currentClip.startSec + within; _syncInsAudio(); _notifyPh(); }
       if (_playing) _raf = requestAnimationFrame(_tick);
       return;
     }
@@ -262,7 +336,7 @@
     }
     const within = _active.currentTime - (_currentClip.inSec || 0);
     if (within >= _currentClip.durationSec - 0.001) { _advance(); }
-    else { _phSec = _currentClip.startSec + Math.max(0, within); try { _applyFx(_currentClip, within); } catch (_) {} _notifyPh(); }
+    else { _phSec = _currentClip.startSec + Math.max(0, within); try { _applyFx(_currentClip, within); } catch (_) {} _syncInsAudio(); _notifyPh(); }
     if (_playing) _raf = requestAnimationFrame(_tick);
   }
 
@@ -272,6 +346,7 @@
     const clip = _clipAt(_phSec);
     if (clip) _goto(clip, _phSec - clip.startSec, false);
     else { _currentClip = null; _setActive(null); _showSlate(""); _showBadge(""); }
+    _syncInsAudio();
     _notifyPh();
   }
 
@@ -283,6 +358,7 @@
     if (_phSec < clip.startSec) _phSec = clip.startSec;
     _playing = true;
     _goto(clip, _phSec - clip.startSec, true);
+    _syncInsAudio();
     _notifyPh();
     _renderTransport();
   }
@@ -292,6 +368,7 @@
     _playing = false;
     _playPending = false;
     _stopTick();
+    _pauseInsAudio();
     _notifyPh();
     _renderTransport();
   }
@@ -466,6 +543,8 @@
     }
 
     _clips = _buildClips(st);
+    _insTracks = _buildInsTracks(st);
+    _syncInsPool();
     _syncPool();  // preload current clips, drop stale ones (timeline is dynamic)
 
     // Re-resolve the clip under the playhead each render (positions change with edits).
@@ -490,7 +569,7 @@
       : null;
 
     // ── canvas (video + placeholder) ────────────────────────────────────────
-    const canvas = el("div", "pm-canvas" + (previewAsset?.kind === "image" ? " media-previewing" : ""));
+    const canvas = el("div", "pm-canvas" + (previewAsset ? " media-previewing" : ""));
     _slateEl = el("div", "pm-slate");
     _slateEl.style.display = "none";
     _slateEl.append(el("div", "pm-slate-title"));
@@ -502,7 +581,7 @@
       canvas.append(stage);  // pooled videos live here; only the active one is visible
       canvas.append(_slateEl);
       canvas.append(_badgeEl);
-    } else if (previewAsset?.kind === "image") {
+    } else if (previewAsset?.kind === "image" || previewAsset?.kind === "audio") {
       canvas.append(stage);
     } else if (["queuing", "running", "pending"].includes(gen.state)) {
       const splash = el("div", "pm-gen-splash");
@@ -549,6 +628,18 @@
       canvas.append(layer);
       canvas.onclick = (e) => {
         if (!e.target.closest(".pm-media-preview-img")) S.clearMediaPreview();
+      };
+    } else if (previewAsset?.kind === "audio") {
+      const layer = el("div", "pm-media-preview");
+      const label = el("div", "pm-media-preview-label", previewAsset.name || "Audio preview");
+      const aud = el("audio", "pm-media-preview-aud");
+      aud.src = API.mediaUrl(previewAsset.id);
+      aud.controls = true;
+      aud.onclick = (e) => e.stopPropagation();
+      layer.append(label, aud);
+      canvas.append(layer);
+      canvas.onclick = (e) => {
+        if (!e.target.closest(".pm-media-preview-aud")) S.clearMediaPreview();
       };
     }
     body.append(canvas);

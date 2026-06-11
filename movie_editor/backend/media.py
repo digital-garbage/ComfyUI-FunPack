@@ -16,6 +16,7 @@ from . import config
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff"}
 _VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".gif"}
+_AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus", ".weba"}
 
 
 def _index_path() -> Path:
@@ -44,6 +45,8 @@ def _kind(ext: str) -> str:
         return "image"
     if ext in _VIDEO_EXT:
         return "video"
+    if ext in _AUDIO_EXT:
+        return "audio"
     return "other"
 
 

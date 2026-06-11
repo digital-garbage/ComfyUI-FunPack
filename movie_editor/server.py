@@ -1014,12 +1014,36 @@ if web is not None and PromptServer is not None:
         # Inserted audio tracks (project-level): resolve each media asset to a file. Skip any
         # that no longer exist on disk rather than failing the whole render.
         keep_original = bool(getattr(proj, "keep_original_audio", True))
-        tracks = []
+        clip_by_scene = {c["scene_id"]: c for c in clips if c.get("scene_id")}
+        media_tracks: list = []
+        separated_tracks: list = []
         for t in (getattr(proj, "audio_tracks", None) or []):
+            if t.get("kind") == "separated" or (t.get("scene_id") and not t.get("media_ref")):
+                sid = t.get("scene_id")
+                c = clip_by_scene.get(sid) if sid else None
+                if not c:
+                    continue
+                pth = _resolve(c)
+                if not os.path.isfile(pth):
+                    continue
+                src_in = t.get("source_in_sec")
+                if src_in is None:
+                    src_in = c.get("in") or 0
+                src_dur = t.get("source_dur")
+                if src_dur is None:
+                    src_dur = c.get("dur") or 0
+                separated_tracks.append({
+                    "path": pth,
+                    "source_in": float(src_in),
+                    "source_dur": float(src_dur),
+                    "start_sec": t.get("start_sec") or 0,
+                    "volume": t.get("volume", 1.0),
+                })
+                continue
             mp = media.path_for(t.get("media_ref") or "")
             if mp is None:
                 continue
-            tracks.append({"path": str(mp), "start_sec": t.get("start_sec") or 0, "volume": t.get("volume", 1.0)})
+            media_tracks.append({"path": str(mp), "start_sec": t.get("start_sec") or 0, "volume": t.get("volume", 1.0)})
 
         # The final render is ephemeral (temp dir) — persist it via the Export Save dialog.
         out_name = f"funpack_final_{int(_time.time())}.mp4"
@@ -1036,8 +1060,11 @@ if web is not None and PromptServer is not None:
                 cmd += ["-t", f"{float(dur):.3f}"]
             cmd += ["-i", pth]
         n = len(clips)
-        for t in tracks:  # inserted-audio inputs follow the clip inputs (indices n..n+k-1)
+        for t in media_tracks:  # inserted-audio inputs follow the clip inputs (indices n..)
             cmd += ["-i", t["path"]]
+        for t in separated_tracks:  # detached clip audio (trimmed per track)
+            cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
+        tracks = media_tracks + separated_tracks
         filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
         cmd += ["-filter_complex", filt, "-map", "[vout]"]
         if has_audio:

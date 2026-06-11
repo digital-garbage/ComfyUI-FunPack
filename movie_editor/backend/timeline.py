@@ -458,6 +458,9 @@ class Scene:
     effects: dict = field(default_factory=dict)
     # Gain applied to this clip's ORIGINAL (LTXAV) audio at render. 1.0 = unchanged, 0 = mute.
     audio_volume: float = 1.0
+    # When True the embedded audio is muted on the clip; the same audio lives on a linked
+    # project.audio_tracks entry (kind=separated) so video and audio edit independently.
+    audio_separated: bool = False
     # Forward-compat per-scene knobs (uniform values still win in V1).
     frames: Optional[int] = None
     fps: Optional[int] = None
@@ -501,6 +504,7 @@ class Scene:
             video_transition=str(d.get("video_transition", "")),
             effects=dict(d.get("effects") or {}),
             audio_volume=float(d.get("audio_volume", 1.0)),
+            audio_separated=bool(d.get("audio_separated", False)),
             frames=d.get("frames"),
             fps=d.get("fps"),
             frames_mode=str(d.get("frames_mode") or "timeline"),
@@ -565,7 +569,9 @@ class Project:
     sampler_inputs: dict = field(default_factory=dict)
     # Audio editing (render-time mix). keep_original_audio=False drops the per-clip LTXAV
     # audio entirely. audio_tracks = inserted tracks mixed over the montage, each:
-    #   {id, media_ref, start_sec, volume, label}. With no tracks and original off → silent.
+    #   {id, media_ref, start_sec, volume, label} for Media Bin assets, or
+    #   {id, kind:"separated", scene_id, start_sec, source_in_sec, source_dur, volume, label}
+    #   for audio detached from a generated clip. With no tracks and original off → silent.
     keep_original_audio: bool = True
     audio_tracks: list = field(default_factory=list)
     # Per-project pipeline config: the configured loader/node slots + linked inputs

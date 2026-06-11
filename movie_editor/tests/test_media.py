@@ -25,9 +25,11 @@ def test_media_roundtrip(tmp_path, monkeypatch):
 
     vid = media.save_upload("clip.mp4", b"\x00\x00\x00")
     assert vid["kind"] == "video"
-    assert len(media.list_media()) == 2
+    aud = media.save_upload("bed.wav", b"RIFF")
+    assert aud["kind"] == "audio"
+    assert len(media.list_media()) == 3
 
     assert media.delete(entry["id"]) is True
     assert media.path_for(entry["id"]) is None
-    assert [m["id"] for m in media.list_media()] == [vid["id"]]
+    assert sorted(m["id"] for m in media.list_media()) == sorted([vid["id"], aud["id"]])
     assert media.delete("nope") is False
