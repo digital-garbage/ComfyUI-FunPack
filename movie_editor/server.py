@@ -613,7 +613,16 @@ if web is not None and PromptServer is not None:
             preview_target = Project.from_dict(p.to_dict())
             preview_target.scenes = [s for s in preview_target.scenes if not s.excluded]
         if for_generation:
-            validation = bridge.validate_generation_prompt(p, preview_target)
+            try:
+                validation = bridge.validate_generation_prompt(p, preview_target)
+            except Exception as e:  # noqa: BLE001
+                return web.json_response({
+                    "combined_prompt": "",
+                    "display_prompt": "",
+                    "for_generation": True,
+                    "parse_error": str(e),
+                    "validation_error": str(e),
+                })
             prompt = validation["generation_prompt"]
             result = {
                 "combined_prompt": prompt,

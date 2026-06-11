@@ -213,7 +213,9 @@
   let _globalApplyTimer = null;
   function scheduleGlobalPromptApply(text) {
     clearTimeout(_globalApplyTimer);
-    _globalApplyTimer = setTimeout(() => { applyGlobalPromptQuiet(text); }, 500);
+    _globalApplyTimer = setTimeout(() => {
+      applyGlobalPromptQuiet(text).catch((e) => console.warn("Global prompt apply failed:", e));
+    }, 500);
   }
 
   function _normalizeSceneText(t) {
@@ -500,6 +502,40 @@
     if (!quiet) notify();
   }
 
+  function _genUnitHasRender(unitId) {
+    return (state.project?.scenes || []).some(
+      (s) => genUnitId(s) === unitId && !!(state.sceneRenders[s.id]?.media?.filename)
+    );
+  }
+
+  // Ratings apply to a specific render — drop stale ratings when nothing is playable.
+  function _clearOrphanRatings() {
+    if (!state.project) return false;
+    let cleared = false;
+    const seen = new Set();
+    for (const sc of state.project.scenes || []) {
+      if (isVideoClip(sc)) {
+        if (sc.rating) { sc.rating = ""; cleared = true; }
+        continue;
+      }
+      const uid = genUnitId(sc);
+      if (seen.has(uid)) continue;
+      seen.add(uid);
+      const root = genUnitRoot(uid) || sc;
+      if (root.rating && !_genUnitHasRender(uid)) {
+        root.rating = "";
+        cleared = true;
+      }
+      for (const s of state.project.scenes) {
+        if (genUnitId(s) === uid && s.id !== root.id && s.rating) {
+          s.rating = "";
+          cleared = true;
+        }
+      }
+    }
+    return cleared;
+  }
+
   let _validateRendersToken = 0;
 
   async function _validateSceneRenders() {
@@ -507,7 +543,14 @@
     const token = ++_validateRendersToken;
     const snapshot = JSON.parse(JSON.stringify(state.sceneRenders || {}));
     const ids = Object.keys(snapshot);
-    if (!ids.length) return;
+    if (!ids.length) {
+      if (_clearOrphanRatings()) {
+        _syncEditorStateToProject();
+        scheduleSave();
+        notify();
+      }
+      return;
+    }
     let missing = 0;
     await Promise.all(ids.map(async (id) => {
       if (token !== _validateRendersToken) return;
@@ -534,8 +577,11 @@
       }
     }));
     if (token !== _validateRendersToken) return;
-    if (missing) {
-      state.notice = `${missing} saved render${missing > 1 ? "s" : ""} no longer on disk — regenerate those clips.`;
+    const clearedRatings = _clearOrphanRatings();
+    if (missing || clearedRatings) {
+      if (missing) {
+        state.notice = `${missing} saved render${missing > 1 ? "s" : ""} no longer on disk — regenerate those clips.`;
+      }
       _syncEditorStateToProject();
       scheduleSave();
       notify();
@@ -558,6 +604,10 @@
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
     state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
+    if (_clearOrphanRatings()) {
+      _syncEditorStateToProject();
+      scheduleSaveSilent();
+    }
     _genInFlightIds.clear();
     _removedDuringGen.clear();
     if (window.EditorHistory) window.EditorHistory.clear();
@@ -995,6 +1045,7 @@
       source: { type: "video", media_ref: mediaRef },
       gen_unit_id: root.id,
       cut_offset_frames: 0,
+      rating: "",
     });
     if (state.selectedSceneId && !scene(state.selectedSceneId)) {
       state.selectedSceneId = root.id;

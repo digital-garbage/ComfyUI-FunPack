@@ -191,7 +191,16 @@
     });
   }
 
+  function genUnitHasRender(st, scene) {
+    const uid = S.genUnitId(scene);
+    return (st.project?.scenes || []).some(
+      (s) => S.genUnitId(s) === uid && hasRender(st, s.id)
+    );
+  }
+
   function sceneRatingRaw(st, scene) {
+    if (S.isVideoClip && S.isVideoClip(scene)) return "";
+    if (!genUnitHasRender(st, scene)) return "";
     const root = S.genUnitRoot(S.genUnitId(scene)) || scene;
     return ((root && root.rating) || scene.rating || "").trim();
   }
