@@ -163,24 +163,11 @@
 
   function renderVideoClip(st, scene) {
     title.textContent = "Video clip";
-    body.append(el("div", "insp-hint", "Imported or converted video — plays as-is. Not included in Generate or the global prompt montage."));
+    body.append(el("div", "insp-hint", "Imported or converted video — plays as-is. Not included in Generate or the global prompt montage. Use Convert to scene on the timeline toolbar to unlock editing."));
     const ref = scene.source?.media_ref;
     const asset = ref ? (st.mediaBin || []).find((m) => m.id === ref) : null;
     body.append(field("Source", el("span", null, asset?.name || ref || "From last render")));
     renderOutgoingSeam(st, scene);
-
-    const actions = el("div", "insp-block");
-    const toScene = el("button", "btn primary", "Convert to scene");
-    toScene.title = scene.scene_archive
-      ? "Restore prompt, source, guides, and settings from before this was locked as video"
-      : "Make this a generative v2v scene (prompt + Generate)";
-    toScene.onclick = () => S.convertToScene(scene.id);
-    actions.append(toScene);
-    const del = el("button", "btn danger", "Delete");
-    del.style.marginLeft = "8px";
-    del.onclick = () => S.removeScene(scene.id);
-    actions.append(del);
-    body.append(actions);
 
     foldSection("More editing", false, (more) => {
       const fx = scene.effects || {};
@@ -246,7 +233,7 @@
     if ((root.source?.type) === "v2v") renderVideoSource(st, root, body, "V2V source video");
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
-    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · generation splits: global prompt or Outgoing seam below`));
+    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · Convert to video on the timeline toolbar · generation splits: global prompt or Outgoing seam below`));
 
     renderOutgoingSeam(st, scene);
 
@@ -254,13 +241,6 @@
     const genBtn = el("button", "btn primary", "Generate this scene");
     genBtn.onclick = () => S.generate(scene.id);
     actions.append(genBtn);
-    const toVid = el("button", "btn ghost", "Convert to video");
-    toVid.title = "Lock as a plain video clip — skipped by Generate; settings saved for Convert back to scene";
-    toVid.style.marginLeft = "8px";
-    toVid.onclick = () => S.convertToVideo(scene.id);
-    actions.append(toVid);
-    const del = el("button", "btn danger", "Delete"); del.style.marginLeft = "8px"; del.onclick = () => S.removeScene(scene.id);
-    actions.append(del);
     body.append(actions);
 
     foldSection("More editing", false, (more) => {

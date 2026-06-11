@@ -245,6 +245,30 @@
     });
   }
 
+  function toolbarConvertButton(st) {
+    const id = st.selectedSceneId;
+    if (!id) return null;
+    const sc = S.scene(id);
+    if (!sc) return null;
+    if (S.isVideoClip(sc)) {
+      const btn = el("button", "btn ghost tiny", "Convert to scene");
+      btn.dataset.convertClip = "1";
+      btn.title = sc.scene_archive
+        ? "Restore prompt, source, guides, and settings from before this was locked as video"
+        : "Make this a generative v2v scene (prompt + Generate)";
+      btn.onclick = () => S.convertToScene(sc.id);
+      return btn;
+    }
+    if (S.isGenerativeScene(sc)) {
+      const btn = el("button", "btn ghost tiny", "Convert to video");
+      btn.dataset.convertClip = "1";
+      btn.title = "Lock as a plain video clip — skipped by Generate; settings saved for Convert back to scene";
+      btn.onclick = () => S.convertToVideo(sc.id);
+      return btn;
+    }
+    return null;
+  }
+
   function syncToolbarSelection(st) {
     const bar = body.querySelector(".tl-toolbar");
     if (!bar || !st.project) return;
@@ -256,6 +280,17 @@
     if (sep) {
       const sc = hasSel ? S.scene(st.selectedSceneId) : null;
       sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, st.selectedSceneId) && !sc.audio_separated);
+    }
+    const oldConv = bar.querySelector("[data-convert-clip]");
+    const freshConv = toolbarConvertButton(st);
+    if (oldConv) {
+      if (freshConv) oldConv.replaceWith(freshConv);
+      else oldConv.remove();
+    } else if (freshConv) {
+      const anchor = bar.querySelector("[data-separate-audio]") || bar.querySelector("[data-export-scene]");
+      if (anchor?.nextSibling) bar.insertBefore(freshConv, anchor.nextSibling);
+      else if (anchor) anchor.after(freshConv);
+      else bar.append(freshConv);
     }
     const oldRating = bar.querySelector(".tl-rating-block");
     const freshRating = toolbarRatingBlock(st, st.project);
@@ -701,9 +736,6 @@
     addRow("Text", "Coming soon", null, true);
     addRow("Image", "Coming soon", null, true);
     addRow("Audio", "Add an audio track from the Media Browser", () => openAudioTrackModal(st));
-    const selSc = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
-    const canSepAud = !!(selSc && hasRender(st, st.selectedSceneId) && !selSc.audio_separated && S.isGenerativeScene(selSc));
-    addRow("Separate audio", "Move selected clip's audio to its own track", () => S.separateSceneAudio(st.selectedSceneId), !canSepAud);
 
     btn.onclick = (e) => {
       e.stopPropagation();
@@ -1068,6 +1100,8 @@
     sepAud.disabled = !(selSc && hasRender(st, st.selectedSceneId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
     sepAud.onclick = () => S.separateSceneAudio(st.selectedSceneId);
     bar.append(split); bar.append(del); bar.append(exp); bar.append(sepAud);
+    const conv = toolbarConvertButton(st);
+    if (conv) bar.append(conv);
     bar.append(toolbarRatingBlock(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
