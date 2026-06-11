@@ -113,6 +113,8 @@
     try { _applyFx(_currentClip, within); } catch (_) {}
     if (_playing && v.paused) v.play().catch(() => {});
   }
+
+  function _segmentSourceBadge(sceneId) {
     if (!sceneId) return "";
     const sc = S.scene(sceneId);
     if (S.isVideoClip?.(sc)) return "Video clip";
