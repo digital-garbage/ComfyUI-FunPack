@@ -120,40 +120,57 @@
   }
 
   const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
+  const REORDER_PX = 12;
 
+  function normId(v) { return v == null ? "" : String(v); }
   function selectedIds(st) {
     return st.selectedSceneIds?.length ? st.selectedSceneIds : (st.selectedSceneId ? [st.selectedSceneId] : []);
   }
+  function isSceneSelected(st, sceneId) {
+    const id = normId(sceneId);
+    return selectedIds(st).some((sid) => normId(sid) === id);
+  }
+  function isSceneFocus(st, sceneId) {
+    return normId(sceneId) === normId(st.selectedSceneId);
+  }
   function clipSelClass(st, sceneId) {
-    const ids = selectedIds(st);
     let cls = "";
-    if (ids.includes(sceneId)) cls += " selected";
-    if (sceneId === st.selectedSceneId) cls += " focus";
+    if (isSceneSelected(st, sceneId)) cls += " selected";
+    if (isSceneFocus(st, sceneId)) cls += " focus";
     return cls;
   }
   function onClipSelect(e, sceneId) {
     _tlEditing = false;
     const ae = document.activeElement;
-    if (ae && body.contains(ae) && /^(SELECT|INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
+    if (ae && /^(SELECT|INPUT|TEXTAREA)$/.test(ae.tagName)) ae.blur();
     S.selectScene(sceneId, { additive: e.metaKey || e.ctrlKey, range: e.shiftKey });
   }
 
   function syncClipSelection(st) {
-    const ids = selectedIds(st);
-    body.querySelectorAll(".clip[data-scene-id], .tl-aud-clip.scene-aud[data-scene-id]").forEach((node) => {
-      const id = node.dataset.sceneId;
-      node.classList.toggle("selected", ids.includes(id));
-      node.classList.toggle("focus", id === st.selectedSceneId);
+    const ids = new Set(selectedIds(st).map(normId));
+    const focus = normId(st.selectedSceneId);
+    body.querySelectorAll(".tl-track2 > .clip, .tl-aud-clip.scene-aud").forEach((node) => {
+      const id = normId(node.dataset.sceneId);
+      if (!id) return;
+      node.classList.toggle("selected", ids.has(id));
+      node.classList.toggle("focus", id === focus);
     });
   }
 
   function syncToolbarSelection(st) {
     const bar = body.querySelector(".tl-toolbar");
-    if (!bar) return;
+    if (!bar || !st.project) return;
     const hasSel = !!st.selectedSceneId;
     bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
     const exp = bar.querySelector("[data-export-scene]");
     if (exp) exp.disabled = !(hasSel && hasRender(st, st.selectedSceneId));
+    const oldAdd = bar.querySelector(".tl-dd");
+    if (oldAdd) {
+      const fresh = addMenuDropdown(st, st.project);
+      oldAdd.replaceWith(fresh);
+      const addBtn = fresh.querySelector("button");
+      if (addBtn) { addBtn.dataset.needsSel = "1"; addBtn.disabled = !hasSel; }
+    }
   }
 
   function syncMetaSelection(st) {
@@ -309,7 +326,6 @@
     clip.dataset.sceneId = scene.id;
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
-    clip.onclick = (e) => onClipSelect(e, scene.id);
 
     // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
     // plain clicks = select; trim handle / action buttons opt out).
@@ -321,7 +337,7 @@
       const onMove = (ev) => {
         const dx = ev.clientX - startX;
         if (!dragging) {
-          if (Math.abs(dx) < 8) return;
+          if (Math.abs(dx) < REORDER_PX) return;
           dragging = true; clip.classList.add("reordering"); document.body.classList.add("tl-reordering");
           _reordering = true;  // hard-block store-driven rebuilds while dragging
         }
@@ -336,13 +352,20 @@
         document.removeEventListener("mouseup", onUp);
         document.body.classList.remove("tl-reordering");
         const line = track.querySelector(".tl-dropline"); if (line) line.remove();
+        const dx = ev.clientX - startX;
+        if (dragging && Math.abs(dx) < REORDER_PX) {
+          dragging = false;
+          clip.style.transform = "";
+          clip.classList.remove("reordering");
+          _reordering = false;
+        }
         if (dragging) {
           ev.preventDefault();
           clip.style.transform = ""; clip.classList.remove("reordering");
           _reordering = false;
           if (drop) S.moveSceneTo(scene.id, drop.idx);
           // swallow the click that fires right after the drag so it doesn't re-select
-          clip.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
+          track.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
         }
       };
       document.addEventListener("mousemove", onMove);
@@ -933,6 +956,12 @@
 
     const tracks = el("div", "tl-tracks");
     const track = el("div", "tl-track2");
+    track.addEventListener("click", (e) => {
+      const clip = e.target.closest(".clip:not(.ghost)[data-scene-id]");
+      if (!clip) return;
+      if (e.target.closest(".clip-actions, .clip-trim, .seam-prompt-row, select, button")) return;
+      onClipSelect(e, clip.dataset.sceneId);
+    });
     lay.forEach(({ seg, o, d }) => {
       if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
       else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));

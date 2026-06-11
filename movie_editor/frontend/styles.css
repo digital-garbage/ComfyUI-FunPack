@@ -606,6 +606,28 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
 .clip.src-carry { border-style: dashed; border-color: color-mix(in srgb, var(--teal-soft) 35%, var(--line)); }
 .clip.src-carry::before { background: var(--teal-soft); opacity: .45; }
 .clip.src-image::before { background: var(--amber); opacity: .7; }
+/* Selection must win over source-type border accents (otherwise only audio lane looks selected). */
+.clip.selected,
+.clip.selected.src-mixed,
+.clip.selected.src-carry,
+.clip.selected.src-image,
+.clip.selected.pending:not(.rendered) {
+  border-color: var(--teal-soft);
+  box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.35);
+  z-index: 2;
+}
+.clip.selected.focus,
+.clip.selected.focus.src-mixed,
+.clip.selected.focus.src-carry,
+.clip.selected.focus.src-image {
+  border-color: var(--teal);
+  box-shadow: inset 0 0 0 1px var(--teal-soft);
+  z-index: 3;
+}
+.clip.selected::before,
+.clip.selected.src-carry::before { background: var(--teal-soft); opacity: 0.85; }
+.clip.selected.focus::before,
+.clip.selected.focus.src-carry::before { background: var(--teal); opacity: 1; }
 .clip-src-stack { display: inline-flex; align-items: center; gap: 1px; line-height: 1; }
 .clip-anchor-mark { font-size: 11px; color: var(--amber); }
 .clip-guide-mark { font-size: 11px; color: var(--teal-soft); margin-left: -1px; }
