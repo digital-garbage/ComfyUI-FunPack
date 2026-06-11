@@ -343,15 +343,34 @@
     return { next, ghosts: ghostsOut, usedGhost };
   }
 
+  function _normalizeGlobalPromptParse(trimmed, v) {
+    v = v || {};
+    const text = String(trimmed || "").trim();
+    const anchor = String(v.anchor || "").trim();
+    const scenes = Array.isArray(v.scenes) ? v.scenes : [];
+    const transitions = v.transitions || [];
+    const hasSceneText = scenes.some((s) => String(s.text || "").trim());
+
+    // No split markers / shortcuts detected: the whole global prompt is one scene.
+    if (!hasSceneText && text) {
+      return { anchor: "", scenes: [{ text }], transitions: [] };
+    }
+    // Parser kept everything in anchor with no scene chunks — fold into one scene.
+    if (!hasSceneText && anchor) {
+      return { anchor: "", scenes: [{ text: anchor }], transitions: [] };
+    }
+    return { anchor: v.anchor || "", scenes, transitions };
+  }
+
   function _afterTimelineStructureChange() {
     _pinnedGlobalPrompt = null;
     syncGlobalPromptFromTimeline();
   }
 
   async function _distributeGlobalPrompt(text, res) {
-    const v = res.parsed_verbatim || res.parsed_raw || res.parsed || {};
-    if (!(v.scenes || []).length) return false;
     const trimmed = String(text || "").trim();
+    const v = _normalizeGlobalPromptParse(trimmed, res.parsed_verbatim || res.parsed_raw || res.parsed || {});
+    if (!(v.scenes || []).length) return false;
     _pinnedGlobalPrompt = trimmed;
     state.project.global_prompt = trimmed;
     state.project.anchor = v.anchor || "";
@@ -1215,12 +1234,13 @@
     if (!state.project || !state.preview) return;
     _historyRecord();
     // Authoritative lossless split (verbatim text, shortcut-aware boundaries).
-    const v = state.preview.parsed_verbatim || state.preview.parsed_raw || state.preview.parsed || {};
+    const v0 = state.preview.parsed_verbatim || state.preview.parsed_raw || state.preview.parsed || {};
+    const fullPrompt = state.preview.combined_prompt || state.project.global_prompt || "";
+    const v = _normalizeGlobalPromptParse(fullPrompt, v0);
     const parsedScenes = v.scenes || [];
     if (!parsedScenes.length) return;
 
     state.project.anchor = v.anchor || "";
-    const fullPrompt = state.preview.combined_prompt || state.project.global_prompt || "";
     const { next, ghosts: ghostsOut } = _alignScenesFromParsed(
       state.project.scenes, parsedScenes, state.sceneGhosts
     );
