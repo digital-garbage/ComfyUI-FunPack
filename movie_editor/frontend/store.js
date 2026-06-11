@@ -281,32 +281,42 @@
     if (!quiet) notify();
   }
 
+  let _validateRendersToken = 0;
+
   async function _validateSceneRenders() {
     if (!state.project) return;
-    const renders = state.sceneRenders || {};
-    const ids = Object.keys(renders);
+    const token = ++_validateRendersToken;
+    const snapshot = JSON.parse(JSON.stringify(state.sceneRenders || {}));
+    const ids = Object.keys(snapshot);
     if (!ids.length) return;
     let missing = 0;
     await Promise.all(ids.map(async (id) => {
-      const r = renders[id];
+      if (token !== _validateRendersToken) return;
+      const r = snapshot[id];
       if (!r?.media?.filename) {
-        delete state.sceneRenders[id];
+        if (token !== _validateRendersToken) return;
+        if (state.sceneRenders[id]) delete state.sceneRenders[id];
         missing++;
         return;
       }
       try {
         const res = await fetch(API.resultUrl(state.project.id, r.media), { method: "HEAD" });
         if (!res.ok) {
-          delete state.sceneRenders[id];
+          if (token !== _validateRendersToken) return;
+          const cur = state.sceneRenders[id];
+          if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
           missing++;
         }
       } catch (_) {
-        delete state.sceneRenders[id];
+        if (token !== _validateRendersToken) return;
+        const cur = state.sceneRenders[id];
+        if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
         missing++;
       }
     }));
+    if (token !== _validateRendersToken) return;
     if (missing) {
-      state.notice = `${missing} saved render${missing > 1 ? "s" : ""} missing after restart - regenerate those clips.`;
+      state.notice = `${missing} saved render${missing > 1 ? "s" : ""} no longer on disk — regenerate those clips.`;
       _syncEditorStateToProject();
       scheduleSave();
       notify();
@@ -1376,6 +1386,10 @@
     }
     _pruneGhostsAfterRegen(recordedSceneIds);
     if (clearedRating) scheduleSaveSilent();
+    if (recordedSceneIds.length) {
+      _validateRendersToken++;
+      state.notice = "";
+    }
   }
 
   // Poll a single queued prompt to completion. Resolves true on success, false on error.

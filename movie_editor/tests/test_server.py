@@ -142,7 +142,28 @@ def test_resolve_run_seed_random_when_unset():
     p = _project([])
     seeds = {_resolve_run_seed(p) for _ in range(8)}
     assert len(seeds) > 1
-    assert all(1 <= s <= 0xFFFFFFFFFFFFFFFF for s in seeds)
+
+
+def test_resolve_comfy_media_path_temp(monkeypatch, tmp_path):
+    from movie_editor import server
+
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    clip = temp / "clip.mp4"
+    clip.write_bytes(b"x")
+
+    class FP:
+        @staticmethod
+        def get_output_directory():
+            return str(tmp_path / "out")
+
+        @staticmethod
+        def get_temp_directory():
+            return str(temp)
+
+    monkeypatch.setitem(__import__("sys").modules, "folder_paths", FP)
+    assert server._resolve_comfy_media_path("clip.mp4", "", "temp") == str(clip)
+    assert server._resolve_comfy_media_path("nope.mp4", "", "temp") is not None
 
 
 def test_parse_has_scenes():

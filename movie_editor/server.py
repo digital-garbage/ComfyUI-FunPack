@@ -81,6 +81,19 @@ def _media_from_history(hist_entry: dict) -> list[dict]:
     return out
 
 
+def _resolve_comfy_media_path(filename: str, subfolder: str = "", type_: str = "output") -> Optional[str]:
+    """Absolute path to a ComfyUI output/temp media file (None if dirs unavailable)."""
+    import os
+    if not filename:
+        return None
+    try:
+        import folder_paths
+        base = folder_paths.get_output_directory() if type_ == "output" else folder_paths.get_temp_directory()
+    except Exception:
+        return None
+    return os.path.join(base, subfolder or "", filename)
+
+
 def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     import os
     import shutil
@@ -943,6 +956,20 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"could not fetch result: {e}")
         return web.Response(body=data, content_type=ctype.split(";")[0])
+
+    @routes.head(UI_PREFIX + "/api/projects/{pid}/result")
+    async def _result_head(req):
+        """Existence check for scene renders — used by the editor on project load."""
+        import os
+        _project_or_404(req.match_info["pid"])
+        path = _resolve_comfy_media_path(
+            req.query.get("filename", ""),
+            req.query.get("subfolder", ""),
+            req.query.get("type", "output"),
+        )
+        if not path or not os.path.isfile(path):
+            raise web.HTTPNotFound()
+        return web.Response()
 
     # --- API: final render (hard-cut concat of kept clips, with per-clip in/out) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/render")
