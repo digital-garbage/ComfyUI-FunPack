@@ -84,6 +84,20 @@ def get(mid: str) -> Optional[dict]:
     return next((i for i in _load_index() if i.get("id") == mid), None)
 
 
+def rename(mid: str, name: str) -> Optional[dict]:
+    """Update display name only — file on disk and id stay the same."""
+    label = str(name or "").strip()
+    if not label:
+        return None
+    items = _load_index()
+    for it in items:
+        if it.get("id") == mid:
+            it["name"] = label
+            _save_index(items)
+            return dict(it)
+    return None
+
+
 def path_for(mid: str) -> Optional[Path]:
     it = get(mid)
     if not it:

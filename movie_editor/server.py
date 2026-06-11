@@ -920,6 +920,17 @@ if web is not None and PromptServer is not None:
             raise web.HTTPNotFound()
         return web.json_response({"deleted": req.match_info["mid"]})
 
+    @routes.patch(UI_PREFIX + "/api/media/{mid}")
+    async def _media_rename(req):
+        body = await req.json() if req.can_read_body else {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise web.HTTPBadRequest(reason="Name is required.")
+        entry = media.rename(req.match_info["mid"], name)
+        if entry is None:
+            raise web.HTTPNotFound()
+        return web.json_response({"media": entry})
+
     @routes.post(UI_PREFIX + "/api/media/import-clip")
     async def _media_import_clip(req):
         body = await req.json() if req.can_read_body else {}

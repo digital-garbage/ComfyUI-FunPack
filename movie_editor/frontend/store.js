@@ -2381,6 +2381,22 @@
     }
     await loadMedia();
   }
+  async function renameMedia(id, name) {
+    const label = String(name || "").trim();
+    if (!label) return;
+    try {
+      const res = await API.renameMedia(id, label);
+      const entry = res?.media;
+      if (entry) {
+        state.mediaBin = (state.mediaBin || []).map((m) => (m.id === id ? { ...m, ...entry } : m));
+        notify();
+      } else {
+        await loadMedia();
+      }
+    } catch (e) {
+      alert("Rename failed: " + (e.message || e));
+    }
+  }
 
   async function loadTransitions() { try { state.transitions = (await API.transitions()).transitions || []; } catch (_) {} notify(); }
   async function loadNleLibrary() {
@@ -2579,7 +2595,7 @@
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
-    loadMedia, uploadMedia, deleteMedia, deleteMediaMany, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
+    loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
     loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions,

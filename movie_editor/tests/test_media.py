@@ -33,3 +33,16 @@ def test_media_roundtrip(tmp_path, monkeypatch):
     assert media.path_for(entry["id"]) is None
     assert sorted(m["id"] for m in media.list_media()) == sorted([vid["id"], aud["id"]])
     assert media.delete("nope") is False
+
+
+def test_media_rename(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "MEDIA_DIR", tmp_path / "media")
+    entry = media.save_upload("old name.png", b"data")
+    updated = media.rename(entry["id"], "new label.png")
+    assert updated is not None
+    assert updated["name"] == "new label.png"
+    assert updated["filename"] == entry["filename"]
+    assert media.get(entry["id"])["name"] == "new label.png"
+    assert media.rename(entry["id"], "   ") is None
+    assert media.rename("missing", "x") is None

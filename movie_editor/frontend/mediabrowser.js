@@ -352,6 +352,33 @@
     return controls;
   }
 
+  function _beginMediaRename(m, nameEl) {
+    const inp = el("input", "media-name-edit");
+    inp.type = "text";
+    inp.value = m.name || "";
+    nameEl.replaceWith(inp);
+    inp.focus();
+    inp.select();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      if (!save) { render(S.get()); return; }
+      const next = inp.value.trim();
+      if (!next) { alert("Name cannot be empty."); render(S.get()); return; }
+      if (next === m.name) { render(S.get()); return; }
+      await S.renameMedia(m.id, next);
+      render(S.get());
+    };
+    inp.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    };
+    inp.onclick = (e) => e.stopPropagation();
+    inp.onblur = () => { finish(true); };
+  }
+
   function _mediaCard(m, st) {
     const picked = mediaSelected.has(m.id);
     const card = el("div", "media-card"
@@ -372,7 +399,18 @@
     _appendMediaThumb(thumb, m);
     _appendMediaKindBadge(thumb, m);
     card.append(thumb);
-    card.append(el("div", "media-name", m.name));
+    const nameEl = el("div", "media-name", m.name);
+    nameEl.title = "Double-click to rename";
+    nameEl.ondblclick = (e) => { e.stopPropagation(); _beginMediaRename(m, nameEl); };
+    card.append(nameEl);
+    const ren = el("button", "media-ren", "✎");
+    ren.title = "Rename";
+    ren.onclick = (e) => {
+      e.stopPropagation();
+      const cur = card.querySelector(".media-name");
+      if (cur) _beginMediaRename(m, cur);
+    };
+    card.append(ren);
     if (m.kind === "image" || m.kind === "video") {
       const exp = el("button", "media-exp", "⤓");
       exp.title = "Export to disk";
