@@ -21,6 +21,7 @@
       keepAud: p.keep_original_audio,
       gen: st.gen?.state,
       labels: (st.ratingLabels || []).length,
+      notice: st.notice || "",
     });
   }
 

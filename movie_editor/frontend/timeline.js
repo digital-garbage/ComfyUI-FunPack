@@ -1039,7 +1039,7 @@
       const note = el("span", "tl-notice", st.notice);
       const dismiss = el("button", "tl-notice-dismiss", "✕");
       dismiss.title = "Dismiss";
-      dismiss.onclick = () => S.clearNotice();
+      dismiss.onclick = (e) => { e.stopPropagation(); S.clearNotice(); };
       note.append(dismiss);
       meta.append(note);
     }
