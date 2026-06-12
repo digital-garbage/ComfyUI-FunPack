@@ -435,9 +435,9 @@
     gapIn.oninput = () => S.patchSceneQuiet(scene.id, {
       gap_after_sec: Math.max(0, parseFloat(gapIn.value || "0")),
     });
-    body.append(field("Pause after (s)", gapIn));
+    body.append(field("Pause before next clip (s)", gapIn));
     body.append(el("div", "insp-hint",
-      "Black/silent gap before the next clip. Drag the pause block on the timeline or the seam handle."));
+      "Drag a clip right on the timeline to open space before it. Drag back flush with the previous clip to remove the pause."));
   }
 
   function renderSceneCharacters(st, scene, parent) {

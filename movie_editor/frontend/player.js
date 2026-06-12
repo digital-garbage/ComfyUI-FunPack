@@ -1178,8 +1178,12 @@
           title = seg.ghost.pendingGen
             ? "Removed scene — generation in flight"
             : "Removed scene (preview only — not in next run)";
+        } else if (seg.kind === "gap") {
+          cls += " gap";
+          title = `Pause (${d.toFixed(2)}s)`;
         } else {
           const sc = seg.scene;
+          if (!sc) return;
           const stype = sc.source?.type || "empty";
           const isVideo = S.isVideoClip && S.isVideoClip(sc);
           const rendered = isVideo

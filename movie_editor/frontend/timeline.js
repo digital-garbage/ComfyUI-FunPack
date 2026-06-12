@@ -271,7 +271,7 @@
   function attachClipSelect(clip, sceneId) {
     clip.addEventListener("mousedown", (e) => {
       if (e.button !== 0 || isClipSelectBlocked(e)) return;
-      // Modifier clicks select immediately — do not start drag-reorder (it eats the gesture).
+      // Modifier clicks select immediately — do not start spacing drag (it eats the gesture).
       if (e.metaKey || e.shiftKey || isAdditiveMod(e)) {
         e.preventDefault();
         clip.dataset.modSelect = "1";
@@ -545,25 +545,7 @@
     document.addEventListener("mouseup", up);
   }
 
-  // ── drag-reorder: where in the track does the cursor want to drop? ───────────────
-  // Returns {idx, x}: idx = post-removal insertion index among non-dragged clips; x =
-  // the boundary's x relative to the track (for the insertion line).
-  function _dropTarget(track, dragged, clientX) {
-    const others = [...track.querySelectorAll(".clip:not(.ghost)")].filter((c) => c !== dragged);
-    const tr = track.getBoundingClientRect();
-    let idx = 0;
-    for (const c of others) {
-      const r = c.getBoundingClientRect();
-      if (clientX > r.left + r.width / 2) idx++; else break;
-    }
-    let x;
-    if (!others.length) x = 0;
-    else if (idx === 0) x = others[0].getBoundingClientRect().left - tr.left;
-    else x = others[idx - 1].getBoundingClientRect().right - tr.left;
-    return { idx, x };
-  }
-
-  // Removed scene — preview-only ghost (still plays last render until regen).
+  // ── clip ───────────────────────────────────────────────────────────────────────
   function ghostClipEl(st, p, ghost, leftPx, widthPx) {
     const clip = el("div", "clip ghost");
     clip.style.left = leftPx + "px";
@@ -599,53 +581,59 @@
     clip.style.left = leftPx + "px";
     clip.style.width = Math.max(widthPx, 8) + "px";
 
-    // drag the clip body left/right to reorder it on the timeline (a small threshold keeps
-    // plain clicks = select; trim handle / action buttons opt out).
+    // drag clip left/right to add or remove pause before it (flush with previous = no gap).
     attachClipSelect(clip, scene.id);
-    clip.addEventListener("mousedown", (e) => {
-      if (e.button !== 0 || isClipSelectBlocked(e)) return;
-      if (e.metaKey || e.shiftKey || isAdditiveMod(e)) return;
-      const startX = e.clientX;
-      let dragging = false, drop = null;
-      const track = clip.parentNode;
-      const onMove = (ev) => {
-        const dx = ev.clientX - startX;
-        if (!dragging) {
-          if (Math.abs(dx) < REORDER_PX) return;
-          dragging = true; clip.classList.add("reordering"); document.body.classList.add("tl-reordering");
-          _reordering = true;
-          window.EditorHistory?.beginCoalesce(S);
-        }
-        clip.style.transform = `translateX(${dx}px)`;
-        drop = _dropTarget(track, clip, ev.clientX);
-        const stNow = S.get();
-        const pNow = stNow.project;
-        if (pNow) drop.x = snapPx(drop.x, timelineSnapAnchorsPx(stNow, pNow), 10);
-        let line = track.querySelector(".tl-dropline");
-        if (!line) { line = el("div", "tl-dropline"); track.append(line); }
-        line.style.left = drop.x + "px";
-      };
-      const onUp = (ev) => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        document.body.classList.remove("tl-reordering");
-        const line = track.querySelector(".tl-dropline"); if (line) line.remove();
-        const dx = ev.clientX - startX;
-        if (!dragging) return;
-        clip.style.transform = ""; clip.classList.remove("reordering");
-        _reordering = false;
-        if (Math.abs(dx) < REORDER_PX) {
+    if (index > 0) {
+      clip.title = (clip.title ? clip.title + " · " : "") + "Drag left/right to adjust spacing from the previous clip";
+      clip.addEventListener("mousedown", (e) => {
+        if (e.button !== 0 || isClipSelectBlocked(e)) return;
+        if (e.metaKey || e.shiftKey || isAdditiveMod(e)) return;
+        const prevScene = (p.scenes || [])[index - 1];
+        if (!prevScene) return;
+        const gapBefore = +(prevScene.gap_after_sec || 0);
+        const buttLeftPx = leftPx - gapBefore * pxPerSec;
+        const startX = e.clientX;
+        let dragging = false;
+        const track = clip.parentNode;
+        const onMove = (ev) => {
+          const dx = ev.clientX - startX;
+          if (!dragging) {
+            if (Math.abs(dx) < REORDER_PX) return;
+            dragging = true;
+            clip.classList.add("spacing");
+            document.body.classList.add("tl-spacing");
+            _reordering = true;
+            window.EditorHistory?.beginCoalesce(S);
+          }
+          const stNow = S.get();
+          const pNow = stNow.project;
+          const anchors = pNow ? timelineSnapAnchorsPx(stNow, pNow) : [];
+          const clampedLeft = Math.max(buttLeftPx, snapPx(buttLeftPx + gapBefore * pxPerSec + dx, anchors, 10));
+          clip.style.transform = `translateX(${clampedLeft - leftPx}px)`;
+        };
+        const onUp = (ev) => {
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
+          document.body.classList.remove("tl-spacing");
+          if (!dragging) return;
+          clip.style.transform = "";
+          clip.classList.remove("spacing");
+          _reordering = false;
+          ev.preventDefault();
+          const dx = ev.clientX - startX;
+          const stNow = S.get();
+          const pNow = stNow.project;
+          const anchors = pNow ? timelineSnapAnchorsPx(stNow, pNow) : [];
+          const clampedLeft = Math.max(buttLeftPx, snapPx(buttLeftPx + gapBefore * pxPerSec + dx, anchors, 10));
+          const finalGap = (clampedLeft - buttLeftPx) / pxPerSec;
+          S.setSceneGapAfter(prevScene.id, finalGap < 0.02 ? 0 : finalGap);
           window.EditorHistory?.endCoalesce(S);
-          return;
-        }
-        ev.preventDefault();
-        if (drop) S.moveSceneTo(scene.id, drop.idx);
-        window.EditorHistory?.endCoalesce(S);
-        track.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
+          track.addEventListener("click", (ce) => { ce.stopPropagation(); ce.preventDefault(); }, { capture: true, once: true });
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+    }
 
     // accept a media asset dragged from the bin → sets this clip's source
     clip.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("application/funpack-media")) { e.preventDefault(); clip.classList.add("drop-target"); } });
@@ -816,64 +804,12 @@
   }
 
   // ── cut line at each clip boundary (NLE-style; transition lives on clip tail) ──
-  function gapEl(st, p, seg, leftPx, widthPx) {
-    const sceneId = seg.afterSceneId;
-    const gap = el("div", "tl-gap");
-    gap.style.left = leftPx + "px";
-    gap.style.width = Math.max(widthPx, 6) + "px";
-    gap.title = "Pause before next clip - drag edge to adjust";
-    gap.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (sceneId) S.selectScene(sceneId);
-    });
-    const handle = el("div", "tl-gap-handle");
-    handle.addEventListener("mousedown", (e) => {
-      e.stopPropagation();
-      _tlEditing = true;
-      gap.classList.add("resizing");
-      const tip = el("div", "tl-gap-tip");
-      gap.append(tip);
-      const baseW = widthPx;
-      coalescedDrag(e, (dx) => {
-        const w = Math.max(0, baseW + dx);
-        gap.style.width = Math.max(w, 4) + "px";
-        tip.textContent = `${(w / pxPerSec).toFixed(2)}s pause`;
-      }, () => {
-        gap.classList.remove("resizing");
-        tip.remove();
-        _tlEditing = false;
-        const newGap = Math.max(0, (parseFloat(gap.style.width) || widthPx) / pxPerSec);
-        S.setSceneGapAfter(sceneId, newGap);
-      });
-    });
-    gap.append(handle);
-    gap.append(el("span", "tl-gap-label", "pause"));
-    return gap;
-  }
-
   function seamEl(st, p, scene, seamPx) {
     const vt = videoTransitionState(scene, p);
     const seam = el("div", "seam-cut" + (vt.active ? " has-vt vt-" + vt.type : ""));
     seam.style.left = seamPx + "px";
     if (vt.active) {
       seam.title = `${VT_SHORT[vt.type] || vt.type} · ${vt.frames}f — drag the clip edge or use inspector`;
-    }
-    const gapSec = +(scene.gap_after_sec || 0);
-    if (gapSec <= 0.001) {
-      const gapHandle = el("div", "tl-seam-gap-handle");
-      gapHandle.title = "Drag right to add a pause before the next clip";
-      gapHandle.addEventListener("mousedown", (e) => {
-        e.stopPropagation();
-        _seamDragging = true;
-        let finalGap = 0;
-        coalescedDrag(e, (dx) => {
-          finalGap = Math.max(0, dx / pxPerSec);
-        }, () => {
-          _seamDragging = false;
-          if (finalGap > 0.02) S.setSceneGapAfter(scene.id, finalGap);
-        });
-      });
-      seam.append(gapHandle);
     }
     return seam;
   }
@@ -1879,7 +1815,7 @@
   // Don't rebuild the timeline while the user is interacting with one of its controls
   // (e.g. the rating dropdown) — a store notify (autosave/progress) would close it.
   let _tlEditing = false;
-  let _reordering = false;  // a clip is being drag-reordered — never rebuild mid-drag
+  let _reordering = false;  // clip spacing drag in progress — never rebuild mid-drag
   let _seamDragging = false; // adjusting a video transition — never rebuild mid-drag
 
   function render(st) {
@@ -1914,7 +1850,7 @@
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
       const cur = S.get();
-      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-gap") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip") && !e.target.closest(".tl-ov-clip"))
+      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip") && !e.target.closest(".tl-ov-clip"))
         S.selectScene(null);
       if (cur.selectedOverlayId && !e.target.closest(".tl-ov-clip")) S.selectOverlay(null);
       if (cur.selectedAudioTrackId && !e.target.closest(".tl-aud-clip.ins")) S.selectAudioTrack(null);
@@ -1977,8 +1913,8 @@
       }
     });
     lay.forEach(({ seg, o, d }) => {
+      if (seg.kind === "gap") return;
       if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
-      else if (seg.kind === "gap") track.append(gapEl(st, p, seg, o * pxPerSec, d * pxPerSec));
       else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));
     });
     for (let i = 0; i < scenes.length - 1; i++) {

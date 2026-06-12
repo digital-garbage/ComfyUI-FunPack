@@ -461,6 +461,7 @@ input[type=number] { font-family: var(--font-mono); }
 .pm-chip.rendered.stale { background: linear-gradient(180deg, var(--amber-2), #3ab3a8); opacity: .62; }
 .pm-chip.pending { background: repeating-linear-gradient(-45deg, var(--ink-3), var(--ink-3) 4px, #1a1a1a 4px, #1a1a1a 8px); opacity: .45; }
 .pm-chip.ghost { background: repeating-linear-gradient(-45deg, #2a2418, #2a2418 4px, #3d3420 4px, #3d3420 8px); opacity: .65; }
+.pm-chip.gap { background: repeating-linear-gradient(-45deg, var(--ink-2), var(--ink-2) 4px, var(--ink-1) 4px, var(--ink-1) 8px); opacity: .35; border-right-style: dashed; }
 .pm-chip.mixed { background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 55%, #3ab3a8), #2a6a62); opacity: .72; }
 .pm-chip.carry { background: repeating-linear-gradient(-45deg, #1e2a28, #1e2a28 3px, #243532 3px, #243532 6px); opacity: .5; }
 .pm-chip.video { background: linear-gradient(180deg, #3a5a8a, #2a4468); opacity: .7; }
@@ -843,8 +844,10 @@ input[type=number] { font-family: var(--font-mono); }
 .clip::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--amber); opacity: .55; }
 .clip:hover { border-color: #4a4334; }
 .clip:active { cursor: grabbing; }
-.clip.reordering { opacity: .8; z-index: 50; cursor: grabbing; box-shadow: 0 6px 18px rgba(0,0,0,.5); transition: none; }
-body.tl-reordering { cursor: grabbing; user-select: none; }
+.clip.spacing { opacity: .85; z-index: 50; cursor: grabbing; box-shadow: 0 6px 18px rgba(0,0,0,.5); transition: none; }
+body.tl-spacing { cursor: grabbing; user-select: none; }
+.clip:not(.ghost) { cursor: grab; }
+.clip:not(.ghost).spacing { cursor: grabbing; }
 .tl-dropline { position: absolute; top: 6px; bottom: 6px; width: 2px; background: var(--amber, #e0a23a);
   box-shadow: 0 0 6px 1px rgba(224,162,58,.8); z-index: 60; pointer-events: none; }
 .tl-dd { position: relative; display: inline-block; }
