@@ -161,8 +161,8 @@
 
   function coalescedDrag(startEvt, onMove, onUp) {
     window.EditorHistory?.beginCoalesce(S);
-    onDrag(startEvt, onMove, (dx) => {
-      try { if (onUp) onUp(dx); } finally { window.EditorHistory?.endCoalesce(S); }
+    onDrag(startEvt, onMove, (dx, upEvt) => {
+      try { if (onUp) onUp(dx, upEvt); } finally { window.EditorHistory?.endCoalesce(S); }
     });
   }
 
@@ -1417,11 +1417,13 @@
       }, (dx, upEv) => {
         const snapped = snapPx(baseLeft + dx, anchors, 10);
         S.updateOverlayTrack(track.id, { start_sec: Math.max(0, snapped / pxPerSec) });
-        const hit = document.elementFromPoint(upEv.clientX, upEv.clientY);
-        const laneEl = hit?.closest?.(".tl-overlay-lane");
-        const newLaneId = laneEl?.dataset?.laneId;
-        if (newLaneId && newLaneId !== laneId) {
-          S.updateOverlayTrack(track.id, { lane_id: newLaneId }, true);
+        if (upEv) {
+          const hit = document.elementFromPoint(upEv.clientX, upEv.clientY);
+          const laneEl = hit?.closest?.(".tl-overlay-lane");
+          const newLaneId = laneEl?.dataset?.laneId;
+          if (newLaneId && newLaneId !== laneId) {
+            S.updateOverlayTrack(track.id, { lane_id: newLaneId }, true);
+          }
         }
         document.querySelectorAll(".tl-overlay-lane").forEach((l) => l.classList.remove("drop-target"));
       });
