@@ -1310,6 +1310,7 @@
   function segmentDurationSec(seg) {
     const p = state.project;
     if (!p || !seg) return 0;
+    if (seg.kind === "gap") return Math.max(0, +(seg.gapSec || 0));
     if (seg.kind === "scene") {
       const sc = seg.scene;
       if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
@@ -1343,6 +1344,10 @@
     for (const sc of (p.scenes || [])) {
       ordered.push({ kind: "scene", scene: sc, id: sc.id });
       for (const g of (byAnchor.get(sc.id) || [])) pushGhost(g);
+      const gapSec = Math.max(0, +(sc.gap_after_sec || 0));
+      if (gapSec > 0.001) {
+        ordered.push({ kind: "gap", id: `gap:${sc.id}`, afterSceneId: sc.id, gapSec });
+      }
     }
     // Orphans (stale afterSceneId) still show — appended after live clips.
     for (const g of ghosts) { if (!placed.has(g.id)) pushGhost(g); }
@@ -1479,6 +1484,16 @@
     const fps = sceneEffFps(sc, p) || 25;
     const frames = sceneEffFrames(sc, p) || 1;
     return frames / fps;
+  }
+
+  // Insert or adjust a black/silent pause after this clip (seconds).
+  function setSceneGapAfter(id, sec) {
+    if (!state.project) return;
+    const s = scene(id);
+    if (!s) return;
+    const gap = Math.max(0, +sec || 0);
+    if (Math.abs((s.gap_after_sec || 0) - gap) < 0.001) return;
+    patchScene(id, { gap_after_sec: gap });
   }
 
   // Resize a clip by setting its frame count from a target duration (seconds) × fps.
@@ -2966,6 +2981,7 @@
         tdur: tFrames > 0 ? tFrames / fps : 0,
         sceneId: sc.id,
         volume: sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1),
+        gap_after: Math.max(0, +(sc.gap_after_sec || 0)),
       };
       if (r && r.media) {
         out.push({ media: r.media, ...base });
@@ -3193,6 +3209,7 @@
       in: +c.inSec.toFixed(3), dur: +c.durationSec.toFixed(3),
       fx: c.fx, fps: c.fps, w: c.w, h: c.h, transition: c.transition, tdur: +(c.tdur || 0).toFixed(3),
       volume: c.volume, scene_id: c.sceneId,
+      gap_after: +(c.gap_after || 0).toFixed(3),
     }));
     await flushSave();  // audio tracks / keep-original live on the project — render reads it from disk
     set({
@@ -3215,7 +3232,11 @@
         state.sceneGhosts = [];
         _syncEditorStateToProject();
         let acc = 0;
-        for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
+        for (const sc of order) {
+          state.sceneRenders[sc.id] = { media: r.media, inSec: acc };
+          const dur = sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
+          acc += dur + Math.max(0, +(sc.gap_after_sec || 0));
+        }
       }
       set({
         gen: {
@@ -3545,7 +3566,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,

@@ -535,6 +535,8 @@ class Scene:
     # Saved generative state when this clip is converted to a locked ``video`` clip.
     # Restored on Convert to scene (scene → video → scene round-trip).
     scene_archive: Optional[dict] = None
+    # Editorial pause (black/silent) after this clip before the next timeline segment.
+    gap_after_sec: float = 0.0
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -563,6 +565,7 @@ class Scene:
             source_in=float(d.get("source_in") or 0),
             source_dur=d.get("source_dur"),
             scene_archive=d.get("scene_archive"),
+            gap_after_sec=float(d.get("gap_after_sec") or 0),
         )
 
     def to_dict(self) -> dict:

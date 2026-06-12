@@ -14,6 +14,7 @@
         s.video_transition, s.transition_frames, s.transition_to_next, s.effects,
         s.gen_unit_id, s.cut_offset_frames, s.source?.type, s.source?.media_ref,
         s.source_in, s.source_dur, s.rating, s.audio_volume, s.audio_separated, s.scene_archive,
+        s.gap_after_sec,
       ]),
       renders: st.sceneRenders,
       ghosts: st.sceneGhosts,
@@ -86,7 +87,7 @@
       scenes: (p.scenes || []).map((s) => [
         s.id, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
         s.audio_volume, s.audio_separated, s.source_in, s.source_dur, s.effects,
-        s.source?.type, s.source?.media_ref,
+        s.source?.type, s.source?.media_ref, s.gap_after_sec,
       ]),
       renders: st.sceneRenders,
       ghosts: st.sceneGhosts,

@@ -202,6 +202,12 @@
     for (const seg of S.buildPreviewSegments()) {
       const dur = seg.durationSec;
       const startSec = seg.offsetSec;
+      if (seg.kind === "gap") {
+        out.push({
+          blank: true, gap: true, startSec, durationSec: dur,
+        });
+        continue;
+      }
       if (seg.kind === "ghost") {
         const g = seg.ghost;
         if (!g.media) {
@@ -685,7 +691,8 @@
       const within = _phSec - _currentClip.startSec + (1 / 60);
       if (within >= _currentClip.durationSec - 0.001) {
         _phSec = _currentClip.startSec + _currentClip.durationSec;
-        _pause();
+        if (_currentClip.gap) _advance();
+        else _pause();
       } else {
         _phSec = _currentClip.startSec + within;
         _syncInsAudio();

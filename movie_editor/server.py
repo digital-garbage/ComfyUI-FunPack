@@ -627,6 +627,25 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
         acc_dur = float(clips[0].get("dur") or 0) or 0.0
         for i in range(1, n):
             prev = clips[i - 1]
+            gap = float(prev.get("gap_after") or 0)
+            if gap > 0.001:
+                gv = f"[vgap{i}]"
+                ga = f"[agap{i}]"
+                parts.append(
+                    f"color=c=black:s={cw}x{ch}:r={cfps:g}:d={gap:.3f},format=yuv420p,setsar=1{gv}"
+                )
+                parts.append(
+                    f"anullsrc=r=48000:cl=stereo:d={gap:.3f},"
+                    f"aformat=sample_fmts=fltp:channel_layouts=stereo{ga}"
+                )
+                ov = f"[vcgap{i}]"
+                parts.append(f"{acc_v}{gv}concat=n=2:v=1:a=0{ov}")
+                if keep_original:
+                    oa = f"[acgap{i}]"
+                    parts.append(f"{acc_a}{ga}concat=n=2:v=0:a=1{oa}")
+                    acc_a = oa
+                acc_v = ov
+                acc_dur += gap
             trans = (prev.get("transition") or "").strip()
             td = float(prev.get("tdur") or 0)
             dur_i = float(clips[i].get("dur") or 0) or 0.0

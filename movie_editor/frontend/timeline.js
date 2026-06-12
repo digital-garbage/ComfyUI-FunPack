@@ -816,12 +816,64 @@
   }
 
   // ── cut line at each clip boundary (NLE-style; transition lives on clip tail) ──
+  function gapEl(st, p, seg, leftPx, widthPx) {
+    const sceneId = seg.afterSceneId;
+    const gap = el("div", "tl-gap");
+    gap.style.left = leftPx + "px";
+    gap.style.width = Math.max(widthPx, 6) + "px";
+    gap.title = "Pause before next clip - drag edge to adjust";
+    gap.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (sceneId) S.selectScene(sceneId);
+    });
+    const handle = el("div", "tl-gap-handle");
+    handle.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      _tlEditing = true;
+      gap.classList.add("resizing");
+      const tip = el("div", "tl-gap-tip");
+      gap.append(tip);
+      const baseW = widthPx;
+      coalescedDrag(e, (dx) => {
+        const w = Math.max(0, baseW + dx);
+        gap.style.width = Math.max(w, 4) + "px";
+        tip.textContent = `${(w / pxPerSec).toFixed(2)}s pause`;
+      }, () => {
+        gap.classList.remove("resizing");
+        tip.remove();
+        _tlEditing = false;
+        const newGap = Math.max(0, (parseFloat(gap.style.width) || widthPx) / pxPerSec);
+        S.setSceneGapAfter(sceneId, newGap);
+      });
+    });
+    gap.append(handle);
+    gap.append(el("span", "tl-gap-label", "pause"));
+    return gap;
+  }
+
   function seamEl(st, p, scene, seamPx) {
     const vt = videoTransitionState(scene, p);
     const seam = el("div", "seam-cut" + (vt.active ? " has-vt vt-" + vt.type : ""));
     seam.style.left = seamPx + "px";
     if (vt.active) {
       seam.title = `${VT_SHORT[vt.type] || vt.type} · ${vt.frames}f — drag the clip edge or use inspector`;
+    }
+    const gapSec = +(scene.gap_after_sec || 0);
+    if (gapSec <= 0.001) {
+      const gapHandle = el("div", "tl-seam-gap-handle");
+      gapHandle.title = "Drag right to add a pause before the next clip";
+      gapHandle.addEventListener("mousedown", (e) => {
+        e.stopPropagation();
+        _seamDragging = true;
+        let finalGap = 0;
+        coalescedDrag(e, (dx) => {
+          finalGap = Math.max(0, dx / pxPerSec);
+        }, () => {
+          _seamDragging = false;
+          if (finalGap > 0.02) S.setSceneGapAfter(scene.id, finalGap);
+        });
+      });
+      seam.append(gapHandle);
     }
     return seam;
   }
@@ -1862,7 +1914,7 @@
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
       const cur = S.get();
-      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip") && !e.target.closest(".tl-ov-clip"))
+      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-gap") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip") && !e.target.closest(".tl-ov-clip"))
         S.selectScene(null);
       if (cur.selectedOverlayId && !e.target.closest(".tl-ov-clip")) S.selectOverlay(null);
       if (cur.selectedAudioTrackId && !e.target.closest(".tl-aud-clip.ins")) S.selectAudioTrack(null);
@@ -1926,11 +1978,12 @@
     });
     lay.forEach(({ seg, o, d }) => {
       if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
+      else if (seg.kind === "gap") track.append(gapEl(st, p, seg, o * pxPerSec, d * pxPerSec));
       else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));
     });
     for (let i = 0; i < scenes.length - 1; i++) {
-      const nextSeg = segs.find((s) => s.kind === "scene" && s.scene.id === scenes[i + 1].id);
-      if (nextSeg) track.append(seamEl(st, p, scenes[i], nextSeg.offsetSec * pxPerSec));
+      const prevSeg = segs.find((s) => s.kind === "scene" && s.scene.id === scenes[i].id);
+      if (prevSeg) track.append(seamEl(st, p, scenes[i], (prevSeg.offsetSec + prevSeg.durationSec) * pxPerSec));
     }
     if (!lay.length) track.append(el("div", "tl-emptyhint", "No clips yet — add one from the toolbar."));
     tracks.append(track);

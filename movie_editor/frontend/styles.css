@@ -988,6 +988,44 @@ body.tl-reordering { cursor: grabbing; user-select: none; }
   background: var(--line-2); border-radius: 1px;
 }
 .seam-cut.has-vt { background: color-mix(in srgb, var(--teal) 55%, var(--line)); }
+.tl-seam-gap-handle {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 10px;
+  transform: translateX(-50%); cursor: ew-resize; pointer-events: auto;
+}
+.tl-seam-gap-handle:hover { background: color-mix(in srgb, var(--amber) 25%, transparent); }
+
+/* editorial pause between clips */
+.tl-gap {
+  position: absolute; top: 10px; bottom: 10px; z-index: 1;
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--ink-2) 85%, transparent),
+    color-mix(in srgb, var(--ink-2) 85%, transparent) 4px,
+    color-mix(in srgb, var(--ink-1) 85%, transparent) 4px,
+    color-mix(in srgb, var(--ink-1) 85%, transparent) 8px
+  );
+  border: 1px dashed color-mix(in srgb, var(--faint) 60%, transparent);
+  border-radius: 4px; box-sizing: border-box; cursor: pointer;
+}
+.tl-gap:hover, .tl-gap.resizing { border-color: var(--amber); }
+.tl-gap-label {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint);
+  pointer-events: none; user-select: none;
+}
+.tl-gap-handle {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2;
+}
+.tl-gap-handle::after {
+  content: ""; position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+  width: 2px; height: 20px; background: var(--amber); border-radius: 2px; opacity: 0.6;
+}
+.tl-gap:hover .tl-gap-handle::after, .tl-gap.resizing .tl-gap-handle::after { opacity: 1; }
+.tl-gap-tip {
+  position: absolute; bottom: 2px; right: 2px; background: var(--ink-0); border: 1px solid var(--amber);
+  color: var(--amber); font-family: var(--font-mono); font-size: 10px; padding: 1px 5px;
+  border-radius: 4px; white-space: nowrap; pointer-events: none; z-index: 3;
+}
 
 /* transition tail on the outgoing clip (NLE-style overlap) */
 .clip-vt-tail {

@@ -426,6 +426,18 @@
       (v) => S.patchScene(scene.id, { transition_to_next: v }),
       { noneLabel: "— default cut —",
         title: "Prompt marker before the next scene when Studio splits the montage (not the video blend)" })));
+
+    const gapIn = el("input");
+    gapIn.type = "number";
+    gapIn.min = "0";
+    gapIn.step = "0.05";
+    gapIn.value = scene.gap_after_sec || 0;
+    gapIn.oninput = () => S.patchSceneQuiet(scene.id, {
+      gap_after_sec: Math.max(0, parseFloat(gapIn.value || "0")),
+    });
+    body.append(field("Pause after (s)", gapIn));
+    body.append(el("div", "insp-hint",
+      "Black/silent gap before the next clip. Drag the pause block on the timeline or the seam handle."));
   }
 
   function renderSceneCharacters(st, scene, parent) {
