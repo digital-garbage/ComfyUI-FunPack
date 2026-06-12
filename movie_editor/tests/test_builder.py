@@ -237,28 +237,3 @@ def test_live_preview_wires_preview_vae_separately():
     assert graph["sampler"]["inputs"]["preview_vae"] == ["slot_pv", 0]
     assert any("preview_vae" in w for w in report["wired"])
     assert report["blocking"] == []
-
-
-def test_live_preview_port_wire_from_models_slot():
-    models = {
-        "full_control": True,
-        "slots": [
-            {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
-            {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
-            {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {
-                "VAE": ["port:FunPackLTXAVSceneChainSampler.vae", "port:LTXVAudioVAEDecode.audio_vae"],
-            }},
-            {"id": "pv", "node_class": "VaeLoader", "inputs": {}, "wires": {
-                "VAE": "port:FunPackLTXAVSceneChainSampler.preview_vae",
-            }},
-            {"id": "ip", "node_class": "ImgProc", "inputs": {},
-             "wires": {"latent": "port:FunPackStudio.latent",
-                       "Latent": "port:LTXVConcatAVLatent.audio_latent",
-                       "output_image": "port:FunPackStudio.source_image"},
-             "input_sources": {"vae": "out:v:VAE"}},
-            {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:ip:image"}},
-        ],
-    }
-    graph, report = builder.build(OI, models, PARAMS)
-    assert graph["sampler"]["inputs"]["preview_vae"] == ["slot_pv", 0]
-    assert report["blocking"] == []

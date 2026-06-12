@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 from . import config
-from . import pipeline_wiring
 
 # Types that are graph CONNECTIONS (wired automatically), not user widgets.
 LINK_TYPES = {
@@ -81,7 +80,6 @@ ROLES: dict[str, dict] = {
     "unet":          {"label": "Unet / Diffusion Model", "category": "Loaders",  "output": "MODEL"},
     "lora":          {"label": "LoRA",                    "category": "Loaders",  "output": "MODEL", "input": "MODEL"},
     "video_vae":     {"label": "Video VAE",               "category": "Loaders",  "output": "VAE"},
-    "preview_vae":   {"label": "Live Preview VAE",        "category": "Loaders",  "output": "VAE"},
     "audio_vae":     {"label": "Audio VAE",               "category": "Loaders",  "output": "VAE"},
     "clip":          {"label": "CLIP / Text Encoder",     "category": "Loaders",  "output": "CLIP"},
     "clip_vision":   {"label": "CLIP Vision",             "category": "Loaders",  "output": "CLIP_VISION"},
@@ -359,8 +357,6 @@ def pipeline_ports(object_info: dict | None = None) -> list[dict]:
     if object_info:
         for cls, label in CORE_PORT_NODES:
             ports += ports_from_object_info(object_info, cls, label)
-    for p in ports:
-        p["label"] = pipeline_wiring.port_label(p["id"])
     return ports
 
 

@@ -37,42 +37,6 @@
   const listeners = new Set();
   const SAVE_DEBOUNCE_MS = 5000;        // discrete edits (dropdowns, toggles)
   const SAVE_SILENT_DEBOUNCE_MS = 20000; // typing in fields — flushed on blur / generate
-  const LIVE_PREVIEW_PORT = "port:FunPackLTXAVSceneChainSampler.preview_vae";
-
-  function _modelWireTargets(raw) {
-    if (!raw) return [];
-    return Array.isArray(raw) ? raw.slice() : [raw];
-  }
-
-  function _clearLivePreviewWiresInModels(models, exceptSlotId, exceptOut) {
-    for (const s of models.slots || []) {
-      s.wires = s.wires || {};
-      for (const outName of Object.keys(s.wires)) {
-        if (s.id === exceptSlotId && outName === exceptOut) continue;
-        const kept = _modelWireTargets(s.wires[outName]).filter((t) => t !== LIVE_PREVIEW_PORT);
-        if (kept.length) s.wires[outName] = kept;
-        else delete s.wires[outName];
-      }
-    }
-  }
-
-  function _applyLivePreviewWire(models, slotId, vaeOutput) {
-    _clearLivePreviewWiresInModels(models, slotId, vaeOutput);
-    const slot = (models.slots || []).find((s) => s.id === slotId);
-    if (!slot) return;
-    slot.wires = slot.wires || {};
-    const out = vaeOutput || "VAE";
-    const targets = _modelWireTargets(slot.wires[out]);
-    if (!targets.includes(LIVE_PREVIEW_PORT)) targets.push(LIVE_PREVIEW_PORT);
-    slot.wires[out] = targets;
-  }
-
-  function _livePreviewConfigured() {
-    const lp = state.models?.live_preview || {};
-    if (lp.slot_id) return true;
-    return (state.models?.slots || []).some((s) =>
-      Object.values(s.wires || {}).some((raw) => _modelWireTargets(raw).includes(LIVE_PREVIEW_PORT)));
-  }
   let saveTimer = null;
   let _localDirty = false;       // local edits newer than the in-flight save snapshot
   let _commitPromise = null;     // avoid overlapping saves stomping newer anchor edits
@@ -2725,7 +2689,7 @@
             });
           }
         } catch (_) {}
-        if (_livePreviewConfigured()) {
+        if (state.models?.live_preview?.enabled) {
           try {
             const lp = await API.livePreview();
             if (lp?.ready && lp.url) {
@@ -3366,16 +3330,6 @@
       ...(state.models.live_preview || {}),
       enabled: !!enabled,
     };
-    if (!enabled) {
-      _clearLivePreviewWiresInModels(state.models, null, null);
-      state.models.live_preview.slot_id = null;
-    } else if (state.models.live_preview.slot_id) {
-      _applyLivePreviewWire(
-        state.models,
-        state.models.live_preview.slot_id,
-        state.models.live_preview.vae_output,
-      );
-    }
     if (state.project) {
       state.project.models = JSON.parse(JSON.stringify(state.models));
     }
@@ -3396,7 +3350,6 @@
       vae_output: vaeOutput || "VAE",
       enabled: true,
     };
-    _applyLivePreviewWire(state.models, slotId, vaeOutput);
     if (state.project) {
       state.project.models = JSON.parse(JSON.stringify(state.models));
     }

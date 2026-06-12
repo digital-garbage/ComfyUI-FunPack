@@ -166,14 +166,10 @@
       const vaeOuts = (spec.outputs || []).filter((o) => o.type === "VAE");
       if (!vaeOuts.length) continue;
       const outName = vaeOuts.find((o) => o.name === "VAE")?.name || vaeOuts[0].name;
-      const cls = s.node_class || "?";
-      const name = (s.label || "").trim();
-      const label = name && name !== cls ? `${name} — ${cls}` : cls;
-      const role = s.role_label || s.role;
       options.push({
         value: `${s.id}\x1f${outName}`,
-        label,
-        hint: [role, `${outName} output`].filter(Boolean).join(" · "),
+        label: s.label || s.node_class || s.id,
+        hint: `${outName} · ${s.node_class}`,
       });
     }
     if (!options.length) {

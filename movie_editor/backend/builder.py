@@ -81,7 +81,6 @@ OPEN_PORTS: list[tuple[str, str, str, bool]] = [   # (core_id, input, type, requ
     ("studio", "source_image", "IMAGE", False),
     ("studio", "latent", "LATENT", False),
     ("sampler", "vae", "VAE", True),
-    ("sampler", "preview_vae", "VAE", False),
     ("concat", "audio_latent", "LATENT", True),
     ("audiodec", "audio_vae", "VAE", True),
 ]
@@ -207,9 +206,6 @@ def _wire_live_preview_vae(
     if not lp.get("enabled"):
         return
     if "sampler" not in graph:
-        return
-    existing = graph["sampler"].get("inputs", {}).get("preview_vae")
-    if isinstance(existing, list):
         return
     sid = lp.get("slot_id")
     if not sid:
@@ -595,14 +591,13 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
 
 def _port_index(object_info: dict) -> dict[str, tuple[str, str]]:
     """Map pipeline-port id ('Class.input' / 'FunPackStudio.input') -> (core_id, input)."""
+    cls_to_core = {v: k for k, v in CORE.items()}
     idx: dict[str, tuple[str, str]] = {}
     for cid, cls in CORE.items():
         nd = object_info.get(cls)
         for ci in connection_inputs(nd or {}):
             idx[f"{cls}.{ci['name']}"] = (cid, ci["name"])
-    # Authoritative open-core ports (includes optional sockets like preview_vae).
-    for port_id, (cid, inp) in pipeline_wiring.PORT_TO_OPEN_CORE.items():
-        idx[port_id] = (cid, inp)
+    # FunPack ports use the class name directly too (already covered above).
     return idx
 
 
@@ -666,9 +661,6 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
     L = lambda nid: label.get(nid, nid)
 
     targets = list(OPEN_PORTS)  # (core_id, input, type, required)
-    # Live preview VAE is explicit-only (Models wire or live_preview picker), never auto-wired.
-    targets = [(nid, inp, t, req) for (nid, inp, t, req) in targets
-               if not (nid == "sampler" and inp == "preview_vae")]
     for s in slots:  # slot connection inputs (e.g. image-proc vae/image/length)
         if active_slots is not None and s["id"] not in active_slots:
             continue  # inert slot (feeds nothing) — don't auto-wire or block on its inputs
