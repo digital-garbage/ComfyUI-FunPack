@@ -133,8 +133,8 @@
   let tlFps = 25;
 
   // ── helpers ──────────────────────────────────────────────────────────────────
-  const sFps = (sc, p) => ((sc.fps_mode !== "project" && sc.fps != null) ? sc.fps : p.frame_rate) || 25;
-  const sFrames = (sc, p) => ((sc.frames_mode !== "project" && sc.frames != null) ? sc.frames : p.num_frames_per_scene) || 1;
+  const sFps = (sc, p) => (S.sceneEffFps ? S.sceneEffFps(sc, p) : p.frame_rate) || 25;
+  const sFrames = (sc, p) => (S.sceneEffFrames ? S.sceneEffFrames(sc, p) : p.num_frames_per_scene) || 1;
   const sDur = (sc, p) => (S.sceneDurationSec ? S.sceneDurationSec(sc) : (sFrames(sc, p) / sFps(sc, p)));
 
   function snapPx(x, anchors, threshold) {
@@ -731,6 +731,9 @@
 
     // right-edge trim → new duration → frames recomputed (duration × fps).
     const locked = scene.frames_mode === "custom";
+    const baseDur = sDur(scene, p);
+    const baseLeftPx = leftPx;
+    const baseWidthPx = widthPx;
     const leftHandle = el("div", "clip-trim clip-trim-left" + (locked ? " locked" : ""));
     leftHandle.title = locked ? "Length locked (custom mode)" : "Drag to trim start · Alt+drag to slip source when rendered";
     if (!locked) {
@@ -741,13 +744,22 @@
         const anchors = timelineSnapAnchorsPx(st, p);
         let finalDelta = 0;
         coalescedDrag(e, (dx) => {
-          const snappedLeft = snapPx(leftPx + dx, anchors, 10);
-          finalDelta = (snappedLeft - leftPx) / pxPerSec;
+          const snappedLeft = snapPx(baseLeftPx + dx, anchors, 10);
+          finalDelta = (snappedLeft - baseLeftPx) / pxPerSec;
+          if (finalDelta > 0) {
+            clip.style.left = snappedLeft + "px";
+            clip.style.width = Math.max(8, (baseDur - finalDelta) * pxPerSec) + "px";
+          } else {
+            clip.style.left = baseLeftPx + "px";
+            clip.style.width = baseWidthPx + "px";
+          }
           tip.textContent = e.altKey && hasRender(st, scene.id)
             ? `slip ${finalDelta >= 0 ? "+" : ""}${finalDelta.toFixed(2)}s`
-            : `trim ${(-finalDelta).toFixed(2)}s`;
+            : `trim ${Math.max(0, finalDelta).toFixed(2)}s`;
         }, () => {
           clip.classList.remove("trimming"); tip.remove();
+          clip.style.left = baseLeftPx + "px";
+          clip.style.width = baseWidthPx + "px";
           if (e.altKey && hasRender(st, scene.id)) {
             if (Math.abs(finalDelta) > 0.02) S.slipScene(scene.id, finalDelta);
           } else if (finalDelta > 0.02) {
@@ -760,25 +772,25 @@
 
     const handle = el("div", "clip-trim" + (locked ? " locked" : ""));
     handle.title = locked
-      ? "Length is Custom — change it in the inspector (set Frames to Inherit timeline to trim here)"
+      ? "Length is Custom — change it in the inspector (set Frames to Inherit project to trim here)"
       : "Drag to trim · length = duration × fps";
-    const baseDur = sDur(scene, p);
     if (locked) { clip.append(handle); return clip; }
     handle.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
       clip.classList.add("trimming");
       const tip = el("div", "trim-tip"); clip.append(tip);
       const anchors = timelineSnapAnchorsPx(st, p);
       let finalDur = baseDur;
       coalescedDrag(e, (dx) => {
-        const rightPx = snapPx(leftPx + baseDur * pxPerSec + dx, anchors, 10);
-        finalDur = Math.max(0.1, (rightPx - leftPx) / pxPerSec);
+        const rightPx = snapPx(baseLeftPx + baseDur * pxPerSec + dx, anchors, 10);
+        finalDur = Math.max(0.1, (rightPx - baseLeftPx) / pxPerSec);
         const w = finalDur * pxPerSec;
         clip.style.width = Math.max(w, 8) + "px";
         const fps = sFps(scene, p);
         tip.textContent = `${timecode(finalDur, fps)} · ${S.snapFrames(finalDur * fps)}f`;
       }, () => {
         clip.classList.remove("trimming"); tip.remove();
-        S.resizeScene(scene.id, finalDur);
+        if (Math.abs(finalDur - baseDur) > 0.02) S.resizeScene(scene.id, finalDur);
       });
     });
     clip.append(handle);

@@ -507,8 +507,8 @@ class Scene:
     #   "project"  → ignore the per-scene value, use the project global.
     #   "timeline" → use the per-scene value; the timeline trim handle writes it live.
     #   "custom"   → use the per-scene value; the timeline trim handle is locked.
-    # Defaults: length follows the timeline (trim-derived), fps follows the project.
-    frames_mode: str = "timeline"
+    # Defaults: length and fps follow project until trimmed (timeline) or set in inspector (custom).
+    frames_mode: str = "project"
     fps_mode: str = "project"
     width: Optional[int] = None
     height: Optional[int] = None
@@ -549,7 +549,7 @@ class Scene:
             audio_separated=bool(d.get("audio_separated", False)),
             frames=d.get("frames"),
             fps=d.get("fps"),
-            frames_mode=str(d.get("frames_mode") or "timeline"),
+            frames_mode=str(d.get("frames_mode") or "project"),
             fps_mode=str(d.get("fps_mode") or "project"),
             width=d.get("width"),
             height=d.get("height"),
@@ -570,14 +570,14 @@ class Scene:
         return d
 
     def eff_frames(self, project: "Project") -> int:
-        if self.frames_mode == "project" or self.frames is None:
-            return project.num_frames_per_scene
-        return self.frames
+        if self.frames is not None:
+            return self.frames
+        return project.num_frames_per_scene
 
     def eff_fps(self, project: "Project") -> int:
-        if self.fps_mode == "project" or self.fps is None:
-            return project.frame_rate
-        return self.fps
+        if self.fps is not None:
+            return self.fps
+        return project.frame_rate
 
 
 @dataclass

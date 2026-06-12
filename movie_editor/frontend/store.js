@@ -780,18 +780,59 @@
     return _commitPromise;
   }
 
+  function _sceneHasManualSource(sc) {
+    if (!sc?.source) return false;
+    if (isVideoClip(sc)) return true;
+    const t = sc.source.type;
+    if (t === "image" || t === "v2v" || t === "video") return true;
+    return t === "mixed" && !!sc.source.media_ref;
+  }
+
+  function _propagateProjectSettingsToScenes(before, patch) {
+    const p = state.project;
+    if (!p) return;
+    const touches = ["num_frames_per_scene", "frame_rate", "width", "height"].some((k) => k in patch);
+    if (!touches) return;
+    for (const sc of p.scenes || []) {
+      if (_sceneHasManualSource(sc)) continue;
+      if (patch.num_frames_per_scene != null && (sc.frames_mode || "project") === "project") {
+        sc.frames = null;
+      }
+      if (patch.frame_rate != null && (sc.fps_mode || "project") === "project") {
+        sc.fps = null;
+      }
+      if (patch.width != null && (sc.width == null || sc.width === before.width)) sc.width = null;
+      if (patch.height != null && (sc.height == null || sc.height === before.height)) sc.height = null;
+    }
+  }
+
   function patchProject(patch) {
     if (!state.project) return;
     _historyRecord();
+    const before = {
+      num_frames_per_scene: state.project.num_frames_per_scene,
+      frame_rate: state.project.frame_rate,
+      width: state.project.width,
+      height: state.project.height,
+    };
     Object.assign(state.project, patch);
+    _propagateProjectSettingsToScenes(before, patch);
     if (_patchAffectsCombinedPrompt(patch)) syncGlobalPromptFromTimeline();
     notify();
     scheduleSave();
   }
   function patchProjectQuiet(patch) {
     if (!state.project) return;
+    const before = {
+      num_frames_per_scene: state.project.num_frames_per_scene,
+      frame_rate: state.project.frame_rate,
+      width: state.project.width,
+      height: state.project.height,
+    };
     Object.assign(state.project, patch);
+    _propagateProjectSettingsToScenes(before, patch);
     if (_patchAffectsCombinedPrompt(patch)) syncGlobalPromptFromTimeline();
+    if (["num_frames_per_scene", "frame_rate", "width", "height"].some((k) => k in patch)) notify();
     scheduleSaveSilent();
   }
 
@@ -997,7 +1038,7 @@
     if (!state.project) return;
     _historyRecord();
     const srcType = window.PipelineCaps?.defaultSceneSourceType(state) || "carry";
-    const s = { text: "", transition_to_next: "", source: { type: srcType }, excluded: false };
+    const s = { text: "", transition_to_next: "", source: { type: srcType }, excluded: false, frames_mode: "project", fps_mode: "project" };
     state.project.scenes.push(s);
     window.Timeline?.requestAutoFit?.();
     notify(); scheduleSave(); // server assigns id; reselect after commit
@@ -1351,17 +1392,31 @@
   // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
   function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
 
+  function sceneEffFrames(sc, project) {
+    const p = project || state.project;
+    if (!sc || !p) return p?.num_frames_per_scene || 97;
+    return sc.frames != null ? sc.frames : p.num_frames_per_scene;
+  }
+
+  function sceneEffFps(sc, project) {
+    const p = project || state.project;
+    if (!sc || !p) return p?.frame_rate || 25;
+    return sc.fps != null ? sc.fps : p.frame_rate;
+  }
+
   function trimSceneLeft(id, trimSec) {
     if (!state.project) return;
     const s = scene(id); if (!s || s.frames_mode === "custom") return;
-    const fps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
-    const curFrames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
-    const trimFrames = snapFrames(Math.max(0.05, trimSec) * fps);
-    if (trimFrames >= curFrames - 8) return;
+    const fps = sceneEffFps(s);
+    const curFrames = sceneEffFrames(s);
+    const trimFrames = Math.max(1, Math.round(Math.max(0.05, trimSec) * fps));
+    const nextFrames = snapFrames(Math.max(9, curFrames - trimFrames));
+    if (nextFrames >= curFrames) return;
     _historyRecord();
-    s.frames = snapFrames(curFrames - trimFrames);
-    s.source_in = (s.source_in || 0) + trimFrames / fps;
-    if (s.frames_mode == null || s.frames_mode === "project") s.frames_mode = "timeline";
+    const actualTrimFrames = curFrames - nextFrames;
+    s.frames = nextFrames;
+    s.source_in = (s.source_in || 0) + actualTrimFrames / fps;
+    if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
     notify();
     scheduleSave();
   }
@@ -1383,23 +1438,22 @@
   function sceneDurationSec(sc) {
     const p = state.project; if (!p || !sc) return 0;
     if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
-    const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
-    const frames = (sc.frames_mode !== "project" && sc.frames != null ? sc.frames : p.num_frames_per_scene) || 1;
+    const fps = sceneEffFps(sc, p) || 25;
+    const frames = sceneEffFrames(sc, p) || 1;
     return frames / fps;
   }
 
   // Resize a clip by setting its frame count from a target duration (seconds) × fps.
-  // Uses silent save so the drag handle isn't interrupted by a re-render mid-drag.
   function resizeScene(id, durationSec) {
     if (!state.project) return;
     const s = scene(id); if (!s) return;
     if (s.frames_mode === "custom") return;
     _historyRecord();
-    const fps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
+    const fps = sceneEffFps(s);
     s.frames = snapFrames(Math.max(1, durationSec) * fps);
-    // Dragging the trim handle opts the scene into timeline-driven length.
-    if (s.frames_mode == null || s.frames_mode === "project") s.frames_mode = "timeline";
+    if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
     _syncSeparatedAudioTracks();
+    notify();
     scheduleSaveSilent();
   }
 
@@ -1411,8 +1465,8 @@
     const arr = state.project.scenes;
     const i = arr.findIndex((s) => s.id === id); if (i < 0) return;
     const s = arr[i];
-    const effFps = (s.fps_mode !== "project" && s.fps != null) ? s.fps : state.project.frame_rate;
-    let frames = s.frames != null ? s.frames : state.project.num_frames_per_scene;
+    const effFps = sceneEffFps(s);
+    let frames = sceneEffFrames(s);
     if (isVideoClip(s) && s.source_dur != null) frames = snapFrames(s.source_dur * effFps);
     const cut = snapFrames(atFrames != null ? atFrames : frames / 2);
     if (cut <= 9 || cut >= frames) return;
@@ -3442,7 +3496,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, splitScene, snapFrames, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,

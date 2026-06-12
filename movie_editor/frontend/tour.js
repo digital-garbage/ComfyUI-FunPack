@@ -124,7 +124,7 @@
           effects: {},
           audio_volume: 1,
           audio_separated: false,
-          frames_mode: "timeline",
+          frames_mode: "project",
           fps_mode: "project",
           source: { type: "empty", media_ref: null },
           rating: "good",
@@ -145,7 +145,7 @@
           effects: {},
           audio_volume: 1,
           audio_separated: true,
-          frames_mode: "timeline",
+          frames_mode: "project",
           fps_mode: "project",
           source: { type: "video", media_ref: "tour-media-video" },
           rating: "",
@@ -166,7 +166,7 @@
           effects: {},
           audio_volume: 1,
           audio_separated: false,
-          frames_mode: "timeline",
+          frames_mode: "project",
           fps_mode: "project",
           source: { type: "carry", media_ref: null },
           rating: "",
@@ -591,8 +591,16 @@
       banner.append(exitBtn);
       this.root.append(banner);
       document.body.appendChild(this.root);
-      window.addEventListener("resize", this._onResize = () => this.renderStep());
-      window.addEventListener("scroll", this._onScroll = () => this.renderStep(), true);
+      window.addEventListener("resize", this._onResize = () => {
+        const step = STEPS[this.step];
+        if (step?.type === "faq") {
+          this.positionCardCenter();
+          this.card.style.maxWidth = "640px";
+          return;
+        }
+        this.renderStep();
+      });
+      window.addEventListener("scroll", this._onScroll = () => this.reposition(), true);
       this.renderStep();
     },
 

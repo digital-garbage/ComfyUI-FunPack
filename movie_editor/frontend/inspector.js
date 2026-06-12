@@ -94,11 +94,13 @@
     frames: { label: "Frames", projKey: "num_frames_per_scene", snap: (v) => S.snapFrames(v) },
     fps:    { label: "FPS",    projKey: "frame_rate",          snap: (v) => Math.max(1, v) },
   };
-  const LEN_DEFAULT_MODE = { frames: "timeline", fps: "project" };
+  const LEN_DEFAULT_MODE = { frames: "project", fps: "project" };
 
   function modeOf(scene, kind) { return scene[kind + "_mode"] || LEN_DEFAULT_MODE[kind]; }
   function effOf(scene, kind) {
     const m = LEN_META[kind], p = S.get().project;
+    if (kind === "frames" && S.sceneEffFrames) return S.sceneEffFrames(scene, p);
+    if (kind === "fps" && S.sceneEffFps) return S.sceneEffFps(scene, p);
     return modeOf(scene, kind) !== "project" && scene[kind] != null ? scene[kind] : p[m.projKey];
   }
 
@@ -113,8 +115,8 @@
       .forEach(([v, l]) => { const o = el("option", null, l); o.value = v; if (v === mode) o.selected = true; sel.append(o); });
     sel.onchange = () => {
       const patch = { [kind + "_mode"]: sel.value };
-      // Seed the per-scene value from the current effective value when leaving "project".
-      if (sel.value !== "project" && scene[kind] == null) patch[kind] = effOf(scene, kind);
+      if (sel.value === "project") patch[kind] = null;
+      else if (scene[kind] == null) patch[kind] = effOf(scene, kind);
       S.patchScene(scene.id, patch);
     };
     wrap.append(sel);
