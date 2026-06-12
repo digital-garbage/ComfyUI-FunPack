@@ -130,8 +130,13 @@
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
-    generate: (id, onlyScene, sceneIds, resetSession) =>
-      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession }),
+    generate: (id, onlyScene, sceneIds, resetSession, timelineSnapshot) =>
+      j("POST", API(`/projects/${id}/generate`), {
+        only_scene: onlyScene || null,
+        scene_ids: sceneIds || null,
+        reset_session: !!resetSession,
+        timeline_snapshot: timelineSnapshot || null,
+      }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
     livePreview: () => j("GET", API("/live-preview")),
@@ -156,6 +161,7 @@
           type: m.type || "output",
           render_in: String(spec.renderIn != null ? spec.renderIn : 0),
         });
+        if (spec.cacheBust != null) q.set("v", String(spec.cacheBust));
         u += "?" + q.toString();
       }
       return u;

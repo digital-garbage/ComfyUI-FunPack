@@ -200,10 +200,33 @@ def _scene_playback_clip_spec(
 _preview_segment_cache: dict[str, str] = {}
 
 
-def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
+def _invalidate_preview_segment_cache(pid: str) -> None:
+    """Drop cached ffmpeg trims when a project re-generates or source files change."""
+    import os
+    prefix = f"{pid}:"
+    for key in list(_preview_segment_cache.keys()):
+        if not key.startswith(prefix):
+            continue
+        cached = _preview_segment_cache.pop(key, None)
+        if cached:
+            try:
+                os.unlink(cached)
+            except OSError:
+                pass
+
+
+def _source_mtime(path: str) -> int:
+    import os
+    try:
+        return int(os.path.getmtime(path))
+    except OSError:
+        return 0
+
+
+def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict, *, src_mtime: int = 0) -> str:
     return (
         f"{pid}:{scene_id}:{clip.get('filename')}:{clip.get('subfolder') or ''}:"
-        f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}"
+        f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}:mt{int(src_mtime or 0)}"
     )
 
 
@@ -334,6 +357,40 @@ def _parse_prompt_variants(prompt: str, seed: int) -> tuple[dict, dict]:
         },
         errors,
     )
+
+
+def _timeline_snapshot_mismatch(snapshot: Optional[dict], target: Project) -> Optional[str]:
+    """Return a short label when the saved project does not match the editor snapshot."""
+    from .backend.timeline import is_generative_scene, source_type
+
+    if not isinstance(snapshot, dict):
+        return None
+    exp_by_id: dict[str, dict] = {}
+    for raw in snapshot.get("scenes") or []:
+        if isinstance(raw, dict) and raw.get("id"):
+            exp_by_id[str(raw["id"])] = raw
+    if not exp_by_id:
+        return None
+    exp_anchor = str(snapshot.get("anchor") or "").strip()
+    if exp_anchor != str(getattr(target, "anchor", None) or "").strip():
+        return "project anchor"
+    for sc in target.scenes:
+        if sc.excluded or not is_generative_scene(sc):
+            continue
+        sid = str(sc.id)
+        if sid not in exp_by_id:
+            continue
+        exp = exp_by_id[sid]
+        if str(exp.get("text") or "") != str(sc.text or ""):
+            return f"scene {sid} prompt"
+        exp_src = exp.get("source") if isinstance(exp.get("source"), dict) else {}
+        st = source_type(sc)
+        if str(exp_src.get("type") or "carry") != st:
+            return f"scene {sid} source mode"
+        ref = getattr(sc.source, "media_ref", None) if sc.source else None
+        if (exp_src.get("media_ref") or None) != ref:
+            return f"scene {sid} anchor image"
+    return None
 
 
 def _project_models(p: Optional[Project]) -> dict:
@@ -1364,13 +1421,23 @@ if web is not None and PromptServer is not None:
     # --- API: generate / status / result ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/generate")
     async def _generate(req):
-        p = _project_or_404(req.match_info["pid"])
+        pid = req.match_info["pid"]
+        _invalidate_preview_segment_cache(pid)
+        p = _project_or_404(pid)
         body = await req.json() if req.can_read_body else {}
         scene_ids = body.get("scene_ids")
         if scene_ids:
             target = _segment(p, scene_ids)
         else:
             target = _solo(p, body.get("only_scene"))
+        mismatch = _timeline_snapshot_mismatch(body.get("timeline_snapshot"), target)
+        if mismatch:
+            return web.json_response({
+                "detail": (
+                    f"Timeline on the server does not match the editor ({mismatch}). "
+                    "Wait for save to finish, reload the project, then generate again."
+                ),
+            }, status=409)
         try:
             validation = bridge.validate_generation_prompt(p, target)
         except Exception as e:  # noqa: BLE001
@@ -1647,10 +1714,15 @@ if web is not None and PromptServer is not None:
             clip = _scene_playback_clip_spec(proj, scene_id, render_override=render_override)
         except KeyError as e:
             return web.json_response({"detail": str(e)}, status=404)
-        key = _preview_segment_cache_key(pid, scene_id, clip)
+        try:
+            src_path = _resolve_clip_src_path(clip)
+        except FileNotFoundError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        src_mtime = _source_mtime(src_path)
+        key = _preview_segment_cache_key(pid, scene_id, clip, src_mtime=src_mtime)
         cached = _preview_segment_cache.get(key)
         if cached and os.path.isfile(cached):
-            return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=3600"})
+            return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=60"})
         try:
             import folder_paths
             tempdir = folder_paths.get_temp_directory()
@@ -1662,14 +1734,13 @@ if web is not None and PromptServer is not None:
             f"funpack_preview_{pid[:8]}_{scene_id}_{int(_time.time() * 1000)}.mp4",
         )
         try:
-            src_path = _resolve_clip_src_path(clip)
             _ffmpeg_trim_clip(src_path, out_path, clip.get("in"), clip.get("dur"))
         except FileNotFoundError as e:
             return web.json_response({"detail": str(e)}, status=400)
         except RuntimeError as e:
             return web.json_response({"detail": str(e)}, status=503)
         _preview_segment_cache[key] = out_path
-        return web.FileResponse(out_path, headers={"Cache-Control": "private, max-age=3600"})
+        return web.FileResponse(out_path, headers={"Cache-Control": "private, max-age=60"})
 
     # --- API: export one clip (ffmpeg trim from a chain output using in/dur) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/export-clip")
