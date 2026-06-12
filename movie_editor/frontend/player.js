@@ -877,36 +877,7 @@
   let _tcEl = null;       // timecode span (updated live, not rebuilt)
   let _playBtnEl = null;  // play/pause button (glyph updated live, not rebuilt)
   let _genMsgEl = null, _genBarEl = null, _genFillEl = null;  // gen readout, updated live
-  let _livePreviewEl = null, _livePreviewBadgeEl = null, _livePreviewLayerEl = null;
-
-  function _livePreviewConfigured(st) {
-    const m = st?.models || {};
-    const lp = m.live_preview || {};
-    if (lp.enabled || lp.slot_id) return true;
-    if ((m.core_overrides?.sampler?.preview_vae || "").startsWith("out:")) return true;
-    const port = "port:FunPackLTXAVSceneChainSampler.preview_vae";
-    return (m.slots || []).some((s) =>
-      Object.values(s.wires || {}).some((raw) => {
-        const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
-        return arr.includes(port);
-      }));
-  }
-
-  function _ensureLivePreviewDom() {
-    if (_livePreviewLayerEl && _livePreviewEl) return;
-    const canvas = document.querySelector(".pm-canvas");
-    if (!canvas) return;
-    const lpLayer = el("div", "pm-live-preview");
-    _livePreviewEl = el("img", "pm-live-preview-img");
-    _livePreviewEl.alt = "Live preview";
-    _livePreviewEl.draggable = false;
-    _livePreviewEl.style.display = "none";
-    _livePreviewBadgeEl = el("div", "pm-live-preview-badge");
-    _livePreviewBadgeEl.style.display = "none";
-    lpLayer.append(_livePreviewEl, _livePreviewBadgeEl);
-    canvas.append(lpLayer);
-    _livePreviewLayerEl = lpLayer;
-  }
+  let _livePreviewEl = null, _livePreviewBadgeEl = null;
 
   // Update the generation readout in place on progress ticks (no store re-render, so the
   // editor stays interactive — frames can be saved, effects added — while a job runs).
@@ -919,11 +890,9 @@
         _genFillEl.style.width = Math.min(100, Math.round((g.step / g.maxStep) * 100)) + "%";
       }
     }
-    if (g.livePreviewUrl) {
-      _ensureLivePreviewDom();
-      if (_livePreviewLayerEl) _livePreviewLayerEl.style.display = "";
-      if (_livePreviewEl && _livePreviewEl.src !== g.livePreviewUrl) _livePreviewEl.src = g.livePreviewUrl;
-      if (_livePreviewEl) _livePreviewEl.style.display = "";
+    if (_livePreviewEl && g.livePreviewUrl) {
+      if (_livePreviewEl.src !== g.livePreviewUrl) _livePreviewEl.src = g.livePreviewUrl;
+      _livePreviewEl.style.display = "";
     }
     if (_livePreviewBadgeEl && g.liveScene >= 0 && g.liveSceneCount > 0) {
       _livePreviewBadgeEl.textContent = `Scene ${g.liveScene + 1}/${g.liveSceneCount}`;
@@ -1143,7 +1112,7 @@
     // store render; live progress ticks update it in place (see the gen-progress listener),
     // so the rest of the editor isn't rebuilt while a generation runs.
     _genMsgEl = _genBarEl = _genFillEl = null;
-    _livePreviewEl = _livePreviewBadgeEl = _livePreviewLayerEl = null;
+    _livePreviewEl = _livePreviewBadgeEl = null;
     if (["queuing", "running", "pending", "error"].includes(gen.state)) {
       const busy = gen.state !== "error";
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
@@ -1162,9 +1131,17 @@
       }
       canvas.append(ro);
     }
-    if (["queuing", "running", "pending"].includes(gen.state) && _livePreviewConfigured(st)) {
+    if (["queuing", "running", "pending"].includes(gen.state)) {
+      const lp = S.get().models?.live_preview || {};
+      const lpPort = "port:FunPackLTXAVSceneChainSampler.preview_vae";
+      const lpWired = (S.get().models?.slots || []).some((s) =>
+        Object.values(s.wires || {}).some((raw) => {
+          const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+          return arr.includes(lpPort);
+        }));
+      const showLp = lp.enabled || lp.slot_id || lpWired;
+    if (showLp) {
       const lpLayer = el("div", "pm-live-preview");
-      _livePreviewLayerEl = lpLayer;
       _livePreviewEl = el("img", "pm-live-preview-img");
       _livePreviewEl.alt = "Live preview";
       _livePreviewEl.draggable = false;
@@ -1178,6 +1155,7 @@
       }
       lpLayer.append(_livePreviewEl, _livePreviewBadgeEl);
       canvas.append(lpLayer);
+    }
     }
     if (previewAsset?.kind === "image") {
       const layer = el("div", "pm-media-preview");

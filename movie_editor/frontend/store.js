@@ -69,8 +69,7 @@
 
   function _livePreviewConfigured() {
     const lp = state.models?.live_preview || {};
-    if (lp.slot_id || lp.enabled) return true;
-    if ((state.models?.core_overrides?.sampler?.preview_vae || "").startsWith("out:")) return true;
+    if (lp.slot_id) return true;
     return (state.models?.slots || []).some((s) =>
       Object.values(s.wires || {}).some((raw) => _modelWireTargets(raw).includes(LIVE_PREVIEW_PORT)));
   }
@@ -253,34 +252,11 @@
   }
 
   let _globalApplyTimer = null;
-  let _globalApplyPromise = null;
-  let _pendingGlobalPromptText = null;
-
   function scheduleGlobalPromptApply(text) {
-    _pendingGlobalPromptText = text;
-    const trimmed = String(text || "").trim();
-    if (trimmed && trimmed !== buildGlobalPromptFromTimeline(state.project)) {
-      _localDirty = true;
-      _notifySaveChip();
-    }
     clearTimeout(_globalApplyTimer);
     _globalApplyTimer = setTimeout(() => {
-      _globalApplyTimer = null;
       applyGlobalPromptQuiet(text).catch((e) => console.warn("Global prompt apply failed:", e));
     }, 500);
-  }
-
-  async function _flushPendingGlobalPrompt() {
-    clearTimeout(_globalApplyTimer);
-    _globalApplyTimer = null;
-    if (_globalApplyPromise) await _globalApplyPromise;
-    const pending = (_pendingGlobalPromptText || "").trim();
-    if (!pending) return;
-    if (pending === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) {
-      _pendingGlobalPromptText = null;
-      return;
-    }
-    await applyGlobalPromptQuiet(pending, { force: true });
   }
 
   function _normalizeSceneText(t) {
@@ -530,53 +506,30 @@
     return true;
   }
 
-  async function applyGlobalPromptQuiet(text, opts = {}) {
+  async function applyGlobalPromptQuiet(text) {
     if (!state.project) return false;
     const trimmed = String(text || "").trim();
-    const force = !!opts.force;
-    if (!trimmed) {
-      _pendingGlobalPromptText = null;
+    if (!trimmed) return false;
+    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) return true;
+    _historyRecord();
+    let res;
+    try { res = await API.parsePrompt(state.project.id, trimmed); }
+    catch (e) {
+      console.warn("Global prompt parse failed:", e);
       return false;
     }
-    if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) {
-      _pendingGlobalPromptText = null;
-      return true;
-    }
-    if (_globalApplyPromise) return _globalApplyPromise;
-    _globalApplyPromise = (async () => {
-      try {
-        if (!force && _pendingGlobalPromptText != null && String(_pendingGlobalPromptText).trim() !== trimmed) {
-          return false;
-        }
-        _historyRecord();
-        let res;
-        try { res = await API.parsePrompt(state.project.id, trimmed); }
-        catch (e) {
-          console.warn("Global prompt parse failed:", e);
-          return false;
-        }
-        if (!force && _pendingGlobalPromptText != null && String(_pendingGlobalPromptText).trim() !== trimmed) {
-          return false;
-        }
-        if (!await _distributeGlobalPrompt(trimmed, res)) return false;
-        clearTimeout(saveTimer);
-        saveTimer = null;
-        _localDirty = true;
-        scheduleSaveSilent();
-        refreshPreview(true);
-        return true;
-      } finally {
-        _globalApplyPromise = null;
-        if (_pendingGlobalPromptText === trimmed) _pendingGlobalPromptText = null;
-      }
-    })();
-    return _globalApplyPromise;
+    if (!await _distributeGlobalPrompt(trimmed, res)) return false;
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    _localDirty = true;
+    scheduleSaveSilent();
+    refreshPreview(true);
+    return true;
   }
 
   function _syncPromptPreview() {
     return (async () => {
       try {
-        await _flushPendingGlobalPrompt();
         await flushSave();
         await refreshPreview(true);
       } catch (e) { console.error("prompt preview sync failed", e); }
@@ -2428,13 +2381,8 @@
     throw last;
   }
 
-  async function flushPendingEdits() {
-    await _flushPendingGlobalPrompt();
-    return flushSave();
-  }
-
   async function _flushSaveForGenerate() {
-    await flushPendingEdits();
+    await flushSave();
     if (_localDirty) {
       throw new Error(
         "Could not save your latest edits before generate (tunnel may have dropped). "
@@ -2776,19 +2724,23 @@
               msg: `${head}  ·  sampling ${pr.value}/${pr.max}`,
             });
           }
-          const lp = pr?.live_preview;
-          if (lp?.ready && lp.url) {
-            const sceneNote = (lp.scene_index >= 0 && lp.scene_count > 0)
-              ? ` · scene ${lp.scene_index + 1}/${lp.scene_count}`
-              : "";
-            updateGenProgress({
-              livePreviewUrl: lp.url,
-              liveScene: lp.scene_index,
-              liveSceneCount: lp.scene_count,
-              msg: `${(state.gen.msg || prefix).replace(/\s*·\s*scene \d+\/\d+$/, "")}${sceneNote}`,
-            });
-          }
         } catch (_) {}
+        if (_livePreviewConfigured()) {
+          try {
+            const lp = await API.livePreview();
+            if (lp?.ready && lp.url) {
+              const sceneNote = (lp.scene_index >= 0 && lp.scene_count > 0)
+                ? ` · scene ${lp.scene_index + 1}/${lp.scene_count}`
+                : "";
+              updateGenProgress({
+                livePreviewUrl: lp.url,
+                liveScene: lp.scene_index,
+                liveSceneCount: lp.scene_count,
+                msg: `${(state.gen.msg || prefix).replace(/\s*·\s*scene \d+\/\d+$/, "")}${sceneNote}`,
+              });
+            }
+          } catch (_) {}
+        }
       }, 700);
       pollTimer = setInterval(async () => {
         if (_interrupted) {
@@ -2905,7 +2857,6 @@
         10,
       );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
-      if (r.live_preview_note) console.warn("[live preview]", r.live_preview_note);
       _queueRenderPrompts(sceneIds);
       if (r.validation && state.project) {
         state.project.generation_meta = {
@@ -3727,7 +3678,7 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, flushPendingEdits, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, setLivePreviewEnabled, setLivePreviewSlot, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, setLivePreviewEnabled, setLivePreviewSlot, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,

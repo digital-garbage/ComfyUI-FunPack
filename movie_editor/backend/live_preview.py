@@ -95,12 +95,6 @@ def preview_vae_wire(models: Any) -> tuple[Optional[str], Optional[str]]:
         for out_name, raw in (slot.get("wires") or {}).items():
             if PREVIEW_VAE_WIRE in _wire_targets(raw):
                 return str(sid), str(out_name or "VAE")
-    co = (models.get("core_overrides") or {}).get("sampler") or {}
-    src = str(co.get("preview_vae") or "")
-    if src.startswith("out:"):
-        parts = src.split(":", 2)
-        if len(parts) >= 3 and parts[1]:
-            return str(parts[1]), str(parts[2] or "VAE")
     lp = models.get("live_preview") or {}
     sid = lp.get("slot_id")
     if sid:
@@ -109,27 +103,10 @@ def preview_vae_wire(models: Any) -> tuple[Optional[str], Optional[str]]:
 
 
 def models_enabled(models: Any) -> bool:
+    if not isinstance(models, dict):
+        return False
     sid, _ = preview_vae_wire(models)
-    return bool(sid)
-
-
-def api_payload(ui_prefix: str = "/funpack/movie") -> dict[str, Any]:
-    """Status dict for /api/live-preview and /api/progress."""
-    import os
-
-    snap = snapshot()
-    if not snap.get("active"):
-        return {"active": False}
-    frame_path = snap.get("frame_path") or ""
-    ready = bool(frame_path and os.path.isfile(frame_path))
-    payload: dict[str, Any] = {
-        "active": True,
-        "ready": ready,
-        "scene_index": snap.get("scene_index", -1),
-        "scene_count": snap.get("scene_count", 0),
-        "updated_at": snap.get("updated_at", 0),
-    }
-    if ready:
-        ts = int(float(snap.get("updated_at") or 0) * 1000)
-        payload["url"] = f"{ui_prefix}/api/live-preview/frame?t={ts}"
-    return payload
+    if sid:
+        return True
+    lp = models.get("live_preview") or {}
+    return bool(lp.get("enabled") and lp.get("slot_id"))

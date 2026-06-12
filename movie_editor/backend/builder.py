@@ -23,7 +23,6 @@ import json
 from typing import Any, Optional
 
 from . import config
-from . import live_preview
 from . import pipeline_wiring
 from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs, _combo_default
 
@@ -203,20 +202,26 @@ def _wire_live_preview_vae(
     slot_def: dict,
     report: dict,
 ) -> None:
-    """Wire preview VAE slot -> Chain Sampler preview_vae when configured."""
+    """Wire models.live_preview slot VAE output -> Chain Sampler preview_vae."""
+    lp = (models_config or {}).get("live_preview") or {}
+    if not lp.get("enabled"):
+        return
     if "sampler" not in graph:
         return
     existing = graph["sampler"].get("inputs", {}).get("preview_vae")
     if isinstance(existing, list):
         return
-    sid, out_name = live_preview.preview_vae_wire(models_config)
+    sid = lp.get("slot_id")
     if not sid:
+        report["unsatisfied"].append(
+            "Live preview is enabled but no preview VAE is selected (View → Choose preview VAE…)."
+        )
         return
     nid = slot_node_id.get(sid)
     if not nid or nid not in graph:
         report["unsatisfied"].append(f"Live preview VAE slot '{sid}' is not in the graph.")
         return
-    out_name = str(out_name or "VAE")
+    out_name = str(lp.get("vae_output") or "VAE")
     nd = slot_def.get(sid) or {}
     outs = node_outputs(nd)
     oidx = _output_index(nd, out_name)

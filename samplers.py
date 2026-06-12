@@ -3705,11 +3705,7 @@ class FunPackLTXAVSceneChainSampler:
             return
         os.makedirs(preview_dir, exist_ok=True)
         tile = int(cfg.get("decode_tile_size") or 256)
-        try:
-            decoded = self._decode_for_preview(preview_vae, scene_latent, decode_tile_size=tile)
-        except Exception as e:
-            print(f"[FunPackSceneChain] live preview decode failed (scene {scene_index + 1}): {e}")
-            return
+        decoded = self._decode_for_preview(preview_vae, scene_latent, decode_tile_size=tile)
         path = os.path.join(preview_dir, f"scene_{int(scene_index):03d}.webp")
         current = os.path.join(preview_dir, "current.webp")
         if self._save_batch_preview(
@@ -3723,9 +3719,6 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 current = path
             _lp.publish(int(scene_index), current, scene_count)
-            print(f"[FunPackSceneChain] live preview scene {scene_index + 1}/{scene_count} -> {current}")
-        else:
-            print(f"[FunPackSceneChain] live preview save failed (scene {scene_index + 1})")
 
     def _save_batch_preview(self, decoded, path, max_frames=16, width=256):
         """Save a decoded video tensor [T,H,W,C] in 0..1 as a downscaled animated webp."""
