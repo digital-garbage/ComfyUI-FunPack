@@ -1261,6 +1261,8 @@ label.field.linked input, label.field.linked select { opacity: .6; }
   border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); color: var(--muted); }
 .pipe-setup-manual-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .pipe-setup-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+.pipe-setup-hint { margin: 0 0 10px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.restart-card .restart-cancel { margin-top: 4px; }
 
 /* restart overlay */
 .restart-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;

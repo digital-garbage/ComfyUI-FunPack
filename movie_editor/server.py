@@ -1717,23 +1717,36 @@ if web is not None and PromptServer is not None:
         except Exception:
             oi = {}
         mgr = await pipeline_deps.manager_available()
-        return web.json_response(pipeline_deps.status_payload(oi, manager_available=mgr))
+        return web.json_response(pipeline_deps.status_payload(
+            oi,
+            manager_available=mgr,
+            manager_on_disk=pipeline_deps.manager_dir_on_disk(),
+        ))
 
     @routes.post(UI_PREFIX + "/api/pipeline-deps/install")
     async def _pipeline_deps_install(req):
         import asyncio
+        body = await req.json() if req.can_read_body else {}
+        if body.get("install_manager"):
+            if pipeline_deps.manager_dir_on_disk():
+                return web.json_response(
+                    {"detail": "ComfyUI-Manager is already present on disk. Restart ComfyUI to load it."},
+                    status=400,
+                )
+            job = pipeline_deps.create_manager_install_job()
+            asyncio.create_task(pipeline_deps.run_manager_install_job(job["job_id"], _restart_comfy))
+            return web.json_response({"job_id": job["job_id"], "total": job["total"], "kind": "manager"})
         if not await pipeline_deps.manager_available():
             return web.json_response(
-                {"detail": "ComfyUI-Manager is not installed or not reachable."},
+                {"detail": "ComfyUI-Manager is not installed or not reachable. Install it first."},
                 status=503,
             )
-        body = await req.json() if req.can_read_body else {}
         pack_ids = body.get("pack_ids") or body.get("packs") or []
         if not isinstance(pack_ids, list) or not pack_ids:
             return web.json_response({"detail": "pack_ids required."}, status=400)
         job = pipeline_deps.create_install_job([str(x) for x in pack_ids])
         asyncio.create_task(pipeline_deps.run_install_job(job["job_id"], _restart_comfy))
-        return web.json_response({"job_id": job["job_id"], "total": job["total"]})
+        return web.json_response({"job_id": job["job_id"], "total": job["total"], "kind": "packs"})
 
     @routes.get(UI_PREFIX + "/api/pipeline-deps/install/{job_id}")
     async def _pipeline_deps_install_status(req):
@@ -1741,6 +1754,18 @@ if web is not None and PromptServer is not None:
         if not job:
             raise web.HTTPNotFound(reason="Install job not found")
         return web.json_response(job)
+
+    @routes.post(UI_PREFIX + "/api/pipeline-deps/install/{job_id}/cancel")
+    async def _pipeline_deps_install_cancel(req):
+        import asyncio
+        job_id = req.match_info["job_id"]
+        if not pipeline_deps.cancel_install_job(job_id):
+            job = pipeline_deps.get_install_job(job_id)
+            if not job:
+                raise web.HTTPNotFound(reason="Install job not found")
+            return web.json_response({"detail": "Install cannot be cancelled."}, status=409)
+        asyncio.create_task(pipeline_deps._reset_manager_queue())
+        return web.json_response({"cancelled": True, "job_id": job_id})
 
     @routes.get(UI_PREFIX + "/api/pipeline-ports")
     async def _pipeline_ports(_req):

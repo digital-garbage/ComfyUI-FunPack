@@ -2,13 +2,19 @@
 (function () {
   const { el } = window.dom;
 
-  function showOverlay(message) {
+  function showOverlay(message, options) {
     document.querySelector(".restart-overlay")?.remove();
     const ov = el("div", "restart-overlay");
     const card = el("div", "restart-card");
     card.append(el("div", "restart-spin"));
     const msg = el("div", "restart-msg", message);
     card.append(msg);
+    if (options?.onCancel) {
+      const btn = el("button", "btn ghost restart-cancel", options.cancelLabel || "Cancel install");
+      btn.type = "button";
+      btn.onclick = options.onCancel;
+      card.append(btn);
+    }
     ov.append(card);
     document.body.append(ov);
     return msg;

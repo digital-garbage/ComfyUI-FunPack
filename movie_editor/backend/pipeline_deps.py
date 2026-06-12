@@ -3,12 +3,21 @@ them through ComfyUI-Manager's queue (same path as the Manager UI)."""
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import time
 import uuid
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from . import config
 from .builder import CORE
+
+MANAGER_FOLDER = "ComfyUI-Manager"
+MANAGER_GIT_URL = "https://github.com/ComfyUI-Manager/ComfyUI-Manager"
+MANAGER_TITLE = "ComfyUI-Manager"
+STALE_PROGRESS_SEC = 90
+POLL_INTERVAL_SEC = 1.5
 
 # Curated mapping: pack id (ComfyUI-Manager / registry) -> node classes used by the
 # fixed core graph. FunPack and comfy-core primitives are excluded.
@@ -45,6 +54,27 @@ _ALL_MAPPED = frozenset().union(*(p["classes"] for p in PIPELINE_PACKS))
 _install_jobs: dict[str, dict] = {}
 
 
+def custom_nodes_dir() -> Path:
+    """ComfyUI ``custom_nodes`` directory (FunPack lives one level below)."""
+    try:
+        import folder_paths
+        paths = folder_paths.get_folder_paths("custom_nodes")
+        if paths:
+            return Path(paths[0])
+    except Exception:
+        pass
+    return Path(__file__).resolve().parents[2].parent
+
+
+def manager_dir() -> Path:
+    return custom_nodes_dir() / MANAGER_FOLDER
+
+
+def manager_dir_on_disk() -> bool:
+    d = manager_dir()
+    return d.is_dir() and ((d / ".git").exists() or (d / "__init__.py").exists())
+
+
 def required_core_classes() -> list[str]:
     return sorted(set(CORE.values()))
 
@@ -74,15 +104,28 @@ def unmapped_missing_classes(object_info: dict | None) -> list[str]:
     return sorted(missing - _ALL_MAPPED)
 
 
-def status_payload(object_info: dict | None, *, manager_available: bool) -> dict:
+def status_payload(
+    object_info: dict | None,
+    *,
+    manager_available: bool,
+    manager_on_disk: bool | None = None,
+) -> dict:
     packs = missing_packs(object_info)
     unmapped = unmapped_missing_classes(object_info)
+    on_disk = manager_dir_on_disk() if manager_on_disk is None else manager_on_disk
+    needs_setup = bool(packs)
+    needs_manager = needs_setup and not manager_available
     return {
         "manager_available": manager_available,
+        "manager_on_disk": on_disk,
+        "needs_manager_install": needs_manager and not on_disk,
+        "needs_manager_restart": needs_manager and on_disk,
         "missing_classes": missing_core_classes(object_info),
         "missing_packs": packs,
         "unmapped_classes": unmapped,
-        "needs_install": bool(packs),
+        "needs_install": needs_setup,
+        "needs_setup": needs_setup,
+        "manager_git_url": MANAGER_GIT_URL,
         "manual_urls": [
             {"id": p["id"], "title": p["title"], "url": p["git_urls"][0]}
             for p in PIPELINE_PACKS
@@ -194,6 +237,11 @@ async def _start_manager_queue() -> None:
             return
 
 
+async def _reset_manager_queue() -> None:
+    for path in ("/manager/queue/reset", "/api/manager/queue/reset"):
+        await _manager_request("POST", path)
+
+
 async def _manager_queue_status() -> dict:
     for path in ("/manager/queue/status", "/api/manager/queue/status"):
         status, body = await _manager_request("GET", path)
@@ -209,25 +257,84 @@ async def _manager_queue_status() -> dict:
     return {}
 
 
+def install_manager_sync() -> tuple[bool, str]:
+    """Clone ComfyUI-Manager into custom_nodes (no Manager HTTP required)."""
+    import shutil
+
+    if manager_dir_on_disk():
+        return True, "already_installed"
+    if not shutil.which("git"):
+        return False, "git not found on PATH."
+    root = custom_nodes_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    target = manager_dir()
+    proc = subprocess.run(
+        ["git", "clone", MANAGER_GIT_URL, str(target)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "git clone failed").strip()
+        return False, err
+    req = target / "requirements.txt"
+    if req.is_file():
+        pip = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(req)],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if pip.returncode != 0:
+            err = (pip.stderr or pip.stdout or "pip install failed").strip()
+            return False, f"ComfyUI-Manager cloned but pip install failed: {err}"
+    return True, ""
+
+
+def _new_job(*, kind: str, packs: list[dict]) -> dict:
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "job_id": job_id,
+        "kind": kind,
+        "state": "queued",
+        "packs": packs,
+        "total": max(1, len(packs)),
+        "done": 0,
+        "current_title": packs[0]["title"] if packs else "",
+        "error": "",
+        "stale": False,
+        "cancel_requested": False,
+        "started_at": time.time(),
+        "last_progress_at": time.time(),
+    }
+    _install_jobs[job_id] = job
+    return job
+
+
+def create_manager_install_job() -> dict:
+    return _new_job(
+        kind="manager",
+        packs=[{"id": MANAGER_FOLDER, "title": MANAGER_TITLE}],
+    )
+
+
 def create_install_job(pack_ids: list[str]) -> dict:
     packs = []
     for pid in pack_ids:
         spec = _PACK_BY_ID.get(pid)
         if spec:
             packs.append({"id": pid, "title": spec["title"]})
-    job_id = uuid.uuid4().hex[:12]
-    job = {
-        "job_id": job_id,
-        "state": "queued",
-        "packs": packs,
-        "total": len(packs),
-        "done": 0,
-        "current_title": packs[0]["title"] if packs else "",
-        "error": "",
-        "started_at": time.time(),
-    }
-    _install_jobs[job_id] = job
-    return job
+    return _new_job(kind="packs", packs=packs)
+
+
+def cancel_install_job(job_id: str) -> bool:
+    job = _install_jobs.get(job_id)
+    if not job:
+        return False
+    if job["state"] in ("restarting", "cancelled", "done"):
+        return False
+    job["cancel_requested"] = True
+    return True
 
 
 def get_install_job(job_id: str) -> Optional[dict]:
@@ -236,22 +343,119 @@ def get_install_job(job_id: str) -> Optional[dict]:
         return None
     return {
         "job_id": job["job_id"],
+        "kind": job.get("kind") or "packs",
         "state": job["state"],
         "packs": job["packs"],
         "total": job["total"],
         "done": job["done"],
         "current_title": job.get("current_title") or "",
         "error": job.get("error") or "",
+        "stale": bool(job.get("stale")),
     }
 
 
-async def run_install_job(job_id: str, restart_fn) -> None:
+def _job_snapshot(job: dict) -> dict:
+    return get_install_job(job["job_id"]) or {}
+
+
+async def _sleep_poll(job: dict) -> bool:
+    """Return True if cancel was requested during the wait."""
+    steps = max(1, int(POLL_INTERVAL_SEC / 0.25))
+    for _ in range(steps):
+        if job.get("cancel_requested"):
+            return True
+        await asyncio.sleep(0.25)
+    return bool(job.get("cancel_requested"))
+
+
+async def _finish_cancelled(job: dict) -> None:
+    job["state"] = "cancelled"
+    job["current_title"] = ""
+    if job.get("kind") == "packs":
+        await _reset_manager_queue()
+
+
+def _touch_progress(job: dict, done: int) -> None:
+    now = time.time()
+    if done != job.get("_last_done"):
+        job["_last_done"] = done
+        job["last_progress_at"] = now
+        job["stale"] = False
+    elif now - float(job.get("last_progress_at") or now) >= STALE_PROGRESS_SEC:
+        job["stale"] = True
+
+
+async def _poll_manager_queue(job: dict, restart_fn: Callable[[], None]) -> None:
+    deadline = time.time() + 1800
+    while time.time() < deadline:
+        if job.get("cancel_requested"):
+            await _finish_cancelled(job)
+            return
+        st = await _manager_queue_status()
+        done = int(st.get("done_count") or 0)
+        total = int(st.get("total_count") or 0) or job["total"]
+        processing = bool(st.get("is_processing"))
+        job["total"] = max(job["total"], total)
+        job["done"] = min(done, job["total"])
+        _touch_progress(job, done)
+        if job["packs"]:
+            idx = min(max(done, 0), len(job["packs"]) - 1)
+            job["current_title"] = job["packs"][idx]["title"]
+        if job["total"] > 0 and done >= job["total"] and not processing:
+            break
+        if await _sleep_poll(job):
+            await _finish_cancelled(job)
+            return
+    else:
+        job["state"] = "error"
+        job["error"] = "Install timed out. Cancel and try again, or check ComfyUI-Manager in the main ComfyUI window."
+        job["stale"] = True
+        return
+    job["done"] = job["total"]
+    job["state"] = "restarting"
+    job["current_title"] = ""
+    await asyncio.sleep(0.7)
+    restart_fn()
+
+
+async def run_manager_install_job(job_id: str, restart_fn: Callable[[], None]) -> None:
+    job = _install_jobs.get(job_id)
+    if not job:
+        return
+    job["state"] = "installing"
+    job["current_title"] = MANAGER_TITLE
+    try:
+        if job.get("cancel_requested"):
+            await _finish_cancelled(job)
+            return
+        ok, err = await asyncio.to_thread(install_manager_sync)
+        if job.get("cancel_requested"):
+            await _finish_cancelled(job)
+            return
+        if not ok:
+            job["state"] = "error"
+            job["error"] = err or "ComfyUI-Manager install failed."
+            return
+        job["done"] = 1
+        job["state"] = "restarting"
+        job["current_title"] = ""
+        await asyncio.sleep(0.7)
+        restart_fn()
+    except Exception as e:  # noqa: BLE001
+        job["state"] = "error"
+        job["error"] = str(e) or "ComfyUI-Manager install failed."
+
+
+async def run_install_job(job_id: str, restart_fn: Callable[[], None]) -> None:
     job = _install_jobs.get(job_id)
     if not job:
         return
     job["state"] = "installing"
     try:
         for i, pack in enumerate(job["packs"]):
+            if job.get("cancel_requested"):
+                await _finish_cancelled(job)
+                return
             pid = pack["id"]
             spec = _PACK_BY_ID.get(pid)
             if not spec:
@@ -266,29 +470,7 @@ async def run_install_job(job_id: str, restart_fn) -> None:
                 job["error"] = err or f"Failed to queue {pack['title']}."
                 return
         await _start_manager_queue()
-        deadline = time.time() + 1800
-        while time.time() < deadline:
-            st = await _manager_queue_status()
-            done = int(st.get("done_count") or 0)
-            total = int(st.get("total_count") or 0) or job["total"]
-            processing = bool(st.get("is_processing"))
-            job["total"] = max(job["total"], total)
-            job["done"] = min(done, job["total"])
-            if job["packs"]:
-                idx = min(max(done, 0), len(job["packs"]) - 1)
-                job["current_title"] = job["packs"][idx]["title"]
-            if job["total"] > 0 and done >= job["total"] and not processing:
-                break
-            await asyncio.sleep(1.5)
-        else:
-            job["state"] = "error"
-            job["error"] = "Install timed out. Check ComfyUI-Manager queue in the main ComfyUI window."
-            return
-        job["done"] = job["total"]
-        job["state"] = "restarting"
-        job["current_title"] = ""
-        await asyncio.sleep(0.7)
-        restart_fn()
+        await _poll_manager_queue(job, restart_fn)
     except Exception as e:  # noqa: BLE001
         job["state"] = "error"
         job["error"] = str(e) or "Install failed."

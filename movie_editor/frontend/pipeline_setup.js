@@ -7,6 +7,7 @@
 
   let overlay = null;
   let _pollTimer = null;
+  let _activeJobId = null;
 
   function dismissed() {
     try { return localStorage.getItem(LS_KEY) === "1"; } catch (_) { return false; }
@@ -51,7 +52,7 @@
 
   function manualBlock(deps) {
     const box = el("div", "pipe-setup-manual");
-    box.append(el("div", "pipe-setup-manual-title", "Install ComfyUI-Manager or add these repos under custom_nodes:"));
+    box.append(el("div", "pipe-setup-manual-title", "Or clone these repos into custom_nodes manually:"));
     const ul = el("ul", "pipe-setup-list");
     (deps.manual_urls || []).forEach((u) => {
       const li = el("li");
@@ -66,45 +67,112 @@
     return box;
   }
 
+  async function cancelInstall() {
+    const jobId = _activeJobId;
+    if (!jobId) {
+      window.FunPackRestart?.removeOverlay?.();
+      return;
+    }
+    try { await API.pipelineDepsInstallCancel(jobId); } catch (_) { /* server may already be gone */ }
+    _activeJobId = null;
+    if (_pollTimer) { clearTimeout(_pollTimer); _pollTimer = null; }
+    window.FunPackRestart?.removeOverlay?.();
+  }
+
+  function progressMessage(st) {
+    if (st.kind === "manager") {
+      return "Cloning ComfyUI-Manager…\nRestart follows automatically when ready.";
+    }
+    const n = Math.min(st.done + 1, st.total || 1);
+    const title = st.current_title || "…";
+    let msg = `Downloading and installing missing nodes:\n${n} out of ${st.total || "?"} - ${title}`;
+    if (st.stale) {
+      msg += "\n\nNo progress for a while. You can cancel and try again from ComfyUI-Manager.";
+    }
+    return msg;
+  }
+
   async function pollInstall(jobId, msgEl) {
     try {
       const st = await API.pipelineDepsInstallStatus(jobId);
       if (st.state === "installing" || st.state === "queued") {
-        const n = Math.min(st.done + 1, st.total || 1);
-        const title = st.current_title || "…";
-        msgEl.textContent = `Downloading and installing missing nodes:\n${n} out of ${st.total || "?"} - ${title}`;
+        msgEl.textContent = progressMessage(st);
         _pollTimer = setTimeout(() => pollInstall(jobId, msgEl), 1200);
         return;
       }
+      if (st.state === "cancelled") {
+        _activeJobId = null;
+        window.FunPackRestart?.removeOverlay?.();
+        return;
+      }
       if (st.state === "restarting") {
-        msgEl.textContent = "Install complete.\nRestarting ComfyUI…";
+        msgEl.textContent = st.kind === "manager"
+          ? "ComfyUI-Manager installed.\nRestarting ComfyUI…"
+          : "Install complete.\nRestarting ComfyUI…";
+        _activeJobId = null;
         window.FunPackRestart?.waitForReload?.(msgEl, Date.now());
         return;
       }
       if (st.state === "error") {
+        _activeJobId = null;
         window.FunPackRestart?.removeOverlay?.();
         alert(st.error || "Install failed.");
         return;
       }
       _pollTimer = setTimeout(() => pollInstall(jobId, msgEl), 1200);
     } catch (e) {
+      _activeJobId = null;
       window.FunPackRestart?.removeOverlay?.();
       alert(String(e.message || e));
     }
   }
 
+  function beginInstallOverlay(initialMessage) {
+    closeModal();
+    const msg = window.FunPackRestart?.showOverlay?.(initialMessage, {
+      cancelLabel: "Cancel install",
+      onCancel: () => cancelInstall(),
+    });
+    return msg;
+  }
+
+  async function startManagerInstall() {
+    const msg = beginInstallOverlay("Cloning ComfyUI-Manager…\nRestart follows automatically when ready.");
+    if (!msg) return;
+    try {
+      const res = await API.pipelineDepsInstallManager();
+      _activeJobId = res.job_id;
+      pollInstall(res.job_id, msg);
+    } catch (e) {
+      _activeJobId = null;
+      window.FunPackRestart?.removeOverlay?.();
+      alert("Install failed: " + (e.message || e));
+    }
+  }
+
+  async function restartComfyOnly() {
+    closeModal();
+    const msg = beginInstallOverlay("Restarting ComfyUI…\nComfyUI-Manager is on disk but not loaded yet.");
+    if (!msg) return;
+    try {
+      await API.restart();
+    } catch (_) { /* expected while server exits */ }
+    window.FunPackRestart?.waitForReload?.(msg, Date.now());
+  }
+
   async function startInstall(deps) {
     const ids = (deps.missing_packs || []).map((p) => p.id);
     if (!ids.length) return;
-    closeModal();
-    const msg = window.FunPackRestart?.showOverlay?.(
+    const msg = beginInstallOverlay(
       "Downloading and installing missing nodes:\n1 out of " + ids.length + " - " + (deps.missing_packs[0]?.title || "…"),
     );
     if (!msg) return;
     try {
       const res = await API.pipelineDepsInstall(ids);
+      _activeJobId = res.job_id;
       pollInstall(res.job_id, msg);
     } catch (e) {
+      _activeJobId = null;
       window.FunPackRestart?.removeOverlay?.();
       alert("Install failed: " + (e.message || e));
     }
@@ -116,21 +184,27 @@
     const modal = el("div", "modal pipe-setup-modal");
     const head = el("div", "modal-head");
     head.append(el("div", "modal-title", "Pipeline setup"));
-    const closeBtn = el("button", "btn ghost", "Close");
-    closeBtn.type = "button";
-    closeBtn.onclick = () => closeModal();
-    const headRight = el("div", "modal-head-right");
-    headRight.append(closeBtn);
-    head.append(headRight);
     modal.append(head);
 
     const content = el("div", "modal-content");
-    content.append(el("p", "pipe-setup-lead",
-      "Nodes required for the built-in pipeline are missing. Do you want to install them?"));
-    content.append(packList(deps));
-    if (!deps.manager_available) {
-      content.append(el("div", "pipe-setup-warn",
-        "ComfyUI-Manager was not detected. Automatic install is unavailable."));
+    if (deps.needs_manager_install) {
+      content.append(el("p", "pipe-setup-lead",
+        "Nodes required for the built-in pipeline are missing. Install ComfyUI-Manager first, then we can fetch the rest."));
+    } else if (deps.needs_manager_restart) {
+      content.append(el("p", "pipe-setup-lead",
+        "ComfyUI-Manager is on disk but not running yet. Restart ComfyUI to load it, then install the missing node packs."));
+    } else {
+      content.append(el("p", "pipe-setup-lead",
+        "Nodes required for the built-in pipeline are missing. Do you want to install them?"));
+    }
+    if ((deps.missing_packs || []).length) {
+      content.append(packList(deps));
+    }
+    if (deps.needs_manager_install) {
+      content.append(el("div", "pipe-setup-hint",
+        "ComfyUI-Manager handles downloads and updates for custom node packs."));
+      content.append(manualBlock(deps));
+    } else if (!deps.manager_available) {
       content.append(manualBlock(deps));
     }
     if ((deps.unmapped_classes || []).length) {
@@ -140,7 +214,17 @@
     modal.append(content);
 
     const foot = el("div", "pipe-setup-foot");
-    if (deps.manager_available) {
+    if (deps.needs_manager_install) {
+      const mgrBtn = el("button", "btn primary", "Install ComfyUI-Manager");
+      mgrBtn.type = "button";
+      mgrBtn.onclick = () => startManagerInstall();
+      foot.append(mgrBtn);
+    } else if (deps.needs_manager_restart) {
+      const restartBtn = el("button", "btn primary", "Restart ComfyUI");
+      restartBtn.type = "button";
+      restartBtn.onclick = () => restartComfyOnly();
+      foot.append(restartBtn);
+    } else if (deps.manager_available) {
       const installBtn = el("button", "btn primary", "Install missing nodes");
       installBtn.type = "button";
       installBtn.onclick = () => startInstall(deps);
@@ -168,7 +252,7 @@
     if (!st.project || !builtInPipelineActive(st)) return;
     let deps;
     try { deps = await API.pipelineDeps(); } catch (_) { return; }
-    if (!deps?.needs_install) return;
+    if (!deps?.needs_setup) return;
     openModal(deps);
   }
 

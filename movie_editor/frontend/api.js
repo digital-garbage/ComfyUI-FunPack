@@ -111,7 +111,9 @@
     pipelinePorts: () => j("GET", API("/pipeline-ports")),
     pipelineDeps: () => j("GET", API("/pipeline-deps")),
     pipelineDepsInstall: (packIds) => j("POST", API("/pipeline-deps/install"), { pack_ids: packIds }),
+    pipelineDepsInstallManager: () => j("POST", API("/pipeline-deps/install"), { install_manager: true }),
     pipelineDepsInstallStatus: (jobId) => j("GET", API(`/pipeline-deps/install/${encodeURIComponent(jobId)}`)),
+    pipelineDepsInstallCancel: (jobId) => j("POST", API(`/pipeline-deps/install/${encodeURIComponent(jobId)}/cancel`), {}),
     imageTargets: (pid) => j("GET", API("/image-targets" + (pid ? `?pid=${encodeURIComponent(pid)}` : ""))),
     // Models config is per-project; pass the project id. Falls back to the global
     // default route (used as the seed/template) when no project is given.
