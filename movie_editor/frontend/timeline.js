@@ -60,8 +60,10 @@
 
   const ZOOM_KEY = "funpack_tl_zoom";
   const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
+  const VIDEO_LANE_H = 96;  // matches .tl-track2 padding + clip band
   const AUDIO_LANE_H = 44;
   const OVERLAY_LANE_H = 40;
+  const OVERLAY_ADD_ROW_H = 24;
 
   function isAudioAsset(m) {
     return !!m && (m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac|opus|weba)$/i.test(m.name || ""));
@@ -1350,6 +1352,13 @@
       openOverlaySettingsModal(st, track);
     });
 
+    const rm = el("button", "tl-ov-rm", "✕");
+    rm.type = "button";
+    rm.title = "Remove overlay (Delete)";
+    rm.onclick = (e) => { e.stopPropagation(); S.removeOverlayTrack(track.id, { skipConfirm: true }); };
+    rm.onmousedown = (e) => e.stopPropagation();
+    block.append(rm);
+
     const leftTrim = el("div", "tl-ov-trim left");
     leftTrim.title = "Drag to trim start";
     leftTrim.addEventListener("mousedown", (e) => {
@@ -1432,10 +1441,49 @@
     return block;
   }
 
-  function gutterLane(label, title, kind) {
+  function gutterLane(label, title, kind, heightPx) {
     const lane = el("div", "tl-gutter-lane " + kind, label);
     lane.title = title || label;
+    if (heightPx) {
+      lane.style.height = heightPx + "px";
+      lane.style.minHeight = heightPx + "px";
+      lane.style.flex = `0 0 ${heightPx}px`;
+    }
     return lane;
+  }
+
+  function overlayGutterLane(st, lane, i, laneCount) {
+    const top = i === laneCount - 1;
+    const bottom = i === 0;
+    const label = laneCount > 1 ? `O${i + 1}` : "Overlay";
+    const hint = top ? "top layer" : bottom ? "bottom layer" : "middle layer";
+    const row = el("div", "tl-gutter-lane overlay" + (top ? " top" : ""));
+    row.title = `${lane.label || "Overlay"} · ${hint}`;
+    row.style.height = OVERLAY_LANE_H + "px";
+    row.style.minHeight = OVERLAY_LANE_H + "px";
+    row.style.flex = `0 0 ${OVERLAY_LANE_H}px`;
+    row.append(el("span", "tl-gutter-ov-label", label));
+    if (laneCount > 1) {
+      const rm = el("button", "tl-gutter-ov-rm", "✕");
+      rm.type = "button";
+      rm.title = "Remove this overlay track";
+      rm.onclick = (e) => { e.stopPropagation(); S.removeOverlayLane(lane.id); };
+      row.append(rm);
+    }
+    return row;
+  }
+
+  function overlayAddRow(kind) {
+    const row = el("div", kind);
+    row.style.height = OVERLAY_ADD_ROW_H + "px";
+    row.style.minHeight = OVERLAY_ADD_ROW_H + "px";
+    row.style.flex = `0 0 ${OVERLAY_ADD_ROW_H}px`;
+    const add = el("button", "tl-overlay-add-btn", "+");
+    add.type = "button";
+    add.title = "Add overlay track (draws above existing tracks)";
+    add.onclick = (e) => { e.stopPropagation(); S.addOverlayLane(); };
+    row.append(add);
+    return row;
   }
 
   function timelineGutter(st, p) {
@@ -1443,9 +1491,9 @@
     gutter.style.width = GUTTER_W + "px";
     gutter.append(el("div", "tl-gutter-ruler"));
     const gTracks = el("div", "tl-gutter-tracks");
-    gTracks.append(gutterLane("Video", "Video", "video"));
+    gTracks.append(gutterLane("Video", "Video", "video", VIDEO_LANE_H));
     const gAud = el("div", "tl-gutter-aud");
-    gAud.append(gutterLane("Original", "Original audio from generated clips and video", "audio orig"));
+    gAud.append(gutterLane("Original", "Original audio from generated clips and video", "audio orig", AUDIO_LANE_H));
     (p.audio_tracks || []).forEach((t) => {
       let name, title;
       const isSep = S.isSeparatedAudioTrack ? S.isSeparatedAudioTrack(t) : (t.kind === "separated" && t.scene_id);
@@ -1462,27 +1510,14 @@
         title = name;
       }
       const short = name.length > 9 ? name.slice(0, 8) + "…" : name;
-      gAud.append(gutterLane(short, title, "audio" + (isOverlay ? " overlay" : isSep ? " sep" : "")));
+      gAud.append(gutterLane(short, title, "audio" + (isOverlay ? " overlay" : isSep ? " sep" : ""), AUDIO_LANE_H));
     });
     gTracks.append(gAud);
     S.ensureOverlayLanes();
     const ovLanes = p.overlay_lanes || [];
     const gOv = el("div", "tl-gutter-ov");
-    ovLanes.forEach((lane, i) => {
-      const top = i === ovLanes.length - 1;
-      const bottom = i === 0;
-      const label = ovLanes.length > 1 ? `O${i + 1}` : "Overlay";
-      const hint = top ? "top layer" : bottom ? "bottom layer" : "middle layer";
-      const gl = gutterLane(label, `${lane.label || "Overlay"} · ${hint}`, "overlay" + (top ? " top" : ""));
-      gl.style.height = OVERLAY_LANE_H + "px";
-      gl.style.flex = `0 0 ${OVERLAY_LANE_H}px`;
-      gOv.append(gl);
-    });
-    const addOv = el("button", "tl-gutter-add-ov", "+");
-    addOv.type = "button";
-    addOv.title = "Add overlay track (draws above existing tracks)";
-    addOv.onclick = (e) => { e.stopPropagation(); S.addOverlayLane(); };
-    gOv.append(addOv);
+    ovLanes.forEach((lane, i) => gOv.append(overlayGutterLane(st, lane, i, ovLanes.length)));
+    gOv.append(overlayAddRow("tl-gutter-ov-add"));
     gTracks.append(gOv);
     gutter.append(gTracks);
     return gutter;
@@ -1523,6 +1558,8 @@
   function overlayLaneEl(st, p, lane, laneIndex, laneCount) {
     const laneEl = el("div", "tl-overlay-lane" + (laneIndex === laneCount - 1 ? " top" : laneIndex === 0 ? " bottom" : ""));
     laneEl.style.height = OVERLAY_LANE_H + "px";
+    laneEl.style.minHeight = OVERLAY_LANE_H + "px";
+    laneEl.style.flex = `0 0 ${OVERLAY_LANE_H}px`;
     laneEl.dataset.laneId = lane.id;
     const body = el("div", "tl-overlay-lane-body");
     const tracks = (p.overlay_tracks || []).filter((t) => t.lane_id === lane.id);
@@ -1537,6 +1574,7 @@
     const lanes = p.overlay_lanes || [];
     const wrap = el("div", "tl-overlay-lanes");
     lanes.forEach((lane, i) => wrap.append(overlayLaneEl(st, p, lane, i, lanes.length)));
+    wrap.append(overlayAddRow("tl-overlay-add-row"));
     return wrap;
   }
 
@@ -1651,6 +1689,10 @@
     requestAutoFit() { _pendingAutoFit = true; },
     fit: () => fit(S.previewTotalSec ? S.previewTotalSec() : tlTotalSec),
     syncClipRatings,
+    openOverlaySettings: (track) => {
+      if (!track) return;
+      openOverlaySettingsModal(S.get(), track);
+    },
   };
 
   // ── render ───────────────────────────────────────────────────────────────────────
@@ -1733,6 +1775,9 @@
 
     const tracks = el("div", "tl-tracks");
     const track = el("div", "tl-track2");
+    track.style.height = VIDEO_LANE_H + "px";
+    track.style.minHeight = VIDEO_LANE_H + "px";
+    track.style.flex = `0 0 ${VIDEO_LANE_H}px`;
     track.addEventListener("dragover", (e) => {
       if (e.dataTransfer?.types?.includes("application/funpack-media")) {
         e.preventDefault();
@@ -1878,10 +1923,25 @@
     if (e.key === "l" || e.key === "L") { e.preventDefault(); window.Player?.play?.(); return; }
     if (e.key === "+" || e.key === "=") { e.preventDefault(); setZoom(pxPerSec * 1.2, { manual: true }); return; }
     if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(pxPerSec / 1.2, { manual: true }); return; }
+    if (e.key === " " || e.code === "Space") {
+      e.preventDefault();
+      if (window.Player?.isPlaying?.()) window.Player.pause();
+      else window.Player?.play?.();
+      return;
+    }
     if (e.key === "ArrowLeft") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1 / fps)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); window.Player?.seek(ph + 1 / fps); return; }
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (st.selectedOverlayId) { e.preventDefault(); S.removeOverlayTrack(st.selectedOverlayId); }
+      if (st.selectedOverlayId) {
+        e.preventDefault();
+        S.removeSelectedOverlay();
+        return;
+      }
+      if (selectedIds(st).length) {
+        e.preventDefault();
+        S.removeSelectedScenes();
+        return;
+      }
       return;
     }
     if (!st.selectedSceneId) return;
@@ -1898,10 +1958,6 @@
       return;
     }
     if (e.key === "s" || e.key === "S") { e.preventDefault(); splitSelectedAtPlayhead(); }
-    else if (e.key === "Delete" || e.key === "Backspace") {
-      e.preventDefault();
-      if (selectedIds(st).length) S.removeSelectedScenes();
-    }
   });
 
   // Update only the playhead needle + timecode during video playback.

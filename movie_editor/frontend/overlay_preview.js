@@ -29,11 +29,24 @@
     return dur > 0 && t >= start && t < start + dur;
   }
 
+  function clamp01(n, fallback) {
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(0, Math.min(1, n));
+  }
+
+  function layerRect() {
+    const host = ensureLayer();
+    if (!host) return null;
+    const rect = host.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return null;
+    return rect;
+  }
+
   function placeBox(box, ov, rect) {
     const nx = ov.x != null ? ov.x : 0.5;
     const ny = ov.y != null ? ov.y : 0.5;
-    box.style.left = (nx * rect.width) + "px";
-    box.style.top = (ny * rect.height) + "px";
+    box.style.left = (clamp01(nx, 0.5) * rect.width) + "px";
+    box.style.top = (clamp01(ny, 0.5) * rect.height) + "px";
     box.style.opacity = ov.opacity != null ? ov.opacity : 1;
   }
 
@@ -44,42 +57,56 @@
     if (OUI) box.style.fontFamily = OUI.cssFamily(ov.font_family);
   }
 
+  function openSettings(ov) {
+    const fresh = S.overlayTrack(ov.id);
+    if (fresh && window.Timeline?.openOverlaySettings) window.Timeline.openOverlaySettings(fresh);
+  }
+
   function startDrag(e, ov, box, rect) {
+    if (e.button !== 0 || e.detail > 1) return;
     e.preventDefault();
     e.stopPropagation();
-    S.selectOverlay(ov.id);
 
+    const startX = e.clientX;
+    const startY = e.clientY;
     const boxRect = box.getBoundingClientRect();
     const grabOffX = e.clientX - (boxRect.left + boxRect.width / 2);
     const grabOffY = e.clientY - (boxRect.top + boxRect.height / 2);
 
-    const posAt = (clientX, clientY) => {
-      const cx = clientX - rect.left - grabOffX;
-      const cy = clientY - rect.top - grabOffY;
+    const posAt = (clientX, clientY, r) => {
+      const cx = clientX - r.left - grabOffX;
+      const cy = clientY - r.top - grabOffY;
       return {
-        nx: Math.max(0, Math.min(1, cx / rect.width)),
-        ny: Math.max(0, Math.min(1, cy / rect.height)),
+        nx: clamp01(cx / r.width, ov.x != null ? ov.x : 0.5),
+        ny: clamp01(cy / r.height, ov.y != null ? ov.y : 0.5),
       };
     };
 
-    dragging = { id: ov.id, grabOffX, grabOffY, rect, box };
+    dragging = { id: ov.id, grabOffX, grabOffY, rect, box, startX, startY, moved: false };
     box.classList.add("dragging");
+    if (S.get().selectedOverlayId !== ov.id) S.selectOverlay(ov.id);
 
     const onMove = (ev) => {
       if (!dragging) return;
-      const { nx, ny } = posAt(ev.clientX, ev.clientY);
-      dragging.box.style.left = (nx * dragging.rect.width) + "px";
-      dragging.box.style.top = (ny * dragging.rect.height) + "px";
+      if (Math.hypot(ev.clientX - dragging.startX, ev.clientY - dragging.startY) > 4) {
+        dragging.moved = true;
+      }
+      const r = layerRect() || dragging.rect;
+      dragging.rect = r;
+      const { nx, ny } = posAt(ev.clientX, ev.clientY, r);
+      dragging.box.style.left = (nx * r.width) + "px";
+      dragging.box.style.top = (ny * r.height) + "px";
     };
     const onUp = (ev) => {
       if (!dragging) return;
-      const { nx, ny } = posAt(ev.clientX, ev.clientY);
-      const id = dragging.id;
+      const { id, moved } = dragging;
+      const r = layerRect() || dragging.rect;
+      const { nx, ny } = posAt(ev.clientX, ev.clientY, r);
       dragging.box.classList.remove("dragging");
       dragging = null;
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
-      S.updateOverlayTrack(id, { x: nx, y: ny }, true);
+      if (moved) S.updateOverlayTrack(id, { x: nx, y: ny }, true);
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
@@ -99,7 +126,8 @@
     const tracks = S.sortedOverlayTracks ? S.sortedOverlayTracks() : (st.project?.overlay_tracks || []);
     const t = window.Player?.getPlayhead?.() ?? 0;
     const sel = st.selectedOverlayId;
-    const rect = host.getBoundingClientRect();
+    const rect = layerRect();
+    if (!rect) return;
     host.replaceChildren();
 
     tracks.forEach((ov) => {
@@ -119,16 +147,25 @@
           box.appendChild(img);
           const scale = ov.scale != null ? ov.scale : 0.35;
           img.onload = () => {
-            const w = Math.max(24, rect.width * scale);
+            const r = layerRect();
+            if (!r) return;
+            const w = Math.max(24, r.width * scale);
             img.style.width = w + "px";
             img.style.height = "auto";
-            placeBox(box, ov, rect);
+            placeBox(box, ov, r);
           };
         }
       }
 
       placeBox(box, ov, rect);
       box.addEventListener("pointerdown", (e) => startDrag(e, ov, box, rect));
+      box.addEventListener("dblclick", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragging = null;
+        S.selectOverlay(ov.id);
+        openSettings(ov);
+      });
       host.append(box);
     });
   }

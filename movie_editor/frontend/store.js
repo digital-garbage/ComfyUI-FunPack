@@ -1664,12 +1664,12 @@
     return id;
   }
 
-  function removeOverlayLane(laneId) {
+  function removeOverlayLane(laneId, opts) {
     if (!state.project) return;
     ensureOverlayLanes();
     if (state.project.overlay_lanes.length <= 1) return;
     const hasClips = state.project.overlay_tracks.some((t) => t.lane_id === laneId);
-    if (hasClips && !confirm("Remove this overlay track and all clips on it?")) return;
+    if (hasClips && !opts?.skipConfirm && !confirm("Remove this overlay track and all clips on it?")) return;
     _historyRecord();
     state.project.overlay_tracks = state.project.overlay_tracks.filter((t) => t.lane_id !== laneId);
     state.project.overlay_lanes = state.project.overlay_lanes.filter((l) => l.id !== laneId);
@@ -1804,6 +1804,12 @@
     state.project.overlay_tracks = (state.project.overlay_tracks || []).filter((x) => x.id !== id);
     if (state.selectedOverlayId === id) state.selectedOverlayId = null;
     notify(); scheduleSave();
+  }
+
+  function removeSelectedOverlay() {
+    const id = state.selectedOverlayId;
+    if (!id) return;
+    removeOverlayTrack(id, { skipConfirm: true });
   }
 
   function setSourceTrim(id, patch) {
@@ -3135,7 +3141,7 @@
     overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
     addOverlayLane, removeOverlayLane, assignMediaToOverlayLane,
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
-    addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack,
+    addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,

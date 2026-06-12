@@ -842,9 +842,9 @@
     );
     sec.append(layerRow);
 
-    sec.append(el("div", "insp-hint", "Drag on the preview to reposition. Double-click the timeline clip to edit."));
+    sec.append(el("div", "insp-hint", "Drag on the preview to reposition. Double-click preview or timeline clip to edit."));
     const rm = el("button", "btn danger tiny", "Remove overlay");
-    rm.onclick = () => S.removeOverlayTrack(ov.id);
+    rm.onclick = () => S.removeOverlayTrack(ov.id, { skipConfirm: true });
     sec.append(rm);
     body.append(sec);
   }
