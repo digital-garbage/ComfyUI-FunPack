@@ -14,6 +14,14 @@ The `dev` branch is intended for testing unfinished changes, implementing new lo
 
 Use only `main` if you want the most stable version of this node pack. Bug reports based on `dev` version will be ignored.
 
+## Version 3.0 — Cutting Room and development direction
+
+FunPack **3.0** introduces the **Cutting Room** — a dedicated montage editor at `/funpack/movie` inside ComfyUI. It is the primary surface for building multi-scene projects, previewing on a real timeline, and driving FunPack Studio + the LTXAV Scene Chain Sampler without wiring a graph by hand.
+
+Going forward, **new features and UX work target the Cutting Room frontend**. The classic ComfyUI node popups (Studio, Refiner V2, Scene Chain Sampler, and other pre-3.0 nodes) remain fully usable but will receive **bugfixes only** — no significant UI reworks unless a fix requires it. If you live in ComfyUI graphs, nothing breaks; if you want the full montage workflow, use the Cutting Room.
+
+See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
+
 ## Installation
 
 FunPack is available on Comfy Registry and can be installed in any of these ways:
@@ -55,6 +63,7 @@ Per-node documentation is available in the [`docs`](docs) folder.
 
 Start with:
 
+- [`docs/MovieEditor.md`](docs/MovieEditor.md) for the FunPack Cutting Room (Movie Editor)
 - [`docs/FunPackVideoRefinerV2.md`](docs/FunPackVideoRefinerV2.md) for `FunPack Video Refiner V2`
 - [`docs/FunPackVideoRefinerV2QuickGuide.md`](docs/FunPackVideoRefinerV2QuickGuide.md) for a short Discord-friendly Refiner V2 guide
 - [`docs/FunPackLTXAVSceneChainSampler.md`](docs/FunPackLTXAVSceneChainSampler.md) for split-scene LTXV/LTXAV continuation
@@ -93,6 +102,9 @@ I express my deepest gratitude to:
 - DeepSeek team and model;
 - Google and Gemini;
 - Lightricks and LTX-Video model;
+- [ComfyUI-LTXVideo](https://github.com/Lightricks/ComfyUI-LTXVideo) — LTX model loaders and nodes used by the built-in Cutting Room pipeline;
+- [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) — video combine and helper nodes for montage export;
+- [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) — utility nodes used by the built-in pipeline;
 - ComfyUI and its whole community.
 
 Without all of you, this project would've been impossible.
