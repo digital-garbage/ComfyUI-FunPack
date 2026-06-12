@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
 
 from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
-from .backend.nle_overlays import build_overlay_video_filter
+from .backend.nle_overlays import build_overlay_video_filter, sort_overlays_for_composite
 from .backend.timeline import (
     Project,
     build_combined_prompt,
@@ -674,7 +674,10 @@ def _append_overlay_filters(
     image_input_base: int,
 ) -> None:
     """Append overlay compositing after [vbase]; sets final [vout]."""
-    overlays = list(getattr(proj, "overlay_tracks", None) or [])
+    overlays = sort_overlays_for_composite(
+        list(getattr(proj, "overlay_tracks", None) or []),
+        list(getattr(proj, "overlay_lanes", None) or []),
+    )
     if not overlays:
         parts.append("[vbase]null[vout]")
         return

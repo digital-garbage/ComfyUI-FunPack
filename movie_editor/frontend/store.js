@@ -609,6 +609,7 @@
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
     state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
+    normalizeOverlayLanes(state.project);
     state.models = JSON.parse(JSON.stringify(state.project.models || { slots: [] }));
     if (_clearOrphanRatings()) {
       _syncEditorStateToProject();
@@ -1600,6 +1601,130 @@
     return (state.project?.overlay_tracks || []).find((t) => t.id === id) || null;
   }
 
+  function normalizeOverlayLanes(project) {
+    if (!project) return;
+    project.overlay_tracks = project.overlay_tracks || [];
+    let lanes = project.overlay_lanes = project.overlay_lanes || [];
+    if (!lanes.length) {
+      const id = _uid();
+      lanes = project.overlay_lanes = [{ id, label: "Overlay 1" }];
+    }
+    const ids = new Set(lanes.map((l) => l.id));
+    const fallback = lanes[0].id;
+    project.overlay_tracks.forEach((t) => {
+      if (!t.lane_id || !ids.has(t.lane_id)) t.lane_id = fallback;
+    });
+  }
+
+  function ensureOverlayLanes() {
+    if (!state.project) return [];
+    normalizeOverlayLanes(state.project);
+    return state.project.overlay_lanes;
+  }
+
+  function overlayLaneById(laneId) {
+    return ensureOverlayLanes().find((l) => l.id === laneId) || null;
+  }
+
+  function overlayLaneIndex(laneId) {
+    return ensureOverlayLanes().findIndex((l) => l.id === laneId);
+  }
+
+  function sortedOverlayTracks() {
+    ensureOverlayLanes();
+    const tracks = [...(state.project.overlay_tracks || [])];
+    tracks.sort((a, b) => {
+      const ai = overlayLaneIndex(a.lane_id);
+      const bi = overlayLaneIndex(b.lane_id);
+      if (ai !== bi) return ai - bi;
+      return (a.start_sec || 0) - (b.start_sec || 0);
+    });
+    return tracks;
+  }
+
+  function defaultOverlayLaneId() {
+    const lanes = ensureOverlayLanes();
+    return lanes[lanes.length - 1]?.id || lanes[0]?.id;
+  }
+
+  function addOverlayLane(opts) {
+    if (!state.project) return null;
+    _historyRecord();
+    ensureOverlayLanes();
+    const id = _uid();
+    const n = state.project.overlay_lanes.length + 1;
+    const lane = { id, label: `Overlay ${n}` };
+    if (opts?.belowId) {
+      const idx = state.project.overlay_lanes.findIndex((l) => l.id === opts.belowId);
+      state.project.overlay_lanes.splice(Math.max(0, idx), 0, lane);
+    } else {
+      state.project.overlay_lanes.push(lane);
+    }
+    notify(); scheduleSave();
+    return id;
+  }
+
+  function removeOverlayLane(laneId) {
+    if (!state.project) return;
+    ensureOverlayLanes();
+    if (state.project.overlay_lanes.length <= 1) return;
+    const hasClips = state.project.overlay_tracks.some((t) => t.lane_id === laneId);
+    if (hasClips && !confirm("Remove this overlay track and all clips on it?")) return;
+    _historyRecord();
+    state.project.overlay_tracks = state.project.overlay_tracks.filter((t) => t.lane_id !== laneId);
+    state.project.overlay_lanes = state.project.overlay_lanes.filter((l) => l.id !== laneId);
+    notify(); scheduleSave();
+  }
+
+  function _setOverlayLane(overlayId, laneId) {
+    const t = overlayTrack(overlayId);
+    if (!t || !overlayLaneById(laneId)) return;
+    t.lane_id = laneId;
+    notify(); scheduleSave();
+  }
+
+  function bringOverlayToFront(overlayId) {
+    const lanes = ensureOverlayLanes();
+    if (!lanes.length) return;
+    _historyRecord();
+    _setOverlayLane(overlayId, lanes[lanes.length - 1].id);
+  }
+
+  function sendOverlayToBack(overlayId) {
+    const lanes = ensureOverlayLanes();
+    if (!lanes.length) return;
+    _historyRecord();
+    _setOverlayLane(overlayId, lanes[0].id);
+  }
+
+  function bringOverlayForward(overlayId) {
+    const t = overlayTrack(overlayId);
+    if (!t) return;
+    const lanes = ensureOverlayLanes();
+    const idx = overlayLaneIndex(t.lane_id);
+    if (idx < 0 || idx >= lanes.length - 1) return;
+    _historyRecord();
+    _setOverlayLane(overlayId, lanes[idx + 1].id);
+  }
+
+  function sendOverlayBackward(overlayId) {
+    const t = overlayTrack(overlayId);
+    if (!t) return;
+    const lanes = ensureOverlayLanes();
+    const idx = overlayLaneIndex(t.lane_id);
+    if (idx <= 0) return;
+    _historyRecord();
+    _setOverlayLane(overlayId, lanes[idx - 1].id);
+  }
+
+  function assignMediaToOverlayLane(laneId, mediaId) {
+    if (!state.project || !laneId || !mediaId) return;
+    ensureOverlayLanes();
+    if (!overlayLaneById(laneId)) return;
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    if (asset?.kind === "image") addImageOverlay(mediaId, undefined, laneId);
+  }
+
   function selectOverlay(id) {
     state.selectedOverlayId = id || null;
     if (id) {
@@ -1610,14 +1735,17 @@
     notify();
   }
 
-  function addImageOverlay(mediaId, startSec) {
+  function addImageOverlay(mediaId, startSec, laneId) {
     if (!state.project || !mediaId) return;
     _historyRecord();
+    ensureOverlayLanes();
     const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    const lane = laneId && overlayLaneById(laneId) ? laneId : defaultOverlayLaneId();
     state.project.overlay_tracks = state.project.overlay_tracks || [];
     const id = _uid();
     state.project.overlay_tracks.push({
       id,
+      lane_id: lane,
       kind: "image",
       media_ref: mediaId,
       start_sec: Math.max(0, +(startSec ?? _playheadSec())),
@@ -1632,16 +1760,20 @@
     scheduleSave();
   }
 
-  function addTextOverlay(text, startSec) {
+  function addTextOverlay(text, startSec, laneId) {
     if (!state.project) return;
     _historyRecord();
+    ensureOverlayLanes();
+    const lane = laneId && overlayLaneById(laneId) ? laneId : defaultOverlayLaneId();
     state.project.overlay_tracks = state.project.overlay_tracks || [];
     const id = _uid();
     state.project.overlay_tracks.push({
       id,
+      lane_id: lane,
       kind: "text",
       text: String(text || "Title").trim() || "Title",
       font_size: 42,
+      font_family: "system-ui",
       color: "#ffffff",
       start_sec: Math.max(0, +(startSec ?? _playheadSec())),
       duration_sec: 3,
@@ -3000,7 +3132,10 @@
     buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec, clipSourceInSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
-    overlayTrack, selectOverlay, addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack,
+    overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
+    addOverlayLane, removeOverlayLane, assignMediaToOverlayLane,
+    bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
+    addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack,
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,

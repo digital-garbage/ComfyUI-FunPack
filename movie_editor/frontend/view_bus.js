@@ -19,6 +19,7 @@
       ghosts: st.sceneGhosts,
       audio: p.audio_tracks,
       overlays: p.overlay_tracks,
+      ovLanes: p.overlay_lanes,
       keepAud: p.keep_original_audio,
       gen: st.gen?.state,
       labels: (st.ratingLabels || []).length,
@@ -44,6 +45,7 @@
       sels: st.selectedSceneIds,
       overlay: st.selectedOverlayId,
       overlays: p.overlay_tracks,
+      ovLanes: p.overlay_lanes,
       scene: sc,
       proj: sc ? null : {
         name: p.name, anchor: p.anchor, global_prompt: p.global_prompt,
@@ -89,11 +91,21 @@
       renders: st.sceneRenders,
       ghosts: st.sceneGhosts,
       audio: p.audio_tracks,
-      overlays: p.overlay_tracks,
       keepAud: p.keep_original_audio,
       gen: { state: st.gen?.state, media: st.gen?.media },
       mediaPreview: st.mediaPreviewId,
       fps: p.frame_rate,
+    });
+  }
+
+  function fpOverlays(st) {
+    if (!st.project) return "none";
+    return hash({
+      pid: st.project.id,
+      overlays: st.project.overlay_tracks,
+      ovLanes: st.project.overlay_lanes,
+      sel: st.selectedOverlayId,
+      mediaPreview: st.mediaPreviewId,
     });
   }
 
@@ -135,8 +147,9 @@
     subscribeTimeline: (fn) => subscribeZone("timeline", fn, fpTimeline),
     subscribeInspector: (fn) => subscribeZone("inspector", fn, fpInspector),
     subscribePlayer: (fn) => subscribeZone("player", fn, fpPlayer),
+    subscribeOverlays: (fn) => subscribeZone("overlays", fn, fpOverlays),
     subscribeActionbar: (fn) => subscribeZone("actionbar", fn, fpActionbar),
     subscribeMediabrowser: (fn) => subscribeZone("mediabrowser", fn, fpMediabrowser),
-    fingerprints: { fpTimeline, fpTimelineData, fpTimelineSel, fpInspector, fpPlayer, fpActionbar, fpMediabrowser },
+    fingerprints: { fpTimeline, fpTimelineData, fpTimelineSel, fpInspector, fpPlayer, fpOverlays, fpActionbar, fpMediabrowser },
   };
 })();

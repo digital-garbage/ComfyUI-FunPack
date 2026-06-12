@@ -1,8 +1,51 @@
 """Timeline graphics overlays (images + text) for preview/export ffmpeg compositing."""
 from __future__ import annotations
 
+import os
 import re
 from typing import Any
+
+
+# Common system font paths (first match wins at export time).
+_FONT_PATHS: dict[str, list[str]] = {
+    "arial": [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ],
+    "helvetica": [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ],
+    "georgia": [
+        "/System/Library/Fonts/Supplemental/Georgia.ttf",
+        "/Library/Fonts/Georgia.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Georgia.ttf",
+    ],
+    "times": [
+        "/System/Library/Fonts/Supplemental/Times New Roman.ttf",
+        "/Library/Fonts/Times New Roman.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+    ],
+    "courier": [
+        "/System/Library/Fonts/Supplemental/Courier New.ttf",
+        "/Library/Fonts/Courier New.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Courier_New.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    ],
+    "verdana": [
+        "/System/Library/Fonts/Supplemental/Verdana.ttf",
+        "/Library/Fonts/Verdana.ttf",
+        "/usr/share/fonts/truetype/msttcorefonts/Verdana.ttf",
+    ],
+    "impact": [
+        "/System/Library/Fonts/Supplemental/Impact.ttf",
+        "/Library/Fonts/Impact.ttf",
+    ],
+}
 
 
 def _escape_drawtext(text: str) -> str:
@@ -10,6 +53,34 @@ def _escape_drawtext(text: str) -> str:
     s = s.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
     s = re.sub(r"[\r\n]+", " ", s)
     return s
+
+
+def _resolve_fontfile(font_family: str | None) -> str | None:
+    key = (font_family or "system-ui").strip().lower()
+    if key in ("", "system-ui", "default"):
+        return None
+    for path in _FONT_PATHS.get(key, []):
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def sort_overlays_for_composite(
+    overlays: list[dict],
+    lanes: list[dict] | None = None,
+) -> list[dict]:
+    """Bottom lanes first, then start time within a lane."""
+    lane_list = list(lanes or [])
+    if not lane_list:
+        return list(overlays or [])
+    order = {str(l.get("id") or ""): i for i, l in enumerate(lane_list)}
+    fallback = str(lane_list[0].get("id") or "")
+
+    def key(ov: dict) -> tuple[int, float]:
+        lid = str(ov.get("lane_id") or fallback)
+        return (order.get(lid, 0), float(ov.get("start_sec") or 0))
+
+    return sorted(list(overlays or []), key=key)
 
 
 def build_overlay_video_filter(
@@ -53,8 +124,10 @@ def build_overlay_video_filter(
             alpha = f":alpha={opacity:.3f}" if opacity < 0.999 else ""
             x_expr = f"{nx:.6f}*W-text_w/2"
             y_expr = f"{ny:.6f}*H-text_h/2"
+            fontfile = _resolve_fontfile(ov.get("font_family"))
+            font_opt = f":fontfile='{fontfile}'" if fontfile else ""
             parts.append(
-                f"{cur}drawtext=text='{text}':fontsize={size}:fontcolor={fontcolor}{alpha}:"
+                f"{cur}drawtext=text='{text}':fontsize={size}:fontcolor={fontcolor}{alpha}{font_opt}:"
                 f"x={x_expr}:y={y_expr}:{enable}{out}"
             )
             cur = out

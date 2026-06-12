@@ -2,6 +2,7 @@
 (function () {
   const S = window.Store;
   const API = window.MovieEditorAPI;
+  const OUI = window.OverlayUI;
   let layer = null;
   let dragging = null;
 
@@ -36,6 +37,13 @@
     box.style.opacity = ov.opacity != null ? ov.opacity : 1;
   }
 
+  function applyTextStyle(box, ov) {
+    box.textContent = ov.text || "Text";
+    box.style.fontSize = (ov.font_size || 42) + "px";
+    box.style.color = ov.color || "#ffffff";
+    if (OUI) box.style.fontFamily = OUI.cssFamily(ov.font_family);
+  }
+
   function startDrag(e, ov, box, rect) {
     e.preventDefault();
     e.stopPropagation();
@@ -44,33 +52,34 @@
     const boxRect = box.getBoundingClientRect();
     const grabOffX = e.clientX - (boxRect.left + boxRect.width / 2);
     const grabOffY = e.clientY - (boxRect.top + boxRect.height / 2);
-    const ox = ov.x != null ? ov.x : 0.5;
-    const oy = ov.y != null ? ov.y : 0.5;
-    dragging = { id: ov.id, ox, oy, grabOffX, grabOffY, rect };
-    box.classList.add("dragging");
 
     const posAt = (clientX, clientY) => {
-      const cx = clientX - dragging.rect.left - dragging.grabOffX;
-      const cy = clientY - dragging.rect.top - dragging.grabOffY;
-      const nx = Math.max(0, Math.min(1, cx / dragging.rect.width));
-      const ny = Math.max(0, Math.min(1, cy / dragging.rect.height));
-      return { nx, ny };
+      const cx = clientX - rect.left - grabOffX;
+      const cy = clientY - rect.top - grabOffY;
+      return {
+        nx: Math.max(0, Math.min(1, cx / rect.width)),
+        ny: Math.max(0, Math.min(1, cy / rect.height)),
+      };
     };
+
+    dragging = { id: ov.id, grabOffX, grabOffY, rect, box };
+    box.classList.add("dragging");
 
     const onMove = (ev) => {
       if (!dragging) return;
       const { nx, ny } = posAt(ev.clientX, ev.clientY);
-      box.style.left = (nx * dragging.rect.width) + "px";
-      box.style.top = (ny * dragging.rect.height) + "px";
+      dragging.box.style.left = (nx * dragging.rect.width) + "px";
+      dragging.box.style.top = (ny * dragging.rect.height) + "px";
     };
     const onUp = (ev) => {
       if (!dragging) return;
       const { nx, ny } = posAt(ev.clientX, ev.clientY);
-      S.updateOverlayTrack(dragging.id, { x: nx, y: ny }, true);
+      const id = dragging.id;
+      dragging.box.classList.remove("dragging");
       dragging = null;
-      box.classList.remove("dragging");
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
+      S.updateOverlayTrack(id, { x: nx, y: ny }, true);
     };
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
@@ -85,12 +94,12 @@
       host.style.display = "none";
       return;
     }
+    if (dragging) return;
     host.style.display = "";
-    const tracks = st.project?.overlay_tracks || [];
+    const tracks = S.sortedOverlayTracks ? S.sortedOverlayTracks() : (st.project?.overlay_tracks || []);
     const t = window.Player?.getPlayhead?.() ?? 0;
     const sel = st.selectedOverlayId;
     const rect = host.getBoundingClientRect();
-    if (dragging) return;
     host.replaceChildren();
 
     tracks.forEach((ov) => {
@@ -100,9 +109,7 @@
       box.title = ov.label || ov.text || "Overlay";
 
       if (ov.kind === "text") {
-        box.textContent = ov.text || "Text";
-        box.style.fontSize = (ov.font_size || 42) + "px";
-        box.style.color = ov.color || "#ffffff";
+        applyTextStyle(box, ov);
       } else {
         const asset = (st.mediaBin || []).find((m) => m.id === ov.media_ref);
         if (asset?.kind === "image") {
@@ -126,8 +133,8 @@
     });
   }
 
-  if (window.ViewBus) {
-    window.ViewBus.subscribePlayer(render);
+  if (window.ViewBus?.subscribeOverlays) {
+    window.ViewBus.subscribeOverlays(render);
   } else {
     S.subscribe(render);
   }

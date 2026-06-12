@@ -777,6 +777,11 @@
       size.oninput = () => S.updateOverlayTrack(ov.id, { font_size: parseInt(size.value || "42", 10) }, true);
       sec.append(field("Font size", size));
 
+      const fontSel = window.OverlayUI
+        ? window.OverlayUI.fontSelect(ov.font_family || "system-ui", (v) => S.updateOverlayTrack(ov.id, { font_family: v }, true))
+        : el("select");
+      sec.append(field("Font", fontSel));
+
       const color = el("input");
       color.type = "color";
       color.value = (ov.color || "#ffffff").match(/^#/) ? ov.color : "#ffffff";
@@ -814,6 +819,28 @@
     op.dataset.k = "ov-op";
     op.oninput = () => S.updateOverlayTrack(ov.id, { opacity: parseFloat(op.value) }, true);
     sec.append(field("Opacity", op));
+
+    const lane = S.overlayLaneById ? S.overlayLaneById(ov.lane_id) : null;
+    const laneIdx = S.overlayLaneIndex ? S.overlayLaneIndex(ov.lane_id) : -1;
+    const laneCount = (st.project?.overlay_lanes || []).length;
+    sec.append(el("div", "insp-hint", lane
+      ? `Track ${laneIdx + 1} of ${laneCount} · higher tracks draw on top.`
+      : "Higher overlay tracks draw on top when times overlap."));
+
+    const layerRow = el("div", "insp-layer-actions");
+    const mkLayerBtn = (label, fn, title) => {
+      const b = el("button", "btn ghost tiny", label);
+      b.title = title;
+      b.onclick = fn;
+      return b;
+    };
+    layerRow.append(
+      mkLayerBtn("To back", () => S.sendOverlayToBack(ov.id), "Move to bottom overlay track"),
+      mkLayerBtn("↓", () => S.sendOverlayBackward(ov.id), "One track down"),
+      mkLayerBtn("↑", () => S.bringOverlayForward(ov.id), "One track up"),
+      mkLayerBtn("To front", () => S.bringOverlayToFront(ov.id), "Move to top overlay track"),
+    );
+    sec.append(layerRow);
 
     sec.append(el("div", "insp-hint", "Drag on the preview to reposition. Double-click the timeline clip to edit."));
     const rm = el("button", "btn danger tiny", "Remove overlay");

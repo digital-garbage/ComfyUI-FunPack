@@ -18,6 +18,36 @@ def test_build_overlay_text_filter():
     assert final.startswith("[vov")
 
 
+def test_build_overlay_text_with_font():
+    parts, _ = build_overlay_video_filter(
+        "[vbase]",
+        [{"kind": "text", "text": "Hi", "font_family": "system-ui", "start_sec": 0, "duration_sec": 1}],
+        canvas_w=768,
+        canvas_h=512,
+        image_input_labels=[],
+    )
+    assert "drawtext" in parts[0]
+    assert "fontfile=" not in parts[0]
+
+
+def test_resolve_fontfile_optional():
+    from movie_editor.backend.nle_overlays import _resolve_fontfile
+    assert _resolve_fontfile("system-ui") is None
+    assert _resolve_fontfile(None) is None
+
+
+def test_sort_overlays_by_lane():
+    from movie_editor.backend.nle_overlays import sort_overlays_for_composite
+    lanes = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
+    tracks = [
+        {"id": "1", "lane_id": "c", "start_sec": 0},
+        {"id": "2", "lane_id": "a", "start_sec": 1},
+        {"id": "3", "lane_id": "b", "start_sec": 0},
+    ]
+    out = sort_overlays_for_composite(tracks, lanes)
+    assert [t["id"] for t in out] == ["2", "3", "1"]
+
+
 def test_build_overlay_image_filter():
     parts, final = build_overlay_video_filter(
         "[vbase]",
