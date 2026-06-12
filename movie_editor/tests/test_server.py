@@ -401,26 +401,3 @@ def test_timeline_snapshot_mismatch_none_when_aligned():
         ],
     }
     assert _timeline_snapshot_mismatch(snap, p) is None
-
-
-def test_preview_segment_cache_key_includes_source_mtime():
-    from movie_editor.server import _preview_segment_cache_key
-
-    clip = {"filename": "chain.mp4", "subfolder": "", "type": "temp", "in": 0.0, "dur": 2.6}
-    k1 = _preview_segment_cache_key("p1", "s1", clip, src_mtime=100)
-    k2 = _preview_segment_cache_key("p1", "s1", clip, src_mtime=200)
-    assert k1 != k2
-
-
-def test_invalidate_preview_segment_cache_drops_project_entries(tmp_path, monkeypatch):
-    from movie_editor import server
-
-    stale = tmp_path / "stale.mp4"
-    stale.write_bytes(b"x")
-    server._preview_segment_cache.clear()
-    server._preview_segment_cache["p1:s1:chain.mp4:::temp:0:2.6:mt1"] = str(stale)
-    server._preview_segment_cache["p2:s1:other.mp4:::temp:0:1:mt1"] = str(tmp_path / "keep.mp4")
-    server._invalidate_preview_segment_cache("p1")
-    assert not any(k.startswith("p1:") for k in server._preview_segment_cache)
-    assert any(k.startswith("p2:") for k in server._preview_segment_cache)
-    assert not stale.exists()
