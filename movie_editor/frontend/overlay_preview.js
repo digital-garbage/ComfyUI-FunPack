@@ -319,7 +319,7 @@
     const st = S.get();
     const host = ensureLayer();
     if (!host) return;
-    if (st.mediaPreviewId) {
+    if (!st.project || st.mediaPreviewId) {
       host.replaceChildren();
       host.style.display = "none";
       return;

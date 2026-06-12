@@ -1652,6 +1652,7 @@
   }
 
   function sortedOverlayTracks() {
+    if (!state.project) return [];
     ensureOverlayLanes();
     const tracks = [...(state.project.overlay_tracks || [])];
     tracks.sort((a, b) => {
