@@ -54,10 +54,18 @@ window.FunPackWaveform = (function () {
     g.clearRect(0, 0, w, h);
     const fill = (opts && opts.color) || "rgba(45, 212, 191, 0.55)";
     const mid = h / 2;
-    const step = w / peaks.length;
+    let slice = peaks;
+    const totalSec = opts?.totalDurationSec;
+    if (totalSec > 0 && opts?.durationSec > 0) {
+      const inSec = Math.max(0, opts.inSec || 0);
+      const startIdx = Math.floor((inSec / totalSec) * peaks.length);
+      const endIdx = Math.ceil(((inSec + opts.durationSec) / totalSec) * peaks.length);
+      slice = peaks.subarray(startIdx, Math.max(startIdx + 1, endIdx));
+    }
+    const step = w / slice.length;
     g.fillStyle = fill;
-    for (let i = 0; i < peaks.length; i++) {
-      const amp = peaks[i] * mid * 0.92;
+    for (let i = 0; i < slice.length; i++) {
+      const amp = slice[i] * mid * 0.92;
       const x = i * step;
       g.fillRect(x, mid - amp, Math.max(1, step * 0.85), amp * 2);
     }
@@ -89,7 +97,8 @@ window.FunPackWaveform = (function () {
     const buckets = _bucketCount((opts && opts.width) || canvas.clientWidth || 200);
     peaksFromUrl(key, url, buckets).then((data) => {
       if (!canvas.isConnected) return;
-      paint(canvas, data.peaks, opts);
+      const paintOpts = { ...(opts || {}), totalDurationSec: data.durationSec };
+      paint(canvas, data.peaks, paintOpts);
       if (opts && typeof opts.onDuration === "function" && data.durationSec > 0) {
         opts.onDuration(data.durationSec);
       }

@@ -1391,6 +1391,28 @@
 
   // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
   function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
+  function snapFramesFloor(n) {
+    n = Math.round(n);
+    if (n < 9) return 9;
+    return Math.floor((n - 1) / 8) * 8 + 1;
+  }
+  function snapFramesCeil(n) {
+    n = Math.round(n);
+    return Math.max(9, Math.ceil((n - 1) / 8) * 8 + 1);
+  }
+
+  function _framesFromDuration(durationSec, fps, curFrames) {
+    const raw = Math.max(1, durationSec) * fps;
+    const cur = curFrames != null ? curFrames : snapFrames(raw);
+    let frames;
+    if (raw < cur - 0.01) frames = snapFramesFloor(raw);
+    else if (raw > cur + 0.01) frames = snapFramesCeil(raw);
+    else frames = cur;
+    if (frames === cur && Math.abs(durationSec - cur / fps) > 0.02) {
+      frames = raw < cur ? Math.max(9, cur - 8) : cur + 8;
+    }
+    return frames;
+  }
 
   function sceneEffFrames(sc, project) {
     const p = project || state.project;
@@ -1407,16 +1429,32 @@
   function trimSceneLeft(id, trimSec) {
     if (!state.project) return;
     const s = scene(id); if (!s || s.frames_mode === "custom") return;
+    const trim = Math.max(0.05, trimSec);
+    _historyRecord();
+    if (isVideoClip(s)) {
+      const dur = s.source_dur != null ? s.source_dur : sceneDurationSec(s);
+      if (trim >= dur - 0.05) return;
+      s.source_in = (s.source_in || 0) + trim;
+      s.source_dur = Math.max(0.1, dur - trim);
+      if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
+      _syncSeparatedAudioTracks();
+      notify();
+      scheduleSave();
+      return;
+    }
     const fps = sceneEffFps(s);
     const curFrames = sceneEffFrames(s);
-    const trimFrames = Math.max(1, Math.round(Math.max(0.05, trimSec) * fps));
-    const nextFrames = snapFrames(Math.max(9, curFrames - trimFrames));
+    const trimFrames = Math.max(1, Math.round(trim * fps));
+    const rawNext = curFrames - trimFrames;
+    if (rawNext < 9) return;
+    let nextFrames = snapFramesFloor(rawNext);
+    if (nextFrames >= curFrames) nextFrames = Math.max(9, curFrames - 8);
     if (nextFrames >= curFrames) return;
-    _historyRecord();
     const actualTrimFrames = curFrames - nextFrames;
     s.frames = nextFrames;
     s.source_in = (s.source_in || 0) + actualTrimFrames / fps;
     if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
+    _syncSeparatedAudioTracks();
     notify();
     scheduleSave();
   }
@@ -1448,9 +1486,20 @@
     if (!state.project) return;
     const s = scene(id); if (!s) return;
     if (s.frames_mode === "custom") return;
-    _historyRecord();
     const fps = sceneEffFps(s);
-    s.frames = snapFrames(Math.max(1, durationSec) * fps);
+    const curDur = sceneDurationSec(s);
+    const target = Math.max(0.1, durationSec);
+    if (Math.abs(target - curDur) <= 0.02) return;
+    _historyRecord();
+    if (isVideoClip(s)) {
+      s.source_dur = target;
+      s.frames = snapFrames(target * fps);
+    } else {
+      const curFrames = sceneEffFrames(s);
+      const nextFrames = _framesFromDuration(target, fps, curFrames);
+      if (nextFrames === curFrames) return;
+      s.frames = nextFrames;
+    }
     if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
     _syncSeparatedAudioTracks();
     notify();
@@ -3496,7 +3545,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, splitScene, snapFrames, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,

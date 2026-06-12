@@ -160,6 +160,19 @@
     return anchors;
   }
 
+  function _syncSceneAudioClipVisual(sceneId, leftPx, widthPx) {
+    try {
+      const aud = document.querySelector(`.tl-aud-clip.scene-aud[data-scene-id="${sceneId}"]`);
+      if (!aud) return;
+      if (leftPx != null) aud.style.left = leftPx + "px";
+      if (widthPx != null) {
+        const w = Math.max(widthPx, 8);
+        aud.style.width = w + "px";
+        aud.style.maxWidth = w + "px";
+      }
+    } catch (_) {}
+  }
+
   function coalescedDrag(startEvt, onMove, onUp) {
     window.EditorHistory?.beginCoalesce(S);
     onDrag(startEvt, onMove, (dx, upEvt) => {
@@ -747,11 +760,14 @@
           const snappedLeft = snapPx(baseLeftPx + dx, anchors, 10);
           finalDelta = (snappedLeft - baseLeftPx) / pxPerSec;
           if (finalDelta > 0) {
+            const w = Math.max(8, (baseDur - finalDelta) * pxPerSec);
             clip.style.left = snappedLeft + "px";
-            clip.style.width = Math.max(8, (baseDur - finalDelta) * pxPerSec) + "px";
+            clip.style.width = w + "px";
+            _syncSceneAudioClipVisual(scene.id, snappedLeft, w);
           } else {
             clip.style.left = baseLeftPx + "px";
             clip.style.width = baseWidthPx + "px";
+            _syncSceneAudioClipVisual(scene.id, baseLeftPx, baseWidthPx);
           }
           tip.textContent = e.altKey && hasRender(st, scene.id)
             ? `slip ${finalDelta >= 0 ? "+" : ""}${finalDelta.toFixed(2)}s`
@@ -786,6 +802,7 @@
         finalDur = Math.max(0.1, (rightPx - baseLeftPx) / pxPerSec);
         const w = finalDur * pxPerSec;
         clip.style.width = Math.max(w, 8) + "px";
+        _syncSceneAudioClipVisual(scene.id, baseLeftPx, Math.max(w, 8));
         const fps = sFps(scene, p);
         tip.textContent = `${timecode(finalDur, fps)} · ${S.snapFrames(finalDur * fps)}f`;
       }, () => {
@@ -1216,6 +1233,8 @@
     if (scene.audio_separated) return el("span");  // audio lives on its own lane
     const vol = scene.audio_volume != null ? scene.audio_volume : 1;
     const w = Math.max(widthPx, 8);
+    const durSec = w / pxPerSec;
+    const inSec = scene.source_in || 0;
     const clip = el("div", "tl-aud-clip scene-aud" + clipSelClass(st, scene.id));
     clip.dataset.sceneId = scene.id;
     clip.style.left = leftPx + "px";
@@ -1236,13 +1255,17 @@
     const binRef = scene.source?.media_ref;
     const binAsset = binRef ? (st.mediaBin || []).find((m) => m.id === binRef) : null;
     if (r?.media && st.project?.id) {
-      _attachWaveform(canvas, `scene-aud:${scene.id}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
+      _attachWaveform(canvas, `scene-aud:${scene.id}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
         width: w,
+        inSec,
+        durationSec: durSec,
         color: "rgba(45, 212, 191, 0.5)",
       });
     } else if (binAsset?.kind === "video") {
-      _attachWaveform(canvas, `scene-aud-bin:${scene.id}:${binRef}`, window.MovieEditorAPI.mediaUrl(binRef), {
+      _attachWaveform(canvas, `scene-aud-bin:${scene.id}:${binRef}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`, window.MovieEditorAPI.mediaUrl(binRef), {
         width: w,
+        inSec,
+        durationSec: durSec,
         color: "rgba(45, 212, 191, 0.5)",
       });
     } else {
