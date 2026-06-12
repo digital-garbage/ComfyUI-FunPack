@@ -10,6 +10,57 @@
     return document.querySelector("#preview-body .pm-canvas");
   }
 
+  function canvasSize() {
+    return S.projectCanvasSize ? S.projectCanvasSize() : { w: 768, h: 512 };
+  }
+
+  /** Video frame area inside the monitor (object-fit: contain), in canvas-local px. */
+  function videoFrameInCanvas(canvas, pw, ph) {
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
+    if (cw < 1 || ch < 1 || pw < 1 || ph < 1) return null;
+    const ar = pw / ph;
+    const car = cw / ch;
+    let fw, fh, ox, oy;
+    if (car > ar) {
+      fh = ch;
+      fw = fh * ar;
+      ox = (cw - fw) / 2;
+      oy = 0;
+    } else {
+      fw = cw;
+      fh = fw / ar;
+      ox = 0;
+      oy = (ch - fh) / 2;
+    }
+    return { left: ox, top: oy, width: fw, height: fh };
+  }
+
+  function frameScale(rect) {
+    const { w } = canvasSize();
+    return rect.width / Math.max(1, w);
+  }
+
+  function bindCanvasResize(canvas) {
+    if (!canvas || canvas._ovResizeBound) return;
+    canvas._ovResizeBound = true;
+    new ResizeObserver(() => { if (!dragging) render(); }).observe(canvas);
+  }
+
+  function syncLayerFrame(host) {
+    const canvas = canvasEl();
+    if (!canvas || !host) return null;
+    bindCanvasResize(canvas);
+    const { w: pw, h: ph } = canvasSize();
+    const frame = videoFrameInCanvas(canvas, pw, ph);
+    if (!frame) return null;
+    host.style.left = frame.left + "px";
+    host.style.top = frame.top + "px";
+    host.style.width = frame.width + "px";
+    host.style.height = frame.height + "px";
+    return { width: frame.width, height: frame.height };
+  }
+
   function ensureLayer() {
     const canvas = canvasEl();
     if (!canvas) return null;
@@ -20,6 +71,7 @@
     } else if (!canvas.contains(layer)) {
       canvas.appendChild(layer);
     }
+    bindCanvasResize(canvas);
     return layer;
   }
 
@@ -37,18 +89,9 @@
   function layerRect() {
     const host = ensureLayer();
     if (!host) return null;
-    const rect = host.getBoundingClientRect();
-    if (rect.width < 1 || rect.height < 1) return null;
+    const rect = syncLayerFrame(host);
+    if (!rect || rect.width < 1 || rect.height < 1) return null;
     return rect;
-  }
-
-  function canvasSize() {
-    return S.projectCanvasSize ? S.projectCanvasSize() : { w: 768, h: 512 };
-  }
-
-  function previewScale(rect) {
-    const { w } = canvasSize();
-    return rect.width / Math.max(1, w);
   }
 
   function imageWidthPx(ov) {
@@ -78,15 +121,16 @@
     box.style.transform = boxTransform(ov);
   }
 
-  function applyTextStyle(box, ov) {
+  function applyTextStyle(box, ov, rect) {
+    const scale = frameScale(rect);
     box.textContent = ov.text || "Text";
-    box.style.fontSize = (ov.font_size || 42) + "px";
+    box.style.fontSize = Math.max(8, (ov.font_size || 42) * scale) + "px";
     box.style.color = ov.color || "#ffffff";
     if (OUI) box.style.fontFamily = OUI.cssFamily(ov.font_family);
   }
 
   function applyImageSize(img, ov, rect) {
-    const scale = previewScale(rect);
+    const scale = frameScale(rect);
     const wPx = imageWidthPx(ov);
     if (ov.keep_aspect !== false) {
       img.style.width = Math.max(8, wPx * scale) + "px";
@@ -147,6 +191,7 @@
     const startDist = Math.max(12, Math.hypot(e.clientX - cx, e.clientY - cy));
     const startW = ov.kind === "text" ? (ov.font_size || 42) : imageWidthPx(ov);
     const startH = ov.kind === "image" ? imageHeightPx(ov) : null;
+    const fScale = frameScale(rect);
 
     dragging = {
       mode: "resize",
@@ -156,6 +201,7 @@
       startDist,
       startW,
       startH,
+      fScale,
       cx,
       cy,
       box,
@@ -172,18 +218,17 @@
       const dist = Math.max(12, Math.hypot(ev.clientX - dragging.cx, ev.clientY - dragging.cy));
       const ratio = dist / dragging.startDist;
       if (dragging.kind === "text") {
-        const fontSize = Math.round(Math.max(8, Math.min(400, dragging.startW * ratio)));
-        dragging.box.style.fontSize = fontSize + "px";
+        const fontSize = Math.max(8, Math.min(400, dragging.startW * ratio));
+        dragging.box.style.fontSize = Math.max(8, fontSize * dragging.fScale) + "px";
       } else if (dragging.img) {
-        const scale = previewScale(dragging.rect);
         const wPx = Math.round(Math.max(8, dragging.startW * ratio));
         if (dragging.keepAspect) {
-          dragging.img.style.width = Math.max(8, wPx * scale) + "px";
+          dragging.img.style.width = Math.max(8, wPx * dragging.fScale) + "px";
           dragging.img.style.height = "auto";
         } else {
           const hPx = Math.round(Math.max(8, (dragging.startH || wPx) * ratio));
-          dragging.img.style.width = Math.max(8, wPx * scale) + "px";
-          dragging.img.style.height = Math.max(8, hPx * scale) + "px";
+          dragging.img.style.width = Math.max(8, wPx * dragging.fScale) + "px";
+          dragging.img.style.height = Math.max(8, hPx * dragging.fScale) + "px";
         }
       }
     };
@@ -236,12 +281,20 @@
     box.classList.add("dragging");
     if (S.get().selectedOverlayId !== ov.id) S.selectOverlay(ov.id);
 
+    const frameEl = ensureLayer();
+    const posRect = () => {
+      const r = layerRect();
+      if (!r || !frameEl) return dragging.rect;
+      const fr = frameEl.getBoundingClientRect();
+      return { left: fr.left, top: fr.top, width: r.width, height: r.height };
+    };
+
     const onMove = (ev) => {
       if (!dragging || dragging.mode !== "move") return;
       if (Math.hypot(ev.clientX - dragging.startX, ev.clientY - dragging.startY) > 4) {
         dragging.moved = true;
       }
-      const r = layerRect() || dragging.rect;
+      const r = posRect();
       dragging.rect = r;
       const { nx, ny } = posAt(ev.clientX, ev.clientY, r);
       dragging.box.style.left = (nx * r.width) + "px";
@@ -250,7 +303,7 @@
     const onUp = (ev) => {
       if (!dragging || dragging.mode !== "move") return;
       const { id, moved } = dragging;
-      const r = layerRect() || dragging.rect;
+      const r = posRect();
       const { nx, ny } = posAt(ev.clientX, ev.clientY, r);
       dragging.box.classList.remove("dragging");
       dragging = null;
@@ -289,7 +342,7 @@
       box.title = item.label || item.text || "Overlay";
 
       if (item.kind === "text") {
-        applyTextStyle(box, item);
+        applyTextStyle(box, item, rect);
       } else {
         const asset = (st.mediaBin || []).find((m) => m.id === item.media_ref);
         if (asset?.kind === "image") {

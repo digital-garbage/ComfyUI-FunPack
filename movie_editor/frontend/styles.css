@@ -730,7 +730,7 @@ input[type=number] { font-family: var(--font-mono); }
 }
 .tl-ov-clip:hover .tl-ov-rm, .tl-ov-clip.selected .tl-ov-rm { opacity: 1; }
 .tl-ov-rm:hover { background: var(--danger); color: #fff; }
-.pm-overlays { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
+.pm-overlays { position: absolute; z-index: 4; pointer-events: none; overflow: hidden; box-sizing: border-box; }
 .pm-ov-box {
   position: absolute; pointer-events: auto; cursor: grab; max-width: 92%; text-align: center;
   text-shadow: 0 1px 4px rgba(0,0,0,.85); white-space: pre-wrap; line-height: 1.15;
