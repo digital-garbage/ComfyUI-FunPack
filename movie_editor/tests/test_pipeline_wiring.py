@@ -163,6 +163,16 @@ def test_core_overrides_internal_still_ignored_when_guided():
     assert graph["sampler"]["inputs"]["vae"] == ["slot_v", 0]
 
 
+def test_video_vae_may_wire_live_preview():
+    ok = pipeline_wiring.validate_port_wire(
+        role="video_vae", out_type="VAE", out_name="VAE",
+        target="port:FunPackLTXAVSceneChainSampler.preview_vae", models={"slots": []},
+    )
+    assert ok is None
+    ports = pipeline_wiring.allowed_port_ids("video_vae", "VAE", "VAE")
+    assert "FunPackLTXAVSceneChainSampler.preview_vae" in ports
+
+
 def test_core_graph_marks_locked_inputs():
     nodes = builder.core_graph(OI, {"slots": [], "full_control": False})
     studio = next(n for n in nodes if n["id"] == "studio")

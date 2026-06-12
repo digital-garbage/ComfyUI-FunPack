@@ -118,18 +118,43 @@
     return extras;
   }
 
-  function allowedDestinations(slot, out) {
-    const all = destinations(slot, out.type);
-    if (!pipelineLocked()) return all;
-    const role = slot.role || "custom";
+  function _guidedPortAllowlist(role, out) {
     const rules = wiringRules.role_targets?.[role] || [];
     const chainPorts = wiringRules.type_chain_terminals?.[out.type] || [];
-    const hidden = new Set(wiringRules.guided_hidden_ports || []);
-    const allowedPorts = [...rules
+    let allowedPorts = [...rules
       .filter((r) => r.type === out.type && (r.output_name == null || r.output_name === out.name))
       .map((r) => "port:" + r.port),
     ...chainPorts.map((p) => "port:" + p),
     ].filter((p, i, a) => a.indexOf(p) === i);
+    if (role === "custom" && !allowedPorts.length) {
+      for (const rlist of Object.values(wiringRules.role_targets || {})) {
+        for (const r of rlist) {
+          if (r.type !== out.type) continue;
+          if (r.output_name != null && r.output_name !== out.name) continue;
+          const v = "port:" + r.port;
+          if (!allowedPorts.includes(v)) allowedPorts.push(v);
+        }
+      }
+      for (const p of chainPorts) {
+        const v = "port:" + p;
+        if (!allowedPorts.includes(v)) allowedPorts.push(v);
+      }
+    }
+    if (out.type === "VAE") {
+      for (const p of wiringRules.optional_vae_ports || []) {
+        const v = "port:" + p;
+        if (!allowedPorts.includes(v)) allowedPorts.push(v);
+      }
+    }
+    return allowedPorts;
+  }
+
+  function allowedDestinations(slot, out) {
+    const all = destinations(slot, out.type);
+    if (!pipelineLocked()) return all;
+    const role = slot.role || "custom";
+    const hidden = new Set(wiringRules.guided_hidden_ports || []);
+    const allowedPorts = _guidedPortAllowlist(role, out);
     return all.filter((d) => {
       if (!d.value.startsWith("port:")) return true;
       const id = d.value.slice(5);
