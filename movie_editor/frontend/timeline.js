@@ -1124,6 +1124,7 @@
   }
 
   // ── audio lanes (NLE-style, below video) ───────────────────────────────────────
+  function openAudioTrackModal(st) {
     closeAddModal();
     const audioAssets = (st.mediaBin || []).filter(isAudioAsset);
 
