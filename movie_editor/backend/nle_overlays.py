@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Callable
 
 
 # Common system font paths (first match wins at export time).
@@ -47,22 +47,137 @@ _FONT_PATHS: dict[str, list[str]] = {
     ],
 }
 
-
-def _escape_drawtext(text: str) -> str:
-    s = str(text or "")
-    s = s.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
-    s = re.sub(r"[\r\n]+", " ", s)
-    return s
+_DEFAULT_FONT_CANDIDATES = [
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+]
 
 
 def _resolve_fontfile(font_family: str | None) -> str | None:
     key = (font_family or "system-ui").strip().lower()
     if key in ("", "system-ui", "default"):
-        return None
+        key = "arial"
     for path in _FONT_PATHS.get(key, []):
         if os.path.isfile(path):
             return path
+    for path in _DEFAULT_FONT_CANDIDATES:
+        if os.path.isfile(path):
+            return path
     return None
+
+
+def _hex_rgba(color: str, opacity: float) -> tuple[int, int, int, int]:
+    c = str(color or "#ffffff").strip().lstrip("#")
+    if len(c) == 6:
+        r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    else:
+        r, g, b = 255, 255, 255
+    a = int(max(0.0, min(1.0, float(opacity))) * 255)
+    return r, g, b, a
+
+
+def _load_pil_font(font_family: str | None, size: int):
+    from PIL import ImageFont
+
+    size = max(8, int(size))
+    path = _resolve_fontfile(font_family)
+    if path:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            pass
+    for path in _DEFAULT_FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def render_text_overlay_png(ov: dict, canvas_w: int, canvas_h: int, out_path: str) -> tuple[int, int]:
+    """Rasterize a text overlay to a transparent PNG (canvas pixel coordinates).
+
+    Returns ``(width, height)`` of the PNG. Flip is baked into the PNG so ffmpeg
+    only needs the standard overlay filter (no drawtext dependency).
+    """
+    from PIL import Image, ImageDraw
+
+    text = re.sub(r"\r\n?", "\n", str(ov.get("text") or "Text")).strip() or "Text"
+    size = max(8, int(ov.get("font_size") or 42))
+    rgba = _hex_rgba(str(ov.get("color") or "#ffffff"), ov.get("opacity", 1))
+    font = _load_pil_font(ov.get("font_family"), size)
+
+    probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(probe)
+    bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=max(2, size // 10))
+    tw = max(1, bbox[2] - bbox[0])
+    th = max(1, bbox[3] - bbox[1])
+    pad = max(4, size // 8)
+    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.multiline_text(
+        (pad - bbox[0], pad - bbox[1]),
+        text,
+        font=font,
+        fill=rgba,
+        spacing=max(2, size // 10),
+    )
+
+    if ov.get("flip_h"):
+        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if ov.get("flip_v"):
+        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    img.save(out_path, "PNG")
+    return img.size
+
+
+def prepare_overlay_export(
+    overlays: list[dict],
+    lanes: list[dict] | None,
+    *,
+    canvas_w: int,
+    canvas_h: int,
+    tempdir: str,
+    resolve_image_path: Callable[[str | None], str | None],
+) -> tuple[list[dict], list[str]]:
+    """Build ordered overlay list + ffmpeg input paths for export.
+
+    Text overlays are rasterized to PNG via Pillow so export works even when
+    ffmpeg lacks the drawtext filter (common on minimal Homebrew builds).
+    """
+    sorted_ovs = sort_overlays_for_composite(overlays, lanes)
+    export_overlays: list[dict] = []
+    paths: list[str] = []
+
+    for i, ov in enumerate(sorted_ovs):
+        kind = ov.get("kind") or "image"
+        if kind == "text":
+            png_path = os.path.join(tempdir, f"ov_text_{ov.get('id') or i}.png")
+            w, h = render_text_overlay_png(ov, canvas_w, canvas_h, png_path)
+            paths.append(png_path)
+            export_overlays.append({
+                **ov,
+                "kind": "image",
+                "width_px": w,
+                "height_px": h,
+                "keep_aspect": False,
+                "flip_h": False,
+                "flip_v": False,
+            })
+            continue
+        if kind != "image":
+            continue
+        src = resolve_image_path(ov.get("media_ref"))
+        if not src or not os.path.isfile(src):
+            continue
+        paths.append(src)
+        export_overlays.append(dict(ov))
+
+    return export_overlays, paths
 
 
 def _image_target_size(ov: dict, cw: int, ch: int) -> tuple[int, int | None]:
@@ -118,23 +233,25 @@ def build_overlay_video_filter(
     canvas_h: int,
     image_input_labels: list[str],
 ) -> tuple[list[str], str]:
-    """Compose ``overlays`` onto ``base_label``. Returns (filter lines, final label).
+    """Compose image overlays onto ``base_label``. Returns (filter lines, final label).
 
-    ``image_input_labels`` lists ffmpeg stream labels for image overlay inputs,
-    in the same order as image entries in ``overlays``.
+    Text overlays must be rasterized before calling this (see ``prepare_overlay_export``).
     """
     parts: list[str] = []
     cur = base_label
     img_i = 0
     cw = max(1, int(canvas_w))
-    ch = max(1, int(canvas_h))
     seq = 0
 
     for ov in overlays or []:
         kind = ov.get("kind") or "image"
+        if kind != "image":
+            continue
         start = float(ov.get("start_sec") or 0)
         dur = float(ov.get("duration_sec") or 0)
         if dur <= 0:
+            continue
+        if img_i >= len(image_input_labels):
             continue
         end = start + dur
         enable = f"enable='between(t,{start:.3f},{end:.3f})'"
@@ -146,36 +263,9 @@ def build_overlay_video_filter(
         out = f"[vov{seq}]"
         seq += 1
 
-        if kind == "text":
-            text = _escape_drawtext(ov.get("text") or "Text")
-            size = max(8, int(ov.get("font_size") or 42))
-            color = str(ov.get("color") or "#ffffff").lstrip("#")
-            fontcolor = f"0x{color}" if len(color) == 6 else "white"
-            alpha = f":alpha={opacity:.3f}" if opacity < 0.999 else ""
-            x_expr = f"{nx:.6f}*W-text_w/2"
-            y_expr = f"{ny:.6f}*H-text_h/2"
-            fontfile = _resolve_fontfile(ov.get("font_family"))
-            font_opt = f":fontfile='{fontfile}'" if fontfile else ""
-            draw = (
-                f"drawtext=text='{text}':fontsize={size}:fontcolor={fontcolor}{alpha}{font_opt}:"
-                f"x={x_expr}:y={y_expr}:{enable}"
-            )
-            if flip_h or flip_v:
-                txt_layer = f"[txtl{seq}]"
-                parts.append(f"color=c=black@0.0:s={cw}x{ch}:d=1,format=rgba,{draw}{txt_layer}")
-                flip_parts, flipped = _apply_flip(txt_layer, flip_h, flip_v, seq)
-                parts.extend(flip_parts)
-                parts.append(f"{cur}{flipped}overlay=0:0:{enable}{out}")
-            else:
-                parts.append(f"{cur}{draw}{out}")
-            cur = out
-            continue
-
-        if kind != "image" or img_i >= len(image_input_labels):
-            continue
         in_lbl = image_input_labels[img_i]
         img_i += 1
-        tw, th = _image_target_size(ov, cw, ch)
+        tw, th = _image_target_size(ov, cw, max(1, int(canvas_h)))
         scaled = f"[ovs{seq}]"
         if th is None:
             scale_expr = f"scale={tw}:-1"

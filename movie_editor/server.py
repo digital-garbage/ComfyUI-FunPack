@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
 
 from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
-from .backend.nle_overlays import build_overlay_video_filter, sort_overlays_for_composite
+from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
     Project,
     build_combined_prompt,
@@ -666,7 +666,7 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
 
 def _append_overlay_filters(
     parts: list[str],
-    proj: Project,
+    export_overlays: list[dict],
     *,
     canvas_w: int,
     canvas_h: int,
@@ -674,16 +674,12 @@ def _append_overlay_filters(
     image_input_base: int,
 ) -> None:
     """Append overlay compositing after [vbase]; sets final [vout]."""
-    overlays = sort_overlays_for_composite(
-        list(getattr(proj, "overlay_tracks", None) or []),
-        list(getattr(proj, "overlay_lanes", None) or []),
-    )
-    if not overlays:
+    if not export_overlays:
         parts.append("[vbase]null[vout]")
         return
     labels = [f"[{image_input_base + i}:v:0]" for i in range(len(image_paths))]
     ov_parts, final = build_overlay_video_filter(
-        "[vbase]", overlays, canvas_w=canvas_w, canvas_h=canvas_h, image_input_labels=labels,
+        "[vbase]", export_overlays, canvas_w=canvas_w, canvas_h=canvas_h, image_input_labels=labels,
     )
     parts.extend(ov_parts)
     if final == "[vbase]":
@@ -863,24 +859,29 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
         cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
     tracks = media_tracks + separated_tracks
 
-    overlay_image_paths: list[str] = []
-    for ov in (getattr(proj, "overlay_tracks", None) or []):
-        if (ov.get("kind") or "image") != "image":
-            continue
-        mp = media.path_for(ov.get("media_ref") or "")
-        if mp is None:
-            continue
-        overlay_image_paths.append(str(mp))
+    cw = int(clips[0].get("w") or 0) or int(getattr(proj, "width", 768) or 768)
+    ch = int(clips[0].get("h") or 0) or int(getattr(proj, "height", 512) or 512)
+
+    def _overlay_image_path(media_ref: str | None) -> str | None:
+        mp = media.path_for(media_ref or "")
+        return str(mp) if mp is not None else None
+
+    export_overlays, overlay_image_paths = prepare_overlay_export(
+        list(getattr(proj, "overlay_tracks", None) or []),
+        list(getattr(proj, "overlay_lanes", None) or []),
+        canvas_w=cw,
+        canvas_h=ch,
+        tempdir=tempdir,
+        resolve_image_path=_overlay_image_path,
+    )
     for pth in overlay_image_paths:
         cmd += ["-i", pth]
 
     filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
-    cw = int(clips[0].get("w") or 0) or int(getattr(proj, "width", 768) or 768)
-    ch = int(clips[0].get("h") or 0) or int(getattr(proj, "height", 512) or 512)
     filt_parts = filt.split(";") if filt else []
     ov_input_base = n + len(tracks)
     _append_overlay_filters(
-        filt_parts, proj, canvas_w=cw, canvas_h=ch,
+        filt_parts, export_overlays, canvas_w=cw, canvas_h=ch,
         image_paths=overlay_image_paths, image_input_base=ov_input_base,
     )
     filt = ";".join(filt_parts)

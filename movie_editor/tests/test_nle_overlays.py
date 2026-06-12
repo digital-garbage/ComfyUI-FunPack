@@ -1,39 +1,56 @@
 """Overlay compositing filter builder."""
 
-from movie_editor.backend.nle_overlays import build_overlay_video_filter
+import os
+import tempfile
+
+from movie_editor.backend.nle_overlays import build_overlay_video_filter, sort_overlays_for_composite
+
+try:
+    import PIL  # noqa: F401
+    from movie_editor.backend.nle_overlays import prepare_overlay_export, render_text_overlay_png
+    _HAS_PIL = True
+except ImportError:
+    _HAS_PIL = False
 
 
-def test_build_overlay_text_filter():
-    parts, final = build_overlay_video_filter(
-        "[vbase]",
-        [{"kind": "text", "text": "Hello", "start_sec": 1, "duration_sec": 2, "x": 0.5, "y": 0.5, "font_size": 36}],
-        canvas_w=768,
-        canvas_h=512,
-        image_input_labels=[],
-    )
-    assert len(parts) == 1
-    assert "drawtext" in parts[0]
-    assert "Hello" in parts[0]
-    assert "between(t,1.000,3.000)" in parts[0]
-    assert final.startswith("[vov")
+def test_render_text_overlay_png():
+    if not _HAS_PIL:
+        import pytest
+        pytest.skip("Pillow not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "text.png")
+        w, h = render_text_overlay_png(
+            {"text": "Hello", "font_size": 36, "color": "#ffffff", "opacity": 1},
+            768,
+            512,
+            path,
+        )
+        assert os.path.isfile(path)
+        assert w > 0 and h > 0
 
 
-def test_build_overlay_text_with_font():
-    parts, _ = build_overlay_video_filter(
-        "[vbase]",
-        [{"kind": "text", "text": "Hi", "font_family": "system-ui", "start_sec": 0, "duration_sec": 1}],
-        canvas_w=768,
-        canvas_h=512,
-        image_input_labels=[],
-    )
-    assert "drawtext" in parts[0]
-    assert "fontfile=" not in parts[0]
+def test_prepare_overlay_export_rasterizes_text():
+    if not _HAS_PIL:
+        import pytest
+        pytest.skip("Pillow not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        export, paths = prepare_overlay_export(
+            [{"id": "t1", "kind": "text", "text": "Hi", "start_sec": 0, "duration_sec": 2}],
+            [{"id": "lane1"}],
+            canvas_w=768,
+            canvas_h=512,
+            tempdir=tmp,
+            resolve_image_path=lambda _ref: None,
+        )
+        assert len(export) == 1
+        assert len(paths) == 1
+        assert export[0]["kind"] == "image"
+        assert os.path.isfile(paths[0])
 
 
 def test_resolve_fontfile_optional():
     from movie_editor.backend.nle_overlays import _resolve_fontfile
-    assert _resolve_fontfile("system-ui") is None
-    assert _resolve_fontfile(None) is None
+    assert _resolve_fontfile("system-ui") is not None or _resolve_fontfile("arial") is not None
 
 
 def test_sort_overlays_by_lane():
@@ -59,6 +76,7 @@ def test_build_overlay_image_filter():
     assert len(parts) == 2
     assert "scale=400:-1" in parts[0]
     assert "overlay=" in parts[1]
+    assert "drawtext" not in "\n".join(parts)
     assert final.startswith("[vov")
 
 
@@ -86,14 +104,18 @@ def test_build_overlay_image_flip():
     assert "vflip" in joined
 
 
-def test_build_overlay_text_flip():
-    parts, _ = build_overlay_video_filter(
-        "[vbase]",
-        [{"kind": "text", "text": "Hi", "start_sec": 0, "duration_sec": 1, "flip_h": True}],
-        canvas_w=768,
-        canvas_h=512,
-        image_input_labels=[],
-    )
-    joined = "\n".join(parts)
-    assert "drawtext" in joined
-    assert "hflip" in joined
+def test_prepare_overlay_text_flip_baked_into_png():
+    if not _HAS_PIL:
+        import pytest
+        pytest.skip("Pillow not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        export, paths = prepare_overlay_export(
+            [{"id": "t2", "kind": "text", "text": "Flip", "flip_h": True, "start_sec": 0, "duration_sec": 1}],
+            [{"id": "lane1"}],
+            canvas_w=768,
+            canvas_h=512,
+            tempdir=tmp,
+            resolve_image_path=lambda _ref: None,
+        )
+        assert export[0]["flip_h"] is False
+        assert os.path.isfile(paths[0])
