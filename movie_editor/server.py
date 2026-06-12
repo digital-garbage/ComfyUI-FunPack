@@ -552,11 +552,13 @@ _XFADE_MAP = {
 
 
 def _build_render_filter(clips: list, tracks: Optional[list] = None,
-                         keep_original: bool = True, base_input: int = 0) -> tuple[str, bool]:
+                         keep_original: bool = True, base_input: int = 0,
+                         *, blank_canvas: Optional[dict] = None) -> tuple[str, bool]:
     """ffmpeg filter_complex for the final stitch.
 
     Video — per clip: normalize to one canvas, then blur / fade in-out / virtual Ken-Burns
     zoom (zoompan, fixed output size). Fold left-to-right with xfade (overlap) or concat.
+    When `blank_canvas` is set, input 0 is a lavfi color source (no scene clips).
 
     Audio — per-clip original audio gets its volume; when keep_original the per-clip streams
     are folded alongside the video (acrossfade at crossfades, concat otherwise) into [aorig].
@@ -570,73 +572,80 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
     n = len(clips)
     parts: list[str] = []
 
-    # One canvas for the whole render (clips may have differing native sizes/fps — xfade and
-    # concat require identical size/fps/sar, so every clip is normalized to this).
-    cw = int(clips[0].get("w") or 0) or 768
-    ch = int(clips[0].get("h") or 0) or 768
-    cfps = float(clips[0].get("fps") or 0) or 25.0
+    if blank_canvas:
+        total = max(0.01, float(blank_canvas.get("dur") or 0.01))
+        parts.append("[0:v]format=yuv420p,setsar=1[vbase]")
+        acc_a = None
+    else:
+        if not clips:
+            raise ValueError("clips required when blank_canvas is not set")
+        # One canvas for the whole render (clips may have differing native sizes/fps — xfade and
+        # concat require identical size/fps/sar, so every clip is normalized to this).
+        cw = int(clips[0].get("w") or 0) or 768
+        ch = int(clips[0].get("h") or 0) or 768
+        cfps = float(clips[0].get("fps") or 0) or 25.0
 
-    for i, c in enumerate(clips):
-        fx = c.get("fx") or {}
-        dur = float(c.get("dur") or 0) or 0.0
-        # Normalize first: fit into the canvas (letterbox), fixed fps + square pixels.
-        vf: list[str] = [
-            f"scale={cw}:{ch}:force_original_aspect_ratio=decrease",
-            f"pad={cw}:{ch}:-1:-1:color=black",
-            "setsar=1", f"fps={cfps:g}",
-        ]
-        zoom = fx.get("zoom")
-        if zoom in ("in", "out") and dur > 0:
-            nframes = max(1, round(dur * cfps))
-            z = zoompan_z_expr(zoom, fx, nframes)
-            vf.append(
-                f"zoompan=z='{z}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                f":s={cw}x{ch}:fps={cfps:g}"
-            )
+        for i, c in enumerate(clips):
+            fx = c.get("fx") or {}
+            dur = float(c.get("dur") or 0) or 0.0
+            # Normalize first: fit into the canvas (letterbox), fixed fps + square pixels.
+            vf: list[str] = [
+                f"scale={cw}:{ch}:force_original_aspect_ratio=decrease",
+                f"pad={cw}:{ch}:-1:-1:color=black",
+                "setsar=1", f"fps={cfps:g}",
+            ]
+            zoom = fx.get("zoom")
+            if zoom in ("in", "out") and dur > 0:
+                nframes = max(1, round(dur * cfps))
+                z = zoompan_z_expr(zoom, fx, nframes)
+                vf.append(
+                    f"zoompan=z='{z}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                    f":s={cw}x{ch}:fps={cfps:g}"
+                )
+                vf.append("setsar=1")
+            blur = float(fx.get("blur") or 0)
+            if blur > 0:
+                vf.append(f"gblur=sigma={blur * 20:.2f}")
+            fi = float(fx.get("fade_in") or 0)
+            if fi > 0:
+                vf.append(f"fade=t=in:st=0:d={fi:.3f}")
+            fo = float(fx.get("fade_out") or 0)
+            if fo > 0 and dur > 0:
+                vf.append(f"fade=t=out:st={max(0.0, dur - fo):.3f}:d={fo:.3f}")
+            vf.append("format=yuv420p")
             vf.append("setsar=1")
-        blur = float(fx.get("blur") or 0)
-        if blur > 0:
-            vf.append(f"gblur=sigma={blur * 20:.2f}")
-        fi = float(fx.get("fade_in") or 0)
-        if fi > 0:
-            vf.append(f"fade=t=in:st=0:d={fi:.3f}")
-        fo = float(fx.get("fade_out") or 0)
-        if fo > 0 and dur > 0:
-            vf.append(f"fade=t=out:st={max(0.0, dur - fo):.3f}:d={fo:.3f}")
-        vf.append("format=yuv420p")
-        vf.append("setsar=1")
-        parts.append(f"[{i}:v:0]{','.join(vf)}[v{i}]")
-        if keep_original:
-            vol = float(c.get("volume", 1.0))
-            af = "aformat=sample_fmts=fltp:channel_layouts=stereo"
-            if abs(vol - 1.0) > 1e-3:
-                af += f",volume={max(0.0, vol):.3f}"
-            parts.append(f"[{i}:a:0]{af}[a{i}]")
-
-    # Fold video (and the original audio when kept) left-to-right.
-    acc_v, acc_a = "[v0]", "[a0]"
-    acc_dur = float(clips[0].get("dur") or 0) or 0.0
-    for i in range(1, n):
-        prev = clips[i - 1]
-        trans = (prev.get("transition") or "").strip()
-        td = float(prev.get("tdur") or 0)
-        dur_i = float(clips[i].get("dur") or 0) or 0.0
-        if trans in _XFADE_MAP and td > 0 and acc_dur > td:
-            off = max(0.0, acc_dur - td)
-            ov = f"[vx{i}]"
-            parts.append(f"{acc_v}[v{i}]xfade=transition={_XFADE_MAP[trans]}:duration={td:.3f}:offset={off:.3f}{ov}")
+            parts.append(f"[{i}:v:0]{','.join(vf)}[v{i}]")
             if keep_original:
-                oa = f"[ax{i}]"; parts.append(f"{acc_a}[a{i}]acrossfade=d={td:.3f}{oa}"); acc_a = oa
-            acc_v, acc_dur = ov, acc_dur + dur_i - td
-        else:
-            ov = f"[vc{i}]"
-            parts.append(f"{acc_v}[v{i}]concat=n=2:v=1:a=0{ov}")
-            if keep_original:
-                oa = f"[ac{i}]"; parts.append(f"{acc_a}[a{i}]concat=n=2:v=0:a=1{oa}"); acc_a = oa
-            acc_v, acc_dur = ov, acc_dur + dur_i
+                vol = float(c.get("volume", 1.0))
+                af = "aformat=sample_fmts=fltp:channel_layouts=stereo"
+                if abs(vol - 1.0) > 1e-3:
+                    af += f",volume={max(0.0, vol):.3f}"
+                parts.append(f"[{i}:a:0]{af}[a{i}]")
 
-    parts.append(f"{acc_v}null[vbase]")
-    total = max(0.01, acc_dur)
+        # Fold video (and the original audio when kept) left-to-right.
+        acc_v, acc_a = "[v0]", "[a0]"
+        acc_dur = float(clips[0].get("dur") or 0) or 0.0
+        for i in range(1, n):
+            prev = clips[i - 1]
+            trans = (prev.get("transition") or "").strip()
+            td = float(prev.get("tdur") or 0)
+            dur_i = float(clips[i].get("dur") or 0) or 0.0
+            if trans in _XFADE_MAP and td > 0 and acc_dur > td:
+                off = max(0.0, acc_dur - td)
+                ov = f"[vx{i}]"
+                parts.append(f"{acc_v}[v{i}]xfade=transition={_XFADE_MAP[trans]}:duration={td:.3f}:offset={off:.3f}{ov}")
+                if keep_original:
+                    oa = f"[ax{i}]"; parts.append(f"{acc_a}[a{i}]acrossfade=d={td:.3f}{oa}"); acc_a = oa
+                acc_v, acc_dur = ov, acc_dur + dur_i - td
+            else:
+                ov = f"[vc{i}]"
+                parts.append(f"{acc_v}[v{i}]concat=n=2:v=1:a=0{ov}")
+                if keep_original:
+                    oa = f"[ac{i}]"; parts.append(f"{acc_a}[a{i}]concat=n=2:v=0:a=1{oa}"); acc_a = oa
+                acc_v, acc_dur = ov, acc_dur + dur_i
+
+        parts.append(f"{acc_v}null[vbase]")
+        total = max(0.01, acc_dur)
 
     # Assemble the audio mix: original (if kept) + each inserted track (delayed/volume'd).
     mix: list[str] = []
@@ -690,6 +699,30 @@ def _append_overlay_filters(
 
 class RenderJobError(Exception):
     pass
+
+
+def _audio_track_end_sec(t: dict) -> float:
+    start = float(t.get("start_sec") or 0)
+    for key in ("source_dur", "pinned_dur"):
+        if t.get(key) is not None:
+            return start + float(t[key])
+    return start + 1.0
+
+
+def _timeline_duration_sec(proj) -> float:
+    total = 0.0
+    for ov in getattr(proj, "overlay_tracks", None) or []:
+        end = float(ov.get("start_sec") or 0) + float(ov.get("duration_sec") or 0)
+        total = max(total, end)
+    for t in getattr(proj, "audio_tracks", None) or []:
+        total = max(total, _audio_track_end_sec(t))
+    return max(total, 0.01)
+
+
+def _has_graphics_export_content(proj) -> bool:
+    if list(getattr(proj, "audio_tracks", None) or []):
+        return True
+    return any(float(ov.get("duration_sec") or 0) > 0 for ov in (getattr(proj, "overlay_tracks", None) or []))
 
 
 _render_jobs: dict[str, dict] = {}
@@ -772,8 +805,9 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
     import subprocess
     import time as _time
 
-    if not clips:
-        raise RenderJobError("Nothing to render — no generated clips.")
+    blank_mode = not clips
+    if blank_mode and not _has_graphics_export_content(proj):
+        raise RenderJobError("Nothing to render — add overlays, audio, or generated clips.")
     ff = shutil.which("ffmpeg")
     if not ff:
         raise RenderJobError("ffmpeg not found on PATH — install it to render the final video.")
@@ -784,6 +818,12 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
     except Exception as e:  # noqa: BLE001
         raise RenderJobError(f"Output directory unavailable: {e}") from e
 
+    cw = int(getattr(proj, "width", 768) or 768)
+    ch = int(getattr(proj, "height", 512) or 512)
+    cfps = float(getattr(proj, "frame_rate", 25) or 25)
+    blank_canvas = None
+    n_video = 0
+
     def _resolve(c):
         if c.get("bin_media_ref"):
             mp = media.path_for(c.get("bin_media_ref") or "")
@@ -793,12 +833,21 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
         base = outdir if c.get("type", "output") == "output" else tempdir
         return os.path.join(base, c.get("subfolder", ""), c.get("filename", ""))
 
-    paths = [_resolve(c) for c in clips]
-    missing = [p for p in paths if not os.path.isfile(p)]
-    if missing:
-        raise RenderJobError(f"{len(missing)} clip file(s) not found on disk — regenerate then render.")
+    paths: list = []
+    if blank_mode:
+        duration = _timeline_duration_sec(proj)
+        blank_canvas = {"w": cw, "h": ch, "fps": cfps, "dur": duration}
+        n_video = 1
+    else:
+        paths = [_resolve(c) for c in clips]
+        missing = [p for p in paths if not os.path.isfile(p)]
+        if missing:
+            raise RenderJobError(f"{len(missing)} clip file(s) not found on disk — regenerate then render.")
+        cw = int(clips[0].get("w") or 0) or cw
+        ch = int(clips[0].get("h") or 0) or ch
+        n_video = len(clips)
 
-    keep_original = bool(getattr(proj, "keep_original_audio", True))
+    keep_original = bool(getattr(proj, "keep_original_audio", True)) and not blank_mode
     clip_by_scene = {c["scene_id"]: c for c in clips if c.get("scene_id")}
     media_tracks: list = []
     separated_tracks: list = []
@@ -861,14 +910,17 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
     out_name = f"funpack_final_{int(_time.time())}.mp4"
     out_path = os.path.join(tempdir, out_name)
     cmd = [ff, "-y"]
-    for c, pth in zip(clips, paths):
-        inn, dur = c.get("in"), c.get("dur")
-        if inn is not None:
-            cmd += ["-ss", f"{float(inn):.3f}"]
-        if dur is not None:
-            cmd += ["-t", f"{float(dur):.3f}"]
-        cmd += ["-i", pth]
-    n = len(clips)
+    if blank_mode:
+        cmd += ["-f", "lavfi", "-i", f"color=c=black:s={cw}x{ch}:r={cfps:g}:d={blank_canvas['dur']:.3f}"]
+    else:
+        for c, pth in zip(clips, paths):
+            inn, dur = c.get("in"), c.get("dur")
+            if inn is not None:
+                cmd += ["-ss", f"{float(inn):.3f}"]
+            if dur is not None:
+                cmd += ["-t", f"{float(dur):.3f}"]
+            cmd += ["-i", pth]
+    n = n_video
     for t in media_tracks:
         if t.get("source_in") is not None and t.get("source_dur") is not None:
             cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
@@ -877,9 +929,6 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
     for t in separated_tracks:
         cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
     tracks = media_tracks + separated_tracks
-
-    cw = int(clips[0].get("w") or 0) or int(getattr(proj, "width", 768) or 768)
-    ch = int(clips[0].get("h") or 0) or int(getattr(proj, "height", 512) or 512)
 
     def _overlay_image_path(media_ref: str | None) -> str | None:
         mp = media.path_for(media_ref or "")
@@ -896,7 +945,10 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
     for pth in overlay_image_paths:
         cmd += ["-i", pth]
 
-    filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
+    filt, has_audio = _build_render_filter(
+        clips, tracks=tracks, keep_original=keep_original, base_input=n,
+        blank_canvas=blank_canvas,
+    )
     filt_parts = filt.split(";") if filt else []
     ov_input_base = n + len(tracks)
     _append_overlay_filters(
@@ -1506,8 +1558,8 @@ if web is not None and PromptServer is not None:
         proj = _project_or_404(req.match_info["pid"])
         body = await req.json() if req.can_read_body else {}
         clips = body.get("clips") or []
-        if not clips:
-            return web.json_response({"detail": "Nothing to render — no generated clips."}, status=400)
+        if not clips and not _has_graphics_export_content(proj):
+            return web.json_response({"detail": "Nothing to render — add overlays, audio, or generated clips."}, status=400)
         job_id = _uuid.uuid4().hex
         _render_jobs[job_id] = {"state": "queued"}
         asyncio.create_task(_run_render_job(job_id, proj, clips))

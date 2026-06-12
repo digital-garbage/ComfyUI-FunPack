@@ -3074,10 +3074,16 @@
   async function renderFinal() {
     if (!state.project) return;
     const rc = _renderClips();
-    if (!rc.length) { alert("No generated clips to stitch yet — generate first."); return; }
-    if (!confirm(
-      `Stitch ${rc.length} clip(s) into one final video?\n\nThis replaces per-scene renders with a single stitched file on the timeline.`
-    )) return;
+    const totalSec = previewTotalSec();
+    const graphicsOnly = !rc.length && hasOverlayOrAudioContent() && totalSec > 0;
+    if (!rc.length && !graphicsOnly) {
+      alert("Nothing to render yet — generate clips or add overlay/audio tracks first.");
+      return;
+    }
+    const confirmMsg = graphicsOnly
+      ? `Render the overlay/audio timeline (${totalSec.toFixed(1)}s) to a final video?\n\nUses a blank canvas at project resolution (${state.project.width || 768}×${state.project.height || 512}).`
+      : `Stitch ${rc.length} clip(s) into one final video?\n\nThis replaces per-scene renders with a single stitched file on the timeline.`;
+    if (!confirm(confirmMsg)) return;
     const clips = rc.map((c) => ({
       filename: c.media?.filename, subfolder: c.media?.subfolder || "", type: c.media?.type || "output",
       bin_media_ref: c.bin_media_ref || "",
@@ -3086,20 +3092,38 @@
       volume: c.volume, scene_id: c.sceneId,
     }));
     await flushSave();  // audio tracks / keep-original live on the project — render reads it from disk
-    set({ gen: { state: "running", promptId: null, media: [], msg: `Stitching ${clips.length} clip(s)…` } });
+    set({
+      gen: {
+        state: "running",
+        promptId: null,
+        media: [],
+        msg: graphicsOnly ? `Rendering ${totalSec.toFixed(1)}s overlay/audio…` : `Stitching ${clips.length} clip(s)…`,
+      },
+    });
     try {
       const queued = await API.renderFinal(state.project.id, clips);
       const r = queued?.job_id
-        ? await _pollRenderJob(queued.job_id, clips.length)
+        ? await _pollRenderJob(queued.job_id, clips.length || 1)
         : queued;
-      // Play the stitched file across the whole timeline (single source, in-point 0).
-      const order = state.project.scenes.filter((s) => !s.excluded);
-      state.sceneRenders = {};
-      state.sceneGhosts = [];
-      _syncEditorStateToProject();
-      let acc = 0;
-      for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
-      set({ gen: { state: "done", promptId: null, media: [r.media], msg: `Final video rendered from ${r.clips} clip(s) — saving…` } });
+      if (!graphicsOnly) {
+        // Play the stitched file across the whole timeline (single source, in-point 0).
+        const order = state.project.scenes.filter((s) => !s.excluded);
+        state.sceneRenders = {};
+        state.sceneGhosts = [];
+        _syncEditorStateToProject();
+        let acc = 0;
+        for (const sc of order) { state.sceneRenders[sc.id] = { media: r.media, inSec: acc }; acc += sceneDurationSec(sc); }
+      }
+      set({
+        gen: {
+          state: "done",
+          promptId: null,
+          media: [r.media],
+          msg: graphicsOnly
+            ? "Final overlay/audio video rendered — saving…"
+            : `Final video rendered from ${r.clips} clip(s) — saving…`,
+        },
+      });
       const name = (state.project.name || "montage").replace(/[^\w.-]+/g, "_") + `_final_${_stamp()}.mp4`;
       await _saveBlobAs(API.resultUrl(state.project.id, r.media), name);
     } catch (e) {

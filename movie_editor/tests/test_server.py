@@ -5,8 +5,10 @@ from pathlib import Path
 from movie_editor.backend import bridge
 from movie_editor.backend.timeline import Project, Scene
 from movie_editor.server import (
+    _build_render_filter,
     _clip_bytes_for_media,
     _clip_needs_trim,
+    _has_graphics_export_content,
     _parse_has_scenes,
     _parse_prompt_variants,
     _playback_render_from_query,
@@ -16,6 +18,7 @@ from movie_editor.server import (
     _run_studio_inputs,
     _scene_playback_clip_spec,
     _shortcut_seed,
+    _timeline_duration_sec,
 )
 
 CONTINUE = "__funpack_continue__"
@@ -332,3 +335,25 @@ def test_project_models_keeps_empty_slots(monkeypatch):
     p.models = {"slots": [], "full_control": False}
     assert _project_models(p)["slots"] == []
     assert _project_models(p)["slots"] != nodes.load_models()["slots"]
+
+
+def test_timeline_duration_sec_from_overlays_and_audio():
+    p = _project(scenes=[])
+    p.scenes = []
+    p.overlay_tracks = [{"start_sec": 2, "duration_sec": 5}]
+    p.audio_tracks = [{"start_sec": 10, "source_dur": 3}]
+    assert _timeline_duration_sec(p) == 13
+    assert _has_graphics_export_content(p) is True
+
+
+def test_build_render_filter_blank_canvas():
+    filt, has_audio = _build_render_filter(
+        [],
+        tracks=[{"start_sec": 0, "volume": 1.0}],
+        keep_original=False,
+        base_input=1,
+        blank_canvas={"w": 768, "h": 512, "fps": 25, "dur": 8.0},
+    )
+    assert "[0:v]format=yuv420p,setsar=1[vbase]" in filt
+    assert "[aout]" in filt
+    assert has_audio is True
