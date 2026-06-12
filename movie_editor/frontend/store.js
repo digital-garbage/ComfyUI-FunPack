@@ -622,6 +622,7 @@
     refreshPreview();
     await loadModels();
     _validateSceneRenders();
+    window.WelcomePage?.close?.();
   }
 
   async function newProject(name) {
@@ -636,7 +637,10 @@
     _selectionAnchorId = null;
     await refreshProjectList();
     if (state.projects[0]) await loadProject(state.projects[0].id);
-    else notify();
+    else {
+      notify();
+      if (window.WelcomePage) window.WelcomePage.open();
+    }
   }
 
   function downloadProject() {
@@ -2869,9 +2873,8 @@
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
-    if (state.projects[0]) await loadProject(state.projects[0].id);
-    else await newProject("My first montage");
     notify();
+    if (window.WelcomePage) window.WelcomePage.open();
   }
 
   window.Store = {
