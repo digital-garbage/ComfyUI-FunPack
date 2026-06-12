@@ -757,6 +757,71 @@
     body.append(sw);
   }
 
+  function renderOverlayInspector(st, ov) {
+    title.textContent = ov.kind === "text" ? "Text overlay" : "Image overlay";
+    const sec = el("div", "insp-block");
+    sec.append(el("div", "insp-tag", "Overlay"));
+
+    if (ov.kind === "text") {
+      const ta = el("textarea", "insp-global-ta");
+      ta.rows = 3;
+      ta.value = ov.text || "";
+      ta.dataset.k = "ov-text";
+      ta.oninput = () => S.updateOverlayTrack(ov.id, { text: ta.value, label: "Text" }, true);
+      sec.append(field("Text", ta));
+
+      const size = el("input");
+      size.type = "number"; size.min = "8"; size.max = "200"; size.step = "1";
+      size.value = ov.font_size != null ? ov.font_size : 42;
+      size.dataset.k = "ov-size";
+      size.oninput = () => S.updateOverlayTrack(ov.id, { font_size: parseInt(size.value || "42", 10) }, true);
+      sec.append(field("Font size", size));
+
+      const color = el("input");
+      color.type = "color";
+      color.value = (ov.color || "#ffffff").match(/^#/) ? ov.color : "#ffffff";
+      color.dataset.k = "ov-color";
+      color.oninput = () => S.updateOverlayTrack(ov.id, { color: color.value }, true);
+      sec.append(field("Color", color));
+    } else {
+      const asset = (st.mediaBin || []).find((m) => m.id === ov.media_ref);
+      sec.append(el("div", "insp-hint", asset ? `Image: ${asset.name}` : "Missing image in Media Browser"));
+      const scale = el("input");
+      scale.type = "range"; scale.min = "0.05"; scale.max = "1"; scale.step = "0.01";
+      scale.value = ov.scale != null ? ov.scale : 0.35;
+      scale.dataset.k = "ov-scale";
+      scale.oninput = () => S.updateOverlayTrack(ov.id, { scale: parseFloat(scale.value) }, true);
+      sec.append(field("Size", scale));
+    }
+
+    const start = el("input");
+    start.type = "number"; start.min = "0"; start.step = "0.1";
+    start.value = ov.start_sec != null ? ov.start_sec : 0;
+    start.dataset.k = "ov-start";
+    start.oninput = () => S.updateOverlayTrack(ov.id, { start_sec: Math.max(0, parseFloat(start.value || "0")) }, true);
+    sec.append(field("Start (s)", start));
+
+    const dur = el("input");
+    dur.type = "number"; dur.min = "0.25"; dur.step = "0.1";
+    dur.value = ov.duration_sec != null ? ov.duration_sec : 3;
+    dur.dataset.k = "ov-dur";
+    dur.oninput = () => S.updateOverlayTrack(ov.id, { duration_sec: Math.max(0.25, parseFloat(dur.value || "3")) }, true);
+    sec.append(field("Duration (s)", dur));
+
+    const op = el("input");
+    op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
+    op.value = ov.opacity != null ? ov.opacity : 1;
+    op.dataset.k = "ov-op";
+    op.oninput = () => S.updateOverlayTrack(ov.id, { opacity: parseFloat(op.value) }, true);
+    sec.append(field("Opacity", op));
+
+    sec.append(el("div", "insp-hint", "Drag the box on the preview to reposition (center anchor)."));
+    const rm = el("button", "btn danger tiny", "Remove overlay");
+    rm.onclick = () => S.removeOverlayTrack(ov.id);
+    sec.append(rm);
+    body.append(sec);
+  }
+
   // While the user is actively editing one of our fields, DON'T rebuild the inspector —
   // autosave fires ~1s and a rebuild would yank the field out, drop the selection and
   // make typing append (e.g. "512" + "640" -> "512640"). We defer and re-sync on blur.
@@ -774,11 +839,13 @@
     const scrollTop = body.scrollTop;  // preserve scroll across the rebuild
     clear(body);
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
-    const scene = st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
+    const ov = st.selectedOverlayId ? S.overlayTrack(st.selectedOverlayId) : null;
+    const scene = !ov && st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
     renderGlobalPrompt(st);
     renderSwitch(st, scene);
     renderEngineStrip(st);
-    if (scene) {
+    if (ov) renderOverlayInspector(st, ov);
+    else if (scene) {
       if (S.isVideoClip(scene)) renderVideoClip(st, scene);
       else renderScene(st, scene);
     } else renderProject(st);

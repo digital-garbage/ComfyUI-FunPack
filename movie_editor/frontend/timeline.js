@@ -61,6 +61,7 @@
   const ZOOM_KEY = "funpack_tl_zoom";
   const GUTTER_W = 56;  // sticky lane labels (Video / Audio) — shared time origin in tl-content
   const AUDIO_LANE_H = 44;
+  const OVERLAY_LANE_H = 40;
 
   function isAudioAsset(m) {
     return !!m && (m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac|opus|weba)$/i.test(m.name || ""));
@@ -858,8 +859,8 @@
     addRow("Video", "Add an imported video clip from the Media Browser", () => openVideoClipModal(st));
     addRow("Effects", "Post-render clip effect (zoom, blur, fade…)", () => openNleSettingsModal("effect", st));
     addRow("Transitions", "Video blend on the outgoing edge of the clip", () => openNleSettingsModal("transition", st));
-    addRow("Text", "Coming soon", null, true);
-    addRow("Image", "Coming soon", null, true);
+    addRow("Text", "Add a title or label on the timeline", () => openTextOverlayModal(st));
+    addRow("Image", "Add a picture overlay from the Media Browser", () => openImageOverlayModal(st));
     addRow("Audio", "Add an audio track from the Media Browser", () => openAudioTrackModal(st));
 
     btn.onclick = (e) => {
@@ -936,6 +937,92 @@
   }
 
   // ── audio lanes (NLE-style, below video) ───────────────────────────────────────
+  function openImageOverlayModal(st) {
+    closeAddModal();
+    const images = (st.mediaBin || []).filter((m) => m.kind === "image");
+    _addModal = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Add image overlay"));
+    const headRight = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    closeBtn.onclick = closeAddModal;
+    headRight.append(closeBtn);
+    head.append(headRight);
+    box.append(head);
+    const content = el("div", "modal-content");
+    const pick = (mediaId) => { S.addImageOverlay(mediaId); closeAddModal(); };
+    if (!images.length) {
+      content.append(el("div", "pj-meta", "Upload images in the Media Browser, then pick one here."));
+      const uploadBtn = el("button", "btn primary tiny", "Upload image");
+      const fileIn = el("input");
+      fileIn.type = "file";
+      fileIn.accept = "image/*,.png,.jpg,.jpeg,.webp,.gif";
+      fileIn.style.display = "none";
+      uploadBtn.onclick = () => fileIn.click();
+      fileIn.onchange = async () => {
+        const files = [...(fileIn.files || [])];
+        fileIn.value = "";
+        if (!files.length) return;
+        await S.uploadMedia(files);
+        const fresh = S.get();
+        const added = (fresh.mediaBin || []).filter((m) => m.kind === "image");
+        if (added[0]) pick(added[0].id);
+        else closeAddModal();
+      };
+      content.append(uploadBtn, fileIn);
+    } else {
+      content.append(el("div", "pj-meta", "Placed at the playhead. Drag on the preview to reposition."));
+      images.forEach((m) => {
+        const row = el("button", "tl-add-row aud-pick-row", m.name || m.id);
+        row.type = "button";
+        row.onclick = () => pick(m.id);
+        content.append(row);
+      });
+    }
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = closeAddModal;
+    content.append(cancel);
+    box.append(content);
+    _addModal.append(box);
+    _addModal.addEventListener("click", (e) => { if (e.target === _addModal) closeAddModal(); });
+    document.body.append(_addModal);
+  }
+
+  function openTextOverlayModal(st) {
+    closeAddModal();
+    _addModal = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Add text overlay"));
+    const headRight = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    closeBtn.onclick = closeAddModal;
+    headRight.append(closeBtn);
+    head.append(headRight);
+    box.append(head);
+    const content = el("div", "modal-content");
+    content.append(el("div", "pj-meta", "Placed at the playhead. Drag on the preview to reposition."));
+    const ta = el("textarea", "insp-global-ta");
+    ta.rows = 2;
+    ta.value = "Title";
+    ta.placeholder = "Enter text…";
+    content.append(ta);
+    const actions = el("div", "lib-form-actions");
+    const ok = el("button", "btn primary tiny", "Add");
+    ok.onclick = () => { S.addTextOverlay(ta.value); closeAddModal(); };
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = closeAddModal;
+    actions.append(ok, cancel);
+    content.append(actions);
+    box.append(content);
+    _addModal.append(box);
+    _addModal.addEventListener("click", (e) => { if (e.target === _addModal) closeAddModal(); });
+    document.body.append(_addModal);
+    ta.focus();
+    ta.select();
+  }
+
   function openAudioTrackModal(st) {
     closeAddModal();
     const audioAssets = (st.mediaBin || []).filter(isAudioAsset);
@@ -1142,6 +1229,65 @@
     return lane;
   }
 
+  function overlayBlock(st, track) {
+    const startSec = track.start_sec || 0;
+    const durSec = Math.max(0.25, track.duration_sec || 3);
+    const w = Math.max(durSec * pxPerSec, 40);
+    const block = el("div", "tl-ov-clip" + (S.get().selectedOverlayId === track.id ? " selected" : "") + (track.kind === "text" ? " text" : " image"));
+    block.style.left = (startSec * pxPerSec) + "px";
+    block.style.width = w + "px";
+    const label = track.kind === "text"
+      ? (track.text || "Text")
+      : ((st.mediaBin || []).find((m) => m.id === track.media_ref)?.name || track.label || "Image");
+    block.append(el("span", "tl-ov-label", label.length > 18 ? label.slice(0, 17) + "…" : label));
+    block.onclick = (e) => { e.stopPropagation(); S.selectOverlay(track.id); };
+
+    const startIn = el("input");
+    startIn.type = "number"; startIn.min = "0"; startIn.step = "0.1";
+    startIn.value = startSec; startIn.className = "tl-aud-start"; startIn.title = "Start (s)";
+    startIn.oninput = (e) => {
+      e.stopPropagation();
+      const v = parseFloat(startIn.value || "0");
+      block.style.left = (v * pxPerSec) + "px";
+    };
+    startIn.onchange = () => S.updateOverlayTrack(track.id, { start_sec: parseFloat(startIn.value || "0") });
+
+    const durIn = el("input");
+    durIn.type = "number"; durIn.min = "0.25"; durIn.step = "0.1";
+    durIn.value = durSec; durIn.className = "tl-aud-start"; durIn.title = "Duration (s)";
+    durIn.oninput = (e) => {
+      e.stopPropagation();
+      const v = Math.max(0.25, parseFloat(durIn.value || "3"));
+      block.style.width = Math.max(v * pxPerSec, 40) + "px";
+    };
+    durIn.onchange = () => S.updateOverlayTrack(track.id, { duration_sec: Math.max(0.25, parseFloat(durIn.value || "3")) });
+
+    const rm = el("button", "tl-aud-rm", "✕");
+    rm.title = "Remove overlay";
+    rm.onclick = (e) => { e.stopPropagation(); S.removeOverlayTrack(track.id); };
+
+    const controls = el("div", "tl-aud-controls");
+    controls.append(startIn, durIn, rm);
+    block.append(controls);
+
+    block.addEventListener("mousedown", (e) => {
+      if (e.target.closest("input,button")) return;
+      e.stopPropagation();
+      const baseLeft = startSec * pxPerSec;
+      const anchors = timelineSnapAnchorsPx(st, st.project);
+      coalescedDrag(e, (dx) => {
+        const snapped = snapPx(baseLeft + dx, anchors, 10);
+        const sec = Math.max(0, snapped / pxPerSec);
+        block.style.left = (sec * pxPerSec) + "px";
+        startIn.value = sec.toFixed(1);
+      }, () => {
+        S.updateOverlayTrack(track.id, { start_sec: parseFloat(startIn.value || "0") });
+      });
+    });
+
+    return block;
+  }
+
   function gutterLane(label, title, kind) {
     const lane = el("div", "tl-gutter-lane " + kind, label);
     lane.title = title || label;
@@ -1175,6 +1321,10 @@
       gAud.append(gutterLane(short, title, "audio" + (isOverlay ? " overlay" : isSep ? " sep" : "")));
     });
     gTracks.append(gAud);
+    const ovTracks = p.overlay_tracks || [];
+    if (ovTracks.length) {
+      gTracks.append(gutterLane("Overlays", "Text and image overlays composited on export", "overlay"));
+    }
     gutter.append(gTracks);
     return gutter;
   }
@@ -1187,6 +1337,19 @@
     origLane.append(origBody);
     wrap.append(origLane);
     (p.audio_tracks || []).forEach((t) => wrap.append(insertedAudioLane(st, p, t, AUDIO_LANE_H)));
+    return wrap;
+  }
+
+  function overlayLanes(st, p) {
+    const tracks = p.overlay_tracks || [];
+    if (!tracks.length) return null;
+    const lane = el("div", "tl-overlay-lane");
+    lane.style.height = OVERLAY_LANE_H + "px";
+    const body = el("div", "tl-overlay-lane-body");
+    tracks.forEach((t) => body.append(overlayBlock(st, t)));
+    lane.append(body);
+    const wrap = el("div", "tl-overlay-lanes");
+    wrap.append(lane);
     return wrap;
   }
 
@@ -1342,8 +1505,9 @@
     // Click empty timeline space (not a clip/seam) to clear the selection.
     scroll.addEventListener("click", (e) => {
       const cur = S.get();
-      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip"))
+      if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip") && !e.target.closest(".tl-ov-clip"))
         S.selectScene(null);
+      if (cur.selectedOverlayId && !e.target.closest(".tl-ov-clip")) S.selectOverlay(null);
     });
     const stage = el("div", "tl-stage"); stage.style.width = (GUTTER_W + contentW) + "px";
     stage.append(timelineGutter(st, p));
@@ -1410,6 +1574,8 @@
     if (!lay.length) track.append(el("div", "tl-emptyhint", "No clips yet — add one from the toolbar."));
     tracks.append(track);
     tracks.append(audioLanes(st, p, sceneLay));
+    const ovLanes = overlayLanes(st, p);
+    if (ovLanes) tracks.append(ovLanes);
     const phSec = Math.min(window.Player?.getPlayhead() ?? 0, totalSec);
     tlPhEl = el("div", "tl-playhead"); tlPhEl.style.left = (phSec * pxPerSec) + "px"; tracks.append(tlPhEl);
     content.append(tracks);
@@ -1528,6 +1694,10 @@
     if (e.key === "-" || e.key === "_") { e.preventDefault(); setZoom(pxPerSec / 1.2, { manual: true }); return; }
     if (e.key === "ArrowLeft") { e.preventDefault(); window.Player?.seek(Math.max(0, ph - 1 / fps)); return; }
     if (e.key === "ArrowRight") { e.preventDefault(); window.Player?.seek(ph + 1 / fps); return; }
+    if (e.key === "Delete" || e.key === "Backspace") {
+      if (st.selectedOverlayId) { e.preventDefault(); S.removeOverlayTrack(st.selectedOverlayId); }
+      return;
+    }
     if (!st.selectedSceneId) return;
     if (e.key === "i" || e.key === "I") {
       e.preventDefault();

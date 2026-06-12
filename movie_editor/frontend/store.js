@@ -7,6 +7,7 @@
     project: null,         // full Project
     selectedSceneId: null,   // focus clip (inspector / toolbar)
     selectedSceneIds: [],    // multi-select for generate / timeline
+    selectedOverlayId: null, // graphics overlay (text/image) on overlay lane
     transitions: [],       // prompt split-marker library (FunPack transition DB; generation only)
     nleEffects: [],        // post-render clip effects (zoom, blur, fades)
     nleVideoTransitions: [], // post-render seam blends (crossfade, wipe, …)
@@ -933,6 +934,7 @@
       return;
     }
     if (!scene(id)) return;
+    state.selectedOverlayId = null;
 
     if (range && _selectionAnchorId && order.includes(_selectionAnchorId)) {
       const a = order.indexOf(_selectionAnchorId);
@@ -1559,6 +1561,88 @@
       }
     }
     state.project.audio_tracks = (state.project.audio_tracks || []).filter((x) => x.id !== id);
+    notify(); scheduleSave();
+  }
+
+  function _playheadSec() {
+    try { return window.Player?.getPlayhead?.() ?? 0; } catch (_) { return 0; }
+  }
+
+  function overlayTrack(id) {
+    return (state.project?.overlay_tracks || []).find((t) => t.id === id) || null;
+  }
+
+  function selectOverlay(id) {
+    state.selectedOverlayId = id || null;
+    if (id) {
+      state.selectedSceneId = null;
+      state.selectedSceneIds = [];
+      _selectionAnchorId = null;
+    }
+    notify();
+  }
+
+  function addImageOverlay(mediaId, startSec) {
+    if (!state.project || !mediaId) return;
+    _historyRecord();
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    state.project.overlay_tracks = state.project.overlay_tracks || [];
+    const id = _uid();
+    state.project.overlay_tracks.push({
+      id,
+      kind: "image",
+      media_ref: mediaId,
+      start_sec: Math.max(0, +(startSec ?? _playheadSec())),
+      duration_sec: 3,
+      x: 0.5,
+      y: 0.5,
+      scale: 0.35,
+      opacity: 1,
+      label: (asset && asset.name) || "Image",
+    });
+    selectOverlay(id);
+    scheduleSave();
+  }
+
+  function addTextOverlay(text, startSec) {
+    if (!state.project) return;
+    _historyRecord();
+    state.project.overlay_tracks = state.project.overlay_tracks || [];
+    const id = _uid();
+    state.project.overlay_tracks.push({
+      id,
+      kind: "text",
+      text: String(text || "Title").trim() || "Title",
+      font_size: 42,
+      color: "#ffffff",
+      start_sec: Math.max(0, +(startSec ?? _playheadSec())),
+      duration_sec: 3,
+      x: 0.5,
+      y: 0.5,
+      opacity: 1,
+      label: "Text",
+    });
+    selectOverlay(id);
+    scheduleSave();
+  }
+
+  function updateOverlayTrack(id, patch, quiet) {
+    const t = overlayTrack(id);
+    if (!t) return;
+    if (!quiet) _historyRecord();
+    Object.assign(t, patch);
+    notify();
+    quiet ? scheduleSaveSilent() : scheduleSave();
+  }
+
+  function removeOverlayTrack(id, opts) {
+    if (!state.project) return;
+    const t = overlayTrack(id);
+    if (!t) return;
+    if (!opts?.skipConfirm && !confirm("Remove this overlay?")) return;
+    _historyRecord();
+    state.project.overlay_tracks = (state.project.overlay_tracks || []).filter((x) => x.id !== id);
+    if (state.selectedOverlayId === id) state.selectedOverlayId = null;
     notify(); scheduleSave();
   }
 
@@ -2889,6 +2973,7 @@
     buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec, clipSourceInSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
+    overlayTrack, selectOverlay, addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack,
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, splitScene, snapFrames, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,

@@ -619,6 +619,11 @@ class Project:
     # Overlay tracks use absolute timeline start_sec and persist across scene edits.
     keep_original_audio: bool = True
     audio_tracks: list = field(default_factory=list)
+    # Graphics overlays composited on top of the final montage (one timeline lane):
+    #   image — {id, kind:"image", media_ref, start_sec, duration_sec, x, y, scale, opacity, label}
+    #   text  — {id, kind:"text", text, font_size, color, start_sec, duration_sec, x, y, opacity}
+    # x/y are normalized center position (0..1). Later items draw on top when times overlap.
+    overlay_tracks: list = field(default_factory=list)
     # Per-project pipeline config: the configured loader/node slots + linked inputs
     # (same shape as the global models.json). Empty {"slots": []} falls back to the
     # global default at build/read time; the editor seeds new projects from it.
@@ -658,6 +663,7 @@ class Project:
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),
+            overlay_tracks=list(d.get("overlay_tracks") or []),
             models=dict(d.get("models") or {"slots": []}),
             guide_settings=dict(d.get("guide_settings") or {}),
             continuity_settings=dict(d.get("continuity_settings") or {}),

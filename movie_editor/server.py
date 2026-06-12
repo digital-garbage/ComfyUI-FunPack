@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
 
 from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
+from .backend.nle_overlays import build_overlay_video_filter
 from .backend.timeline import (
     Project,
     build_combined_prompt,
@@ -634,7 +635,7 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
                 oa = f"[ac{i}]"; parts.append(f"{acc_a}[a{i}]concat=n=2:v=0:a=1{oa}"); acc_a = oa
             acc_v, acc_dur = ov, acc_dur + dur_i
 
-    parts.append(f"{acc_v}null[vout]")
+    parts.append(f"{acc_v}null[vbase]")
     total = max(0.01, acc_dur)
 
     # Assemble the audio mix: original (if kept) + each inserted track (delayed/volume'd).
@@ -661,6 +662,31 @@ def _build_render_filter(clips: list, tracks: Optional[list] = None,
         parts.append("".join(mix) + f"amix=inputs={len(mix)}:normalize=0:duration=longest[amx]")
         parts.append(f"[amx]atrim=0:{total:.3f},asetpts=PTS-STARTPTS[aout]")
     return ";".join(parts), True
+
+
+def _append_overlay_filters(
+    parts: list[str],
+    proj: Project,
+    *,
+    canvas_w: int,
+    canvas_h: int,
+    image_paths: list[str],
+    image_input_base: int,
+) -> None:
+    """Append overlay compositing after [vbase]; sets final [vout]."""
+    overlays = list(getattr(proj, "overlay_tracks", None) or [])
+    if not overlays:
+        parts.append("[vbase]null[vout]")
+        return
+    labels = [f"[{image_input_base + i}:v:0]" for i in range(len(image_paths))]
+    ov_parts, final = build_overlay_video_filter(
+        "[vbase]", overlays, canvas_w=canvas_w, canvas_h=canvas_h, image_input_labels=labels,
+    )
+    parts.extend(ov_parts)
+    if final == "[vbase]":
+        parts.append("[vbase]null[vout]")
+    else:
+        parts.append(f"{final}null[vout]")
 
 
 class RenderJobError(Exception):
@@ -833,7 +859,28 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
     for t in separated_tracks:
         cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
     tracks = media_tracks + separated_tracks
+
+    overlay_image_paths: list[str] = []
+    for ov in (getattr(proj, "overlay_tracks", None) or []):
+        if (ov.get("kind") or "image") != "image":
+            continue
+        mp = media.path_for(ov.get("media_ref") or "")
+        if mp is None:
+            continue
+        overlay_image_paths.append(str(mp))
+    for pth in overlay_image_paths:
+        cmd += ["-i", pth]
+
     filt, has_audio = _build_render_filter(clips, tracks=tracks, keep_original=keep_original, base_input=n)
+    cw = int(clips[0].get("w") or 0) or int(getattr(proj, "width", 768) or 768)
+    ch = int(clips[0].get("h") or 0) or int(getattr(proj, "height", 512) or 512)
+    filt_parts = filt.split(";") if filt else []
+    ov_input_base = n + len(tracks)
+    _append_overlay_filters(
+        filt_parts, proj, canvas_w=cw, canvas_h=ch,
+        image_paths=overlay_image_paths, image_input_base=ov_input_base,
+    )
+    filt = ";".join(filt_parts)
     cmd += ["-filter_complex", filt, "-map", "[vout]"]
     if has_audio:
         cmd += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]

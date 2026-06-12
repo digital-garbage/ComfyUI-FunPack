@@ -683,6 +683,31 @@ input[type=number] { font-family: var(--font-mono); }
 .tl-aud-clip.overlay { border-color: color-mix(in srgb, #60a5fa 35%, var(--line)); }
 .tl-aud-clip.overlay .tl-aud-wave canvas { opacity: .95; }
 .tl-audio-lane:last-child { border-bottom: none; }
+
+/* overlay graphics lane (text + images) */
+.tl-overlay-lanes { border-top: 1px solid var(--line); }
+.tl-overlay-lane { position: relative; border-top: 1px solid #ffffff08; background: color-mix(in srgb, #c084fc 4%, var(--ink-0)); }
+.tl-overlay-lane-body { position: relative; height: 100%; }
+.tl-gutter-lane.overlay { color: #d8b4fe; }
+.tl-ov-clip {
+  position: absolute; top: 4px; bottom: 4px; min-width: 40px;
+  border-radius: 6px; border: 1px solid color-mix(in srgb, #c084fc 40%, var(--line));
+  background: color-mix(in srgb, #c084fc 12%, var(--ink-1));
+  cursor: grab; overflow: hidden; display: flex; align-items: center; padding: 0 8px;
+}
+.tl-ov-clip.selected { border-color: #c084fc; box-shadow: 0 0 0 1px color-mix(in srgb, #c084fc 45%, transparent); }
+.tl-ov-clip.text { font-family: var(--font-ui); font-weight: 600; font-size: 11px; color: #f3e8ff; }
+.tl-ov-label { pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-overlays { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
+.pm-ov-box {
+  position: absolute; pointer-events: auto; cursor: grab; max-width: 92%; text-align: center;
+  text-shadow: 0 1px 4px rgba(0,0,0,.85); white-space: pre-wrap; line-height: 1.15;
+  border: 1px dashed transparent; border-radius: 4px; padding: 2px 4px;
+}
+.pm-ov-box.selected { border-color: color-mix(in srgb, #c084fc 70%, transparent); }
+.pm-ov-box.dragging { cursor: grabbing; opacity: .92; }
+.pm-ov-box img { display: block; max-height: 70vh; pointer-events: none; }
+
 .tl-audio-lane-body { position: absolute; inset: 0; }
 .tl-aud-clip { position: absolute; top: 4px; bottom: 4px; box-sizing: border-box;
   background: linear-gradient(180deg, #1e3a2f, #152820); border: 1px solid #2d5a45; border-radius: 5px;
