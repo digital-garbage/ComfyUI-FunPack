@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, git_update, live_preview, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, workflow_import
+from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
@@ -1434,20 +1434,6 @@ if web is not None and PromptServer is not None:
             sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p, models=models_cfg)
             if caps["chain_sampler"]:
                 _attach_scene_anchors(sampler_inputs, media_pack, target)
-            import json as _json
-            import tempfile as _tempfile
-            if live_preview.models_enabled(models_cfg):
-                lp_dir = _tempfile.mkdtemp(prefix="funpack_live_")
-                live_preview.reset(lp_dir, active_scene_count)
-                sampler_inputs = dict(sampler_inputs or {})
-                sampler_inputs["funpack_live_preview"] = _json.dumps({
-                    "dir": lp_dir,
-                    "width": 384,
-                    "max_frames": 24,
-                    "decode_tile_size": 256,
-                })
-            else:
-                live_preview.clear()
             graph, report = builder.build(oi, models_cfg, {
                 "prompt": prompt, "seed": _resolve_run_seed(target),
                 "num_frames_per_scene": effective_frames,
@@ -1533,35 +1519,6 @@ if web is not None and PromptServer is not None:
     @routes.get(UI_PREFIX + "/api/progress")
     async def _progress(_req):
         return web.json_response(bridge.current_progress())
-
-    @routes.get(UI_PREFIX + "/api/live-preview")
-    async def _live_preview_status(_req):
-        import os
-        snap = live_preview.snapshot()
-        if not snap.get("active"):
-            return web.json_response({"active": False})
-        frame_path = snap.get("frame_path") or ""
-        ready = bool(frame_path and os.path.isfile(frame_path))
-        payload = {
-            "active": True,
-            "ready": ready,
-            "scene_index": snap.get("scene_index", -1),
-            "scene_count": snap.get("scene_count", 0),
-            "updated_at": snap.get("updated_at", 0),
-        }
-        if ready:
-            ts = int(float(snap.get("updated_at") or 0) * 1000)
-            payload["url"] = f"{UI_PREFIX}/api/live-preview/frame?t={ts}"
-        return web.json_response(payload)
-
-    @routes.get(UI_PREFIX + "/api/live-preview/frame")
-    async def _live_preview_frame(_req):
-        import os
-        snap = live_preview.snapshot()
-        path = snap.get("frame_path") or ""
-        if not path or not os.path.isfile(path):
-            raise web.HTTPNotFound()
-        return web.FileResponse(path, headers={"Cache-Control": "no-store"})
 
     @routes.get(UI_PREFIX + "/api/log")
     async def _log(req):

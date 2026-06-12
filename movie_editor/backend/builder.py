@@ -194,47 +194,6 @@ def _output_index(node_def: Optional[dict], out_name: str) -> int:
     return 0
 
 
-def _wire_live_preview_vae(
-    models_config: dict,
-    graph: dict,
-    slot_node_id: dict,
-    slot_def: dict,
-    report: dict,
-) -> None:
-    """Wire models.live_preview slot VAE output -> Chain Sampler preview_vae."""
-    lp = (models_config or {}).get("live_preview") or {}
-    if not lp.get("enabled"):
-        return
-    if "sampler" not in graph:
-        return
-    sid = lp.get("slot_id")
-    if not sid:
-        report["unsatisfied"].append(
-            "Live preview is enabled but no preview VAE is selected (View → Choose preview VAE…)."
-        )
-        return
-    nid = slot_node_id.get(sid)
-    if not nid or nid not in graph:
-        report["unsatisfied"].append(f"Live preview VAE slot '{sid}' is not in the graph.")
-        return
-    out_name = str(lp.get("vae_output") or "VAE")
-    nd = slot_def.get(sid) or {}
-    outs = node_outputs(nd)
-    oidx = _output_index(nd, out_name)
-    if not outs or oidx >= len(outs) or outs[oidx].get("type") != "VAE":
-        report["unsatisfied"].append(
-            f"Live preview slot '{sid}' has no VAE output '{out_name}'."
-        )
-        return
-    graph["sampler"]["inputs"]["preview_vae"] = [nid, oidx]
-    slot_lbl = next(
-        (s.get("label") or s.get("node_class") or sid
-         for s in ((models_config or {}).get("slots") or []) if s.get("id") == sid),
-        sid,
-    )
-    report["wired"].append(f"{slot_lbl}.{out_name} -> sampler.preview_vae (live preview)")
-
-
 def build(object_info: dict, models_config: dict, params: dict, media: dict | None = None) -> tuple[dict, dict]:
     """Return (graph, report). `params`: prompt, negative_prompt, seed,
     num_frames_per_scene, frame_rate, width, height. `models_config`: {"slots":[...],
@@ -466,8 +425,6 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 report["unsatisfied"].append(
                     f"core override {cid}.{inp}: '{source}' could not be resolved.")
 
-    _wire_live_preview_vae(models_config, graph, slot_node_id, slot_def, report)
-
     # 5. auto-wire remaining unbound typed inputs by unique producer.
     producers = _producers(graph, slots, slot_node_id, slot_def, object_info)
     # Drop producers whose node isn't in the graph (core producers vanish when the built-in
@@ -490,9 +447,6 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         for src in (ovs or {}).values():
             if isinstance(src, str) and src.startswith("out:"):
                 active_slots.add(src.split(":", 2)[1])
-    lp_sid = ((models_config or {}).get("live_preview") or {}).get("slot_id")
-    if lp_sid:
-        active_slots.add(lp_sid)
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
 
     for msg in pipeline_wiring.validate_models_wiring(models_config):

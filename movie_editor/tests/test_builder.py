@@ -211,29 +211,3 @@ def test_movie_editor_scene_ratings_in_studio_settings():
         {"index": 2, "rating": "Missing action"},
     ]
     assert "_movie_editor_scene_ratings" not in graph["studio"]["inputs"]
-
-
-def test_live_preview_wires_preview_vae_separately():
-    models = {
-        "full_control": True,
-        "live_preview": {"enabled": True, "slot_id": "pv", "vae_output": "VAE"},
-        "slots": [
-            {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
-            {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
-            {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {
-                "VAE": ["port:FunPackLTXAVSceneChainSampler.vae", "port:LTXVAudioVAEDecode.audio_vae"],
-            }},
-            {"id": "pv", "node_class": "VaeLoader", "inputs": {"vae_name": "taehv.safetensors"}, "wires": {}},
-            {"id": "ip", "node_class": "ImgProc", "inputs": {},
-             "wires": {"latent": "port:FunPackStudio.latent",
-                       "Latent": "port:LTXVConcatAVLatent.audio_latent",
-                       "output_image": "port:FunPackStudio.source_image"},
-             "input_sources": {"vae": "out:v:VAE"}},
-            {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:ip:image"}},
-        ],
-    }
-    graph, report = builder.build(OI, models, PARAMS)
-    assert graph["sampler"]["inputs"]["vae"] == ["slot_v", 0]
-    assert graph["sampler"]["inputs"]["preview_vae"] == ["slot_pv", 0]
-    assert any("preview_vae" in w for w in report["wired"])
-    assert report["blocking"] == []

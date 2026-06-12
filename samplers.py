@@ -2095,14 +2095,6 @@ class FunPackLTXAVSceneChainSampler:
                     "multiline": True,
                     "tooltip": "Optional media_ref → filename map for image-type i2v guides in custom guide stacks.",
                 }),
-                "preview_vae": ("VAE", {
-                    "tooltip": "Optional fast preview VAE (e.g. taehv). When wired, Movie Editor can show per-scene animated previews while the chain runs.",
-                }),
-                "funpack_live_preview": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "tooltip": "Internal JSON from Movie Editor: preview output directory and encode options.",
-                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3305,7 +3297,6 @@ class FunPackLTXAVSceneChainSampler:
                refinement_key_input="", funpack_scene_guides="",
                funpack_scene_anchors="",
                funpack_scene_media_refs="",
-               preview_vae=None, funpack_live_preview="",
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3328,15 +3319,11 @@ class FunPackLTXAVSceneChainSampler:
                 carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                 embed_guidance, embed_guidance_strength, transition_duration,
                 decode_tile_size, refinement_key_input, embed_guidance_source,
-                preview_vae=preview_vae, funpack_live_preview=funpack_live_preview,
             )
 
         max_scene_count = max(1, int(max_scenes))
         scene_conditionings = positive[:max_scene_count]
         scene_count = len(scene_conditionings)
-        live_cfg = self._parse_live_preview_config(funpack_live_preview)
-        if preview_vae is not None and live_cfg.get("dir"):
-            self._init_live_preview(live_cfg, scene_count)
         time_scale = self._time_scale(vae)
         video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale)
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
@@ -3537,10 +3524,6 @@ class FunPackLTXAVSceneChainSampler:
                 f"Scene {scene_index + 1}: seed={scene_seed}, text={scene_meta['text']}"
                 + (f" | encode≠text" if scene_meta["encode_text"] != scene_meta["text"] else "")
             )
-            if preview_vae is not None and live_cfg.get("dir"):
-                self._emit_live_scene_preview(
-                    preview_vae, sampled, scene_index, scene_count, live_cfg,
-                )
 
         del scene_cond, scene_positive, scene_negative, scene_conditionings, chunk, sampled
 
@@ -3668,58 +3651,6 @@ class FunPackLTXAVSceneChainSampler:
             return None
         return [groups[k] for k in sorted(groups)]
 
-    def _parse_live_preview_config(self, raw):
-        if not raw:
-            return {}
-        if isinstance(raw, dict):
-            return raw
-        try:
-            import json as _json
-            out = _json.loads(str(raw))
-            return out if isinstance(out, dict) else {}
-        except Exception:
-            return {}
-
-    def _init_live_preview(self, cfg, scene_count):
-        try:
-            from movie_editor.backend import live_preview as _lp
-        except Exception:
-            try:
-                from .movie_editor.backend import live_preview as _lp  # type: ignore
-            except Exception:
-                return
-        _lp.reset(cfg.get("dir", ""), scene_count)
-
-    def _emit_live_scene_preview(self, preview_vae, scene_latent, scene_index, scene_count, cfg):
-        import os
-        import shutil
-        try:
-            from movie_editor.backend import live_preview as _lp
-        except Exception:
-            try:
-                from .movie_editor.backend import live_preview as _lp  # type: ignore
-            except Exception:
-                return
-        preview_dir = str(cfg.get("dir") or "")
-        if not preview_dir:
-            return
-        os.makedirs(preview_dir, exist_ok=True)
-        tile = int(cfg.get("decode_tile_size") or 256)
-        decoded = self._decode_for_preview(preview_vae, scene_latent, decode_tile_size=tile)
-        path = os.path.join(preview_dir, f"scene_{int(scene_index):03d}.webp")
-        current = os.path.join(preview_dir, "current.webp")
-        if self._save_batch_preview(
-            decoded,
-            path,
-            max_frames=int(cfg.get("max_frames") or 24),
-            width=int(cfg.get("width") or 384),
-        ):
-            try:
-                shutil.copy2(path, current)
-            except Exception:
-                current = path
-            _lp.publish(int(scene_index), current, scene_count)
-
     def _save_batch_preview(self, decoded, path, max_frames=16, width=256):
         """Save a decoded video tensor [T,H,W,C] in 0..1 as a downscaled animated webp."""
         try:
@@ -3769,8 +3700,7 @@ class FunPackLTXAVSceneChainSampler:
                             latent_template, num_frames_per_scene, frame_overlap, cfg, max_scenes,
                             use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                             embed_guidance, embed_guidance_strength, transition_duration,
-                            decode_tile_size, refinement_key_input, embed_guidance_source="relative",
-                            preview_vae=None, funpack_live_preview=""):
+                            decode_tile_size, refinement_key_input, embed_guidance_source="relative"):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -3811,7 +3741,6 @@ class FunPackLTXAVSceneChainSampler:
                 embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
-                preview_vae=preview_vae, funpack_live_preview=funpack_live_preview,
                 unique_id=None, prompt=None,
             )
             last = out

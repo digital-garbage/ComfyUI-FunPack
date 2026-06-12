@@ -877,7 +877,6 @@
   let _tcEl = null;       // timecode span (updated live, not rebuilt)
   let _playBtnEl = null;  // play/pause button (glyph updated live, not rebuilt)
   let _genMsgEl = null, _genBarEl = null, _genFillEl = null;  // gen readout, updated live
-  let _livePreviewEl = null, _livePreviewBadgeEl = null;
 
   // Update the generation readout in place on progress ticks (no store re-render, so the
   // editor stays interactive — frames can be saved, effects added — while a job runs).
@@ -889,14 +888,6 @@
         _genBarEl.style.visibility = "";
         _genFillEl.style.width = Math.min(100, Math.round((g.step / g.maxStep) * 100)) + "%";
       }
-    }
-    if (_livePreviewEl && g.livePreviewUrl) {
-      if (_livePreviewEl.src !== g.livePreviewUrl) _livePreviewEl.src = g.livePreviewUrl;
-      _livePreviewEl.style.display = "";
-    }
-    if (_livePreviewBadgeEl && g.liveScene >= 0 && g.liveSceneCount > 0) {
-      _livePreviewBadgeEl.textContent = `Scene ${g.liveScene + 1}/${g.liveSceneCount}`;
-      _livePreviewBadgeEl.style.display = "";
     }
   });
 
@@ -1112,7 +1103,6 @@
     // store render; live progress ticks update it in place (see the gen-progress listener),
     // so the rest of the editor isn't rebuilt while a generation runs.
     _genMsgEl = _genBarEl = _genFillEl = null;
-    _livePreviewEl = _livePreviewBadgeEl = null;
     if (["queuing", "running", "pending", "error"].includes(gen.state)) {
       const busy = gen.state !== "error";
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
@@ -1130,22 +1120,6 @@
         ro.append(stop);
       }
       canvas.append(ro);
-    }
-    if (["queuing", "running", "pending"].includes(gen.state) && S.get().models?.live_preview?.enabled) {
-      const lpLayer = el("div", "pm-live-preview");
-      _livePreviewEl = el("img", "pm-live-preview-img");
-      _livePreviewEl.alt = "Live preview";
-      _livePreviewEl.draggable = false;
-      if (gen.livePreviewUrl) _livePreviewEl.src = gen.livePreviewUrl;
-      else _livePreviewEl.style.display = "none";
-      _livePreviewBadgeEl = el("div", "pm-live-preview-badge");
-      if (gen.liveScene >= 0 && gen.liveSceneCount > 0) {
-        _livePreviewBadgeEl.textContent = `Scene ${gen.liveScene + 1}/${gen.liveSceneCount}`;
-      } else {
-        _livePreviewBadgeEl.style.display = "none";
-      }
-      lpLayer.append(_livePreviewEl, _livePreviewBadgeEl);
-      canvas.append(lpLayer);
     }
     if (previewAsset?.kind === "image") {
       const layer = el("div", "pm-media-preview");

@@ -156,42 +156,6 @@
     });
   }
 
-  async function _pickPreviewVae(st) {
-    closeAll();
-    const slots = st.models?.slots || [];
-    const options = [];
-    for (const s of slots) {
-      let spec;
-      try { spec = await window.MovieEditorAPI.nodeSpec(s.node_class); } catch (_) { continue; }
-      const vaeOuts = (spec.outputs || []).filter((o) => o.type === "VAE");
-      if (!vaeOuts.length) continue;
-      const outName = vaeOuts.find((o) => o.name === "VAE")?.name || vaeOuts[0].name;
-      options.push({
-        value: `${s.id}\x1f${outName}`,
-        label: s.label || s.node_class || s.id,
-        hint: `${outName} · ${s.node_class}`,
-      });
-    }
-    if (!options.length) {
-      alert("No Models slot outputs VAE.\nAdd a VAE loader in Settings → Models (e.g. taehv for fast preview).");
-      return;
-    }
-    const cur = st.models?.live_preview || {};
-    if (!window.SlotPicker) return;
-    window.SlotPicker.open({
-      title: "Choose preview VAE",
-      options: options.map((o) => {
-        const [sid, out] = o.value.split("\x1f");
-        const isCur = sid === cur.slot_id && out === (cur.vae_output || "VAE");
-        return { ...o, hint: isCur ? "current" : o.hint };
-      }),
-      onPick: (val) => {
-        const [slotId, outName] = val.split("\x1f");
-        S.setLivePreviewSlot(slotId, outName);
-      },
-    });
-  }
-
   let _gitStatus = null;
 
   function promptNewProject() {
@@ -250,13 +214,6 @@
       ],
       View: [
         { label: "Refresh Preview", action: () => S.refreshPreview() },
-        { sep: true },
-        { label: st.models?.live_preview?.enabled ? "Disable live preview ✓" : "Enable live preview",
-          disabled: !hasProject() || !chainOn,
-          action: () => S.setLivePreviewEnabled(!st.models?.live_preview?.enabled) },
-        { label: "Choose preview VAE…",
-          disabled: !hasProject() || !chainOn,
-          action: () => _pickPreviewVae(st) },
         { sep: true },
         { label: "Reset Layout", action: () => { const r = document.documentElement; r.style.removeProperty("--media-w"); r.style.removeProperty("--timeline-h"); } },
       ],

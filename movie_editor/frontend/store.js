@@ -25,7 +25,7 @@
     notice: "",
     saving: false,
     unsaved: false,
-    models: { slots: [], live_preview: { enabled: false, slot_id: null, vae_output: "VAE" } },   // pluggable node config (shared with Models modal)
+    models: { slots: [] },   // pluggable node config (shared with Models modal)
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
     shortcuts: [],           // prompt shortcut library
@@ -2689,22 +2689,6 @@
             });
           }
         } catch (_) {}
-        if (state.models?.live_preview?.enabled) {
-          try {
-            const lp = await API.livePreview();
-            if (lp?.ready && lp.url) {
-              const sceneNote = (lp.scene_index >= 0 && lp.scene_count > 0)
-                ? ` · scene ${lp.scene_index + 1}/${lp.scene_count}`
-                : "";
-              updateGenProgress({
-                livePreviewUrl: lp.url,
-                liveScene: lp.scene_index,
-                liveSceneCount: lp.scene_count,
-                msg: `${(state.gen.msg || prefix).replace(/\s*·\s*scene \d+\/\d+$/, "")}${sceneNote}`,
-              });
-            }
-          } catch (_) {}
-        }
       }, 700);
       pollTimer = setInterval(async () => {
         if (_interrupted) {
@@ -2814,7 +2798,7 @@
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession) {
     _interrupted = false;
     _markGenInFlight(sceneIds);
-    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0, livePreviewUrl: null, liveScene: -1, liveSceneCount: 0 } });
+    set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
       const r = await _retryOnTunnel(
         () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession),
@@ -3277,12 +3261,6 @@
   // ── pluggable models / exposed controls ──────────────────────────────────────
   async function loadModels() {
     try { state.models = await API.getModels(state.project?.id); } catch (_) { state.models = { slots: [] }; }
-    state.models.live_preview = {
-      enabled: false,
-      slot_id: null,
-      vae_output: "VAE",
-      ...(state.models.live_preview || {}),
-    };
     if (state.project) {
       state.project.models = JSON.parse(JSON.stringify(state.models || { slots: [] }));
     }
@@ -3320,44 +3298,6 @@
     notify();
     try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
     catch (e) { console.error("saveModels failed", e); }
-  }
-
-  async function setLivePreviewEnabled(enabled) {
-    state.models.live_preview = {
-      enabled: false,
-      slot_id: null,
-      vae_output: "VAE",
-      ...(state.models.live_preview || {}),
-      enabled: !!enabled,
-    };
-    if (state.project) {
-      state.project.models = JSON.parse(JSON.stringify(state.models));
-    }
-    notify();
-    try {
-      state.models = await API.saveModels(state.project?.id, state.models);
-      notify();
-    } catch (e) { console.error("saveModels failed", e); }
-  }
-
-  async function setLivePreviewSlot(slotId, vaeOutput = "VAE") {
-    state.models.live_preview = {
-      enabled: false,
-      slot_id: null,
-      vae_output: "VAE",
-      ...(state.models.live_preview || {}),
-      slot_id: slotId,
-      vae_output: vaeOutput || "VAE",
-      enabled: true,
-    };
-    if (state.project) {
-      state.project.models = JSON.parse(JSON.stringify(state.models));
-    }
-    notify();
-    try {
-      state.models = await API.saveModels(state.project?.id, state.models);
-      notify();
-    } catch (e) { console.error("saveModels failed", e); }
   }
 
   // ── media bin + libraries ─────────────────────────────────────────────────────
@@ -3631,7 +3571,7 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, setLivePreviewEnabled, setLivePreviewSlot, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
