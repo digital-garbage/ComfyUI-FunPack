@@ -42,11 +42,6 @@ GUIDED_HIDDEN_PORTS: frozenset[str] = frozenset({
     "LTXVConcatAVLatent.video_latent",  # Studio output 12 -> concat (CORE_LINKS)
 })
 
-# Optional VAE sinks — any VAE loader may wire here in guided mode (separate from main vae).
-OPTIONAL_VAE_PORTS: tuple[str, ...] = (
-    "FunPackLTXAVSceneChainSampler.preview_vae",
-)
-
 DEFAULT_WIRES_BY_ROLE: dict[str, dict[str, str]] = {
     "unet": {"MODEL": "port:FunPackStudio.model"},
     "clip": {"CLIP": "port:FunPackStudio.clip"},
@@ -128,10 +123,6 @@ def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None) -
     has_explicit = any(t == out_type for t, _, _ in role_rules)
     if not has_explicit:
         for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
-            if port not in out:
-                out.append(port)
-    if out_type == "VAE":
-        for port in OPTIONAL_VAE_PORTS:
             if port not in out:
                 out.append(port)
     return out
@@ -259,7 +250,6 @@ def wiring_rules_payload() -> dict[str, Any]:
         "default_wires": DEFAULT_WIRES_BY_ROLE,
         "default_input_sources": DEFAULT_INPUT_SOURCES_BY_ROLE,
         "port_labels": PORT_LABELS,
-        "optional_vae_ports": list(OPTIONAL_VAE_PORTS),
         "open_core_ports": [
             {"core_id": cid, "input": inp, "port": port}
             for port, (cid, inp) in PORT_TO_OPEN_CORE.items()
