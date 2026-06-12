@@ -134,6 +134,7 @@
       j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
+    livePreview: () => j("GET", API("/live-preview")),
     ratingLabels: () => j("GET", API("/rating-labels")),
     log: (limit) => j("GET", API("/log" + (limit ? `?limit=${limit}` : ""))),
     interrupt: () => j("POST", API("/interrupt")),
