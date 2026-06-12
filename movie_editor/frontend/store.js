@@ -277,13 +277,21 @@
     return null;
   }
 
+  // Keep separated audio on the timeline when its source clip is removed.
+  function _detachSeparatedAudioForScene(sc) {
+    if (!state.project?.audio_tracks) return;
+    for (const t of state.project.audio_tracks) {
+      if (t.kind !== "separated" || t.scene_id !== sc.id) continue;
+      t.start_sec = sceneTimelineOffsetSec(sc.id);
+      delete t.scene_id;
+    }
+  }
+
   // Ghost a removed scene when it had a render; otherwise drop it entirely.
   function _ghostOrDropScene(sc, afterSceneId, ghosts) {
     const r = state.sceneRenders[sc.id];
     const inFlight = _genInFlightIds.has(sc.id);
-    state.project.audio_tracks = (state.project.audio_tracks || []).filter(
-      (t) => !(t.kind === "separated" && t.scene_id === sc.id)
-    );
+    _detachSeparatedAudioForScene(sc);
     delete state.sceneRenders[sc.id];
     let out = (ghosts || []).filter((g) => g.id !== sc.id);
     if (!r?.media && !inFlight) return out;
@@ -1449,7 +1457,7 @@
   }
 
   function isSeparatedAudioTrack(t) {
-    return !!(t && t.kind === "separated" && t.scene_id);
+    return !!(t && t.kind === "separated");
   }
 
   function sceneHasEmbeddedAudio(sc) {
@@ -1615,7 +1623,9 @@
     if (!t) return;
     if (!opts?.skipConfirm) {
       const msg = isSeparatedAudioTrack(t)
-        ? "Remove separated audio? The clip will use embedded audio from its current video render again."
+        ? (t.scene_id && scene(t.scene_id)
+          ? "Remove separated audio? The clip will use embedded audio from its current video render again."
+          : "Remove this detached audio track?")
         : "Remove this overlay audio track?";
       if (!confirm(msg)) return;
     }

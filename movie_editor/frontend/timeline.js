@@ -1250,9 +1250,9 @@
     const canvas = el("canvas");
     wave.append(canvas);
     block.append(wave);
-    if (isSep && sepScene) {
+    if (isSep) {
       const pinned = track.pinned_media;
-      const r = (st.sceneRenders || {})[track.scene_id];
+      const r = track.scene_id ? (st.sceneRenders || {})[track.scene_id] : null;
       const media = pinned || r?.media;
       const sepUrl = S.separatedTrackAudioUrl ? S.separatedTrackAudioUrl(st, track) : null;
       if (sepUrl) {
@@ -1310,7 +1310,9 @@
     controls.append(startIn);
     const rm = el("button", "ic-btn danger tl-aud-rm", "✕");
     rm.title = isSep
-      ? "Remove separated audio (restores embedded audio on the clip)"
+      ? (sepScene
+        ? "Remove separated audio (restores embedded audio on the clip)"
+        : "Remove detached audio track")
       : "Remove overlay audio track";
     rm.onclick = (e) => { e.stopPropagation(); S.removeAudioTrack(track.id); };
     controls.append(rm);
