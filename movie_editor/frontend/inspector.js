@@ -920,8 +920,7 @@
       if (_editing) return;
       const k = t.dataset?.k;
       if (k === "global-prompt") {
-        S.flushSave();
-        render(S.get());
+        S.flushPendingEdits().then(() => render(S.get()));
         return;
       }
       if (!S.flushSave()) render(S.get());

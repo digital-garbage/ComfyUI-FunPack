@@ -1466,6 +1466,16 @@ if web is not None and PromptServer is not None:
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)
+        live_preview_note = None
+        if live_preview.models_enabled(models_cfg):
+            samp_in = (graph.get("sampler") or {}).get("inputs") or {}
+            if not isinstance(samp_in.get("preview_vae"), list):
+                live_preview_note = (
+                    "Live preview VAE is configured but preview_vae is not wired — "
+                    "wire a VAE loader to Chain Sampler · live preview in Models, then restart ComfyUI if you recently updated FunPack."
+                )
+            elif not samp_in.get("funpack_live_preview"):
+                live_preview_note = "Live preview directory was not passed to the Chain Sampler."
         try:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001
@@ -1483,6 +1493,8 @@ if web is not None and PromptServer is not None:
             "validation": validation,
             "prompt_repairs_cleared": prompt_changed,
             "reset_session": reset_session,
+            "live_preview": live_preview.models_enabled(models_cfg),
+            "live_preview_note": live_preview_note,
         })
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/status/{prompt_id}")
@@ -1532,27 +1544,15 @@ if web is not None and PromptServer is not None:
 
     @routes.get(UI_PREFIX + "/api/progress")
     async def _progress(_req):
-        return web.json_response(bridge.current_progress())
+        payload = bridge.current_progress()
+        lp = live_preview.api_payload(UI_PREFIX)
+        if lp.get("active"):
+            payload["live_preview"] = lp
+        return web.json_response(payload)
 
     @routes.get(UI_PREFIX + "/api/live-preview")
     async def _live_preview_status(_req):
-        import os
-        snap = live_preview.snapshot()
-        if not snap.get("active"):
-            return web.json_response({"active": False})
-        frame_path = snap.get("frame_path") or ""
-        ready = bool(frame_path and os.path.isfile(frame_path))
-        payload = {
-            "active": True,
-            "ready": ready,
-            "scene_index": snap.get("scene_index", -1),
-            "scene_count": snap.get("scene_count", 0),
-            "updated_at": snap.get("updated_at", 0),
-        }
-        if ready:
-            ts = int(float(snap.get("updated_at") or 0) * 1000)
-            payload["url"] = f"{UI_PREFIX}/api/live-preview/frame?t={ts}"
-        return web.json_response(payload)
+        return web.json_response(live_preview.api_payload(UI_PREFIX))
 
     @routes.get(UI_PREFIX + "/api/live-preview/frame")
     async def _live_preview_frame(_req):

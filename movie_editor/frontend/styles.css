@@ -448,7 +448,7 @@ input[type=number] { font-family: var(--font-mono); }
 .gen-readout .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); animation: pulse 1s infinite; flex: 0 0 auto; }
 .gen-readout.error { color: var(--danger); }
 .gen-readout.error .pulse { background: var(--danger); animation: none; }
-.pm-live-preview { position: absolute; inset: 12px 12px 52px 12px; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 1; }
+.pm-live-preview { position: absolute; inset: 12px 12px 52px 12px; display: flex; align-items: center; justify-content: center; pointer-events: none; z-index: 3; }
 .pm-live-preview-img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; border: 1px solid var(--line); box-shadow: 0 8px 32px #000a; background: #0006; }
 .pm-live-preview-badge { position: absolute; top: 8px; left: 8px; font-family: var(--font-mono); font-size: 11px; color: var(--amber-2); background: #000b; border: 1px solid var(--line); padding: 3px 8px; border-radius: 12px; }
 .gen-bar { width: 90px; height: 5px; background: #ffffff22; border-radius: 3px; overflow: hidden; flex: 0 0 auto; }
