@@ -693,16 +693,30 @@ input[type=number] { font-family: var(--font-mono); }
   position: absolute; top: 4px; bottom: 4px; min-width: 40px;
   border-radius: 6px; border: 1px solid color-mix(in srgb, #c084fc 40%, var(--line));
   background: color-mix(in srgb, #c084fc 12%, var(--ink-1));
-  cursor: grab; overflow: hidden; display: flex; align-items: center; padding: 0 8px;
+  cursor: grab; overflow: hidden;
 }
 .tl-ov-clip.selected { border-color: #c084fc; box-shadow: 0 0 0 1px color-mix(in srgb, #c084fc 45%, transparent); }
+.tl-ov-clip.trimming { cursor: ew-resize; }
 .tl-ov-clip.text { font-family: var(--font-ui); font-weight: 600; font-size: 11px; color: #f3e8ff; }
-.tl-ov-label { pointer-events: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-ov-body { position: absolute; inset: 0 8px; display: flex; align-items: center; padding: 0 4px; pointer-events: none; }
+.tl-ov-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-ov-trim { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
+.tl-ov-trim.left { left: 0; }
+.tl-ov-trim.right { right: 0; }
+.tl-ov-trim::after {
+  content: ""; position: absolute; top: 50%; transform: translateY(-50%); width: 2px; height: 18px;
+  background: color-mix(in srgb, #c084fc 55%, var(--faint)); border-radius: 2px; opacity: 0;
+  transition: opacity .12s;
+}
+.tl-ov-trim.left::after { left: 2px; }
+.tl-ov-trim.right::after { right: 2px; }
+.tl-ov-clip:hover .tl-ov-trim::after, .tl-ov-clip.trimming .tl-ov-trim::after { opacity: 1; }
 .pm-overlays { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
 .pm-ov-box {
   position: absolute; pointer-events: auto; cursor: grab; max-width: 92%; text-align: center;
   text-shadow: 0 1px 4px rgba(0,0,0,.85); white-space: pre-wrap; line-height: 1.15;
   border: 1px dashed transparent; border-radius: 4px; padding: 2px 4px;
+  transform: translate(-50%, -50%);
 }
 .pm-ov-box.selected { border-color: color-mix(in srgb, #c084fc 70%, transparent); }
 .pm-ov-box.dragging { cursor: grabbing; opacity: .92; }

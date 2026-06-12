@@ -31,44 +31,41 @@
   function placeBox(box, ov, rect) {
     const nx = ov.x != null ? ov.x : 0.5;
     const ny = ov.y != null ? ov.y : 0.5;
-    const bw = box.offsetWidth || rect.width * (ov.scale || 0.35);
-    const bh = box.offsetHeight || 40;
-    const left = nx * rect.width - bw / 2;
-    const top = ny * rect.height - bh / 2;
-    box.style.left = left + "px";
-    box.style.top = top + "px";
+    box.style.left = (nx * rect.width) + "px";
+    box.style.top = (ny * rect.height) + "px";
     box.style.opacity = ov.opacity != null ? ov.opacity : 1;
   }
 
   function startDrag(e, ov, box, rect) {
-    if (S.get().selectedOverlayId !== ov.id) {
-      S.selectOverlay(ov.id);
-      return;
-    }
     e.preventDefault();
     e.stopPropagation();
-    const startX = e.clientX;
-    const startY = e.clientY;
+    S.selectOverlay(ov.id);
+
+    const boxRect = box.getBoundingClientRect();
+    const grabOffX = e.clientX - (boxRect.left + boxRect.width / 2);
+    const grabOffY = e.clientY - (boxRect.top + boxRect.height / 2);
     const ox = ov.x != null ? ov.x : 0.5;
     const oy = ov.y != null ? ov.y : 0.5;
-    dragging = { id: ov.id, startX, startY, ox, oy, rect };
+    dragging = { id: ov.id, ox, oy, grabOffX, grabOffY, rect };
     box.classList.add("dragging");
+
+    const posAt = (clientX, clientY) => {
+      const cx = clientX - dragging.rect.left - dragging.grabOffX;
+      const cy = clientY - dragging.rect.top - dragging.grabOffY;
+      const nx = Math.max(0, Math.min(1, cx / dragging.rect.width));
+      const ny = Math.max(0, Math.min(1, cy / dragging.rect.height));
+      return { nx, ny };
+    };
 
     const onMove = (ev) => {
       if (!dragging) return;
-      const dx = ev.clientX - dragging.startX;
-      const dy = ev.clientY - dragging.startY;
-      const nx = Math.max(0, Math.min(1, dragging.ox + dx / dragging.rect.width));
-      const ny = Math.max(0, Math.min(1, dragging.oy + dy / dragging.rect.height));
-      box.style.left = (nx * dragging.rect.width - box.offsetWidth / 2) + "px";
-      box.style.top = (ny * dragging.rect.height - box.offsetHeight / 2) + "px";
+      const { nx, ny } = posAt(ev.clientX, ev.clientY);
+      box.style.left = (nx * dragging.rect.width) + "px";
+      box.style.top = (ny * dragging.rect.height) + "px";
     };
     const onUp = (ev) => {
       if (!dragging) return;
-      const dx = ev.clientX - dragging.startX;
-      const dy = ev.clientY - dragging.startY;
-      const nx = Math.max(0, Math.min(1, dragging.ox + dx / dragging.rect.width));
-      const ny = Math.max(0, Math.min(1, dragging.oy + dy / dragging.rect.height));
+      const { nx, ny } = posAt(ev.clientX, ev.clientY);
       S.updateOverlayTrack(dragging.id, { x: nx, y: ny }, true);
       dragging = null;
       box.classList.remove("dragging");
@@ -93,6 +90,7 @@
     const t = window.Player?.getPlayhead?.() ?? 0;
     const sel = st.selectedOverlayId;
     const rect = host.getBoundingClientRect();
+    if (dragging) return;
     host.replaceChildren();
 
     tracks.forEach((ov) => {
@@ -124,7 +122,6 @@
 
       placeBox(box, ov, rect);
       box.addEventListener("pointerdown", (e) => startDrag(e, ov, box, rect));
-      box.addEventListener("click", (e) => { e.stopPropagation(); S.selectOverlay(ov.id); });
       host.append(box);
     });
   }

@@ -1049,31 +1049,59 @@
     if (!state.project) return;
     const sc = scene(sceneId);
     if (!sc || isVideoClip(sc)) return;
+    const mediaRef = (sc.source && sc.source.media_ref) || null;
+    const asset = mediaRef ? (state.mediaBin || []).find((m) => m.id === mediaRef) : null;
+    if (asset?.kind !== "video") {
+      alert("Assign a video file to this clip first (Media Browser or drag onto the clip), then Convert to video.");
+      return;
+    }
+    _lockSceneAsVideo(sceneId, mediaRef, { archive: true });
+  }
+
+  function _clearUnitSceneRenders(unitId) {
+    const live = new Set((state.project?.scenes || []).filter((s) => genUnitId(s) === unitId).map((s) => s.id));
+    for (const id of Object.keys(state.sceneRenders || {})) {
+      const s = scene(id);
+      if (!s) continue;
+      if (genUnitId(s) === unitId && !live.has(id)) delete state.sceneRenders[id];
+    }
+    live.forEach((id) => { delete state.sceneRenders[id]; });
+  }
+
+  function _lockSceneAsVideo(sceneId, mediaId, { archive = true } = {}) {
+    if (!state.project || !mediaId) return;
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    if (!asset || asset.kind !== "video") return;
     _historyRecord();
+    const sc = scene(sceneId);
+    if (!sc) return;
     const uid = genUnitId(sc);
     const root = genUnitRoot(uid) || sc;
-    const archive = _snapshotSceneForArchive(root);
-    const mediaRef = (root.source && root.source.media_ref) || null;
+    const archiveSnap = archive && !isVideoClip(root) ? _snapshotSceneForArchive(root) : null;
     state.project.scenes = state.project.scenes.filter(
       (s) => genUnitId(s) !== uid || s.id === root.id
     );
+    _clearUnitSceneRenders(uid);
+    const fps = state.project.frame_rate || 25;
+    const dur = asset.duration_sec || root.source_dur || null;
     Object.assign(root, {
-      scene_archive: archive,
-      source: { type: "video", media_ref: mediaRef },
+      scene_archive: archiveSnap || root.scene_archive || null,
+      source: { type: "video", media_ref: mediaId },
       gen_unit_id: root.id,
       cut_offset_frames: 0,
-      rating: "",
+      source_dur: dur,
+      rating: root.rating || "",
     });
-    const asset = mediaRef ? (state.mediaBin || []).find((m) => m.id === mediaRef) : null;
-    if (asset?.kind === "video") {
-      root.source_dur = asset.duration_sec || root.source_dur || null;
-      if (!asset.duration_sec) _probeVideoClipDuration(root.id, mediaRef);
+    if (dur != null) {
+      root.frames_mode = "timeline";
+      root.frames = snapFrames(dur * fps);
     }
     if (state.selectedSceneId && !scene(state.selectedSceneId)) {
       state.selectedSceneId = root.id;
       state.selectedSceneIds = [root.id];
       _selectionAnchorId = root.id;
     }
+    if (!asset.duration_sec) _probeVideoClipDuration(root.id, mediaId);
     _afterTimelineStructureChange();
     notify(); scheduleSave();
   }
@@ -2927,11 +2955,10 @@
           source: { ...(s.source || {}), type: "video", media_ref: mediaId },
           source_dur: asset.duration_sec || s.source_dur || null,
         });
+        delete state.sceneRenders[sceneId];
+        notify(); scheduleSave();
       } else if (confirm("Replace this scene with the imported video clip? Use Convert to video in the inspector to keep a backup of scene settings.")) {
-        patchScene(sceneId, {
-          source: { type: "video", media_ref: mediaId },
-          source_dur: asset.duration_sec || null,
-        });
+        _lockSceneAsVideo(sceneId, mediaId, { archive: true });
       }
       if (!asset.duration_sec) _probeVideoClipDuration(sceneId, mediaId);
       return;

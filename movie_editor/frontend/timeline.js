@@ -167,6 +167,7 @@
   }
 
   function appendFilmstrip(clip, st, scene, widthPx) {
+    if (S.isVideoClip && S.isVideoClip(scene)) return;
     if (!hasRender(st, scene.id)) return;
     if (clip.querySelector(".clip-filmstrip")) return;
     const r = st.sceneRenders[scene.id];
@@ -937,13 +938,22 @@
   }
 
   // ── audio lanes (NLE-style, below video) ───────────────────────────────────────
-  function openImageOverlayModal(st) {
+  function modalField(label, control) {
+    const wrap = el("div");
+    wrap.style.marginBottom = "10px";
+    wrap.append(el("div", "pj-meta", label));
+    wrap.append(control);
+    return wrap;
+  }
+
+  function openImageOverlayModal(st, existing) {
     closeAddModal();
     const images = (st.mediaBin || []).filter((m) => m.kind === "image");
+    const editing = existing && existing.kind === "image";
     _addModal = el("div", "modal-overlay");
     const box = el("div", "modal");
     const head = el("div", "modal-head");
-    head.append(el("div", "modal-title", "Add image overlay"));
+    head.append(el("div", "modal-title", editing ? "Image overlay settings" : "Add image overlay"));
     const headRight = el("div", "modal-head-right");
     const closeBtn = el("button", "btn ghost tiny", "✕");
     closeBtn.onclick = closeAddModal;
@@ -951,7 +961,11 @@
     head.append(headRight);
     box.append(head);
     const content = el("div", "modal-content");
-    const pick = (mediaId) => { S.addImageOverlay(mediaId); closeAddModal(); };
+    const pick = (mediaId) => {
+      if (editing) S.updateOverlayTrack(existing.id, { media_ref: mediaId, label: (images.find((m) => m.id === mediaId)?.name) || "Image" });
+      else S.addImageOverlay(mediaId);
+      closeAddModal();
+    };
     if (!images.length) {
       content.append(el("div", "pj-meta", "Upload images in the Media Browser, then pick one here."));
       const uploadBtn = el("button", "btn primary tiny", "Upload image");
@@ -972,15 +986,27 @@
       };
       content.append(uploadBtn, fileIn);
     } else {
-      content.append(el("div", "pj-meta", "Placed at the playhead. Drag on the preview to reposition."));
+      content.append(el("div", "pj-meta", editing ? "Change image or adjust settings below." : "Placed at the playhead. Drag on the preview to reposition."));
       images.forEach((m) => {
-        const row = el("button", "tl-add-row aud-pick-row", m.name || m.id);
+        const row = el("button", "tl-add-row aud-pick-row" + (editing && existing.media_ref === m.id ? " selected" : ""), m.name || m.id);
         row.type = "button";
         row.onclick = () => pick(m.id);
         content.append(row);
       });
     }
-    const cancel = el("button", "btn ghost tiny", "Cancel");
+    if (editing) {
+      const scale = el("input");
+      scale.type = "range"; scale.min = "0.05"; scale.max = "1"; scale.step = "0.01";
+      scale.value = existing.scale != null ? existing.scale : 0.35;
+      scale.oninput = () => S.updateOverlayTrack(existing.id, { scale: parseFloat(scale.value) }, true);
+      content.append(modalField("Size", scale));
+      const op = el("input");
+      op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
+      op.value = existing.opacity != null ? existing.opacity : 1;
+      op.oninput = () => S.updateOverlayTrack(existing.id, { opacity: parseFloat(op.value) }, true);
+      content.append(modalField("Opacity", op));
+    }
+    const cancel = el("button", "btn ghost tiny", editing ? "Close" : "Cancel");
     cancel.onclick = closeAddModal;
     content.append(cancel);
     box.append(content);
@@ -989,12 +1015,13 @@
     document.body.append(_addModal);
   }
 
-  function openTextOverlayModal(st) {
+  function openTextOverlayModal(st, existing) {
     closeAddModal();
+    const editing = existing && existing.kind === "text";
     _addModal = el("div", "modal-overlay");
     const box = el("div", "modal");
     const head = el("div", "modal-head");
-    head.append(el("div", "modal-title", "Add text overlay"));
+    head.append(el("div", "modal-title", editing ? "Text overlay settings" : "Add text overlay"));
     const headRight = el("div", "modal-head-right");
     const closeBtn = el("button", "btn ghost tiny", "✕");
     closeBtn.onclick = closeAddModal;
@@ -1002,15 +1029,37 @@
     head.append(headRight);
     box.append(head);
     const content = el("div", "modal-content");
-    content.append(el("div", "pj-meta", "Placed at the playhead. Drag on the preview to reposition."));
+    if (!editing) content.append(el("div", "pj-meta", "Placed at the playhead. Drag on the preview to reposition."));
     const ta = el("textarea", "insp-global-ta");
     ta.rows = 2;
-    ta.value = "Title";
+    ta.value = editing ? (existing.text || "") : "Title";
     ta.placeholder = "Enter text…";
-    content.append(ta);
+    content.append(modalField("Text", ta));
+    const size = el("input");
+    size.type = "number"; size.min = "8"; size.max = "200"; size.step = "1";
+    size.value = editing ? (existing.font_size != null ? existing.font_size : 42) : 42;
+    content.append(modalField("Font size", size));
+    const color = el("input");
+    color.type = "color";
+    color.value = editing ? ((existing.color || "#ffffff").match(/^#/) ? existing.color : "#ffffff") : "#ffffff";
+    content.append(modalField("Color", color));
+    const op = el("input");
+    op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
+    op.value = editing ? (existing.opacity != null ? existing.opacity : 1) : 1;
+    content.append(modalField("Opacity", op));
     const actions = el("div", "lib-form-actions");
-    const ok = el("button", "btn primary tiny", "Add");
-    ok.onclick = () => { S.addTextOverlay(ta.value); closeAddModal(); };
+    const ok = el("button", "btn primary tiny", editing ? "Save" : "Add");
+    ok.onclick = () => {
+      const text = ta.value.trim() || "Title";
+      if (editing) {
+        S.updateOverlayTrack(existing.id, { text, font_size: parseInt(size.value || "42", 10), color: color.value, opacity: parseFloat(op.value), label: "Text" });
+      } else {
+        S.addTextOverlay(text);
+        const ov = (S.get().project?.overlay_tracks || []).slice(-1)[0];
+        if (ov) S.updateOverlayTrack(ov.id, { font_size: parseInt(size.value || "42", 10), color: color.value, opacity: parseFloat(op.value) }, true);
+      }
+      closeAddModal();
+    };
     const cancel = el("button", "btn ghost tiny", "Cancel");
     cancel.onclick = closeAddModal;
     actions.append(ok, cancel);
@@ -1020,7 +1069,14 @@
     _addModal.addEventListener("click", (e) => { if (e.target === _addModal) closeAddModal(); });
     document.body.append(_addModal);
     ta.focus();
-    ta.select();
+    if (!editing) ta.select();
+  }
+
+  function openOverlaySettingsModal(st, track) {
+    if (!track) return;
+    S.selectOverlay(track.id);
+    if (track.kind === "text") openTextOverlayModal(st, track);
+    else openImageOverlayModal(st, track);
   }
 
   function openAudioTrackModal(st) {
@@ -1239,49 +1295,77 @@
     const label = track.kind === "text"
       ? (track.text || "Text")
       : ((st.mediaBin || []).find((m) => m.id === track.media_ref)?.name || track.label || "Image");
-    block.append(el("span", "tl-ov-label", label.length > 18 ? label.slice(0, 17) + "…" : label));
+    const body = el("div", "tl-ov-body");
+    body.append(el("span", "tl-ov-label", label.length > 18 ? label.slice(0, 17) + "…" : label));
+    block.append(body);
+    block.title = "Double-click to edit · drag edges to trim";
     block.onclick = (e) => { e.stopPropagation(); S.selectOverlay(track.id); };
-
-    const startIn = el("input");
-    startIn.type = "number"; startIn.min = "0"; startIn.step = "0.1";
-    startIn.value = startSec; startIn.className = "tl-aud-start"; startIn.title = "Start (s)";
-    startIn.oninput = (e) => {
+    block.addEventListener("dblclick", (e) => {
       e.stopPropagation();
-      const v = parseFloat(startIn.value || "0");
-      block.style.left = (v * pxPerSec) + "px";
-    };
-    startIn.onchange = () => S.updateOverlayTrack(track.id, { start_sec: parseFloat(startIn.value || "0") });
+      openOverlaySettingsModal(st, track);
+    });
 
-    const durIn = el("input");
-    durIn.type = "number"; durIn.min = "0.25"; durIn.step = "0.1";
-    durIn.value = durSec; durIn.className = "tl-aud-start"; durIn.title = "Duration (s)";
-    durIn.oninput = (e) => {
+    const leftTrim = el("div", "tl-ov-trim left");
+    leftTrim.title = "Drag to trim start";
+    leftTrim.addEventListener("mousedown", (e) => {
       e.stopPropagation();
-      const v = Math.max(0.25, parseFloat(durIn.value || "3"));
-      block.style.width = Math.max(v * pxPerSec, 40) + "px";
-    };
-    durIn.onchange = () => S.updateOverlayTrack(track.id, { duration_sec: Math.max(0.25, parseFloat(durIn.value || "3")) });
+      block.classList.add("trimming");
+      const tip = el("div", "trim-tip"); block.append(tip);
+      const baseLeft = startSec * pxPerSec;
+      const baseDur = durSec;
+      const anchors = timelineSnapAnchorsPx(st, st.project);
+      let finalStart = startSec;
+      let finalDur = durSec;
+      coalescedDrag(e, (dx) => {
+        const snappedLeft = snapPx(baseLeft + dx, anchors, 10);
+        const deltaSec = (snappedLeft - baseLeft) / pxPerSec;
+        finalStart = Math.max(0, startSec + deltaSec);
+        finalDur = Math.max(0.25, durSec - (finalStart - startSec));
+        block.style.left = (finalStart * pxPerSec) + "px";
+        block.style.width = Math.max(finalDur * pxPerSec, 40) + "px";
+        tip.textContent = `${finalStart.toFixed(1)}s · ${finalDur.toFixed(1)}s`;
+      }, () => {
+        block.classList.remove("trimming"); tip.remove();
+        S.updateOverlayTrack(track.id, { start_sec: finalStart, duration_sec: finalDur });
+      });
+    });
 
-    const rm = el("button", "tl-aud-rm", "✕");
-    rm.title = "Remove overlay";
-    rm.onclick = (e) => { e.stopPropagation(); S.removeOverlayTrack(track.id); };
+    const rightTrim = el("div", "tl-ov-trim right");
+    rightTrim.title = "Drag to extend or shorten";
+    rightTrim.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      block.classList.add("trimming");
+      const tip = el("div", "trim-tip"); block.append(tip);
+      const baseLeft = startSec * pxPerSec;
+      const baseDur = durSec;
+      const anchors = timelineSnapAnchorsPx(st, st.project);
+      let finalDur = durSec;
+      coalescedDrag(e, (dx) => {
+        const rightPx = snapPx(baseLeft + baseDur * pxPerSec + dx, anchors, 10);
+        finalDur = Math.max(0.25, (rightPx - baseLeft) / pxPerSec);
+        block.style.width = Math.max(finalDur * pxPerSec, 40) + "px";
+        tip.textContent = `${finalDur.toFixed(1)}s`;
+      }, () => {
+        block.classList.remove("trimming"); tip.remove();
+        S.updateOverlayTrack(track.id, { duration_sec: finalDur });
+      });
+    });
 
-    const controls = el("div", "tl-aud-controls");
-    controls.append(startIn, durIn, rm);
-    block.append(controls);
+    block.append(leftTrim, rightTrim);
 
     block.addEventListener("mousedown", (e) => {
-      if (e.target.closest("input,button")) return;
+      if (e.target.closest(".tl-ov-trim")) return;
       e.stopPropagation();
+      S.selectOverlay(track.id);
       const baseLeft = startSec * pxPerSec;
       const anchors = timelineSnapAnchorsPx(st, st.project);
       coalescedDrag(e, (dx) => {
         const snapped = snapPx(baseLeft + dx, anchors, 10);
         const sec = Math.max(0, snapped / pxPerSec);
         block.style.left = (sec * pxPerSec) + "px";
-        startIn.value = sec.toFixed(1);
-      }, () => {
-        S.updateOverlayTrack(track.id, { start_sec: parseFloat(startIn.value || "0") });
+      }, (dx) => {
+        const snapped = snapPx(baseLeft + dx, anchors, 10);
+        S.updateOverlayTrack(track.id, { start_sec: Math.max(0, snapped / pxPerSec) });
       });
     });
 

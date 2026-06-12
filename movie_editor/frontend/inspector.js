@@ -815,7 +815,7 @@
     op.oninput = () => S.updateOverlayTrack(ov.id, { opacity: parseFloat(op.value) }, true);
     sec.append(field("Opacity", op));
 
-    sec.append(el("div", "insp-hint", "Drag the box on the preview to reposition (center anchor)."));
+    sec.append(el("div", "insp-hint", "Drag on the preview to reposition. Double-click the timeline clip to edit."));
     const rm = el("button", "btn danger tiny", "Remove overlay");
     rm.onclick = () => S.removeOverlayTrack(ov.id);
     sec.append(rm);
