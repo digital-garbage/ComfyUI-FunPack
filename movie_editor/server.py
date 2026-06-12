@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - only available inside ComfyUI
     web = None
     PromptServer = None
 
-from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_wiring, projects, workflow_import
+from .backend import bridge, builder, config, git_update, media, nodes, pipeline_caps, pipeline_deps, pipeline_wiring, projects, workflow_import
 from .backend.nle_effects import zoompan_z_expr
 from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_export
 from .backend.timeline import (
@@ -1709,6 +1709,38 @@ if web is not None and PromptServer is not None:
             import traceback
             print(f"[FunPack][movie] node-candidates({role}) failed:\n{traceback.format_exc()}")
             raise web.HTTPInternalServerError(reason=f"candidates({role}) failed: {e}")
+
+    @routes.get(UI_PREFIX + "/api/pipeline-deps")
+    async def _pipeline_deps(_req):
+        try:
+            oi = await bridge.object_info()
+        except Exception:
+            oi = {}
+        mgr = await pipeline_deps.manager_available()
+        return web.json_response(pipeline_deps.status_payload(oi, manager_available=mgr))
+
+    @routes.post(UI_PREFIX + "/api/pipeline-deps/install")
+    async def _pipeline_deps_install(req):
+        import asyncio
+        if not await pipeline_deps.manager_available():
+            return web.json_response(
+                {"detail": "ComfyUI-Manager is not installed or not reachable."},
+                status=503,
+            )
+        body = await req.json() if req.can_read_body else {}
+        pack_ids = body.get("pack_ids") or body.get("packs") or []
+        if not isinstance(pack_ids, list) or not pack_ids:
+            return web.json_response({"detail": "pack_ids required."}, status=400)
+        job = pipeline_deps.create_install_job([str(x) for x in pack_ids])
+        asyncio.create_task(pipeline_deps.run_install_job(job["job_id"], _restart_comfy))
+        return web.json_response({"job_id": job["job_id"], "total": job["total"]})
+
+    @routes.get(UI_PREFIX + "/api/pipeline-deps/install/{job_id}")
+    async def _pipeline_deps_install_status(req):
+        job = pipeline_deps.get_install_job(req.match_info["job_id"])
+        if not job:
+            raise web.HTTPNotFound(reason="Install job not found")
+        return web.json_response(job)
 
     @routes.get(UI_PREFIX + "/api/pipeline-ports")
     async def _pipeline_ports(_req):

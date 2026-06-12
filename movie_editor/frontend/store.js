@@ -636,6 +636,7 @@
     await loadModels();
     _validateSceneRenders();
     window.WelcomePage?.close?.();
+    window.PipelineSetup?.maybePrompt?.();
   }
 
   async function newProject(name) {

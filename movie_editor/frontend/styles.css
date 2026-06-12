@@ -1250,6 +1250,18 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 /* Input-source arrow points left (← instead of →) */
 .wire-row .wire-arrow.src { color: var(--amber); }
 
+/* pipeline missing-nodes setup modal */
+.pipe-setup-modal { max-width: 520px; width: min(520px, 96vw); }
+.pipe-setup-lead { margin: 0 0 12px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.pipe-setup-list { margin: 0 0 12px; padding-left: 18px; color: var(--text); font-size: 13px; }
+.pipe-setup-list li { margin: 6px 0; }
+.pipe-setup-sub { display: block; font-size: 11px; color: var(--faint); font-family: var(--font-mono); margin-top: 2px; }
+.pipe-setup-warn { margin: 10px 0; padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.45;
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent); color: var(--muted); }
+.pipe-setup-manual-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.pipe-setup-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+
 /* restart overlay */
 .restart-overlay { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center;
   background: color-mix(in srgb, var(--ink-0) 88%, transparent); backdrop-filter: blur(3px); }

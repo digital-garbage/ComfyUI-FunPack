@@ -78,27 +78,11 @@
   }
 
   function _restartOverlay(message) {
-    const ov = el("div", "restart-overlay");
-    const card = el("div", "restart-card");
-    card.append(el("div", "restart-spin"));
-    const msg = el("div", "restart-msg", message);
-    card.append(msg); ov.append(card); document.body.append(ov);
-    return msg;
+    return window.FunPackRestart?.showOverlay?.(message);
   }
 
   function _waitForComfyReload(msgEl, startMs) {
-    const start = startMs || Date.now();
-    const tick = async () => {
-      try {
-        const h = await window.MovieEditorAPI.health();
-        if (h && h.ok) { location.reload(); return; }
-      } catch (_) { /* still down */ }
-      if (Date.now() - start > 90000) {
-        msgEl.textContent = "Still waiting on ComfyUI…\nIt may need a manual restart - check the console.";
-      }
-      setTimeout(tick, 2000);
-    };
-    setTimeout(tick, 3500);
+    window.FunPackRestart?.waitForReload?.(msgEl, startMs);
   }
 
   async function restartComfy() {
@@ -128,7 +112,7 @@
         ? `Updated ${res.before} → ${res.after}.\nRestarting ComfyUI…`
         : "Already up to date.\nRestarting ComfyUI…";
     } catch (e) {
-      document.querySelector(".restart-overlay")?.remove();
+      window.FunPackRestart?.removeOverlay?.();
       alert("Update failed: " + (e.message || e));
       return;
     }
@@ -163,7 +147,7 @@
             ? `Switched to ${branch} (${res.before} → ${res.after}).\nRestarting ComfyUI…`
             : `On ${branch}, already up to date.\nRestarting ComfyUI…`;
         } catch (e) {
-          document.querySelector(".restart-overlay")?.remove();
+          window.FunPackRestart?.removeOverlay?.();
           alert("Branch switch failed: " + (e.message || e));
           return;
         }
