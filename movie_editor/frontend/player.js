@@ -1161,7 +1161,8 @@
     _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
     if (p && _totalSecCur > 0 && S.buildPreviewSegments) {
       const previewSegs = S.buildPreviewSegments();
-      if (previewSegs.length) previewSegs.forEach((seg) => {
+      if (previewSegs.length) {
+        previewSegs.forEach((seg) => {
         const d = seg.durationSec;
         let cls = "pm-chip";
         let title = "";
@@ -1210,7 +1211,7 @@
           document.addEventListener("mouseup", up);
         });
         minibar.append(chip);
-      });
+        });
       } else {
         const chip = el("div", "pm-chip blank-program");
         chip.style.width = "100%";
