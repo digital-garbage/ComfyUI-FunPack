@@ -12,6 +12,7 @@
   function render(st) {
     clear(mount);
     const genAll = el("button", "btn primary compact", "▶ Generate");
+    genAll.dataset.tour = "generate-all";
     genAll.title = "Generate the whole montage";
     genAll.disabled = !hasProject() || busy(st);
     genAll.onclick = () => S.generate(null);
@@ -28,6 +29,7 @@
     mount.append(genSel);
 
     const renderBtn = el("button", "btn render compact", "⧉ Render");
+    renderBtn.dataset.tour = "render-final";
     renderBtn.title = "Stitch generated clips into a final video";
     renderBtn.disabled = !hasProject() || busy(st);
     renderBtn.onclick = () => S.renderFinal();

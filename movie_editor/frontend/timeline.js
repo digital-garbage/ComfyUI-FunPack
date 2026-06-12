@@ -1723,6 +1723,7 @@
       else S.removeSelectedScenes();
     };
     const exp = el("button", "btn ghost tiny", "⤓ Export");
+    exp.dataset.tour = "export-scene";
     exp.dataset.exportScene = "1";
     exp.title = exportTitle;
     exp.disabled = !(hasSel && saveable);

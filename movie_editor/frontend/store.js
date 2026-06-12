@@ -3395,6 +3395,15 @@
 
   // ── boot ─────────────────────────────────────────────────────────────────────
   async function init() {
+    if (window.__FUNPACK_TOUR__ && window.TourSandbox) {
+      window.TourSandbox.patchApi?.();
+      window.TourSandbox.patchStore?.(window.Store);
+      await window.TourSandbox.bootstrap(state, notify);
+      notify();
+      document.body.classList.add("tour-mode");
+      setTimeout(() => window.TourGuide?.start?.(), 180);
+      return;
+    }
     try { state.health = await API.health(); } catch (_) { state.health = { ok: false }; }
     if (state.gen?.state === "error" && /Setup incomplete|Missing workflow template/.test(state.gen.msg || "")) {
       state.gen = { state: "idle", promptId: null, media: [], msg: "" };

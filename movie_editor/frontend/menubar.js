@@ -233,6 +233,17 @@
         { sep: true },
         { label: "Reset Layout", action: () => { const r = document.documentElement; r.style.removeProperty("--media-w"); r.style.removeProperty("--timeline-h"); } },
       ],
+      Help: window.__FUNPACK_TOUR__ ? [
+        { label: "Restart tour", action: () => window.TourGuide?.jump?.(0) },
+        { label: "Skip to FAQ", action: () => window.TourGuide?.jump?.(17) },
+        { sep: true },
+        { label: "Exit tour", action: () => window.TourGuide?.exit?.(false) },
+      ] : [
+        { label: "Welcome tour…", hint: "?", action: () => {
+          const u = window.TourSandbox?.tourUrl?.() || (window.location.pathname + "?mode=tour");
+          window.location.href = u;
+        } },
+      ],
       Settings: [
         { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
           action: () => window.EngineSettingsModal.open() },
@@ -267,7 +278,7 @@
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },
         { label: "Restart ComfyUI", hint: "⟳", danger: true, action: restartComfy },
         { sep: true },
-        { label: st.health?.reference_loaded ? "Pipeline reference: loaded" : "Pipeline reference: missing", disabled: true },
+        { label: st.health?.reference_loaded ? "Workflow template: loaded" : "Workflow template: missing", disabled: true },
         { label: `Configured nodes: ${st.health?.configured_slots ?? 0}`, disabled: true },
         { label: st.health?.ok ? `Connected · ${window.location.host}` : "ComfyUI not reachable", disabled: true },
       ],
@@ -307,6 +318,7 @@
     Object.keys(spec).forEach((name) => {
       const wrap = el("div", "menu" + (openName === name ? " open" : ""));
       const btn = el("button", "menu-btn", name);
+      btn.dataset.menu = name;
       btn.onclick = (e) => { e.stopPropagation(); openName === name ? closeAll() : openMenu(name); };
       btn.onmouseenter = () => { if (openName && openName !== name) openMenu(name); };
       wrap.append(btn);
@@ -333,7 +345,9 @@
     const saving = detail?.saving ?? st.saving;
     const unsaved = detail?.unsaved ?? st.unsaved;
     sc.className = "save-chip" + (saving || unsaved ? " dirty" : "");
-    sc.textContent = saving ? "saving…" : (unsaved ? "unsaved" : (st.project ? "saved" : ""));
+    sc.textContent = window.__FUNPACK_TOUR__
+      ? "demo"
+      : (saving ? "saving…" : (unsaved ? "unsaved" : (st.project ? "saved" : "")));
   }
 
   function renderChips(st) {
@@ -342,7 +356,7 @@
     hc.className = "health-chip " + (ok ? "ok" : "bad");
     clear(hc);
     hc.append(el("span", "led"));
-    hc.append(el("span", null, ok ? "ComfyUI live" : "offline"));
+    hc.append(el("span", null, window.__FUNPACK_TOUR__ ? "Tour demo" : (ok ? "ComfyUI live" : "offline")));
     renderSaveChip(st);
   }
 

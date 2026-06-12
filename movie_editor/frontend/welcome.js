@@ -49,7 +49,9 @@
   }
 
   function welcomeTour() {
-    alert("Welcome tour is coming soon.");
+    close();
+    const u = window.TourSandbox?.tourUrl?.() || (window.location.pathname + "?mode=tour");
+    window.location.href = u;
   }
 
   function close() {
@@ -91,7 +93,7 @@
         latest ? latest.name : "No saved projects yet",
         !latest, openLatest),
       mkBtn("Load Project", "", "Import a .json project file", false, loadProjectFile),
-      mkBtn("Welcome Tour", "ghost", "Coming soon", false, welcomeTour),
+      mkBtn("Welcome Tour", "ghost", "Interactive walkthrough (demo project)", false, welcomeTour),
     );
     card.append(actions);
 
@@ -99,5 +101,5 @@
     document.body.append(overlay);
   }
 
-  window.WelcomePage = { open, close, isOpen: () => !!overlay };
+  window.WelcomePage = { open, close, isOpen: () => !!overlay, openTour: welcomeTour };
 })();
