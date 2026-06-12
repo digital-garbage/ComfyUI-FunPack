@@ -376,9 +376,29 @@
     const bar = body.querySelector(".tl-toolbar");
     if (!bar || !st.project) return;
     const { ids, hasSel, focusId, saveable, saveableN } = clipToolbarState(st);
+    const audioSel = st.selectedAudioTrackId;
+    const canSplit = hasSel || audioSel;
+    const canRemove = hasSel || audioSel;
     const selN = ids.length;
     const { exportTitle, binTitle } = exportSaveTitles(hasSel, saveable, saveableN, selN);
-    bar.querySelectorAll("[data-needs-sel]").forEach((b) => { b.disabled = !hasSel; });
+    bar.querySelectorAll("[data-needs-sel]").forEach((b) => {
+      if (b.dataset.separateAudio != null || b.dataset.removeSepAudio != null) return;
+      b.disabled = b.classList.contains("danger") ? !canRemove : !canSplit;
+    });
+    const splitBtn = [...bar.querySelectorAll("[data-needs-sel]")].find((b) => b.textContent === "Split");
+    if (splitBtn) {
+      splitBtn.disabled = !canSplit;
+      splitBtn.title = audioSel
+        ? "Split selected audio at the playhead (S)"
+        : (hasSel ? "Split the selected clip at the playhead (S)" : "Select a clip or audio track first");
+    }
+    const delBtn = bar.querySelector(".btn.danger[data-needs-sel]");
+    if (delBtn && delBtn.textContent === "Remove") {
+      delBtn.disabled = !canRemove;
+      delBtn.title = audioSel
+        ? "Remove selected audio track (Delete / Backspace)"
+        : (hasSel ? "Remove selected clip(s) (Delete / Backspace)" : "Select a clip or audio track first");
+    }
     const badge = bar.querySelector("[data-tl-sel-badge]");
     if (badge) {
       if (selN > 0) {
@@ -1236,15 +1256,18 @@
     const asset = isOverlay && track.media_ref ? (st.mediaBin || []).find((m) => m.id === track.media_ref) : null;
     const sepScene = isSep ? p.scenes.find((s) => s.id === track.scene_id) : null;
     const sepIdx = sepScene ? p.scenes.indexOf(sepScene) + 1 : 0;
+    const linkedSep = isSep && !!track.scene_id && !!sepScene;
     const body = el("div", "tl-audio-lane-body");
     const startSec = track.start_sec || 0;
-    let durSec = isSep
-      ? (S.separatedTrackDurSec ? S.separatedTrackDurSec(track) : (track.pinned_dur || track.source_dur || 0))
-      : (track.source_dur || asset?.duration_sec || 0);
+    const inSec = S.audioTrackInSec ? S.audioTrackInSec(track) : (track.source_in_sec || 0);
+    let durSec = S.audioTrackDurSec ? S.audioTrackDurSec(track) : (track.source_dur || asset?.duration_sec || 0);
     const w = Math.max((durSec || 2) * pxPerSec, 48);
-    const block = el("div", "tl-aud-clip ins" + (isSep ? " sep" : " overlay"));
+    const selected = st.selectedAudioTrackId === track.id;
+    const block = el("div", "tl-aud-clip ins" + (isSep ? " sep" : " overlay") + (selected ? " selected" : ""));
+    block.dataset.audioTrackId = track.id;
     block.style.left = (startSec * pxPerSec) + "px";
     block.style.width = w + "px";
+    block.title = "Drag edges to trim · Alt+left drag to slip source · S splits at playhead";
 
     const wave = el("div", "tl-aud-wave");
     const canvas = el("canvas");
@@ -1257,8 +1280,8 @@
       const sepUrl = S.separatedTrackAudioUrl ? S.separatedTrackAudioUrl(st, track) : null;
       if (sepUrl) {
         const wfKey = track.pinned_bin_ref
-          ? `sep-aud-bin:${track.id}:${track.pinned_bin_ref}:${track.pinned_in_sec ?? track.source_in_sec ?? 0}`
-          : `sep-aud:${track.id}:${media?.filename || ""}:${track.pinned_in_sec ?? track.source_in_sec ?? 0}`;
+          ? `sep-aud-bin:${track.id}:${track.pinned_bin_ref}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`
+          : `sep-aud:${track.id}:${media?.filename || ""}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`;
         _attachWaveform(canvas, wfKey, sepUrl, {
           width: w,
           color: "rgba(45, 212, 191, 0.55)",
@@ -1273,7 +1296,7 @@
         _attachWaveform(canvas, null, null, { color: "rgba(45, 138, 106, 0.28)" });
       }
     } else if (asset) {
-      _attachWaveform(canvas, `aud:${asset.id}`, window.MovieEditorAPI.mediaUrl(asset.id), {
+      _attachWaveform(canvas, `aud:${asset.id}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`, window.MovieEditorAPI.mediaUrl(asset.id), {
         width: w,
         color: "rgba(96, 165, 250, 0.55)",
         onDuration: (sec) => {
@@ -1284,11 +1307,70 @@
         },
       });
     } else if (track.render_media?.filename && st.project?.id) {
-      _attachWaveform(canvas, `aud-render:${track.id}`, window.MovieEditorAPI.resultUrl(st.project.id, track.render_media), {
+      _attachWaveform(canvas, `aud-render:${track.id}:${inSec.toFixed(3)}`, window.MovieEditorAPI.resultUrl(st.project.id, track.render_media), {
         width: w,
         color: "rgba(96, 165, 250, 0.55)",
       });
     }
+
+    const leftTrim = el("div", "tl-aud-trim left");
+    leftTrim.title = linkedSep
+      ? "Drag to trim start · Alt+drag to slip source in file"
+      : "Drag to trim start · Alt+drag to slip source";
+    leftTrim.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      block.classList.add("trimming");
+      const tip = el("div", "trim-tip"); block.append(tip);
+      const baseLeft = startSec * pxPerSec;
+      const anchors = timelineSnapAnchorsPx(st, p);
+      let finalDelta = 0;
+      coalescedDrag(e, (dx) => {
+        const snappedLeft = snapPx(baseLeft + dx, anchors, 10);
+        finalDelta = (snappedLeft - baseLeft) / pxPerSec;
+        if (e.altKey) {
+          tip.textContent = `slip ${finalDelta >= 0 ? "+" : ""}${finalDelta.toFixed(2)}s`;
+          return;
+        }
+        const trim = Math.max(0, finalDelta);
+        const newDur = Math.max(0.1, durSec - trim);
+        if (linkedSep) {
+          block.style.width = Math.max(newDur * pxPerSec, 48) + "px";
+        } else {
+          block.style.left = (baseLeft + trim * pxPerSec) + "px";
+          block.style.width = Math.max(newDur * pxPerSec, 48) + "px";
+        }
+        tip.textContent = `trim ${trim.toFixed(2)}s · ${newDur.toFixed(2)}s`;
+      }, () => {
+        block.classList.remove("trimming"); tip.remove();
+        if (e.altKey) {
+          if (Math.abs(finalDelta) > 0.02) S.slipAudioTrack(track.id, finalDelta);
+        } else if (finalDelta > 0.02) {
+          S.trimAudioTrackLeft(track.id, finalDelta);
+        }
+      });
+    });
+
+    const rightTrim = el("div", "tl-aud-trim right");
+    rightTrim.title = "Drag to shorten or extend";
+    rightTrim.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      block.classList.add("trimming");
+      const tip = el("div", "trim-tip"); block.append(tip);
+      const baseLeft = startSec * pxPerSec;
+      const baseDur = durSec;
+      const anchors = timelineSnapAnchorsPx(st, p);
+      let finalDur = durSec;
+      coalescedDrag(e, (dx) => {
+        const rightPx = snapPx(baseLeft + baseDur * pxPerSec + dx, anchors, 10);
+        finalDur = Math.max(0.1, (rightPx - baseLeft) / pxPerSec);
+        block.style.width = Math.max(finalDur * pxPerSec, 48) + "px";
+        tip.textContent = `${finalDur.toFixed(2)}s`;
+      }, () => {
+        block.classList.remove("trimming"); tip.remove();
+        S.resizeAudioTrack(track.id, finalDur);
+      });
+    });
+    block.append(leftTrim, rightTrim);
 
     const controls = el("div", "tl-aud-controls");
     const label = isSep ? (track.label || `S${sepIdx} audio`) : ((asset && asset.name) || "audio");
@@ -1303,9 +1385,11 @@
     startIn.oninput = (e) => {
       e.stopPropagation();
       const v = parseFloat(startIn.value || "0");
+      if (linkedSep) return;
       S.updateAudioTrack(track.id, { start_sec: v }, true);
       block.style.left = (v * pxPerSec) + "px";
     };
+    startIn.disabled = linkedSep;
     startIn.onclick = (e) => e.stopPropagation();
     controls.append(startIn);
     const rm = el("button", "ic-btn danger tl-aud-rm", "✕");
@@ -1318,9 +1402,17 @@
     controls.append(rm);
     block.append(controls);
 
-    block.addEventListener("mousedown", (e) => {
-      if (e.target.closest("input,button,select")) return;
+    block.onclick = (e) => {
+      if (e.target.closest(".tl-aud-trim, input, button, select")) return;
       e.stopPropagation();
+      S.selectAudioTrack(track.id);
+    };
+
+    block.addEventListener("mousedown", (e) => {
+      if (e.target.closest(".tl-aud-trim, input, button, select")) return;
+      e.stopPropagation();
+      S.selectAudioTrack(track.id);
+      if (linkedSep) return;
       const baseLeft = startSec * pxPerSec;
       const anchors = timelineSnapAnchorsPx(st, p);
       coalescedDrag(e, (dx) => {
@@ -1604,6 +1696,9 @@
 
     // Clip actions on the selected clip (also bound to S / Delete).
     const { ids, hasSel, focusId, saveable, saveableN } = clipToolbarState(st);
+    const audioSel = st.selectedAudioTrackId;
+    const canSplit = hasSel || audioSel;
+    const canRemove = hasSel || audioSel;
     const selN = ids.length;
     const { exportTitle, binTitle } = exportSaveTitles(hasSel, saveable, saveableN, selN);
     const selBadge = el("span", "tl-sel-badge");
@@ -1612,14 +1707,21 @@
     if (selN > 0) selBadge.textContent = selN === 1 ? "1 clip selected" : `${selN} clips selected`;
     const split = el("button", "btn ghost tiny", "Split");
     split.dataset.needsSel = "1";
-    split.title = hasSel ? "Split the selected clip at the playhead (S)" : "Select a clip first";
-    split.disabled = !hasSel;
+    split.title = audioSel
+      ? "Split selected audio at the playhead (S)"
+      : (hasSel ? "Split the selected clip at the playhead (S)" : "Select a clip or audio track first");
+    split.disabled = !canSplit;
     split.onclick = () => splitSelectedAtPlayhead();
     const del = el("button", "btn ghost tiny danger", "Remove");
     del.dataset.needsSel = "1";
-    del.title = hasSel ? "Remove selected clip(s) (Delete / Backspace)" : "Select a clip first";
-    del.disabled = !hasSel;
-    del.onclick = () => S.removeSelectedScenes();
+    del.title = audioSel
+      ? "Remove selected audio track (Delete / Backspace)"
+      : (hasSel ? "Remove selected clip(s) (Delete / Backspace)" : "Select a clip or audio track first");
+    del.disabled = !canRemove;
+    del.onclick = () => {
+      if (audioSel) S.removeAudioTrack(audioSel);
+      else S.removeSelectedScenes();
+    };
     const exp = el("button", "btn ghost tiny", "⤓ Export");
     exp.dataset.exportScene = "1";
     exp.title = exportTitle;
@@ -1727,6 +1829,7 @@
       if ((cur.selectedSceneId || (cur.selectedSceneIds || []).length) && !e.target.closest(".clip") && !e.target.closest(".seam-cut") && !e.target.closest(".tl-ruler2") && !e.target.closest(".tl-aud-clip") && !e.target.closest(".tl-ov-clip"))
         S.selectScene(null);
       if (cur.selectedOverlayId && !e.target.closest(".tl-ov-clip")) S.selectOverlay(null);
+      if (cur.selectedAudioTrackId && !e.target.closest(".tl-aud-clip.ins")) S.selectAudioTrack(null);
     });
     const stage = el("div", "tl-stage"); stage.style.width = (GUTTER_W + contentW) + "px";
     stage.append(timelineGutter(st, p));
@@ -1887,13 +1990,23 @@
   // ── keyboard: S = split selected clip at playhead, Del/Backspace = remove it ──
   function splitSelectedAtPlayhead() {
     const st = S.get();
-    if (!st.project || !st.selectedSceneId) return;
+    if (!st.project) return;
+    const ph = window.Player?.getPlayhead() ?? 0;
+    if (st.selectedAudioTrackId) {
+      const aud = (st.project.audio_tracks || []).find((t) => t.id === st.selectedAudioTrackId);
+      if (!aud) return;
+      const start = aud.start_sec || 0;
+      const dur = S.audioTrackDurSec ? S.audioTrackDurSec(aud) : (aud.source_dur || 0);
+      const splitAt = (ph > start + 0.05 && ph < start + dur - 0.05) ? ph : (start + dur / 2);
+      S.splitAudioTrack(st.selectedAudioTrackId, splitAt);
+      return;
+    }
+    if (!st.selectedSceneId) return;
     const p = st.project;
     const seg = (S.buildPreviewSegments ? S.buildPreviewSegments() : []).find((s) => s.kind === "scene" && s.scene.id === st.selectedSceneId);
     if (!seg) return;
     const target = seg.scene;
     const off = seg.offsetSec;
-    const ph = window.Player?.getPlayhead() ?? 0;
     const fps = sFps(target, p), dur = sDur(target, p);
     // Split at the playhead when it's inside the clip; otherwise at the midpoint.
     const at = (ph > off + 0.05 && ph < off + dur - 0.05) ? Math.round((ph - off) * fps) : null;
@@ -1927,10 +2040,33 @@
         S.removeSelectedOverlay();
         return;
       }
+      if (st.selectedAudioTrackId) {
+        e.preventDefault();
+        S.removeAudioTrack(st.selectedAudioTrackId);
+        return;
+      }
       if (selectedIds(st).length) {
         e.preventDefault();
         S.removeSelectedScenes();
         return;
+      }
+      return;
+    }
+    if (st.selectedAudioTrackId) {
+      const aud = (st.project.audio_tracks || []).find((t) => t.id === st.selectedAudioTrackId);
+      if (aud) {
+        if (e.key === "i" || e.key === "I") {
+          e.preventDefault();
+          window.Player?.seek(aud.start_sec || 0);
+          return;
+        }
+        if (e.key === "o" || e.key === "O") {
+          e.preventDefault();
+          const dur = S.audioTrackDurSec ? S.audioTrackDurSec(aud) : (aud.source_dur || 0);
+          window.Player?.seek((aud.start_sec || 0) + dur);
+          return;
+        }
+        if (e.key === "s" || e.key === "S") { e.preventDefault(); splitSelectedAtPlayhead(); return; }
       }
       return;
     }

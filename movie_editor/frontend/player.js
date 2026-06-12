@@ -377,13 +377,34 @@
     }
   }
 
+  function _hasPlayableClipMedia(clip) {
+    return !!(clip && !clip.pending && (clip.media || clip.binUrl || clip.streamUrl));
+  }
+
+  function _isBlankProgram() {
+    const total = S.previewTotalSec ? S.previewTotalSec() : 0;
+    if (total <= 0 || !S.hasOverlayOrAudioContent?.()) return false;
+    return !_clips.some(_hasPlayableClipMedia);
+  }
+
+  function _blankClip() {
+    const dur = Math.max(0.01, S.previewTotalSec ? S.previewTotalSec() : _totalSecCur || 0.01);
+    return { blank: true, startSec: 0, durationSec: dur };
+  }
+
   function _clipAt(sec) {
-    return _clips.find((c) => sec >= c.startSec - 0.05 && sec < c.startSec + c.durationSec - 0.001) || null;
+    const clip = _clips.find((c) => sec >= c.startSec - 0.05 && sec < c.startSec + c.durationSec - 0.001);
+    if (clip) return clip;
+    if (_isBlankProgram() && sec >= 0 && sec < (_totalSecCur || S.previewTotalSec?.() || 0)) return _blankClip();
+    return null;
   }
   function _clipFrom(sec) {  // first playable clip at/after sec (skip pending gaps)
     const at = _clipAt(sec);
     if (at && !at.pending) return at;
-    return _clips.find((c) => !c.pending && c.startSec >= sec - 0.05) || null;
+    const next = _clips.find((c) => !c.pending && c.startSec >= sec - 0.05);
+    if (next) return next;
+    if (_isBlankProgram()) return _blankClip();
+    return null;
   }
 
   let _slateEl = null;
@@ -586,6 +607,14 @@
   // in-point + offset within the (preloaded) source video.
   function _goto(clip, offset, play) {
     if (!clip) return;
+    if (clip.blank) {
+      _currentClip = clip;
+      _setActive(null);
+      _showSlate("");
+      _showBadge("");
+      if (play) _startTick();
+      return;
+    }
     if (clip.pending) {
       _currentClip = clip;
       _setActive(null);
@@ -652,6 +681,19 @@
   function _tick() {
     _raf = null;
     if (!_playing || !_currentClip) return;
+    if (_currentClip.blank) {
+      const within = _phSec - _currentClip.startSec + (1 / 60);
+      if (within >= _currentClip.durationSec - 0.001) {
+        _phSec = _currentClip.startSec + _currentClip.durationSec;
+        _pause();
+      } else {
+        _phSec = _currentClip.startSec + within;
+        _syncInsAudio();
+        _notifyPh();
+      }
+      if (_playing) _raf = requestAnimationFrame(_tick);
+      return;
+    }
     if (_currentClip.pending) {
       const within = _phSec - _currentClip.startSec + (1 / 60);
       if (within >= _currentClip.durationSec - 0.001) _advance();
@@ -782,7 +824,7 @@
     _playing = false;
     _playPending = false;
     _stopTick();
-    const first = _clips[0];
+    const first = _clips.find(_hasPlayableClipMedia) || (_isBlankProgram() ? _blankClip() : _clips[0]);
     if (first) _goto(first, 0, false);
     _notifyPh();
     _renderTransport();
@@ -939,16 +981,35 @@
   let _lastSegHash = "";
   let _lastProjectId = null;
 
-  function _ensureStageMounted() {
-    if (!_clips.length || !body) return;
-    if (body.contains(stage)) return;
+  function _ensureBlankFrame(p) {
+    if (!p) return;
+    const pw = p.width || 768, ph = p.height || 512;
+    let blank = stage.querySelector(".pm-blank-frame");
+    if (!blank) {
+      blank = document.createElement("div");
+      blank.className = "pm-blank-frame";
+      stage.appendChild(blank);
+    }
+    blank.style.aspectRatio = `${pw} / ${ph}`;
+  }
+
+  function _ensureProgramStage(st) {
+    if (!body) return;
+    if (!_clips.some(_hasPlayableClipMedia) && !_isBlankProgram()) return;
+    if (body.contains(stage)) {
+      if (_isBlankProgram()) _ensureBlankFrame(st?.project || S.get().project);
+      return;
+    }
     let canvas = body.querySelector(".pm-canvas");
     if (!canvas) {
       canvas = el("div", "pm-canvas");
       body.append(canvas);
     }
     if (!canvas.contains(stage)) canvas.insertBefore(stage, canvas.firstChild);
+    if (_isBlankProgram()) _ensureBlankFrame(st?.project || S.get().project);
   }
+
+  function _ensureStageMounted() { _ensureProgramStage(S.get()); }
 
   // ── full render (store subscription) ──────────────────────────────────────
   function render(st) {
@@ -976,6 +1037,7 @@
         const clip = _clipAt(_phSec);
         if (clip) _goto(clip, _phSec - clip.startSec, _playing);
         else if (_clips.length && !_active) _goto(_clips[0], 0, false);
+        else if (_isBlankProgram()) _goto(_blankClip(), _phSec, _playing);
       }
     }
 
@@ -1007,8 +1069,13 @@
     _badgeEl = el("div", "pm-segment-badge");
     _badgeEl.style.display = "none";
 
-    if (_clips.length) {
+    if (_clips.some(_hasPlayableClipMedia)) {
       canvas.append(stage);  // pooled videos live here; only the active one is visible
+      canvas.append(_slateEl);
+      canvas.append(_badgeEl);
+    } else if (_isBlankProgram()) {
+      canvas.append(stage);
+      _ensureBlankFrame(p);
       canvas.append(_slateEl);
       canvas.append(_badgeEl);
     } else if (previewOverlay) {
@@ -1093,7 +1160,8 @@
     _minibarEl = minibar;
     _totalSecCur = S.previewTotalSec ? S.previewTotalSec() : 0;
     if (p && _totalSecCur > 0 && S.buildPreviewSegments) {
-      S.buildPreviewSegments().forEach((seg) => {
+      const previewSegs = S.buildPreviewSegments();
+      if (previewSegs.length) previewSegs.forEach((seg) => {
         const d = seg.durationSec;
         let cls = "pm-chip";
         let title = "";
@@ -1143,6 +1211,30 @@
         });
         minibar.append(chip);
       });
+      } else {
+        const chip = el("div", "pm-chip blank-program");
+        chip.style.width = "100%";
+        chip.title = "Overlays / audio";
+        chip.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          _beginScrub();
+          const scrub = (ev) => {
+            const r = minibar.getBoundingClientRect();
+            const frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+            _seek(frac * _totalSecCur);
+          };
+          scrub(e);
+          const move = (ev) => scrub(ev);
+          const up = () => {
+            document.removeEventListener("mousemove", move);
+            document.removeEventListener("mouseup", up);
+            _endScrub();
+          };
+          document.addEventListener("mousemove", move);
+          document.addEventListener("mouseup", up);
+        });
+        minibar.append(chip);
+      }
       const needle = el("div", "pm-needle");
       needle.style.left = (Math.min(_phSec, _totalSecCur) / _totalSecCur * 100).toFixed(3) + "%";
       minibar.append(needle);

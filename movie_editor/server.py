@@ -845,7 +845,18 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
         mp = media.path_for(t.get("media_ref") or "")
         if mp is None:
             continue
-        media_tracks.append({"path": str(mp), "start_sec": t.get("start_sec") or 0, "volume": t.get("volume", 1.0)})
+        entry = {
+            "path": str(mp),
+            "start_sec": t.get("start_sec") or 0,
+            "volume": t.get("volume", 1.0),
+        }
+        src_in = t.get("source_in_sec")
+        src_dur = t.get("source_dur")
+        if src_in is not None:
+            entry["source_in"] = float(src_in)
+        if src_dur is not None:
+            entry["source_dur"] = float(src_dur)
+        media_tracks.append(entry)
 
     out_name = f"funpack_final_{int(_time.time())}.mp4"
     out_path = os.path.join(tempdir, out_name)
@@ -859,7 +870,10 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
         cmd += ["-i", pth]
     n = len(clips)
     for t in media_tracks:
-        cmd += ["-i", t["path"]]
+        if t.get("source_in") is not None and t.get("source_dur") is not None:
+            cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
+        else:
+            cmd += ["-i", t["path"]]
     for t in separated_tracks:
         cmd += ["-ss", f"{t['source_in']:.3f}", "-t", f"{t['source_dur']:.3f}", "-i", t["path"]]
     tracks = media_tracks + separated_tracks

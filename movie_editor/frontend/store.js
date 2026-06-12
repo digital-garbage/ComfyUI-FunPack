@@ -8,6 +8,7 @@
     selectedSceneId: null,   // focus clip (inspector / toolbar)
     selectedSceneIds: [],    // multi-select for generate / timeline
     selectedOverlayId: null, // graphics overlay (text/image) on overlay lane
+    selectedAudioTrackId: null, // inserted audio lane (overlay / separated)
     transitions: [],       // prompt split-marker library (FunPack transition DB; generation only)
     nleEffects: [],        // post-render clip effects (zoom, blur, fades)
     nleVideoTransitions: [], // post-render seam blends (crossfade, wipe, …)
@@ -613,6 +614,8 @@
     const first = state.project.scenes[0]?.id || null;
     state.selectedSceneId = first;
     state.selectedSceneIds = first ? [first] : [];
+    state.selectedOverlayId = null;
+    state.selectedAudioTrackId = null;
     _selectionAnchorId = first;
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
@@ -944,6 +947,7 @@
     }
     if (!scene(id)) return;
     state.selectedOverlayId = null;
+    state.selectedAudioTrackId = null;
 
     if (range && _selectionAnchorId && order.includes(_selectionAnchorId)) {
       const a = order.indexOf(_selectionAnchorId);
@@ -1310,9 +1314,38 @@
     });
   }
 
+  function audioTrackEndSec(t) {
+    if (!t) return 0;
+    const start = t.start_sec || 0;
+    if (t.source_dur != null) return start + t.source_dur;
+    if (t.pinned_dur != null) return start + t.pinned_dur;
+    if (isSeparatedAudioTrack(t)) return start + separatedTrackDurSec(t);
+    const asset = (state.mediaBin || []).find((m) => m.id === t.media_ref);
+    if (asset?.duration_sec) return start + asset.duration_sec;
+    return start + 1;
+  }
+
   function previewTotalSec() {
+    const p = state.project;
+    if (!p) return 0;
     const segs = buildPreviewSegments();
-    return segs.length ? segs[segs.length - 1].offsetSec + segs[segs.length - 1].durationSec : 0;
+    let total = segs.length ? segs[segs.length - 1].offsetSec + segs[segs.length - 1].durationSec : 0;
+    for (const ov of p.overlay_tracks || []) {
+      const end = (ov.start_sec || 0) + (ov.duration_sec || 0);
+      if (end > total) total = end;
+    }
+    for (const t of p.audio_tracks || []) {
+      const end = audioTrackEndSec(t);
+      if (end > total) total = end;
+    }
+    return total;
+  }
+
+  function hasOverlayOrAudioContent() {
+    const p = state.project;
+    if (!p) return false;
+    if ((p.audio_tracks || []).length) return true;
+    return (p.overlay_tracks || []).some((ov) => (ov.duration_sec || 0) > 0);
   }
 
   // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
@@ -1599,6 +1632,156 @@
     notify(); scheduleSave();
   }
 
+  function audioTrackInSec(t) {
+    if (!t) return 0;
+    if (t.pinned_in_sec != null) return t.pinned_in_sec;
+    if (t.source_in_sec != null) return t.source_in_sec;
+    return 0;
+  }
+
+  function audioTrackDurSec(t) {
+    if (!t) return 0.1;
+    if (t.pinned_dur != null) return t.pinned_dur;
+    if (t.source_dur != null) return t.source_dur;
+    const asset = t.media_ref ? (state.mediaBin || []).find((m) => m.id === t.media_ref) : null;
+    if (asset?.duration_sec) return asset.duration_sec;
+    return 1;
+  }
+
+  function audioTrackSourceDurSec(t) {
+    if (!t) return null;
+    if (t.pinned_bin_ref) {
+      const asset = (state.mediaBin || []).find((m) => m.id === t.pinned_bin_ref);
+      return asset?.duration_sec ?? null;
+    }
+    if (t.media_ref) {
+      const asset = (state.mediaBin || []).find((m) => m.id === t.media_ref);
+      return asset?.duration_sec ?? null;
+    }
+    return null;
+  }
+
+  function audioTrackMaxDurSec(t) {
+    const inSec = audioTrackInSec(t);
+    const srcDur = audioTrackSourceDurSec(t);
+    if (srcDur != null) return Math.max(0.1, srcDur - inSec);
+    return Math.max(audioTrackDurSec(t), 86400);
+  }
+
+  function _applyAudioTrimFields(t, patch) {
+    if (patch.start_sec != null) t.start_sec = Math.max(0, +patch.start_sec);
+    if (patch.source_in_sec != null) t.source_in_sec = Math.max(0, +patch.source_in_sec);
+    if (patch.source_dur != null) t.source_dur = Math.max(0.1, +patch.source_dur);
+    if (isSeparatedAudioTrack(t)) {
+      if (patch.source_in_sec != null) t.pinned_in_sec = t.source_in_sec;
+      if (patch.source_dur != null) t.pinned_dur = t.source_dur;
+    }
+  }
+
+  function trimAudioTrackLeft(id, trimSec, opts) {
+    if (!state.project) return;
+    const t = (state.project.audio_tracks || []).find((x) => x.id === id);
+    if (!t) return;
+    const trim = Math.max(0, +trimSec || 0);
+    if (trim < 0.02) return;
+    const inSec = audioTrackInSec(t);
+    const dur = audioTrackDurSec(t);
+    const start = t.start_sec || 0;
+    const linked = isSeparatedAudioTrack(t) && t.scene_id && scene(t.scene_id);
+    if (opts?.slip) {
+      slipAudioTrack(id, trim, opts);
+      return;
+    }
+    if (trim >= dur - 0.1) return;
+    if (!opts?.quiet) _historyRecord();
+    if (linked) {
+      _applyAudioTrimFields(t, { source_in_sec: inSec + trim, source_dur: dur - trim });
+    } else {
+      _applyAudioTrimFields(t, {
+        start_sec: start + trim,
+        source_in_sec: inSec + trim,
+        source_dur: dur - trim,
+      });
+    }
+    notify(); opts?.quiet ? scheduleSaveSilent() : scheduleSave();
+  }
+
+  function slipAudioTrack(id, deltaSec, opts) {
+    if (!state.project) return;
+    const t = (state.project.audio_tracks || []).find((x) => x.id === id);
+    if (!t) return;
+    const delta = +deltaSec || 0;
+    if (Math.abs(delta) < 0.02) return;
+    const inSec = audioTrackInSec(t);
+    const dur = audioTrackDurSec(t);
+    const srcDur = audioTrackSourceDurSec(t);
+    let newIn = Math.max(0, inSec + delta);
+    if (srcDur != null) newIn = Math.min(newIn, Math.max(0, srcDur - dur));
+    if (Math.abs(newIn - inSec) < 0.02) return;
+    if (!opts?.quiet) _historyRecord();
+    _applyAudioTrimFields(t, { source_in_sec: newIn, source_dur: dur });
+    notify(); opts?.quiet ? scheduleSaveSilent() : scheduleSave();
+  }
+
+  function resizeAudioTrack(id, durationSec, opts) {
+    if (!state.project) return;
+    const t = (state.project.audio_tracks || []).find((x) => x.id === id);
+    if (!t) return;
+    let dur = Math.max(0.1, +durationSec || 0);
+    dur = Math.min(dur, audioTrackMaxDurSec(t));
+    if (Math.abs(dur - audioTrackDurSec(t)) < 0.02) return;
+    if (!opts?.quiet) _historyRecord();
+    _applyAudioTrimFields(t, { source_dur: dur });
+    notify(); opts?.quiet ? scheduleSaveSilent() : scheduleSave();
+  }
+
+  function splitAudioTrack(id, timelineSec) {
+    if (!state.project) return;
+    const t = (state.project.audio_tracks || []).find((x) => x.id === id);
+    if (!t) return;
+    const start = t.start_sec || 0;
+    const inSec = audioTrackInSec(t);
+    const dur = audioTrackDurSec(t);
+    const rel = (+timelineSec || 0) - start;
+    if (rel <= 0.05 || rel >= dur - 0.05) return;
+    _historyRecord();
+    _applyAudioTrimFields(t, { start_sec: start, source_in_sec: inSec, source_dur: rel });
+    const second = {
+      id: _uid(),
+      kind: t.kind || "overlay",
+      start_sec: start + rel,
+      source_in_sec: inSec + rel,
+      source_dur: dur - rel,
+      volume: t.volume != null ? t.volume : 1,
+      label: (t.label || "audio") + " (2)",
+    };
+    if (t.media_ref) second.media_ref = t.media_ref;
+    if (t.render_media) second.render_media = JSON.parse(JSON.stringify(t.render_media));
+    if (t.pinned_bin_ref) second.pinned_bin_ref = t.pinned_bin_ref;
+    if (t.pinned_media) second.pinned_media = JSON.parse(JSON.stringify(t.pinned_media));
+    if (isSeparatedAudioTrack(t)) {
+      second.pinned_in_sec = second.source_in_sec;
+      second.pinned_dur = second.source_dur;
+    }
+    state.project.audio_tracks.push(second);
+    state.selectedAudioTrackId = second.id;
+    state.selectedSceneId = null;
+    state.selectedSceneIds = [];
+    state.selectedOverlayId = null;
+    notify(); scheduleSave();
+  }
+
+  function selectAudioTrack(id) {
+    state.selectedAudioTrackId = id || null;
+    if (id) {
+      state.selectedSceneId = null;
+      state.selectedSceneIds = [];
+      state.selectedOverlayId = null;
+      _selectionAnchorId = null;
+    }
+    notify();
+  }
+
   function updateAudioTrack(id, patch, quiet) {
     const t = (state.project?.audio_tracks || []).find((x) => x.id === id);
     if (!t) return;
@@ -1606,6 +1789,7 @@
     Object.assign(t, patch);
     notify(); quiet ? scheduleSaveSilent() : scheduleSave();
   }
+
   function _syncSeparatedTracksAfterRegen(recordedIds) {
     for (const id of recordedIds || []) {
       const t = separatedTrackForScene(id);
@@ -1638,6 +1822,7 @@
       }
     }
     state.project.audio_tracks = (state.project.audio_tracks || []).filter((x) => x.id !== id);
+    if (state.selectedAudioTrackId === id) state.selectedAudioTrackId = null;
     notify(); scheduleSave();
   }
 
@@ -1800,6 +1985,7 @@
     if (id) {
       state.selectedSceneId = null;
       state.selectedSceneIds = [];
+      state.selectedAudioTrackId = null;
       _selectionAnchorId = null;
     }
     notify();
@@ -3211,10 +3397,12 @@
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
-    buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec, clipSourceInSec,
+    buildPreviewSegments, previewTotalSec, audioTrackEndSec, hasOverlayOrAudioContent,
+    segmentDurationSec, sceneDurationSec, clipSourceInSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
+    selectAudioTrack, trimAudioTrackLeft, slipAudioTrack, resizeAudioTrack, splitAudioTrack,
     sceneHasEmbeddedAudio, separatedTrackAudioUrl,
-    separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
+    separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec, audioTrackInSec, audioTrackDurSec,
     overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
     projectCanvasSize, normalizeOverlayTrack,
     addOverlayLane, removeOverlayLane, assignMediaToOverlayLane,
