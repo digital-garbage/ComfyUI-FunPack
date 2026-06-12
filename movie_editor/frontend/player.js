@@ -158,8 +158,7 @@
         const sc = S.scene(c.sceneId);
         const sourceIn = sc?.source_in || 0;
         const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
-        const cacheBust = (st && st._previewGenToken) || Date.now();
-        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, { media: c.media, renderIn, cacheBust });
+        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, { media: c.media, renderIn });
       }
     }
   }
@@ -922,8 +921,6 @@
     }
     if (g.livePreviewUrl) {
       _ensureLivePreviewDom();
-      const canvas = document.querySelector(".pm-canvas");
-      if (canvas && !canvas.classList.contains("gen-live-preview")) canvas.classList.add("gen-live-preview");
       if (_livePreviewLayerEl) _livePreviewLayerEl.style.display = "";
       if (_livePreviewEl && _livePreviewEl.src !== g.livePreviewUrl) _livePreviewEl.src = g.livePreviewUrl;
       if (_livePreviewEl) _livePreviewEl.style.display = "";
@@ -1098,9 +1095,6 @@
 
     // Rebuilding the monitor DOM during playback detaches <video> nodes and kills multi-scene
     // chain preview mid-stream (often visible from scene 3 onward once store ticks catch up).
-    // Still mount live preview during generation so sampling frames stay visible while playing.
-    const genActive = ["queuing", "running", "pending"].includes(st.gen?.state);
-    if (genActive && _livePreviewConfigured(st)) _ensureLivePreviewDom();
     if (_scrubDepth > 0 || _playing) {
       _ensureStageMounted();
       return;
@@ -1114,8 +1108,7 @@
     const previewOverlay = previewAsset && (previewAsset.kind === "image" || previewAsset.kind === "audio" || previewAsset.kind === "video");
 
     // ── canvas (video + placeholder) ────────────────────────────────────────
-    const genLive = ["queuing", "running", "pending"].includes(gen.state) && _livePreviewConfigured(st);
-    const canvas = el("div", "pm-canvas" + (previewOverlay ? " media-previewing" : "") + (genLive ? " gen-live-preview" : ""));
+    const canvas = el("div", "pm-canvas" + (previewOverlay ? " media-previewing" : ""));
     _slateEl = el("div", "pm-slate");
     _slateEl.style.display = "none";
     _slateEl.append(el("div", "pm-slate-title"));

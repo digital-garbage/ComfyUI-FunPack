@@ -828,7 +828,6 @@
       _syncEditorStateToProject();
       snapshot.scene_renders = state.project.scene_renders;
       snapshot.scene_ghosts = state.project.scene_ghosts;
-      snapshot.models = state.project.models;
       const previewKeyBefore = _promptPreviewKey(snapshot);
       const selBefore = JSON.stringify(state.selectedSceneIds || []);
       const metaBefore = { name: snapshot.name, scene_count: (snapshot.scenes || []).length };
@@ -840,12 +839,7 @@
         // If the user edited again while this save was in flight (e.g. dropped a new
         // anchor), do NOT replace local state with the older snapshot we just wrote.
         if (_localDirty) scheduleSave();
-        else {
-          state.project = saved;
-          // Keep in-memory renders if a run finished while this save was in flight.
-          state.project.scene_renders = JSON.parse(JSON.stringify(state.sceneRenders || {}));
-          state.project.scene_ghosts = JSON.parse(JSON.stringify(state.sceneGhosts || []));
-        }
+        else state.project = saved;
         state.saving = false;
         _pruneSelection();
         const selChanged = JSON.stringify(state.selectedSceneIds || []) !== selBefore;
@@ -2412,8 +2406,6 @@
     [/Node registry unavailable/i, "ComfyUI is offline or still starting up — wait a moment and try again."],
     [/HTTP 53[0-9]|HTTP 52[24]|HTTP 502|Failed to fetch|NetworkError|Load failed/i,
       "Cloudflare tunnel lost contact with the vast.ai instance. GPU work may still be running — wait, refresh, and check ComfyUI output. If it keeps failing, use vast.ai direct port access or restart the tunnel."],
-    [/Timeline on the server|Timeline did not save|does not match the editor/i,
-      "Timeline did not save before generate. Wait for the save indicator to clear, then try again."],
   ];
 
   function _isTransientTunnelError(err) {
@@ -2441,24 +2433,7 @@
     return flushSave();
   }
 
-  function _generationTimelineSnap(project, sceneIds) {
-    if (!project) return { anchor: "", scenes: [] };
-    const ids = sceneIds && sceneIds.length ? new Set(sceneIds) : null;
-    const scenes = (project.scenes || [])
-      .filter((s) => !s.excluded && isGenerativeScene(s))
-      .filter((s) => !ids || ids.has(s.id))
-      .map((s) => ({
-        id: s.id,
-        text: s.text || "",
-        source: {
-          type: (s.source && s.source.type) || "carry",
-          media_ref: (s.source && s.source.media_ref) || null,
-        },
-      }));
-    return { anchor: (project.anchor || "").trim(), scenes };
-  }
-
-  async function _flushSaveForGenerate(sceneIds) {
+  async function _flushSaveForGenerate() {
     await flushPendingEdits();
     if (_localDirty) {
       throw new Error(
@@ -2466,16 +2441,6 @@
         + "Wait for the save indicator to clear, then try again."
       );
     }
-    const localSnap = _generationTimelineSnap(state.project, sceneIds);
-    const saved = await _retryOnTunnel(() => API.getProject(state.project.id));
-    const serverSnap = _generationTimelineSnap(saved, sceneIds);
-    if (JSON.stringify(localSnap) !== JSON.stringify(serverSnap)) {
-      throw new Error(
-        "Timeline did not save before generate. Wait for the save indicator to clear, then try again."
-      );
-    }
-    state._previewGenToken = Date.now();
-    return localSnap;
   }
 
   function _sleep(ms) {
@@ -2786,10 +2751,8 @@
     if (recordedSceneIds.length) {
       _validateRendersToken++;
       state.notice = "";
-      state._previewGenToken = Date.now();
       _syncEditorStateToProject();
       scheduleSaveSilent();
-      notify();
     }
   }
 
@@ -2937,15 +2900,8 @@
     _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0, livePreviewUrl: null, liveScene: -1, liveSceneCount: 0 } });
     try {
-      const timelineSnapshot = _generationTimelineSnap(state.project, sceneIds);
       const r = await _retryOnTunnel(
-        () => API.generate(
-          state.project.id,
-          onlyScene || null,
-          onlyScene ? null : sceneIds,
-          !!resetSession,
-          timelineSnapshot,
-        ),
+        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession),
         10,
       );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
@@ -2979,17 +2935,17 @@
 
   async function generate(onlyScene) {
     if (!state.project) return;
-    if (!onlyScene) return generateMontage();
-    const sc = scene(onlyScene);
-    const ids = sc ? genUnitSceneIds(genUnitId(sc)) : [onlyScene];
     try {
-      await _flushSaveForGenerate(ids);
+      await _flushSaveForGenerate();
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
       return;
     }
+    if (!onlyScene) return generateMontage();
     const reset = _resetSessionPending; _resetSessionPending = false;
     if (reset) state.resetSessionArmed = false;
+    const sc = scene(onlyScene);
+    const ids = sc ? genUnitSceneIds(genUnitId(sc)) : [onlyScene];
     await _generateRun(ids, onlyScene, "Generating scene", reset);
   }
 
@@ -2998,13 +2954,13 @@
   // session reset applies to the FIRST run only.
   async function generateMontage() {
     if (!state.project) return;
-    const runs = _runs();
     try {
-      await _flushSaveForGenerate(runs.flat());
+      await _flushSaveForGenerate();
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
       return;
     }
+    const runs = _runs();
     if (!runs.length) { set({ gen: { state: "error", promptId: null, media: [], msg: "No active scenes to generate." } }); return; }
     const reset = _resetSessionPending; _resetSessionPending = false;
     if (reset) state.resetSessionArmed = false;
@@ -3025,13 +2981,13 @@
       set({ gen: { state: "error", promptId: null, media: [], msg: "No scenes selected." } });
       return;
     }
-    const runs = _runsForSceneIds(ids);
     try {
-      await _flushSaveForGenerate(runs.flat());
+      await _flushSaveForGenerate();
     } catch (e) {
       set({ gen: { state: "error", promptId: null, media: [], msg: _friendlyGenError(e.message) } });
       return;
     }
+    const runs = _runsForSceneIds(ids);
     if (!runs.length) {
       set({ gen: { state: "error", promptId: null, media: [], msg: "No generatable runs in the selection." } });
       return;
