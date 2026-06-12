@@ -816,6 +816,11 @@ def _ffmpeg_stitch_final(proj, clips: list) -> dict:
                     pinned.get("subfolder", ""),
                     pinned.get("type", "output"),
                 )
+            bin_ref = t.get("pinned_bin_ref")
+            if (not pth or not os.path.isfile(pth)) and bin_ref:
+                mp = media.path_for(str(bin_ref))
+                if mp is not None:
+                    pth = str(mp)
             c = clip_by_scene.get(sid) if sid else None
             if not pth or not os.path.isfile(pth):
                 if not c:

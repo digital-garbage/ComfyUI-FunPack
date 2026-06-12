@@ -1452,6 +1452,33 @@
     return !!(t && t.kind === "separated" && t.scene_id);
   }
 
+  function sceneHasEmbeddedAudio(sc) {
+    if (!sc || sc.excluded || sc.audio_separated) return false;
+    if (isVideoClip(sc)) {
+      const ref = sc.source?.media_ref;
+      if (!ref) return false;
+      const asset = (state.mediaBin || []).find((m) => m.id === ref);
+      return asset?.kind === "video";
+    }
+    if (sc.source?.type === "v2v" && sc.source?.media_ref) {
+      const asset = (state.mediaBin || []).find((m) => m.id === sc.source.media_ref);
+      if (asset?.kind === "video") return true;
+    }
+    return !!(state.sceneRenders[sc.id]?.media);
+  }
+
+  function separatedTrackAudioUrl(st, track) {
+    if (!track) return null;
+    if (track.pinned_bin_ref) {
+      const asset = (st?.mediaBin || state.mediaBin || []).find((m) => m.id === track.pinned_bin_ref);
+      return asset?.kind === "video" ? window.MovieEditorAPI.mediaUrl(track.pinned_bin_ref) : null;
+    }
+    const media = separatedTrackMedia(track);
+    if (media && st?.project?.id) return window.MovieEditorAPI.resultUrl(st.project.id, media);
+    if (media && state.project?.id) return window.MovieEditorAPI.resultUrl(state.project.id, media);
+    return null;
+  }
+
   function _syncSeparatedAudioTracks() {
     if (!state.project) return;
     let moved = false;
@@ -1525,15 +1552,25 @@
   function separateSceneAudio(sceneId) {
     if (!state.project) return;
     const sc = scene(sceneId);
-    if (!sc || sc.audio_separated) return;
-    const r = state.sceneRenders[sceneId];
-    if (!r?.media) { alert("Generate this clip first."); return; }
+    if (!sc || sc.audio_separated || !sceneHasEmbeddedAudio(sc)) return;
     if (separatedTrackForScene(sceneId)) return;
     _historyRecord();
     const idx = state.project.scenes.indexOf(sc);
-    const inSec = clipSourceInSec(sc, r);
     const dur = sc.source_dur != null ? sc.source_dur : sceneDurationSec(sc);
     const savedVol = sc.audio_volume != null ? sc.audio_volume : 1;
+    let inSec = sc.source_in || 0;
+    let pinned_media = null;
+    let pinned_bin_ref = null;
+
+    if (isVideoClip(sc) || (sc.source?.type === "v2v" && sc.source?.media_ref && !state.sceneRenders[sceneId]?.media)) {
+      pinned_bin_ref = sc.source.media_ref;
+    } else {
+      const r = state.sceneRenders[sceneId];
+      if (!r?.media) { alert("Generate this clip first."); return; }
+      inSec = clipSourceInSec(sc, r);
+      pinned_media = JSON.parse(JSON.stringify(r.media));
+    }
+
     state.project.audio_tracks = state.project.audio_tracks || [];
     state.project.audio_tracks.push({
       id: _uid(),
@@ -1542,11 +1579,12 @@
       start_sec: sceneTimelineOffsetSec(sceneId),
       source_in_sec: inSec,
       source_dur: dur,
-      pinned_media: JSON.parse(JSON.stringify(r.media)),
+      pinned_media,
+      pinned_bin_ref,
       pinned_in_sec: inSec,
       pinned_dur: dur,
       volume: savedVol,
-      label: `S${idx + 1} audio`,
+      label: (isVideoClip(sc) ? `V${idx + 1}` : `S${idx + 1}`) + " audio",
     });
     sc.audio_separated = true;
     sc.audio_volume = 0;
@@ -3165,6 +3203,7 @@
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, segmentDurationSec, sceneDurationSec, clipSourceInSec,
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
+    sceneHasEmbeddedAudio, separatedTrackAudioUrl,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
     overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
     projectCanvasSize, normalizeOverlayTrack,

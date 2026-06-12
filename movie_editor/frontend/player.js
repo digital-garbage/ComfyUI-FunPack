@@ -295,11 +295,24 @@
     const out = [];
     for (const t of (st.project.audio_tracks || [])) {
       if (S.isSeparatedAudioTrack && S.isSeparatedAudioTrack(t)) {
-        const media = S.separatedTrackMedia ? S.separatedTrackMedia(t) : null;
-        if (!media || !pid) continue;
+        const url = S.separatedTrackAudioUrl ? S.separatedTrackAudioUrl(st, t) : null;
+        if (!url) {
+          const media = S.separatedTrackMedia ? S.separatedTrackMedia(t) : null;
+          if (media && pid) {
+            out.push({
+              id: t.id,
+              url: _urlFor(media),
+              startSec: t.start_sec || 0,
+              durSec: S.separatedTrackDurSec ? S.separatedTrackDurSec(t) : (t.source_dur || 1),
+              inSec: S.separatedTrackInSec ? S.separatedTrackInSec(t) : (t.source_in_sec || 0),
+              vol: t.volume != null ? t.volume : 1,
+            });
+          }
+          continue;
+        }
         out.push({
           id: t.id,
-          url: _urlFor(media),
+          url,
           startSec: t.start_sec || 0,
           durSec: S.separatedTrackDurSec ? S.separatedTrackDurSec(t) : (t.source_dur || 1),
           inSec: S.separatedTrackInSec ? S.separatedTrackInSec(t) : (t.source_in_sec || 0),

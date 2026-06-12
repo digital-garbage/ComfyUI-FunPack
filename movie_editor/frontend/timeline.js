@@ -399,7 +399,7 @@
     const sep = bar.querySelector("[data-separate-audio]");
     if (sep) {
       const sc = focusId ? S.scene(focusId) : null;
-      sep.disabled = !(sc && S.isGenerativeScene(sc) && hasRender(st, focusId) && !sc?.audio_separated);
+      sep.disabled = !(sc && S.sceneHasEmbeddedAudio?.(sc));
     }
     const rmSep = bar.querySelector("[data-remove-sep-audio]");
     if (rmSep) {
@@ -1201,8 +1201,15 @@
     clip.append(wave);
 
     const r = (st.sceneRenders || {})[scene.id];
+    const binRef = scene.source?.media_ref;
+    const binAsset = binRef ? (st.mediaBin || []).find((m) => m.id === binRef) : null;
     if (r?.media && st.project?.id) {
       _attachWaveform(canvas, `scene-aud:${scene.id}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
+        width: w,
+        color: "rgba(45, 212, 191, 0.5)",
+      });
+    } else if (binAsset?.kind === "video") {
+      _attachWaveform(canvas, `scene-aud-bin:${scene.id}:${binRef}`, window.MovieEditorAPI.mediaUrl(binRef), {
         width: w,
         color: "rgba(45, 212, 191, 0.5)",
       });
@@ -1247,9 +1254,12 @@
       const pinned = track.pinned_media;
       const r = (st.sceneRenders || {})[track.scene_id];
       const media = pinned || r?.media;
-      if (media && st.project?.id) {
-        const wfKey = `sep-aud:${track.id}:${media.filename || ""}:${track.pinned_in_sec ?? track.source_in_sec ?? 0}`;
-        _attachWaveform(canvas, wfKey, window.MovieEditorAPI.resultUrl(st.project.id, media), {
+      const sepUrl = S.separatedTrackAudioUrl ? S.separatedTrackAudioUrl(st, track) : null;
+      if (sepUrl) {
+        const wfKey = track.pinned_bin_ref
+          ? `sep-aud-bin:${track.id}:${track.pinned_bin_ref}:${track.pinned_in_sec ?? track.source_in_sec ?? 0}`
+          : `sep-aud:${track.id}:${media?.filename || ""}:${track.pinned_in_sec ?? track.source_in_sec ?? 0}`;
+        _attachWaveform(canvas, wfKey, sepUrl, {
           width: w,
           color: "rgba(45, 212, 191, 0.55)",
           onDuration: (sec) => {
@@ -1623,7 +1633,7 @@
     sepAud.dataset.separateAudio = "1";
     sepAud.title = "Detach this clip's audio onto its own track (video keeps picture only)";
     const selSc = focusId ? S.scene(focusId) : null;
-    sepAud.disabled = !(selSc && hasRender(st, focusId) && !selSc?.audio_separated && S.isGenerativeScene(selSc));
+    sepAud.disabled = !(selSc && S.sceneHasEmbeddedAudio?.(selSc));
     sepAud.onclick = () => { if (focusId) S.separateSceneAudio(focusId); };
     const sepTrack = selSc && S.separatedTrackForScene ? S.separatedTrackForScene(selSc.id) : null;
     const rmSepAud = el("button", "btn ghost tiny danger", "Remove audio");

@@ -614,7 +614,7 @@ class Project:
     # audio entirely. audio_tracks = lanes mixed over the montage:
     #   overlay — {id, kind:"overlay", media_ref, start_sec, source_in_sec?, source_dur?, volume, label}
     #   separated — {id, kind:"separated", scene_id, start_sec, source_in_sec, source_dur,
-    #     pinned_media, pinned_in_sec, pinned_dur, volume, label} — pinned_* freeze audio
+    #     pinned_media, pinned_bin_ref, pinned_in_sec, pinned_dur, volume, label} — pinned_* freeze audio
     #     from the render at separation time so video-only regen keeps the old audio.
     # Overlay tracks use absolute timeline start_sec and persist across scene edits.
     keep_original_audio: bool = True
