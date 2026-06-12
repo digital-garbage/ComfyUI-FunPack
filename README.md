@@ -2,9 +2,11 @@
 
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M61MBGIT)
-[![Become a Patron](https://c5.patreon.com/external/logo/become_a_patron_button.png)](https://patreon.com/digitalgarbage?utm_medium=unknown&utm_source=join_link&utm_campaign=creatorshare_creator&utm_content=copyLink)
-[![Run on Vast.ai](https://img.shields.io/badge/Run%20on-Vast.ai-BCFF41?style=for-the-badge&logoColor=000000)](https://cloud.vast.ai/?ref_id=308176)
+<p align="left">
+  <a href="https://ko-fi.com/M4M61MBGIT"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Ko-fi" height="36"></a>&nbsp;
+  <a href="https://patreon.com/digitalgarbage?utm_medium=unknown&amp;utm_source=join_link&amp;utm_campaign=creatorshare_creator&amp;utm_content=copyLink"><img src="https://c5.patreon.com/external/logo/become_a_patron_button.png" alt="Patreon" height="36"></a>&nbsp;
+  <a href="https://cloud.vast.ai/?ref_id=308176"><img src="https://img.shields.io/badge/Run%20on-Vast.ai-BCFF41?style=for-the-badge&amp;logoColor=000000" alt="Vast.ai" height="36"></a>
+</p>
 
 ## Dev Branch
 
