@@ -9,6 +9,7 @@
     const p = st.project;
     return hash({
       pid: p.id,
+      timing: [p.num_frames_per_scene, p.frame_rate, p.width, p.height],
       scenes: (p.scenes || []).map((s) => [
         s.id, s.text, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
         s.video_transition, s.transition_frames, s.transition_to_next, s.effects,
@@ -47,6 +48,7 @@
       overlay: st.selectedOverlayId,
       overlays: p.overlay_tracks,
       ovLanes: p.overlay_lanes,
+      timing: [p.num_frames_per_scene, p.frame_rate, p.width, p.height],
       scene: sc,
       proj: sc ? null : {
         name: p.name, anchor: p.anchor, global_prompt: p.global_prompt,
@@ -84,6 +86,7 @@
     }
     return hash({
       pid: p.id,
+      timing: [p.num_frames_per_scene, p.frame_rate],
       scenes: (p.scenes || []).map((s) => [
         s.id, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
         s.audio_volume, s.audio_separated, s.source_in, s.source_dur, s.effects,

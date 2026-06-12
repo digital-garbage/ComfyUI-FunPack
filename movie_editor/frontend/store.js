@@ -795,13 +795,13 @@
     const touches = ["num_frames_per_scene", "frame_rate", "width", "height"].some((k) => k in patch);
     if (!touches) return;
     for (const sc of p.scenes || []) {
-      if (_sceneHasManualSource(sc)) continue;
-      if (patch.num_frames_per_scene != null && (sc.frames_mode || "project") === "project") {
+      if (patch.num_frames_per_scene != null && (sc.frames_mode || "project") === "project" && !isVideoClip(sc)) {
         sc.frames = null;
       }
       if (patch.frame_rate != null && (sc.fps_mode || "project") === "project") {
         sc.fps = null;
       }
+      if (_sceneHasManualSource(sc)) continue;
       if (patch.width != null && (sc.width == null || sc.width === before.width)) sc.width = null;
       if (patch.height != null && (sc.height == null || sc.height === before.height)) sc.height = null;
     }
@@ -1423,12 +1423,14 @@
   function sceneEffFrames(sc, project) {
     const p = project || state.project;
     if (!sc || !p) return p?.num_frames_per_scene || 97;
+    if ((sc.frames_mode || "project") === "project") return p.num_frames_per_scene || 97;
     return sc.frames != null ? sc.frames : p.num_frames_per_scene;
   }
 
   function sceneEffFps(sc, project) {
     const p = project || state.project;
     if (!sc || !p) return p?.frame_rate || 25;
+    if ((sc.fps_mode || "project") === "project") return p.frame_rate || 25;
     return sc.fps != null ? sc.fps : p.frame_rate;
   }
 
