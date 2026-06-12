@@ -63,7 +63,6 @@
   const VIDEO_LANE_H = 96;  // matches .tl-track2 padding + clip band
   const AUDIO_LANE_H = 44;
   const OVERLAY_LANE_H = 40;
-  const OVERLAY_ADD_ROW_H = 24;
 
   function isAudioAsset(m) {
     return !!m && (m.kind === "audio" || /\.(mp3|wav|m4a|aac|ogg|flac|opus|weba)$/i.test(m.name || ""));
@@ -994,15 +993,9 @@
     }
 
     if (editing) {
-      const scale = el("input");
-      scale.type = "range"; scale.min = "0.05"; scale.max = "1"; scale.step = "0.01";
-      scale.value = existing.scale != null ? existing.scale : 0.35;
-      const scaleVal = el("span", "ov-range-val", Math.round(parseFloat(scale.value) * 100) + "%");
-      scale.oninput = () => {
-        scaleVal.textContent = Math.round(parseFloat(scale.value) * 100) + "%";
-        S.updateOverlayTrack(existing.id, { scale: parseFloat(scale.value) }, true);
-      };
-      form.append(OUI.rangeField("Size", scale, scaleVal));
+      form.append(OUI.pixelSizeFields(existing, st.project?.width || 768, st.project?.height || 512, (patch) => {
+        S.updateOverlayTrack(existing.id, patch, true);
+      }));
       const op = el("input");
       op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
       op.value = existing.opacity != null ? existing.opacity : 1;
@@ -1066,7 +1059,7 @@
     size.type = "number"; size.min = "8"; size.max = "200"; size.step = "1";
     size.value = state.font_size;
     size.oninput = () => { state.font_size = parseInt(size.value || "42", 10); syncPreview(); };
-    row.append(OUI.field("Size", size));
+    row.append(OUI.field("Font size (px)", size));
 
     const fontSel = OUI.fontSelect(state.font_family, (v) => { state.font_family = v; syncPreview(); });
     row.append(OUI.field("Font", fontSel));
@@ -1473,19 +1466,6 @@
     return row;
   }
 
-  function overlayAddRow(kind) {
-    const row = el("div", kind);
-    row.style.height = OVERLAY_ADD_ROW_H + "px";
-    row.style.minHeight = OVERLAY_ADD_ROW_H + "px";
-    row.style.flex = `0 0 ${OVERLAY_ADD_ROW_H}px`;
-    const add = el("button", "tl-overlay-add-btn", "+");
-    add.type = "button";
-    add.title = "Add overlay track (draws above existing tracks)";
-    add.onclick = (e) => { e.stopPropagation(); S.addOverlayLane(); };
-    row.append(add);
-    return row;
-  }
-
   function timelineGutter(st, p) {
     const gutter = el("div", "tl-gutter");
     gutter.style.width = GUTTER_W + "px";
@@ -1517,7 +1497,6 @@
     const ovLanes = p.overlay_lanes || [];
     const gOv = el("div", "tl-gutter-ov");
     ovLanes.forEach((lane, i) => gOv.append(overlayGutterLane(st, lane, i, ovLanes.length)));
-    gOv.append(overlayAddRow("tl-gutter-ov-add"));
     gTracks.append(gOv);
     gutter.append(gTracks);
     return gutter;
@@ -1574,7 +1553,6 @@
     const lanes = p.overlay_lanes || [];
     const wrap = el("div", "tl-overlay-lanes");
     lanes.forEach((lane, i) => wrap.append(overlayLaneEl(st, p, lane, i, lanes.length)));
-    wrap.append(overlayAddRow("tl-overlay-add-row"));
     return wrap;
   }
 

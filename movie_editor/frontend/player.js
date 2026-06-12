@@ -758,9 +758,9 @@
     _clipBoundaryToken = 0;
     _stopTick();
     _pauseInsAudio();
-    _notifyPh();
     _renderTransport();
     if (wasPlaying) render(S.get());
+    _notifyPh();
   }
 
   function _stop() {
@@ -1145,6 +1145,8 @@
     // header status
     clear(statusEl);
     if (gen.promptId) statusEl.append(el("span", null, gen.state.toUpperCase()));
+
+    try { window.OverlayPreview?.refresh?.(); } catch (_) {}
   }
 
   if (window.ViewBus) window.ViewBus.subscribePlayer(render);

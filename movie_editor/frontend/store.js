@@ -1598,7 +1598,27 @@
   }
 
   function overlayTrack(id) {
-    return (state.project?.overlay_tracks || []).find((t) => t.id === id) || null;
+    const t = (state.project?.overlay_tracks || []).find((x) => x.id === id) || null;
+    return t ? normalizeOverlayTrack(t) : null;
+  }
+
+  function projectCanvasSize() {
+    return { w: state.project?.width || 768, h: state.project?.height || 512 };
+  }
+
+  function normalizeOverlayTrack(ov) {
+    if (!ov) return ov;
+    const cw = state.project?.width || 768;
+    const ch = state.project?.height || 512;
+    if (ov.kind === "image") {
+      if (ov.width_px == null && ov.scale != null) ov.width_px = Math.max(8, Math.round(+ov.scale * cw));
+      if (ov.width_px == null) ov.width_px = Math.max(8, Math.round(cw * 0.35));
+      if (ov.keep_aspect === undefined) ov.keep_aspect = true;
+      if (!ov.keep_aspect && ov.height_px == null) ov.height_px = ov.width_px;
+    }
+    ov.flip_h = !!ov.flip_h;
+    ov.flip_v = !!ov.flip_v;
+    return ov;
   }
 
   function normalizeOverlayLanes(project) {
@@ -1613,6 +1633,7 @@
     const fallback = lanes[0].id;
     project.overlay_tracks.forEach((t) => {
       if (!t.lane_id || !ids.has(t.lane_id)) t.lane_id = fallback;
+      normalizeOverlayTrack(t);
     });
   }
 
@@ -1743,6 +1764,7 @@
     const lane = laneId && overlayLaneById(laneId) ? laneId : defaultOverlayLaneId();
     state.project.overlay_tracks = state.project.overlay_tracks || [];
     const id = _uid();
+    const { w: cw, h: ch } = projectCanvasSize();
     state.project.overlay_tracks.push({
       id,
       lane_id: lane,
@@ -1752,7 +1774,10 @@
       duration_sec: 3,
       x: 0.5,
       y: 0.5,
-      scale: 0.35,
+      width_px: Math.max(8, Math.round(cw * 0.35)),
+      keep_aspect: true,
+      flip_h: false,
+      flip_v: false,
       opacity: 1,
       label: (asset && asset.name) || "Image",
     });
@@ -1779,6 +1804,8 @@
       duration_sec: 3,
       x: 0.5,
       y: 0.5,
+      flip_h: false,
+      flip_v: false,
       opacity: 1,
       label: "Text",
     });
@@ -3139,6 +3166,7 @@
     addAudioTrack, updateAudioTrack, removeAudioTrack, separateSceneAudio, separatedTrackForScene,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec,
     overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
+    projectCanvasSize, normalizeOverlayTrack,
     addOverlayLane, removeOverlayLane, assignMediaToOverlayLane,
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,

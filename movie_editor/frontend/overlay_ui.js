@@ -97,5 +97,95 @@
     return wrap;
   }
 
-  window.OverlayUI = { FONTS, cssFamily, fontSelect, openModal, field, rangeField };
+  function overlayWidthPx(ov, canvasW) {
+    if (ov.width_px != null) return Math.max(8, parseInt(ov.width_px, 10) || 8);
+    if (ov.scale != null) return Math.max(8, Math.round(+ov.scale * canvasW));
+    return Math.max(8, Math.round(canvasW * 0.35));
+  }
+
+  function overlayHeightPx(ov, canvasW, canvasH) {
+    if (ov.height_px != null) return Math.max(8, parseInt(ov.height_px, 10) || 8);
+    return overlayWidthPx(ov, canvasW);
+  }
+
+  function pixelSizeFields(ov, canvasW, canvasH, onPatch) {
+    const wrap = document.createElement("div");
+    wrap.className = "ov-size-fields";
+    const row = document.createElement("div");
+    row.className = "ov-form-row";
+
+    const wIn = document.createElement("input");
+    wIn.type = "number";
+    wIn.min = "8";
+    wIn.max = String(Math.max(canvasW * 4, 4096));
+    wIn.step = "1";
+    wIn.className = "ov-input";
+    wIn.value = overlayWidthPx(ov, canvasW);
+
+    const hIn = document.createElement("input");
+    hIn.type = "number";
+    hIn.min = "8";
+    hIn.max = String(Math.max(canvasH * 4, 4096));
+    hIn.step = "1";
+    hIn.className = "ov-input";
+    hIn.value = overlayHeightPx(ov, canvasW, canvasH);
+
+    const keep = document.createElement("input");
+    keep.type = "checkbox";
+    keep.checked = ov.keep_aspect !== false;
+    keep.id = "ov-keep-" + (ov.id || "new");
+
+    const syncHeight = () => {
+      hIn.disabled = keep.checked;
+      hIn.style.opacity = keep.checked ? "0.45" : "1";
+    };
+    syncHeight();
+
+    wIn.oninput = () => onPatch({ width_px: Math.max(8, parseInt(wIn.value || "8", 10)) });
+    hIn.oninput = () => onPatch({ height_px: Math.max(8, parseInt(hIn.value || "8", 10)) });
+    keep.onchange = () => {
+      syncHeight();
+      onPatch({ keep_aspect: keep.checked });
+    };
+
+    row.append(field("Width (px)", wIn), field("Height (px)", hIn));
+    wrap.append(row);
+
+    const keepRow = document.createElement("label");
+    keepRow.className = "ov-keep-row";
+    const keepLab = document.createElement("span");
+    keepLab.textContent = "Keep proportion";
+    keepRow.append(keep, keepLab);
+    wrap.append(keepRow);
+
+    const flipRow = document.createElement("div");
+    flipRow.className = "ov-flip-row";
+    let flipH = !!ov.flip_h;
+    let flipV = !!ov.flip_v;
+    const mkFlip = (label, get, set) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn ghost tiny" + (get() ? " active" : "");
+      btn.textContent = label;
+      btn.onclick = (e) => {
+        e.preventDefault();
+        set(!get());
+        btn.classList.toggle("active", get());
+        onPatch({ flip_h: flipH, flip_v: flipV });
+      };
+      return btn;
+    };
+    flipRow.append(
+      mkFlip("Flip horizontal", () => flipH, (v) => { flipH = v; }),
+      mkFlip("Flip vertical", () => flipV, (v) => { flipV = v; }),
+    );
+    wrap.append(flipRow);
+
+    return wrap;
+  }
+
+  window.OverlayUI = {
+    FONTS, cssFamily, fontSelect, openModal, field, rangeField,
+    overlayWidthPx, overlayHeightPx, pixelSizeFields,
+  };
 })();

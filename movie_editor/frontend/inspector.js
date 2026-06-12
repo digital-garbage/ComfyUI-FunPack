@@ -775,7 +775,7 @@
       size.value = ov.font_size != null ? ov.font_size : 42;
       size.dataset.k = "ov-size";
       size.oninput = () => S.updateOverlayTrack(ov.id, { font_size: parseInt(size.value || "42", 10) }, true);
-      sec.append(field("Font size", size));
+      sec.append(field("Font size (px)", size));
 
       const fontSel = window.OverlayUI
         ? window.OverlayUI.fontSelect(ov.font_family || "system-ui", (v) => S.updateOverlayTrack(ov.id, { font_family: v }, true))
@@ -791,12 +791,12 @@
     } else {
       const asset = (st.mediaBin || []).find((m) => m.id === ov.media_ref);
       sec.append(el("div", "insp-hint", asset ? `Image: ${asset.name}` : "Missing image in Media Browser"));
-      const scale = el("input");
-      scale.type = "range"; scale.min = "0.05"; scale.max = "1"; scale.step = "0.01";
-      scale.value = ov.scale != null ? ov.scale : 0.35;
-      scale.dataset.k = "ov-scale";
-      scale.oninput = () => S.updateOverlayTrack(ov.id, { scale: parseFloat(scale.value) }, true);
-      sec.append(field("Size", scale));
+      const canvas = S.projectCanvasSize ? S.projectCanvasSize() : { w: st.project?.width || 768, h: st.project?.height || 512 };
+      if (window.OverlayUI?.pixelSizeFields) {
+        sec.append(window.OverlayUI.pixelSizeFields(ov, canvas.w, canvas.h, (patch) => {
+          S.updateOverlayTrack(ov.id, patch, true);
+        }));
+      }
     }
 
     const start = el("input");
@@ -819,6 +819,15 @@
     op.dataset.k = "ov-op";
     op.oninput = () => S.updateOverlayTrack(ov.id, { opacity: parseFloat(op.value) }, true);
     sec.append(field("Opacity", op));
+
+    const flipRow = el("div", "insp-layer-actions");
+    const mkFlip = (label, key) => {
+      const b = el("button", "btn ghost tiny" + (ov[key] ? " active" : ""), label);
+      b.onclick = () => S.updateOverlayTrack(ov.id, { [key]: !ov[key] }, true);
+      return b;
+    };
+    flipRow.append(mkFlip("Flip H", "flip_h"), mkFlip("Flip V", "flip_v"));
+    sec.append(flipRow);
 
     const lane = S.overlayLaneById ? S.overlayLaneById(ov.lane_id) : null;
     const laneIdx = S.overlayLaneIndex ? S.overlayLaneIndex(ov.lane_id) : -1;
