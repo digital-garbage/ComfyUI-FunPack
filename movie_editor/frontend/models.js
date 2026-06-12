@@ -19,6 +19,74 @@
   const expanded = new Set();     // slot ids currently expanded (collapsed by default)
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
+  const LIVE_PREVIEW_PORT = "port:FunPackLTXAVSceneChainSampler.preview_vae";
+
+  function _clearLivePreviewWires(exceptSlotId, exceptOut) {
+    for (const s of config.slots) {
+      s.wires = s.wires || {};
+      for (const outName of Object.keys(s.wires)) {
+        if (s.id === exceptSlotId && outName === exceptOut) continue;
+        const kept = wireTargets(s.wires[outName]).filter((t) => t !== LIVE_PREVIEW_PORT);
+        if (kept.length) s.wires[outName] = kept;
+        else delete s.wires[outName];
+      }
+    }
+  }
+
+  function _syncLivePreviewConfig(slotId, outName, wired) {
+    config.live_preview = {
+      enabled: false,
+      slot_id: null,
+      vae_output: "VAE",
+      ...(config.live_preview || {}),
+    };
+    if (wired && slotId && outName) {
+      config.live_preview.enabled = true;
+      config.live_preview.slot_id = slotId;
+      config.live_preview.vae_output = outName;
+    } else if (!wired && config.live_preview.slot_id === slotId
+        && (config.live_preview.vae_output || "VAE") === outName) {
+      config.live_preview.enabled = false;
+      config.live_preview.slot_id = null;
+    }
+  }
+
+  function _findLivePreviewWire() {
+    for (const s of config.slots) {
+      for (const [outName, raw] of Object.entries(s.wires || {})) {
+        if (wireTargets(raw).includes(LIVE_PREVIEW_PORT)) {
+          return { slotId: s.id, outName };
+        }
+      }
+    }
+    return null;
+  }
+
+  function _scanLivePreviewFromWires() {
+    const hit = _findLivePreviewWire();
+    if (hit) _syncLivePreviewConfig(hit.slotId, hit.outName, true);
+  }
+
+  function _afterLivePreviewWireChange(slot, outName) {
+    const targets = wireTargets(slot.wires?.[outName]);
+    if (targets.includes(LIVE_PREVIEW_PORT)) {
+      _clearLivePreviewWires(slot.id, outName);
+      if (!wireTargets(slot.wires[outName]).includes(LIVE_PREVIEW_PORT)) {
+        _addWire(slot.id, outName, LIVE_PREVIEW_PORT);
+      }
+      _syncLivePreviewConfig(slot.id, outName, true);
+    } else if (config.live_preview?.slot_id === slot.id
+        && (config.live_preview?.vae_output || "VAE") === outName) {
+      _syncLivePreviewConfig(slot.id, outName, false);
+    }
+  }
+
+  function slotDisplayLabel(slot) {
+    const cls = slot.node_class || "?";
+    const name = (slot.label || "").trim();
+    if (name && name !== cls) return `${name} — ${cls}`;
+    return cls;
+  }
 
   function roleLabel(key) { const r = roles.find((x) => x.key === key); return r ? r.label : (key === "custom" ? "Node" : (key || "?")); }
   function slotName(slot) { return slot.label || slot.node_class; }
@@ -112,6 +180,7 @@
       _clearPortWires(portId, parsed.slotId, parsed.out);
       _addWire(parsed.slotId, parsed.out, "port:" + portId);
     }
+    _scanLivePreviewFromWires();
   }
 
   function clearInternalCoreOverrides() {
@@ -325,7 +394,7 @@
     const roleSpan = el("span", "slot-role", roleText);
     roleSpan.title = "Click ✎ to rename this label";
     head.append(roleSpan);
-    head.append(el("span", "slot-node", slotName(slot)));
+    head.append(el("span", "slot-node", slotDisplayLabel(slot)));
     const ren = el("button", "ic-btn", "✎"); ren.title = "Rename role label";
     ren.onclick = async (e) => {
       e.stopPropagation();
@@ -533,10 +602,26 @@
         const sel = el("select", "wire-select");
         dests.forEach((d) => { const o = el("option", null, d.label); o.value = d.value; if (d.value === t) o.selected = true; sel.append(o); });
         if (t && !dests.some((d) => d.value === t)) { const o = el("option", null, t + " (not allowed)"); o.value = t; o.selected = true; sel.append(o); }
-        sel.onchange = async () => { _setWireTarget(slot, out.name, targets[i], sel.value); targets[i] = sel.value; reconcileOpenPortWiring(); await persist(); render(); };
+        sel.onchange = async () => {
+          _setWireTarget(slot, out.name, targets[i], sel.value);
+          targets[i] = sel.value;
+          slot.wires[out.name] = targets;
+          _afterLivePreviewWireChange(slot, out.name);
+          reconcileOpenPortWiring();
+          await persist();
+          render();
+        };
         const rm = el("button", "btn ghost tiny wire-rm", "×");
         rm.title = "Remove this wire";
-        rm.onclick = async () => { _setWireTarget(slot, out.name, targets[i], ""); targets.splice(i, 1); reconcileOpenPortWiring(); await persist(); render(); };
+        rm.onclick = async () => {
+          _setWireTarget(slot, out.name, targets[i], "");
+          targets.splice(i, 1);
+          slot.wires[out.name] = targets;
+          _afterLivePreviewWireChange(slot, out.name);
+          reconcileOpenPortWiring();
+          await persist();
+          render();
+        };
         row.append(sel, rm);
         wrap.append(row);
       });
@@ -859,6 +944,10 @@
           break;
         }
       }
+      if (cid === "sampler" && inp === "preview_vae") {
+        _clearLivePreviewWires(parsed.slotId, parsed.out);
+        _syncLivePreviewConfig(parsed.slotId, parsed.out, true);
+      }
     } else if (prev) {
       const old = _parseOutSource(prev);
       if (old) {
@@ -868,6 +957,10 @@
             break;
           }
         }
+      }
+      if (cid === "sampler" && inp === "preview_vae") {
+        _clearLivePreviewWires(null, null);
+        config.live_preview = { ...(config.live_preview || {}), enabled: false, slot_id: null };
       }
     }
   }
@@ -953,6 +1046,7 @@
         ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). "
           + "Wire video LATENT to Studio · latent (not Concat · video_latent — that link is internal). "
           + "Wire IMAGE via Input Image Processing → Studio · source_image (Timeline default). "
+          + "Wire a fast VAE (e.g. taehv) to Chain Sampler · live preview for per-scene previews. "
           + "MODEL/CLIP may chain through patchers. Enable Full control to override core links."
         : "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it.";
       sec.append(el("div", "links-hint", hint));

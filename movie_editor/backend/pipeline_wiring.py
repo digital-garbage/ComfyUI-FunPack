@@ -16,6 +16,7 @@ ROLE_WIRE_TARGETS: dict[str, list[tuple[str, Optional[str], str]]] = {
     "clip": [("CLIP", None, "FunPackStudio.clip")],
     "lora": [("MODEL", None, "FunPackStudio.model"), ("CLIP", None, "FunPackStudio.clip")],
     "video_vae": [("VAE", None, "FunPackLTXAVSceneChainSampler.vae")],
+    "preview_vae": [("VAE", None, "FunPackLTXAVSceneChainSampler.preview_vae")],
     "audio_vae": [("VAE", None, "LTXVAudioVAEDecode.audio_vae")],
     "audio_encoder": [("LATENT", None, "LTXVConcatAVLatent.audio_latent")],
     "empty_latent": [("LATENT", None, "FunPackStudio.latent")],
@@ -45,6 +46,7 @@ DEFAULT_WIRES_BY_ROLE: dict[str, dict[str, str]] = {
     "unet": {"MODEL": "port:FunPackStudio.model"},
     "clip": {"CLIP": "port:FunPackStudio.clip"},
     "video_vae": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"},
+    "preview_vae": {"VAE": "port:FunPackLTXAVSceneChainSampler.preview_vae"},
     "audio_vae": {"VAE": "port:LTXVAudioVAEDecode.audio_vae"},
     "audio_encoder": {"LATENT": "port:LTXVConcatAVLatent.audio_latent"},
     "empty_latent": {"LATENT": "port:FunPackStudio.latent"},
@@ -63,6 +65,7 @@ PORT_LABELS: dict[str, str] = {
     "FunPackStudio.latent": "Studio · latent (forwards to Concat AV · video_latent)",
     "FunPackStudio.source_image": "Studio · source_image (Img2Video anchor)",
     "FunPackLTXAVSceneChainSampler.vae": "Chain Sampler · vae",
+    "FunPackLTXAVSceneChainSampler.preview_vae": "Chain Sampler · live preview",
     "LTXVConcatAVLatent.audio_latent": "Concat AV Latent · audio_latent",
     "LTXVAudioVAEDecode.audio_vae": "Audio VAE Decode · audio_vae",
 }
@@ -75,6 +78,7 @@ OPEN_CORE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     ("studio", "source_image"),
     ("studio", "latent"),
     ("sampler", "vae"),
+    ("sampler", "preview_vae"),
     ("concat", "audio_latent"),
     ("audiodec", "audio_vae"),
 })
@@ -85,6 +89,7 @@ PORT_TO_OPEN_CORE: dict[str, tuple[str, str]] = {
     "FunPackStudio.source_image": ("studio", "source_image"),
     "FunPackStudio.latent": ("studio", "latent"),
     "FunPackLTXAVSceneChainSampler.vae": ("sampler", "vae"),
+    "FunPackLTXAVSceneChainSampler.preview_vae": ("sampler", "preview_vae"),
     "LTXVConcatAVLatent.audio_latent": ("concat", "audio_latent"),
     "LTXVAudioVAEDecode.audio_vae": ("audiodec", "audio_vae"),
 }

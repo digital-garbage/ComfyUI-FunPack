@@ -1131,7 +1131,16 @@
       }
       canvas.append(ro);
     }
-    if (["queuing", "running", "pending"].includes(gen.state) && S.get().models?.live_preview?.enabled) {
+    if (["queuing", "running", "pending"].includes(gen.state)) {
+      const lp = S.get().models?.live_preview || {};
+      const lpPort = "port:FunPackLTXAVSceneChainSampler.preview_vae";
+      const lpWired = (S.get().models?.slots || []).some((s) =>
+        Object.values(s.wires || {}).some((raw) => {
+          const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+          return arr.includes(lpPort);
+        }));
+      const showLp = lp.enabled || lp.slot_id || lpWired;
+    if (showLp) {
       const lpLayer = el("div", "pm-live-preview");
       _livePreviewEl = el("img", "pm-live-preview-img");
       _livePreviewEl.alt = "Live preview";
@@ -1146,6 +1155,7 @@
       }
       lpLayer.append(_livePreviewEl, _livePreviewBadgeEl);
       canvas.append(lpLayer);
+    }
     }
     if (previewAsset?.kind === "image") {
       const layer = el("div", "pm-media-preview");

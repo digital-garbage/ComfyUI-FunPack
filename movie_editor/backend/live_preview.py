@@ -72,8 +72,41 @@ def parse_config(raw: Any) -> dict[str, Any]:
         return {}
 
 
+PREVIEW_VAE_PORT = "FunPackLTXAVSceneChainSampler.preview_vae"
+PREVIEW_VAE_WIRE = f"port:{PREVIEW_VAE_PORT}"
+
+
+def _wire_targets(raw: Any) -> list[str]:
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(t) for t in raw if t]
+    return [str(raw)]
+
+
+def preview_vae_wire(models: Any) -> tuple[Optional[str], Optional[str]]:
+    """Return (slot_id, vae_output) wired to Chain Sampler live preview, if any."""
+    if not isinstance(models, dict):
+        return None, None
+    for slot in models.get("slots") or []:
+        sid = slot.get("id")
+        if not sid:
+            continue
+        for out_name, raw in (slot.get("wires") or {}).items():
+            if PREVIEW_VAE_WIRE in _wire_targets(raw):
+                return str(sid), str(out_name or "VAE")
+    lp = models.get("live_preview") or {}
+    sid = lp.get("slot_id")
+    if sid:
+        return str(sid), str(lp.get("vae_output") or "VAE")
+    return None, None
+
+
 def models_enabled(models: Any) -> bool:
     if not isinstance(models, dict):
         return False
+    sid, _ = preview_vae_wire(models)
+    if sid:
+        return True
     lp = models.get("live_preview") or {}
     return bool(lp.get("enabled") and lp.get("slot_id"))
