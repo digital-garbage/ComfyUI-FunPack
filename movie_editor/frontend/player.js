@@ -158,7 +158,8 @@
         const sc = S.scene(c.sceneId);
         const sourceIn = sc?.source_in || 0;
         const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
-        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, { media: c.media, renderIn });
+        const cacheBust = (st && st._previewGenToken) || Date.now();
+        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, { media: c.media, renderIn, cacheBust });
       }
     }
   }
@@ -877,7 +878,36 @@
   let _tcEl = null;       // timecode span (updated live, not rebuilt)
   let _playBtnEl = null;  // play/pause button (glyph updated live, not rebuilt)
   let _genMsgEl = null, _genBarEl = null, _genFillEl = null;  // gen readout, updated live
-  let _livePreviewEl = null, _livePreviewBadgeEl = null;
+  let _livePreviewEl = null, _livePreviewBadgeEl = null, _livePreviewLayerEl = null;
+
+  function _livePreviewConfigured(st) {
+    const m = st?.models || {};
+    const lp = m.live_preview || {};
+    if (lp.enabled || lp.slot_id) return true;
+    if ((m.core_overrides?.sampler?.preview_vae || "").startsWith("out:")) return true;
+    const port = "port:FunPackLTXAVSceneChainSampler.preview_vae";
+    return (m.slots || []).some((s) =>
+      Object.values(s.wires || {}).some((raw) => {
+        const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+        return arr.includes(port);
+      }));
+  }
+
+  function _ensureLivePreviewDom() {
+    if (_livePreviewLayerEl && _livePreviewEl) return;
+    const canvas = document.querySelector(".pm-canvas");
+    if (!canvas) return;
+    const lpLayer = el("div", "pm-live-preview");
+    _livePreviewEl = el("img", "pm-live-preview-img");
+    _livePreviewEl.alt = "Live preview";
+    _livePreviewEl.draggable = false;
+    _livePreviewEl.style.display = "none";
+    _livePreviewBadgeEl = el("div", "pm-live-preview-badge");
+    _livePreviewBadgeEl.style.display = "none";
+    lpLayer.append(_livePreviewEl, _livePreviewBadgeEl);
+    canvas.append(lpLayer);
+    _livePreviewLayerEl = lpLayer;
+  }
 
   // Update the generation readout in place on progress ticks (no store re-render, so the
   // editor stays interactive — frames can be saved, effects added — while a job runs).
@@ -890,9 +920,13 @@
         _genFillEl.style.width = Math.min(100, Math.round((g.step / g.maxStep) * 100)) + "%";
       }
     }
-    if (_livePreviewEl && g.livePreviewUrl) {
-      if (_livePreviewEl.src !== g.livePreviewUrl) _livePreviewEl.src = g.livePreviewUrl;
-      _livePreviewEl.style.display = "";
+    if (g.livePreviewUrl) {
+      _ensureLivePreviewDom();
+      const canvas = document.querySelector(".pm-canvas");
+      if (canvas && !canvas.classList.contains("gen-live-preview")) canvas.classList.add("gen-live-preview");
+      if (_livePreviewLayerEl) _livePreviewLayerEl.style.display = "";
+      if (_livePreviewEl && _livePreviewEl.src !== g.livePreviewUrl) _livePreviewEl.src = g.livePreviewUrl;
+      if (_livePreviewEl) _livePreviewEl.style.display = "";
     }
     if (_livePreviewBadgeEl && g.liveScene >= 0 && g.liveSceneCount > 0) {
       _livePreviewBadgeEl.textContent = `Scene ${g.liveScene + 1}/${g.liveSceneCount}`;
@@ -1064,6 +1098,9 @@
 
     // Rebuilding the monitor DOM during playback detaches <video> nodes and kills multi-scene
     // chain preview mid-stream (often visible from scene 3 onward once store ticks catch up).
+    // Still mount live preview during generation so sampling frames stay visible while playing.
+    const genActive = ["queuing", "running", "pending"].includes(st.gen?.state);
+    if (genActive && _livePreviewConfigured(st)) _ensureLivePreviewDom();
     if (_scrubDepth > 0 || _playing) {
       _ensureStageMounted();
       return;
@@ -1077,7 +1114,8 @@
     const previewOverlay = previewAsset && (previewAsset.kind === "image" || previewAsset.kind === "audio" || previewAsset.kind === "video");
 
     // ── canvas (video + placeholder) ────────────────────────────────────────
-    const canvas = el("div", "pm-canvas" + (previewOverlay ? " media-previewing" : ""));
+    const genLive = ["queuing", "running", "pending"].includes(gen.state) && _livePreviewConfigured(st);
+    const canvas = el("div", "pm-canvas" + (previewOverlay ? " media-previewing" : "") + (genLive ? " gen-live-preview" : ""));
     _slateEl = el("div", "pm-slate");
     _slateEl.style.display = "none";
     _slateEl.append(el("div", "pm-slate-title"));
@@ -1112,7 +1150,7 @@
     // store render; live progress ticks update it in place (see the gen-progress listener),
     // so the rest of the editor isn't rebuilt while a generation runs.
     _genMsgEl = _genBarEl = _genFillEl = null;
-    _livePreviewEl = _livePreviewBadgeEl = null;
+    _livePreviewEl = _livePreviewBadgeEl = _livePreviewLayerEl = null;
     if (["queuing", "running", "pending", "error"].includes(gen.state)) {
       const busy = gen.state !== "error";
       const ro = el("div", "gen-readout" + (gen.state === "error" ? " error" : ""));
@@ -1131,17 +1169,9 @@
       }
       canvas.append(ro);
     }
-    if (["queuing", "running", "pending"].includes(gen.state)) {
-      const lp = S.get().models?.live_preview || {};
-      const lpPort = "port:FunPackLTXAVSceneChainSampler.preview_vae";
-      const lpWired = (S.get().models?.slots || []).some((s) =>
-        Object.values(s.wires || {}).some((raw) => {
-          const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
-          return arr.includes(lpPort);
-        }));
-      const showLp = lp.enabled || lp.slot_id || lpWired;
-    if (showLp) {
+    if (["queuing", "running", "pending"].includes(gen.state) && _livePreviewConfigured(st)) {
       const lpLayer = el("div", "pm-live-preview");
+      _livePreviewLayerEl = lpLayer;
       _livePreviewEl = el("img", "pm-live-preview-img");
       _livePreviewEl.alt = "Live preview";
       _livePreviewEl.draggable = false;
@@ -1155,7 +1185,6 @@
       }
       lpLayer.append(_livePreviewEl, _livePreviewBadgeEl);
       canvas.append(lpLayer);
-    }
     }
     if (previewAsset?.kind === "image") {
       const layer = el("div", "pm-media-preview");

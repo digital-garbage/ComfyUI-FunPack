@@ -200,10 +200,33 @@ def _scene_playback_clip_spec(
 _preview_segment_cache: dict[str, str] = {}
 
 
-def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
+def _invalidate_preview_segment_cache(pid: str) -> None:
+    """Drop cached ffmpeg trims when a project re-generates or source files change."""
+    import os
+    prefix = f"{pid}:"
+    for key in list(_preview_segment_cache.keys()):
+        if not key.startswith(prefix):
+            continue
+        cached = _preview_segment_cache.pop(key, None)
+        if cached:
+            try:
+                os.unlink(cached)
+            except OSError:
+                pass
+
+
+def _source_mtime(path: str) -> int:
+    import os
+    try:
+        return int(os.path.getmtime(path))
+    except OSError:
+        return 0
+
+
+def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict, *, src_mtime: int = 0) -> str:
     return (
         f"{pid}:{scene_id}:{clip.get('filename')}:{clip.get('subfolder') or ''}:"
-        f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}"
+        f"{clip.get('type') or 'output'}:{clip.get('in')}:{clip.get('dur')}:mt{int(src_mtime or 0)}"
     )
 
 
@@ -1398,7 +1421,9 @@ if web is not None and PromptServer is not None:
     # --- API: generate / status / result ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/generate")
     async def _generate(req):
-        p = _project_or_404(req.match_info["pid"])
+        pid = req.match_info["pid"]
+        _invalidate_preview_segment_cache(pid)
+        p = _project_or_404(pid)
         body = await req.json() if req.can_read_body else {}
         scene_ids = body.get("scene_ids")
         if scene_ids:
@@ -1689,10 +1714,15 @@ if web is not None and PromptServer is not None:
             clip = _scene_playback_clip_spec(proj, scene_id, render_override=render_override)
         except KeyError as e:
             return web.json_response({"detail": str(e)}, status=404)
-        key = _preview_segment_cache_key(pid, scene_id, clip)
+        try:
+            src_path = _resolve_clip_src_path(clip)
+        except FileNotFoundError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        src_mtime = _source_mtime(src_path)
+        key = _preview_segment_cache_key(pid, scene_id, clip, src_mtime=src_mtime)
         cached = _preview_segment_cache.get(key)
         if cached and os.path.isfile(cached):
-            return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=3600"})
+            return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=60"})
         try:
             import folder_paths
             tempdir = folder_paths.get_temp_directory()
@@ -1704,14 +1734,13 @@ if web is not None and PromptServer is not None:
             f"funpack_preview_{pid[:8]}_{scene_id}_{int(_time.time() * 1000)}.mp4",
         )
         try:
-            src_path = _resolve_clip_src_path(clip)
             _ffmpeg_trim_clip(src_path, out_path, clip.get("in"), clip.get("dur"))
         except FileNotFoundError as e:
             return web.json_response({"detail": str(e)}, status=400)
         except RuntimeError as e:
             return web.json_response({"detail": str(e)}, status=503)
         _preview_segment_cache[key] = out_path
-        return web.FileResponse(out_path, headers={"Cache-Control": "private, max-age=3600"})
+        return web.FileResponse(out_path, headers={"Cache-Control": "private, max-age=60"})
 
     # --- API: export one clip (ffmpeg trim from a chain output using in/dur) ---
     @routes.post(UI_PREFIX + "/api/projects/{pid}/export-clip")

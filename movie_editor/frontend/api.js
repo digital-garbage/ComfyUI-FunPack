@@ -161,6 +161,7 @@
           type: m.type || "output",
           render_in: String(spec.renderIn != null ? spec.renderIn : 0),
         });
+        if (spec.cacheBust != null) q.set("v", String(spec.cacheBust));
         u += "?" + q.toString();
       }
       return u;

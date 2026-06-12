@@ -69,7 +69,8 @@
 
   function _livePreviewConfigured() {
     const lp = state.models?.live_preview || {};
-    if (lp.slot_id) return true;
+    if (lp.slot_id || lp.enabled) return true;
+    if ((state.models?.core_overrides?.sampler?.preview_vae || "").startsWith("out:")) return true;
     return (state.models?.slots || []).some((s) =>
       Object.values(s.wires || {}).some((raw) => _modelWireTargets(raw).includes(LIVE_PREVIEW_PORT)));
   }
@@ -2473,6 +2474,7 @@
         "Timeline did not save before generate. Wait for the save indicator to clear, then try again."
       );
     }
+    state._previewGenToken = Date.now();
     return localSnap;
   }
 
@@ -2784,8 +2786,10 @@
     if (recordedSceneIds.length) {
       _validateRendersToken++;
       state.notice = "";
+      state._previewGenToken = Date.now();
       _syncEditorStateToProject();
       scheduleSaveSilent();
+      notify();
     }
   }
 
@@ -2809,23 +2813,19 @@
               msg: `${head}  ·  sampling ${pr.value}/${pr.max}`,
             });
           }
+          const lp = pr?.live_preview;
+          if (lp?.ready && lp.url) {
+            const sceneNote = (lp.scene_index >= 0 && lp.scene_count > 0)
+              ? ` · scene ${lp.scene_index + 1}/${lp.scene_count}`
+              : "";
+            updateGenProgress({
+              livePreviewUrl: lp.url,
+              liveScene: lp.scene_index,
+              liveSceneCount: lp.scene_count,
+              msg: `${(state.gen.msg || prefix).replace(/\s*·\s*scene \d+\/\d+$/, "")}${sceneNote}`,
+            });
+          }
         } catch (_) {}
-        if (_livePreviewConfigured()) {
-          try {
-            const lp = await API.livePreview();
-            if (lp?.ready && lp.url) {
-              const sceneNote = (lp.scene_index >= 0 && lp.scene_count > 0)
-                ? ` · scene ${lp.scene_index + 1}/${lp.scene_count}`
-                : "";
-              updateGenProgress({
-                livePreviewUrl: lp.url,
-                liveScene: lp.scene_index,
-                liveSceneCount: lp.scene_count,
-                msg: `${(state.gen.msg || prefix).replace(/\s*·\s*scene \d+\/\d+$/, "")}${sceneNote}`,
-              });
-            }
-          } catch (_) {}
-        }
       }, 700);
       pollTimer = setInterval(async () => {
         if (_interrupted) {
@@ -2949,6 +2949,7 @@
         10,
       );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
+      if (r.live_preview_note) console.warn("[live preview]", r.live_preview_note);
       _queueRenderPrompts(sceneIds);
       if (r.validation && state.project) {
         state.project.generation_meta = {
