@@ -332,6 +332,10 @@ def normalize_shortcut_item(item, fallback_name=""):
         "enabled": bool(item.get("enabled", True)),
         "triggers": triggers,
         "replacements": replacements,
+        # Optional per-shortcut refinement key. Empty string = bound to the run's default
+        # key (no special handling). A non-default key means "when this shortcut fires,
+        # this key is being trained" — Studio steers/rates the scene against it.
+        "refinement_key": normalize_refinement_key(item.get("refinement_key", "")),
         "created_at": created,
         "updated_at": str(item.get("updated_at") or now_iso()),
     }
@@ -592,15 +596,16 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
         replacements = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
         if not replacements:
             continue
+        sc_key = normalize_refinement_key(shortcut.get("refinement_key", ""))
         for trigger in shortcut_list(shortcut.get("triggers", [])):
             pattern = _shortcut_trigger_pattern(trigger)
             if pattern:
-                candidates.append((trigger, pattern, replacements, shortcut.get("name", trigger)))
+                candidates.append((trigger, pattern, replacements, shortcut.get("name", trigger), sc_key))
     if not candidates:
         return original, []
 
     candidates.sort(key=lambda item: len(shortcut_key(item[0])), reverse=True)
-    combined = "|".join(f"(?P<t{index}>{pattern})" for index, (_, pattern, _, _) in enumerate(candidates))
+    combined = "|".join(f"(?P<t{index}>{pattern})" for index, (_, pattern, _, _, _) in enumerate(candidates))
     if not combined:
         return original, []
     try:
@@ -615,11 +620,12 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
 
     def replace(match):
         nonlocal removals_happened
-        for index, (trigger, _, replacements, name) in enumerate(candidates):
+        for index, (trigger, _, replacements, name, sc_key) in enumerate(candidates):
             if match.group(f"t{index}") is None:
                 continue
             replacement = rng.choice(replacements)
-            applied.append({"name": str(name), "trigger": trigger, "replacement": replacement})
+            applied.append({"name": str(name), "trigger": trigger,
+                            "replacement": replacement, "refinement_key": sc_key})
             if not replacement:
                 removals_happened = True
             return replacement

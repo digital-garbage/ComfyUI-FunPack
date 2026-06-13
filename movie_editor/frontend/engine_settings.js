@@ -146,6 +146,14 @@
     const card = engineCard(parent, "studio_card", "FunPack Studio", true);
     card.setBadge(countStudioChanges(p));
 
+    // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
+    // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
+    // bound to a non-default key layer per-scene training on top of this.
+    const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
+    keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
+    keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
+    card.body.append(field("Refinement key", keyCtrl));
+
     const ess = collapsibleSection(card.body, "studio_ess", "Essentials", true);
     STUDIO_REFINER_ESSENTIALS.forEach((f) => renderStudioRefinerBool(ess, rf, f));
 

@@ -613,6 +613,10 @@ class Project:
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
     sampler_inputs: dict = field(default_factory=dict)
+    # Refinement key for this project's runs. Feeds the FunPackRefinementKeyLoader (Studio /
+    # Chain Sampler / SaveRefinementLatent). "default" = the keyless/default store. Shortcuts
+    # bound to a non-default key layer their own per-scene training on top of this.
+    refinement_key: str = "default"
     # Audio editing (render-time mix). keep_original_audio=False drops the per-clip LTXAV
     # audio entirely. audio_tracks = lanes mixed over the montage:
     #   overlay — {id, kind:"overlay", media_ref, start_sec, source_in_sec?, source_dur?, volume, label}
@@ -664,6 +668,7 @@ class Project:
             sampler_slot=str(d.get("sampler_slot", "funpack")),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
+            refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),
             overlay_lanes=list(d.get("overlay_lanes") or []),

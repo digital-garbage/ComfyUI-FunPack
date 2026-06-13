@@ -242,6 +242,14 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # which the result proxy + final-render concat resolve against the temp directory.
         graph["vhs"]["inputs"]["save_output"] = False
 
+        # Refinement key for this run. FunPackRefinementKeyLoader resolves target = selected
+        # combo OR typed key_name; force the combo to "-None-" so the typed project key wins
+        # (an existing combo value seeded from the reference workflow would otherwise override).
+        _rkey = str(params.get("refinement_key") or "default").strip() or "default"
+        if "keyloader" in graph:
+            graph["keyloader"]["inputs"]["key_name"] = _rkey
+            graph["keyloader"]["inputs"]["refinement_key"] = "-None-"
+
         # 2b. project-level widget overrides for the built-in FunPack nodes.
         _me_scene_ratings = None
         for k, v in (params.get("studio_inputs") or {}).items():

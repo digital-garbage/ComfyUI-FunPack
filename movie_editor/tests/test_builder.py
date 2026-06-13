@@ -211,3 +211,15 @@ def test_movie_editor_scene_ratings_in_studio_settings():
         {"index": 2, "rating": "Missing action"},
     ]
     assert "_movie_editor_scene_ratings" not in graph["studio"]["inputs"]
+
+
+def test_refinement_key_injected_into_keyloader():
+    graph, _ = builder.build(OI, {"slots": []}, {**PARAMS, "refinement_key": "charA"})
+    assert graph["keyloader"]["inputs"]["key_name"] == "charA"
+    # combo forced to none so the typed key_name wins over any reference-seeded value
+    assert graph["keyloader"]["inputs"]["refinement_key"] == "-None-"
+
+
+def test_refinement_key_defaults_when_absent():
+    graph, _ = builder.build(OI, {"slots": []}, PARAMS)
+    assert graph["keyloader"]["inputs"]["key_name"] == "default"

@@ -1446,6 +1446,7 @@ if web is not None and PromptServer is not None:
                 ),
                 "sampler_inputs": sampler_inputs,
                 "reset_session": reset_session,
+                "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Workflow build failed: {e}"}, status=502)

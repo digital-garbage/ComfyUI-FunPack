@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+**Multi-refinement-key support in the Movie Editor.** Refinement keys are now a first-class, per-shortcut training signal. (1) The Engine settings → FunPack Studio card has a **Refinement key** field, so a project can set/wire its own key (previously the key was fixed and unreachable even in full-control mode); it feeds the FunPackRefinementKeyLoader for Studio / Chain Sampler / SaveRefinementLatent. (2) The Shortcuts editor gains a **"Use non-default refinement key"** checkbox + key-name field — firing that shortcut means its key is being trained. (3) **Multi-key per scene:** a scene whose prompt fires several shortcuts bound to different keys now has its conditioning steered by *each* key and **averaged/merged** into one (one key ⇒ substitute the default; none ⇒ default). Rating that scene trains **every** participating key. A key counts for a scene only if one of its shortcuts fired in that scene's text (anchor-bound keys count for every scene); attribution falls back to the safe union if the prompt was rewritten or the split diverges.
+
 ## [3.0.0] - 2026-06-11
 
 ### Added

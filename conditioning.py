@@ -627,10 +627,12 @@ def _expand_with_map(text):
     """
     try:
         from .templates import (load_shortcut_db, shortcut_list, shortcut_key,
-                                 _shortcut_replacements, _shortcut_trigger_pattern)
+                                 _shortcut_replacements, _shortcut_trigger_pattern,
+                                 normalize_refinement_key)
     except ImportError:
         from templates import (load_shortcut_db, shortcut_list, shortcut_key,
-                               _shortcut_replacements, _shortcut_trigger_pattern)
+                               _shortcut_replacements, _shortcut_trigger_pattern,
+                               normalize_refinement_key)
     import random
     from hashlib import md5
 
@@ -647,14 +649,16 @@ def _expand_with_map(text):
         reps = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
         if not reps:
             continue
+        sc_key = normalize_refinement_key(shortcut.get("refinement_key", ""))
+        sc_name = str(shortcut.get("name", "") or "")
         for trig in shortcut_list(shortcut.get("triggers", [])):
             pat = _shortcut_trigger_pattern(trig)
             if pat:
-                candidates.append((trig, pat, reps))
+                candidates.append((trig, pat, reps, sc_key, sc_name))
     if not candidates:
         return text, whole
     candidates.sort(key=lambda it: len(shortcut_key(it[0])), reverse=True)
-    combined = "|".join(f"(?P<t{i}>{pat})" for i, (_, pat, _) in enumerate(candidates))
+    combined = "|".join(f"(?P<t{i}>{pat})" for i, (_, pat, _, _, _) in enumerate(candidates))
     if not combined:
         return text, whole
     rng = random.Random(int(md5(text.encode("utf-8")).hexdigest()[:12], 16))
@@ -671,13 +675,15 @@ def _expand_with_map(text):
                            "orig_start": last, "orig_end": m.start(), "is_shortcut": False})
             parts.append(lit); exp_pos += len(lit)
         rep = None
-        for i, (_, _, reps) in enumerate(candidates):
+        pc_key, pc_name = "", ""
+        for i, (_, _, reps, sc_key, sc_name) in enumerate(candidates):
             if m.group(f"t{i}") is not None:
-                rep = rng.choice(reps); break
+                rep = rng.choice(reps); pc_key, pc_name = sc_key, sc_name; break
         if rep is None:
             rep = m.group(0)
         pieces.append({"exp_start": exp_pos, "exp_end": exp_pos + len(rep),
-                       "orig_start": m.start(), "orig_end": m.end(), "is_shortcut": True})
+                       "orig_start": m.start(), "orig_end": m.end(), "is_shortcut": True,
+                       "refinement_key": pc_key, "name": pc_name})
         parts.append(rep); exp_pos += len(rep)
         last = m.end()
     if last < len(text):
@@ -769,6 +775,78 @@ def split_timeline_verbatim(prompt):
         for i in range(1, len(scene_texts)) if effects[i]
     ]
     return {"anchor": chunks[0], "scenes": scenes, "transitions": transitions}
+
+
+def prompt_scene_shortcut_keys(prompt):
+    """Map fired shortcuts to scenes by their non-default refinement key.
+
+    Returns (scene_count, scene_key_sets, all_keys) where scene_key_sets[i] is the set of
+    non-default refinement keys whose shortcuts fired in scene i's text, and all_keys is the
+    union (used for the safe fallback when scene attribution can't be trusted). Boundaries
+    mirror the editor's lossless splitter (split_timeline_verbatim): expand-with-map ->
+    detect transitions -> project boundaries onto the ORIGINAL text. The anchor (chunk 0) is
+    prepended to every scene, so anchor-span keys participate in EVERY scene. Original-text
+    offsets are used so random replacement picks (which change expanded lengths) never matter.
+
+    scene_count == 0 means no transition split was detected (single scene) or there were no
+    fired non-default keys at all.
+    """
+    text = str(prompt or "")
+    if not text.strip():
+        return 0, [], set()
+
+    expanded, pieces = _expand_with_map(text)
+    fired = [(pc.get("orig_start", 0), str(pc.get("refinement_key") or ""))
+             for pc in pieces
+             if pc.get("is_shortcut") and str(pc.get("refinement_key") or "")]
+    all_keys = {k for _, k in fired}
+    if not all_keys:
+        return 0, [], set()
+
+    try:
+        from .templates import load_custom_transition_triggers
+    except ImportError:
+        from templates import load_custom_transition_triggers
+    custom_map = load_custom_transition_triggers()
+    triggers = list(custom_map.keys())
+    if triggers:
+        def _trig_pat(t):
+            end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+            return r"\b" + re.escape(t) + end
+        parts = "|".join(_trig_pat(t) for t in sorted(triggers, key=len, reverse=True))
+        split_pattern = re.compile(r"(?:" + parts + r"|" + _GENERIC_SCENE_LABEL_PATTERN + r")", re.IGNORECASE)
+    else:
+        split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
+
+    cuts = []
+    for m in split_pattern.finditer(expanded):
+        info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
+        if info.get("placement") == "start":
+            orig = _project_offset(pieces, m.start(), "before")
+        else:
+            orig = _project_offset(pieces, m.end(), "after")
+        cuts.append(orig)
+    seen, uniq = set(), []
+    for off in sorted(cuts):
+        if off <= 0 or off in seen:
+            continue
+        seen.add(off); uniq.append(off)
+    if not uniq:
+        return 0, [], all_keys  # no scene split -> caller uses default / fallback
+
+    positions = [0] + uniq + [len(text)]
+    n_chunks = len(positions) - 1            # chunk 0 = anchor, chunks 1.. = scenes
+    chunk_keys = [set() for _ in range(n_chunks)]
+    for off, key in fired:
+        idx = 0
+        for i in range(n_chunks):
+            if positions[i] <= off < positions[i + 1]:
+                idx = i
+                break
+        chunk_keys[idx].add(key)
+    anchor_keys = chunk_keys[0]
+    scene_key_sets = [set(anchor_keys) | s for s in chunk_keys[1:]]
+    return len(scene_key_sets), scene_key_sets, all_keys
 
 
 def parse_timeline_segments(prompt):
@@ -6679,6 +6757,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             conditionings.append((cond, scene_meta))
         return conditionings
 
+    def _v2_scene_refinement_keys(self, raw_positive, scene_count):
+        """Per-scene non-default refinement keys, aligned to split_scene_texts.
+
+        A key participates in a scene when one of its bound shortcuts fired in that scene's
+        text (anchor keys count for every scene). Falls back to the union across all scenes
+        when attribution can't be trusted — the raw-prompt scene count diverges from the
+        actual split (advisor/repair rewrote the prompt, unusual transition stacking, etc.).
+        Returns a list of sets aligned to scenes; empty sets => default key (today's path)."""
+        scene_count = max(1, int(scene_count or 1))
+        try:
+            n, scene_sets, all_keys = prompt_scene_shortcut_keys(raw_positive)
+        except Exception as error:
+            print(f"[FunPackStudio] Scene refinement-key attribution failed: {error}")
+            return [set() for _ in range(scene_count)]
+        if not all_keys:
+            return [set() for _ in range(scene_count)]
+        if n == scene_count:
+            return scene_sets
+        return [set(all_keys) for _ in range(scene_count)]
+
     def _v2_scene_seed_values(self, seed, scene_count, provided=None):
         scene_count = max(0, int(scene_count or 0))
         provided = list(provided or [])
@@ -6741,6 +6839,53 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             )
         return scene_run
 
+    def _v2_learn_scene_into_state(self, target_global, scene_run, profile, iter_num,
+                                   axis_feedback, seed_output_connected):
+        """Run the full per-scene learning suite into one target global_state. Returns the
+        successful-seed-memory status string. Shared by the project key and every non-default
+        key bound to the scene's shortcuts (multi-key rating)."""
+        self._v2_update_phrase_memory(target_global, scene_run, profile, iter_num, axis_feedback)
+        self._v2_update_concept_delta_memory(target_global, scene_run, profile)
+        self._v2_update_concept_pair_dirs(target_global, scene_run, profile)
+        seed_memory_status = self._v2_update_successful_seed_memory(
+            target_global, scene_run, profile, iter_num,
+            seed_output_connected=bool(seed_output_connected),
+        )
+        self._v2_update_intent_family_memory(target_global, scene_run, profile, iter_num, axis_feedback)
+        self._v2_update_negative_prompt_memory(target_global, scene_run, profile, axis_feedback)
+        self._v2_update_intent_alignment_memory(target_global, scene_run, profile, iter_num, axis_feedback)
+        self._v2_update_conditioning_memory(target_global, scene_run, profile, axis_feedback)
+        return seed_memory_status
+
+    def _v2_learn_scene_into_keys(self, scene_keys, project_key, scene_run, profile, iter_num,
+                                  axis_feedback, seed_output_connected):
+        """Train every non-default key that participated in a scene. Each key's own state file
+        gets the full learning suite + its value-function update, then is saved. The project
+        key is skipped here (it already learns into the run's main global_state)."""
+        trained = []
+        for key in scene_keys or []:
+            key = str(key or "").strip()
+            if not key or key == str(project_key or "").strip():
+                continue
+            try:
+                state, _ = self._v2_load_state(key)
+                key_global = state.setdefault("global", {})
+                self._v2_learn_scene_into_state(
+                    key_global, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
+                )
+                if not profile.get("skip_learning"):
+                    self._v2_train_value_function(
+                        refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt"),
+                        scene_run.get("conditioning"),
+                        float(profile.get("reward", 0.0)),
+                    )
+                state["global"] = key_global
+                self._v2_save_state(state, key)
+                trained.append(key)
+            except Exception as error:
+                print(f"[FunPackRefiner] Scene key '{key}' learning failed: {error}")
+        return trained
+
     def _v2_apply_movie_editor_scene_ratings(
         self,
         global_state,
@@ -6783,24 +6928,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 lines.append(f"Scene {scene_index + 1}: skipped (no scene text in last run)")
                 continue
             axis_feedback = self._v2_axis_feedback(profile, global_state.get("last_missing_axes", []))
-            self._v2_update_phrase_memory(global_state, scene_run, profile, iter_num, axis_feedback)
-            self._v2_update_concept_delta_memory(global_state, scene_run, profile)
-            self._v2_update_concept_pair_dirs(global_state, scene_run, profile)
-            seed_memory_status = self._v2_update_successful_seed_memory(
-                global_state,
-                scene_run,
-                profile,
-                iter_num,
-                seed_output_connected=bool(seed_output_connected),
+            # Project default key: learns into the run's main global_state (saved by refine()).
+            seed_memory_status = self._v2_learn_scene_into_state(
+                global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
-            self._v2_update_intent_family_memory(
-                global_state, scene_run, profile, iter_num, axis_feedback,
-            )
-            self._v2_update_negative_prompt_memory(global_state, scene_run, profile, axis_feedback)
-            self._v2_update_intent_alignment_memory(
-                global_state, scene_run, profile, iter_num, axis_feedback,
-            )
-            self._v2_update_conditioning_memory(global_state, scene_run, profile, axis_feedback)
             if refinement_key and not profile.get("skip_learning"):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
@@ -6809,10 +6940,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 )
                 if n is not None:
                     print(f"[FunPackRefiner] Scene {scene_index + 1} value function updated — {n} samples")
+            # Non-default keys whose shortcuts fired in this scene: rate against EACH of them.
+            scene_keys = []
+            sk_all = previous_run.get("scene_refinement_keys") or []
+            if 0 <= scene_index < len(sk_all):
+                scene_keys = list(sk_all[scene_index] or [])
+            trained_keys = self._v2_learn_scene_into_keys(
+                scene_keys, refinement_key, scene_run, profile, iter_num,
+                axis_feedback, seed_output_connected,
+            )
             self._v2_learn_absolute(scene_run, profile)
             profiles.append(profile)
+            key_note = f" [keys: {', '.join(trained_keys)}]" if trained_keys else ""
             lines.append(
-                f"Scene {scene_index + 1} ({label}): {seed_memory_status.split(': ', 1)[-1]}"
+                f"Scene {scene_index + 1} ({label}): {seed_memory_status.split(': ', 1)[-1]}{key_note}"
             )
         if not profiles:
             return "Movie Editor ratings: no learnable scene ratings.", None
@@ -12402,6 +12543,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Transition seed prep failed: {e}")
 
+        # Per-scene non-default refinement keys (shortcut->key bindings). Aligned to
+        # split_scene_texts; empty sets keep today's single-key behaviour for that scene.
+        scene_refinement_keys = (
+            self._v2_scene_refinement_keys(_raw_positive_prompt, len(split_scene_texts))
+            if split_scene_texts else []
+        )
+
         if current_prompt_refusal:
             state["last_run"] = None
         else:
@@ -12442,6 +12590,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "scene_count": len(split_scene_texts) if split_scene_texts else 1,
                 "scene_texts": list(split_scene_texts) if split_scene_texts else [],
                 "scene_seeds": current_scene_seeds,
+                # Non-default refinement keys that participated in each scene (sorted lists),
+                # so the NEXT run's rating pass can train every key that shaped the scene.
+                "scene_refinement_keys": [sorted(s) for s in scene_refinement_keys],
                 "gen_context": current_gen_context,
             }
         self._v2_update_advisor_feedback_history(global_state, feedback_prompt, advisor_rating_label, int(global_state.get("total_iterations", 0)))
@@ -12726,7 +12877,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile),
                         status,
                         training_info,
                         loss_graph,
@@ -12744,7 +12895,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12943,6 +13094,75 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception as e:
             print(f"[FunPackRefiner] Conditioning ascent failed: {e}")
             return conditioning_list
+
+    def _v2_apply_scene_refinement_keys(self, conditioning_list, scene_refinement_keys,
+                                        default_key, value_guidance=True, learning_profile=None):
+        """Relative-mode output steering with per-scene multi-key support.
+
+        For each scene entry, look up the non-default keys whose shortcuts fired in it:
+          - 0 keys  -> steer with the project default key (today's _v2_ascend_conditioning).
+          - >=1 key -> steer a clone with EACH key's learned state (per-prompt conditioning
+                       memory + that key's value-function ascend), then AVERAGE the per-key
+                       results into one merged conditioning (one key == mean of one == itself).
+                       This REPLACES the default key for that scene; every key that appeared in
+                       the scene shaped its final conditioning.
+        With no scene keys at all this is exactly _v2_ascend_conditioning(default_key)."""
+        if not conditioning_list:
+            return conditioning_list
+        has_keys = any(scene_refinement_keys or [])
+        if not has_keys:
+            return self._v2_ascend_conditioning(conditioning_list, default_key, apply=value_guidance)
+
+        profile = learning_profile or dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
+        key_state_cache = {}
+
+        def _key_global(key):
+            if key not in key_state_cache:
+                try:
+                    state, _ = self._v2_load_state(key)
+                    key_state_cache[key] = state.get("global", {}) if isinstance(state, dict) else {}
+                except Exception as error:
+                    print(f"[FunPackStudio] Scene key '{key}' state load failed: {error}")
+                    key_state_cache[key] = {}
+            return key_state_cache[key]
+
+        out = []
+        merged_scenes = []
+        for entry in conditioning_list:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[0], torch.Tensor)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], entry[1]
+            scene_index = meta.get("funpack_scene_index") if isinstance(meta, dict) else None
+            keys = set()
+            if isinstance(scene_index, int) and 0 <= scene_index < len(scene_refinement_keys or []):
+                keys = set(scene_refinement_keys[scene_index] or set())
+            if not keys:
+                # default-key path for this scene (per-entry so it matches no-key behaviour)
+                out.append(self._v2_ascend_conditioning([entry], default_key, apply=value_guidance)[0])
+                continue
+            steered = []
+            for key in sorted(keys):
+                try:
+                    c, _ = self._v2_apply_conditioning_memory(cond.clone(), _key_global(key), profile)
+                    if not isinstance(c, torch.Tensor):
+                        c = cond.clone()
+                    c = self._v2_ascend_conditioning([(c, meta)], key, apply=value_guidance)[0][0]
+                    steered.append(c)
+                except Exception as error:
+                    print(f"[FunPackStudio] Scene key '{key}' steering failed: {error}")
+            if not steered:
+                out.append(entry)
+                continue
+            merged = steered[0] if len(steered) == 1 else torch.stack(steered, dim=0).mean(dim=0)
+            merged = protect_audio_channels(merged, cond)
+            out.append((merged, meta))
+            merged_scenes.append((scene_index, sorted(keys)))
+        if merged_scenes:
+            desc = "; ".join(f"scene {i + 1 if isinstance(i, int) else '?'}={'+'.join(ks)}"
+                             for i, ks in merged_scenes)
+            print(f"[FunPackStudio] Scene refinement-key merge applied ({desc}).")
+        return out
 
     # ====================== ABSOLUTE STEERING (prompt-agnostic) ======================
     # Relative steering (everything above) keys every learned direction to one prompt's
@@ -13167,16 +13387,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
-                                  temporal_style="natural", temporal_fallback_text=""):
+                                  temporal_style="natural", temporal_fallback_text="",
+                                  scene_refinement_keys=None, learning_profile=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
-        spread to it (the backstop half of the dual auto-cap)."""
+        spread to it (the backstop half of the dual auto-cap).
+
+        scene_refinement_keys (when any scene has non-default keys) REPLACES the project-key
+        relative steering for those scenes with the merged per-key steering (see
+        _v2_apply_scene_refinement_keys); scenes without bound keys keep the project key."""
         mode = str(steer_mode or "relative").lower()
         out = self._v2_apply_pulse_temporal(conditioning_list, temporal_style)
         out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
         if mode in ("relative", "both"):
-            out = self._v2_ascend_conditioning(out, refinement_key, apply=value_guidance)
+            out = self._v2_apply_scene_refinement_keys(
+                out, scene_refinement_keys, refinement_key,
+                value_guidance=value_guidance, learning_profile=learning_profile,
+            )
         if mode in ("absolute", "both"):
             out = self._v2_apply_absolute(out, float(absolute_strength))
         if spread_cap and spread_cap > 0:

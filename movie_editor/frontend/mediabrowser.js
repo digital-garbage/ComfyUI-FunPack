@@ -84,14 +84,30 @@
       const reps = el("textarea", "lib-in"); reps.rows = 4; reps.placeholder = "Replacement(s) — one per line; multiple = random pick"; reps.value = (item.replacements || []).join("\n");
       const en = checkRow("Enabled", item.enabled !== false);
       box.append(labeled("Name", name), labeled("Triggers", trig), labeled("Replacements", reps), en);
+
+      // Per-shortcut refinement key. When checked, firing this shortcut means the named key
+      // is being trained — Studio steers/rates each scene against every key that appeared in it.
+      const existingKey = String(item.refinement_key || "").trim();
+      const useKey = checkRow("Use non-default refinement key", !!existingKey);
+      const keyField = labeled("Refinement key", (() => {
+        const i = el("input", "lib-in"); i.placeholder = "key name"; i.value = existingKey; return i;
+      })());
+      const keyInput = keyField.querySelector("input");
+      keyField.style.display = existingKey ? "" : "none";
+      useKey._cb.onchange = () => { keyField.style.display = useKey._cb.checked ? "" : "none"; if (useKey._cb.checked) keyInput.focus(); };
+      box.append(useKey, keyField);
+
       const actions = el("div", "lib-form-actions");
       const save = el("button", "btn primary tiny", "Save");
       save.onclick = async () => {
         const triggers = splitLines(trig.value);
         if (!triggers.length) { alert("At least one trigger is required."); return; }
+        const refKey = useKey._cb.checked ? (keyInput.value || "").trim() : "";
+        if (useKey._cb.checked && !refKey) { alert("Enter a refinement key name, or uncheck the box."); return; }
         await S.saveShortcut({
           name: name.value.trim() || triggers[0], triggers,
           replacements: splitLines(reps.value), enabled: en._cb.checked,
+          refinement_key: refKey,
           original_name: item.name || undefined,
         });
         close(); render(S.get());
