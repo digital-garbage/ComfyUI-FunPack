@@ -2,44 +2,52 @@
 (function () {
   const FORGET_LABEL = "-Just forget it-";
 
+  // `label` is the canonical value sent to the backend (unchanged); `display` is the
+  // clearer name shown to the user. Hints note that "action" includes camera MOVES and
+  // "details" includes appearance / setting / camera FRAMING (_v2_axis_categories).
   const CATEGORIES = [
     {
       id: "positive",
       label: "Positive",
       accent: "76,175,125",
       ratings: [
-        { label: "Perfect", reward: "+1.0", hint: "Exact match — full prompt adherence reinforcement" },
-        { label: "Nailed it", reward: "+0.75", hint: "Good adherence, weaker reinforcement" },
+        { label: "Perfect", reward: "+1.0", hint: "Exactly what you asked for. Strongly reinforces this result." },
+        { label: "Nailed it", reward: "+0.75", hint: "On target, just short of perfect. Reinforces." },
       ],
     },
     {
       id: "missing",
-      label: "Missing",
+      label: "Missing (asked for it, didn't get it)",
       accent: "212,168,75",
       ratings: [
-        { label: "Missing action", reward: "+0.05", hint: "Action wasn't attempted" },
-        { label: "Missing details", reward: "+0.35", hint: "Details absent from output" },
-        { label: "Missing quality", reward: "−0.30", hint: "Visual quality degraded" },
-        { label: "Missing action + quality", reward: "−0.55", hint: "Action missing, quality suffered" },
+        { label: "Missing action", reward: "+0.05", hint: "Prompted motion didn't happen — includes CAMERA moves (pan/zoom/dolly). Pushes more motion." },
+        { label: "Missing details", reward: "+0.35", hint: "Asked-for details absent — fine detail, appearance, setting, or camera framing." },
+        { label: "Missing quality", reward: "−0.30", display: "Bad quality / artifacts", hint: "Body horror, melting, blur, low quality — the IMAGE itself is degraded." },
+        { label: "Missing action + quality", reward: "−0.55", hint: "Motion missing AND the image is degraded." },
       ],
     },
     {
       id: "wrong",
-      label: "Wrong",
+      label: "Wrong (did something, but wrong)",
       accent: "210,90,90",
       ratings: [
-        { label: "Wrong action", reward: "−0.10", hint: "Wrong action attempted — suppress" },
-        { label: "Wrong action + quality", reward: "−0.40", hint: "Wrong action caused quality/anatomy damage" },
-        { label: "Wrong details", reward: "+0.20", hint: "Details were wrong" },
-        { label: "Wrong appearance", reward: "0.0", hint: "Appearance mismatch — suppresses auto-inject" },
+        { label: "Wrong action", reward: "−0.10", hint: "Subject or CAMERA moved, but the wrong way. Suppresses that motion." },
+        { label: "Wrong action + quality", reward: "−0.40", hint: "Wrong motion that also damaged anatomy / quality." },
+        { label: "Wrong details", reward: "+0.20", display: "Not-asked details", hint: "Detail / appearance / framing is fine in general — just not what THIS prompt asked." },
+        { label: "Wrong appearance", reward: "0.0", display: "Wrong character/subject", hint: "Wrong person, outfit, or place. Stops auto-injecting appearance words. NOT for body horror — use Bad quality." },
       ],
     },
   ];
 
   const NUCLEAR = [
-    { label: "Awful", reward: "−0.90", hint: "Everything wrong" },
-    { label: FORGET_LABEL, reward: "none", hint: "Clear rating — no learning signal" },
+    { label: "Awful", reward: "−0.90", hint: "Everything wrong. Strong negative." },
+    { label: FORGET_LABEL, reward: "none", hint: "Clears the rating — no learning signal." },
   ];
+
+  // canonical label -> display name, for rendering a stored value (scene button, chips).
+  const DISPLAY_NAMES = {};
+  for (const cat of CATEGORIES) for (const r of cat.ratings) if (r.display) DISPLAY_NAMES[r.label] = r.display;
+  const displayName = (label) => DISPLAY_NAMES[label] || label;
 
   const NO_LOVED = new Set([
     "Perfect", "Nailed it", "Awful", FORGET_LABEL,
@@ -61,8 +69,8 @@
   function formatLabel(value) {
     const v = String(value || "").trim();
     if (!v || v === FORGET_LABEL) return "";
-    if (v.endsWith("|loved")) return v.slice(0, -6) + " ♥";
-    return v;
+    if (v.endsWith("|loved")) return displayName(v.slice(0, -6)) + " ♥";
+    return displayName(v);
   }
 
   function buttonLabel(value) {
@@ -92,7 +100,7 @@
 
     const labelEl = document.createElement("div");
     labelEl.className = "me-rating-opt-label";
-    labelEl.textContent = r.label;
+    labelEl.textContent = r.display || r.label;
 
     const rewardEl = document.createElement("div");
     rewardEl.className = "me-rating-opt-reward";

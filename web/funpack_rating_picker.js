@@ -4,44 +4,53 @@ import { api } from "../../scripts/api.js";
 const PICKER_NODES = new Set(["FunPackStudio", "FunPackVideoRefinerV2"]);
 const FORGET_LABEL = "-Just forget it-";
 
+// `label` is the canonical value sent to the backend (unchanged, so saved ratings
+// and node validation keep working); `display` is the clearer name shown to the
+// user. Hints note that "action" includes camera MOVES and "details" includes
+// appearance / setting / camera FRAMING (see _v2_axis_categories in conditioning.py).
 const CATEGORIES = [
   {
     id: "positive",
     label: "Positive",
     accent: "76,175,125",
     ratings: [
-      { label: "Perfect",   reward: "+1.0",  hint: "Exact match — full prompt adherence reinforcement" },
-      { label: "Nailed it", reward: "+0.75", hint: "Good adherence, weaker reinforcement" },
+      { label: "Perfect",   reward: "+1.0",  hint: "Exactly what you asked for. Strongly reinforces this result." },
+      { label: "Nailed it", reward: "+0.75", hint: "On target, just short of perfect. Reinforces." },
     ],
   },
   {
     id: "missing",
-    label: "Missing",
+    label: "Missing (asked for it, didn't get it)",
     accent: "212,168,75",
     ratings: [
-      { label: "Missing action",           reward: "+0.05", hint: "Action wasn't attempted" },
-      { label: "Missing details",          reward: "+0.35", hint: "Details absent from output" },
-      { label: "Missing quality",          reward: "−0.30", hint: "Visual quality degraded" },
-      { label: "Missing action + quality", reward: "−0.55", hint: "Action missing, quality suffered" },
+      { label: "Missing action",           reward: "+0.05", hint: "Prompted motion didn't happen — includes CAMERA moves (pan/zoom/dolly). Pushes more motion." },
+      { label: "Missing details",          reward: "+0.35", hint: "Asked-for details absent — fine detail, appearance, setting, or camera framing." },
+      { label: "Missing quality",          reward: "−0.30", display: "Bad quality / artifacts", hint: "Body horror, melting, blur, low quality — the IMAGE itself is degraded." },
+      { label: "Missing action + quality", reward: "−0.55", hint: "Motion missing AND the image is degraded." },
     ],
   },
   {
     id: "wrong",
-    label: "Wrong",
+    label: "Wrong (did something, but wrong)",
     accent: "210,90,90",
     ratings: [
-      { label: "Wrong action",            reward: "−0.10", hint: "Wrong action attempted — suppress" },
-      { label: "Wrong action + quality",  reward: "−0.40", hint: "Wrong action caused quality/anatomy damage" },
-      { label: "Wrong details",           reward: "+0.20", hint: "Details were wrong" },
-      { label: "Wrong appearance",        reward: "0.0",   hint: "Appearance mismatch — suppresses auto-inject" },
+      { label: "Wrong action",            reward: "−0.10", hint: "Subject or CAMERA moved, but the wrong way. Suppresses that motion." },
+      { label: "Wrong action + quality",  reward: "−0.40", hint: "Wrong motion that also damaged anatomy / quality." },
+      { label: "Wrong details",           reward: "+0.20", display: "Not-asked details", hint: "Detail / appearance / framing is fine in general — just not what THIS prompt asked." },
+      { label: "Wrong appearance",        reward: "0.0",   display: "Wrong character/subject", hint: "Wrong person, outfit, or place. Stops auto-injecting appearance words. NOT for body horror — use Bad quality." },
     ],
   },
 ];
 
 const NUCLEAR = [
-  { label: "Awful",      reward: "−0.90", hint: "Everything wrong" },
-  { label: FORGET_LABEL, reward: "none",  hint: "Skip learning — auto-set after each run" },
+  { label: "Awful",      reward: "−0.90", hint: "Everything wrong. Strong negative." },
+  { label: FORGET_LABEL, reward: "none",  hint: "Clears the rating — no learning signal. Auto-set after each run." },
 ];
+
+// canonical label -> display name, for rendering a stored value (button text).
+const DISPLAY_NAMES = {};
+for (const cat of CATEGORIES) for (const r of cat.ratings) if (r.display) DISPLAY_NAMES[r.label] = r.display;
+function displayName(label) { return DISPLAY_NAMES[label] || label; }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -160,7 +169,7 @@ function makeOption(r, accent, onPick, allOptions) {
 
   const labelEl = document.createElement("div");
   labelEl.className = "fp-picker-opt-label";
-  labelEl.textContent = r.label;
+  labelEl.textContent = r.display || r.label;
 
   const rewardEl = document.createElement("div");
   rewardEl.className = "fp-picker-opt-reward";
@@ -306,8 +315,8 @@ function setupRatingPicker(node) {
   const getLabel = () => {
     const v = ratingWidget.value || "";
     if (!v || v === FORGET_LABEL) return "Waiting for rating...";
-    if (v.endsWith("|loved")) return `Rating: ${v.slice(0, -6)} ♥`;
-    return `Rating: ${v}`;
+    if (v.endsWith("|loved")) return `Rating: ${displayName(v.slice(0, -6))} ♥`;
+    return `Rating: ${displayName(v)}`;
   };
 
   node.widgets = (node.widgets || []).filter((w) => w.__fpPickerWidget !== true);
