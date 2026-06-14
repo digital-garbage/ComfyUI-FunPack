@@ -10,10 +10,6 @@
 
 **Session Reset now wipes every key a run trains, not just the default.** Because per-scene multi-key learning trains *every* refinement key whose shortcut fired in the prompt, a Studio Session Reset now clears all of those keys too (project/default key + each non-default key activated by a shortcut), so no stale per-key state survives a reset (`FunPackVideoRefinerV2._v2_reset_prompt_keys`). The Movie Editor's "Reset Studio session" now confirms first, listing exactly which keys will be wiped: *"This action will reset Studio learning for keys: default, key1, key2… To avoid resetting a non-default key, remove the shortcut that activates it from the prompt. Proceed?"* — disarming a mis-armed reset does not re-prompt.
 
-### Fixed
-
-**Editor timeline could drop/shift scenes when a shortcut expanded to a scene cut.** If a shortcut's replacement text contained a transition marker (e.g. a `scene N` label or a custom trigger) — increasingly common now that shortcuts can carry refinement keys — the editor's lossless splitter (`split_timeline_verbatim`) projected that hidden cut onto the shortcut's edge in the original text. Colliding/early projected boundaries got deduped away, so a scene would vanish from the timeline and the remaining scene texts shifted (classically: "scene 2 removed, scene 1 now shows scene 2's prompt") until a UI reload. The timeline now treats shortcuts as opaque and ignores cuts that originate *inside* a shortcut expansion (they only ever existed after expansion, which the user can't see or edit); generation still expands and splits on them as before. Splits on literal, user-typed markers are unchanged.
-
 ## [3.0.0] - 2026-06-11
 
 ### Added

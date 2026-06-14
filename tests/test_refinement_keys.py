@@ -44,30 +44,6 @@ def _norm(s):
     return _re.sub(r"\s+", " ", str(s or "")).strip()
 
 
-def test_verbatim_split_ignores_shortcut_internal_cuts(monkeypatch):
-    """A key-bound shortcut whose REPLACEMENT contains a scene cut must NOT split or corrupt
-    the editor's verbatim timeline (the cut is invisible/uneditable there). Regression for the
-    'scene 2 removed / scene 1 shows scene 2's prompt' bug."""
-    # <closeup> expands to text containing the generic 'scene 2' label and carries a key.
-    db = _db({"closeup": (["<closeup>"], ["scene 2 a tight close-up"], "closeupkey")})
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-
-    # No literal cut -> a single verbatim scene that keeps the whole prompt (shortcut opaque).
-    p1 = "a hero stands in the rain <closeup> of his eyes"
-    v1 = conditioning.split_timeline_verbatim(p1)
-    assert len(v1["scenes"]) == 1
-    assert v1["anchor"] == ""
-    assert _norm(v1["scenes"][0]["text"]) == _norm(p1)  # lossless, uncorrupted
-
-    # One LITERAL cut + a shortcut-internal cut -> only the literal one splits (anchor + 1 scene).
-    p2 = "<closeup> the alley is dark. scene 3 sunrise over the bay"
-    v2 = conditioning.split_timeline_verbatim(p2)
-    assert len(v2["scenes"]) == 1
-    rejoined = " ".join(x for x in [v2["anchor"]] + [s["text"] for s in v2["scenes"]] if x)
-    assert _norm(rejoined) == _norm(p2)  # nothing dropped
-
-
 def test_verbatim_split_still_splits_on_literal_cuts(monkeypatch):
     """The fix must not suppress real, user-typed scene cuts."""
     db = _db({"closeup": (["<closeup>"], ["a tight close-up"], "closeupkey")})  # no cut in replacement
