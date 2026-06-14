@@ -857,12 +857,21 @@ def prompt_scene_shortcut_keys(prompt):
         split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
 
     cuts = []
+    # (1) Scan the EXPANDED text: catches a shortcut whose expansion resolves to a transition.
     for m in split_pattern.finditer(expanded):
         info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
         if info.get("placement") == "start":
             orig = _project_offset(pieces, m.start(), "before")
         else:
             orig = _project_offset(pieces, m.end(), "after")
+        cuts.append(orig)
+    # (2) Scan the ORIGINAL text too: a transition trigger that is ALSO a shortcut gets expanded
+    #     away in (1) before detection, so its split would be lost. Matching the verbatim text
+    #     catches it at its true offset. This mirrors split_timeline_verbatim so this attribution
+    #     split lands on the same scene count as the generation split (fewer divergence fallbacks).
+    for m in split_pattern.finditer(text):
+        info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
+        orig = m.start() if info.get("placement") == "start" else m.end()
         cuts.append(orig)
     seen, uniq = set(), []
     for off in sorted(cuts):
@@ -891,10 +900,12 @@ def resolve_scene_refinement_keys(raw_positive, scene_count):
     """Per-scene non-default refinement keys, aligned to split_scene_texts.
 
     A key participates in a scene when one of its bound shortcuts fired in that scene's
-    text (anchor keys count for every scene). Falls back to the union across all scenes
-    when attribution can't be trusted — the raw-prompt scene count diverges from the
-    actual split (advisor/repair rewrote the prompt, unusual transition stacking, etc.).
-    Returns a list of sets aligned to scenes; empty sets => default key (today's path).
+    text (anchor keys count for every scene). Falls back to the project DEFAULT key only
+    (empty sets) when attribution can't be trusted — the raw-prompt scene count diverges
+    from the actual split (advisor/repair rewrote the prompt, unusual transition stacking,
+    etc.). The old behaviour here was the all-keys UNION, which trained EVERY key on EVERY
+    scene (cross-contamination + value-function bloat); under-training one diverged run is
+    far safer. Returns a list of sets aligned to scenes; empty sets => default key.
 
     This is the single source of truth shared by generation (FunPackStudio._v2_scene_refinement_keys)
     and the Movie Editor preview, so what the editor shows is exactly what will run."""
@@ -908,7 +919,10 @@ def resolve_scene_refinement_keys(raw_positive, scene_count):
         return [set() for _ in range(scene_count)]
     if n == scene_count:
         return scene_sets
-    return [set(all_keys) for _ in range(scene_count)]
+    # Divergence: attribution cannot be trusted. Steer/train with the project default key only
+    # (empty sets) instead of the all-keys union, so a diverged run never trains every key on
+    # every scene. all_keys stays available to callers that need the full set (e.g. session reset).
+    return [set() for _ in range(scene_count)]
 
 
 def parse_timeline_segments(prompt):

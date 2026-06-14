@@ -176,9 +176,10 @@ def test_studio_scene_refinement_keys_fallback(monkeypatch):
     raw = "wide shot scene 1 alpha here scene 2 beta here"  # attribution finds 2 scenes
     # scene_count matches -> precise per-scene
     assert studio._v2_scene_refinement_keys(raw, 2) == [{"keyA"}, {"keyB"}]
-    # scene_count diverges (advisor rewrote / stacking) -> safe union for every scene
+    # scene_count diverges (advisor rewrote / stacking) -> default key only (empty sets), NOT the
+    # all-keys union; a union here would train every key on every scene (cross-contamination).
     out = studio._v2_scene_refinement_keys(raw, 3)
-    assert out == [{"keyA", "keyB"}, {"keyA", "keyB"}, {"keyA", "keyB"}]
+    assert out == [set(), set(), set()]
 
 
 def test_studio_scene_refinement_keys_no_bindings(monkeypatch):

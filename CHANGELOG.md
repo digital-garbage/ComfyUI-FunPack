@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- Multi-key refinement: stop training every key on every clip. Per-scene key attribution
+  (`prompt_scene_shortcut_keys`) now scans both the expanded and original prompt — matching the
+  generation splitter `split_timeline_verbatim` — so structurally-identical prompts land on the
+  same scene count and attribution stays precise. When the count still diverges (advisor/repair
+  rewrote `prompt_to_encode` away from the raw prompt), `resolve_scene_refinement_keys` now falls
+  back to the project **default key only** (empty sets) instead of the all-keys **union**. The
+  union assigned every key to every scene, which both steered and — once persisted into the run
+  and read back at rating time — trained every key on every clip (cross-contamination + value
+  function bloat, e.g. an ~80 MB jump on a single 3-clip rating pass).
+
 ## [3.0.1] - 2026-06-14
 
 ### Added
