@@ -584,6 +584,14 @@
     // a non-finite volume throws on assignment, which (in the rAF tick) would freeze playback.
     const keepOrig = (S.get().project || {}).keep_original_audio !== false;
     let vol = (clip && clip.vol != null) ? +clip.vol : 1;
+    // Read the scene's volume LIVE: the timeline slider changes audio_volume via
+    // patchSceneQuiet (no re-render), so the cached clip.vol would stay stale —
+    // a mute that never un-mutes when dragged back up. _applyFx runs every frame
+    // during playback, so a live read tracks the slider immediately.
+    if (clip && clip.sceneId && S.scene) {
+      const sc = S.scene(clip.sceneId);
+      if (sc) vol = sc.audio_separated ? 0 : (sc.audio_volume != null ? sc.audio_volume : 1);
+    }
     if (!isFinite(vol)) vol = 1;
     const nv = keepOrig ? Math.max(0, Math.min(1, vol)) : 0;
     if (v.volume !== nv) { try { v.volume = nv; } catch (_) {} }
