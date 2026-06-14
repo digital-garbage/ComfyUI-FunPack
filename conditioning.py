@@ -13221,14 +13221,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 # default-key path for this scene (per-entry so it matches no-key behaviour)
                 out.append(self._v2_ascend_conditioning([entry], default_key, apply=value_guidance)[0])
                 continue
+            # Each key contributes only its learned DIRECTIONS here (per-prompt
+            # conditioning memory). The value-function ascend+search runs ONCE on the
+            # merged result below — not per key — because per-key search injected
+            # independent noise and a poorly-fit fresh key's VF could ascend toward a
+            # bad optimum, which the averaging then baked in (a body-horror path).
             steered = []
             for key in sorted(keys):
                 try:
                     c, _ = self._v2_apply_conditioning_memory(cond.clone(), _key_global(key), profile)
-                    if not isinstance(c, torch.Tensor):
-                        c = cond.clone()
-                    c = self._v2_ascend_conditioning([(c, meta)], key, apply=value_guidance)[0][0]
-                    steered.append(c)
+                    steered.append(c if isinstance(c, torch.Tensor) else cond.clone())
                 except Exception as error:
                     print(f"[FunPackStudio] Scene key '{key}' steering failed: {error}")
             if not steered:
@@ -13240,8 +13242,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 merged = torch.stack(steered, dim=0).mean(dim=0)
                 # Averaging per-key tensors that point different ways shrinks the
                 # per-token magnitude (and collapses it toward zero when keys
-                # disagree), and ascend/search already broke the per-key renorm —
-                # so a raw mean can land far from the scene encode at the wrong
+                # disagree), leaving the merge far from the scene encode at the wrong
                 # magnitude, which free-runs into warping on simple prompts. Re-impose
                 # the single-key discipline: cap the delta vs the raw encode, then
                 # renormalize to its per-token norm (same tail as
@@ -13254,6 +13255,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 merged = cond + delta * scale
                 merged = torch.clamp(merged, min=-60.0, max=60.0)
                 merged = merged / merged.norm(dim=-1, keepdim=True).clamp_min(1e-8) * original_norm
+            # Single VF ascend+search on the merged conditioning, using the always-on
+            # project default key (the most-trained, most stable VF) rather than any
+            # one scene key.
+            try:
+                merged = self._v2_ascend_conditioning([(merged, meta)], default_key, apply=value_guidance)[0][0]
+            except Exception as error:
+                print(f"[FunPackStudio] Merged scene ascend failed: {error}")
             merged = protect_audio_channels(merged, cond)
             out.append((merged, meta))
             merged_scenes.append((scene_index, sorted(keys)))
