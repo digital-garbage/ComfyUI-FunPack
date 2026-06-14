@@ -742,8 +742,21 @@ def split_timeline_verbatim(prompt):
     else:
         split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
 
+    def _starts_in_shortcut(exp_off):
+        # A cut whose trigger text lives INSIDE a shortcut expansion is invisible/uneditable in
+        # the verbatim timeline (the trigger isn't in the original text we slice). Splitting on it
+        # projects the boundary onto the shortcut's edge, corrupting/dropping scenes. The editor
+        # treats shortcuts as opaque (they only expand for preview/generation), so such cuts are
+        # ignored here; generation still expands and splits on them normally.
+        for pc in pieces:
+            if pc.get("is_shortcut") and pc["exp_start"] <= exp_off < pc["exp_end"]:
+                return True
+        return False
+
     cuts = []  # (orig_offset, effect)
     for m in split_pattern.finditer(expanded):
+        if _starts_in_shortcut(m.start()):
+            continue
         info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
         effect = info.get("visual_effect") or None
         if effect == "none":
