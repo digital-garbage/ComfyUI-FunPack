@@ -556,12 +556,16 @@ def _shortcut_trigger_pattern(trigger):
 
 
 def _shortcut_replacements(raw):
-    """Parse replacement list, allowing empty string as a valid ‘remove’ replacement."""
+    """Parse replacement list, allowing empty string as a valid ‘remove’ replacement.
+
+    A replacement is a prose phrase that legitimately contains commas/semicolons, so a raw
+    string is split on NEWLINES ONLY (the 'one per line' UI contract). Splitting on commas
+    tore one phrase into several variants and re-saving kept re-tearing it."""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw)
         except (json.JSONDecodeError, TypeError, ValueError):
-            raw = re.split(r"[,;\n]+", raw)
+            raw = raw.split("\n")
     if not isinstance(raw, list):
         return []
     seen = set()

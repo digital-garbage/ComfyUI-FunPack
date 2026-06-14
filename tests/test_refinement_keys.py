@@ -92,6 +92,20 @@ def test_verbatim_split_still_splits_on_literal_cuts(monkeypatch):
     assert len(v["scenes"]) == 2
 
 
+def test_shortcut_replacement_keeps_commas():
+    """A replacement is a prose phrase: commas must NOT split it into variants (regression for
+    'qcut' replacement 'The video rapidly cuts, showing the next view.' becoming two variants,
+    which never matched the comma-form transition trigger and reverted on every save)."""
+    phrase = "The video rapidly cuts, showing the next view."
+    assert templates._shortcut_replacements([phrase]) == [phrase]      # list path (editors)
+    assert templates._shortcut_replacements(phrase) == [phrase]        # string fallback
+    # newlines still separate variants; commas inside each survive
+    assert templates._shortcut_replacements("a, b\nc, d") == ["a, b", "c, d"]
+    item = normalize_shortcut_item({"name": "rapidcut", "triggers": ["qcut"],
+                                    "replacements": [phrase], "refinement_key": "cuts"})
+    assert item["replacements"] == [phrase]
+
+
 def test_normalize_shortcut_item_carries_key():
     item = normalize_shortcut_item({"name": "x", "triggers": ["alpha"], "replacements": ["A"],
                                     "refinement_key": "  charA  "})

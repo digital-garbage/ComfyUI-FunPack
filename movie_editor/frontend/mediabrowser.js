@@ -66,7 +66,12 @@
     document.body.append(overlay);
     _libModal = overlay;
   }
-  const splitLines = (v) => String(v || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+  // Triggers may be one-per-line OR comma-separated (short tokens). Replacements are
+  // one-per-line ONLY — a replacement is a prose phrase that often contains commas, so
+  // splitting on commas wrongly tore one phrase into several variants (and re-saving kept
+  // re-tearing it, so a comma edit reverted to the split form).
+  const splitTriggers = (v) => String(v || "").split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+  const splitReplacements = (v) => String(v || "").split(/\n+/).map((s) => s.trim()).filter(Boolean);
   function labeled(label, ctrl) {
     const l = el("label", "lib-field"); l.append(el("span", null, label)); l.append(ctrl); return l;
   }
@@ -100,13 +105,13 @@
       const actions = el("div", "lib-form-actions");
       const save = el("button", "btn primary tiny", "Save");
       save.onclick = async () => {
-        const triggers = splitLines(trig.value);
+        const triggers = splitTriggers(trig.value);
         if (!triggers.length) { alert("At least one trigger is required."); return; }
         const refKey = useKey._cb.checked ? (keyInput.value || "").trim() : "";
         if (useKey._cb.checked && !refKey) { alert("Enter a refinement key name, or uncheck the box."); return; }
         await S.saveShortcut({
           name: name.value.trim() || triggers[0], triggers,
-          replacements: splitLines(reps.value), enabled: en._cb.checked,
+          replacements: splitReplacements(reps.value), enabled: en._cb.checked,
           refinement_key: refKey,
           original_name: item.name || undefined,
         });
