@@ -20,6 +20,8 @@ FunPack **3.0** introduces the **Cutting Room** — a dedicated montage editor a
 
 Going forward, **new features and UX work target the Cutting Room frontend**. The classic ComfyUI node popups (Studio, Refiner V2, Scene Chain Sampler, and other pre-3.0 nodes) remain fully usable but will receive **bugfixes only** — no significant UI reworks unless a fix requires it. If you live in ComfyUI graphs, nothing breaks; if you want the full montage workflow, use the Cutting Room.
 
+**3.0.1** adds per-shortcut **refinement keys** (a shortcut can mark which key it trains, with per-scene multi-key steering and a timeline preview of the keys each scene will use) and fixes Cutting Room splitting/anchor bugs — see the [CHANGELOG](CHANGELOG.md).
+
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 
 ## Installation

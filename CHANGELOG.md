@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-06-14
+
 ### Added
 
 **Multi-refinement-key support in the Movie Editor.** Refinement keys are now a first-class, per-shortcut training signal. (1) The Engine settings → FunPack Studio card has a **Refinement key** field, so a project can set/wire its own key (previously the key was fixed and unreachable even in full-control mode); it feeds the FunPackRefinementKeyLoader for Studio / Chain Sampler / SaveRefinementLatent. (2) The Shortcuts editor gains a **"Use non-default refinement key"** checkbox + key-name field — firing that shortcut means its key is being trained. (3) **Multi-key per scene:** a scene whose prompt fires several shortcuts bound to different keys now has its conditioning steered by *each* key and **averaged/merged** into one (one key ⇒ substitute the default; none ⇒ default). Rating that scene trains **every** participating key. A key counts for a scene only if one of its shortcuts fired in that scene's text (anchor-bound keys count for every scene); attribution falls back to the safe union if the prompt was rewritten or the split diverges.
@@ -17,6 +19,8 @@
 **Scene prompt text vanished from the timeline after replacing an i2v anchor.** Replacing a scene's i2v anchor is a source-only change — it doesn't alter the prompt-preview key or the selection — so `commit()` replaced `state.project` with the saved project *without* re-rendering the timeline, leaving the stale optimistic DOM (the clip's prompt text could read blank/"empty scene" until a reload or regenerate forced a full re-render). Anchor/source changes now flag the commit to re-render from the authoritative saved state once the save lands.
 
 **Editor timeline dropped a scene when a transition trigger was also a shortcut.** If a scene-cut marker (e.g. `qcut`, `cut`) was *also* a shortcut — common now that cut markers can carry refinement keys (e.g. `qcut` → "cuts" key) — the lossless splitter expanded the trigger word away *before* detecting transitions, so the split was lost or misplaced. Classic symptom: "scene 2 removed from the timeline, scene 1 shows scene 2's prompt" until reload. `split_timeline_verbatim` now also scans the original (verbatim) text for triggers, catching trigger-shortcuts at their true position; genuine shortcut-driven splits (trigger only appears after expansion) and plain triggers are unchanged, and the result still round-trips losslessly.
+
+## [3.0.0] - 2026-06-11
 
 ### Added
 
