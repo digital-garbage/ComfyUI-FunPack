@@ -44,6 +44,45 @@ def _norm(s):
     return _re.sub(r"\s+", " ", str(s or "")).strip()
 
 
+def test_verbatim_split_when_trigger_is_also_a_shortcut(monkeypatch):
+    """Regression: a transition trigger that is ALSO a shortcut (qcut/cut) was expanded away
+    before transition detection, losing/misplacing the split -> 'scene 2 removed, scene 1 shows
+    scene 2's prompt'. The verbatim splitter must also scan the original text and catch it."""
+    db = _db({
+        "char": (["CHAR:"], ["A cinematic film."], ""),
+        "man": (["man"], ["a tall man"], ""),
+        "qcut": (["qcut"], ["fast paced editing"], "cuts"),  # word 'qcut' disappears on expand
+        "cut": (["cut"], ["Scene cut."], ""),
+        "10": (["10"], ["an explosion"], "key10"),
+        "20": (["20"], ["a chase"], "key20"),
+        "30": (["30"], ["a kiss"], "key30"),
+    })
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"qcut": {"placement": "start", "visual_effect": None},
+                                 "cut": {"placement": "silent", "visual_effect": None}})
+    v = conditioning.split_timeline_verbatim("CHAR: a woman man qcut 10 cut 20 30")
+    assert len(v["scenes"]) == 2
+    assert _norm(v["anchor"]) == "CHAR: a woman man"
+    # action 10 in scene 1, actions 20 & 30 in scene 2 (cut is silent -> trails scene 1)
+    assert "10" in v["scenes"][0]["text"] and "20" in v["scenes"][1]["text"] and "30" in v["scenes"][1]["text"]
+    # lossless round-trip
+    rejoined = " ".join(x for x in [v["anchor"]] + [s["text"] for s in v["scenes"]] if x)
+    assert _norm(rejoined) == _norm("CHAR: a woman man qcut 10 cut 20 30")
+
+
+def test_verbatim_split_shortcut_driven_split_still_works(monkeypatch):
+    """A shortcut whose trigger is NOT a transition but whose EXPANSION resolves to one must
+    still create a boundary (the supported shortcut-driven split)."""
+    db = _db({"break": (["<break>"], ["Scene cut."], "")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "silent", "visual_effect": None}})
+    v = conditioning.split_timeline_verbatim("intro shot <break> the night falls")
+    assert len(v["scenes"]) == 1
+    assert "<break>" in v["anchor"]
+
+
 def test_verbatim_split_still_splits_on_literal_cuts(monkeypatch):
     """The fix must not suppress real, user-typed scene cuts."""
     db = _db({"closeup": (["<closeup>"], ["a tight close-up"], "closeupkey")})  # no cut in replacement

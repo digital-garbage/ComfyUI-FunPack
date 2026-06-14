@@ -10,7 +10,9 @@
 
 **Session Reset now wipes every key a run trains, not just the default.** Because per-scene multi-key learning trains *every* refinement key whose shortcut fired in the prompt, a Studio Session Reset now clears all of those keys too (project/default key + each non-default key activated by a shortcut), so no stale per-key state survives a reset (`FunPackVideoRefinerV2._v2_reset_prompt_keys`). The Movie Editor's "Reset Studio session" now confirms first, listing exactly which keys will be wiped: *"This action will reset Studio learning for keys: default, key1, key2… To avoid resetting a non-default key, remove the shortcut that activates it from the prompt. Proceed?"* — disarming a mis-armed reset does not re-prompt.
 
-## [3.0.0] - 2026-06-11
+### Fixed
+
+**Editor timeline dropped a scene when a transition trigger was also a shortcut.** If a scene-cut marker (e.g. `qcut`, `cut`) was *also* a shortcut — common now that cut markers can carry refinement keys (e.g. `qcut` → "cuts" key) — the lossless splitter expanded the trigger word away *before* detecting transitions, so the split was lost or misplaced. Classic symptom: "scene 2 removed from the timeline, scene 1 shows scene 2's prompt" until reload. `split_timeline_verbatim` now also scans the original (verbatim) text for triggers, catching trigger-shortcuts at their true position; genuine shortcut-driven splits (trigger only appears after expansion) and plain triggers are unchanged, and the result still round-trips losslessly.
 
 ### Added
 

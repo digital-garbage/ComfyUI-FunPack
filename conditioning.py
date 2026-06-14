@@ -742,21 +742,33 @@ def split_timeline_verbatim(prompt):
     else:
         split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
 
+    def _effect(group):
+        info = custom_map.get(re.sub(r"\s+", " ", group.strip().lower())) or {}
+        eff = info.get("visual_effect") or None
+        return (None if eff == "none" else eff), info.get("placement")
+
     cuts = []  # (orig_offset, effect)
+    # (1) Scan the EXPANDED text: catches shortcut-driven splits, i.e. a shortcut whose
+    #     trigger word is NOT a transition but whose EXPANSION resolves to one.
     for m in split_pattern.finditer(expanded):
-        info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
-        effect = info.get("visual_effect") or None
-        if effect == "none":
-            effect = None
+        effect, placement = _effect(m.group(0))
         # 'start' -> cut before the trigger (leads new scene); otherwise after it.
-        if info.get("placement") == "start":
+        if placement == "start":
             orig = _project_offset(pieces, m.start(), "before")
         else:
             orig = _project_offset(pieces, m.end(), "after")
         cuts.append((orig, effect))
+    # (2) Scan the ORIGINAL text too: a transition trigger that is ALSO a shortcut (e.g.
+    #     'qcut'/'cut') gets expanded away in (1) before detection, so its split would be lost
+    #     or misplaced. Matching the verbatim text catches it at its true offset (no projection
+    #     needed). Non-shortcut triggers yield the same offset in both scans and dedupe to one.
+    for m in split_pattern.finditer(text):
+        effect, placement = _effect(m.group(0))
+        orig = m.start() if placement == "start" else m.end()
+        cuts.append((orig, effect))
 
     # dedupe boundaries that map to the same original offset (e.g. several triggers inside
-    # one shortcut expansion) and drop any at the very start.
+    # one shortcut expansion, or the same trigger seen by both scans) and drop any at the start.
     seen, uniq = set(), []
     for off, eff in sorted(cuts, key=lambda c: c[0]):
         if off <= 0 or off in seen:
