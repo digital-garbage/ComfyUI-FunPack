@@ -445,11 +445,37 @@ def conditioning_spread(cond):
         return None
 
 
+def _readable_refinement_key(refinement_key):
+    """A human-readable, filesystem-safe rendering of a refinement key, or None
+    when the key can't be represented without ambiguity (then callers fall back to
+    the legacy hash so two distinct keys never collide on one file). Keys in real
+    use are short names ("default", "123"); the hash was only ever defensive."""
+    key = str(refinement_key or "").strip()
+    if not key or len(key) > 120 or key in {".", ".."}:
+        return None
+    # Conservative whitelist: anything outside it (slashes, colons, newlines,
+    # unicode) would change meaning or break a path, so hash those instead.
+    if not re.fullmatch(r"[A-Za-z0-9 _.\-]+", key):
+        return None
+    return key
+
+
 def refinement_state_path(refinement_key, mode, prefix="refine", extension="json"):
+    """Path to a per-key state file. The clip state — the actual "refinement key"
+    users load, share and drop into the folder — is stored readably as
+    ``<key>.json``; sidecars (value function, sampler context, latents) get a
+    ``<key>.<mode>.<ext>`` suffix so they group with it. Unsafe/over-long keys (which
+    can't be a filename) keep a ``<prefix>_<md5>.ext`` hash."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     refinements_dir = os.path.join(base_dir, "refinements")
-    safe_key = md5(f"{(mode or 'ltx2').lower()}::{refinement_key}".encode("utf-8")).hexdigest()
-    return os.path.join(refinements_dir, f"{prefix}_{safe_key}.{extension}")
+    mode_l = (mode or "ltx2").lower()
+    safe = _readable_refinement_key(refinement_key)
+    if safe is None:
+        digest = md5(f"{mode_l}::{refinement_key}".encode("utf-8")).hexdigest()
+        return os.path.join(refinements_dir, f"{prefix}_{digest}.{extension}")
+    if mode_l == "clip":
+        return os.path.join(refinements_dir, f"{safe}.{extension}")
+    return os.path.join(refinements_dir, f"{safe}.{mode_l}.{extension}")
 
 
 def clone_latent(latent):

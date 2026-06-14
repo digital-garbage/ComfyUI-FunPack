@@ -165,30 +165,42 @@
       const res = await funpackFetch("GET", `${FUNPACK}/refinement_keys?cache_bust=${Date.now()}`);
       return res.json();
     },
-    importRefinementKey: async (data) => {
+    importRefinementKey: async (data, opts = {}) => {
+      const ow = opts.overwrite ? "&overwrite=true" : "";
       const json = JSON.stringify(data);
       const bytes = new TextEncoder().encode(json);
+      // A 409 means a key of that name already exists — surface it as a tagged
+      // error so the caller can ask the user to overwrite (then retry).
+      const finish = async (res) => {
+        if (res.status === 409) {
+          let p = null; try { p = await res.json(); } catch (_) {}
+          const err = new Error((p && p.error) || "Refinement key already exists.");
+          err.exists = true; err.key = (p && p.key) || "";
+          throw err;
+        }
+        if (!res.ok) {
+          let p = null; try { p = await res.json(); } catch (_) {}
+          throw new Error(readApiError(res, p));
+        }
+        return res.json();
+      };
       // Reverse proxies on Vast.ai / Runpod cap the request body well below
       // ComfyUI's 100 MB, so a one-shot POST of a large key gets HTTP 413 at the
       // proxy. Keep a fast single POST for small keys; stream big ones in chunks
       // (each far under any proxy limit) so they can never be rejected.
       const CHUNK = 256 * 1024;
       if (bytes.length <= CHUNK) {
-        try {
-          const res = await funpackFetch("POST", `${FUNPACK}/refinement_keys/import`, data);
-          return res.json();
-        } catch (e) {
-          // Only fall back to chunking on body-size rejections; rethrow real errors.
-          if (!/\b413\b|too large|entity too large/i.test(String(e.message || e))) throw e;
-        }
+        const res = await fetch(`${FUNPACK}/refinement_keys/import?_=${Date.now()}${ow}`, {
+          method: "POST", cache: "no-store",
+          headers: { "Content-Type": "application/json" }, body: json,
+        });
+        if (res.status !== 413) return finish(res); // 413 → fall through to chunked
       }
       const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
       const postChunk = async (path, body) => {
         const res = await fetch(path, {
-          method: "POST",
-          cache: "no-store",
-          headers: { "Content-Type": "application/octet-stream" },
-          body,
+          method: "POST", cache: "no-store",
+          headers: { "Content-Type": "application/octet-stream" }, body,
         });
         if (!res.ok) {
           let payload = null;
@@ -201,16 +213,15 @@
       for (let off = 0; off < bytes.length; off += CHUNK, index++) {
         // Slice by bytes (not string chars) so a multi-byte char is never split
         // across the seam where the two halves get re-encoded independently.
-        const part = bytes.slice(off, off + CHUNK);
         await postChunk(
           `${FUNPACK}/refinement_keys/import_chunk?upload_id=${encodeURIComponent(uploadId)}&index=${index}`,
-          part,
+          bytes.slice(off, off + CHUNK),
         );
       }
-      const fin = await postChunk(
-        `${FUNPACK}/refinement_keys/import_finalize?upload_id=${encodeURIComponent(uploadId)}`,
-      );
-      return fin.json();
+      return finish(await fetch(
+        `${FUNPACK}/refinement_keys/import_finalize?upload_id=${encodeURIComponent(uploadId)}${ow}`,
+        { method: "POST", cache: "no-store" },
+      ));
     },
     async exportRefinementKeyFile(key) {
       const res = await fetch(
@@ -226,7 +237,7 @@
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `funpack_refinement_${key}.json`;
+      link.download = `${key}.json`;
       document.body.appendChild(link);
       link.click();
       link.remove();

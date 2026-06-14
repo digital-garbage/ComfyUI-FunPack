@@ -128,11 +128,62 @@ async function exportKey(node) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `funpack_refinement_${key}.json`;
+  link.download = `${key}.json`;
   document.body.appendChild(link);
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+// Upload a refinement key. Streams large keys in chunks so reverse proxies on
+// Vast.ai / Runpod can't reject them with HTTP 413, and surfaces a 409 name
+// collision as a tagged error (err.exists / err.key) so the caller can confirm
+// an overwrite and retry. Mirrors movie_editor/frontend/api.js.
+async function importRefinementKeyData(data, overwrite) {
+  const ow = overwrite ? "&overwrite=true" : "";
+  const bytes = new TextEncoder().encode(JSON.stringify(data));
+  const CHUNK = 256 * 1024;
+  const finish = async (res) => {
+    if (res.status === 409) {
+      const p = await res.json().catch(() => ({}));
+      const err = new Error(p.error || "Refinement key already exists.");
+      err.exists = true; err.key = p.key || "";
+      throw err;
+    }
+    if (!res.ok) {
+      const p = await res.json().catch(() => ({}));
+      throw new Error(p.error || `Import failed with HTTP ${res.status}`);
+    }
+    return res.json().catch(() => ({}));
+  };
+  if (bytes.length <= CHUNK) {
+    const res = await api.fetchApi(`/funpack/refinement_keys/import?_=${Date.now()}${ow}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    if (res.status !== 413) return finish(res);
+  }
+  const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const postChunk = async (path, body) => {
+    const res = await api.fetchApi(path, {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body,
+    });
+    if (!res.ok) {
+      const p = await res.json().catch(() => ({}));
+      throw new Error(p.error || `Upload failed with HTTP ${res.status}`);
+    }
+  };
+  let index = 0;
+  for (let off = 0; off < bytes.length; off += CHUNK, index++) {
+    await postChunk(
+      `/funpack/refinement_keys/import_chunk?upload_id=${encodeURIComponent(uploadId)}&index=${index}`,
+      bytes.slice(off, off + CHUNK),
+    );
+  }
+  return finish(await api.fetchApi(
+    `/funpack/refinement_keys/import_finalize?upload_id=${encodeURIComponent(uploadId)}${ow}`,
+    { method: "POST" },
+  ));
 }
 
 function importKey() {
@@ -146,14 +197,14 @@ function importKey() {
     }
     try {
       const data = JSON.parse(await file.text());
-      const response = await api.fetchApi("/funpack/refinement_keys/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || `Import failed with HTTP ${response.status}`);
+      try {
+        await importRefinementKeyData(data, false);
+      } catch (e) {
+        if (!e.exists) throw e;
+        if (!confirm(`A refinement key named "${e.key}" already exists.\n\nOverwrite it with the imported file?`)) {
+          return;
+        }
+        await importRefinementKeyData(data, true);
       }
       await refreshTrackedNodes();
     } catch (error) {

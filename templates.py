@@ -103,6 +103,10 @@ def refinement_store_dir():
 
 def normalize_refinement_key(value):
     value = str(value or "").strip()
+    # Keys are stored readably as <key>.json now, so a user (or a dropped filename)
+    # that includes the extension still resolves to the same key.
+    if value.lower().endswith(".json"):
+        value = value[:-5].strip()
     if not value or value == REFINEMENT_KEY_NONE:
         return ""
     return value
@@ -165,48 +169,12 @@ def _coerce_refinement_payload(data):
     return data if isinstance(data, dict) else None
 
 
-def read_refinement_key_file(path, fallback_key=""):
-    """Load + validate one file on disk as a V2 clip refinement state, tolerant of
-    arbitrary filenames (HuggingFace downloads, renamed exports) and the export
-    wrapper. Returns ``(state, key)`` or ``(None, "")`` if the file is not a
-    refinement key (e.g. a sampler-context sidecar, scene db, anything else)."""
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except (json.JSONDecodeError, OSError, ValueError):
-        return None, ""
-    data = _coerce_refinement_payload(data)
-    if data is None:
-        return None, ""
-    # Only the "clip" namespace is a real refinement key. The sidecar files that
-    # share this folder (sampler_ctx, etc.) declare another namespace or carry no
-    # refinement_key, so normalize_refinement_state rejects them below.
-    namespace = str(data.get("state_namespace", "clip") or "clip")
-    if namespace != "clip":
-        return None, ""
-    return normalize_refinement_state(data, fallback_key)
-
-
-def _find_refinement_file_for_key(key):
-    """Scan the refinements folder for a file that declares ``key`` regardless of
-    its filename. Lets a manually-dropped key (whose name is not the canonical
-    md5-hashed path) still resolve. Returns ``(state, key)`` or ``(None, "")``."""
-    target = normalize_refinement_key(key)
-    if not target:
-        return None, ""
-    directory = refinement_store_dir()
-    if not os.path.isdir(directory):
-        return None, ""
-    for filename in os.listdir(directory):
-        if not filename.lower().endswith(".json"):
-            continue
-        path = os.path.join(directory, filename)
-        if not os.path.isfile(path):
-            continue
-        state, found_key = read_refinement_key_file(path)
-        if state is not None and found_key == target:
-            return state, found_key
-    return None, ""
+# A refinement key is stored as <key>.json. Sidecars in the same folder are either
+# non-.json (value_fn .pt, latents .pt) or carry a mode suffix (<key>.sampler_ctx.json),
+# and legacy installs may still hold opaque <prefix>_<md5>.json files. All are
+# excluded from the key listing below.
+_SIDECAR_JSON_SUFFIXES = (".sampler_ctx.json",)
+_LEGACY_HASHED_RE = re.compile(r"_[0-9a-f]{32}$|^[0-9a-f]{32}$")
 
 
 def load_refinement_key_state(refinement_key, create=False):
@@ -224,14 +192,6 @@ def load_refinement_key_state(refinement_key, create=False):
             return state, loaded_key, f"Loaded refinement key '{loaded_key}'."
         except (json.JSONDecodeError, OSError, ValueError):
             return None, key, f"Refinement key '{key}' is unreadable."
-    # Canonical (hashed) file is absent, but a key dropped in manually — a
-    # HuggingFace download or a renamed export — lives under a different filename.
-    # Find it by its declared key and migrate it to the canonical path so every
-    # consumer (Editor, Studio, loader node) loads it identically from now on.
-    state, found_key = _find_refinement_file_for_key(key)
-    if state is not None:
-        save_refinement_key_state(state, found_key)
-        return state, found_key, f"Imported refinement key '{found_key}'."
     if not create:
         return None, key, f"Refinement key '{key}' does not exist."
     state = empty_v2_refinement_state(key)
@@ -254,32 +214,24 @@ def save_refinement_key_state(state, refinement_key):
 
 
 def refinement_key_names():
+    # The key IS the filename: every <key>.json in the folder is a key. Skip mode
+    # sidecars, legacy hashed files, and internal dunder keys (e.g. the Absolute
+    # taste store).
     keys = set()
     directory = refinement_store_dir()
     if os.path.isdir(directory):
         for filename in os.listdir(directory):
-            # Detect any .json holding a refinement key, not just the canonical
-            # refine_v2_<hash>.json name — manual drops and HuggingFace downloads
-            # keep their own filename (e.g. funpack_refinement_<key>.json).
-            if not filename.lower().endswith(".json"):
+            low = filename.lower()
+            if not low.endswith(".json") or low.endswith(_SIDECAR_JSON_SUFFIXES):
                 continue
-            path = os.path.join(directory, filename)
-            if not os.path.isfile(path):
+            stem = filename[:-5]
+            if stem.startswith("__") or _LEGACY_HASHED_RE.search(stem):
                 continue
-            state, key = read_refinement_key_file(path)
-            if not key:
+            if not os.path.isfile(os.path.join(directory, filename)):
                 continue
-            keys.add(key)
-            # Self-heal: a manually-placed key lives at a non-canonical filename
-            # and would list but fail to load (loads resolve by hashed path). Write
-            # it to the canonical path so it loads everywhere; never clobber an
-            # existing canonical file (that one is authoritative).
-            canonical = refinement_key_path(key)
-            if os.path.abspath(path) != os.path.abspath(canonical) and not os.path.exists(canonical):
-                try:
-                    save_refinement_key_state(state, key)
-                except OSError:
-                    pass
+            key = normalize_refinement_key(stem)
+            if key:
+                keys.add(key)
     return [REFINEMENT_KEY_NONE] + sorted(keys)
 
 
@@ -1672,17 +1624,29 @@ async def funpack_refinement_keys_export(request):
         state,
         headers={
             "Cache-Control": "no-store, max-age=0",
-            "Content-Disposition": f"attachment; filename=funpack_refinement_{loaded_key}.json",
+            "Content-Disposition": f"attachment; filename={loaded_key}.json",
         },
     )
 
 
-def _save_imported_refinement_key(incoming):
+def _truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _save_imported_refinement_key(incoming, overwrite=False):
     """Shared tail for the one-shot and chunked import routes. Returns an aiohttp
-    response."""
+    response. When a key of the same name already exists and ``overwrite`` is not
+    set, replies 409 with ``{"exists": True, "key": ...}`` so the client can ask
+    the user to overwrite or cancel."""
     state, key = normalize_refinement_state(_coerce_refinement_payload(incoming) or {})
     if state is None:
         return web.json_response({"error": "Imported file is not a valid V2 refinement key JSON."}, status=400)
+    if not overwrite and os.path.exists(refinement_key_path(key)):
+        return web.json_response(
+            {"exists": True, "key": key,
+             "error": f"A refinement key named '{key}' already exists."},
+            status=409,
+        )
     path = save_refinement_key_state(state, key)
     if not path:
         return web.json_response({"error": "Could not save imported refinement key."}, status=400)
@@ -1692,7 +1656,7 @@ def _save_imported_refinement_key(incoming):
 @PromptServer.instance.routes.post("/funpack/refinement_keys/import")
 async def funpack_refinement_keys_import(request):
     incoming = await request.json()
-    return _save_imported_refinement_key(incoming)
+    return _save_imported_refinement_key(incoming, overwrite=_truthy(request.query.get("overwrite")))
 
 
 # --- Chunked import -------------------------------------------------------------------
@@ -1745,7 +1709,7 @@ async def funpack_refinement_keys_import_finalize(request):
             os.remove(part_path)
         except OSError:
             pass
-    return _save_imported_refinement_key(incoming)
+    return _save_imported_refinement_key(incoming, overwrite=_truthy(request.query.get("overwrite")))
 
 
 @PromptServer.instance.routes.get("/funpack/available_loras")

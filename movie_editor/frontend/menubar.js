@@ -27,7 +27,18 @@
       if (!file) return;
       try {
         const data = JSON.parse(await file.text());
-        const res = await window.MovieEditorAPI.importRefinementKey(data);
+        let res;
+        try {
+          res = await window.MovieEditorAPI.importRefinementKey(data);
+        } catch (e) {
+          if (!e.exists) throw e;
+          // Name collision: keys are stored by name (<key>.json), so importing
+          // replaces the existing one. Confirm before overwriting.
+          if (!confirm(`A refinement key named "${e.key}" already exists.\n\nOverwrite it with the imported file?`)) {
+            return;
+          }
+          res = await window.MovieEditorAPI.importRefinementKey(data, { overwrite: true });
+        }
         alert(`Imported refinement key "${res.imported || file.name}".`);
       } catch (e) {
         alert("Refinement key import failed: " + (e.message || e));
