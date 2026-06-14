@@ -2786,10 +2786,31 @@
     );
   }
 
+  // Every refinement key a reset will wipe: the project/default key plus every non-default
+  // key whose shortcut fires in the current prompt (those keys also get TRAINED per scene, so
+  // a reset must clear them too). Mirrors the backend _v2_reset_prompt_keys union.
+  function sessionResetKeys() {
+    const pv = state.preview || {};
+    const defKey = (state.project?.refinement_key || "default").trim() || "default";
+    const out = new Set([defKey]);
+    (pv.scene_refinement_keys || []).forEach((rk) => {
+      if (rk && !rk.uses_default) (rk.keys || []).forEach((k) => { if (k) out.add(k); });
+    });
+    return [...out];
+  }
+
   // Toggle a pending Studio session reset — applied to the FIRST run of the next
-  // generation. Clicking again disarms it (in case of a mis-click).
+  // generation. Clicking again disarms it (in case of a mis-click). Arming asks for
+  // confirmation, listing every key it will wipe so non-default keys aren't lost silently.
   let _resetSessionPending = false;
   function resetStudioSession() {
+    if (!_resetSessionPending) {
+      const keys = sessionResetKeys();
+      const msg = `This action will reset Studio learning for keys: ${keys.join(", ")}.\n\n`
+        + "It is applied on the next generation. To avoid resetting a non-default key, "
+        + "remove the shortcut that activates it from the prompt.\n\nProceed?";
+      if (!confirm(msg)) return;
+    }
     _resetSessionPending = !_resetSessionPending;
     set({ resetSessionArmed: _resetSessionPending });
   }

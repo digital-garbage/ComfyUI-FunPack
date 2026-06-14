@@ -133,6 +133,38 @@ def test_resolver_matches_studio(monkeypatch):
         assert conditioning.resolve_scene_refinement_keys(raw, n) == studio._v2_scene_refinement_keys(raw, n)
 
 
+def test_reset_prompt_keys_union_excludes_primary(monkeypatch):
+    """Session reset wipes the project key (caller) PLUS every non-default key in the prompt."""
+    db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB"),
+              "c": (["gamma"], ["CCC"], "keyC")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    studio = conditioning.FunPackVideoRefinerV2()
+    reset_calls, saved = [], []
+    monkeypatch.setattr(studio, "_v2_load_state",
+                        lambda key, reset_session=False: (reset_calls.append((key, reset_session)) or ({}, "fresh")))
+    monkeypatch.setattr(studio, "_v2_save_state", lambda data, key: saved.append(key))
+    # keyA fires in positive, keyC fires in intent; primary "default" is excluded.
+    done = studio._v2_reset_prompt_keys("default", "alpha shot", "gamma intent")
+    assert done == ["keyA", "keyC"]
+    assert all(rs is True for _, rs in reset_calls)
+    assert sorted(k for k, _ in reset_calls) == ["keyA", "keyC"]
+    assert sorted(saved) == ["keyA", "keyC"]
+
+
+def test_reset_prompt_keys_skips_when_primary_only(monkeypatch):
+    db = _db({"a": (["alpha"], ["AAA"], "keyA")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    studio = conditioning.FunPackVideoRefinerV2()
+    monkeypatch.setattr(studio, "_v2_load_state", lambda *a, **k: ({}, "fresh"))
+    monkeypatch.setattr(studio, "_v2_save_state", lambda *a, **k: None)
+    # primary key is keyA itself -> nothing extra to reset
+    assert studio._v2_reset_prompt_keys("keyA", "alpha shot") == []
+    # no keyed shortcuts at all -> nothing extra
+    assert studio._v2_reset_prompt_keys("default", "plain prompt") == []
+
+
 def test_bridge_scene_refinement_keys_preview(monkeypatch):
     """Preview payload: explicit keys vs project-default fallback per scene."""
     from movie_editor.backend import bridge

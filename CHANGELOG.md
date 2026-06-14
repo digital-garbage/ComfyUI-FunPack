@@ -8,6 +8,8 @@
 
 **Per-scene refinement-key preview.** The timeline preview now shows, on each scene, the refinement key(s) it will actually steer with before you generate — explicit keys (with `(avg)` when more than one), or the project default key (greyed, `(default)`) when no shortcut key fired in that scene. The preview reuses the exact generation-time resolver (`resolve_scene_refinement_keys`), so what you see matches what runs, including the safe-union fallback.
 
+**Session Reset now wipes every key a run trains, not just the default.** Because per-scene multi-key learning trains *every* refinement key whose shortcut fired in the prompt, a Studio Session Reset now clears all of those keys too (project/default key + each non-default key activated by a shortcut), so no stale per-key state survives a reset (`FunPackVideoRefinerV2._v2_reset_prompt_keys`). The Movie Editor's "Reset Studio session" now confirms first, listing exactly which keys will be wiped: *"This action will reset Studio learning for keys: default, key1, key2… To avoid resetting a non-default key, remove the shortcut that activates it from the prompt. Proceed?"* — disarming a mis-armed reset does not re-prompt.
+
 ## [3.0.0] - 2026-06-11
 
 ### Added

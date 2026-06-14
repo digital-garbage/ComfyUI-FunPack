@@ -6461,6 +6461,32 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except (json.JSONDecodeError, OSError, ValueError):
             return self._v2_empty_state(refinement_key), "reset unreadable"
 
+    def _v2_reset_prompt_keys(self, primary_key, *raw_prompts):
+        """On Session Reset, also wipe every NON-default refinement key whose shortcut fired in
+        the prompt(s) — not just the project/default key. Any key a run can TRAIN (per-scene
+        multi-key learning) must also be resettable by that run, otherwise stale state for those
+        keys survives a reset. primary_key is excluded (the main flow already reset + will resave
+        it). Returns the extra keys reset, for the status string."""
+        keys = set()
+        for text in raw_prompts:
+            try:
+                _, _, all_keys = prompt_scene_shortcut_keys(text)
+            except Exception as error:
+                print(f"[FunPackVideoRefinerV2] Reset key scan failed: {error}")
+                all_keys = set()
+            keys |= all_keys
+        keys.discard(str(primary_key or "default"))
+        keys.discard("")
+        done = []
+        for key in sorted(keys):
+            try:
+                fresh_state, _ = self._v2_load_state(key, reset_session=True)
+                self._v2_save_state(fresh_state, key)
+                done.append(key)
+            except Exception as error:
+                print(f"[FunPackVideoRefinerV2] Reset of refinement key '{key}' failed: {error}")
+        return done
+
     def _v2_save_state(self, data, refinement_key):
         path = self._v2_state_path(refinement_key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -11984,6 +12010,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Pre-shortcut prompt, kept so Batch Training can re-resolve shortcuts with different
         # seeds to build N variant conditionings (Studio owns conditioning production).
         _raw_positive_prompt = str(positive_prompt or "")
+        _raw_intent_prompt = str(user_intent_prompt or "")
         positive_prompt, shortcut_status, shortcut_applied = self._v2_apply_global_shortcuts(positive_prompt, seed=seed)
         user_intent_prompt, intent_shortcut_status, intent_shortcut_applied = self._v2_apply_global_shortcuts(user_intent_prompt, seed=seed)
         if intent_shortcut_applied:
@@ -12006,6 +12033,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         advisor_clip = advisor_clip if advisor_clip is not None else clip
         prompt_only_mode = execution_mode == "Prompt only"
         state, state_status = self._v2_load_state(refinement_key, reset_session=reset_session)
+        if reset_session:
+            extra_reset = self._v2_reset_prompt_keys(refinement_key, _raw_positive_prompt, _raw_intent_prompt)
+            if extra_reset:
+                state_status = f"{state_status} (also reset keys: {', '.join(extra_reset)})"
         scene_db, scene_builder_status = self._v2_scene_builder_db(state)
         global_state = state.setdefault("global", {})
         global_state.setdefault("phrase_memory", {})
