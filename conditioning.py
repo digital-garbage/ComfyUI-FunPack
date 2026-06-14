@@ -6078,16 +6078,22 @@ V2_RATING_PROFILES = {
     "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
     "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
     "Missing details + action": {"key": "missing_details_action", "reward": -0.10, "level": 3, "missing_axes": ["details", "action"]},
-    "Wrong details": {"key": "wrong_details", "reward": 0.20, "level": 5, "missing_axes": ["details"], "wrong_axes": ["details"]},
-    "Wrong action": {"key": "wrong_action", "reward": -0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"]},
-    "Wrong action + quality": {"key": "wrong_action_quality", "reward": -0.40, "level": 3, "missing_axes": ["quality"], "wrong_axes": ["action"]},
-    "Wrong details + action": {"key": "wrong_details_action", "reward": 0.00, "level": 3, "missing_axes": ["details", "action"], "wrong_axes": ["details", "action"]},
+    # Wrong-* are prompt-REPAIR signals ("good gen, but the words/identity were off"), not quality
+    # rewards. `skip_value_function` keeps them out of value-function + Absolute-taste reward
+    # training (where a 0.0/low reward on a visually-good gen poisons the learned quality landscape
+    # and the ascent direction → drift/wrong-character). They STILL drive prompt repair and the
+    # relative direction/category memory via their missing_axes/wrong_axes/wrong_categories.
+    "Wrong details": {"key": "wrong_details", "reward": 0.20, "level": 5, "missing_axes": ["details"], "wrong_axes": ["details"], "skip_value_function": True},
+    "Wrong action": {"key": "wrong_action", "reward": -0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"], "skip_value_function": True},
+    "Wrong action + quality": {"key": "wrong_action_quality", "reward": -0.40, "level": 3, "missing_axes": ["quality"], "wrong_axes": ["action"], "skip_value_function": True},
+    "Wrong details + action": {"key": "wrong_details_action", "reward": 0.00, "level": 3, "missing_axes": ["details", "action"], "wrong_axes": ["details", "action"], "skip_value_function": True},
     "Wrong appearance": {
         "key": "wrong_appearance",
         "reward": 0.0,
         "level": 4,
         "missing_axes": [],
         "wrong_categories": ["appearance", "subject", "environment"],
+        "skip_value_function": True,
     },
     "Missing details + quality": {"key": "missing_details_quality", "reward": -0.40, "level": 2, "missing_axes": ["details", "quality"]},
     "Missing action + quality": {"key": "missing_action_quality", "reward": -0.55, "level": 1, "missing_axes": ["action", "quality"]},
@@ -6962,7 +6968,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_learn_scene_into_state(
                     key_global, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
                 )
-                if not profile.get("skip_learning"):
+                if not profile.get("skip_learning") and not profile.get("skip_value_function"):
                     self._v2_train_value_function(
                         refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt"),
                         scene_run.get("conditioning"),
@@ -7021,7 +7027,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seed_memory_status = self._v2_learn_scene_into_state(
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
-            if refinement_key and not profile.get("skip_learning"):
+            if refinement_key and not profile.get("skip_learning") and not profile.get("skip_value_function"):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     scene_run.get("conditioning"),
@@ -12230,7 +12236,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # calls) so the reward asset accumulates regardless of whether guidance is applied.
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
             # off still builds the VF, so enabling guidance later works immediately.
-            if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+            if (has_previous_run and refinement_key and not learning_profile.get("skip_learning")
+                    and not learning_profile.get("skip_value_function")):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     (previous_run or {}).get("conditioning"),
@@ -12240,6 +12247,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     print(f"[FunPackRefiner] Value function updated — {n} samples")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
+            # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
+            # quality, so a 0.0/low repair reward on a good gen would push it into the global bad_dir.
             if has_previous_run:
                 self._v2_learn_absolute(previous_run, learning_profile)
             if has_previous_run and not learning_profile.get("skip_learning"):
@@ -13359,6 +13368,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         Pooled across every prompt, this converges on a single global-taste prior. Also trains
         the keyless value function. Runs independent of refinement_key — Absolute is keyless."""
         if not isinstance(previous_run, dict) or learning_profile.get("skip_learning"):
+            return
+        # Wrong-* repair ratings carry no quality signal — Absolute is purely reward-driven
+        # ("do I like this in general"), so feeding a repair reward here would store a good gen as
+        # global bad-taste and train the keyless VF on a mislabel. Repair belongs to the relative
+        # per-key direction/category memory, not the global taste prior.
+        if learning_profile.get("skip_value_function"):
             return
         payload = previous_run.get("conditioning")
         if not isinstance(payload, dict):

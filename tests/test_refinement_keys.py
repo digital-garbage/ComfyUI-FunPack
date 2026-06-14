@@ -233,6 +233,35 @@ def test_reset_prompt_keys_skips_when_primary_only(monkeypatch):
     assert studio._v2_reset_prompt_keys("default", "plain prompt") == []
 
 
+def test_wrong_ratings_skip_value_function():
+    """Wrong-* are prompt-repair signals, not quality rewards: they must NOT train the value
+    function (a 0.0/low reward on a visually-good gen poisons the learned quality landscape).
+    Missing-*/Perfect/Awful are real quality signals and MUST still train it."""
+    profiles = conditioning.V2_RATING_PROFILES
+    wrong = [k for k in profiles if k.startswith("Wrong")]
+    assert wrong, "expected Wrong-* ratings to exist"
+    for label in wrong:
+        assert profiles[label].get("skip_value_function") is True, f"{label} should skip VF"
+    for label in ("Perfect", "Nailed it", "Missing details", "Missing quality", "Awful"):
+        assert not profiles[label].get("skip_value_function"), f"{label} must still train VF"
+
+
+def test_learn_absolute_skips_repair_ratings(monkeypatch):
+    """The keyless Absolute taste store reads reward as pure quality, so a Wrong-* repair rating
+    must be a no-op there (otherwise a good gen gets stored as global bad-taste)."""
+    studio = conditioning.FunPackVideoRefinerV2()
+    touched = []
+    monkeypatch.setattr(studio, "_v2_load_absolute_global",
+                        lambda: touched.append(True) or ({"global": {}}, {}))
+    run = {"conditioning": {"shape": [1, 1, 4], "data": [0.0, 0.0, 0.0, 0.0]}}
+    # repair rating -> early return, never loads/writes the absolute store
+    studio._v2_learn_absolute(run, conditioning.normalize_refiner_v2_rating("Wrong appearance"))
+    assert touched == []
+    # a real quality rating proceeds (loads the store)
+    studio._v2_learn_absolute(run, conditioning.normalize_refiner_v2_rating("Perfect"))
+    assert touched == [True]
+
+
 def test_bridge_scene_refinement_keys_preview(monkeypatch):
     """Preview payload: explicit keys vs project-default fallback per scene."""
     from movie_editor.backend import bridge

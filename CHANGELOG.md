@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Fixed
+- Reward poisoning from prompt-repair ratings (drift / wrong-character / distorted gens). The
+  `Wrong *` ratings (appearance/details/action/combos) are prompt-REPAIR signals — "good gen, but
+  the words/identity were off" — yet they were feeding their 0.0/low reward into value-function
+  training AND the keyless Absolute taste store. That stamped visually-good conditioning as a
+  low-value "valley," so the VF ascent (now always the default key, applied to every scene) pushed
+  conditioning away from good regions into drift, and Absolute stored good gens as global
+  bad-taste. Wrong-* now carry `skip_value_function`: they still drive prompt repair + relative
+  per-key direction/category memory, but no longer train any reward asset. Quality ratings
+  (Missing-*/Perfect/Nailed/Awful) are unchanged.
 - Multi-key refinement: stop training every key on every clip. Per-scene key attribution
   (`prompt_scene_shortcut_keys`) now scans both the expanded and original prompt — matching the
   generation splitter `split_timeline_verbatim` — so structurally-identical prompts land on the
