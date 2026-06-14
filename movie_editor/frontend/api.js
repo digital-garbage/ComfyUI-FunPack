@@ -166,8 +166,51 @@
       return res.json();
     },
     importRefinementKey: async (data) => {
-      const res = await funpackFetch("POST", `${FUNPACK}/refinement_keys/import`, data);
-      return res.json();
+      const json = JSON.stringify(data);
+      const bytes = new TextEncoder().encode(json);
+      // Reverse proxies on Vast.ai / Runpod cap the request body well below
+      // ComfyUI's 100 MB, so a one-shot POST of a large key gets HTTP 413 at the
+      // proxy. Keep a fast single POST for small keys; stream big ones in chunks
+      // (each far under any proxy limit) so they can never be rejected.
+      const CHUNK = 256 * 1024;
+      if (bytes.length <= CHUNK) {
+        try {
+          const res = await funpackFetch("POST", `${FUNPACK}/refinement_keys/import`, data);
+          return res.json();
+        } catch (e) {
+          // Only fall back to chunking on body-size rejections; rethrow real errors.
+          if (!/\b413\b|too large|entity too large/i.test(String(e.message || e))) throw e;
+        }
+      }
+      const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const postChunk = async (path, body) => {
+        const res = await fetch(path, {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/octet-stream" },
+          body,
+        });
+        if (!res.ok) {
+          let payload = null;
+          try { payload = await res.json(); } catch (_) {}
+          throw new Error(readApiError(res, payload));
+        }
+        return res;
+      };
+      let index = 0;
+      for (let off = 0; off < bytes.length; off += CHUNK, index++) {
+        // Slice by bytes (not string chars) so a multi-byte char is never split
+        // across the seam where the two halves get re-encoded independently.
+        const part = bytes.slice(off, off + CHUNK);
+        await postChunk(
+          `${FUNPACK}/refinement_keys/import_chunk?upload_id=${encodeURIComponent(uploadId)}&index=${index}`,
+          part,
+        );
+      }
+      const fin = await postChunk(
+        `${FUNPACK}/refinement_keys/import_finalize?upload_id=${encodeURIComponent(uploadId)}`,
+      );
+      return fin.json();
     },
     async exportRefinementKeyFile(key) {
       const res = await fetch(

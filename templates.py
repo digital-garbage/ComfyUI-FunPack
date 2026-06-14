@@ -156,6 +156,59 @@ def normalize_refinement_state(data, fallback_key=""):
     return state, key
 
 
+def _coerce_refinement_payload(data):
+    """Unwrap common export envelopes so any shared / HuggingFace refinement file
+    resolves to its inner V2 clip state. The Studio export and the Editor import
+    both round-trip through ``{"state": {...}}`` wrappers in some versions."""
+    if isinstance(data, dict) and isinstance(data.get("state"), dict):
+        data = data["state"]
+    return data if isinstance(data, dict) else None
+
+
+def read_refinement_key_file(path, fallback_key=""):
+    """Load + validate one file on disk as a V2 clip refinement state, tolerant of
+    arbitrary filenames (HuggingFace downloads, renamed exports) and the export
+    wrapper. Returns ``(state, key)`` or ``(None, "")`` if the file is not a
+    refinement key (e.g. a sampler-context sidecar, scene db, anything else)."""
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None, ""
+    data = _coerce_refinement_payload(data)
+    if data is None:
+        return None, ""
+    # Only the "clip" namespace is a real refinement key. The sidecar files that
+    # share this folder (sampler_ctx, etc.) declare another namespace or carry no
+    # refinement_key, so normalize_refinement_state rejects them below.
+    namespace = str(data.get("state_namespace", "clip") or "clip")
+    if namespace != "clip":
+        return None, ""
+    return normalize_refinement_state(data, fallback_key)
+
+
+def _find_refinement_file_for_key(key):
+    """Scan the refinements folder for a file that declares ``key`` regardless of
+    its filename. Lets a manually-dropped key (whose name is not the canonical
+    md5-hashed path) still resolve. Returns ``(state, key)`` or ``(None, "")``."""
+    target = normalize_refinement_key(key)
+    if not target:
+        return None, ""
+    directory = refinement_store_dir()
+    if not os.path.isdir(directory):
+        return None, ""
+    for filename in os.listdir(directory):
+        if not filename.lower().endswith(".json"):
+            continue
+        path = os.path.join(directory, filename)
+        if not os.path.isfile(path):
+            continue
+        state, found_key = read_refinement_key_file(path)
+        if state is not None and found_key == target:
+            return state, found_key
+    return None, ""
+
+
 def load_refinement_key_state(refinement_key, create=False):
     key = normalize_refinement_key(refinement_key)
     if not key:
@@ -171,6 +224,14 @@ def load_refinement_key_state(refinement_key, create=False):
             return state, loaded_key, f"Loaded refinement key '{loaded_key}'."
         except (json.JSONDecodeError, OSError, ValueError):
             return None, key, f"Refinement key '{key}' is unreadable."
+    # Canonical (hashed) file is absent, but a key dropped in manually — a
+    # HuggingFace download or a renamed export — lives under a different filename.
+    # Find it by its declared key and migrate it to the canonical path so every
+    # consumer (Editor, Studio, loader node) loads it identically from now on.
+    state, found_key = _find_refinement_file_for_key(key)
+    if state is not None:
+        save_refinement_key_state(state, found_key)
+        return state, found_key, f"Imported refinement key '{found_key}'."
     if not create:
         return None, key, f"Refinement key '{key}' does not exist."
     state = empty_v2_refinement_state(key)
@@ -197,17 +258,28 @@ def refinement_key_names():
     directory = refinement_store_dir()
     if os.path.isdir(directory):
         for filename in os.listdir(directory):
-            if not filename.startswith("refine_v2_") or not filename.endswith(".json"):
+            # Detect any .json holding a refinement key, not just the canonical
+            # refine_v2_<hash>.json name — manual drops and HuggingFace downloads
+            # keep their own filename (e.g. funpack_refinement_<key>.json).
+            if not filename.lower().endswith(".json"):
                 continue
             path = os.path.join(directory, filename)
-            try:
-                with open(path, "r", encoding="utf-8") as file:
-                    data = json.load(file)
-                key = normalize_refinement_key(data.get("refinement_key") if isinstance(data, dict) else "")
-                if key:
-                    keys.add(key)
-            except (json.JSONDecodeError, OSError, ValueError):
+            if not os.path.isfile(path):
                 continue
+            state, key = read_refinement_key_file(path)
+            if not key:
+                continue
+            keys.add(key)
+            # Self-heal: a manually-placed key lives at a non-canonical filename
+            # and would list but fail to load (loads resolve by hashed path). Write
+            # it to the canonical path so it loads everywhere; never clobber an
+            # existing canonical file (that one is authoritative).
+            canonical = refinement_key_path(key)
+            if os.path.abspath(path) != os.path.abspath(canonical) and not os.path.exists(canonical):
+                try:
+                    save_refinement_key_state(state, key)
+                except OSError:
+                    pass
     return [REFINEMENT_KEY_NONE] + sorted(keys)
 
 
@@ -1605,18 +1677,75 @@ async def funpack_refinement_keys_export(request):
     )
 
 
-@PromptServer.instance.routes.post("/funpack/refinement_keys/import")
-async def funpack_refinement_keys_import(request):
-    incoming = await request.json()
-    if isinstance(incoming, dict) and isinstance(incoming.get("state"), dict):
-        incoming = incoming["state"]
-    state, key = normalize_refinement_state(incoming)
+def _save_imported_refinement_key(incoming):
+    """Shared tail for the one-shot and chunked import routes. Returns an aiohttp
+    response."""
+    state, key = normalize_refinement_state(_coerce_refinement_payload(incoming) or {})
     if state is None:
         return web.json_response({"error": "Imported file is not a valid V2 refinement key JSON."}, status=400)
     path = save_refinement_key_state(state, key)
     if not path:
         return web.json_response({"error": "Could not save imported refinement key."}, status=400)
     return web.json_response({"imported": key, "keys": refinement_key_names()})
+
+
+@PromptServer.instance.routes.post("/funpack/refinement_keys/import")
+async def funpack_refinement_keys_import(request):
+    incoming = await request.json()
+    return _save_imported_refinement_key(incoming)
+
+
+# --- Chunked import -------------------------------------------------------------------
+# Reverse proxies in front of ComfyUI on rented GPUs (Vast.ai, Runpod) cap the
+# request body well below ComfyUI's own 100 MB limit, so a large refinement key
+# POSTed in one shot is rejected with HTTP 413 before it ever reaches us. The
+# client streams the key in small chunks (each well under any proxy limit) which
+# we reassemble on disk, then finalize parses + saves the whole thing.
+def _refinement_upload_dir():
+    directory = os.path.join(refinement_store_dir(), ".uploads")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _refinement_upload_path(upload_id):
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(upload_id or ""))[:80]
+    if not safe:
+        return None
+    return os.path.join(_refinement_upload_dir(), f"{safe}.part")
+
+
+@PromptServer.instance.routes.post("/funpack/refinement_keys/import_chunk")
+async def funpack_refinement_keys_import_chunk(request):
+    part_path = _refinement_upload_path(request.query.get("upload_id"))
+    if not part_path:
+        return web.json_response({"error": "Missing or invalid upload id."}, status=400)
+    try:
+        index = int(request.query.get("index", "0"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Invalid chunk index."}, status=400)
+    chunk = await request.read()
+    # index 0 starts (or restarts) the upload; later chunks append in order.
+    with open(part_path, "wb" if index <= 0 else "ab") as file:
+        file.write(chunk)
+    return web.json_response({"ok": True, "received": os.path.getsize(part_path)})
+
+
+@PromptServer.instance.routes.post("/funpack/refinement_keys/import_finalize")
+async def funpack_refinement_keys_import_finalize(request):
+    part_path = _refinement_upload_path(request.query.get("upload_id"))
+    if not part_path or not os.path.exists(part_path):
+        return web.json_response({"error": "Upload not found or expired."}, status=404)
+    try:
+        with open(part_path, "r", encoding="utf-8") as file:
+            incoming = json.load(file)
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        return web.json_response({"error": f"Uploaded data is not valid JSON: {exc}"}, status=400)
+    finally:
+        try:
+            os.remove(part_path)
+        except OSError:
+            pass
+    return _save_imported_refinement_key(incoming)
 
 
 @PromptServer.instance.routes.get("/funpack/available_loras")
