@@ -13234,7 +13234,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if not steered:
                 out.append(entry)
                 continue
-            merged = steered[0] if len(steered) == 1 else torch.stack(steered, dim=0).mean(dim=0)
+            if len(steered) == 1:
+                merged = steered[0]
+            else:
+                merged = torch.stack(steered, dim=0).mean(dim=0)
+                # Averaging per-key tensors that point different ways shrinks the
+                # per-token magnitude (and collapses it toward zero when keys
+                # disagree), and ascend/search already broke the per-key renorm —
+                # so a raw mean can land far from the scene encode at the wrong
+                # magnitude, which free-runs into warping on simple prompts. Re-impose
+                # the single-key discipline: cap the delta vs the raw encode, then
+                # renormalize to its per-token norm (same tail as
+                # _v2_apply_conditioning_memory_impl). Capping BEFORE renorm is what
+                # keeps a near-zero mean from being amplified into noise.
+                delta = merged - cond
+                original_norm = cond.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                delta_norm = delta.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+                scale = torch.minimum(torch.ones_like(delta_norm), (original_norm * 0.08) / delta_norm)
+                merged = cond + delta * scale
+                merged = torch.clamp(merged, min=-60.0, max=60.0)
+                merged = merged / merged.norm(dim=-1, keepdim=True).clamp_min(1e-8) * original_norm
             merged = protect_audio_channels(merged, cond)
             out.append((merged, meta))
             merged_scenes.append((scene_index, sorted(keys)))
