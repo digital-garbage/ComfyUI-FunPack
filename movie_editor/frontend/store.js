@@ -41,6 +41,11 @@
   let _localDirty = false;       // local edits newer than the in-flight save snapshot
   let _commitPromise = null;     // avoid overlapping saves stomping newer anchor edits
   let _commitQueued = false;
+  // Force a re-render from the authoritative saved project after the next commit. Set by
+  // source/anchor changes: those don't change the prompt-preview key or selection, so commit()
+  // would replace state.project = saved WITHOUT re-rendering, leaving the timeline showing the
+  // stale optimistic DOM (scene prompt text could read blank until reload/regenerate).
+  let _renderAfterSave = false;
   let _selectionAnchorId = null;  // shift-click range anchor
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
@@ -765,8 +770,8 @@
         const metaChanged = saved.name !== metaBefore.name
           || (saved.scenes || []).length !== metaBefore.scene_count;
         if (metaChanged) refreshProjectList(true);
-        if (previewStale && !skipPreviewRefresh) refreshPreview(true);
-        else if (selChanged) notify();
+        if (previewStale && !skipPreviewRefresh) { refreshPreview(true); _renderAfterSave = false; }
+        else if (selChanged || _renderAfterSave) { notify(); _renderAfterSave = false; }
         _notifySaveChip();
       } catch (e) {
         _localDirty = true;
@@ -921,7 +926,7 @@
     if (charsChanged) _invalidateGlobalPromptDraft();
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
-      _localDirty = true; notify(); commit();
+      _localDirty = true; _renderAfterSave = true; notify(); commit();
     } else if (charsChanged) {
       notify();
       _syncPromptPreview();
@@ -944,7 +949,7 @@
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
-      _localDirty = true; notify(); commit();
+      _localDirty = true; _renderAfterSave = true; notify(); commit();
     } else {
       if (_patchAffectsCombinedPrompt(merged)) syncGlobalPromptFromTimeline();
       scheduleSaveSilent();

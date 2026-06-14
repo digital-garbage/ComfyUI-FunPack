@@ -12,6 +12,8 @@
 
 ### Fixed
 
+**Scene prompt text vanished from the timeline after replacing an i2v anchor.** Replacing a scene's i2v anchor is a source-only change — it doesn't alter the prompt-preview key or the selection — so `commit()` replaced `state.project` with the saved project *without* re-rendering the timeline, leaving the stale optimistic DOM (the clip's prompt text could read blank/"empty scene" until a reload or regenerate forced a full re-render). Anchor/source changes now flag the commit to re-render from the authoritative saved state once the save lands.
+
 **Editor timeline dropped a scene when a transition trigger was also a shortcut.** If a scene-cut marker (e.g. `qcut`, `cut`) was *also* a shortcut — common now that cut markers can carry refinement keys (e.g. `qcut` → "cuts" key) — the lossless splitter expanded the trigger word away *before* detecting transitions, so the split was lost or misplaced. Classic symptom: "scene 2 removed from the timeline, scene 1 shows scene 2's prompt" until reload. `split_timeline_verbatim` now also scans the original (verbatim) text for triggers, catching trigger-shortcuts at their true position; genuine shortcut-driven splits (trigger only appears after expansion) and plain triggers are unchanged, and the result still round-trips losslessly.
 
 ### Added
