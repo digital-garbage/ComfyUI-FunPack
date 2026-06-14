@@ -849,6 +849,30 @@ def prompt_scene_shortcut_keys(prompt):
     return len(scene_key_sets), scene_key_sets, all_keys
 
 
+def resolve_scene_refinement_keys(raw_positive, scene_count):
+    """Per-scene non-default refinement keys, aligned to split_scene_texts.
+
+    A key participates in a scene when one of its bound shortcuts fired in that scene's
+    text (anchor keys count for every scene). Falls back to the union across all scenes
+    when attribution can't be trusted — the raw-prompt scene count diverges from the
+    actual split (advisor/repair rewrote the prompt, unusual transition stacking, etc.).
+    Returns a list of sets aligned to scenes; empty sets => default key (today's path).
+
+    This is the single source of truth shared by generation (FunPackStudio._v2_scene_refinement_keys)
+    and the Movie Editor preview, so what the editor shows is exactly what will run."""
+    scene_count = max(1, int(scene_count or 1))
+    try:
+        n, scene_sets, all_keys = prompt_scene_shortcut_keys(raw_positive)
+    except Exception as error:
+        print(f"[FunPackStudio] Scene refinement-key attribution failed: {error}")
+        return [set() for _ in range(scene_count)]
+    if not all_keys:
+        return [set() for _ in range(scene_count)]
+    if n == scene_count:
+        return scene_sets
+    return [set(all_keys) for _ in range(scene_count)]
+
+
 def parse_timeline_segments(prompt):
     """Return {"anchor": str, "scenes": [...], "transitions": [...]} for timeline preview.
 
@@ -6760,22 +6784,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_scene_refinement_keys(self, raw_positive, scene_count):
         """Per-scene non-default refinement keys, aligned to split_scene_texts.
 
-        A key participates in a scene when one of its bound shortcuts fired in that scene's
-        text (anchor keys count for every scene). Falls back to the union across all scenes
-        when attribution can't be trusted — the raw-prompt scene count diverges from the
-        actual split (advisor/repair rewrote the prompt, unusual transition stacking, etc.).
-        Returns a list of sets aligned to scenes; empty sets => default key (today's path)."""
-        scene_count = max(1, int(scene_count or 1))
-        try:
-            n, scene_sets, all_keys = prompt_scene_shortcut_keys(raw_positive)
-        except Exception as error:
-            print(f"[FunPackStudio] Scene refinement-key attribution failed: {error}")
-            return [set() for _ in range(scene_count)]
-        if not all_keys:
-            return [set() for _ in range(scene_count)]
-        if n == scene_count:
-            return scene_sets
-        return [set(all_keys) for _ in range(scene_count)]
+        Thin wrapper over the module-level resolve_scene_refinement_keys so generation and
+        the Movie Editor preview share one source of truth (see that function for the rules)."""
+        return resolve_scene_refinement_keys(raw_positive, scene_count)
 
     def _v2_scene_seed_values(self, seed, scene_count, provided=None):
         scene_count = max(0, int(scene_count or 0))

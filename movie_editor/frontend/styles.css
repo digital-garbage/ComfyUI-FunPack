@@ -566,6 +566,8 @@ input[type=number] { font-family: var(--font-mono); }
 .pv-badge { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .5px; text-transform: uppercase; color: var(--teal); border: 1px solid #57d0c655; border-radius: 4px; padding: 1px 5px; flex: 0 0 auto; }
 .pv-badge.anchor { color: var(--amber); border-color: #f3a93c55; }
 .pv-badge.trans { color: var(--faint); border-color: transparent; font-size: 9px; }
+.pv-badge.rkey { color: #c79bf2; border-color: #c79bf255; text-transform: none; letter-spacing: 0; }
+.pv-badge.rkey.default { color: var(--faint); border-color: #ffffff22; }
 .sync-preview-btn { margin-top: 8px; width: 100%; }
 
 /* Sampler panel (sp-*) */

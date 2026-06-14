@@ -120,3 +120,25 @@ def test_studio_scene_refinement_keys_no_bindings(monkeypatch):
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
     studio = conditioning.FunPackVideoRefinerV2()
     assert studio._v2_scene_refinement_keys("alpha scene 2 here", 2) == [set(), set()]
+
+
+def test_resolver_matches_studio(monkeypatch):
+    """The Movie Editor preview resolver and the Studio generation path are one function."""
+    db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    studio = conditioning.FunPackVideoRefinerV2()
+    raw = "wide shot scene 1 alpha here scene 2 beta here"
+    for n in (2, 3):
+        assert conditioning.resolve_scene_refinement_keys(raw, n) == studio._v2_scene_refinement_keys(raw, n)
+
+
+def test_bridge_scene_refinement_keys_preview(monkeypatch):
+    """Preview payload: explicit keys vs project-default fallback per scene."""
+    from movie_editor.backend import bridge
+    db = _db({"a": (["alpha"], ["AAA"], "keyA")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = bridge.scene_refinement_keys("wide shot scene 1 alpha here scene 2 plain", 2, "myproj")
+    assert out[0] == {"keys": ["keyA"], "uses_default": False, "default_key": "myproj"}
+    assert out[1] == {"keys": ["myproj"], "uses_default": True, "default_key": "myproj"}

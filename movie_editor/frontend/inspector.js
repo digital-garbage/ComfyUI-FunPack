@@ -653,9 +653,21 @@
     if (pv.parse_error) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, "ComfyUI offline — preview paused")); box.append(w); }
     const parsed = pv.parsed || {};
     if (parsed.anchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }
+    const rkeys = pv.scene_refinement_keys || [];
     (parsed.scenes || []).forEach((s, i) => {
       const l = el("div", "pv-line");
       l.append(el("span", "pv-badge", "S" + (i + 1)));
+      // Refinement key(s) this scene will steer with (matches generation exactly)
+      const rk = rkeys[i];
+      if (rk && rk.keys && rk.keys.length) {
+        const label = (rk.keys.length > 1 ? "keys: " : "key: ") + rk.keys.join(" + ")
+          + (rk.uses_default ? " (default)" : (rk.keys.length > 1 ? " (avg)" : ""));
+        const chip = el("span", "pv-badge rkey" + (rk.uses_default ? " default" : ""), label);
+        chip.title = rk.uses_default
+          ? "No shortcut key fired in this scene — steers with the project default key"
+          : "Steers with these refinement keys (averaged when more than one)";
+        l.append(chip);
+      }
       l.append(el("span", null, s.text || "(empty)"));
       // Show detected transition after this scene
       const t = (parsed.transitions || []).find((tr) => tr.after_scene === i);

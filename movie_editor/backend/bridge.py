@@ -82,6 +82,26 @@ def parse_timeline_verbatim(prompt: str) -> dict:
         return parse_timeline_raw(prompt)
 
 
+def scene_refinement_keys(prompt: str, scene_count: int, default_key: str = "default") -> list:
+    """Per-scene refinement keys that generation will actually use, for the editor preview.
+
+    Returns one entry per scene aligned to parse_timeline's scenes:
+      {"keys": [<non-default keys, sorted>], "uses_default": bool, "default_key": str}
+    A scene with no fired non-default keys steers with the project default key
+    (uses_default=True). Mirrors generation exactly by reusing the same resolver."""
+    resolve = _funpack_attr("conditioning", "resolve_scene_refinement_keys")
+    default_key = str(default_key or "default").strip() or "default"
+    sets = resolve(str(prompt or ""), int(scene_count or 1))
+    out = []
+    for s in sets:
+        keys = sorted(s)
+        if keys:
+            out.append({"keys": keys, "uses_default": False, "default_key": default_key})
+        else:
+            out.append({"keys": [default_key], "uses_default": True, "default_key": default_key})
+    return out
+
+
 def validate_generation_prompt(full, target) -> dict:
     """Build the generation prompt and run fingerprint; track changes since last queue."""
     from .timeline import (

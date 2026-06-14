@@ -1142,6 +1142,8 @@ if web is not None and PromptServer is not None:
                 result["parsed_verbatim"] = bridge.parse_timeline_verbatim(prompt)
                 result["expected_scenes"] = validation["expected_scenes"]
                 result["parsed_scenes"] = len(parsed.get("scenes", []))
+                result["scene_refinement_keys"] = bridge.scene_refinement_keys(
+                    prompt, len(parsed.get("scenes", [])), p.refinement_key)
             except Exception as e:  # noqa: BLE001
                 result["parse_error"] = str(e)
             return web.json_response(result)
@@ -1157,6 +1159,8 @@ if web is not None and PromptServer is not None:
             got = len(parsed.get("scenes", []))
             result["expected_scenes"] = expected
             result["parsed_scenes"] = got
+            result["scene_refinement_keys"] = bridge.scene_refinement_keys(
+                prompt, got, p.refinement_key)
             if expected and got != expected:
                 result["warning"] = (
                     f"Studio split produced {got} scene(s) but the timeline has {expected}. "
