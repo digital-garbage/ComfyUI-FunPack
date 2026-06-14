@@ -449,7 +449,7 @@
     card.title = mediaSelectMode
       ? `${m.name}\nClick to toggle selection`
       : m.kind === "image"
-        ? `${m.name}\nImage · click to preview · drag onto a clip to set anchor`
+        ? `${m.name}\nImage · click to preview · drag onto timeline to add a clip, or onto a clip to set its anchor`
         : m.kind === "audio"
           ? `${m.name}\nAudio · click to preview · add via timeline + Add → Audio`
           : m.kind === "video"

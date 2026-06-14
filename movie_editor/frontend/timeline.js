@@ -641,7 +641,9 @@
     clip.addEventListener("drop", (e) => {
       const id = e.dataTransfer.getData("application/funpack-media");
       clip.classList.remove("drop-target");
-      if (id) { e.preventDefault(); S.assignMediaToScene(scene.id, id); }
+      // Dropping on a clip sets ITS anchor; stop the event reaching the track-level
+      // drop (which would otherwise also create a brand-new clip).
+      if (id) { e.preventDefault(); e.stopPropagation(); S.assignMediaToScene(scene.id, id); }
     });
 
     // i2v anchor thumbnail (image + mixed + generated_frame)
@@ -1910,6 +1912,12 @@
       if (asset?.kind === "video") {
         e.preventDefault();
         S.addVideoClip(id);
+      } else if (asset?.kind === "image") {
+        // CapCut-style: drop an image on empty timeline → default-length generative
+        // scene anchored to it. (Dropping ON a clip sets that clip's anchor instead;
+        // that handler stops propagation so this one doesn't also fire.)
+        e.preventDefault();
+        S.addImageClip(id);
       }
     });
     lay.forEach(({ seg, o, d }) => {

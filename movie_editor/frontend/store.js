@@ -1211,6 +1211,26 @@
     if (!dur) _probeVideoClipDuration(id, mediaId);
   }
 
+  // Drop an image onto the timeline → a new GENERATIVE scene at the project's
+  // default length, anchored to that image (i2v). Empty prompt; the user fills it
+  // in. Mirrors addScene (server assigns the id) but pre-sets the image anchor.
+  function addImageClip(mediaId) {
+    if (!state.project || !mediaId) return;
+    const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
+    if (!asset || asset.kind !== "image") return;
+    _historyRecord();
+    state.project.scenes.push({
+      text: "",
+      transition_to_next: "",
+      source: { type: "image", media_ref: mediaId },
+      excluded: false,
+      frames_mode: "project",
+      fps_mode: "project",
+    });
+    window.Timeline?.requestAutoFit?.();
+    notify(); scheduleSave(); // server assigns id; reselect after commit
+  }
+
   function _applyVideoClipDuration(sceneId, durSec) {
     const sc = scene(sceneId);
     if (!sc || !isVideoClip(sc) || !durSec || !isFinite(durSec)) return;
@@ -3579,7 +3599,7 @@
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, scene,
-    addVideoClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
+    addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
