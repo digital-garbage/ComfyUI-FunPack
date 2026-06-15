@@ -221,11 +221,25 @@
   }
 
   let _globalApplyTimer = null;
+  let _pendingGlobalPromptText = null;   // latest typed global prompt awaiting distribution
   function scheduleGlobalPromptApply(text) {
+    _pendingGlobalPromptText = text;
     clearTimeout(_globalApplyTimer);
     _globalApplyTimer = setTimeout(() => {
-      applyGlobalPromptQuiet(text).catch((e) => console.warn("Global prompt apply failed:", e));
+      _globalApplyTimer = null;
+      const t = _pendingGlobalPromptText; _pendingGlobalPromptText = null;
+      applyGlobalPromptQuiet(t).catch((e) => console.warn("Global prompt apply failed:", e));
     }, 500);
+  }
+
+  // Materialize a still-debounced global-prompt edit into scene.text NOW (screen = truth). Called
+  // before generate/save so a prompt typed faster than the 500ms debounce isn't left undistributed
+  // — otherwise we'd save (and generate from) stale scene text while the screen shows the new prompt.
+  async function flushGlobalPromptApply() {
+    if (_globalApplyTimer) { clearTimeout(_globalApplyTimer); _globalApplyTimer = null; }
+    if (_pendingGlobalPromptText == null) return;
+    const t = _pendingGlobalPromptText; _pendingGlobalPromptText = null;
+    await applyGlobalPromptQuiet(t);
   }
 
   function _normalizeSceneText(t) {
@@ -2371,6 +2385,7 @@
   }
 
   async function _flushSaveForGenerate() {
+    await flushGlobalPromptApply();   // distribute any just-typed global prompt into scenes first
     await flushSave();
     if (_localDirty) {
       throw new Error(
