@@ -12670,52 +12670,32 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 },
             })
 
+        # ONE canonical split (of the RAW prompt) feeds BOTH the per-scene encode texts AND the
+        # per-scene refinement keys, so generation, attribution, preview and reset can never disagree
+        # on scene count or boundaries — no guard, no fallback. split_scenes walks the shortcut
+        # expansion pieces and cuts only at real transition triggers (qcut/cut), giving each scene's
+        # expanded text + keys; _v2_transition_scene_texts then prepends the anchor exactly as before.
         split_scene_texts = []
         split_scene_effects = []
+        scene_refinement_keys = []
         current_scene_seeds = []
         current_scene_seed_source = str(_seed_source or "fresh seed")
         if split_by_transitions:
             try:
-                split_segments = self._v2_split_prompt_by_transitions(prompt_to_encode, placement=split_transition_placement)
-                if len(split_segments) > 1:
-                    split_scene_texts, split_scene_effects = self._v2_transition_scene_texts(split_segments)
+                canonical = split_scenes(_raw_positive_prompt, placement=split_transition_placement)
+                canon_scenes = [s for s in (canonical.get("scenes", []) or [])
+                                if (s.get("expanded") or "").strip()]
+                if len(canon_scenes) > 1:
+                    segments = [(canonical.get("anchor_expanded", ""), None)] + \
+                               [(s.get("expanded", ""), s.get("effect")) for s in canon_scenes]
+                    split_scene_texts, split_scene_effects = self._v2_transition_scene_texts(segments)
+                    scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
                     current_scene_seed_source = (
-                        "successful seed memory"
-                        if _scene_seeds else
-                        "base seed + scene index"
+                        "successful seed memory" if _scene_seeds else "base seed + scene index"
                     )
             except Exception as e:
-                print(f"[FunPackVideoRefinerV2] Transition seed prep failed: {e}")
-
-        # Per-scene non-default refinement keys (shortcut->key bindings), read off the ONE canonical
-        # split of the RAW prompt. The scene TEXTS above come from prompt_to_encode (post any
-        # transforms); the KEYS come from the raw prompt where shortcuts still live. GUARD: those two
-        # must agree on scene count — if a transform (advisor/lucky/wildcard; prompt-repair is being
-        # removed) restructured the prompt between them, the per-scene key->scene mapping can't be
-        # trusted, so scream and fall back to default-key attribution rather than land a key on the
-        # wrong scene. With no structure-changing transforms (the common case) the counts always match.
-        scene_refinement_keys = []
-        if split_scene_texts:
-            canonical_scene_keys = self._v2_scene_refinement_keys(_raw_positive_prompt)
-            if len(canonical_scene_keys) == len(split_scene_texts):
-                scene_refinement_keys = canonical_scene_keys
-            else:
-                # DIAGNOSTIC: dump both splits so we can see exactly where they diverge. The text
-                # split is on the EXPANDED prompt (generation), the key split is on the RAW prompt
-                # (split_scenes). Trimmed to 80 chars/scene.
-                _canon = split_scenes(_raw_positive_prompt).get("scenes", [])
-                print(
-                    f"[FunPackVideoRefinerV2] SCENE SPLIT MISMATCH: expanded/text split = "
-                    f"{len(split_scene_texts)} scene(s), raw/key split = {len(canonical_scene_keys)}. "
-                    f"Falling back to default-key attribution for this run.\n"
-                    f"  RAW key-split scenes ({len(_canon)}):\n" +
-                    "\n".join(f"    [{i}] keys={sorted(s.get('keys') or [])} :: {(s.get('raw') or '')[:80]!r}"
-                              for i, s in enumerate(_canon)) +
-                    f"\n  EXPANDED text-split scenes ({len(split_scene_texts)}):\n" +
-                    "\n".join(f"    [{i}] {str(t)[:80]!r}" for i, t in enumerate(split_scene_texts))
-                )
-                scene_refinement_keys = [set() for _ in split_scene_texts]
+                print(f"[FunPackVideoRefinerV2] Transition scene prep failed: {e}")
 
         if current_prompt_refusal:
             state["last_run"] = None
