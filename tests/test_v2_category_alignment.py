@@ -256,7 +256,10 @@ def test_wrong_appearance_rating_is_available():
 
     assert "Wrong appearance" in V2_RATING_LABELS
     assert profile["key"] == "wrong_appearance"
-    assert profile["wrong_categories"] == ["appearance", "subject", "environment"]
+    # Wrong appearance now drives the consistency anchor, not prompt repair (the dead
+    # wrong_categories field was dropped in Stage 2 Part B). It stays quality-neutral.
+    assert "wrong_categories" not in profile
+    assert profile["skip_value_function"] is True
 
 
 def test_scene_builder_user_category_overrides_refiner_classification():
@@ -2067,3 +2070,132 @@ def test_split_by_transitions_uses_provided_scene_seeds(tmp_path):
 
     assert [item[1]["funpack_scene_seed"] for item in cond] == [900, 901]
     assert all(item[1]["funpack_seed_source"] == "successful seed memory" for item in cond)
+
+
+# --- Stage 2 Part B: "Wrong appearance" consistency anchor ---
+
+def _mean_cosine(a, b):
+    a = a.reshape(-1, a.shape[-1]).float()
+    b = b.reshape(-1, b.shape[-1]).float()
+    a = a / a.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    b = b / b.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    return float((a * b).sum(dim=-1).mean().item())
+
+
+def test_appearance_anchor_stores_blessed_on_good_rating():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    payload = tensor_to_serializable(torch.randn(1, 6, 8))
+    previous_run = {"conditioning": payload, "prompt": "woman in red dress"}
+
+    status = refiner._v2_update_appearance_anchor(
+        global_state, previous_run, normalize_refiner_v2_rating("Perfect"), 3
+    )
+
+    assert "blessed" in status.lower()
+    assert global_state["appearance_anchor"]["conditioning"] is payload
+    assert global_state["appearance_anchor"]["count"] == 1
+    # A good rating should NOT populate the drift slot.
+    assert "appearance_drift" not in global_state
+
+
+def test_appearance_anchor_stores_drift_on_wrong_appearance():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    payload = tensor_to_serializable(torch.randn(1, 6, 8))
+    previous_run = {"conditioning": payload, "prompt": "woman in red dress"}
+
+    refiner._v2_update_appearance_anchor(
+        global_state, previous_run, normalize_refiner_v2_rating("Wrong appearance"), 4
+    )
+
+    assert global_state["appearance_drift"]["conditioning"] is payload
+    # Wrong appearance must not overwrite/seed the blessed anchor.
+    assert "appearance_anchor" not in global_state
+
+
+def test_good_rating_overwrites_blessed_anchor():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    first = tensor_to_serializable(torch.randn(1, 6, 8))
+    second = tensor_to_serializable(torch.randn(1, 6, 8))
+
+    refiner._v2_update_appearance_anchor(
+        global_state, {"conditioning": first, "prompt": "a"}, normalize_refiner_v2_rating("Perfect"), 1
+    )
+    refiner._v2_update_appearance_anchor(
+        global_state, {"conditioning": second, "prompt": "b"}, normalize_refiner_v2_rating("Nailed it"), 2
+    )
+
+    assert global_state["appearance_anchor"]["conditioning"] is second
+    assert global_state["appearance_anchor"]["count"] == 2
+
+
+def test_appearance_anchor_skips_when_no_conditioning_or_skip_learning():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    # No conditioning payload on the run.
+    refiner._v2_update_appearance_anchor(
+        global_state, {"prompt": "x"}, normalize_refiner_v2_rating("Perfect"), 1
+    )
+    assert "appearance_anchor" not in global_state
+    # skip_learning rating (e.g. -Just forget it-) never stores.
+    payload = tensor_to_serializable(torch.randn(1, 6, 8))
+    refiner._v2_update_appearance_anchor(
+        global_state, {"conditioning": payload}, normalize_refiner_v2_rating("-Just forget it-"), 1
+    )
+    assert "appearance_anchor" not in global_state
+
+
+def test_wrong_appearance_pulls_toward_blessed_and_repels_drift():
+    refiner = FunPackVideoRefinerV2()
+    torch.manual_seed(0)
+    original = torch.randn(1, 6, 8)
+    blessed = torch.randn(1, 6, 8)
+    drift = torch.randn(1, 6, 8)
+    global_state = {
+        "appearance_anchor": {"conditioning": tensor_to_serializable(blessed)},
+        "appearance_drift": {"conditioning": tensor_to_serializable(drift)},
+    }
+
+    refined, status = refiner._v2_apply_conditioning_memory(
+        original.clone(), global_state, normalize_refiner_v2_rating("Wrong appearance")
+    )
+
+    assert "appearance-anchor: pull→blessed + repel←drift" in status
+    # Output moved toward the blessed appearance and away from the drift (direction).
+    assert _mean_cosine(refined, blessed) > _mean_cosine(original, blessed)
+    assert _mean_cosine(refined, drift) < _mean_cosine(original, drift)
+    # Gentle: per-token norm is preserved and the net change is small.
+    assert torch.allclose(
+        refined.norm(dim=-1), original.norm(dim=-1), atol=1e-3
+    )
+    assert (refined - original).norm() / original.norm() < 0.08
+
+
+def test_appearance_anchor_idle_without_blessed():
+    refiner = FunPackVideoRefinerV2()
+    torch.manual_seed(1)
+    original = torch.randn(1, 6, 8)
+
+    refined, status = refiner._v2_apply_conditioning_memory(
+        original.clone(), {}, normalize_refiner_v2_rating("Wrong appearance")
+    )
+
+    assert "appearance-anchor idle" in status
+    assert torch.allclose(refined, original, atol=1e-4)
+
+
+def test_appearance_anchor_not_applied_on_non_wrong_appearance_rating():
+    refiner = FunPackVideoRefinerV2()
+    torch.manual_seed(2)
+    original = torch.randn(1, 6, 8)
+    blessed = torch.randn(1, 6, 8)
+    global_state = {"appearance_anchor": {"conditioning": tensor_to_serializable(blessed)}}
+
+    # A "Missing details" rating must not trigger the appearance anchor pull.
+    refined, status = refiner._v2_apply_conditioning_memory(
+        original.clone(), global_state, normalize_refiner_v2_rating("Missing details")
+    )
+
+    assert "appearance-anchor idle" in status

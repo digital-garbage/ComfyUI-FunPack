@@ -6113,21 +6113,24 @@ V2_RATING_PROFILES = {
     "Missing action": {"key": "missing_action", "reward": 0.05, "level": 5, "missing_axes": ["action"]},
     "Missing quality": {"key": "missing_quality", "reward": -0.30, "level": 4, "missing_axes": ["quality"]},
     "Missing details + action": {"key": "missing_details_action", "reward": -0.10, "level": 3, "missing_axes": ["details", "action"]},
-    # Wrong-* are prompt-REPAIR signals ("good gen, but the words/identity were off"), not quality
-    # rewards. `skip_value_function` keeps them out of value-function + Absolute-taste reward
-    # training (where a 0.0/low reward on a visually-good gen poisons the learned quality landscape
-    # and the ascent direction → drift/wrong-character). They STILL drive prompt repair and the
-    # relative direction/category memory via their missing_axes/wrong_axes/wrong_categories.
+    # Wrong-* are quality-neutral signals ("good gen, but the words/identity were off"), not
+    # quality rewards. `skip_value_function` keeps them out of value-function + Absolute-taste
+    # reward training (where a 0.0/low reward on a visually-good gen poisons the learned quality
+    # landscape and the ascent direction → drift/wrong-character). They STILL drive the relative
+    # direction/category memory via their missing_axes/wrong_axes.
     "Wrong details": {"key": "wrong_details", "reward": 0.20, "level": 5, "missing_axes": ["details"], "wrong_axes": ["details"], "skip_value_function": True},
     "Wrong action": {"key": "wrong_action", "reward": -0.10, "level": 4, "missing_axes": ["action"], "wrong_axes": ["action"], "skip_value_function": True},
     "Wrong action + quality": {"key": "wrong_action_quality", "reward": -0.40, "level": 3, "missing_axes": ["quality"], "wrong_axes": ["action"], "skip_value_function": True},
     "Wrong details + action": {"key": "wrong_details_action", "reward": 0.00, "level": 3, "missing_axes": ["details", "action"], "wrong_axes": ["details", "action"], "skip_value_function": True},
+    # "Wrong appearance" = character consistency wasn't preserved. Drives the consistency anchor
+    # (_v2_update_appearance_anchor / _v2_apply_conditioning_memory_impl): pull the next gen toward
+    # the last good-rated conditioning for this key and repel from the rejected drift. Not a reward
+    # (skip_value_function) — it's a conditioning nudge, not a quality score.
     "Wrong appearance": {
         "key": "wrong_appearance",
         "reward": 0.0,
         "level": 4,
         "missing_axes": [],
-        "wrong_categories": ["appearance", "subject", "environment"],
         "skip_value_function": True,
     },
     "Missing details + quality": {"key": "missing_details_quality", "reward": -0.40, "level": 2, "missing_axes": ["details", "quality"]},
@@ -6858,6 +6861,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seed_output_connected=bool(seed_output_connected),
         )
         self._v2_update_intent_family_memory(target_global, scene_run, profile, iter_num, axis_feedback)
+        self._v2_update_appearance_anchor(target_global, scene_run, profile, iter_num)
         self._v2_update_negative_prompt_memory(target_global, scene_run, profile, axis_feedback)
         self._v2_update_intent_alignment_memory(target_global, scene_run, profile, iter_num, axis_feedback)
         self._v2_update_conditioning_memory(target_global, scene_run, profile, axis_feedback)
@@ -8364,6 +8368,42 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             slot["delta"] = delta_payload
             slot["count"] = 1
             return True
+
+    def _v2_update_appearance_anchor(self, global_state, previous_run, rating_profile, iter_num):
+        """Consistency anchor for the "Wrong appearance" rating. global_state is already
+        per-refinement-key, so these live with that key automatically.
+
+        On a good rating, remember the rated run's conditioning as the "blessed appearance"
+        (the last good character). On a Wrong-appearance rating, remember the rejected run's
+        conditioning as the "drift" to repel from. _v2_apply_conditioning_memory_impl pulls the
+        next gen toward the blessed appearance and away from the drift when the user rated the
+        previous gen Wrong appearance."""
+        if not isinstance(global_state, dict) or not isinstance(previous_run, dict):
+            return "Appearance anchor: no update."
+        if rating_profile.get("skip_learning"):
+            return "Appearance anchor: no update."
+        conditioning = previous_run.get("conditioning")
+        if not isinstance(conditioning, dict):
+            return "Appearance anchor: run carried no conditioning."
+        key = rating_profile.get("key", "")
+        is_good = key in {"like", "nailed_it", "loved_it"} or bool(rating_profile.get("loved_modifier"))
+        if is_good:
+            existing = global_state.get("appearance_anchor") or {}
+            global_state["appearance_anchor"] = {
+                "conditioning": conditioning,
+                "prompt": self._v2_prompt_key(previous_run.get("prompt", "")),
+                "count": int(existing.get("count", 0)) + 1,
+                "last_seen_iter": int(iter_num),
+            }
+            return "Appearance anchor: blessed appearance stored."
+        if key == "wrong_appearance":
+            global_state["appearance_drift"] = {
+                "conditioning": conditioning,
+                "prompt": self._v2_prompt_key(previous_run.get("prompt", "")),
+                "last_seen_iter": int(iter_num),
+            }
+            return "Appearance anchor: drift stored (repel on next gen)."
+        return "Appearance anchor: no update."
 
     def _v2_update_intent_family_memory(self, global_state, last_run, rating_profile, iter_num, axis_feedback=None):
         if not isinstance(global_state, dict) or not isinstance(last_run, dict) or rating_profile.get("skip_learning"):
@@ -9971,6 +10011,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
 
         mixed, family_delta_status = self._v2_apply_intent_family_delta(mixed, intent_family_slot, strength)
 
+        # --- Consistency anchor (Wrong appearance) ---
+        # "Wrong appearance" means the established character drifted. Pull this run gently back
+        # toward the last good-rated conditioning for this key (the "blessed appearance") and
+        # repel from the just-rejected drifted look. Gentle fixed strengths; the global 7.5%
+        # delta cap below bounds the net effect. No-op when nothing is stored or shapes mismatch.
+        appearance_status = "appearance-anchor idle"
+        if rating_profile.get("key") == "wrong_appearance":
+            anchor = global_state.get("appearance_anchor") or {}
+            drift = global_state.get("appearance_drift") or {}
+            anchor_actions = []
+            if self._v2_shape_compatible(anchor.get("conditioning"), mixed):
+                mixed = self._v2_apply_conditioning_payload(mixed, anchor.get("conditioning"), 0.05)
+                anchor_actions.append("pull→blessed")
+            if self._v2_shape_compatible(drift.get("conditioning"), mixed):
+                mixed = self._v2_repel_conditioning_payload(mixed, drift.get("conditioning"), 0.04)
+                anchor_actions.append("repel←drift")
+            if anchor_actions:
+                appearance_status = "appearance-anchor: " + " + ".join(anchor_actions)
+
         axis_memory = global_state.get("axis_conditioning_memory", {})
         axis_actions = []
         missing_axes = set(axis_feedback.get("missing_axes", []))
@@ -10096,6 +10155,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             f"  Bad conditioning: {'direction' if bad_count >= 3 else f'lerp fallback ({bad_count}/3 runs)'}\n"
             f"  Axis adjustments: {axis_str}\n"
             f"  {family_delta_status}\n"
+            f"  {appearance_status}\n"
             f"  Total delta clamped to 7.5% of conditioning norm"
         )
 
@@ -11610,6 +11670,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state.setdefault("intent_alignment_memory", {})
         global_state.setdefault("intent_family_memory", {})
         global_state.setdefault("perfect_anchors", {})
+        global_state.setdefault("appearance_anchor", {})
+        global_state.setdefault("appearance_drift", {})
         global_state.setdefault("variant_evidence", {})
         global_state.setdefault("intent_preference_phrases", {})
         global_state.setdefault("conditioning_deltas", {})
@@ -11710,6 +11772,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 learning_profile,
                 int(global_state.get("total_iterations", 0)) + 1,
                 axis_feedback,
+            )
+            self._v2_update_appearance_anchor(
+                global_state,
+                previous_run,
+                learning_profile,
+                int(global_state.get("total_iterations", 0)) + 1,
             )
             negative_memory_status = self._v2_update_negative_prompt_memory(
                 global_state,
