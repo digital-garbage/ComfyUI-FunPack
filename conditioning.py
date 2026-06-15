@@ -12648,11 +12648,19 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if len(canonical_scene_keys) == len(split_scene_texts):
                 scene_refinement_keys = canonical_scene_keys
             else:
+                # DIAGNOSTIC: dump both splits so we can see exactly where they diverge. The text
+                # split is on the EXPANDED prompt (generation), the key split is on the RAW prompt
+                # (split_scenes). Trimmed to 80 chars/scene.
+                _canon = split_scenes(_raw_positive_prompt).get("scenes", [])
                 print(
-                    f"[FunPackVideoRefinerV2] SCENE SPLIT MISMATCH: text split has "
-                    f"{len(split_scene_texts)} scene(s) but the raw key split has "
-                    f"{len(canonical_scene_keys)} — a prompt transform changed the scene structure. "
-                    f"Falling back to default-key attribution for this run."
+                    f"[FunPackVideoRefinerV2] SCENE SPLIT MISMATCH: expanded/text split = "
+                    f"{len(split_scene_texts)} scene(s), raw/key split = {len(canonical_scene_keys)}. "
+                    f"Falling back to default-key attribution for this run.\n"
+                    f"  RAW key-split scenes ({len(_canon)}):\n" +
+                    "\n".join(f"    [{i}] keys={sorted(s.get('keys') or [])} :: {(s.get('raw') or '')[:80]!r}"
+                              for i, s in enumerate(_canon)) +
+                    f"\n  EXPANDED text-split scenes ({len(split_scene_texts)}):\n" +
+                    "\n".join(f"    [{i}] {str(t)[:80]!r}" for i, t in enumerate(split_scene_texts))
                 )
                 scene_refinement_keys = [set() for _ in split_scene_texts]
 
