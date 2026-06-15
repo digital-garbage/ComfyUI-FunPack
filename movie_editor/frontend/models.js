@@ -240,6 +240,10 @@
       ctrl = el("select");
       (spec.choices || []).forEach((c) => { const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o); });
       if (!spec.choices || !spec.choices.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
+      // A saved value that no longer exists (renamed/removed file) leaves nothing
+      // selected — the browser then shows the first option without persisting it,
+      // so the stale value silently goes to generation. Persist what's displayed.
+      else if (value != null && !spec.choices.includes(value)) onChange(spec.choices[0]);
       ctrl.onchange = () => onChange(ctrl.value);
     } else if (spec.kind === "boolean") {
       ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!value; ctrl.style.width = "auto";

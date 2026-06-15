@@ -115,6 +115,16 @@ def test_explicit_wires_and_autowire():
     assert report["ambiguous"] == []
 
 
+def test_stale_combo_value_coerced_to_live_choice():
+    # "old.safetensors" was renamed/removed; the live spec only has "m.safetensors".
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "old.safetensors"},
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+    ]}
+    graph, _ = builder.build(OI, models, PARAMS)
+    assert graph["slot_u"]["inputs"]["unet_name"] == "m.safetensors"
+
+
 def test_linked_inputs_drive_multiple_node_values():
     models = {
         "slots": [
