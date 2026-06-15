@@ -2494,9 +2494,14 @@
 
   // Record a completed run's output: map each of the run's scenes to the one source
   // video at its cumulative in-point, so splits/deletes later play the right portions.
-  function _pruneGhostsAfterRegen(recordedSceneIds) {
+  function _pruneGhostsAfterRegen(recordedSceneIds, protectedGhostIds) {
     const ids = new Set(recordedSceneIds || []);
-    state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
+    const keep = new Set(protectedGhostIds || []);
+    // Drop ghosts superseded by this run's fresh renders (anchored after, or sharing id with, a
+    // recorded scene) — but never a ghost that just received its own finished media this pass.
+    state.sceneGhosts = (state.sceneGhosts || []).filter(
+      (g) => keep.has(g.id) || (!ids.has(g.afterSceneId) && !ids.has(g.id))
+    );
   }
 
   function _ghostDurationSec(g) {
@@ -2666,6 +2671,10 @@
     let chainSceneIdx = 0;
     let clearedRating = false;
     const recordedSceneIds = [];
+    // Ghosts of scenes removed mid-generation that just received their finished media in this
+    // pass. They must survive _pruneGhostsAfterRegen — they ARE the fresh result, not the stale
+    // pre-regen render the prune is meant to drop.
+    const completedGhostIds = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       if (_removedDuringGen.has(id)) {
@@ -2677,6 +2686,7 @@
           const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, ghost, sceneLayout, chainSceneIdx, sourceSpanSec);
           ghosts[gi] = { ...ghost, media: primary, inSec, pendingGen: false };
           state.sceneGhosts = ghosts;
+          completedGhostIds.push(id);
           sourceEnd = inSec + _ghostDurationSec(ghost);
           lastChain = ghost;
           if (!sameUnit) chainSceneIdx += 1;
@@ -2697,7 +2707,7 @@
       lastChain = sc;
       if (!sameUnit) chainSceneIdx += 1;
     }
-    _pruneGhostsAfterRegen(recordedSceneIds);
+    _pruneGhostsAfterRegen(recordedSceneIds, completedGhostIds);
     _syncSeparatedTracksAfterRegen(recordedSceneIds);
     if (clearedRating) scheduleSaveSilent();
     if (recordedSceneIds.length) {
