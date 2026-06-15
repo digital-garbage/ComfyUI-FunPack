@@ -9,17 +9,14 @@ const ADVISOR_DTYPES = ["bfloat16", "float16", "float32"];
 const REFINER_MODES = ["Refine", "Prompt only", "Learning"];
 const ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"];
 const TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"];
-const SB_MODES = ["Pass-through", "Manual", "Auto", "Learning"];
 const CATEGORY_ORDER = ["action", "camera", "subject", "appearance", "environment", "style", "quality", "details"];
-const TABS = ["Session", "Scene", "Shortcuts", "Split markers", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
+const TABS = ["Session", "Shortcuts", "Split markers", "Refiner", "Advisor", "LoRA", "Sampler", "Adjustments", "Timeline"];
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "Normalizing", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
 const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
 
 let activePanel = null;
-let studioSceneData = null;
-let studioSceneKey = null;
 let studioShortcutData = null;
 let studioTransitionData = null;
 
@@ -68,7 +65,6 @@ function defaultSettings() {
   return {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
-    scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
     refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6 },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
@@ -117,27 +113,6 @@ function hideWidget(widget) {
 }
 
 // ─── API calls ────────────────────────────────────────────────────────────────
-
-async function fetchScenes(key = "") {
-  try {
-    const params = new URLSearchParams({ cache_bust: Date.now() });
-    if (key) params.set("key", key);
-    const res = await api.fetchApi(`/funpack/scenes?${params}`, { cache: "no-store" });
-    if (!res.ok) return null;
-    studioSceneData = await res.json();
-    studioSceneKey = key || "";
-    return studioSceneData;
-  } catch { return null; }
-}
-
-async function saveScene(key, payload) {
-  const params = key ? `?key=${encodeURIComponent(key)}` : "";
-  const res = await api.fetchApi(`/funpack/scenes/scene${params}`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "save", ...payload }),
-  });
-  if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
-}
 
 async function fetchShortcuts() {
   try {
@@ -741,7 +716,6 @@ function openPanel(node) {
     body.replaceChildren();
     errorEl.textContent = "";
     if (name === "Session") renderSession();
-    else if (name === "Scene") renderScene();
     else if (name === "Shortcuts") renderShortcuts();
     else if (name === "Split markers") renderSplitMarkers();
     else if (name === "Refiner") renderRefiner();
@@ -759,8 +733,6 @@ function openPanel(node) {
     const keyInput = textInput(settings.refinement_key, "session key name");
     keyInput.addEventListener("input", () => {
       settings.refinement_key = keyInput.value.trim();
-      studioSceneData = null;
-      studioSceneKey = null;
     });
 
     const linkedKey = linkedRefinementKey(node);
@@ -776,153 +748,6 @@ function openPanel(node) {
     const resetToggle = toggleEl(settings.refiner.reset_session, "Reset session on next run");
     resetToggle.inp.addEventListener("change", () => { settings.refiner.reset_session = resetToggle.inp.checked; });
     body.append(row("Reset", resetToggle.wrap));
-
-    body.append(sectionTitle("Scene Builder"));
-    const modeSelect = selectEl(SB_MODES, settings.scene_builder.mode);
-    modeSelect.addEventListener("change", async () => {
-      settings.scene_builder.mode = modeSelect.value;
-      saveSettings(node, settings);
-      studioSceneData = null;
-      studioSceneKey = null;
-      if (settings.scene_builder.mode !== "Pass-through") {
-        await fetchScenes(settings.refinement_key || linkedRefinementKey(node));
-      }
-      renderTab(activeTab);
-    });
-    body.append(row("Mode", modeSelect));
-
-    if (settings.scene_builder.mode !== "Pass-through") {
-      const hint = el("div", "funpack-studio-hint",
-        "Scene Builder active - prompt is built from the Scene tab, not from the positive_prompt input.");
-      body.append(hint);
-      const toScene = btn("Open Scene tab →", "secondary");
-      toScene.addEventListener("click", () => switchTab("Scene"));
-      body.append(toScene);
-    } else {
-      const hint = el("div", "funpack-studio-hint",
-        "Pass-through - the positive_prompt connected to the node is used as-is.");
-      body.append(hint);
-    }
-  }
-
-  // SCENE ────────────────────────────────────────────────────────────────────
-  function renderScene() {
-    body.append(sectionTitle("Scene Builder"));
-
-    if (settings.scene_builder.mode === "Pass-through") {
-      body.append(el("div", "funpack-studio-hint",
-        "Scene Builder is in Pass-through mode. Change mode in the Session tab to enable scene construction."));
-      return;
-    }
-
-    const key = settings.refinement_key || linkedRefinementKey(node);
-
-    // Scene name + scene selector
-    const sceneNames = studioSceneData?.scenes || [NONE_SENTINEL];
-    const sceneSelect = selectEl(sceneNames, settings.scene_builder.scene || NONE_SENTINEL);
-    sceneSelect.addEventListener("change", () => {
-      settings.scene_builder.scene = sceneSelect.value;
-      const scene = studioSceneData?.data?.scenes?.[sceneSelect.value];
-      if (scene) {
-        settings.scene_builder.scene_name = scene.name || sceneSelect.value;
-        settings.scene_builder.aliases = Array.isArray(scene.aliases) ? scene.aliases.join(", ") : "";
-        settings.scene_builder.scene_positive = scene.positive_text || "";
-        settings.scene_builder.scene_negative = scene.negative_text || "";
-        renderScene();
-      }
-    });
-    body.append(row("Saved scene", sceneSelect));
-
-    const nameInput = textInput(settings.scene_builder.scene_name, "Scene name");
-    nameInput.addEventListener("input", () => { settings.scene_builder.scene_name = nameInput.value; });
-    body.append(row("Scene name", nameInput));
-
-    const aliasInput = textInput(settings.scene_builder.aliases, "Aliases, comma separated");
-    aliasInput.addEventListener("input", () => { settings.scene_builder.aliases = aliasInput.value; });
-    body.append(row("Aliases", aliasInput));
-
-    body.append(sectionTitle("Positive prompt"));
-    const posArea = el("textarea", "funpack-studio-textarea");
-    posArea.value = settings.scene_builder.scene_positive || "";
-    posArea.placeholder = "Positive prompt phrases...";
-    posArea.addEventListener("input", () => { settings.scene_builder.scene_positive = posArea.value; });
-    body.append(posArea);
-
-    // Memory phrase bank
-    const memItems = studioSceneData?.memory || [];
-    if (memItems.length) {
-      body.append(sectionTitle("Phrase bank - click to insert"));
-      const search = el("input", "funpack-studio-search");
-      search.type = "search";
-      search.placeholder = "Search phrases";
-      body.append(search);
-
-      const bank = el("div", "funpack-studio-bank");
-      const renderBank = () => {
-        const q = search.value.toLowerCase().trim();
-        const filtered = q ? memItems.filter((m) => String(m.text || "").toLowerCase().includes(q)) : memItems;
-        bank.replaceChildren();
-        const byGroup = new Map();
-        for (const m of filtered) {
-          const cat = CATEGORY_ORDER.includes(m.category) ? m.category : "details";
-          if (!byGroup.has(cat)) byGroup.set(cat, []);
-          byGroup.get(cat).push(m);
-        }
-        for (const cat of CATEGORY_ORDER) {
-          const g = byGroup.get(cat);
-          if (!g?.length) continue;
-          bank.append(el("div", "funpack-studio-cat-label", cat));
-          const chipRow = el("div", "funpack-studio-chip-row");
-          for (const m of g) {
-            const chip = el("button", "funpack-studio-chip", m.text);
-            chip.type = "button";
-            chip.addEventListener("click", () => {
-              const cur = posArea.value.trim();
-              posArea.value = cur ? `${cur}, ${m.text}` : m.text;
-              settings.scene_builder.scene_positive = posArea.value;
-            });
-            chipRow.append(chip);
-          }
-          bank.append(chipRow);
-        }
-      };
-      renderBank();
-      search.addEventListener("input", renderBank);
-      body.append(bank);
-    }
-
-    // Save/delete scene buttons
-    const footer = el("div", "funpack-studio-footer");
-    const refreshBtn = btn("Refresh");
-    refreshBtn.addEventListener("click", async () => {
-      saveSettings(node, settings);
-      await fetchScenes(key);
-      renderScene();
-    });
-    const saveBtn = btn("Save scene", "primary");
-    saveBtn.addEventListener("click", async () => {
-      try {
-        saveSettings(node, settings);
-        await saveScene(key, {
-          name: settings.scene_builder.scene_name,
-          aliases: settings.scene_builder.aliases,
-          mode: settings.scene_builder.mode,
-          positive_text: settings.scene_builder.scene_positive,
-          negative_text: settings.scene_builder.scene_negative,
-        });
-        await fetchScenes(key);
-        settings.scene_builder.scene = settings.scene_builder.scene_name || settings.scene_builder.scene || NONE_SENTINEL;
-        saveSettings(node, settings);
-        renderScene();
-      } catch (e) { showError(root, e.message); }
-    });
-    footer.append(refreshBtn, saveBtn);
-    body.append(footer);
-
-    // Fetch scenes if not loaded
-    if (!studioSceneData || studioSceneKey !== (key || "")) {
-      fetchScenes(key).then(() => renderScene());
-    }
   }
 
   // SHORTCUTS ────────────────────────────────────────────────────────────────
@@ -1165,15 +990,6 @@ function openPanel(node) {
 
   // REFINER ──────────────────────────────────────────────────────────────────
   function renderRefiner() {
-    const sbMode = settings.scene_builder?.mode || "Pass-through";
-    const sbActive = sbMode !== "Pass-through";
-    if (sbActive) {
-      const banner = el("div", "funpack-studio-banner");
-      banner.innerHTML = `Scene Builder is active (<b>${sbMode}</b> mode) — positive prompt is built in the <a href="#" class="funpack-studio-tab-link">Scene tab</a>, not from the node input.`;
-      banner.querySelector("a").addEventListener("click", (e) => { e.preventDefault(); switchTab("Scene"); });
-      body.append(banner);
-    }
-
     body.append(sectionTitle("Execution"));
 
     const modeSelect = selectEl(REFINER_MODES, settings.refiner.mode);
@@ -1300,17 +1116,11 @@ function openPanel(node) {
     body.append(fbArea);
 
     body.append(sectionTitle("Intent"));
-    if (sbActive) {
-      body.append(el("div", "funpack-studio-hint",
-        "Intent is derived from the Scene Builder prompt when Scene Builder is active."));
-    }
     body.append(overrideToggle(settings, "user_intent_prompt",
       "Override - use popup value even when user_intent_prompt input is connected"));
     const intentArea = el("textarea", "funpack-studio-textarea short");
     intentArea.value = settings.refiner.user_intent_prompt_override || "";
     intentArea.placeholder = "Intent override (overrides the user_intent_prompt node input)...";
-    intentArea.disabled = sbActive;
-    if (sbActive) intentArea.style.opacity = "0.45";
     intentArea.addEventListener("input", () => { settings.refiner.user_intent_prompt_override = intentArea.value; });
     body.append(intentArea);
   }

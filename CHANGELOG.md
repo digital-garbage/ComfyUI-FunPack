@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Removed
+- Removed the `FunPack Scene Builder` node and the Studio Scene Builder feature (the per-key
+  scene database, saved scenes, the Studio **Scene** tab, and scene-database wildcard cleanup).
+  It was redundant — helpful on paper but effectively unused, with no way to drive it from the
+  Cutting Room, and it risked interfering with shortcuts. Shortcuts, transition splitting, and
+  refinement keys are unchanged. Studio now always uses the connected `positive_prompt`.
+
 ### Fixed
 - "Reset Studio session" silently wiped keys it never listed. The confirmation read the per-scene
   `scene_refinement_keys` (which drops keys via its divergence fallback), while the backend reset
