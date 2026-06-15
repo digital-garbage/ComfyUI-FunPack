@@ -831,52 +831,105 @@ def refinement_keys_in_text(text):
             if pc.get("is_shortcut") and str(pc.get("refinement_key") or "")}
 
 
-def split_scenes(prompt):
+def split_scenes(prompt, placement="start"):
     """THE canonical scene split — one source of truth for editing, preview, key attribution,
     session reset and generation.
 
-    Splits `prompt` into an anchor + scenes at shortcut-aware transition boundaries (detected on
-    BOTH the expanded and the raw text, then projected onto the raw words so nothing is expanded
-    or dropped), and for each scene reports everything any consumer needs:
+    Walks the ordered shortcut-expansion pieces (`_expand_with_map`) ONCE — no offset round-trip,
+    no re-scanning of expansion content. A scene boundary is created ONLY by a real transition
+    trigger: a shortcut whose trigger word is in the transition DB (e.g. `qcut`/`cut`), or a literal
+    transition word the user typed. The hard-coded generic `scene <N>` pattern is intentionally NOT
+    used — incidental "scene 2" text inside an expansion must never force a cut. Each non-transition
+    keyed shortcut contributes its refinement key to the CURRENT scene; the leading run (before the
+    first transition) is the anchor, whose keys fold into every scene.
 
+    Returns:
         {
-          "anchor": <raw anchor text, prepended to every scene>,
-          "scenes": [
-            {"index": i,
-             "raw":    <verbatim scene text>,          # editing / lossless mapping
-             "keys":   <set of refinement keys firing in this scene + anchor>,  # attribution / reset
-             "effect": <transition visual effect before this scene | None>},    # generation
-            ...
-          ],
+          "anchor": <raw anchor text>, "anchor_expanded": <expanded anchor>,
+          "scenes": [ {"index": i,
+                       "raw":      <verbatim scene text>,            # editing
+                       "expanded": <expanded scene text, no anchor>, # generation encode
+                       "keys":     <anchor keys ∪ this scene's keys>,# attribution / reset
+                       "effect":   <transition effect before this scene | None>}, ... ],
         }
+    A prompt with no transition triggers yields a single scene (the whole prompt). Because every
+    consumer reads this ONE split, scene counts and boundaries can never disagree."""
+    text = str(prompt or "")
+    try:
+        from .templates import load_custom_transition_triggers
+    except ImportError:
+        from templates import load_custom_transition_triggers
+    try:
+        custom_map = load_custom_transition_triggers() or {}
+    except Exception:
+        custom_map = {}
 
-    Derive, never re-split: per-scene keys = entry["keys"]; the reset pool = union of all keys;
-    the preview/generation scene texts come from these raw chunks (expanded by the caller). Because
-    every consumer reads ONE split, scene counts and boundaries can never disagree."""
-    verbatim = split_timeline_verbatim(prompt)
-    anchor = verbatim.get("anchor", "") or ""
-    anchor_keys = refinement_keys_in_text(anchor)
-    # transitions[i] = {"after_scene": k, "visual_effect": e} means effect e precedes scene k+1.
-    effect_before = {}
-    for t in verbatim.get("transitions", []) or []:
+    expanded_full, pieces = _expand_with_map(text)
+    segs = [{"raw": "", "exp": "", "keys": set(), "effect": None}]
+
+    def _norm(s):
+        return re.sub(r"\s+", " ", str(s or "").strip().lower())
+
+    def _open(effect):
+        eff = None if effect in (None, "none", "") else effect
+        segs.append({"raw": "", "exp": "", "keys": set(), "effect": eff})
+
+    def _transition(raw_t, exp_t, info):
+        place = (info.get("placement") or placement or "start")
+        effect = info.get("visual_effect")
+        if place == "end":             # trigger tails the previous scene, then cut
+            segs[-1]["raw"] += raw_t; segs[-1]["exp"] += exp_t
+            _open(effect)
+        elif place == "silent":        # trigger dropped entirely
+            _open(effect)
+        else:                          # "start": trigger leads the new scene
+            _open(effect)
+            segs[-1]["raw"] += raw_t; segs[-1]["exp"] += exp_t
+
+    # Literal-text trigger matcher (custom triggers only; never the generic scene-N pattern).
+    triggers = [t for t in custom_map.keys() if t]
+    lit_pat = None
+    if triggers:
+        def _tp(t):
+            end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+            return r"\b" + re.escape(t) + end
         try:
-            effect_before[int(t.get("after_scene", -1)) + 1] = t.get("visual_effect")
-        except (TypeError, ValueError):
-            continue
-    scenes = []
-    for s in verbatim.get("scenes", []) or []:
-        try:
-            idx = int(s.get("index", len(scenes)))
-        except (TypeError, ValueError):
-            idx = len(scenes)
-        raw = s.get("text", "") or ""
-        scenes.append({
-            "index": idx,
-            "raw": raw,
-            "keys": anchor_keys | refinement_keys_in_text(raw),
-            "effect": effect_before.get(idx),
-        })
-    return {"anchor": anchor, "scenes": scenes}
+            lit_pat = re.compile("|".join(_tp(t) for t in sorted(triggers, key=len, reverse=True)), re.IGNORECASE)
+        except re.error:
+            lit_pat = None
+
+    for pc in pieces:
+        raw = text[pc.get("orig_start", 0):pc.get("orig_end", 0)]
+        exp = expanded_full[pc.get("exp_start", 0):pc.get("exp_end", 0)]
+        if pc.get("is_shortcut"):
+            info = custom_map.get(_norm(raw))
+            if info is not None:                          # transition-trigger shortcut
+                _transition(raw, exp, info)
+            else:                                         # content shortcut: text + its key
+                segs[-1]["raw"] += raw; segs[-1]["exp"] += exp
+                key = str(pc.get("refinement_key") or "").strip()
+                if key:
+                    segs[-1]["keys"].add(key)
+        elif lit_pat is not None:                         # literal text may hold typed triggers
+            last = 0
+            for m in lit_pat.finditer(raw):
+                segs[-1]["raw"] += raw[last:m.start()]; segs[-1]["exp"] += raw[last:m.start()]
+                _transition(m.group(0), m.group(0), custom_map.get(_norm(m.group(0))) or {})
+                last = m.end()
+            segs[-1]["raw"] += raw[last:]; segs[-1]["exp"] += raw[last:]
+        else:
+            segs[-1]["raw"] += raw; segs[-1]["exp"] += exp
+
+    anchor = segs[0]
+    anchor_keys = set(anchor["keys"])
+    body = segs[1:]
+    if not body:                                          # no transitions -> one scene
+        return {"anchor": "", "anchor_expanded": "",
+                "scenes": [{"index": 0, "raw": anchor["raw"].strip(),
+                            "expanded": anchor["exp"].strip(), "keys": anchor_keys, "effect": None}]}
+    scenes = [{"index": i, "raw": s["raw"].strip(), "expanded": s["exp"].strip(),
+               "keys": anchor_keys | s["keys"], "effect": s["effect"]} for i, s in enumerate(body)]
+    return {"anchor": anchor["raw"].strip(), "anchor_expanded": anchor["exp"].strip(), "scenes": scenes}
 
 
 def refinement_key_pool_for(prompt):
