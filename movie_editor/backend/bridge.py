@@ -54,11 +54,18 @@ def _funpack_imports():
 
 
 def parse_timeline(prompt: str, seed: int = 0) -> dict:
-    """{anchor, scenes, transitions} — the canonical split Studio will see.
-    Shortcuts are expanded first (as generation does)."""
-    parse_timeline_segments, apply_prompt_shortcuts, *_ = _funpack_imports()
-    expanded, _applied = apply_prompt_shortcuts(str(prompt or ""), seed=int(seed or 0))
-    return parse_timeline_segments(expanded)
+    """{anchor, scenes, transitions} — the canonical split Studio will see, via the ONE splitter
+    (split_scenes) generation now uses, so the preview's scene count/boundaries match generation
+    exactly. Scene text is the EXPANDED text (what Studio encodes); the anchor is prepended by
+    Studio per scene. The lossless raw editing split lives in parse_timeline_verbatim."""
+    split_fn = _funpack_attr("conditioning", "split_scenes")
+    s = split_fn(str(prompt or ""))
+    scenes = [{"index": i, "text": (sc.get("expanded") or "")}
+              for i, sc in enumerate(s.get("scenes", []) or [])]
+    transitions = [{"after_scene": i - 1, "visual_effect": sc.get("effect")}
+                   for i, sc in enumerate(s.get("scenes", []) or [])
+                   if i > 0 and sc.get("effect")]
+    return {"anchor": s.get("anchor_expanded", ""), "scenes": scenes, "transitions": transitions}
 
 
 def parse_timeline_raw(prompt: str) -> dict:
