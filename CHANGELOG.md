@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Fixed
+- "Reset Studio session" now lists the keys it will wipe off a **fresh** preview. The modal read
+  `scene_refinement_keys` from the cached preview, which can lag the prompt (debounced refresh, or
+  `_distributeGlobalPrompt` carrying the old keys forward), so a just-added key-bound shortcut was
+  missing from the wipe list (it would only offer to reset `default`). Arming the reset now awaits a
+  preview refresh before computing the list.
 - Exposed project-settings dropdowns now refresh with the model list. A node input exposed to the
   main editor (e.g. a wired LoRA loader's `lora_name` + strength) snapshotted its combo options at
   expose time, so "Refresh model list" updated the live spec inside the Models menu but left the

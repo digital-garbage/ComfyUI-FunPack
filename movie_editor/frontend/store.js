@@ -2828,8 +2828,12 @@
   // generation. Clicking again disarms it (in case of a mis-click). Arming asks for
   // confirmation, listing every key it will wipe so non-default keys aren't lost silently.
   let _resetSessionPending = false;
-  function resetStudioSession() {
+  async function resetStudioSession() {
     if (!_resetSessionPending) {
+      // Read the key list off a FRESH preview: the cached one can lag the prompt (debounced
+      // refresh, or _distributeGlobalPrompt carrying old scene_refinement_keys forward), so a
+      // just-added key-bound shortcut would otherwise be missing from the wipe list.
+      try { await refreshPreview(true); } catch (_) {}
       const keys = sessionResetKeys();
       const msg = `This action will reset Studio learning for keys: ${keys.join(", ")}.\n\n`
         + "It is applied on the next generation. To avoid resetting a non-default key, "
