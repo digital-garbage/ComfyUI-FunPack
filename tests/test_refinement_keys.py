@@ -245,6 +245,25 @@ def test_split_scenes_ignores_triggers_inside_expansions(monkeypatch):
     assert "Scene cut." not in out["scenes"][1]["expanded"]  # silent trigger dropped
 
 
+def test_split_scenes_literal_scene_label_still_splits(monkeypatch):
+    """The generic 'scene N' label MUST still split when it's LITERAL text — the Movie Editor
+    injects it into the generation prompt to force a split for a unit with no leading trigger
+    (build_combined_prompt for_generation). But the SAME label inside a shortcut expansion must NOT
+    split (that was the user's phantom 'scene 2'). One rule: literal cuts, expansion-content doesn't."""
+    db = _db({"qcut": (["qcut"], ["rapid cut"], ""),
+              "tth": (["tth"], ["a backflip"], ""),
+              "cof": (["cof"], ["sitting, scene 9 of many"], "cs")})  # 'scene 9' INSIDE expansion
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"qcut": {"placement": "start", "visual_effect": "none"}})
+    # explicit qcut leads scene 0; the editor-injected literal 'scene 2' leads scene 1
+    out = conditioning.split_scenes("CHAR a woman man qcut tth scene 2 cof")
+    assert len(out["scenes"]) == 2
+    assert out["scenes"][0]["keys"] == set()      # tth has no key
+    assert out["scenes"][1]["keys"] == {"cs"}     # cof, despite 'scene 9' in its expansion
+    assert out["anchor"] == "CHAR a woman man"
+
+
 def test_single_scene_with_custom_key_is_detected(monkeypatch):
     """Regression: a custom key fired in a single-logical-scene prompt MUST be detected (was
     silently dropped to empty when the old code compared scene counts and fell back)."""

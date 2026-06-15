@@ -886,17 +886,20 @@ def split_scenes(prompt, placement="start"):
             _open(effect)
             segs[-1]["raw"] += raw_t; segs[-1]["exp"] += exp_t
 
-    # Literal-text trigger matcher (custom triggers only; never the generic scene-N pattern).
-    triggers = [t for t in custom_map.keys() if t]
-    lit_pat = None
-    if triggers:
-        def _tp(t):
-            end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
-            return r"\b" + re.escape(t) + end
-        try:
-            lit_pat = re.compile("|".join(_tp(t) for t in sorted(triggers, key=len, reverse=True)), re.IGNORECASE)
-        except re.error:
-            lit_pat = None
+    # Literal-text trigger matcher: the user's custom triggers PLUS the generic `scene <N>` label.
+    # Scoped to LITERAL text only (this matcher never runs over shortcut expansions), so a "scene 2"
+    # the user types — or, crucially, the one the Movie Editor INJECTS into the generation prompt to
+    # force a split for a scene with no leading trigger (see build_combined_prompt for_generation) —
+    # still cuts, while a "scene 2" buried inside a shortcut's expansion does NOT.
+    def _tp(t):
+        end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
+        return r"\b" + re.escape(t) + end
+    _pats = [_tp(t) for t in sorted((t for t in custom_map.keys() if t), key=len, reverse=True)]
+    _pats.append(_GENERIC_SCENE_LABEL_PATTERN)
+    try:
+        lit_pat = re.compile("|".join(_pats), re.IGNORECASE)
+    except re.error:
+        lit_pat = None
 
     for pc in pieces:
         raw = text[pc.get("orig_start", 0):pc.get("orig_end", 0)]
