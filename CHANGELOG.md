@@ -12,15 +12,20 @@
   bad-taste. Wrong-* now carry `skip_value_function`: they still drive prompt repair + relative
   per-key direction/category memory, but no longer train any reward asset. Quality ratings
   (Missing-*/Perfect/Nailed/Awful) are unchanged.
-- Multi-key refinement: stop training every key on every clip. Per-scene key attribution
-  (`prompt_scene_shortcut_keys`) now scans both the expanded and original prompt — matching the
-  generation splitter `split_timeline_verbatim` — so structurally-identical prompts land on the
-  same scene count and attribution stays precise. When the count still diverges (advisor/repair
-  rewrote `prompt_to_encode` away from the raw prompt), `resolve_scene_refinement_keys` now falls
-  back to the project **default key only** (empty sets) instead of the all-keys **union**. The
-  union assigned every key to every scene, which both steered and — once persisted into the run
-  and read back at rating time — trained every key on every clip (cross-contamination + value
-  function bloat, e.g. an ~80 MB jump on a single 3-clip rating pass).
+- Refinement-key attribution rewritten to the simple, correct model — fixes both "every key
+  trained on every clip" AND "custom uploaded keys not detected." The old code re-split the raw
+  prompt independently and compared scene counts, then guessed (all-keys **union** → cross-training,
+  or, briefly, empty → keys vanished, including single-scene-with-keys). `resolve_scene_refinement_keys`
+  now just reads each scene: split with the shortcut-aware `split_timeline_verbatim` (same scenes
+  generation uses) and collect the keys whose shortcuts fired in each scene's text (anchor keys
+  apply to all). No scene-count comparison, no union/empty guessing — a single scene with a custom
+  key is detected, and each scene gets exactly its own keys. Only when the editor's scene count
+  genuinely can't be aligned (advisor/repair restructured the prompt) does it fall back to the
+  project default key.
+- Refinement training law: a scene owned by a custom key trains **only** that key — the project
+  **default** key is left untouched for that scene and learns solely from scenes with no custom
+  key. Previously every rated scene also trained the default (and, via the union, every other key),
+  which is what bloated keys and cross-contaminated taste.
 
 ## [3.0.1] - 2026-06-14
 

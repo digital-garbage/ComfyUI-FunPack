@@ -857,21 +857,12 @@ def prompt_scene_shortcut_keys(prompt):
         split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
 
     cuts = []
-    # (1) Scan the EXPANDED text: catches a shortcut whose expansion resolves to a transition.
     for m in split_pattern.finditer(expanded):
         info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
         if info.get("placement") == "start":
             orig = _project_offset(pieces, m.start(), "before")
         else:
             orig = _project_offset(pieces, m.end(), "after")
-        cuts.append(orig)
-    # (2) Scan the ORIGINAL text too: a transition trigger that is ALSO a shortcut gets expanded
-    #     away in (1) before detection, so its split would be lost. Matching the verbatim text
-    #     catches it at its true offset. This mirrors split_timeline_verbatim so this attribution
-    #     split lands on the same scene count as the generation split (fewer divergence fallbacks).
-    for m in split_pattern.finditer(text):
-        info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
-        orig = m.start() if info.get("placement") == "start" else m.end()
         cuts.append(orig)
     seen, uniq = set(), []
     for off in sorted(cuts):
@@ -896,32 +887,61 @@ def prompt_scene_shortcut_keys(prompt):
     return len(scene_key_sets), scene_key_sets, all_keys
 
 
-def resolve_scene_refinement_keys(raw_positive, scene_count):
-    """Per-scene non-default refinement keys, aligned to split_scene_texts.
+def refinement_keys_in_text(text):
+    """The set of non-default refinement keys whose shortcuts fire in `text`.
 
-    A key participates in a scene when one of its bound shortcuts fired in that scene's
-    text (anchor keys count for every scene). Falls back to the project DEFAULT key only
-    (empty sets) when attribution can't be trusted — the raw-prompt scene count diverges
-    from the actual split (advisor/repair rewrote the prompt, unusual transition stacking,
-    etc.). The old behaviour here was the all-keys UNION, which trained EVERY key on EVERY
-    scene (cross-contamination + value-function bloat); under-training one diverged run is
-    far safer. Returns a list of sets aligned to scenes; empty sets => default key.
-
-    This is the single source of truth shared by generation (FunPackStudio._v2_scene_refinement_keys)
-    and the Movie Editor preview, so what the editor shows is exactly what will run."""
-    scene_count = max(1, int(scene_count or 1))
+    Pure read of one prompt chunk: expand its shortcuts and collect the refinement key bound
+    to each shortcut that fired. No splitting, no scene logic — the caller hands us one scene's
+    text and we say which keys belong to it."""
+    if not str(text or "").strip():
+        return set()
     try:
-        n, scene_sets, all_keys = prompt_scene_shortcut_keys(raw_positive)
+        _, pieces = _expand_with_map(str(text))
+    except Exception:
+        return set()
+    return {str(pc.get("refinement_key") or "") for pc in pieces
+            if pc.get("is_shortcut") and str(pc.get("refinement_key") or "")}
+
+
+def resolve_scene_refinement_keys(raw_positive, scene_count):
+    """Per-scene non-default refinement keys, read straight off each scene's text.
+
+    The honest, simple model (no scene-count comparison, no union/empty fallback guessing):
+      1. Split the prompt into anchor + scenes with the SAME shortcut-aware splitter the editor
+         and Studio use (`split_timeline_verbatim`), so scenes line up with generation.
+      2. For each scene, read the keys whose shortcuts fired in it; anchor keys apply to every
+         scene (the anchor is prepended to all of them).
+    A scene with no fired non-default key gets an empty set => it steers/trains with the project
+    DEFAULT key. Returns a list of sets; empty sets => default.
+
+    Single source of truth shared by generation (FunPackStudio._v2_scene_refinement_keys) and the
+    Movie Editor preview, so what the editor shows is exactly what will run."""
+    scene_count = max(1, int(scene_count or 1))
+    raw = str(raw_positive or "")
+    try:
+        split = split_timeline_verbatim(raw)
+        anchor_keys = refinement_keys_in_text(split.get("anchor", ""))
+        per_scene = [anchor_keys | refinement_keys_in_text(s.get("text", ""))
+                     for s in (split.get("scenes", []) or [])]
     except Exception as error:
         print(f"[FunPackStudio] Scene refinement-key attribution failed: {error}")
         return [set() for _ in range(scene_count)]
-    if not all_keys:
+
+    pool = set(anchor_keys)
+    for s in per_scene:
+        pool |= s
+    if not pool:
+        # No keyed shortcuts anywhere -> every scene is on the default key.
         return [set() for _ in range(scene_count)]
-    if n == scene_count:
-        return scene_sets
-    # Divergence: attribution cannot be trusted. Steer/train with the project default key only
-    # (empty sets) instead of the all-keys union, so a diverged run never trains every key on
-    # every scene. all_keys stays available to callers that need the full set (e.g. session reset).
+    if len(per_scene) == scene_count:
+        # Scenes line up with the caller's split -> precise per-scene attribution.
+        return per_scene
+    if scene_count == 1:
+        # One logical scene -> every activated key belongs to it.
+        return [pool]
+    # The split we read disagrees with the caller's scene count (advisor/repair restructured the
+    # prompt between attribution and generation). We can't trust which scene each key lands in, so
+    # steer/train the project DEFAULT key only rather than smear every key across every scene.
     return [set() for _ in range(scene_count)]
 
 
@@ -7023,11 +7043,33 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 lines.append(f"Scene {scene_index + 1}: skipped (no scene text in last run)")
                 continue
             axis_feedback = self._v2_axis_feedback(profile, global_state.get("last_missing_axes", []))
-            # Project default key: learns into the run's main global_state (saved by refine()).
+            # Which non-default keys fired in THIS scene (per-scene pool, attributed at gen time).
+            scene_keys = []
+            sk_all = previous_run.get("scene_refinement_keys") or []
+            if 0 <= scene_index < len(sk_all):
+                scene_keys = list(sk_all[scene_index] or [])
+            primary = str(refinement_key or "").strip()
+            custom_keys = [k for k in scene_keys if str(k or "").strip() and str(k or "").strip() != primary]
+            if custom_keys:
+                # Scene is owned by custom key(s): train ONLY them. The project DEFAULT key is left
+                # untouched for this scene — default learns solely from scenes with no custom key,
+                # so a clip's key never trains the default (and vice versa).
+                trained_keys = self._v2_learn_scene_into_keys(
+                    scene_keys, refinement_key, scene_run, profile, iter_num,
+                    axis_feedback, seed_output_connected,
+                )
+                self._v2_learn_absolute(scene_run, profile)
+                profiles.append(profile)
+                lines.append(
+                    f"Scene {scene_index + 1} ({label}): trained custom key(s) [{', '.join(trained_keys)}], default skipped"
+                )
+                continue
+            # No custom key in this scene -> the project DEFAULT key learns it (into the run's main
+            # global_state, saved by refine()) and trains its value function.
             seed_memory_status = self._v2_learn_scene_into_state(
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
-            if refinement_key and not profile.get("skip_learning") and not profile.get("skip_value_function"):
+            if refinement_key and not profile.get("skip_value_function"):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     scene_run.get("conditioning"),
@@ -7035,20 +7077,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 )
                 if n is not None:
                     print(f"[FunPackRefiner] Scene {scene_index + 1} value function updated — {n} samples")
-            # Non-default keys whose shortcuts fired in this scene: rate against EACH of them.
-            scene_keys = []
-            sk_all = previous_run.get("scene_refinement_keys") or []
-            if 0 <= scene_index < len(sk_all):
-                scene_keys = list(sk_all[scene_index] or [])
-            trained_keys = self._v2_learn_scene_into_keys(
-                scene_keys, refinement_key, scene_run, profile, iter_num,
-                axis_feedback, seed_output_connected,
-            )
             self._v2_learn_absolute(scene_run, profile)
             profiles.append(profile)
-            key_note = f" [keys: {', '.join(trained_keys)}]" if trained_keys else ""
             lines.append(
-                f"Scene {scene_index + 1} ({label}): {seed_memory_status.split(': ', 1)[-1]}{key_note}"
+                f"Scene {scene_index + 1} ({label}): {seed_memory_status.split(': ', 1)[-1]}"
             )
         if not profiles:
             return "Movie Editor ratings: no learnable scene ratings.", None

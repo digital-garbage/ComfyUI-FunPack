@@ -233,6 +233,54 @@ def test_reset_prompt_keys_skips_when_primary_only(monkeypatch):
     assert studio._v2_reset_prompt_keys("default", "plain prompt") == []
 
 
+def test_single_scene_with_custom_key_is_detected(monkeypatch):
+    """Regression: a custom key fired in a single-logical-scene prompt MUST be detected (was
+    silently dropped to empty when the old code compared scene counts and fell back)."""
+    db = _db({"hero": (["hero"], ["a tall knight"], "mykey")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    assert conditioning.resolve_scene_refinement_keys("hero stands in a field", 1) == [{"mykey"}]
+    # two custom keys in one scene -> both detected
+    db2 = _db({"hero": (["hero"], ["knight"], "mykey"), "vil": (["villain"], ["masked"], "badguy")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db2)
+    assert conditioning.resolve_scene_refinement_keys("hero meets villain", 1) == [{"mykey", "badguy"}]
+
+
+def test_resolve_reads_keys_per_scene(monkeypatch):
+    """Multi-scene: each scene gets exactly the keys whose shortcuts fired in it (read per scene,
+    no scene-count comparison)."""
+    db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.resolve_scene_refinement_keys("wide scene 1 alpha here scene 2 beta here", 2)
+    assert out == [{"keyA"}, {"keyB"}]
+
+
+def test_me_scene_ratings_custom_key_skips_default(monkeypatch):
+    """Training law: a scene owned by a custom key trains ONLY that key — the project default key
+    is left untouched. Default learns solely from scenes with no custom key."""
+    studio = conditioning.FunPackVideoRefinerV2()
+    calls = {"default_state": 0, "default_vf": 0, "custom": []}
+    monkeypatch.setattr(studio, "_v2_build_scene_learning_run",
+                        lambda run, idx, *a, **k: {"conditioning": {"x": 1}, "scene_index": idx})
+    monkeypatch.setattr(studio, "_v2_axis_feedback",
+                        lambda *a, **k: {"missing_axes": [], "satisfied_axes": []})
+    monkeypatch.setattr(studio, "_v2_learn_scene_into_state",
+                        lambda *a, **k: (calls.__setitem__("default_state", calls["default_state"] + 1), "seed: ok")[1])
+    monkeypatch.setattr(studio, "_v2_train_value_function",
+                        lambda *a, **k: (calls.__setitem__("default_vf", calls["default_vf"] + 1), 1)[1])
+    monkeypatch.setattr(studio, "_v2_learn_scene_into_keys",
+                        lambda keys, *a, **k: (calls["custom"].append(list(keys)), list(keys))[1])
+    monkeypatch.setattr(studio, "_v2_learn_absolute", lambda *a, **k: None)
+    prev = {"scene_count": 2, "scene_texts": ["s1", "s2"],
+            "scene_refinement_keys": [["mykey"], []]}  # scene1 custom, scene2 default
+    ratings = [{"index": 0, "rating": "Perfect"}, {"index": 1, "rating": "Perfect"}]
+    studio._v2_apply_movie_editor_scene_ratings({}, prev, ratings, 1, refinement_key="default")
+    assert calls["custom"] == [["mykey"]]   # scene 1 trained its custom key
+    assert calls["default_state"] == 1      # default learned ONLY scene 2
+    assert calls["default_vf"] == 1         # default VF trained ONLY scene 2
+
+
 def test_wrong_ratings_skip_value_function():
     """Wrong-* are prompt-repair signals, not quality rewards: they must NOT train the value
     function (a 0.0/low reward on a visually-good gen poisons the learned quality landscape).
