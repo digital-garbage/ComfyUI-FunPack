@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Fixed
+- Exposed project-settings dropdowns now refresh with the model list. A node input exposed to the
+  main editor (e.g. a wired LoRA loader's `lora_name` + strength) snapshotted its combo options at
+  expose time, so "Refresh model list" updated the live spec inside the Models menu but left the
+  exposed dropdown stale (a newly installed LoRA was detectable in the node settings but not in the
+  project-settings control). Refresh now re-pulls each exposed control's and shared link's combo
+  `choices` from the freshly loaded spec and persists, and all three refresh entry points (Models
+  modal button, `ModelsModal.refresh`, menubar "Refresh model list") go through one shared path.
 - Reward poisoning from prompt-repair ratings (drift / wrong-character / distorted gens). The
   `Wrong *` ratings (appearance/details/action/combos) are prompt-REPAIR signals — "good gen, but
   the words/identity were off" — yet they were feeding their 0.0/low reward into value-function

@@ -160,6 +160,52 @@
   }
   async function loadSpec(cls) { if (!specByClass[cls]) cache(await API.nodeSpec(cls)); return specByClass[cls]; }
   function specFor(slot) { return specByClass[slot.node_class] || null; }
+  function inputSpecFor(slot, name) { return ((specFor(slot) || {}).inputs || []).find((w) => w.name === name) || null; }
+
+  // Exposed controls and shared links snapshot their combo `choices` at expose time (so the main
+  // editor can render dropdowns without re-fetching object_info). Those snapshots go stale after
+  // a model-list refresh — a newly installed LoRA/checkpoint shows up inside the Models menu (live
+  // spec) but not in the exposed project-settings dropdown. Re-pull each exposed/link combo's
+  // choices from the freshly loaded spec. Returns true if anything changed (caller persists).
+  function refreshExposedChoices() {
+    let changed = false;
+    (config.slots || []).forEach((slot) => {
+      (slot.exposed || []).forEach((e) => {
+        if (e.kind !== "combo") return;
+        const w = inputSpecFor(slot, e.name);
+        if (w && Array.isArray(w.choices) && JSON.stringify(w.choices) !== JSON.stringify(e.choices || [])) {
+          e.choices = w.choices.slice(); changed = true;
+        }
+      });
+    });
+    (config.links || []).forEach((link) => {
+      if (link.kind !== "combo") return;
+      const first = (link.members || [])[0];
+      const slot = first && slotById(first.slotId);
+      const w = slot && inputSpecFor(slot, first.input);
+      if (w && Array.isArray(w.choices) && JSON.stringify(w.choices) !== JSON.stringify(link.choices || [])) {
+        link.choices = w.choices.slice(); changed = true;
+      }
+    });
+    return changed;
+  }
+
+  // Shared full refresh used by the modal button, the public ModelsModal.refresh() and the menubar:
+  // drop caches, refresh the backend model list, reload specs, then re-sync exposed/link choices and
+  // persist so the main-editor dropdowns update too. Loads config only when it isn't already held
+  // (keeps the open modal's live `config` object so its edit closures stay attached — see persist()).
+  async function doFullRefresh() {
+    Object.keys(candCache).forEach((k) => delete candCache[k]);
+    Object.keys(specByClass).forEach((k) => delete specByClass[k]);
+    allNodes = null;
+    try { await API.refreshModels(); } catch (_) {}
+    if (!config || !config.slots) {
+      try { config = await API.getModels(window.Store?.get().project?.id); } catch (_) { config = { slots: [] }; }
+    }
+    try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) {}
+    await prewarmSpecs();
+    if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
+  }
 
   async function persist() {
     // Keep the SAME `config` object — every wire/widget handler closes over it, so
@@ -993,12 +1039,7 @@
   }
 
   async function refreshList() {
-    Object.keys(candCache).forEach((k) => delete candCache[k]);
-    Object.keys(specByClass).forEach((k) => delete specByClass[k]);
-    allNodes = null;
-    try { await API.refreshModels(); } catch (_) {}
-    try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) {}
-    await prewarmSpecs();
+    await doFullRefresh();
     render();
   }
 
@@ -1034,5 +1075,5 @@
     render();
   }
 
-  window.ModelsModal = { open, refresh: async () => { await ensureRoles().catch(() => {}); await (window.MovieEditorAPI.refreshModels().catch(() => {})); } };
+  window.ModelsModal = { open, refresh: async () => { await ensureRoles().catch(() => {}); await doFullRefresh().catch(() => {}); } };
 })();

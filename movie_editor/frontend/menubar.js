@@ -246,7 +246,7 @@
         { label: "Models…", action: () => window.ModelsModal.open() },
         { label: "Import ComfyUI Workflow…", disabled: !hasProject(),
           action: () => window.WorkflowImportWizard?.open() },
-        { label: "Refresh model list", hint: "R", action: async () => { try { await window.MovieEditorAPI.refreshModels(); } catch (_) {} } },
+        { label: "Refresh model list", hint: "R", action: async () => { try { await (window.ModelsModal?.refresh ? window.ModelsModal.refresh() : window.MovieEditorAPI.refreshModels()); } catch (_) {} } },
         { sep: true },
         { label: `Conditioning: ${_roleLabel(st.project?.conditioning_slot, "FunPack Studio")}`,
           disabled: !hasProject() || customPipe,
