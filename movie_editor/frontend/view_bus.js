@@ -142,8 +142,9 @@
     return S.subscribe((st) => {
       const fp = fpFn(st);
       if (fp === last) return;
+      const ok = fn(st);
+      if (ok === false) return; // handler declined to apply this update — retry next notify
       last = fp;
-      fn(st);
     });
   }
 
