@@ -903,6 +903,63 @@ def refinement_keys_in_text(text):
             if pc.get("is_shortcut") and str(pc.get("refinement_key") or "")}
 
 
+def split_scenes(prompt):
+    """THE canonical scene split — one source of truth for editing, preview, key attribution,
+    session reset and generation.
+
+    Splits `prompt` into an anchor + scenes at shortcut-aware transition boundaries (detected on
+    BOTH the expanded and the raw text, then projected onto the raw words so nothing is expanded
+    or dropped), and for each scene reports everything any consumer needs:
+
+        {
+          "anchor": <raw anchor text, prepended to every scene>,
+          "scenes": [
+            {"index": i,
+             "raw":    <verbatim scene text>,          # editing / lossless mapping
+             "keys":   <set of refinement keys firing in this scene + anchor>,  # attribution / reset
+             "effect": <transition visual effect before this scene | None>},    # generation
+            ...
+          ],
+        }
+
+    Derive, never re-split: per-scene keys = entry["keys"]; the reset pool = union of all keys;
+    the preview/generation scene texts come from these raw chunks (expanded by the caller). Because
+    every consumer reads ONE split, scene counts and boundaries can never disagree."""
+    verbatim = split_timeline_verbatim(prompt)
+    anchor = verbatim.get("anchor", "") or ""
+    anchor_keys = refinement_keys_in_text(anchor)
+    # transitions[i] = {"after_scene": k, "visual_effect": e} means effect e precedes scene k+1.
+    effect_before = {}
+    for t in verbatim.get("transitions", []) or []:
+        try:
+            effect_before[int(t.get("after_scene", -1)) + 1] = t.get("visual_effect")
+        except (TypeError, ValueError):
+            continue
+    scenes = []
+    for s in verbatim.get("scenes", []) or []:
+        try:
+            idx = int(s.get("index", len(scenes)))
+        except (TypeError, ValueError):
+            idx = len(scenes)
+        raw = s.get("text", "") or ""
+        scenes.append({
+            "index": idx,
+            "raw": raw,
+            "keys": anchor_keys | refinement_keys_in_text(raw),
+            "effect": effect_before.get(idx),
+        })
+    return {"anchor": anchor, "scenes": scenes}
+
+
+def refinement_key_pool_for(prompt):
+    """Every non-default refinement key the prompt activates (anchor + all scenes) — the exact
+    set a session reset wipes. Derived from the one canonical split."""
+    pool = set()
+    for scene in split_scenes(prompt).get("scenes", []) or []:
+        pool |= scene.get("keys") or set()
+    return pool
+
+
 def resolve_scene_refinement_keys(raw_positive, scene_count):
     """Per-scene non-default refinement keys, read straight off each scene's text.
 

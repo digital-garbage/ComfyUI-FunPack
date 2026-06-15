@@ -233,6 +233,34 @@ def test_reset_prompt_keys_skips_when_primary_only(monkeypatch):
     assert studio._v2_reset_prompt_keys("default", "plain prompt") == []
 
 
+def test_split_scenes_canonical_model(monkeypatch):
+    """The one canonical split reports per-scene raw text + keys; anchor keys fold into every
+    scene; the reset pool is the union."""
+    db = _db({"anc": (["zeta"], ["ZZZ"], "anchorKey"),
+              "a": (["alpha"], ["AAA"], "keyA"),
+              "b": (["beta"], ["BBB"], "keyB")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes("zeta intro scene 1 alpha here scene 2 beta here")
+    scenes = out["scenes"]
+    assert len(scenes) == 2
+    assert scenes[0]["keys"] == {"anchorKey", "keyA"}
+    assert scenes[1]["keys"] == {"anchorKey", "keyB"}
+    assert "alpha" in scenes[0]["raw"]  # verbatim text preserved
+    assert conditioning.refinement_key_pool_for(
+        "zeta intro scene 1 alpha here scene 2 beta here") == {"anchorKey", "keyA", "keyB"}
+
+
+def test_split_scenes_single_scene(monkeypatch):
+    db = _db({"hero": (["hero"], ["a knight"], "mykey")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes("hero stands in a field")
+    assert len(out["scenes"]) == 1
+    assert out["scenes"][0]["keys"] == {"mykey"}
+    assert conditioning.refinement_key_pool_for("hero stands in a field") == {"mykey"}
+
+
 def test_single_scene_with_custom_key_is_detected(monkeypatch):
     """Regression: a custom key fired in a single-logical-scene prompt MUST be detected (was
     silently dropped to empty when the old code compared scene counts and fell back)."""
