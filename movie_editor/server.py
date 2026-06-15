@@ -1143,7 +1143,7 @@ if web is not None and PromptServer is not None:
                 result["expected_scenes"] = validation["expected_scenes"]
                 result["parsed_scenes"] = len(parsed.get("scenes", []))
                 result["scene_refinement_keys"] = bridge.scene_refinement_keys(
-                    prompt, len(parsed.get("scenes", [])), p.refinement_key)
+                    prompt, p.refinement_key)
                 result["refinement_key_pool"] = bridge.refinement_key_pool(prompt)
             except Exception as e:  # noqa: BLE001
                 result["parse_error"] = str(e)
@@ -1161,7 +1161,7 @@ if web is not None and PromptServer is not None:
             result["expected_scenes"] = expected
             result["parsed_scenes"] = got
             result["scene_refinement_keys"] = bridge.scene_refinement_keys(
-                prompt, got, p.refinement_key)
+                prompt, p.refinement_key)
             result["refinement_key_pool"] = bridge.refinement_key_pool(prompt)
             if expected and got != expected:
                 result["warning"] = (

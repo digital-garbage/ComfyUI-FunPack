@@ -815,78 +815,6 @@ def split_timeline_verbatim(prompt):
     return {"anchor": chunks[0], "scenes": scenes, "transitions": transitions}
 
 
-def prompt_scene_shortcut_keys(prompt):
-    """Map fired shortcuts to scenes by their non-default refinement key.
-
-    Returns (scene_count, scene_key_sets, all_keys) where scene_key_sets[i] is the set of
-    non-default refinement keys whose shortcuts fired in scene i's text, and all_keys is the
-    union (used for the safe fallback when scene attribution can't be trusted). Boundaries
-    mirror the editor's lossless splitter (split_timeline_verbatim): expand-with-map ->
-    detect transitions -> project boundaries onto the ORIGINAL text. The anchor (chunk 0) is
-    prepended to every scene, so anchor-span keys participate in EVERY scene. Original-text
-    offsets are used so random replacement picks (which change expanded lengths) never matter.
-
-    scene_count == 0 means no transition split was detected (single scene) or there were no
-    fired non-default keys at all.
-    """
-    text = str(prompt or "")
-    if not text.strip():
-        return 0, [], set()
-
-    expanded, pieces = _expand_with_map(text)
-    fired = [(pc.get("orig_start", 0), str(pc.get("refinement_key") or ""))
-             for pc in pieces
-             if pc.get("is_shortcut") and str(pc.get("refinement_key") or "")]
-    all_keys = {k for _, k in fired}
-    if not all_keys:
-        return 0, [], set()
-
-    try:
-        from .templates import load_custom_transition_triggers
-    except ImportError:
-        from templates import load_custom_transition_triggers
-    custom_map = load_custom_transition_triggers()
-    triggers = list(custom_map.keys())
-    if triggers:
-        def _trig_pat(t):
-            end = r"\b" if re.search(r"\w$", t) else r"(?=\s|$)"
-            return r"\b" + re.escape(t) + end
-        parts = "|".join(_trig_pat(t) for t in sorted(triggers, key=len, reverse=True))
-        split_pattern = re.compile(r"(?:" + parts + r"|" + _GENERIC_SCENE_LABEL_PATTERN + r")", re.IGNORECASE)
-    else:
-        split_pattern = re.compile(_GENERIC_SCENE_LABEL_PATTERN, re.IGNORECASE)
-
-    cuts = []
-    for m in split_pattern.finditer(expanded):
-        info = custom_map.get(re.sub(r"\s+", " ", m.group(0).strip().lower())) or {}
-        if info.get("placement") == "start":
-            orig = _project_offset(pieces, m.start(), "before")
-        else:
-            orig = _project_offset(pieces, m.end(), "after")
-        cuts.append(orig)
-    seen, uniq = set(), []
-    for off in sorted(cuts):
-        if off <= 0 or off in seen:
-            continue
-        seen.add(off); uniq.append(off)
-    if not uniq:
-        return 0, [], all_keys  # no scene split -> caller uses default / fallback
-
-    positions = [0] + uniq + [len(text)]
-    n_chunks = len(positions) - 1            # chunk 0 = anchor, chunks 1.. = scenes
-    chunk_keys = [set() for _ in range(n_chunks)]
-    for off, key in fired:
-        idx = 0
-        for i in range(n_chunks):
-            if positions[i] <= off < positions[i + 1]:
-                idx = i
-                break
-        chunk_keys[idx].add(key)
-    anchor_keys = chunk_keys[0]
-    scene_key_sets = [set(anchor_keys) | s for s in chunk_keys[1:]]
-    return len(scene_key_sets), scene_key_sets, all_keys
-
-
 def refinement_keys_in_text(text):
     """The set of non-default refinement keys whose shortcuts fire in `text`.
 
@@ -960,46 +888,20 @@ def refinement_key_pool_for(prompt):
     return pool
 
 
-def resolve_scene_refinement_keys(raw_positive, scene_count):
-    """Per-scene non-default refinement keys, read straight off each scene's text.
+def resolve_scene_refinement_keys(raw_positive):
+    """Per-scene non-default refinement keys, read straight off the canonical scene split.
 
-    The honest, simple model (no scene-count comparison, no union/empty fallback guessing):
-      1. Split the prompt into anchor + scenes with the SAME shortcut-aware splitter the editor
-         and Studio use (`split_timeline_verbatim`), so scenes line up with generation.
-      2. For each scene, read the keys whose shortcuts fired in it; anchor keys apply to every
-         scene (the anchor is prepended to all of them).
-    A scene with no fired non-default key gets an empty set => it steers/trains with the project
-    DEFAULT key. Returns a list of sets; empty sets => default.
-
-    Single source of truth shared by generation (FunPackStudio._v2_scene_refinement_keys) and the
-    Movie Editor preview, so what the editor shows is exactly what will run."""
-    scene_count = max(1, int(scene_count or 1))
-    raw = str(raw_positive or "")
+    Returns a list of sets aligned 1:1 with `split_scenes(raw_positive)["scenes"]`; an empty set
+    means that scene steers/trains with the project DEFAULT key. There is no scene-count parameter
+    and no divergence fallback: every consumer reads the ONE canonical split, so attribution can't
+    disagree with the preview or with generation. Anchor keys are already folded into each scene by
+    `split_scenes`."""
     try:
-        split = split_timeline_verbatim(raw)
-        anchor_keys = refinement_keys_in_text(split.get("anchor", ""))
-        per_scene = [anchor_keys | refinement_keys_in_text(s.get("text", ""))
-                     for s in (split.get("scenes", []) or [])]
+        return [scene.get("keys") or set()
+                for scene in split_scenes(str(raw_positive or "")).get("scenes", []) or []]
     except Exception as error:
         print(f"[FunPackStudio] Scene refinement-key attribution failed: {error}")
-        return [set() for _ in range(scene_count)]
-
-    pool = set(anchor_keys)
-    for s in per_scene:
-        pool |= s
-    if not pool:
-        # No keyed shortcuts anywhere -> every scene is on the default key.
-        return [set() for _ in range(scene_count)]
-    if len(per_scene) == scene_count:
-        # Scenes line up with the caller's split -> precise per-scene attribution.
-        return per_scene
-    if scene_count == 1:
-        # One logical scene -> every activated key belongs to it.
-        return [pool]
-    # The split we read disagrees with the caller's scene count (advisor/repair restructured the
-    # prompt between attribution and generation). We can't trust which scene each key lands in, so
-    # steer/train the project DEFAULT key only rather than smear every key across every scene.
-    return [set() for _ in range(scene_count)]
+        return []
 
 
 def parse_timeline_segments(prompt):
@@ -6605,11 +6507,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         keys = set()
         for text in raw_prompts:
             try:
-                _, _, all_keys = prompt_scene_shortcut_keys(text)
+                keys |= refinement_key_pool_for(text)
             except Exception as error:
                 print(f"[FunPackVideoRefinerV2] Reset key scan failed: {error}")
-                all_keys = set()
-            keys |= all_keys
         keys.discard(str(primary_key or "default"))
         keys.discard("")
         done = []
@@ -6942,12 +6842,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             conditionings.append((cond, scene_meta))
         return conditionings
 
-    def _v2_scene_refinement_keys(self, raw_positive, scene_count):
-        """Per-scene non-default refinement keys, aligned to split_scene_texts.
+    def _v2_scene_refinement_keys(self, raw_positive):
+        """Per-scene non-default refinement keys, aligned to the canonical split_scenes().
 
         Thin wrapper over the module-level resolve_scene_refinement_keys so generation and
         the Movie Editor preview share one source of truth (see that function for the rules)."""
-        return resolve_scene_refinement_keys(raw_positive, scene_count)
+        return resolve_scene_refinement_keys(raw_positive)
 
     def _v2_scene_seed_values(self, seed, scene_count, provided=None):
         scene_count = max(0, int(scene_count or 0))
@@ -12735,12 +12635,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except Exception as e:
                 print(f"[FunPackVideoRefinerV2] Transition seed prep failed: {e}")
 
-        # Per-scene non-default refinement keys (shortcut->key bindings). Aligned to
-        # split_scene_texts; empty sets keep today's single-key behaviour for that scene.
-        scene_refinement_keys = (
-            self._v2_scene_refinement_keys(_raw_positive_prompt, len(split_scene_texts))
-            if split_scene_texts else []
-        )
+        # Per-scene non-default refinement keys (shortcut->key bindings), read off the ONE canonical
+        # split of the RAW prompt. The scene TEXTS above come from prompt_to_encode (post any
+        # transforms); the KEYS come from the raw prompt where shortcuts still live. GUARD: those two
+        # must agree on scene count — if a transform (advisor/lucky/wildcard; prompt-repair is being
+        # removed) restructured the prompt between them, the per-scene key->scene mapping can't be
+        # trusted, so scream and fall back to default-key attribution rather than land a key on the
+        # wrong scene. With no structure-changing transforms (the common case) the counts always match.
+        scene_refinement_keys = []
+        if split_scene_texts:
+            canonical_scene_keys = self._v2_scene_refinement_keys(_raw_positive_prompt)
+            if len(canonical_scene_keys) == len(split_scene_texts):
+                scene_refinement_keys = canonical_scene_keys
+            else:
+                print(
+                    f"[FunPackVideoRefinerV2] SCENE SPLIT MISMATCH: text split has "
+                    f"{len(split_scene_texts)} scene(s) but the raw key split has "
+                    f"{len(canonical_scene_keys)} — a prompt transform changed the scene structure. "
+                    f"Falling back to default-key attribution for this run."
+                )
+                scene_refinement_keys = [set() for _ in split_scene_texts]
 
         if current_prompt_refusal:
             state["last_run"] = None

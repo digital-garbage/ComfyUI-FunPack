@@ -131,55 +131,15 @@ def test_expand_with_map_tags_pieces(monkeypatch):
     assert keyed == {"keyA", "keyB"}
 
 
-def test_prompt_scene_shortcut_keys_per_scene(monkeypatch):
-    db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    # generic "scene N" labels split: chunk0=anchor (no key), chunk1=alpha->A, chunk2=beta->B
-    n, scene_sets, all_keys = conditioning.prompt_scene_shortcut_keys(
-        "wide shot scene 1 alpha here scene 2 beta here"
-    )
-    assert n == 2
-    assert scene_sets[0] == {"keyA"}
-    assert scene_sets[1] == {"keyB"}
-    assert all_keys == {"keyA", "keyB"}
-
-
-def test_prompt_scene_shortcut_keys_anchor_in_every_scene(monkeypatch):
-    # anchor-bound key participates in every scene; per-scene keys add on top.
-    db = _db({"anc": (["zeta"], ["ZZZ"], "anchorKey"),
-              "a": (["alpha"], ["AAA"], "keyA"),
-              "b": (["beta"], ["BBB"], "keyB")})
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    n, scene_sets, _ = conditioning.prompt_scene_shortcut_keys(
-        "zeta intro scene 1 alpha here scene 2 beta here"
-    )
-    assert n == 2
-    assert scene_sets[0] == {"anchorKey", "keyA"}
-    assert scene_sets[1] == {"anchorKey", "keyB"}
-
-
-def test_prompt_scene_shortcut_keys_no_keys(monkeypatch):
-    db = _db({"a": (["alpha"], ["AAA"], "")})  # default key only
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    n, scene_sets, all_keys = conditioning.prompt_scene_shortcut_keys("alpha scene 2 stuff")
-    assert n == 0 and scene_sets == [] and all_keys == set()
-
-
-def test_studio_scene_refinement_keys_fallback(monkeypatch):
+def test_studio_scene_refinement_keys_canonical(monkeypatch):
+    """Attribution is read off the canonical split — one set per scene, no scene_count, no
+    divergence fallback (count reconciliation now lives in the generation guard, not here)."""
     db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
     studio = conditioning.FunPackVideoRefinerV2()
-    raw = "wide shot scene 1 alpha here scene 2 beta here"  # attribution finds 2 scenes
-    # scene_count matches -> precise per-scene
-    assert studio._v2_scene_refinement_keys(raw, 2) == [{"keyA"}, {"keyB"}]
-    # scene_count diverges (advisor rewrote / stacking) -> default key only (empty sets), NOT the
-    # all-keys union; a union here would train every key on every scene (cross-contamination).
-    out = studio._v2_scene_refinement_keys(raw, 3)
-    assert out == [set(), set(), set()]
+    raw = "wide shot scene 1 alpha here scene 2 beta here"
+    assert studio._v2_scene_refinement_keys(raw) == [{"keyA"}, {"keyB"}]
 
 
 def test_studio_scene_refinement_keys_no_bindings(monkeypatch):
@@ -187,7 +147,9 @@ def test_studio_scene_refinement_keys_no_bindings(monkeypatch):
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
     studio = conditioning.FunPackVideoRefinerV2()
-    assert studio._v2_scene_refinement_keys("alpha scene 2 here", 2) == [set(), set()]
+    # no keyed shortcuts -> every scene is the default key (all empty sets)
+    out = studio._v2_scene_refinement_keys("alpha scene 2 here")
+    assert out and all(s == set() for s in out)
 
 
 def test_resolver_matches_studio(monkeypatch):
@@ -197,8 +159,7 @@ def test_resolver_matches_studio(monkeypatch):
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
     studio = conditioning.FunPackVideoRefinerV2()
     raw = "wide shot scene 1 alpha here scene 2 beta here"
-    for n in (2, 3):
-        assert conditioning.resolve_scene_refinement_keys(raw, n) == studio._v2_scene_refinement_keys(raw, n)
+    assert conditioning.resolve_scene_refinement_keys(raw) == studio._v2_scene_refinement_keys(raw)
 
 
 def test_reset_prompt_keys_union_excludes_primary(monkeypatch):
@@ -267,11 +228,11 @@ def test_single_scene_with_custom_key_is_detected(monkeypatch):
     db = _db({"hero": (["hero"], ["a tall knight"], "mykey")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    assert conditioning.resolve_scene_refinement_keys("hero stands in a field", 1) == [{"mykey"}]
+    assert conditioning.resolve_scene_refinement_keys("hero stands in a field") == [{"mykey"}]
     # two custom keys in one scene -> both detected
     db2 = _db({"hero": (["hero"], ["knight"], "mykey"), "vil": (["villain"], ["masked"], "badguy")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db2)
-    assert conditioning.resolve_scene_refinement_keys("hero meets villain", 1) == [{"mykey", "badguy"}]
+    assert conditioning.resolve_scene_refinement_keys("hero meets villain") == [{"mykey", "badguy"}]
 
 
 def test_resolve_reads_keys_per_scene(monkeypatch):
@@ -280,7 +241,7 @@ def test_resolve_reads_keys_per_scene(monkeypatch):
     db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    out = conditioning.resolve_scene_refinement_keys("wide scene 1 alpha here scene 2 beta here", 2)
+    out = conditioning.resolve_scene_refinement_keys("wide scene 1 alpha here scene 2 beta here")
     assert out == [{"keyA"}, {"keyB"}]
 
 
@@ -344,6 +305,6 @@ def test_bridge_scene_refinement_keys_preview(monkeypatch):
     db = _db({"a": (["alpha"], ["AAA"], "keyA")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    out = bridge.scene_refinement_keys("wide shot scene 1 alpha here scene 2 plain", 2, "myproj")
+    out = bridge.scene_refinement_keys("wide shot scene 1 alpha here scene 2 plain", "myproj")
     assert out[0] == {"keys": ["keyA"], "uses_default": False, "default_key": "myproj"}
     assert out[1] == {"keys": ["myproj"], "uses_default": True, "default_key": "myproj"}

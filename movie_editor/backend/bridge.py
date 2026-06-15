@@ -82,16 +82,16 @@ def parse_timeline_verbatim(prompt: str) -> dict:
         return parse_timeline_raw(prompt)
 
 
-def scene_refinement_keys(prompt: str, scene_count: int, default_key: str = "default") -> list:
+def scene_refinement_keys(prompt: str, default_key: str = "default") -> list:
     """Per-scene refinement keys that generation will actually use, for the editor preview.
 
-    Returns one entry per scene aligned to parse_timeline's scenes:
+    Returns one entry per scene aligned to the canonical split_scenes():
       {"keys": [<non-default keys, sorted>], "uses_default": bool, "default_key": str}
     A scene with no fired non-default keys steers with the project default key
     (uses_default=True). Mirrors generation exactly by reusing the same resolver."""
     resolve = _funpack_attr("conditioning", "resolve_scene_refinement_keys")
     default_key = str(default_key or "default").strip() or "default"
-    sets = resolve(str(prompt or ""), int(scene_count or 1))
+    sets = resolve(str(prompt or ""))
     out = []
     for s in sets:
         keys = sorted(s)
@@ -105,12 +105,11 @@ def scene_refinement_keys(prompt: str, scene_count: int, default_key: str = "def
 def refinement_key_pool(prompt: str) -> list:
     """Every non-default refinement key whose shortcut fires anywhere in the prompt — the exact
     set a Studio session reset will wipe. Scene-count independent, so it mirrors the backend
-    `_v2_reset_prompt_keys` (which clears `prompt_scene_shortcut_keys(...).all_keys`), NOT the
-    per-scene `scene_refinement_keys` (whose divergence fallback can drop a key the reset still
-    wipes). Used so the reset confirmation lists exactly what will be cleared."""
-    keys_in_text = _funpack_attr("conditioning", "refinement_keys_in_text")
+    `_v2_reset_prompt_keys`. Used so the reset confirmation lists exactly what will be cleared.
+    Derived from the one canonical split, like everything else."""
+    pool_for = _funpack_attr("conditioning", "refinement_key_pool_for")
     try:
-        return sorted(k for k in keys_in_text(str(prompt or "")) if k)
+        return sorted(k for k in pool_for(str(prompt or "")) if k)
     except Exception:
         return []
 
