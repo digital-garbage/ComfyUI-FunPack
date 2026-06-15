@@ -2811,16 +2811,23 @@
     );
   }
 
-  // Every refinement key a reset will wipe: the project/default key plus every non-default
-  // key whose shortcut fires in the current prompt (those keys also get TRAINED per scene, so
-  // a reset must clear them too). Mirrors the backend _v2_reset_prompt_keys union.
+  // Every refinement key a reset will wipe: the project/default key plus every non-default key
+  // whose shortcut fires anywhere in the prompt. Uses the scene-count-independent
+  // refinement_key_pool, which mirrors the backend _v2_reset_prompt_keys EXACTLY — the per-scene
+  // scene_refinement_keys can drop a key via its divergence fallback, which would under-report and
+  // let the reset silently wipe a key the user wasn't warned about. Falls back to the per-scene
+  // list only for an older preview payload without the pool.
   function sessionResetKeys() {
     const pv = state.preview || {};
     const defKey = (state.project?.refinement_key || "default").trim() || "default";
     const out = new Set([defKey]);
-    (pv.scene_refinement_keys || []).forEach((rk) => {
-      if (rk && !rk.uses_default) (rk.keys || []).forEach((k) => { if (k) out.add(k); });
-    });
+    if (Array.isArray(pv.refinement_key_pool)) {
+      pv.refinement_key_pool.forEach((k) => { if (k) out.add(k); });
+    } else {
+      (pv.scene_refinement_keys || []).forEach((rk) => {
+        if (rk && !rk.uses_default) (rk.keys || []).forEach((k) => { if (k) out.add(k); });
+      });
+    }
     return [...out];
   }
 

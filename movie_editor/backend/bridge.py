@@ -102,6 +102,19 @@ def scene_refinement_keys(prompt: str, scene_count: int, default_key: str = "def
     return out
 
 
+def refinement_key_pool(prompt: str) -> list:
+    """Every non-default refinement key whose shortcut fires anywhere in the prompt — the exact
+    set a Studio session reset will wipe. Scene-count independent, so it mirrors the backend
+    `_v2_reset_prompt_keys` (which clears `prompt_scene_shortcut_keys(...).all_keys`), NOT the
+    per-scene `scene_refinement_keys` (whose divergence fallback can drop a key the reset still
+    wipes). Used so the reset confirmation lists exactly what will be cleared."""
+    keys_in_text = _funpack_attr("conditioning", "refinement_keys_in_text")
+    try:
+        return sorted(k for k in keys_in_text(str(prompt or "")) if k)
+    except Exception:
+        return []
+
+
 def validate_generation_prompt(full, target) -> dict:
     """Build the generation prompt and run fingerprint; track changes since last queue."""
     from .timeline import (

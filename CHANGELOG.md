@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+- "Reset Studio session" silently wiped keys it never listed. The confirmation read the per-scene
+  `scene_refinement_keys` (which drops keys via its divergence fallback), while the backend reset
+  wipes the scene-count-independent **pool** (`prompt_scene_shortcut_keys.all_keys` — every key
+  fired in the prompt). So a second key you were training could be cleared without ever appearing
+  in the confirmation. The preview now exposes `refinement_key_pool` (mirrors the backend reset
+  exactly) and the confirmation lists from it, so what's shown is precisely what gets wiped.
+
 ## [3.0.2] - 2026-06-15
 
 ### Fixed
