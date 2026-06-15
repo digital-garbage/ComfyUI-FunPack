@@ -1,6 +1,6 @@
 # FunPack Studio
 
-`FunPack Studio` is a single node that combines all core FunPack refinement tools under one interface. It replaces the typical chain of `FunPack Refinement Key Loader - FunPack Scene Builder - FunPack Apply LoRA Weights - FunPack LoRA Loader - FunPack Video Refiner V2 - FunPack Conditioning Adjust` with a single node and a tabbed popup editor.
+`FunPack Studio` is a single node that combines all core FunPack refinement tools under one interface. It replaces the typical chain of `FunPack Refinement Key Loader - FunPack Apply LoRA Weights - FunPack LoRA Loader - FunPack Video Refiner V2 - FunPack Conditioning Adjust` with a single node and a tabbed popup editor.
 
 The standalone nodes remain fully functional. Studio is an alternative for workflows where you want everything in one place.
 
@@ -22,7 +22,7 @@ The `rating` widget opens a **rating picker** popup. Alongside the quality ratin
 | `clip_vision_output` | CLIP_VISION_OUTPUT | Advisory image context stored in session state. Not blended into conditioning. |
 | `source_image` | IMAGE | Source image or frame batch. V2 stores size, aspect ratio, and a fingerprint to detect changes. |
 | `lora_stack` | FUNPACK_LORA_STACK | External LoRA stack. Bypasses Studio's internal LoRA management entirely when connected. |
-| `positive_prompt` | STRING | Positive prompt text. Ignored when Scene Builder mode is not Pass-through. |
+| `positive_prompt` | STRING | Positive prompt text. |
 | `negative_prompt` | STRING | Negative prompt text. Encoded via CLIP and output as negative conditioning. Skipped when `negative_conditioning` is connected. |
 | `user_intent_prompt` | STRING | Raw user intent for repair and alignment anchoring. |
 | `feedback_prompt` | STRING | Feedback describing what was wrong with the previous output. Highest priority in the advisor. |
@@ -53,17 +53,9 @@ Set the refinement key for the current session. This key links all FunPack memor
 
 When a `refinement_key_input` is connected to the node, that value takes precedence at runtime unless the **Override** toggle is enabled.
 
-**Scene Builder mode** is also controlled here. Changing from Pass-through to Manual/Auto/Learning activates the scene builder, which then constructs the positive prompt from the Scene tab instead of from the `positive_prompt` input.
-
-### Scene
-
-Available when Scene Builder mode is not Pass-through. Save and load named scene presets. The phrase bank shows all phrases from the session's universal memory. Clicking a chip appends it to the positive prompt composer.
-
-When Scene Builder is active the Refiner tab shows a notice and the intent override field is disabled, since intent derives from the scene prompt.
-
 ### Shortcuts
 
-Shortcuts are global positive-prompt expansions shared by Scene Builder, Studio, and Refiner V2. Each shortcut has one or more activation phrases and one or more replacement phrases. Matching uses exact word or phrase boundaries, preserves surrounding spaces and punctuation, and chooses among replacements with the run seed.
+Shortcuts are global positive-prompt expansions shared by Studio and Refiner V2. Each shortcut has one or more activation phrases and one or more replacement phrases. Matching uses exact word or phrase boundaries, preserves surrounding spaces and punctuation, and chooses among replacements with the run seed.
 
 Shortcuts are stored outside refinement keys, can be imported/exported separately, and are not cleared by **Reset session**.
 

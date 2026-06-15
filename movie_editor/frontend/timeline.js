@@ -1978,18 +1978,19 @@
       ?? JSON.stringify({ sel: st.selectedSceneId, sels: st.selectedSceneIds });
     const fpRat = _ratingsFingerprint(st);
     if (fpData !== _lastDataFp) {
+      const ok = render(st);
+      if (!ok) return false; // render declined (focus/drag/scroll) — retry on next notify
       _lastDataFp = fpData;
       _lastSelFp = fpSel;
       _lastRatFp = fpRat;
-      const ok = render(st);
-      if (_pendingAutoFit && ok && st.project) {
+      if (_pendingAutoFit && st.project) {
         _pendingAutoFit = false;
         if (_autoFitEnabled) {
           const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
           requestAnimationFrame(() => { if (total > 0) fit(total); });
         }
       }
-      return;
+      return true;
     }
     if (fpRat !== _lastRatFp) {
       _lastRatFp = fpRat;

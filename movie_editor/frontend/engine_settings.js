@@ -66,7 +66,6 @@
   const STUDIO_REFINER_ESSENTIALS = [
     { name: "vision_conditioning", label: "Vision conditioning", default: true },
     { name: "reference_injection", label: "Reference injection", default: false },
-    { name: "prompt_repair", label: "Prompt repair", default: false },
   ];
   const STUDIO_REFINER_ADVANCED = [
     { name: "value_guidance", label: "Value guidance", kind: "bool", default: true },

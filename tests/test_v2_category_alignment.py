@@ -256,141 +256,10 @@ def test_wrong_appearance_rating_is_available():
 
     assert "Wrong appearance" in V2_RATING_LABELS
     assert profile["key"] == "wrong_appearance"
-    assert profile["wrong_categories"] == ["appearance", "subject", "environment"]
-
-
-def test_prompt_repair_blocks_appearance_subject_and_environment():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {
-            "white tights": {
-                "text": "white tights",
-                "primary": "appearance",
-                "effective_category_scores": refiner._v2_heuristic_scores("white tights"),
-                "wanted_axes": {"details": 3},
-                "score": 6.0,
-                "liked_count": 4,
-            },
-            "detailed background": {
-                "text": "detailed background",
-                "primary": "environment",
-                "effective_category_scores": refiner._v2_heuristic_scores("detailed background"),
-                "wanted_axes": {"details": 3},
-                "score": 6.0,
-                "liked_count": 4,
-            },
-            "female character": {
-                "text": "female character",
-                "primary": "subject",
-                "effective_category_scores": refiner._v2_heuristic_scores("female character"),
-                "wanted_axes": {"details": 3},
-                "score": 6.0,
-                "liked_count": 4,
-            },
-            "tiny smoke curls": {
-                "text": "tiny smoke curls",
-                "primary": "details",
-                "effective_category_scores": refiner._v2_heuristic_scores("tiny smoke curls"),
-                "wanted_axes": {"details": 3},
-                "score": 4.0,
-                "liked_count": 2,
-            },
-        }
-    }
-    profile = normalize_refiner_v2_rating("Missing details")
-    feedback = refiner._v2_axis_feedback(profile, None)
-
-    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "person smoking",
-        refiner._v2_classify_phrases(None, prompt_items(refiner, ["person smoking"]), global_state),
-        global_state,
-        None,
-        feedback,
-    )
-
-    assert "tiny smoke curls" in repaired
-    assert "white tights" not in repaired
-    assert "detailed background" not in repaired
-    assert "female character" not in repaired
-    assert all(candidate["text"] != "white tights" for candidate in candidates)
-
-
-def test_scene_builder_user_category_overrides_refiner_classification():
-    refiner = FunPackVideoRefinerV2()
-    scene_db = {
-        "universal_memory": {
-            "running pose": {
-                "text": "running pose",
-                "category": "appearance",
-                "category_source": "user",
-                "category_locked": True,
-            }
-        }
-    }
-
-    phrase = refiner._v2_classify_phrases(
-        None,
-        [{"text": "running pose", "tokens": refiner._v2_phrase_words("running pose")}],
-        {"phrase_memory": {}},
-        scene_db=scene_db,
-    )[0]
-
-    assert phrase["primary"] == "appearance"
-    assert phrase["source"] == "scene_builder_user"
-    assert phrase["scene_category_locked"] is True
-
-
-def test_scene_builder_locked_category_is_not_trained_by_refiner():
-    refiner = FunPackVideoRefinerV2()
-    scene_db = {
-        "universal_memory": {
-            "running pose": {
-                "text": "running pose",
-                "category": "appearance",
-                "category_source": "user",
-                "category_locked": True,
-            }
-        }
-    }
-    global_state = {"phrase_memory": {}}
-    phrase = refiner._v2_classify_phrases(
-        None,
-        [{"text": "running pose", "tokens": refiner._v2_phrase_words("running pose")}],
-        global_state,
-        scene_db=scene_db,
-    )[0]
-
-    refiner._v2_update_phrase_memory(
-        global_state,
-        {"prompt": "running pose", "phrases": [phrase]},
-        normalize_refiner_v2_rating("Perfect"),
-        1,
-        refiner._v2_axis_feedback(normalize_refiner_v2_rating("Perfect"), None),
-    )
-
-    entry = global_state["phrase_memory"]["running pose"]
-    assert entry["primary"] == "appearance"
-    assert entry["category_locked"] is True
-    assert entry["category_evidence_count"] == 0
-    assert entry["liked_count"] == 0
-
-
-def test_scene_builder_wildcard_cleanup_runs_after_refiner_processing():
-    refiner = FunPackVideoRefinerV2()
-    scene_db = {
-        "universal_memory": {
-            "red dress": {"text": "red dress", "category": "appearance", "wildcard": True},
-            "blue dress": {"text": "blue dress", "category": "appearance", "wildcard": True},
-        }
-    }
-
-    prompt, status = refiner._v2_resolve_scene_builder_wildcards(
-        "person walking, red dress, blue dress",
-        scene_db,
-    )
-
-    assert prompt == "person walking, red dress"
-    assert "removed 1 duplicate" in status
+    # Wrong appearance now drives the consistency anchor, not prompt repair (the dead
+    # wrong_categories field was dropped in Stage 2 Part B). It stays quality-neutral.
+    assert "wrong_categories" not in profile
+    assert profile["skip_value_function"] is True
 
 
 def test_lucky_composition_gates_unrelated_old_action_by_current_intent():
@@ -426,26 +295,6 @@ def test_lucky_composition_gates_unrelated_old_action_by_current_intent():
     assert "walking on beach" in lucky
     assert "dancing in rain" not in lucky
     assert "Lucky: on" in status
-
-
-def test_perfect_repair_does_not_inject_after_scene_change():
-    refiner = FunPackVideoRefinerV2()
-    slot = {
-        "perfect_repairs": {
-            "dancing in rain": {"text": "dancing in rain", "axes": {"action": 1}, "count": 3}
-        }
-    }
-
-    repaired, status, adjustments = refiner._v2_apply_perfect_repair_phrases(
-        "walking on beach",
-        slot,
-        intent_prompt="walking on beach",
-        intent_phrases=prompt_phrases(refiner, "walking on beach"),
-    )
-
-    assert repaired == "walking on beach"
-    assert adjustments == []
-    assert "already represented" in status
 
 
 def test_intent_alignment_learns_missing_original_intent_from_enhancer_variant():
@@ -616,96 +465,6 @@ def test_intent_alignment_omits_bad_token_in_new_enhancer_phrase():
     ]
 
 
-def test_repeated_intent_family_phrase_becomes_conservative_repair_candidate():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {},
-        "intent_family_memory": {},
-        "perfect_anchors": {},
-        "variant_evidence": {},
-        "intent_preference_phrases": {},
-        "conditioning_deltas": {},
-    }
-    intent_prompt = "yellow car riding down the road"
-    enhanced_prompt = "yellow car in a desert"
-    profile = normalize_refiner_v2_rating("Missing action")
-    feedback = refiner._v2_axis_feedback(profile, None)
-
-    for iteration in range(2):
-        refiner._v2_update_intent_family_memory(
-            global_state,
-            {
-                "prompt": enhanced_prompt,
-                "phrases": prompt_phrases(refiner, enhanced_prompt, global_state),
-                "intent_prompt": intent_prompt,
-                "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
-            },
-            profile,
-            iteration + 1,
-            feedback,
-        )
-
-    current_intent = "yellow car down the road"
-    _, family_slot, _ = refiner._v2_intent_family_slot(global_state, current_intent, create=False)
-    repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        enhanced_prompt,
-        prompt_phrases(refiner, enhanced_prompt, global_state),
-        global_state,
-        None,
-        feedback,
-        intent_phrases=prompt_phrases(refiner, current_intent, global_state),
-        intent_family_slot=family_slot,
-    )
-
-    assert "yellow car riding down the road" in repaired
-    assert "intent_preference" in status
-    assert any(candidate["source"] == "intent_preference" for candidate in candidates)
-
-
-def test_repeated_intent_preference_does_not_repair_unrelated_family():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {},
-        "intent_family_memory": {},
-        "perfect_anchors": {},
-        "variant_evidence": {},
-        "intent_preference_phrases": {},
-        "conditioning_deltas": {},
-    }
-    yellow_intent = "yellow car riding down the road"
-    dragon_intent = "dragon sleeping in a cave"
-    profile = normalize_refiner_v2_rating("Missing action")
-    feedback = refiner._v2_axis_feedback(profile, None)
-
-    for iteration in range(2):
-        refiner._v2_update_intent_family_memory(
-            global_state,
-            {
-                "prompt": "yellow car in a desert",
-                "phrases": prompt_phrases(refiner, "yellow car in a desert", global_state),
-                "intent_prompt": yellow_intent,
-                "intent_phrases": prompt_phrases(refiner, yellow_intent, global_state),
-            },
-            profile,
-            iteration + 1,
-            feedback,
-        )
-
-    _, dragon_slot, _ = refiner._v2_intent_family_slot(global_state, dragon_intent, create=True)
-    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "dragon in a cave",
-        prompt_phrases(refiner, "dragon in a cave", global_state),
-        global_state,
-        None,
-        feedback,
-        intent_phrases=prompt_phrases(refiner, dragon_intent, global_state),
-        intent_family_slot=dragon_slot,
-    )
-
-    assert "yellow car riding down the road" not in repaired
-    assert all(candidate["text"] != "yellow car riding down the road" for candidate in candidates)
-
-
 def test_active_repair_axes_persist_until_perfect():
     refiner = FunPackVideoRefinerV2()
     global_state = {"active_repair_axes": []}
@@ -729,78 +488,6 @@ def test_active_repair_axes_persist_until_perfect():
     assert repair_feedback["missing_axes"] == []
     assert global_state["active_repair_axes"] == []
     assert "cleared by Perfect" in status
-
-
-def test_perfect_rating_preserves_successful_repair_phrases():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {},
-        "intent_family_memory": {},
-        "perfect_anchors": {},
-        "variant_evidence": {},
-        "intent_preference_phrases": {},
-        "conditioning_deltas": {},
-    }
-    intent_prompt = "person smoking"
-    profile = normalize_refiner_v2_rating("Perfect")
-    feedback = refiner._v2_axis_feedback(profile, None)
-    source = tensor_to_serializable(torch.zeros(1, 3, 2))
-    refined = tensor_to_serializable(torch.ones(1, 3, 2))
-
-    refiner._v2_update_intent_family_memory(
-        global_state,
-        {
-            "prompt": "person smoking",
-            "encoded_prompt": "person smoking, tiny smoke curls",
-            "phrases": prompt_phrases(refiner, "person smoking", global_state),
-            "intent_prompt": intent_prompt,
-            "intent_phrases": prompt_phrases(refiner, intent_prompt, global_state),
-            "source_conditioning": source,
-            "conditioning": refined,
-            "repair_candidates": [{"text": "tiny smoke curls", "axes": ["details"], "score": 2.0, "source": "memory"}],
-        },
-        profile,
-        1,
-        feedback,
-    )
-    _, slot, _ = refiner._v2_intent_family_slot(global_state, intent_prompt, create=False)
-    repaired, status, adjustments = refiner._v2_apply_perfect_repair_phrases("person smoking", slot)
-
-    assert "tiny smoke curls" in repaired
-    assert "Perfect-proven" in status
-    assert adjustments == [{"text": "tiny smoke curls", "source": "perfect_repair", "action": "added"}]
-
-
-def test_prompt_repair_falls_back_to_any_axis_candidates_when_requested_axis_is_empty():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {
-            "portrait quality": {
-                "text": "portrait quality",
-                "primary": "quality",
-                "effective_category_scores": refiner._v2_heuristic_scores("portrait quality"),
-                "wanted_axes": {"quality": 3},
-                "score": 4.0,
-                "liked_count": 2,
-                "category_evidence_count": 2,
-            }
-        }
-    }
-    profile = normalize_refiner_v2_rating("Missing action")
-    feedback = refiner._v2_axis_feedback(profile, None)
-
-    repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "static portrait",
-        prompt_phrases(refiner, "static portrait", global_state),
-        global_state,
-        None,
-        feedback,
-    )
-
-    assert "portrait quality" in repaired
-    assert "showing other-axis repair candidates" in status
-    assert candidates[0]["text"] == "portrait quality"
-    assert candidates[0]["source"] == "memory"
 
 
 def test_intent_family_perfect_anchor_keeps_loved_variant():
@@ -1899,258 +1586,6 @@ def test_normal_previous_run_can_train_before_current_refusal_is_discarded(tmp_p
     assert "sorry, but i can't assist with that request." not in state["prompt_histories"]
 
 
-def test_liked_action_detail_context_clusters_repair_missing_axes():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
-    rich_prompt = "woman walking reaching hand tiny particles rain reflections"
-    liked_phrases = refiner._v2_classify_phrases(
-        None,
-        prompt_items(refiner, [
-            "woman",
-            "walking",
-            "reaching hand",
-            "tiny particles",
-            "rain reflections",
-        ]),
-        global_state,
-    )
-    profile = normalize_refiner_v2_rating("Perfect")
-    feedback = refiner._v2_axis_feedback(profile, None)
-
-    refiner._v2_update_phrase_memory(
-        global_state,
-        {"prompt": rich_prompt, "phrases": liked_phrases},
-        profile,
-        1,
-        feedback,
-    )
-    assert "Preferred context stored" in refiner._v2_update_preferred_context_memory(
-        global_state,
-        {"phrases": liked_phrases},
-        profile,
-        2,
-        feedback,
-    )
-
-    missing_profile = normalize_refiner_v2_rating("Missing details + action")
-    missing_feedback = refiner._v2_axis_feedback(missing_profile, None)
-    current_phrases = refiner._v2_classify_phrases(
-        None,
-        prompt_items(refiner, ["woman", "rain"]),
-        global_state,
-    )
-    intent_phrases = refiner._v2_classify_phrases(
-        None,
-        refiner._ordered_prompt_phrases(rich_prompt),
-        global_state,
-    )
-
-    repaired, status, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "woman, rain",
-        current_phrases,
-        global_state,
-        None,
-        missing_feedback,
-        intent_phrases=intent_phrases,
-    )
-
-    assert "walking" in repaired
-    assert "tiny particles" in repaired
-    assert "intent" in status or "preferred_context" in status
-    assert len(candidates) >= 2
-
-
-def test_prompt_repair_does_not_pull_unrequested_memory_for_any_missing_axis():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {
-            "walking": {
-                "text": "walking",
-                "primary": "action",
-                "effective_category_scores": refiner._v2_heuristic_scores("walking"),
-                "wanted_axes": {"action": 5},
-                "score": 5.0,
-                "liked_count": 5,
-            },
-            "tiny particles": {
-                "text": "tiny particles",
-                "primary": "details",
-                "effective_category_scores": refiner._v2_heuristic_scores("tiny particles"),
-                "wanted_axes": {"details": 5},
-                "score": 5.0,
-                "liked_count": 5,
-            },
-            "cinematic lighting": {
-                "text": "cinematic lighting",
-                "primary": "style",
-                "effective_category_scores": refiner._v2_heuristic_scores("cinematic lighting"),
-                "wanted_axes": {"quality": 5},
-                "score": 5.0,
-                "liked_count": 5,
-            },
-            "glass reflections": {
-                "text": "glass reflections",
-                "primary": "details",
-                "effective_category_scores": refiner._v2_heuristic_scores("glass reflections"),
-                "wanted_axes": {"details": 2},
-                "score": 2.0,
-                "liked_count": 1,
-            },
-        },
-    }
-    profile = normalize_refiner_v2_rating("Awful")
-    feedback = refiner._v2_axis_feedback(profile, None)
-    current_phrases = refiner._v2_classify_phrases(
-        None,
-        prompt_items(refiner, ["woman", "glass"]),
-        global_state,
-    )
-
-    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "woman, glass",
-        current_phrases,
-        global_state,
-        None,
-        feedback,
-    )
-
-    candidate_texts = {candidate["text"] for candidate in candidates}
-    assert "glass reflections" in repaired
-    assert "walking" not in repaired
-    assert "tiny particles" not in repaired
-    assert "cinematic lighting" not in repaired
-    assert "walking" not in candidate_texts
-    assert "tiny particles" not in candidate_texts
-    assert "cinematic lighting" not in candidate_texts
-
-
-def test_prompt_repair_treats_same_word_with_different_neighbours_as_different():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {
-            "turning head": {
-                "text": "turning head",
-                "primary": "action",
-                "effective_category_scores": refiner._v2_heuristic_scores("turning head"),
-                "wanted_axes": {"action": 4},
-                "score": 4.0,
-                "liked_count": 4,
-                "context_senses": {
-                    "mid|eyes,portrait": {
-                        "context": {
-                            "anchor_words": ["head", "turning"],
-                            "context_words": ["portrait", "eyes"],
-                            "position_bucket": "mid",
-                            "window": 3,
-                        },
-                        "category_weights": refiner._v2_category_template(0.0),
-                        "effective_category_scores": refiner._v2_heuristic_scores("turning head"),
-                        "category_evidence_count": 4,
-                        "occurrence_count": 4,
-                    },
-                },
-            },
-        },
-    }
-    profile = normalize_refiner_v2_rating("Missing action")
-    feedback = refiner._v2_axis_feedback(profile, None)
-    current_phrases = refiner._v2_classify_phrases(
-        None,
-        prompt_items(refiner, ["car", "turning wheel", "street"]),
-        global_state,
-    )
-
-    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "car, turning wheel, street",
-        current_phrases,
-        global_state,
-        None,
-        feedback,
-    )
-
-    assert "turning head" not in repaired
-    assert all(candidate["text"] != "turning head" for candidate in candidates)
-
-
-def test_vague_user_intent_lets_enhanced_positive_prompt_anchor_repair():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {
-            "walking slowly": {
-                "text": "walking slowly",
-                "primary": "action",
-                "effective_category_scores": refiner._v2_heuristic_scores("walking slowly"),
-                "wanted_axes": {"action": 3},
-                "score": 3.0,
-                "liked_count": 3,
-            },
-        },
-    }
-    assert refiner._v2_user_intent_prompt_is_vague("Figure it out")
-    assert not refiner._v2_user_intent_prompt_is_vague("person walking")
-
-    profile = normalize_refiner_v2_rating("Missing action")
-    feedback = refiner._v2_axis_feedback(profile, None)
-    current_phrases = refiner._v2_classify_phrases(
-        None,
-        prompt_items(refiner, ["woman", "walking through glass hallway"]),
-        global_state,
-    )
-
-    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "woman, walking through glass hallway",
-        current_phrases,
-        global_state,
-        None,
-        feedback,
-        intent_phrases=[],
-    )
-
-    assert "walking slowly" in repaired
-    assert any(candidate["text"] == "walking slowly" for candidate in candidates)
-
-
-def test_complex_user_intent_ranks_before_matching_preferred_memory():
-    refiner = FunPackVideoRefinerV2()
-    global_state = {
-        "phrase_memory": {},
-        "preferred_context_memory": {
-            "reach-memory": {
-                "anchor": "reaching hand slowly",
-                "axes": {"action": 4},
-                "context": {},
-                "phrases": ["reaching hand slowly"],
-                "score": 10.0,
-                "liked_count": 8,
-            },
-        },
-    }
-    profile = normalize_refiner_v2_rating("Missing action")
-    feedback = refiner._v2_axis_feedback(profile, None)
-    current_phrases = refiner._v2_classify_phrases(
-        None,
-        prompt_items(refiner, ["woman"]),
-        global_state,
-    )
-    intent_phrases = refiner._v2_classify_phrases(
-        None,
-        refiner._ordered_prompt_phrases("woman reaching hand toward glass"),
-        global_state,
-    )
-
-    repaired, _, candidates = refiner._v2_repair_prompt_for_missing_axes(
-        "woman",
-        current_phrases,
-        global_state,
-        None,
-        feedback,
-        intent_phrases=intent_phrases,
-    )
-
-    assert "reaching hand toward glass" in repaired
-    assert candidates[0]["source"] == "intent"
-
-
 def test_phrase_clusters_train_more_strongly_than_ngrams_and_tokens():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "preferred_context_memory": {}}
@@ -2175,29 +1610,6 @@ def test_phrase_clusters_train_more_strongly_than_ngrams_and_tokens():
     token_score = global_state["phrase_memory"]["reaching"]["score"]
 
     assert phrase_score > ngram_score > token_score
-
-
-def test_repair_candidates_saved_as_json_lists(tmp_path):
-    refiner = FunPackVideoRefinerV2()
-    state_path = tmp_path / "state.json"
-    refiner._v2_state_path = lambda refinement_key: str(state_path)
-    rich_prompt = "woman, walking, reaching hand, tiny particles, rain reflections"
-
-    refiner.refine_v2(rich_prompt, FakeClip(), "Perfect", "json-repair-test")
-    refiner.refine_v2(rich_prompt, FakeClip(), "Perfect", "json-repair-test")
-    refiner.refine_v2(
-        "woman, rain",
-        FakeClip(),
-        "Missing details + action",
-        "json-repair-test",
-        user_intent_prompt=rich_prompt,
-    )
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    candidates = state["last_run"]["repair_candidates"]
-    assert candidates
-    assert isinstance(candidates[0]["axes"], list)
-    assert "walking" in state["last_run"]["encoded_prompt"]
 
 
 def test_wrong_action_rating_preserves_quality_but_marks_action_wrong():
@@ -2304,126 +1716,6 @@ def test_split_by_transitions_disabled_returns_single_entry(tmp_path):
 
     assert len(cond) == 1
     assert "Transition split" not in status
-
-
-def test_split_prompt_by_transitions_detects_known_phrases():
-    refiner = FunPackVideoRefinerV2()
-
-    segments = refiner._v2_split_prompt_by_transitions(
-        "a dog running in a field, scene one jumping over a fence, cut to stopping"
-    )
-    assert len(segments) == 3
-
-    segments_none = refiner._v2_split_prompt_by_transitions("a dog running in a field")
-    assert len(segments_none) == 1
-
-    standalone_then = refiner._v2_split_prompt_by_transitions("a dog running in a field, then jumping")
-    assert len(standalone_then) == 1
-
-    scene_labels = refiner._v2_split_prompt_by_transitions(
-        "character description, scene one shows walking, scene -999999 shows fighting, scene minus infinity shows resting"
-    )
-    assert len(scene_labels) == 4
-
-    plural_description = refiner._v2_split_prompt_by_transitions(
-        "character description shown in three distinct scenes"
-    )
-    assert len(plural_description) == 1
-
-
-def test_transition_scene_preview_uses_full_first_segment():
-    refiner = FunPackVideoRefinerV2()
-
-    segs = refiner._v2_split_prompt_by_transitions(
-        "In this anime video, Hiyuki is a mature woman, scene one she walks, cut to she sits"
-    )
-    assert len(segs) == 3
-    texts = refiner._v2_transition_scene_texts(segs)
-    assert len(texts) == 2
-    assert texts[0].startswith("In this anime video, Hiyuki is a mature woman")
-    assert texts[1].startswith("In this anime video, Hiyuki is a mature woman")
-    assert "scene one she walks" in texts[0]
-    assert "she sits" in texts[1]
-
-
-def test_scene_labels_after_transitions_are_scene_text_not_boundaries(tmp_path):
-    refiner = FunPackVideoRefinerV2()
-    state_path = tmp_path / "state.json"
-    refiner._v2_state_path = lambda refinement_key: str(state_path)
-    prompt = (
-        "In this 3D animated video, Kai'Sa from League of Legends is shown in three distinct scenes. "
-        "Scene ten shows her walking through a neon corridor, "
-        "scene -999999 shows her charging her weapons, "
-        "scene minus infinity shows her landing on a rooftop."
-    )
-
-    segments = refiner._v2_split_prompt_by_transitions(prompt)
-    texts = refiner._v2_transition_scene_texts(segments)
-    assert len(texts) == 3
-    assert all("Kai'Sa from League of Legends" in text for text in texts)
-    assert "Scene ten shows her walking" in texts[0]
-    assert "scene -999999 shows her charging" in texts[1]
-    assert "scene minus infinity shows her landing" in texts[2]
-    assert "shown in three distinct scenes" not in texts[0].split(", ")[-1]
-
-    cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
-        prompt,
-        FakeClip(),
-        "Perfect",
-        "transition-label-text-test",
-        split_by_transitions=True,
-    )
-
-    assert len(cond) == 3
-    assert "Transition split: 3 scenes detected" in status
-    assert "Scene 3" in encoded_prompts
-    assert "Scene 4" not in encoded_prompts
-
-
-def test_prompt_starting_with_scene_label_keeps_first_scene():
-    refiner = FunPackVideoRefinerV2()
-    prompt = "scene ten: she walks into a room, scene one: she walks out"
-
-    segments = refiner._v2_split_prompt_by_transitions(prompt)
-    texts = refiner._v2_transition_scene_texts(segments)
-
-    assert len(texts) == 2
-    assert texts[0].startswith("scene ten she walks into a room")
-    assert texts[1].startswith("scene one she walks out")
-
-
-def test_new_transition_phrases_and_then_handling():
-    refiner = FunPackVideoRefinerV2()
-    prompt = (
-        "character anchor, as the action continues she runs, "
-        "as the video progresses she turns, "
-        "the final sequence shows her smiling, "
-        "the final shot returns to her face, "
-        "in the final moments she waves, "
-        "a final shot zooms out from the city, "
-        "the camera then shifts to the sky, "
-        "the camera then pulls back from her, "
-        "the camera shifts to the window, "
-        "the camera zooms in on her eyes, "
-        "finally, the scene transitions into rain, "
-        "the scene transitions to a rooftop, "
-        "the scene shifts to a hallway, "
-        "in the next segment she sits"
-    )
-
-    segments = refiner._v2_split_prompt_by_transitions(prompt)
-    texts = refiner._v2_transition_scene_texts(segments)
-
-    assert len(texts) == 14
-    assert all(text.startswith("character anchor") for text in texts)
-    assert "the final shot returns to her face" in texts[3]
-    assert "a final shot zooms out from the city" in texts[5]
-    assert "the camera then shifts to the sky" in texts[6]
-    assert "the camera then pulls back from her" in texts[7]
-    assert "the camera shifts to the window" in texts[8]
-    assert "the camera zooms in on her eyes" in texts[9]
-    assert "finally, the scene transitions into rain" in texts[10]
-    assert "the scene transitions to a rooftop" in texts[11]
 
 
 def test_split_by_transitions_has_no_hard_scene_cap(tmp_path):
@@ -2580,3 +1872,132 @@ def test_split_by_transitions_uses_provided_scene_seeds(tmp_path):
 
     assert [item[1]["funpack_scene_seed"] for item in cond] == [900, 901]
     assert all(item[1]["funpack_seed_source"] == "successful seed memory" for item in cond)
+
+
+# --- Stage 2 Part B: "Wrong appearance" consistency anchor ---
+
+def _mean_cosine(a, b):
+    a = a.reshape(-1, a.shape[-1]).float()
+    b = b.reshape(-1, b.shape[-1]).float()
+    a = a / a.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    b = b / b.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    return float((a * b).sum(dim=-1).mean().item())
+
+
+def test_appearance_anchor_stores_blessed_on_good_rating():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    payload = tensor_to_serializable(torch.randn(1, 6, 8))
+    previous_run = {"conditioning": payload, "prompt": "woman in red dress"}
+
+    status = refiner._v2_update_appearance_anchor(
+        global_state, previous_run, normalize_refiner_v2_rating("Perfect"), 3
+    )
+
+    assert "blessed" in status.lower()
+    assert global_state["appearance_anchor"]["conditioning"] is payload
+    assert global_state["appearance_anchor"]["count"] == 1
+    # A good rating should NOT populate the drift slot.
+    assert "appearance_drift" not in global_state
+
+
+def test_appearance_anchor_stores_drift_on_wrong_appearance():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    payload = tensor_to_serializable(torch.randn(1, 6, 8))
+    previous_run = {"conditioning": payload, "prompt": "woman in red dress"}
+
+    refiner._v2_update_appearance_anchor(
+        global_state, previous_run, normalize_refiner_v2_rating("Wrong appearance"), 4
+    )
+
+    assert global_state["appearance_drift"]["conditioning"] is payload
+    # Wrong appearance must not overwrite/seed the blessed anchor.
+    assert "appearance_anchor" not in global_state
+
+
+def test_good_rating_overwrites_blessed_anchor():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    first = tensor_to_serializable(torch.randn(1, 6, 8))
+    second = tensor_to_serializable(torch.randn(1, 6, 8))
+
+    refiner._v2_update_appearance_anchor(
+        global_state, {"conditioning": first, "prompt": "a"}, normalize_refiner_v2_rating("Perfect"), 1
+    )
+    refiner._v2_update_appearance_anchor(
+        global_state, {"conditioning": second, "prompt": "b"}, normalize_refiner_v2_rating("Nailed it"), 2
+    )
+
+    assert global_state["appearance_anchor"]["conditioning"] is second
+    assert global_state["appearance_anchor"]["count"] == 2
+
+
+def test_appearance_anchor_skips_when_no_conditioning_or_skip_learning():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {}
+    # No conditioning payload on the run.
+    refiner._v2_update_appearance_anchor(
+        global_state, {"prompt": "x"}, normalize_refiner_v2_rating("Perfect"), 1
+    )
+    assert "appearance_anchor" not in global_state
+    # skip_learning rating (e.g. -Just forget it-) never stores.
+    payload = tensor_to_serializable(torch.randn(1, 6, 8))
+    refiner._v2_update_appearance_anchor(
+        global_state, {"conditioning": payload}, normalize_refiner_v2_rating("-Just forget it-"), 1
+    )
+    assert "appearance_anchor" not in global_state
+
+
+def test_wrong_appearance_pulls_toward_blessed_and_repels_drift():
+    refiner = FunPackVideoRefinerV2()
+    torch.manual_seed(0)
+    original = torch.randn(1, 6, 8)
+    blessed = torch.randn(1, 6, 8)
+    drift = torch.randn(1, 6, 8)
+    global_state = {
+        "appearance_anchor": {"conditioning": tensor_to_serializable(blessed)},
+        "appearance_drift": {"conditioning": tensor_to_serializable(drift)},
+    }
+
+    refined, status = refiner._v2_apply_conditioning_memory(
+        original.clone(), global_state, normalize_refiner_v2_rating("Wrong appearance")
+    )
+
+    assert "appearance-anchor: pull→blessed + repel←drift" in status
+    # Output moved toward the blessed appearance and away from the drift (direction).
+    assert _mean_cosine(refined, blessed) > _mean_cosine(original, blessed)
+    assert _mean_cosine(refined, drift) < _mean_cosine(original, drift)
+    # Gentle: per-token norm is preserved and the net change is small.
+    assert torch.allclose(
+        refined.norm(dim=-1), original.norm(dim=-1), atol=1e-3
+    )
+    assert (refined - original).norm() / original.norm() < 0.08
+
+
+def test_appearance_anchor_idle_without_blessed():
+    refiner = FunPackVideoRefinerV2()
+    torch.manual_seed(1)
+    original = torch.randn(1, 6, 8)
+
+    refined, status = refiner._v2_apply_conditioning_memory(
+        original.clone(), {}, normalize_refiner_v2_rating("Wrong appearance")
+    )
+
+    assert "appearance-anchor idle" in status
+    assert torch.allclose(refined, original, atol=1e-4)
+
+
+def test_appearance_anchor_not_applied_on_non_wrong_appearance_rating():
+    refiner = FunPackVideoRefinerV2()
+    torch.manual_seed(2)
+    original = torch.randn(1, 6, 8)
+    blessed = torch.randn(1, 6, 8)
+    global_state = {"appearance_anchor": {"conditioning": tensor_to_serializable(blessed)}}
+
+    # A "Missing details" rating must not trigger the appearance anchor pull.
+    refined, status = refiner._v2_apply_conditioning_memory(
+        original.clone(), global_state, normalize_refiner_v2_rating("Missing details")
+    )
+
+    assert "appearance-anchor idle" in status

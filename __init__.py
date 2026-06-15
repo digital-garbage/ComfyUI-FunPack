@@ -21,7 +21,7 @@ if __package__:
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler
-    from .templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
+    from .templates import FunPackRefinementKeyLoader
     try:
         from . import batch_training  # noqa: F401  registers /funpack/batch/* routes
     except Exception as _e:
@@ -70,10 +70,9 @@ else:
         FunPackNormalizingSampler = None
         FunPackLTXAVSceneChainSampler = None
     try:
-        from templates import FunPackRefinementKeyLoader, FunPackSceneBuilder
+        from templates import FunPackRefinementKeyLoader
     except Exception:
         FunPackRefinementKeyLoader = None
-        FunPackSceneBuilder = None
 
 WEB_DIRECTORY = "./web"
 
@@ -99,7 +98,6 @@ NODE_CLASS_MAPPINGS = {
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
-    "FunPackSceneBuilder": FunPackSceneBuilder,
 }
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
 
@@ -125,7 +123,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
-    "FunPackSceneBuilder": "FunPack Scene Builder",
 }
 
 __all__ = [
