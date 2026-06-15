@@ -6379,11 +6379,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     "label": "I'm Feeling Lucky",
                     "tooltip": "Compose a learned prompt from V2 phrase memory, then encode it through the connected CLIP.",
                 }),
-                "prompt_repair": ("BOOLEAN", {
-                    "default": True,
-                    "label": "Prompt Repair",
-                    "tooltip": "Allow V2 to append learned phrases for missing axes. Disable when not enough context has been built yet or when memory suggestions are disrupting the generation.",
-                }),
                 "advisor_thinking": ("BOOLEAN", {
                     "default": True,
                     "label": "Advisor Thinking",
@@ -11981,7 +11976,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   reset_session=False, lora_stack=None, im_feeling_lucky=False, user_intent_prompt="",
                   refinement_key_input="", positive_conditioning=None, clip_vision_output=None,
                   source_image=None, model=None, mode="Refine", advisor_mode="Off", advisor_thinking=True,
-                  advisor_clip=None, feedback_prompt="", prompt_repair=True, temporal_style="natural",
+                  advisor_clip=None, feedback_prompt="", temporal_style="natural",
                   split_by_transitions=False, split_transition_placement="start", reference_injection=False,
                   value_guidance=True, latent=None, seed_output_connected=False,
                   steer_mode="relative", absolute_strength=0.6,
@@ -12313,40 +12308,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 intent_phrases,
                 global_state,
             )
-            if prompt_repair:
-                aligned_prompt, perfect_repair_status, perfect_repair_adjustments = self._v2_apply_perfect_repair_phrases(
-                    aligned_prompt,
-                    current_family_slot,
-                    intent_prompt=intent_source_prompt,
-                    intent_phrases=intent_phrases,
-                    clip=clip,
-                    encode_cache=encode_cache,
-                )
-                prompt_to_encode, emphasis_status = self._v2_emphasized_prompt(
-                    aligned_prompt,
-                    phrases,
-                    global_state,
-                    {**learning_profile, "missing_axes": repair_feedback.get("missing_axes", [])},
-                )
-            else:
-                perfect_repair_status = "Perfect repairs: disabled."
-                perfect_repair_adjustments = []
-                prompt_to_encode = aligned_prompt
-                emphasis_status = "Prompt emphasis: disabled."
+            # Prompt repair removed (Stage 2). The intent-aligned prompt is encoded as-is; the only
+            # remaining prompt-rewriting path is the advisor (when enabled). Perfect-repair phrase
+            # injection, missing-axis repair, and the emphasis pass are gone. repair_feedback /
+            # active_repair_axes is KEPT — it's the "what's missing" signal the advisor still reads.
+            perfect_repair_status = "Perfect repairs: removed."
+            perfect_repair_adjustments = []
+            prompt_to_encode = aligned_prompt
+            emphasis_status = "Prompt emphasis: removed."
             advisor_active = advisor_mode != "Off"
-            if prompt_repair:
-                prompt_to_encode, repair_status, repair_candidates = self._v2_repair_prompt_for_missing_axes(
-                    prompt_to_encode,
-                    phrases,
-                    global_state,
-                    previous_run,
-                    repair_feedback,
-                    intent_phrases=intent_phrases,
-                    intent_family_slot=current_family_slot,
-                    apply=not advisor_active,
-                )
-            else:
-                repair_status = "Prompt repair: disabled."
+            repair_status = "Prompt repair: removed."
             prompt_to_encode, wildcard_status = self._v2_resolve_scene_builder_wildcards(
                 prompt_to_encode,
                 scene_db,
@@ -14529,7 +14500,6 @@ class FunPackStudio:
         mode = str(rf.get("mode", "Refine") or "Refine")
         advisor_mode = str(rf.get("advisor_mode", "Off") or "Off")
         advisor_thinking = bool(rf.get("advisor_thinking", True))
-        prompt_repair = bool(rf.get("prompt_repair", True))
         im_feeling_lucky = bool(rf.get("im_feeling_lucky", False))
         reset_session = bool(rf.get("reset_session", False))
         temporal_style = str(rf.get("temporal_style", "natural") or "natural").strip().lower()
@@ -14688,7 +14658,6 @@ class FunPackStudio:
             advisor_thinking=advisor_thinking,
             advisor_clip=advisor_clip,
             feedback_prompt=feedback_prompt,
-            prompt_repair=prompt_repair,
             temporal_style=temporal_style,
             split_by_transitions=split_by_transitions,
             split_transition_placement=split_transition_placement,

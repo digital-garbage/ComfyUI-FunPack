@@ -69,7 +69,7 @@ function defaultSettings() {
     refinement_key: "",
     overrides: { refinement_key: false, feedback_prompt: false, user_intent_prompt: false, negative_prompt: false },
     scene_builder: { mode: "Pass-through", scene: NONE_SENTINEL, scene_name: "", aliases: "", scene_positive: "", scene_negative: "" },
-    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, prompt_repair: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6 },
+    refiner: { mode: "Refine", advisor_mode: "Off", advisor_thinking: true, im_feeling_lucky: false, reset_session: false, feedback_prompt: "", user_intent_prompt_override: "", negative_prompt: "", temporal_style: "natural", split_by_transitions: false, split_transition_placement: "start", reference_injection: false, vision_conditioning: true, value_guidance: true, steer_mode: "relative", absolute_strength: 0.6 },
     advisor_llm: { enabled: false, model_path: "huihui-ai/Huihui-Qwen3-8B-abliterated-v2", dtype: "bfloat16" },
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
@@ -1187,10 +1187,6 @@ function openPanel(node) {
     const thinkToggle = toggleEl(settings.refiner.advisor_thinking, "Advisor thinking");
     thinkToggle.inp.addEventListener("change", () => { settings.refiner.advisor_thinking = thinkToggle.inp.checked; });
     body.append(row("Thinking", thinkToggle.wrap));
-
-    const repairToggle = toggleEl(settings.refiner.prompt_repair, "Prompt repair");
-    repairToggle.inp.addEventListener("change", () => { settings.refiner.prompt_repair = repairToggle.inp.checked; });
-    body.append(row("Prompt repair", repairToggle.wrap));
 
     const luckyToggle = toggleEl(settings.refiner.im_feeling_lucky, "I'm Feeling Lucky");
     luckyToggle.inp.addEventListener("change", () => { settings.refiner.im_feeling_lucky = luckyToggle.inp.checked; });
