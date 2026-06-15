@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-06-15
+
 ### Fixed
 - "Reset Studio session" now lists the keys it will wipe off a **fresh** preview. The modal read
   `scene_refinement_keys` from the cached preview, which can lag the prompt (debounced refresh, or
