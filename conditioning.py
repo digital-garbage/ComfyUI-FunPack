@@ -11928,7 +11928,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 canonical = split_scenes(_raw_positive_prompt, placement=split_transition_placement)
                 canon_scenes = [s for s in (canonical.get("scenes", []) or [])
                                 if (s.get("expanded") or "").strip()]
-                if len(canon_scenes) > 1:
+                if len(canon_scenes) >= 1:
                     segments = [(canonical.get("anchor_expanded", ""), None)] + \
                                [(s.get("expanded", ""), s.get("effect")) for s in canon_scenes]
                     split_scene_texts, split_scene_effects = self._v2_transition_scene_texts(segments)
