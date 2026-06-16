@@ -6,7 +6,7 @@
 (function () {
   const { el } = window.dom;
 
-  const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "Normalizing", "KSampler"];
+  const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
   const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
   const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
   const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
@@ -33,20 +33,11 @@
     };
   }
 
-  function defaultNormalizing() {
-    return {
-      normalize_strength: 0.5, normalize_start_sigma: 0.9,
-      velocity_bias_mode: "off", velocity_bias_strength: 0.0,
-      velocity_bias_source: "mean", velocity_refinement_key: "default",
-      rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2,
-    };
-  }
-
   function defaultPass(type) {
     return {
       type: type || "Hybrid Euler 2S", sigmas: "",
       hybrid: defaultHybrid(), distilled: defaultDistilled(),
-      normalizing: defaultNormalizing(), ksampler_name: "euler",
+      ksampler_name: "euler",
     };
   }
 
@@ -129,7 +120,7 @@
     return i;
   }
 
-  // ── velocity-bias / rescue block (shared by Hybrid, Distilled, Normalizing) ──
+  // ── velocity-bias / rescue block (shared by Hybrid and Distilled) ──
 
   function renderVelocityBlock(c, dk, sub, save, saveNow) {
     const vbm = selCtrl(VELOCITY_BIAS_MODES, sub.velocity_bias_mode || "off", dk + "-vbm",
@@ -262,20 +253,6 @@
         numCtrl(dc.s_noise, 0, 0.5, 0.01, dk + "-dsn",
           (v) => { dc.s_noise = v; save(); }));
       renderVelocityBlock(container, dk + "-d", dc, save, saveNow);
-
-    } else if (cfg.type === "Normalizing") {
-      const nc = cfg.normalizing;
-      sectionTag(container, "Normalizing");
-      hint(container, "Deterministic euler with video-only latent normalization. Built for distilled LTXAV at CFG=1.");
-      row(container, "normalize strength",
-        numCtrl(nc.normalize_strength, 0, 1, 0.05, dk + "-nn",
-          (v) => { nc.normalize_strength = v; save(); }));
-      hint(container, "How hard to pull video latent spread back. 0 = plain euler. 0.5 = gentle. 1.0 = clamp.");
-      row(container, "normalize start sigma",
-        numCtrl(nc.normalize_start_sigma, 0, 1, 0.025, dk + "-nns",
-          (v) => { nc.normalize_start_sigma = v; save(); }));
-      hint(container, "Sigma at/below which normalization activates. ~0.9 = structure-forming step.");
-      renderVelocityBlock(container, dk + "-n", nc, save, saveNow);
 
     } else if (cfg.type === "KSampler") {
       sectionTag(container, "KSampler");

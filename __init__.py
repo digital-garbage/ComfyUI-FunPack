@@ -20,7 +20,7 @@ if __package__:
         FunPackVideoStitch,
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
-    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler
+    from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader
     try:
         from . import batch_training  # noqa: F401  registers /funpack/batch/* routes
@@ -63,11 +63,10 @@ else:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
     try:
-        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackNormalizingSampler, FunPackLTXAVSceneChainSampler
+        from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     except Exception:
         FunPackHybridEuler2SSampler = None
         FunPackDistilledFlowSampler = None
-        FunPackNormalizingSampler = None
         FunPackLTXAVSceneChainSampler = None
     try:
         from templates import FunPackRefinementKeyLoader
@@ -93,7 +92,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackSaveRefinementLatent": FunPackSaveRefinementLatent,
     "FunPackHybridEuler2SSampler": FunPackHybridEuler2SSampler,
     "FunPackDistilledFlowSampler": FunPackDistilledFlowSampler,
-    "FunPackNormalizingSampler": FunPackNormalizingSampler,
+
     "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
@@ -118,7 +117,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackSaveRefinementLatent": "FunPack Save Refinement Latent",
     "FunPackHybridEuler2SSampler": "FunPack Hybrid Euler 2S Sampler",
     "FunPackDistilledFlowSampler": "FunPack Distilled Flow Sampler",
-    "FunPackNormalizingSampler": "FunPack Normalizing Sampler",
+
     "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
