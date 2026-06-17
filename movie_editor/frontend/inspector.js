@@ -209,7 +209,7 @@
 
   function renderVideoClip(st, scene) {
     title.textContent = "Video clip";
-    body.append(el("div", "insp-hint", "Imported or converted video — plays as-is. Not included in Generate or the global prompt montage. Use Convert to scene on the timeline toolbar to unlock editing."));
+    body.append(el("div", "insp-hint", "Imported or converted video — plays as-is. Not included in Generate or the global prompt montage."));
     const ref = scene.source?.media_ref;
     const asset = ref ? (st.mediaBin || []).find((m) => m.id === ref) : null;
     body.append(field("Source", el("span", null, asset?.name || ref || "From last render")));
@@ -282,7 +282,7 @@
       (lenDrift
         ? `Rendered ≈ ${shownDur.toFixed(2)}s · plan ${planDur.toFixed(2)}s — Regenerate to apply`
         : `Duration ≈ ${planDur.toFixed(2)}s`)
-      + ` · trim on timeline · Convert to video on the timeline toolbar · generation splits: global prompt or Outgoing seam below`));
+      + ` · trim on timeline · generation splits: global prompt or Outgoing seam below`));
 
     renderOutgoingSeam(st, scene);
 
