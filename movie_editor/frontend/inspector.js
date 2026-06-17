@@ -710,7 +710,7 @@
     body.append(wrap);
   }
 
-  function exposedControl(desc, value, on) {
+  function exposedControl(desc, value, on, key) {
     let ctrl;
     if (desc.kind === "combo") {
       ctrl = el("select");
@@ -721,13 +721,19 @@
       ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!value; ctrl.style.width = "auto";
       ctrl.onchange = () => on(ctrl.checked);
     } else if (desc.kind === "int" || desc.kind === "float") {
-      ctrl = el("input"); ctrl.type = "number"; if (desc.kind === "float") ctrl.step = "any";
-      ctrl.value = value != null ? value : "";
+      ctrl = el("input"); ctrl.type = "number";
+      // Real bounds/step from the node spec (captured at expose time) — not step=1 for all.
+      if (desc.min != null) ctrl.min = String(desc.min);
+      if (desc.max != null) ctrl.max = String(desc.max);
+      if (desc.step != null) ctrl.step = String(desc.step);
+      else if (desc.kind === "float") ctrl.step = "any";
+      ctrl.value = value != null ? value : (desc.default != null ? desc.default : "");
       ctrl.oninput = () => on(desc.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0"));
     } else {
-      ctrl = el("input"); ctrl.type = "text"; ctrl.value = value != null ? value : "";
+      ctrl = el("input"); ctrl.type = "text"; ctrl.value = value != null ? value : (desc.default != null ? desc.default : "");
       ctrl.oninput = () => on(ctrl.value);
     }
+    if (key) ctrl.dataset.k = key; // protect from autosave rebuilds while editing
     return ctrl;
   }
 
@@ -749,12 +755,15 @@
         const note = el("div", "lib-sub"); note.textContent = `← ${SRC_LBL[l.editor_key] || l.editor_key}`;
         wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, note));
       } else {
-        const ctrl = exposedControl({ kind: l.kind, choices: l.choices }, l.value, (v) => S.setModelLink(l.id, v));
+        const ctrl = exposedControl(
+          { kind: l.kind, choices: l.choices, min: l.min, max: l.max, step: l.step, default: l.default },
+          l.value, (v) => S.setModelLink(l.id, v), "exp-link-" + l.id);
         wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, ctrl));
       }
     });
     slotItems.forEach(([slot, d]) => {
-      const ctrl = exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v));
+      const ctrl = exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v),
+        "exp-" + slot.id + "-" + d.name);
       wrap.append(field(`${slotLabel(slot)} · ${d.label || d.name}`, ctrl));
     });
     body.append(wrap);

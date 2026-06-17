@@ -47,6 +47,8 @@
   // stale optimistic DOM (scene prompt text could read blank until reload/regenerate).
   let _renderAfterSave = false;
   let _selectionAnchorId = null;  // shift-click range anchor
+  let _modelsSaveTimer = null;    // debounce exposed-control (node input) saves
+  let _modelsSaveDirty = false;
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -751,6 +753,7 @@
   // commit promise when it flushed, else null.
   function flushSave() {
     clearTimeout(saveTimer); saveTimer = null;
+    flushModelsSave();  // persist any debounced exposed-control (node input) edits too
     if (!_localDirty && !_commitPromise) return null;
     return commit();
   }
@@ -2386,6 +2389,7 @@
 
   async function _flushSaveForGenerate() {
     await flushGlobalPromptApply();   // distribute any just-typed global prompt into scenes first
+    await flushModelsSave();          // persist exposed-control edits before building the graph
     await flushSave();
     if (_localDirty) {
       throw new Error(
@@ -3358,18 +3362,34 @@
     notify();
   }
 
-  // Edit a configured node input from the main editor (an "exposed" control) and persist.
-  async function setModelInput(slotId, name, value) {
-    const slot = (state.models.slots || []).find((s) => s.id === slotId);
-    if (!slot) return;
-    slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
-    notify();
+  // Persisting a node input hits the server; typing a weight used to fire one save PER
+  // KEYSTROKE and notify twice (before + after the await), which rebuilt the inspector and
+  // yanked the field. Now: update in place + notify once (cheap, and the field is data-k
+  // protected from rebuild), and DEBOUNCE the network save. flushModelsSave() runs on field
+  // blur and before generate (via flushSave / _flushSaveForGenerate).
+  function _scheduleModelsSave() {
+    _modelsSaveDirty = true;
+    clearTimeout(_modelsSaveTimer);
+    _modelsSaveTimer = setTimeout(() => { _modelsSaveTimer = null; flushModelsSave(); }, 500);
+  }
+  async function flushModelsSave() {
+    if (!_modelsSaveTimer && !_modelsSaveDirty) return;
+    clearTimeout(_modelsSaveTimer); _modelsSaveTimer = null; _modelsSaveDirty = false;
     try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
     catch (e) { console.error("saveModels failed", e); }
   }
 
+  // Edit a configured node input from the main editor (an "exposed" control) and persist.
+  function setModelInput(slotId, name, value) {
+    const slot = (state.models.slots || []).find((s) => s.id === slotId);
+    if (!slot) return;
+    slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
+    notify();
+    _scheduleModelsSave();
+  }
+
   // Set a linked control's shared value (writes through to all member inputs) and persist.
-  async function setModelLink(linkId, value) {
+  function setModelLink(linkId, value) {
     const link = (state.models.links || []).find((l) => l.id === linkId);
     if (!link) return;
     link.value = value;
@@ -3378,8 +3398,7 @@
       if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; }
     });
     notify();
-    try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
-    catch (e) { console.error("saveModels failed", e); }
+    _scheduleModelsSave();
   }
 
   // ── media bin + libraries ─────────────────────────────────────────────────────
