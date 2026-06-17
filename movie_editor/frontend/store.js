@@ -286,6 +286,7 @@
       state.sceneRenders[id] = {
         media: ghost.media,
         inSec: ghost.inSec || 0,
+        durationSec: ghost.durationSec != null ? ghost.durationSec : undefined,
       };
     }
     return sc;
@@ -1359,10 +1360,7 @@
       if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
       return sceneDurationSec(sc);
     }
-    const g = seg.ghost;
-    const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
-    const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
-    return (frames || 1) / (fps || 25);
+    return _ghostDurationSec(seg.ghost);
   }
 
   // Preview/timeline layout: live scenes interleaved with removed-scene ghosts.
@@ -1493,7 +1491,7 @@
       return;
     }
     const fps = sceneEffFps(s);
-    const curFrames = sceneEffFrames(s);
+    const curFrames = Math.max(1, Math.round(sceneDurationSec(s) * fps)); // trim from what's shown
     const trimFrames = Math.max(1, Math.round(trim * fps));
     const rawNext = curFrames - trimFrames;
     if (rawNext < 9) return;
@@ -1522,13 +1520,36 @@
   function redo() { window.EditorHistory?.redo(window.Store); }
 
 
-  // A scene's duration in seconds (respecting per-scene frames/fps modes).
-  function sceneDurationSec(sc) {
+  // Length (s) this scene was ACTUALLY rendered at, frozen at generation time. Null until
+  // generated (or for old renders saved before this was captured — they fall back to plan).
+  function renderDurationSec(sceneId) {
+    const r = state.sceneRenders[sceneId];
+    return r && r.durationSec != null ? r.durationSec : null;
+  }
+
+  // The PLANNED length (s) from the per-scene frames/fps modes — what the next Generate will
+  // produce. Ignores any existing render. Use this for "what will generate", not playback.
+  function _planDurationSec(sc) {
     const p = state.project; if (!p || !sc) return 0;
     if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
     const fps = sceneEffFps(sc, p) || 25;
     const frames = sceneEffFrames(sc, p) || 1;
     return frames / fps;
+  }
+
+  // A scene's duration in seconds for layout / playback / trimming. A generated render is
+  // IMMUTABLE: once made it keeps the length it was rendered at, so changing the project or
+  // scene default can never truncate it or make its tail unreachable — regenerate or trim to
+  // change it. An explicit per-scene length (timeline/custom mode), a slip-trim duration, or
+  // a split (which clears the frozen length) all take precedence and fall back to the plan.
+  function sceneDurationSec(sc) {
+    if (!sc) return 0;
+    const rd = renderDurationSec(sc.id);
+    if (rd != null && !isVideoClip(sc) && sc.source_dur == null
+        && (sc.frames_mode || "project") === "project") {
+      return rd;
+    }
+    return _planDurationSec(sc);
   }
 
   // Insert or adjust a black/silent pause after this clip (seconds).
@@ -1555,7 +1576,7 @@
       s.source_dur = target;
       s.frames = snapFrames(target * fps);
     } else {
-      const curFrames = sceneEffFrames(s);
+      const curFrames = Math.max(1, Math.round(sceneDurationSec(s) * fps)); // resize from what's shown
       const nextFrames = _framesFromDuration(target, fps, curFrames);
       if (nextFrames === curFrames) return;
       s.frames = nextFrames;
@@ -1608,6 +1629,7 @@
     // at the first half's out-point (its in-point + first-half duration).
     const r = state.sceneRenders[id];
     if (r && r.media) {
+      delete r.durationSec; // a split is an explicit re-length: both halves revert to plan layout
       state.sceneRenders[second.id] = {
         media: r.media,
         inSec: (r.inSec || 0) + cutSec,
@@ -2509,6 +2531,8 @@
   }
 
   function _ghostDurationSec(g) {
+    if (!g) return 0;
+    if (g.durationSec != null) return g.durationSec; // frozen real length once rendered
     const p = state.project;
     const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
     const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
@@ -2688,10 +2712,11 @@
           const ghost = ghosts[gi];
           const sameUnit = lastChain && genUnitId(lastChain) === genUnitId(ghost);
           const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, ghost, sceneLayout, chainSceneIdx, sourceSpanSec);
-          ghosts[gi] = { ...ghost, media: primary, inSec, pendingGen: false };
+          const ghostDur = _ghostDurationSec(ghost); // freeze before any project change can shrink it
+          ghosts[gi] = { ...ghost, media: primary, inSec, durationSec: ghostDur, pendingGen: false };
           state.sceneGhosts = ghosts;
           completedGhostIds.push(id);
-          sourceEnd = inSec + _ghostDurationSec(ghost);
+          sourceEnd = inSec + ghostDur;
           lastChain = ghost;
           if (!sameUnit) chainSceneIdx += 1;
         }
@@ -2703,11 +2728,12 @@
       const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, sc, sceneLayout, chainSceneIdx, sourceSpanSec);
       const renderPrompt = _queuedRenderPrompts[id] || _snapshotRenderPrompt(id);
       delete _queuedRenderPrompts[id];
-      state.sceneRenders[id] = { media: primary, inSec, renderPrompt };
+      const realDur = _planDurationSec(sc); // freeze the length this render was actually made at
+      state.sceneRenders[id] = { media: primary, inSec, renderPrompt, durationSec: realDur };
       recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
-      sourceEnd = inSec + sceneDurationSec(sc);
+      sourceEnd = inSec + realDur;
       lastChain = sc;
       if (!sameUnit) chainSceneIdx += 1;
     }

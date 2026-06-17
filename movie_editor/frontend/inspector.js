@@ -275,7 +275,14 @@
     }
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
-    body.append(el("div", "insp-hint", `Duration ≈ ${(effFrames / effFps).toFixed(2)}s · trim on timeline · Convert to video on the timeline toolbar · generation splits: global prompt or Outgoing seam below`));
+    const planDur = effFrames / effFps;
+    const shownDur = S.sceneDurationSec ? S.sceneDurationSec(scene) : planDur;
+    const lenDrift = Math.abs(shownDur - planDur) > 0.05; // render frozen at an older plan length
+    body.append(el("div", "insp-hint",
+      (lenDrift
+        ? `Rendered ≈ ${shownDur.toFixed(2)}s · plan ${planDur.toFixed(2)}s — Regenerate to apply`
+        : `Duration ≈ ${planDur.toFixed(2)}s`)
+      + ` · trim on timeline · Convert to video on the timeline toolbar · generation splits: global prompt or Outgoing seam below`));
 
     renderOutgoingSeam(st, scene);
 
