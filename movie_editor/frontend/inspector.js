@@ -124,6 +124,9 @@
     if (mode === "custom") {
       const i = el("input"); i.type = "number"; i.value = effOf(scene, kind); i.dataset.k = "sc-" + kind;
       i.oninput = () => S.patchSceneQuiet(scene.id, { [kind]: m.snap(parseInt(i.value || "0", 10)) });
+      // Stored value is snapped (frames → 9/17/25…, fps → ≥1); reflect that back on commit
+      // so the field doesn't keep showing an unsnapped number the engine won't actually use.
+      i.onchange = () => { i.value = m.snap(parseInt(i.value || "0", 10)); };
       wrap.append(i);
     } else {
       const note = el("div", "len-readout");
@@ -220,8 +223,13 @@
       };
       const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
       blur.value = fx.blur || 0;
-      blur.oninput = () => patchFx("blur", parseFloat(blur.value), true);
-      more.append(field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur));
+      const blurField = field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur);
+      const blurLbl = blurField.querySelector("span");
+      blur.oninput = () => {
+        patchFx("blur", parseFloat(blur.value), true);
+        if (blurLbl) blurLbl.textContent = `Blur (${Math.round(parseFloat(blur.value) * 100)}%)`;
+      };
+      more.append(blurField);
       const lenRow = el("div", "fields-row");
       lenRow.append(lengthControl(scene, "frames"));
       lenRow.append(lengthControl(scene, "fps"));
@@ -230,7 +238,7 @@
       if (r?.media || ref) {
         const srcTag = el("div", "insp-tag"); srcTag.textContent = "Source trim (slip)"; more.append(srcTag);
         const inRow = el("div", "fields-row");
-        const iIn = el("input"); iIn.type = "number"; iIn.min = "0"; iIn.step = "0.05";
+        const iIn = el("input"); iIn.type = "number"; iIn.min = "0"; iIn.step = "0.05"; iIn.dataset.k = "vc-src-in";
         iIn.value = scene.source_in || 0;
         iIn.oninput = () => S.setSourceTrim(scene.id, { source_in: parseFloat(iIn.value || 0) });
         inRow.append(field("Source in (s)", iIn));
@@ -293,8 +301,13 @@
       };
       const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
       blur.value = fx.blur || 0; blur.dataset.k = "sc-fx-blur";
-      blur.oninput = () => patchFx("blur", parseFloat(blur.value), true);
-      more.append(field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur));
+      const blurField = field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur);
+      const blurLbl = blurField.querySelector("span");
+      blur.oninput = () => {
+        patchFx("blur", parseFloat(blur.value), true);
+        if (blurLbl) blurLbl.textContent = `Blur (${Math.round(parseFloat(blur.value) * 100)}%)`;
+      };
+      more.append(blurField);
       const fadeRow = el("div", "fields-row");
       const fi = _num(fx.fade_in || 0, "sc-fx-fi", { min: 0, max: 10, step: 0.1 });
       fi.oninput = () => patchFx("fade_in", parseFloat(fi.value || "0"), true);
@@ -332,8 +345,13 @@
         const zRow = el("div", "fields-row");
         const zRatio = el("input"); zRatio.type = "range"; zRatio.min = "5"; zRatio.max = "50"; zRatio.step = "1";
         zRatio.value = Math.round((fx.zoom_ratio != null ? fx.zoom_ratio : 0.15) * 100);
-        zRatio.oninput = () => patchFxObj({ zoom_ratio: parseFloat(zRatio.value) / 100 }, true);
-        zRow.append(field(`Zoom amount (${zRatio.value}%)`, zRatio));
+        const zRatioField = field(`Zoom amount (${zRatio.value}%)`, zRatio);
+        const zRatioLbl = zRatioField.querySelector("span");
+        zRatio.oninput = () => {
+          patchFxObj({ zoom_ratio: parseFloat(zRatio.value) / 100 }, true);
+          if (zRatioLbl) zRatioLbl.textContent = `Zoom amount (${zRatio.value}%)`;
+        };
+        zRow.append(zRatioField);
         const zStart = _num(fx.zoom_start_frame != null ? fx.zoom_start_frame : 0, "sc-fx-zstart", {
           min: 0, max: Math.max(0, effFrames - 1), step: 1,
         });
@@ -413,6 +431,7 @@
     body.append(field("Video transition", typeSel));
 
     const fr = el("input"); fr.type = "number"; fr.min = "1"; fr.max = "120"; fr.step = "1";
+    fr.dataset.k = "sc-blend-frames";
     fr.value = type ? frames : "";
     fr.disabled = !type;
     fr.placeholder = type ? "" : "—";
@@ -505,9 +524,11 @@
 
     const row1 = el("div", "fields-row");
     row1.append(numberField("Frames / scene", p.num_frames_per_scene, (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames"));
+    row1.append(numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps"));
     body.append(row1);
     const row2 = el("div", "fields-row");
-    row2.append(numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps"));
+    row2.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
+    row2.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
     body.append(row2);
 
     const promptTag = el("div", "insp-tag"); promptTag.textContent = "Prompt"; body.append(promptTag);
@@ -525,10 +546,6 @@
 
     foldSection("Advanced project settings", false, (adv) => {
       adv.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
-      const row3 = el("div", "fields-row");
-      row3.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));
-      row3.append(numberField("Height", p.height != null ? p.height : 512, (v) => S.patchProjectQuiet({ height: v }), "pj-h"));
-      adv.append(row3);
     });
   }
 
@@ -884,17 +901,27 @@
     body.append(sec);
   }
 
-  // While the user is actively editing one of our fields, DON'T rebuild the inspector —
-  // autosave fires ~1s and a rebuild would yank the field out, drop the selection and
-  // make typing append (e.g. "512" + "640" -> "512640"). We defer and re-sync on blur.
+  // While the user is actively editing one of our text/number/range fields, DON'T rebuild
+  // the inspector — autosave fires ~1s and a rebuild would yank the field out, drop the
+  // caret and make typing append (e.g. "512" + "640" -> "512640"). We defer and re-sync on
+  // blur. Checkboxes and selects are DISCRETE commits, not typing: rebuilding right after
+  // them is required so their dependent controls (custom length input, Ken Burns knobs,
+  // absolute strength, …) appear/disappear immediately instead of only after blur.
+  function shouldProtect(a) {
+    if (!a || !a.dataset || !a.dataset.k || !body.contains(a)) return false;
+    if (a.tagName === "TEXTAREA") return true;
+    if (a.tagName !== "INPUT") return false; // SELECT — let it rebuild to reveal dependents
+    const t = (a.type || "text").toLowerCase();
+    return t !== "checkbox" && t !== "radio"; // protect text/number/range/color; rebuild toggles
+  }
   let _editing = false;
 
   function render(st) {
     if (_editing) {
-      // Only skip if a field is actually still focused; else the flag got stuck (focused
-      // element removed without focusout) — clear it so the inspector resumes updating.
-      const a = document.activeElement;
-      if (a && body.contains(a) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT") && a.dataset.k) return;
+      // Only skip if a protected (typing) field is actually still focused; else the flag
+      // got stuck (focused element removed without focusout, or focus is on a discrete
+      // control) — clear it so the inspector resumes updating.
+      if (shouldProtect(document.activeElement)) return;
       _editing = false;
     }
 

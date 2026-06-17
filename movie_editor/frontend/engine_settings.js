@@ -510,15 +510,24 @@
     container.append(foot);
   }
 
+  // Protect a text/number/range field being typed into from autosave rebuilds, but let
+  // checkboxes and selects rebuild immediately so their dependent controls (absolute
+  // strength, embed mode/strength, mid-scene strength, …) appear right after the toggle.
+  function shouldProtect(a, scope) {
+    if (!a || !a.dataset || !a.dataset.k || !scope || !scope.contains(a)) return false;
+    if (a.tagName === "TEXTAREA") return true;
+    if (a.tagName !== "INPUT") return false;
+    const t = (a.type || "text").toLowerCase();
+    return t !== "checkbox" && t !== "radio";
+  }
+
   function render() {
     if (!overlay) return;
+    const content = overlay.querySelector(".modal-content");
     if (_editing) {
-      const content = overlay.querySelector(".modal-content");
-      const a = document.activeElement;
-      if (a && content && content.contains(a) && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT") && a.dataset.k) return;
+      if (shouldProtect(document.activeElement, content)) return;
       _editing = false;
     }
-    const content = overlay.querySelector(".modal-content");
     const scrollTop = content.scrollTop;
     clear(content);
     renderContent(content, S.get());
