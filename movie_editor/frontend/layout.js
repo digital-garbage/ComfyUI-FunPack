@@ -1,17 +1,16 @@
-// Dock panel visibility: Media / Preview / Settings toggles above the timeline.
-// Preserves the canonical layout (media left, preview top-right, settings bottom-right)
-// when all three are on; collapsing a tab gives its space to the remaining panels.
+// Column visibility: Assets / Preview / Properties toggles (chips in the timeline header).
+// Canonical layout is all three side-by-side; collapsing a column gives its space to the rest.
 (function () {
   const KEY = "funpack_dock_panels";
   const PANELS = [
-    { id: "media", label: "Media" },
+    { id: "media", label: "Assets" },
     { id: "preview", label: "Preview" },
-    { id: "settings", label: "Settings" },
+    { id: "settings", label: "Properties" },
   ];
 
-  const dock = document.getElementById("dock");
+  const mainRow = document.getElementById("main-row");
   const tabsEl = document.getElementById("dock-tabs");
-  if (!dock || !tabsEl) return;
+  if (!mainRow || !tabsEl) return;
 
   function load() {
     try {
@@ -39,9 +38,6 @@
     preview: document.getElementById("preview-zone"),
     settings: document.getElementById("inspector-zone"),
   };
-  const splitLeft = document.getElementById("split-left");
-  const splitMid = document.getElementById("split-mid");
-  const rightStack = document.getElementById("right-stack");
 
   function setVis(el, show) {
     if (!el) return;
@@ -49,16 +45,13 @@
   }
 
   function apply() {
-    dock.dataset.media = state.media ? "1" : "0";
-    dock.dataset.preview = state.preview ? "1" : "0";
-    dock.dataset.settings = state.settings ? "1" : "0";
+    // CSS reads these data attrs to size columns and hide the dividing splitters.
+    mainRow.dataset.media = state.media ? "1" : "0";
+    mainRow.dataset.preview = state.preview ? "1" : "0";
+    mainRow.dataset.settings = state.settings ? "1" : "0";
     setVis(panelEls.media, state.media);
     setVis(panelEls.preview, state.preview);
     setVis(panelEls.settings, state.settings);
-    const rs = state.preview || state.settings;
-    setVis(rightStack, rs);
-    setVis(splitLeft, state.media && rs);
-    setVis(splitMid, state.preview && state.settings);
     tabsEl.querySelectorAll(".dock-tab").forEach((btn) => {
       const id = btn.dataset.panel;
       const on = !!state[id];

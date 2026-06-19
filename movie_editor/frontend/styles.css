@@ -21,7 +21,8 @@
   --danger:#e8607a;
   --good:  #79c479;
 
-  --media-w: 300px;
+  --media-w: 280px;
+  --properties-w: 340px;
   --inspector-h: 340px;
   --timeline-h: 320px;
   --menubar-h: 42px;
@@ -124,40 +125,29 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .log-body { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: var(--muted); background: #060606; }
 
-/* ───────────────────────── WORKSPACE GRID ───────────────────────── */
-.workspace { height: calc(100% - var(--menubar-h)); display: flex; flex-direction: column; }
-.dock { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.dock-panels { flex: 1; display: flex; min-height: 0; min-width: 0; }
-.right-stack { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* ──────────── WORKSPACE — OpenCut-style NLE: Assets | Preview | Properties / Timeline ──────────── */
+/* (layout borrowed from OpenCut: three resizable columns over a full-width timeline) */
+.workspace { height: calc(100% - var(--menubar-h)); display: flex; flex-direction: column; min-height: 0; }
+.main-row { flex: 1; display: flex; min-height: 0; min-width: 0; }
 
 .zone { background: var(--ink-1); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.dock-panel { flex: 0 0 auto; }
 .dock-panel[hidden] { display: none !important; }
 
-/* canonical layout: media left, preview + settings stacked right */
-.media { width: var(--media-w); border-right: 1px solid var(--line); container-type: inline-size; container-name: media-zone; }
-.preview { flex: 1; min-height: 80px; border-bottom: 1px solid var(--line); }
-.inspector { height: var(--inspector-h); min-height: 120px; flex: 0 0 auto; }
+.media { width: var(--media-w); flex: 0 0 auto; border-right: 1px solid var(--line); container-type: inline-size; container-name: media-zone; }
+.preview { flex: 1; min-width: 120px; }
+.inspector { width: var(--properties-w); flex: 0 0 auto; border-left: 1px solid var(--line); }
 .timeline { height: var(--timeline-h); min-height: 200px; border-top: 1px solid var(--line); }
 
-/* solo panel fills the dock */
-.dock[data-media="1"][data-preview="0"][data-settings="0"] .media { flex: 1; width: auto; border-right: none; }
-.dock[data-media="0"][data-preview="1"][data-settings="0"] .right-stack .preview { flex: 1; border-bottom: none; }
-.dock[data-media="0"][data-preview="0"][data-settings="1"] .right-stack .inspector { flex: 1; height: auto; }
+/* degrade gracefully as columns are toggled off — preview takes the slack, else properties, else media */
+.main-row[data-preview="0"][data-settings="1"] .inspector { flex: 1; width: auto; }
+.main-row[data-preview="0"][data-settings="0"] .media,
+.main-row[data-media="0"][data-preview="0"] .inspector { flex: 1; width: auto; }
 
-/* media + preview: settings hidden, preview fills right column */
-.dock[data-media="1"][data-preview="1"][data-settings="0"] .right-stack .preview { flex: 1; border-bottom: none; }
-
-/* media + settings: preview hidden, settings fills right column */
-.dock[data-media="1"][data-preview="0"][data-settings="1"] .right-stack .inspector { flex: 1; height: auto; }
-
-/* preview + settings only: full-width right stack */
-.dock[data-media="0"][data-preview="1"][data-settings="1"] .right-stack { flex: 1; width: 100%; }
-
-/* hide splitters when a boundary has only one visible panel */
-.dock[data-media="0"] #split-left { display: none; }
-.dock[data-preview="0"][data-settings="0"] #split-mid { display: none; }
-.dock[data-media="0"] .right-stack { flex: 1; width: 100%; }
+/* hide a splitter when one of its two neighbours is hidden */
+.main-row[data-media="0"] #split-left,
+.main-row[data-preview="0"][data-settings="0"] #split-left { display: none; }
+.main-row[data-preview="0"] #split-right,
+.main-row[data-settings="0"] #split-right { display: none; }
 
 /* panel toggle tabs (timeline header, top-right) */
 .dock-tabs { display: flex; gap: 4px; margin-left: 12px; flex: 0 0 auto; }
@@ -1453,4 +1443,74 @@ body.tour-mode { overflow: hidden; }
 .plan-editor-note { font-size: 11px; color: var(--faint); margin: 8px 0; }
 .plan-editor-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .clip.off-plan { outline: 1px dashed color-mix(in srgb, var(--teal) 45%, transparent); outline-offset: -2px; }
+
+/* ───────────────────────── COMPOSER BUTTON (header) ───────────────────────── */
+.composer-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: 20px;
+  color: var(--muted); font-family: var(--font-mono); font-size: 11px; letter-spacing: .6px;
+  padding: 3px 12px; cursor: pointer; transition: color .12s, background .12s, border-color .12s;
+}
+.composer-btn:hover { color: var(--amber-2); background: var(--ink-3); }
+.composer-btn .composer-dot { font-size: 9px; color: var(--teal); transform: translateY(-.5px); }
+.composer-btn.on {
+  color: var(--teal); border-color: color-mix(in srgb, var(--teal) 50%, var(--line)); background: var(--teal-soft);
+}
+.composer-btn.on .composer-dot { color: var(--teal); filter: drop-shadow(0 0 5px var(--teal-soft)); }
+
+/* ───────────────────────── FLOATING WINDOW (Composer, …) ───────────────────────── */
+.fw {
+  position: fixed; left: 0; top: 0; z-index: 4000;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--ink-1); border: 1px solid var(--line); border-radius: 11px;
+  box-shadow: 0 24px 60px -18px rgba(0,0,0,.78), 0 0 0 1px #0006;
+}
+.fw[hidden] { display: none; }
+.fw.fw-maxed {
+  left: 12px !important; top: calc(var(--menubar-h) + 10px) !important;
+  width: calc(100vw - 24px) !important; height: calc(100vh - var(--menubar-h) - 22px) !important;
+  border-radius: 11px;
+}
+.fw-bar {
+  flex: 0 0 38px; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 13px;
+  background: linear-gradient(#1f1c16, #17140f); border-bottom: 1px solid var(--line);
+  cursor: move; user-select: none;
+}
+.fw.fw-maxed .fw-bar { cursor: default; }
+.fw-title { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.fw-dot { color: var(--teal); font-size: 9px; }
+.fw-title-text { font-family: var(--font-display); font-weight: 700; font-size: 14px; letter-spacing: .2px; }
+.fw-sub { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
+.fw-ctrls { margin-left: auto; display: flex; gap: 4px; }
+.fw-btn {
+  width: 24px; height: 24px; display: grid; place-items: center; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--muted); font-size: 12px; line-height: 1; cursor: pointer; transition: background .12s, color .12s, border-color .12s;
+}
+.fw-btn:hover { background: var(--ink-3); color: var(--text); border-color: var(--line); }
+.fw-close:hover { background: color-mix(in srgb, var(--danger) 22%, transparent); color: var(--danger); border-color: var(--danger); }
+.fw-body { flex: 1; min-height: 0; overflow: hidden; display: flex; }
+.fw-grip {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, var(--line) 50%, var(--line) 64%, transparent 64%, transparent 78%, var(--line) 78%, var(--line) 92%, transparent 92%);
+}
+.fw.fw-maxed .fw-grip { display: none; }
+
+/* minimized pills, bottom-left */
+.fw-dock { position: fixed; left: 12px; bottom: 12px; z-index: 4100; display: flex; gap: 8px; }
+.fw-pill {
+  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: 20px; padding: 5px 8px 5px 12px;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .5px; color: var(--muted);
+  box-shadow: var(--shadow); transition: color .12s, border-color .12s;
+}
+.fw-pill:hover { color: var(--amber-2); border-color: var(--muted); }
+.fw-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 6px var(--teal-soft); }
+.fw-pill-x { width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--faint); cursor: pointer; }
+.fw-pill-x:hover { background: var(--ink-3); color: var(--danger); }
+
+/* ───────────────────────── COMPOSER content ───────────────────────── */
+.composer-shell { display: flex; flex-direction: column; width: 100%; min-height: 0; }
+.composer-tabs { padding: 10px 12px 0; flex: 0 0 auto; }
+.composer-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 
