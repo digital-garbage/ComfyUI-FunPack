@@ -455,7 +455,7 @@
       id: "transitions",
       title: "Transitions and seams",
       target: "#timeline-body .seam-cut",
-      body: "Seams between clips are transition markers in your montage text (generation) plus optional video crossfades (post-render). Custom split markers live in Media - Splits.",
+      body: "Seams between clips are transition markers in your montage text (generation) plus optional video crossfades (post-render). Custom split markers live in the Composer.",
       pad: 8,
       optionalTarget: "#timeline-body",
     },
@@ -500,15 +500,11 @@
       alsoHighlight: '[data-tour="export-scene"]',
     },
     {
-      id: "media-libraries",
-      title: "Media libraries",
-      target: ".bin-tabs",
-      body: "Characters, Shortcuts, Splits, Effects, and Transitions bins feed Studio and the timeline. Import or create entries here instead of retyping them per scene.",
+      id: "composer",
+      title: "Composer",
+      target: "#composer-btn",
+      body: "Characters, Shortcuts, and Split markers live in the Composer — a window you open from here. Create them once and reuse them across scenes instead of retyping. (Per-clip effects and video transitions are edited in Properties.)",
       pad: 6,
-      before: () => {
-        const tab = document.querySelector('.bin-tab');
-        if (tab) tab.scrollIntoView({ block: "nearest" });
-      },
     },
     {
       id: "project-io",
