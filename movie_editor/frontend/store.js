@@ -450,6 +450,7 @@
 
   function _afterTimelineStructureChange() {
     _pinnedGlobalPrompt = null;
+    _ensureTimelineOrder();
     _syncSeparatedAudioTracks();
     syncGlobalPromptFromTimeline();
   }
@@ -642,6 +643,7 @@
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
     state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
+    _ensureTimelineOrder();
     normalizeOverlayLanes(state.project);
     state.models = JSON.parse(JSON.stringify(state.project.models || { slots: [] }));
     if (_clearOrphanRatings()) {
@@ -1363,7 +1365,45 @@
     return _ghostDurationSec(seg.ghost);
   }
 
-  // Preview/timeline layout: live scenes interleaved with removed-scene ghosts.
+  // ── timeline (cut) order — independent of plan (scenes) order ─────────────────
+  // The timeline is the RESULT; its order is project.timeline_order (scene ids), which the
+  // plan can never move. Self-healing: keep existing order, drop ids whose scene is gone,
+  // append new scenes in plan order. Empty falls back to plan order (back-compat / fresh).
+  function _ensureTimelineOrder() {
+    const p = state.project; if (!p) return;
+    const ids = (p.scenes || []).map((s) => s.id);
+    const idSet = new Set(ids);
+    const cur = (Array.isArray(p.timeline_order) ? p.timeline_order : []).filter((id) => idSet.has(id));
+    const inCur = new Set(cur);
+    for (const id of ids) if (!inCur.has(id)) cur.push(id);
+    p.timeline_order = cur;
+  }
+
+  function orderedTimelineScenes() {
+    const p = state.project; if (!p) return [];
+    const byId = new Map((p.scenes || []).map((s) => [s.id, s]));
+    const order = (Array.isArray(p.timeline_order) && p.timeline_order.length)
+      ? p.timeline_order : (p.scenes || []).map((s) => s.id);
+    const out = []; const seen = new Set();
+    for (const id of order) { const s = byId.get(id); if (s && !seen.has(id)) { out.push(s); seen.add(id); } }
+    for (const s of (p.scenes || [])) if (!seen.has(s.id)) { out.push(s); seen.add(s.id); }
+    return out;
+  }
+
+  // Reorder the CUT (timeline_order) only — never the plan. Selected clip ± 1 slot.
+  function moveTimelineClip(id, delta) {
+    const p = state.project; if (!p) return;
+    _ensureTimelineOrder();
+    const order = p.timeline_order;
+    const i = order.indexOf(id); if (i < 0) return;
+    const j = Math.max(0, Math.min(order.length - 1, i + delta));
+    if (i === j) return;
+    _historyRecord();
+    order.splice(i, 1); order.splice(j, 0, id);
+    notify(); scheduleSave();
+  }
+
+  // Preview/timeline layout: result clips (cut order) interleaved with removed-scene ghosts.
   function buildPreviewSegments() {
     const p = state.project;
     if (!p) return [];
@@ -1382,7 +1422,7 @@
       ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
     };
     for (const g of (byAnchor.get("__start__") || [])) pushGhost(g);
-    for (const sc of (p.scenes || [])) {
+    for (const sc of orderedTimelineScenes()) {
       ordered.push({ kind: "scene", scene: sc, id: sc.id });
       for (const g of (byAnchor.get(sc.id) || [])) pushGhost(g);
       const gapSec = Math.max(0, +(sc.gap_after_sec || 0));
@@ -3081,7 +3121,7 @@
   function _renderClips() {
     const p = state.project;
     const out = [];
-    for (const sc of (p.scenes || [])) {
+    for (const sc of orderedTimelineScenes()) {
       if (sc.excluded) continue;
       const r = state.sceneRenders[sc.id];
       const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
@@ -3679,7 +3719,7 @@
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
     addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,

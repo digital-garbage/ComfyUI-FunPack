@@ -644,6 +644,9 @@ class Project:
     # Persisted editor session: generated clip refs + preview ghosts (survive reload).
     scene_renders: dict = field(default_factory=dict)
     scene_ghosts: list = field(default_factory=list)
+    # Cut order: scene ids in TIMELINE (result) order, independent of plan (scenes) order.
+    # Empty = follow plan order (back-compat). Reordering the plan never touches this.
+    timeline_order: list = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -679,6 +682,7 @@ class Project:
             generation_meta=dict(d.get("generation_meta") or {}),
             scene_renders=dict(d.get("scene_renders") or {}),
             scene_ghosts=list(d.get("scene_ghosts") or []),
+            timeline_order=list(d.get("timeline_order") or []),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )

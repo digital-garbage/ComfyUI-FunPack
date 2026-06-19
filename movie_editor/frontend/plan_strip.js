@@ -138,13 +138,19 @@
     const actions = el("div", "plan-editor-actions");
     const gen = el("button", "btn primary tiny", "Generate this scene");
     gen.onclick = () => S.generate(sc.id);
+    const mvL = el("button", "btn ghost tiny", "← Plan");
+    mvL.title = "Move earlier in the plan (generation order). Does NOT move the timeline clip.";
+    mvL.onclick = () => S.moveScene(sc.id, -1);
+    const mvR = el("button", "btn ghost tiny", "Plan →");
+    mvR.title = "Move later in the plan (generation order). Does NOT move the timeline clip.";
+    mvR.onclick = () => S.moveScene(sc.id, 1);
     const adv = el("button", "btn ghost tiny", "Advanced ↗");
     adv.title = "Open full scene settings (guides, effects, transitions) in the inspector";
     adv.onclick = () => { S.selectScene(sc.id); if (window.DockLayout) window.DockLayout.set({ settings: true }); };
     const rm = el("button", "btn ghost tiny danger", "Remove");
     rm.title = "Remove this scene from the plan";
     rm.onclick = () => { if (confirm("Remove this scene from the plan?")) { expandedId = null; S.removeScene(sc.id); } };
-    actions.append(gen, adv, rm);
+    actions.append(gen, mvL, mvR, adv, rm);
     ed.append(actions);
     return ed;
   }

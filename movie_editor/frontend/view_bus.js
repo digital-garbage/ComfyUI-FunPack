@@ -10,6 +10,7 @@
     return hash({
       pid: p.id,
       timing: [p.num_frames_per_scene, p.frame_rate, p.width, p.height],
+      tlorder: p.timeline_order,
       scenes: (p.scenes || []).map((s) => [
         s.id, s.text, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
         s.video_transition, s.transition_frames, s.transition_to_next, s.effects,
@@ -87,6 +88,7 @@
     return hash({
       pid: p.id,
       timing: [p.num_frames_per_scene, p.frame_rate],
+      tlorder: p.timeline_order,
       scenes: (p.scenes || []).map((s) => [
         s.id, s.excluded, s.frames, s.fps, s.frames_mode, s.fps_mode,
         s.audio_volume, s.audio_separated, s.source_in, s.source_dur, s.effects,
