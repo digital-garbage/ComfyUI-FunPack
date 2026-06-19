@@ -537,7 +537,8 @@
     const srcType = src.type || "empty";
     const clip = el("div", "clip" + clipSelClass(st, scene.id)
       + (S.isVideoClip(scene) ? " clip-video" : "")
-      + (scene.excluded ? " excluded" : "")
+      + (scene.excluded && !scene.removed_from_plan ? " excluded" : "")
+      + (scene.removed_from_plan ? " off-plan" : "")
       + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded && S.isGenerativeScene(scene) ? " pending" : ""))
       + (hasRender(st, scene.id) && S.renderIsStale?.(scene.id) ? " stale-render" : "")
       + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : "")

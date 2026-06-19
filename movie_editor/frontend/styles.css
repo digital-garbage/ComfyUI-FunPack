@@ -1452,4 +1452,5 @@ body.tour-mode { overflow: hidden; }
 .plan-edit-prompt { width: 100%; box-sizing: border-box; }
 .plan-editor-note { font-size: 11px; color: var(--faint); margin: 8px 0; }
 .plan-editor-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.clip.off-plan { outline: 1px dashed color-mix(in srgb, var(--teal) 45%, transparent); outline-offset: -2px; }
 

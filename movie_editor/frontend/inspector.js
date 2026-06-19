@@ -265,6 +265,15 @@
         : "This scene has editorial cuts — Generate regens the whole uncut scene."));
     }
 
+    if (root.removed_from_plan) {
+      const banner = el("div", "insp-hint");
+      banner.append(el("span", null, "Removed from plan — its generated clip stays on the timeline. "));
+      const restore = el("button", "btn ghost tiny", "Restore to plan");
+      restore.onclick = () => S.restoreToPlan(scene.id);
+      banner.append(restore);
+      body.append(banner);
+    }
+
     const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));

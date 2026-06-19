@@ -147,9 +147,9 @@
     const adv = el("button", "btn ghost tiny", "Advanced ↗");
     adv.title = "Open full scene settings (guides, effects, transitions) in the inspector";
     adv.onclick = () => { S.selectScene(sc.id); if (window.DockLayout) window.DockLayout.set({ settings: true }); };
-    const rm = el("button", "btn ghost tiny danger", "Remove");
-    rm.title = "Remove this scene from the plan";
-    rm.onclick = () => { if (confirm("Remove this scene from the plan?")) { expandedId = null; S.removeScene(sc.id); } };
+    const rm = el("button", "btn ghost tiny danger", "Remove from plan");
+    rm.title = "Remove from the plan. A generated clip stays on the timeline; an ungenerated scene is deleted.";
+    rm.onclick = () => { expandedId = null; S.removeFromPlan(sc.id); };
     actions.append(gen, mvL, mvR, adv, rm);
     ed.append(actions);
     return ed;
@@ -187,7 +187,7 @@
     if (collapseBtn) collapseBtn.textContent = collapsed ? "Show" : "Hide";
     clear(body);
     if (collapsed || !st.project) return;
-    const scenes = st.project.scenes || [];
+    const scenes = (st.project.scenes || []).filter((s) => !s.removed_from_plan);
     const rowEl = el("div", "plan-row");
     scenes.forEach((sc, i) => rowEl.append(cardEl(st, sc, i)));
     const add = el("button", "plan-add", "+ Add scene");

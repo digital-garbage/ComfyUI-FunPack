@@ -1329,6 +1329,35 @@
     notify(); scheduleSave();
   }
 
+  // Remove a scene from the PLAN. If its gen-unit has a generated clip, KEEP that clip on the
+  // timeline: mark the unit `excluded` (so generation + prompt skip it everywhere) and
+  // `removed_from_plan` (hide from the plan strip; export keeps it because it has a render).
+  // If nothing was generated, it's a plain delete.
+  function removeFromPlan(id) {
+    if (!state.project) return;
+    const s = scene(id); if (!s) return;
+    const uid = genUnitId(s);
+    const unit = (state.project.scenes || []).filter((x) => genUnitId(x) === uid);
+    const rendered = isVideoClip(s) || unit.some((x) => state.sceneRenders[x.id] && state.sceneRenders[x.id].media);
+    if (!rendered) { removeScene(id); return; }
+    _historyRecord();
+    unit.forEach((x) => { x.excluded = true; x.removed_from_plan = true; });
+    syncGlobalPromptFromTimeline();
+    notify(); scheduleSave();
+  }
+
+  // Bring a removed-from-plan scene back into the plan (re-enable generation).
+  function restoreToPlan(id) {
+    if (!state.project) return;
+    const s = scene(id); if (!s) return;
+    const uid = genUnitId(s);
+    _historyRecord();
+    (state.project.scenes || []).filter((x) => genUnitId(x) === uid)
+      .forEach((x) => { x.excluded = false; x.removed_from_plan = false; });
+    syncGlobalPromptFromTimeline();
+    notify(); scheduleSave();
+  }
+
   function removeSelectedScenes() {
     if (!state.project) return;
     let ids = [...new Set(state.selectedSceneIds || [])].filter((sid) => scene(sid));
@@ -3122,7 +3151,7 @@
     const p = state.project;
     const out = [];
     for (const sc of orderedTimelineScenes()) {
-      if (sc.excluded) continue;
+      if (sc.excluded && !sc.removed_from_plan) continue; // removed-from-plan clips stay in the cut
       const r = state.sceneRenders[sc.id];
       const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
       const tFrames = sc.transition_frames || 0;
@@ -3719,7 +3748,7 @@
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
     addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
     sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,

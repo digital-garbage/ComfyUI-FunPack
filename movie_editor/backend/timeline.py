@@ -537,6 +537,9 @@ class Scene:
     scene_archive: Optional[dict] = None
     # Editorial pause (black/silent) after this clip before the next timeline segment.
     gap_after_sec: float = 0.0
+    # Removed from the PLAN but its generated clip stays on the TIMELINE. Also `excluded`,
+    # so generation/prompt skip it everywhere; export keeps it because it has a render.
+    removed_from_plan: bool = False
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -566,6 +569,7 @@ class Scene:
             source_dur=d.get("source_dur"),
             scene_archive=d.get("scene_archive"),
             gap_after_sec=float(d.get("gap_after_sec") or 0),
+            removed_from_plan=bool(d.get("removed_from_plan", False)),
         )
 
     def to_dict(self) -> dict:
