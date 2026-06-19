@@ -1515,4 +1515,6 @@ body.tour-mode { overflow: hidden; }
 .composer-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
 .compose-bin { display: flex; flex-direction: column; gap: 8px; height: 100%; }
 .compose-ta { flex: 1; min-height: 220px; resize: none; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55; }
+.lib-cat-tag { margin-left: 8px; padding: 1px 7px; border-radius: 10px; background: var(--teal-soft); color: var(--teal);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .5px; text-transform: uppercase; vertical-align: middle; }
 

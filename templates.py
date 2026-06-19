@@ -333,6 +333,10 @@ def normalize_shortcut_item(item, fallback_name=""):
         # key (no special handling). A non-default key means "when this shortcut fires,
         # this key is being trained" — Studio steers/rates the scene against it.
         "refinement_key": normalize_refinement_key(item.get("refinement_key", "")),
+        # Optional grouping for the Composer (free-text). Sub-category is only
+        # meaningful under a category, but we store both verbatim.
+        "category": re.sub(r"\s+", " ", str(item.get("category") or "").strip()),
+        "sub_category": re.sub(r"\s+", " ", str(item.get("sub_category") or "").strip()),
         "created_at": created,
         "updated_at": str(item.get("updated_at") or now_iso()),
     }

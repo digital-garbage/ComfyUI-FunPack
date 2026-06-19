@@ -90,6 +90,13 @@
       const en = checkRow("Enabled", item.enabled !== false);
       box.append(labeled("Name", name), labeled("Triggers", trig), labeled("Replacements", reps), en);
 
+      // Grouping for the Composer (free-text; sub-category nests under category).
+      const cat = el("input", "lib-in"); cat.placeholder = "e.g. Lighting"; cat.value = item.category || "";
+      const sub = el("input", "lib-in"); sub.placeholder = "e.g. Golden hour"; sub.value = item.sub_category || "";
+      const catRow = el("div", "fields-row");
+      catRow.append(labeled("Category", cat), labeled("Sub-category", sub));
+      box.append(catRow);
+
       // Per-shortcut refinement key: firing this shortcut marks the named key as training.
       const existingKey = String(item.refinement_key || "").trim();
       const useKey = checkRow("Use non-default refinement key", !!existingKey);
@@ -111,7 +118,9 @@
         await S.saveShortcut({
           name: name.value.trim() || triggers[0], triggers,
           replacements: splitReplacements(reps.value), enabled: en._cb.checked,
-          refinement_key: refKey, original_name: item.name || undefined,
+          refinement_key: refKey,
+          category: cat.value.trim(), sub_category: sub.value.trim(),
+          original_name: item.name || undefined,
         });
         close(); render();
       };
@@ -139,12 +148,15 @@
     toolbar.append(addBtn, expBtn, impBtn, impFile); wrap.append(toolbar);
 
     const list = el("div", "lib-list");
-    const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
+    const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${s.category || ""} ${s.sub_category || ""} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
     items.forEach((s) => {
       const trig = (s.triggers || [])[0] || s.name;
       const row = el("div", "lib-row");
       const main = el("div", "lib-main");
-      main.append(el("div", "lib-name", s.name + (s.enabled === false ? " (off)" : "")));
+      const nameLine = el("div", "lib-name", s.name + (s.enabled === false ? " (off)" : ""));
+      const catLabel = [s.category, s.sub_category].filter(Boolean).join(" · ");
+      if (catLabel) nameLine.append(el("span", "lib-cat-tag", catLabel));
+      main.append(nameLine);
       const rep = (s.replacements || []).join(" / ");
       if (rep) main.append(el("div", "lib-sub", "→ " + rep));
       row.append(main);
