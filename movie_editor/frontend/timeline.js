@@ -640,9 +640,13 @@
     const root = unitCuts > 1
       ? (p.scenes || []).find((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id) && !(s.cut_offset_frames > 0))
       : null;
+    // The timeline clip is the RESULT: show what it was actually generated with (the frozen
+    // render prompt), not the live plan text — editing a scene in the plan must not mutate the
+    // already-generated video here. Falls back to live plan text only when not yet generated.
+    const frozen = !S.isVideoClip(scene) && S.renderPromptForScene ? S.renderPromptForScene(scene.id) : null;
     const label = S.isVideoClip(scene)
       ? ((mref && (st.mediaBin || []).find((m) => m.id === mref)?.name) || "Video clip")
-      : (scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
+      : ((frozen && frozen.text) || scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
     clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" && label !== "Video clip" ? "" : " empty"), label));
 
     const charIds = S.sceneCharacterIds(scene.id);
