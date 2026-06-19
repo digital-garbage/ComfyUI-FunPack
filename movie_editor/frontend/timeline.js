@@ -1037,6 +1037,8 @@
     const OUI = window.OverlayUI;
     const editing = existing && existing.kind === "text";
     const state = {
+      ...(OUI.TEXT_STYLE_DEFAULTS || {}),
+      ...(editing ? existing : {}),
       text: editing ? (existing.text || "") : "Title",
       font_size: editing ? (existing.font_size != null ? existing.font_size : 42) : 42,
       font_family: editing ? (existing.font_family || "system-ui") : "system-ui",
@@ -1058,9 +1060,7 @@
 
     const syncPreview = () => {
       previewInner.textContent = state.text || "Title";
-      previewInner.style.fontSize = state.font_size + "px";
-      previewInner.style.color = state.color;
-      previewInner.style.fontFamily = OUI.cssFamily(state.font_family);
+      OUI.applyTextCss(previewInner, state, state.font_size);
       previewInner.style.opacity = state.opacity;
     };
     syncPreview();
@@ -1092,6 +1092,11 @@
     row2.append(OUI.field("Color", color));
     form.append(row2);
 
+    form.append(OUI.textStyleControls(
+      (k) => state[k],
+      (patch) => { Object.assign(state, patch); syncPreview(); },
+    ));
+
     const op = el("input");
     op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
     op.value = state.opacity;
@@ -1115,6 +1120,11 @@
         font_family: state.font_family,
         color: state.color,
         opacity: state.opacity,
+        bold: !!state.bold, italic: !!state.italic,
+        text_align: state.text_align, line_spacing: state.line_spacing,
+        stroke_width: state.stroke_width, stroke_color: state.stroke_color,
+        shadow: !!state.shadow, shadow_color: state.shadow_color,
+        bg_enabled: !!state.bg_enabled, bg_color: state.bg_color, bg_opacity: state.bg_opacity,
         label: "Text",
       };
       if (editing) S.updateOverlayTrack(existing.id, payload);

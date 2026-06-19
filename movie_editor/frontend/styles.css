@@ -784,7 +784,18 @@ input[type=number] { font-family: var(--font-mono); }
 .ov-range-val { font-family: var(--font-mono); font-size: 11px; color: #d8b4fe; }
 .ov-range { width: 100%; accent-color: #c084fc; }
 .ov-text-preview { border-radius: 12px; border: 1px solid var(--line); background: radial-gradient(ellipse at center, #2a2430 0%, #121018 72%); min-height: 96px; display: grid; place-items: center; padding: 20px; }
-.ov-text-preview-inner { max-width: 100%; text-align: center; text-shadow: 0 2px 8px rgba(0,0,0,.85); white-space: pre-wrap; line-height: 1.15; word-break: break-word; }
+.ov-text-preview-inner { max-width: 100%; white-space: pre-wrap; word-break: break-word; }
+
+/* Extra text-style controls (bold/italic/align toggles, outline, shadow, box) */
+.ov-textstyle { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ov-style-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ov-align-group { display: inline-flex; gap: 4px; margin-left: auto; }
+.ov-style-btn { width: 34px; height: 32px; display: grid; place-items: center; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--ink-2); color: var(--muted); cursor: pointer; font-size: 14px; font-weight: 700; }
+.ov-style-btn:hover { border-color: color-mix(in srgb, #c084fc 40%, var(--line)); color: var(--text); }
+.ov-style-btn.active { border-color: #c084fc; color: #e9d5ff; background: color-mix(in srgb, #c084fc 12%, var(--ink-2)); }
+.ov-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); height: 40px; }
+.ov-check input { accent-color: #c084fc; }
 .ov-image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; }
 .ov-image-card { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--ink-2); cursor: pointer; text-align: left; }
 .ov-image-card:hover { border-color: color-mix(in srgb, #c084fc 35%, var(--line)); background: color-mix(in srgb, #c084fc 5%, var(--ink-2)); }

@@ -645,6 +645,13 @@
       color.dataset.k = "ov-color";
       color.oninput = () => S.updateOverlayTrack(ov.id, { color: color.value }, true);
       sec.append(field("Color", color));
+
+      if (window.OverlayUI?.textStyleControls) {
+        sec.append(window.OverlayUI.textStyleControls(
+          (k) => ov[k],
+          (patch) => S.updateOverlayTrack(ov.id, patch, true),
+        ));
+      }
     } else {
       const asset = (st.mediaBin || []).find((m) => m.id === ov.media_ref);
       sec.append(el("div", "insp-hint", asset ? `Image: ${asset.name}` : "Missing image in Media Browser"));

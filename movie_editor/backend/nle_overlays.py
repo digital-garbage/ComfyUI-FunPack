@@ -78,22 +78,57 @@ def _hex_rgba(color: str, opacity: float) -> tuple[int, int, int, int]:
     return r, g, b, a
 
 
-def _load_pil_font(font_family: str | None, size: int):
+def _variant_path(regular: str, bold: bool, italic: bool) -> str | None:
+    """Find a bold/italic sibling of a regular font file by common naming patterns."""
+    if not regular or (not bold and not italic):
+        return None
+    d = os.path.dirname(regular)
+    base, ext = os.path.splitext(os.path.basename(regular))
+    if ext.lower() == ".ttc":
+        return None
+    # Candidate suffixes per family naming style, most specific first.
+    space, ital_word = [], "Italic"
+    if bold and italic:
+        space = [" Bold Italic", "-BoldItalic", "-BoldOblique", " BdIt"]
+    elif bold:
+        space = [" Bold", "-Bold", " Bd"]
+    elif italic:
+        space = [" Italic", "-Italic", "-Oblique", " It"]
+    # Strip a trailing "-Regular"/" Regular" stem before appending a variant suffix.
+    stem = re.sub(r"[ -]?Regular$", "", base)
+    for suf in space:
+        cand = os.path.join(d, f"{stem}{suf}{ext}")
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _load_pil_font(font_family: str | None, size: int, bold: bool = False, italic: bool = False):
+    """Return ``(font, has_bold, has_italic)`` — the booleans say whether a real
+    bold/italic face was found (so the caller can fake the missing ones)."""
     from PIL import ImageFont
 
     size = max(8, int(size))
     path = _resolve_fontfile(font_family)
+    has_bold = has_italic = False
     if path:
+        variant = _variant_path(path, bold, italic)
+        if variant:
+            try:
+                f = ImageFont.truetype(variant, size)
+                return f, bold, italic
+            except OSError:
+                pass
         try:
-            return ImageFont.truetype(path, size)
+            return ImageFont.truetype(path, size), has_bold, has_italic
         except OSError:
             pass
-    for path in _DEFAULT_FONT_CANDIDATES:
+    for cand in _DEFAULT_FONT_CANDIDATES:
         try:
-            return ImageFont.truetype(path, size)
+            return ImageFont.truetype(cand, size), has_bold, has_italic
         except OSError:
             continue
-    return ImageFont.load_default()
+    return ImageFont.load_default(), has_bold, has_italic
 
 
 def render_text_overlay_png(ov: dict, canvas_w: int, canvas_h: int, out_path: str) -> tuple[int, int]:
@@ -106,33 +141,79 @@ def render_text_overlay_png(ov: dict, canvas_w: int, canvas_h: int, out_path: st
 
     text = re.sub(r"\r\n?", "\n", str(ov.get("text") or "Text")).strip() or "Text"
     size = max(8, int(ov.get("font_size") or 42))
-    rgba = _hex_rgba(str(ov.get("color") or "#ffffff"), ov.get("opacity", 1))
-    font = _load_pil_font(ov.get("font_family"), size)
+    opacity = max(0.0, min(1.0, float(ov.get("opacity", 1) or 0)))
+    fill = _hex_rgba(str(ov.get("color") or "#ffffff"), opacity)
+
+    bold = bool(ov.get("bold"))
+    italic = bool(ov.get("italic"))
+    font, has_bold, has_italic = _load_pil_font(ov.get("font_family"), size, bold, italic)
+
+    align = str(ov.get("text_align") or "center").lower()
+    if align not in ("left", "center", "right"):
+        align = "center"
+    ls_mult = float(ov.get("line_spacing") if ov.get("line_spacing") is not None else 1.2)
+    spacing = max(0, int(round(size * (ls_mult - 1))))
+
+    stroke_w = max(0, int(round(float(ov.get("stroke_width") or 0))))
+    # Fake bold by thickening glyphs with a same-color stroke when no bold face exists.
+    faux_bold_extra = max(1, int(round(size * 0.045))) if (bold and not has_bold) else 0
+    eff_stroke = stroke_w + faux_bold_extra
+    if stroke_w > 0:
+        stroke_fill = _hex_rgba(str(ov.get("stroke_color") or "#000000"), opacity)
+    elif faux_bold_extra:
+        stroke_fill = fill
+    else:
+        stroke_fill = None
+
+    shadow = bool(ov.get("shadow"))
+    shadow_off = max(1, int(round(size * 0.06)))
+    shadow_fill = _hex_rgba(str(ov.get("shadow_color") or "#000000"), opacity * 0.85) if shadow else None
 
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
-    bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=max(2, size // 10))
+    bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align=align, stroke_width=eff_stroke)
     tw = max(1, bbox[2] - bbox[0])
     th = max(1, bbox[3] - bbox[1])
-    pad = max(4, size // 8)
-    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.multiline_text(
-        (pad - bbox[0], pad - bbox[1]),
-        text,
-        font=font,
-        fill=rgba,
-        spacing=max(2, size // 10),
-    )
+    margin = eff_stroke + (shadow_off if shadow else 0) + max(4, size // 8)
+    layer = Image.new("RGBA", (tw + margin * 2 + shadow_off, th + margin * 2 + shadow_off), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    ox, oy = margin - bbox[0], margin - bbox[1]
+    if shadow:
+        draw.multiline_text((ox + shadow_off, oy + shadow_off), text, font=font, fill=shadow_fill,
+                            spacing=spacing, align=align, stroke_width=eff_stroke, stroke_fill=shadow_fill)
+    draw.multiline_text((ox, oy), text, font=font, fill=fill,
+                        spacing=spacing, align=align, stroke_width=eff_stroke, stroke_fill=stroke_fill)
+
+    # Fake italic by shearing the rendered text layer when no italic face exists.
+    if italic and not has_italic:
+        shear = 0.21
+        new_w = layer.width + int(abs(shear) * layer.height)
+        layer = layer.transform((new_w, layer.height), Image.Transform.AFFINE,
+                                (1, shear, -shear * layer.height, 0, 1, 0),
+                                resample=Image.Resampling.BICUBIC)
+
+    crop = layer.getbbox()
+    if crop:
+        layer = layer.crop(crop)
+
+    if ov.get("bg_enabled"):
+        pad_x, pad_y = max(2, int(round(size * 0.4))), max(2, int(round(size * 0.22)))
+        bw, bh = layer.width + pad_x * 2, layer.height + pad_y * 2
+        bg = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        bg_opacity = float(ov.get("bg_opacity") if ov.get("bg_opacity") is not None else 0.5)
+        bg_rgba = _hex_rgba(str(ov.get("bg_color") or "#000000"), bg_opacity * opacity)
+        ImageDraw.Draw(bg).rounded_rectangle([0, 0, bw - 1, bh - 1], radius=max(0, int(round(size * 0.1))), fill=bg_rgba)
+        bg.alpha_composite(layer, (pad_x, pad_y))
+        layer = bg
 
     if ov.get("flip_h"):
-        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        layer = layer.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
     if ov.get("flip_v"):
-        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        layer = layer.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    img.save(out_path, "PNG")
-    return img.size
+    layer.save(out_path, "PNG")
+    return layer.size
 
 
 def prepare_overlay_export(
