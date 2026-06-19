@@ -600,16 +600,9 @@
       });
     }
 
-    // accept a media asset dragged from the bin → sets this clip's source
-    clip.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("application/funpack-media")) { e.preventDefault(); clip.classList.add("drop-target"); } });
-    clip.addEventListener("dragleave", () => clip.classList.remove("drop-target"));
-    clip.addEventListener("drop", (e) => {
-      const id = e.dataTransfer.getData("application/funpack-media");
-      clip.classList.remove("drop-target");
-      // Dropping on a clip sets ITS anchor; stop the event reaching the track-level
-      // drop (which would otherwise also create a brand-new clip).
-      if (id) { e.preventDefault(); e.stopPropagation(); S.assignMediaToScene(scene.id, id); }
-    });
+    // i2v anchors are set on the PLAN, not here — the timeline is the rendered result.
+    // (Drop an image onto a Plan card to anchor that scene.) Video clips still drop on the
+    // timeline track below.
 
     // i2v anchor thumbnail (image + mixed + generated_frame)
     const mref = anchorMediaRef(scene, p);
@@ -1878,14 +1871,10 @@
       const asset = (st.mediaBin || []).find((m) => m.id === id);
       if (asset?.kind === "video") {
         e.preventDefault();
-        S.addVideoClip(id);
-      } else if (asset?.kind === "image") {
-        // CapCut-style: drop an image on empty timeline → default-length generative
-        // scene anchored to it. (Dropping ON a clip sets that clip's anchor instead;
-        // that handler stops propagation so this one doesn't also fire.)
-        e.preventDefault();
-        S.addImageClip(id);
+        S.addVideoClip(id); // a finished video is a result — it belongs on the timeline
       }
+      // Images are i2v ANCHORS — drop them on a Plan card (or the Plan strip) instead, so
+      // the timeline (the rendered result) is never changed by setting up a generation.
     });
     lay.forEach(({ seg, o, d }) => {
       if (seg.kind === "gap") return;

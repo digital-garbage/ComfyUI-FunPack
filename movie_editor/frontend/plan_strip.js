@@ -60,6 +60,24 @@
     const l = el("label", "plan-field"); l.append(el("span", null, labelText)); l.append(control); return l;
   }
 
+  // i2v anchors are dropped on the PLAN (never the timeline). Accept image media only.
+  function attachAnchorDrop(node, st, onImage) {
+    node.addEventListener("dragover", (e) => {
+      if (!e.dataTransfer.types.includes("application/funpack-media")) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "copy"; node.classList.add("drop-target");
+    });
+    node.addEventListener("dragleave", () => node.classList.remove("drop-target"));
+    node.addEventListener("drop", (e) => {
+      node.classList.remove("drop-target");
+      const id = e.dataTransfer.getData("application/funpack-media");
+      if (!id) return;
+      const asset = (st.mediaBin || []).find((m) => m.id === id);
+      if (!asset || asset.kind !== "image") return; // images = anchors; videos go to the timeline
+      e.preventDefault(); e.stopPropagation();
+      onImage(id);
+    });
+  }
+
   function cardEditor(st, sc) {
     const root = rootOf(sc);
     const ed = el("div", "plan-editor");
@@ -152,6 +170,7 @@
       chev.onclick = (e) => { e.stopPropagation(); expandedId = isOpen ? null : sc.id; S.selectScene(sc.id); render(st); };
       c.append(chev);
     }
+    if (!S.isVideoClip(sc)) attachAnchorDrop(c, st, (id) => S.assignMediaToScene(sc.id, id));
     c.onclick = () => { if (st.selectedSceneId !== sc.id) S.selectScene(sc.id); };
     return c;
   }
@@ -166,9 +185,11 @@
     const rowEl = el("div", "plan-row");
     scenes.forEach((sc, i) => rowEl.append(cardEl(st, sc, i)));
     const add = el("button", "plan-add", "+ Add scene");
-    add.title = "Add a new scene to the plan";
+    add.title = "Add a new scene to the plan · or drop an image here to anchor a new scene";
     add.onclick = () => S.addScene();
     rowEl.append(add);
+    // Drop an image on empty plan space → a new scene anchored to it (cards stopPropagation).
+    attachAnchorDrop(rowEl, st, (id) => S.addImageClip(id));
     body.append(rowEl);
     if (expandedId) {
       const sc = S.scene(expandedId);
