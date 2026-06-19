@@ -14,28 +14,6 @@
     ["mixed", "Mixed · Img2Video anchor + prior guides"],
   ];
 
-  function splitMarkerSelect(value, onChange, opts) {
-    opts = opts || {};
-    const sel = el("select");
-    const noneLabel = opts.noneLabel || "— default cut —";
-    const none = el("option", null, noneLabel); none.value = ""; sel.append(none);
-    (S.get().transitions || []).forEach((t) => {
-      const name = t.trigger || t.name || t.key; if (!name) return;
-      const o = el("option", null, name); o.value = name; if (name === value) o.selected = true; sel.append(o);
-    });
-    if (value && ![...sel.options].some((o) => o.value === value)) {
-      const o = el("option", null, value); o.value = value; o.selected = true; sel.append(o);
-    }
-    sel.onchange = () => onChange(sel.value);
-    sel.title = opts.title || "Prompt marker: how Studio splits the montage before the next scene when generating";
-    return sel;
-  }
-
-  // Legacy alias used in a few call sites
-  function transitionSelect(value, onChange) {
-    return splitMarkerSelect(value, onChange);
-  }
-
   function field(labelText, control) {
     const l = el("label", "field"); l.append(el("span", null, labelText)); l.append(control); return l;
   }
@@ -213,7 +191,6 @@
     const ref = scene.source?.media_ref;
     const asset = ref ? (st.mediaBin || []).find((m) => m.id === ref) : null;
     body.append(field("Source", el("span", null, asset?.name || ref || "From last render")));
-    renderOutgoingSeam(st, scene);
 
     foldSection("More editing", false, (more) => {
       const fx = scene.effects || {};
@@ -291,9 +268,7 @@
       (lenDrift
         ? `Rendered ≈ ${shownDur.toFixed(2)}s · plan ${planDur.toFixed(2)}s — Regenerate to apply`
         : `Duration ≈ ${planDur.toFixed(2)}s`)
-      + ` · trim on timeline · generation splits: global prompt or Outgoing seam below`));
-
-    renderOutgoingSeam(st, scene);
+      + ` · trim on timeline · generation splits live in the global prompt (Composer)`));
 
     const actions = el("div", "insp-block");
     const genBtn = el("button", "btn primary", "Generate this scene");
@@ -302,7 +277,6 @@
     body.append(actions);
 
     foldSection("More editing", false, (more) => {
-      if (PC()?.usesFunpackStudio(st)) renderSceneCharacters(st, scene, more);
 
       const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; more.append(fxTag);
       const fx = scene.effects || {};
@@ -415,87 +389,6 @@
     });
   }
 
-  const VIDEO_TRANSITIONS = [
-    ["", "Hard cut"],
-    ["crossfade", "Dissolve"],
-    ["fadeblack", "Fade through black"],
-    ["wipeleft", "Wipe left"],
-    ["wiperight", "Wipe right"],
-  ];
-
-  function renderOutgoingSeam(st, scene) {
-    const p = st.project;
-    const fps = scene.fps || p.frame_rate || 24;
-    const type = (scene.video_transition || "").trim();
-    const frames = scene.transition_frames > 0 ? scene.transition_frames : 16;
-
-    const tag = el("div", "insp-tag"); tag.textContent = "Outgoing seam"; body.append(tag);
-    body.append(el("div", "insp-hint",
-      "Video blend on the cut to the next clip — drag the colored edge on the timeline to set length."));
-
-    const typeSel = el("select");
-    VIDEO_TRANSITIONS.forEach(([v, lbl]) => {
-      const o = el("option", null, lbl); o.value = v;
-      if (v === type) o.selected = true;
-      typeSel.append(o);
-    });
-    typeSel.onchange = () => {
-      const next = typeSel.value;
-      if (!next) S.patchScene(scene.id, { video_transition: "", transition_frames: null });
-      else S.patchScene(scene.id, { video_transition: next, transition_frames: frames });
-    };
-    body.append(field("Video transition", typeSel));
-
-    const fr = el("input"); fr.type = "number"; fr.min = "1"; fr.max = "120"; fr.step = "1";
-    fr.dataset.k = "sc-blend-frames";
-    fr.value = type ? frames : "";
-    fr.disabled = !type;
-    fr.placeholder = type ? "" : "—";
-    fr.oninput = () => {
-      if (!type) return;
-      S.patchScene(scene.id, { transition_frames: Math.max(1, parseInt(fr.value, 10) || 16) });
-    };
-    body.append(field(`Blend length (frames · ${fps} fps)`, fr));
-
-    body.append(field("Generation split marker", splitMarkerSelect(scene.transition_to_next || "",
-      (v) => S.patchScene(scene.id, { transition_to_next: v }),
-      { noneLabel: "— default cut —",
-        title: "Prompt marker before the next scene when Studio splits the montage (not the video blend)" })));
-
-    const gapIn = el("input");
-    gapIn.type = "number";
-    gapIn.min = "0";
-    gapIn.step = "0.05";
-    gapIn.value = scene.gap_after_sec || 0;
-    gapIn.oninput = () => S.patchSceneQuiet(scene.id, {
-      gap_after_sec: Math.max(0, parseFloat(gapIn.value || "0")),
-    });
-    body.append(field("Pause before next clip (s)", gapIn));
-    body.append(el("div", "insp-hint",
-      "Drag a clip right on the timeline to open space before it. Drag back flush with the previous clip to remove the pause."));
-  }
-
-  function renderSceneCharacters(st, scene, parent) {
-    parent = parent || body;
-    const ids = S.sceneCharacterIds(scene.id);
-    const tag = el("div", "insp-tag"); tag.textContent = "Characters"; parent.append(tag);
-    const chips = el("div", "char-chips");
-    if (!ids.length) {
-      chips.append(el("span", "char-chip empty", "None — assign in Characters bin"));
-    } else {
-      ids.forEach((cid) => {
-        const c = (st.characters || []).find((x) => x.id === cid);
-        const chip = el("span", "char-chip");
-        chip.textContent = c?.name || cid;
-        const rm = el("button", "char-chip-rm", "✕");
-        rm.onclick = () => S.toggleSceneCharacter(scene.id, cid);
-        chip.append(rm);
-        chips.append(chip);
-      });
-    }
-    parent.append(chips);
-  }
-
   function slotLabelFor(st, slotId) {
     if (!slotId || slotId === "funpack") return null;
     const slot = (st.models?.slots || []).find((s) => s.id === slotId);
@@ -552,9 +445,6 @@
     anchor.placeholder = "World / setting context prepended to every scene";
     anchor.oninput = () => S.patchProjectQuiet({ anchor: anchor.value });
     body.append(field("Anchor", anchor));
-    body.append(field("Split before scene 1 (generation prompt)", splitMarkerSelect(p.intro_transition || "",
-      (v) => S.patchProject({ intro_transition: v }),
-      { noneLabel: "— default cut —", title: "Prompt marker between anchor and scene 1 when Studio splits a long montage" })));
     const neg = el("textarea"); neg.rows = 2; neg.value = p.negative_prompt || ""; neg.dataset.k = "pj-neg";
     neg.placeholder = "What to avoid in every scene";
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
@@ -785,31 +675,6 @@
     body.append(wrap);
   }
 
-  // Pinned global-prompt editor (always on top). Edits debounce into the timeline via store.
-  let gpDraft = null;
-  let gpProjectId = null;
-  function renderGlobalPrompt(st) {
-    if (st.project.id !== gpProjectId) { gpProjectId = st.project.id; gpDraft = null; }
-    const pv = st.preview;
-    const live = st.project.global_prompt
-      || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt))
-      || "";
-    const dirty = gpDraft != null && gpDraft !== live;
-    const val = gpDraft != null ? gpDraft : live;
-
-    const sec = el("div", "insp-global");
-    sec.append(el("div", "insp-global-title", "Global prompt"));
-
-    const ta = el("textarea", "insp-global-ta"); ta.rows = 3; ta.value = val; ta.dataset.k = "global-prompt";
-    ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
-    ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); };
-    sec.append(ta);
-    sec.append(el("div", "insp-hint", dirty
-      ? "Applying to timeline…"
-      : "Edits apply automatically. Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector."));
-    body.append(sec);
-  }
-
   function renderSwitch(st, scene) {
     const sw = el("div", "insp-switch");
     const mk = (label, active, on, disabled) => {
@@ -955,7 +820,6 @@
     if (!st.project) { title.textContent = "Inspector"; body.append(el("div", "pj-meta", "No project open.")); return; }
     const ov = st.selectedOverlayId ? S.overlayTrack(st.selectedOverlayId) : null;
     const scene = !ov && st.selectedSceneId ? S.scene(st.selectedSceneId) : null;
-    renderGlobalPrompt(st);
     renderSwitch(st, scene);
     renderEngineStrip(st);
     if (ov) renderOverlayInspector(st, ov);
@@ -990,16 +854,6 @@
       }
       if (!S.flushSave()) render(S.get());
     }, 60);
-  });
-
-  window.addEventListener("funpack-invalidate-global-prompt", () => { gpDraft = null; });
-  window.addEventListener("funpack-global-prompt-updated", (e) => {
-    if (_editing && document.activeElement?.dataset?.k === "global-prompt") return;
-    gpDraft = null;
-    const ta = body.querySelector('[data-k="global-prompt"]');
-    if (ta && e.detail?.text != null) ta.value = e.detail.text;
-    const hint = body.querySelector(".insp-global .insp-hint");
-    if (hint) hint.textContent = "Edits apply automatically. Stays in sync with per-scene prompts. Per-seam split markers: Outgoing seam in the scene inspector.";
   });
 
   if (window.ViewBus) window.ViewBus.subscribeInspector(render);

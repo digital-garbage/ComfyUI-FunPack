@@ -1,18 +1,15 @@
-// Composer: the single home for prompt-craft tools — Characters, Shortcuts, Split markers.
-// Lives in a draggable FloatingWindow, toggled by the "Composer" button in the menu bar.
-// (Moved out of the Media Browser so the left dock is just media; these belong together.)
+// Composer: the home for prompt-craft tools — Compose (global prompt), Shortcuts, Split markers.
+// Lives in a draggable FloatingWindow, toggled by the "Composer" button next to the panel tabs.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
   const API = window.MovieEditorAPI;
 
   let win = null;                 // FloatingWindow instance (lazy)
-  let tab = "Characters";
-  let q = { Characters: "", Shortcuts: "", Splits: "" };
-  let editCharacter = null;       // character being edited ({} = new), or null
+  let tab = "Compose";
+  let q = { Shortcuts: "", Splits: "" };
+  let gpDraft = null;             // in-progress global-prompt text (Compose tab), or null
   let _modal = null;
-
-  function rerender() { if (win && win.isOpen()) render(); }
 
   // ── generic editor modal (shortcut / split forms) ──────────────────────────────
   function closeModal() { if (_modal) { _modal.remove(); _modal = null; } }
@@ -59,12 +56,28 @@
     inp.oninput = () => { q[key] = inp.value; render(); };
     return inp;
   }
-  function mediaRefPicker(st, value, onChange, opts) {
-    return window.MediaPicker.create({
-      value, mediaBin: st.mediaBin, onChange, compact: true,
-      startOpen: !!(opts && opts.startOpen),
-    });
+
+  // ── compose (global prompt) ─────────────────────────────────────────────────────
+  // The whole montage as one editable prompt. Edits debounce into the timeline (which
+  // re-splits into scenes); external timeline edits flow back unless we're mid-type.
+  function composeTab(st) {
+    const wrap = el("div", "bin compose-bin");
+    const pv = st.preview;
+    const live = st.project.global_prompt
+      || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || "";
+    const val = gpDraft != null ? gpDraft : live;
+
+    wrap.append(el("div", "lib-form-title", "Global prompt"));
+    const ta = el("textarea", "lib-in compose-ta"); ta.rows = 14; ta.value = val;
+    ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
+    ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); };
+    wrap.append(ta);
+    wrap.append(el("div", "insp-hint",
+      "Edits apply automatically and stay in sync with the timeline's per-scene prompts. Shortcuts expand at generation time."));
+    composeTextarea = ta;
+    return wrap;
   }
+  let composeTextarea = null;
 
   // ── shortcuts ─────────────────────────────────────────────────────────────────
   function openShortcutEditor(item) {
@@ -113,7 +126,7 @@
     wrap.append(searchRow("Shortcuts", "Filter shortcuts…"));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add"); addBtn.onclick = () => openShortcutEditor({});
-    const expBtn = el("a", "btn ghost tiny", "↓ Export");
+    const expBtn = el("a", "btn ghost tiny", "↑ Export");
     expBtn.href = API.exportShortcutsUrl(); expBtn.download = "funpack_shortcuts.json"; expBtn.title = "Download shortcuts as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
     impFile.onchange = async () => {
@@ -121,7 +134,7 @@
       const n = await S.importShortcuts(impFile.files[0]); impFile.value = "";
       if (n != null) alert(`Imported ${n} shortcut(s).`);
     };
-    const impBtn = el("button", "btn ghost tiny", "↑ Import"); impBtn.title = "Import shortcuts from JSON";
+    const impBtn = el("button", "btn ghost tiny", "↓ Import"); impBtn.title = "Import shortcuts from JSON";
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn, expBtn, impBtn, impFile); wrap.append(toolbar);
 
@@ -182,7 +195,7 @@
     wrap.append(searchRow("Splits", "Filter split markers…"));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add"); addBtn.onclick = () => openSplitMarkerEditor({});
-    const expBtn = el("a", "btn ghost tiny", "↓ Export");
+    const expBtn = el("a", "btn ghost tiny", "↑ Export");
     expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_promptsplit.json"; expBtn.title = "Download split markers as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
     impFile.onchange = async () => {
@@ -190,7 +203,7 @@
       const n = await S.importTransitions(impFile.files[0]); impFile.value = "";
       if (n != null) alert(`Imported ${n} split marker(s).`);
     };
-    const impBtn = el("button", "btn ghost tiny", "↑ Import"); impBtn.title = "Import split markers from JSON";
+    const impBtn = el("button", "btn ghost tiny", "↓ Import"); impBtn.title = "Import split markers from JSON";
     impBtn.onclick = () => impFile.click();
     toolbar.append(addBtn, expBtn, impBtn, impFile); wrap.append(toolbar);
 
@@ -217,108 +230,26 @@
     return wrap;
   }
 
-  // ── characters ──────────────────────────────────────────────────────────────────
-  function characterForm(st, item) {
-    const isNew = !item.id;
-    const box = el("div", "lib-form");
-    box.append(el("div", "lib-form-title", isNew ? "New character" : `Edit “${item.name || "character"}”`));
-    const name = el("input", "lib-in"); name.placeholder = "Name"; name.value = item.name || "";
-    const appearance = el("textarea", "lib-in"); appearance.rows = 2; appearance.placeholder = "Face, hair, eyes, skin…"; appearance.value = item.appearance || "";
-    const body = el("textarea", "lib-in"); body.rows = 2; body.placeholder = "Build, height, proportions…"; body.value = item.body || "";
-    const wardrobe = el("textarea", "lib-in"); wardrobe.rows = 2; wardrobe.placeholder = "Default outfit or style…"; wardrobe.value = item.wardrobe || "";
-    const always = el("textarea", "lib-in"); always.rows = 2; always.placeholder = "Tags always included in this character's prompt"; always.value = item.always_include || "";
-    const never = el("textarea", "lib-in"); never.rows = 2; never.placeholder = "Appended to negative when this character is on a scene"; never.value = item.never_include || "";
-    let faceRef = item.face_ref || null, bodyRef = item.body_ref || null, detailRef = item.detail_ref || null;
-    box.append(
-      labeled("Name", name), labeled("Appearance", appearance), labeled("Body", body),
-      labeled("Wardrobe", wardrobe), labeled("Always include", always), labeled("Never include", never),
-      labeled("Face ref (identity pin)", mediaRefPicker(st, faceRef, (v) => { faceRef = v; }, { startOpen: true })),
-      labeled("Body ref", mediaRefPicker(st, bodyRef, (v) => { bodyRef = v; }, { startOpen: true })),
-      labeled("Detail ref", mediaRefPicker(st, detailRef, (v) => { detailRef = v; }, { startOpen: true })),
-    );
-    const actions = el("div", "lib-form-actions");
-    const save = el("button", "btn primary tiny", "Save");
-    save.onclick = async () => {
-      const nm = name.value.trim();
-      if (!nm) { alert("Character name is required."); return; }
-      await S.saveCharacter({
-        id: item.id || undefined, original_id: item.id || undefined, name: nm,
-        appearance: appearance.value, body: body.value, wardrobe: wardrobe.value,
-        always_include: always.value, never_include: never.value,
-        face_ref: faceRef, body_ref: bodyRef, detail_ref: detailRef,
-      });
-      editCharacter = null; render();
-    };
-    const cancel = el("button", "btn ghost tiny", "Cancel");
-    cancel.onclick = () => { editCharacter = null; render(); };
-    actions.append(save, cancel); box.append(actions);
-    return box;
-  }
-
-  function charactersTab(st) {
-    if (editCharacter) return characterForm(st, editCharacter);
-    const wrap = el("div", "bin");
-    wrap.append(searchRow("Characters", "Filter characters…"));
-    const hint = el("div", "pj-meta char-hint");
-    hint.textContent = st.selectedSceneId
-      ? "Click a character to add/remove it on the selected scene."
-      : "Select a scene, then click characters to assign them.";
-    wrap.append(hint);
-    const head = el("div", "lib-head");
-    const add = el("button", "btn ghost tiny", "＋ New"); add.onclick = () => { editCharacter = {}; render(); };
-    head.append(add); wrap.append(head);
-
-    const assigned = st.selectedSceneId ? new Set(S.sceneCharacterIds(st.selectedSceneId)) : null;
-    const list = el("div", "char-list");
-    const items = filtered(st.characters || [], q.Characters, (c) =>
-      `${c.name} ${c.appearance || ""} ${c.body || ""} ${c.wardrobe || ""}`);
-    items.forEach((c) => {
-      const onScene = assigned && assigned.has(c.id);
-      const row = el("div", "char-row" + (onScene ? " on-scene" : ""));
-      const prev = el("div", "char-thumb");
-      if (c.face_ref) { const img = el("img"); img.src = API.mediaUrl(c.face_ref); img.loading = "lazy"; prev.append(img); }
-      else prev.append(el("span", null, "◎"));
-      row.append(prev);
-      const info = el("div", "char-info");
-      info.append(el("div", "char-name", c.name || "(unnamed)"));
-      const sub = [c.appearance, c.wardrobe].filter(Boolean).join(" · ");
-      if (sub) info.append(el("div", "char-sub", sub));
-      row.append(info);
-      if (onScene) row.append(el("span", "char-badge", "on scene"));
-      row.onclick = () => {
-        if (st.selectedSceneId) S.toggleSceneCharacter(st.selectedSceneId, c.id);
-        else { editCharacter = { ...c }; render(); }
-      };
-      const edit = el("button", "btn ghost tiny", "✎"); edit.title = "Edit character";
-      edit.onclick = (e) => { e.stopPropagation(); editCharacter = { ...c }; render(); };
-      const del = el("button", "btn ghost tiny danger", "✕"); del.title = "Delete character";
-      del.onclick = async (e) => { e.stopPropagation(); if (confirm(`Delete character “${c.name}”?`)) await S.deleteCharacter(c.id); };
-      const actions = el("div", "char-actions"); actions.append(edit, del); row.append(actions);
-      list.append(row);
-    });
-    if (!items.length) list.append(el("div", "pj-meta", (st.characters || []).length ? "No match." : "No characters yet — create one."));
-    wrap.append(list);
-    return wrap;
-  }
-
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Characters", "Shortcuts", "Splits"];
+  const TABS = ["Compose", "Shortcuts", "Splits"];
   function render() {
     if (!win) return;
     const st = S.get();
+    composeTextarea = null;
     const root = clear(win.body);
     const shell = el("div", "composer-shell");
     const tabs = el("div", "bin-tabs composer-tabs");
     TABS.forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
-      b.title = name === "Splits" ? "Split markers (generation prompt)" : name;
-      b.onclick = () => { if (tab === name) return; tab = name; editCharacter = null; closeModal(); render(); };
+      b.title = name === "Splits" ? "Split markers (generation prompt)"
+        : name === "Compose" ? "Global prompt — the whole montage" : name;
+      b.onclick = () => { if (tab === name) return; tab = name; closeModal(); render(); };
       tabs.append(b);
     });
     shell.append(tabs);
     const scroll = el("div", "composer-scroll");
     scroll.append(
-      tab === "Characters" ? charactersTab(st)
+      tab === "Compose" ? composeTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
           : splitMarkersTab(st),
     );
@@ -344,17 +275,25 @@
   function registerButton(btn) { _btn = btn; btn.onclick = toggle; _syncButton(); }
   function _syncButton() { if (_btn) _btn.classList.toggle("on", isOpen()); }
 
-  // Re-render on relevant store changes (characters/shortcuts/splits/selection).
+  // Re-render on relevant store changes (shortcuts / splits / project switch).
   let lastFp = null;
   S.subscribe((st) => {
     if (!isOpen()) return;
     const fp = JSON.stringify({
-      c: st.characters?.length, s: st.shortcuts?.length, t: st.transitions?.length,
-      sel: st.selectedSceneId, pid: st.project?.id,
+      s: st.shortcuts?.length, t: st.transitions?.length, pid: st.project?.id,
     });
     if (fp === lastFp) return;
     lastFp = fp;
     render();
+  });
+
+  // Keep the Compose textarea in sync with timeline-driven global-prompt changes,
+  // but never clobber what the user is actively typing.
+  window.addEventListener("funpack-global-prompt-updated", (e) => {
+    if (tab !== "Compose" || !composeTextarea) return;
+    if (document.activeElement === composeTextarea) return;
+    gpDraft = null;
+    composeTextarea.value = (e.detail && e.detail.text) || "";
   });
 
   window.Composer = { toggle, isOpen, registerButton };

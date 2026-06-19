@@ -448,7 +448,7 @@
       id: "inspector-scene",
       title: "Scene inspector",
       target: "#inspector-body",
-      body: "Edit the prompt, source type (Empty, Image, Carry), transitions, and characters for the selected scene. Deselect all clips to edit project anchor, seed, and global timing.",
+      body: "Edit the prompt and source type (Empty, Image, Carry) for the selected scene. Deselect all clips to edit project anchor, seed, and global timing. The whole-montage global prompt lives in the Composer.",
       pad: 8,
     },
     {
