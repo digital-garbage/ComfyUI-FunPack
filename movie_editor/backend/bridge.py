@@ -244,21 +244,34 @@ def _library_fns():
     )
 
 
+def _shortcut_categories() -> list:
+    fn = _funpack_attr("templates", "shortcut_categories")
+    return fn()
+
+
 def shortcuts() -> dict:
     si, *_ = _library_fns()
-    return {"shortcuts": si()}
+    return {"shortcuts": si(), "categories": _shortcut_categories()}
 
 
 def save_shortcut(payload: dict) -> dict:
     si, save, *_ = _library_fns()
     save(payload)
-    return {"shortcuts": si()}
+    return {"shortcuts": si(), "categories": _shortcut_categories()}
 
 
 def delete_shortcut(name: str) -> dict:
     si, _save, delete, *_ = _library_fns()
     delete(name)
-    return {"shortcuts": si()}
+    return {"shortcuts": si(), "categories": _shortcut_categories()}
+
+
+def save_category(payload: dict) -> dict:
+    """Add a category (and optionally a sub-category under it) to the managed list."""
+    add = _funpack_attr("templates", "add_shortcut_category")
+    si, *_ = _library_fns()
+    add(payload.get("category", ""), payload.get("sub_category", ""))
+    return {"shortcuts": si(), "categories": _shortcut_categories()}
 
 
 def save_transition(payload: dict) -> dict:
@@ -292,7 +305,7 @@ def import_shortcuts(incoming: dict) -> dict:
             count += 1
     save_shortcut_db(data)
     data = load_shortcut_db()
-    return {"imported": count, "shortcuts": shortcut_items(data)}
+    return {"imported": count, "shortcuts": shortcut_items(data), "categories": _shortcut_categories()}
 
 
 def export_transitions() -> dict:

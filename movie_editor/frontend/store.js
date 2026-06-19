@@ -29,6 +29,7 @@
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
     shortcuts: [],           // prompt shortcut library
+    shortcutCategories: [],  // managed grouping list: [{name, sub_categories:[]}]
     characters: [],          // global character library
     imageTargets: [],        // where an image asset can be wired [{value,label}]
     ratingLabels: [],        // FunPack Studio V2 rating options
@@ -3545,7 +3546,7 @@
     }
     notify();
   }
-  async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
+  async function loadShortcuts() { try { const r = await API.shortcuts(); state.shortcuts = r.shortcuts || []; state.shortcutCategories = r.categories || []; } catch (_) { state.shortcuts = []; state.shortcutCategories = []; } notify(); }
   async function loadCharacters() { try { state.characters = (await API.characters()).characters || []; } catch (_) { state.characters = []; } notify(); }
   function _characterAssignedToProject(charId) {
     if (!charId || !state.project) return false;
@@ -3585,8 +3586,16 @@
     const next = ids.includes(charId) ? ids.filter((x) => x !== charId) : [...ids, charId];
     patchScene(sceneId, { character_ids: next });
   }
-  async function saveShortcut(item) { try { state.shortcuts = (await API.saveShortcut(item)).shortcuts || state.shortcuts; notify(); } catch (e) { alert("Save failed: " + e.message); } }
-  async function deleteShortcut(name) { try { state.shortcuts = (await API.deleteShortcut(name)).shortcuts || []; notify(); } catch (e) { console.error(e); } }
+  async function saveShortcut(item) { try { const r = await API.saveShortcut(item); state.shortcuts = r.shortcuts || state.shortcuts; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { alert("Save failed: " + e.message); } }
+  async function deleteShortcut(name) { try { const r = await API.deleteShortcut(name); state.shortcuts = r.shortcuts || []; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { console.error(e); } }
+  async function addCategory(category, subCategory) {
+    try {
+      const r = await API.saveCategory({ category, sub_category: subCategory || "" });
+      if (r.categories) state.shortcutCategories = r.categories;
+      notify();
+      return true;
+    } catch (e) { alert("Add category failed: " + e.message); return false; }
+  }
   async function saveTransition(item) {
     try {
       state.transitions = (await API.saveTransition(item)).transitions || state.transitions;
@@ -3599,7 +3608,9 @@
       const text = await file.text();
       const data = JSON.parse(text);
       const r = await API.importShortcuts(data);
-      state.shortcuts = r.shortcuts || state.shortcuts; notify();
+      state.shortcuts = r.shortcuts || state.shortcuts;
+      if (r.categories) state.shortcutCategories = r.categories;
+      notify();
       return r.imported;
     } catch (e) { alert("Import failed: " + e.message); return 0; }
   }
@@ -3770,7 +3781,7 @@
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
-    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
+    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, addCategory,
     loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,

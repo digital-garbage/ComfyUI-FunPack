@@ -81,6 +81,7 @@
     exportTransitionsUrl: () => API("/library/transitions/export"),
     importTransitions: (data) => j("POST", API("/library/transitions/import"), data),
     shortcuts: () => j("GET", API("/library/shortcuts")),
+    saveCategory: (payload) => j("POST", API("/library/categories"), payload),
     saveShortcut: (item) => j("POST", API("/library/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),
     exportShortcutsUrl: () => API("/library/shortcuts/export"),

@@ -277,7 +277,60 @@ def empty_shortcut_db():
         "version": 1,
         "source": "ComfyUI-FunPack",
         "shortcuts": {},
+        # Managed grouping list for the Composer. Each entry is
+        # {"name": <category>, "sub_categories": [<sub>, ...]}. Persisted so a
+        # category survives even with no shortcut assigned to it yet.
+        "categories": [],
     }
+
+
+def _clean_label(value):
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def normalize_category_list(value):
+    """List of {"name", "sub_categories": [...]} — deduped (case-insensitive),
+    order-preserving, sub-categories nested under their parent category."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    index = {}  # lower(name) -> position in out
+    for entry in value:
+        if isinstance(entry, str):
+            entry = {"name": entry, "sub_categories": []}
+        if not isinstance(entry, dict):
+            continue
+        name = _clean_label(entry.get("name"))
+        if not name:
+            continue
+        key = name.lower()
+        if key not in index:
+            index[key] = len(out)
+            out.append({"name": name, "sub_categories": []})
+        bucket = out[index[key]]["sub_categories"]
+        seen = {s.lower() for s in bucket}
+        for sub in entry.get("sub_categories", []) or []:
+            sub = _clean_label(sub)
+            if sub and sub.lower() not in seen:
+                seen.add(sub.lower())
+                bucket.append(sub)
+    return out
+
+
+def _union_category(categories, name, sub=""):
+    """Ensure `name` (and optional `sub`) exists in the managed list. Mutates + returns."""
+    name = _clean_label(name)
+    if not name:
+        return categories
+    key = name.lower()
+    entry = next((c for c in categories if c["name"].lower() == key), None)
+    if entry is None:
+        entry = {"name": name, "sub_categories": []}
+        categories.append(entry)
+    sub = _clean_label(sub)
+    if sub and sub.lower() not in {s.lower() for s in entry["sub_categories"]}:
+        entry["sub_categories"].append(sub)
+    return categories
 
 
 def shortcut_key(value):
@@ -361,6 +414,12 @@ def normalize_shortcut_db(data):
     data["version"] = 1
     data["source"] = "ComfyUI-FunPack"
     data["shortcuts"] = normalized
+    # Managed category list: normalize, then union any category/sub-category a
+    # shortcut references so the list never loses a grouping that's in use.
+    categories = normalize_category_list(data.get("categories"))
+    for shortcut in normalized.values():
+        _union_category(categories, shortcut.get("category"), shortcut.get("sub_category"))
+    data["categories"] = categories
     return data
 
 
@@ -422,6 +481,22 @@ def delete_shortcut_item(name):
         data.setdefault("shortcuts", {}).pop(key, None)
         save_shortcut_db(data)
     return key, data
+
+
+def shortcut_categories(data=None):
+    data = load_shortcut_db() if data is None else normalize_shortcut_db(data)
+    return data.get("categories", [])
+
+
+def add_shortcut_category(name, sub_category=""):
+    """Add a category (and optionally a sub-category under it) to the managed list."""
+    name = _clean_label(name)
+    if not name:
+        raise ValueError("Category name is required.")
+    data = load_shortcut_db()
+    _union_category(data.setdefault("categories", []), name, sub_category)
+    save_shortcut_db(data)
+    return load_shortcut_db()
 
 
 # --- Custom transition DB --------------------------------------------------
@@ -883,6 +958,7 @@ async def funpack_shortcuts(_):
             "path": shortcut_store_path(),
             "data": data,
             "shortcuts": shortcut_items(data),
+            "categories": shortcut_categories(data),
         },
         headers={"Cache-Control": "no-store, max-age=0"},
     )
@@ -912,13 +988,13 @@ async def funpack_shortcut_save(request):
         if not name:
             return web.json_response({"error": "Shortcut name is required."}, status=400)
         key, data = delete_shortcut_item(name)
-        return web.json_response({"deleted": key, "data": data, "shortcuts": shortcut_items(data)})
+        return web.json_response({"deleted": key, "data": data, "shortcuts": shortcut_items(data), "categories": shortcut_categories(data)})
 
     try:
         key, data = save_shortcut_item(body)
     except ValueError as error:
         return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({"saved": key, "data": data, "shortcuts": shortcut_items(data)})
+    return web.json_response({"saved": key, "data": data, "shortcuts": shortcut_items(data), "categories": shortcut_categories(data)})
 
 
 @PromptServer.instance.routes.post("/funpack/shortcuts/import")
@@ -938,7 +1014,7 @@ async def funpack_shortcuts_import(request):
             count += 1
     save_shortcut_db(data)
     data = load_shortcut_db()
-    return web.json_response({"imported": count, "data": data, "shortcuts": shortcut_items(data)})
+    return web.json_response({"imported": count, "data": data, "shortcuts": shortcut_items(data), "categories": shortcut_categories(data)})
 
 
 @PromptServer.instance.routes.get("/funpack/transitions")

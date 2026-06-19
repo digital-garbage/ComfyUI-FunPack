@@ -192,25 +192,12 @@
     const asset = ref ? (st.mediaBin || []).find((m) => m.id === ref) : null;
     body.append(field("Source", el("span", null, asset?.name || ref || "From last render")));
 
-    foldSection("More editing", false, (more) => {
-      const fx = scene.effects || {};
-      const patchFx = (k, v, quiet) => {
-        const next = { ...(scene.effects || {}), [k]: v };
-        quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
-      };
-      const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
-      blur.value = fx.blur || 0;
-      const blurField = field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur);
-      const blurLbl = blurField.querySelector("span");
-      blur.oninput = () => {
-        patchFx("blur", parseFloat(blur.value), true);
-        if (blurLbl) blurLbl.textContent = `Blur (${Math.round(parseFloat(blur.value) * 100)}%)`;
-      };
-      more.append(blurField);
-      const lenRow = el("div", "fields-row");
-      lenRow.append(lengthControl(scene, "frames"));
-      lenRow.append(lengthControl(scene, "fps"));
-      more.append(lenRow);
+    const lenRow = el("div", "fields-row");
+    lenRow.append(lengthControl(scene, "frames"));
+    lenRow.append(lengthControl(scene, "fps"));
+    body.append(lenRow);
+
+    foldSection("Scene options", false, (more) => {
       const r = (st.sceneRenders || {})[scene.id];
       if (r?.media || ref) {
         const srcTag = el("div", "insp-tag"); srcTag.textContent = "Source trim (slip)"; more.append(srcTag);
@@ -262,6 +249,10 @@
 
     const effFrames = effOf(scene, "frames"), effFps = effOf(scene, "fps") || 1;
     const planDur = effFrames / effFps;
+    const lenRow = el("div", "fields-row");
+    lenRow.append(lengthControl(scene, "frames"));
+    lenRow.append(lengthControl(scene, "fps"));
+    body.append(lenRow);
     const shownDur = S.sceneDurationSec ? S.sceneDurationSec(scene) : planDur;
     const lenDrift = Math.abs(shownDur - planDur) > 0.05; // render frozen at an older plan length
     body.append(el("div", "insp-hint",
@@ -276,91 +267,14 @@
     actions.append(genBtn);
     body.append(actions);
 
-    foldSection("More editing", false, (more) => {
-
-      const fxTag = el("div", "insp-tag"); fxTag.textContent = "Video effects"; more.append(fxTag);
-      const fx = scene.effects || {};
-      const patchFx = (k, v, quiet) => {
-        const next = { ...(scene.effects || {}), [k]: v };
-        quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
-      };
+    foldSection("Scene options", false, (more) => {
+      // Visual effects (blur / fades / Ken Burns zoom) are applied from the timeline's
+      // + Add → Effects menu now; this section keeps source trim, i2v guides, and exclude.
       const _num = (val, k, opts) => {
         const i = el("input"); i.type = "number"; i.value = val; i.dataset.k = k;
         if (opts) Object.assign(i, opts);
         return i;
       };
-      const blur = el("input"); blur.type = "range"; blur.min = "0"; blur.max = "1"; blur.step = "0.05";
-      blur.value = fx.blur || 0; blur.dataset.k = "sc-fx-blur";
-      const blurField = field(`Blur (${Math.round((fx.blur || 0) * 100)}%)`, blur);
-      const blurLbl = blurField.querySelector("span");
-      blur.oninput = () => {
-        patchFx("blur", parseFloat(blur.value), true);
-        if (blurLbl) blurLbl.textContent = `Blur (${Math.round(parseFloat(blur.value) * 100)}%)`;
-      };
-      more.append(blurField);
-      const fadeRow = el("div", "fields-row");
-      const fi = _num(fx.fade_in || 0, "sc-fx-fi", { min: 0, max: 10, step: 0.1 });
-      fi.oninput = () => patchFx("fade_in", parseFloat(fi.value || "0"), true);
-      const fo = _num(fx.fade_out || 0, "sc-fx-fo", { min: 0, max: 10, step: 0.1 });
-      fo.oninput = () => patchFx("fade_out", parseFloat(fo.value || "0"), true);
-      fadeRow.append(field("Fade in (s)", fi)); fadeRow.append(field("Fade out (s)", fo));
-      more.append(fadeRow);
-      const zoom = el("select"); zoom.dataset.k = "sc-fx-zoom";
-      [["none", "None"], ["in", "Zoom in"], ["out", "Zoom out"]].forEach(([v, label]) => {
-        const o = el("option", null, label); o.value = v; if ((fx.zoom || "none") === v) o.selected = true; zoom.append(o);
-      });
-      const effFps = (scene.fps_mode !== "project" && scene.fps != null) ? scene.fps : (st.project.frame_rate || 25);
-      const effDur = S.sceneDurationSec ? S.sceneDurationSec(scene) : (
-        ((scene.frames_mode !== "project" && scene.frames != null) ? scene.frames : st.project.num_frames_per_scene) / effFps
-      );
-      const effFrames = Math.max(1, Math.round(effDur * effFps));
-      const defaultZoomLen = Math.min(25, Math.max(1, effFrames));
-      const patchFxObj = (patch, quiet) => {
-        const next = { ...(scene.effects || {}), ...patch };
-        quiet ? S.patchSceneQuiet(scene.id, { effects: next }) : S.patchScene(scene.id, { effects: next });
-      };
-      zoom.onchange = () => {
-        const v = zoom.value;
-        const patch = { zoom: v };
-        if (v === "in" || v === "out") {
-          if (fx.zoom_ratio == null) patch.zoom_ratio = 0.15;
-          if (fx.zoom_frames == null) patch.zoom_frames = defaultZoomLen;
-          if (fx.zoom_start_frame == null) patch.zoom_start_frame = 0;
-        }
-        patchFxObj(patch);
-      };
-      more.append(field("Ken Burns zoom", zoom));
-      const zoomMode = fx.zoom || "none";
-      if (zoomMode === "in" || zoomMode === "out") {
-        const zRow = el("div", "fields-row");
-        const zRatio = el("input"); zRatio.type = "range"; zRatio.min = "5"; zRatio.max = "50"; zRatio.step = "1";
-        zRatio.value = Math.round((fx.zoom_ratio != null ? fx.zoom_ratio : 0.15) * 100);
-        const zRatioField = field(`Zoom amount (${zRatio.value}%)`, zRatio);
-        const zRatioLbl = zRatioField.querySelector("span");
-        zRatio.oninput = () => {
-          patchFxObj({ zoom_ratio: parseFloat(zRatio.value) / 100 }, true);
-          if (zRatioLbl) zRatioLbl.textContent = `Zoom amount (${zRatio.value}%)`;
-        };
-        zRow.append(zRatioField);
-        const zStart = _num(fx.zoom_start_frame != null ? fx.zoom_start_frame : 0, "sc-fx-zstart", {
-          min: 0, max: Math.max(0, effFrames - 1), step: 1,
-        });
-        zStart.oninput = () => patchFxObj({ zoom_start_frame: parseInt(zStart.value || "0", 10) }, true);
-        zRow.append(field("Start frame", zStart));
-        more.append(zRow);
-        const zLen = _num(fx.zoom_frames != null ? fx.zoom_frames : defaultZoomLen, "sc-fx-zlen", {
-          min: 1, max: effFrames, step: 1,
-        });
-        zLen.oninput = () => patchFxObj({ zoom_frames: parseInt(zLen.value || "1", 10) }, true);
-        more.append(field("Ramp length (frames)", zLen));
-        more.append(el("div", "insp-hint",
-          "Zoom runs only during the ramp window - before/after holds steady at the start/end scale."));
-      }
-
-      const lenRow = el("div", "fields-row");
-      lenRow.append(lengthControl(scene, "frames"));
-      lenRow.append(lengthControl(scene, "fps"));
-      more.append(lenRow);
 
       const r = (st.sceneRenders || {})[scene.id];
       if (r && r.media) {

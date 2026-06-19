@@ -1228,6 +1228,13 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
+    @routes.post(UI_PREFIX + "/api/library/categories")
+    async def _category_save(req):
+        try:
+            return web.json_response(bridge.save_category(await req.json()))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
     @routes.get(UI_PREFIX + "/api/library/characters")
     async def _characters(_req):
         try:

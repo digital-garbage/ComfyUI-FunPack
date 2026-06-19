@@ -27,7 +27,108 @@
     box.append(content); overlay.append(box);
     overlay.addEventListener("click", (e) => { if (e.target === overlay) closeModal(); });
     document.body.append(overlay);
+    overlay.style.zIndex = _stackZ(0);
     _modal = overlay;
+  }
+
+  // z-index helper: keep Composer modals above the floating window (~4000+); `bump`
+  // stacks a secondary modal above the primary editor modal beneath it.
+  function _stackZ(bump) {
+    const winZ = win && win.root ? (parseInt(win.root.style.zIndex || "4000", 10) || 4000) : 4000;
+    const base = _modal ? (parseInt(_modal.style.zIndex || winZ, 10) || winZ) : winZ;
+    return base + 5 + (bump || 0);
+  }
+
+  // A small modal that STACKS above the current editor modal without closing it —
+  // used for the quick "Add category / sub-category" prompts.
+  function openStackModal(title, build) {
+    const overlay = el("div", "modal-overlay");
+    const box = el("div", "modal modal-mini");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", title));
+    box.append(head);
+    const content = el("div", "modal-content");
+    const close = () => overlay.remove();
+    build(content, close);
+    box.append(content); overlay.append(box);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    document.body.append(overlay);
+    overlay.style.zIndex = _stackZ(10);
+    setTimeout(() => { const i = box.querySelector("input, select"); if (i) i.focus(); }, 0);
+    return close;
+  }
+
+  function promptNewCategory(onAdded) {
+    openStackModal("Add category", (content, close) => {
+      const box = el("div", "lib-form lib-form-modal");
+      const name = el("input", "lib-in"); name.placeholder = "Category name";
+      box.append(labeled("Name", name));
+      const actions = el("div", "lib-form-actions");
+      const ok = el("button", "btn primary tiny", "OK");
+      ok.onclick = async () => {
+        const v = name.value.trim(); if (!v) { name.focus(); return; }
+        if (await S.addCategory(v)) { close(); if (onAdded) onAdded(v); }
+      };
+      const cancel = el("button", "btn ghost tiny", "Cancel"); cancel.onclick = close;
+      name.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); ok.click(); } };
+      actions.append(ok, cancel); box.append(actions);
+      content.append(box);
+    });
+  }
+
+  function promptNewSubCategory(presetCategory, onAdded) {
+    const cats = (S.get().shortcutCategories || []);
+    if (!presetCategory && !cats.length) { alert("Add a category first."); return; }
+    openStackModal("Add sub-category", (content, close) => {
+      const box = el("div", "lib-form lib-form-modal");
+      let parentSel = null;
+      if (!presetCategory) {
+        parentSel = selectFrom(cats.map((c) => c.name), cats[0] && cats[0].name);
+        box.append(labeled("Category", parentSel));
+      }
+      const name = el("input", "lib-in"); name.placeholder = "Sub-category name";
+      box.append(labeled("Name", name));
+      const actions = el("div", "lib-form-actions");
+      const ok = el("button", "btn primary tiny", "OK");
+      ok.onclick = async () => {
+        const parent = presetCategory || (parentSel && parentSel.value) || "";
+        const v = name.value.trim();
+        if (!parent) { alert("Pick a category first."); return; }
+        if (!v) { name.focus(); return; }
+        if (await S.addCategory(parent, v)) { close(); if (onAdded) onAdded(parent, v); }
+      };
+      const cancel = el("button", "btn ghost tiny", "Cancel"); cancel.onclick = close;
+      name.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); ok.click(); } };
+      actions.append(ok, cancel); box.append(actions);
+      content.append(box);
+    });
+  }
+
+  function optionEl(value, label, selected) {
+    const o = el("option", null, label); o.value = value; if (selected) o.selected = true; return o;
+  }
+
+  // A "＋ Add ▾" split button with a small dropdown of [label, action] entries.
+  function addDropdown(entries) {
+    const wrap = el("div", "composer-add");
+    const btn = el("button", "btn ghost tiny", "＋ Add ▾");
+    const panel = el("div", "composer-add-menu"); panel.hidden = true;
+    entries.forEach(([label, fn]) => {
+      const b = el("button", "composer-add-item", label);
+      b.onclick = () => { panel.hidden = true; fn(); };
+      panel.append(b);
+    });
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const opening = panel.hidden;
+      panel.hidden = !opening;
+      if (opening) {
+        const off = (ev) => { if (!wrap.contains(ev.target)) { panel.hidden = true; document.removeEventListener("mousedown", off, true); } };
+        setTimeout(() => document.addEventListener("mousedown", off, true), 0);
+      }
+    };
+    wrap.append(btn, panel);
+    return wrap;
   }
 
   // ── shared field helpers ──────────────────────────────────────────────────────
@@ -90,12 +191,44 @@
       const en = checkRow("Enabled", item.enabled !== false);
       box.append(labeled("Name", name), labeled("Triggers", trig), labeled("Replacements", reps), en);
 
-      // Grouping for the Composer (free-text; sub-category nests under category).
-      const cat = el("input", "lib-in"); cat.placeholder = "e.g. Lighting"; cat.value = item.category || "";
-      const sub = el("input", "lib-in"); sub.placeholder = "e.g. Golden hour"; sub.value = item.sub_category || "";
+      // Grouping for the Composer: managed category + nested sub-category, chosen from
+      // dropdowns. Each dropdown offers the existing entries plus "＋ Add new…".
+      const grouping = { category: item.category || "", sub_category: item.sub_category || "" };
       const catRow = el("div", "fields-row");
-      catRow.append(labeled("Category", cat), labeled("Sub-category", sub));
       box.append(catRow);
+      const ADD = " add";
+      function paintGrouping() {
+        clear(catRow);
+        const cats = S.get().shortcutCategories || [];
+        const lc = (s) => String(s || "").toLowerCase();
+        const catNames = cats.map((c) => c.name);
+        if (grouping.category && !catNames.some((n) => lc(n) === lc(grouping.category))) catNames.push(grouping.category);
+
+        const catSel = el("select", "lib-in");
+        catSel.append(optionEl("", "— none —", !grouping.category));
+        catNames.forEach((n) => catSel.append(optionEl(n, n, lc(n) === lc(grouping.category))));
+        catSel.append(optionEl(ADD, "＋ Add new category…"));
+        catSel.onchange = () => {
+          if (catSel.value === ADD) { catSel.value = grouping.category; promptNewCategory((nm) => { grouping.category = nm; grouping.sub_category = ""; paintGrouping(); }); return; }
+          grouping.category = catSel.value; grouping.sub_category = ""; paintGrouping();
+        };
+        catRow.append(labeled("Category", catSel));
+
+        const entry = cats.find((c) => lc(c.name) === lc(grouping.category));
+        const subs = entry ? entry.sub_categories.slice() : [];
+        if (grouping.sub_category && !subs.some((s) => lc(s) === lc(grouping.sub_category))) subs.push(grouping.sub_category);
+        const subSel = el("select", "lib-in");
+        subSel.append(optionEl("", "— none —", !grouping.sub_category));
+        subs.forEach((s) => subSel.append(optionEl(s, s, lc(s) === lc(grouping.sub_category))));
+        subSel.append(optionEl(ADD, "＋ Add new sub-category…"));
+        subSel.disabled = !grouping.category;
+        subSel.onchange = () => {
+          if (subSel.value === ADD) { subSel.value = grouping.sub_category; promptNewSubCategory(grouping.category, (p, s) => { grouping.category = p; grouping.sub_category = s; paintGrouping(); }); return; }
+          grouping.sub_category = subSel.value;
+        };
+        catRow.append(labeled("Sub-category", subSel));
+      }
+      paintGrouping();
 
       // Per-shortcut refinement key: firing this shortcut marks the named key as training.
       const existingKey = String(item.refinement_key || "").trim();
@@ -119,7 +252,7 @@
           name: name.value.trim() || triggers[0], triggers,
           replacements: splitReplacements(reps.value), enabled: en._cb.checked,
           refinement_key: refKey,
-          category: cat.value.trim(), sub_category: sub.value.trim(),
+          category: grouping.category, sub_category: grouping.sub_category,
           original_name: item.name || undefined,
         });
         close(); render();
@@ -134,7 +267,11 @@
     const wrap = el("div", "bin");
     wrap.append(searchRow("Shortcuts", "Filter shortcuts…"));
     const toolbar = el("div", "bin-toolbar");
-    const addBtn = el("button", "btn ghost tiny", "＋ Add"); addBtn.onclick = () => openShortcutEditor({});
+    const addBtn = addDropdown([
+      ["Shortcut", () => openShortcutEditor({})],
+      ["Category", () => promptNewCategory()],
+      ["Sub-category", () => promptNewSubCategory("")],
+    ]);
     const expBtn = el("a", "btn ghost tiny", "↑ Export");
     expBtn.href = API.exportShortcutsUrl(); expBtn.download = "funpack_shortcuts.json"; expBtn.title = "Download shortcuts as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
@@ -293,6 +430,7 @@
     if (!isOpen()) return;
     const fp = JSON.stringify({
       s: st.shortcuts?.length, t: st.transitions?.length, pid: st.project?.id,
+      c: (st.shortcutCategories || []).reduce((n, x) => n + 1 + (x.sub_categories?.length || 0), 0),
     });
     if (fp === lastFp) return;
     lastFp = fp;
