@@ -979,7 +979,10 @@
       });
       card.append(box);
     }
-    const outs = (n.outputs || []).filter((o) => (o.to || []).length);
+    // Show every core output. In Full control these are tappable as slot input sources
+    // (pick "<node> → <output>" in a slot's Input sources), so the user can, e.g., feed a
+    // replacement sampler with Studio's conditioning. In guided mode they're informational.
+    const outs = n.outputs || [];
     if (outs.length) {
       const box = el("div", "wire-box");
       box.append(el("div", "wire-title", "Outputs → destinations"));
@@ -987,7 +990,12 @@
         const row = el("div", "wire-row");
         row.append(el("span", "wire-out", `${o.name} (${o.type})`));
         row.append(el("span", "wire-arrow", "→"));
-        row.append(el("span", "wire-dest", o.to.join(", ")));
+        const dest = (o.to || []).length
+          ? o.to.join(", ")
+          : (config.full_control ? "available — pick in a slot's Input sources" : "—");
+        const destEl = el("span", "wire-dest", dest);
+        if (!(o.to || []).length && !config.full_control) destEl.classList.add("wire-muted");
+        row.append(destEl);
         box.append(row);
       });
       card.append(box);

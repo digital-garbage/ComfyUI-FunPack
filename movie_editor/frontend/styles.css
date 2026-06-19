@@ -1237,6 +1237,7 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .wire-out { font-family: var(--font-mono); font-size: 11px; color: var(--muted); flex: 0 0 auto; min-width: 130px; }
 .wire-arrow { color: var(--teal); }
 .wire-dest { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.wire-dest.wire-muted { color: var(--faint); opacity: .7; }
 .wire-select { flex: 1; }
 .wire-multi { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .wire-multi-row { display: flex; gap: 5px; align-items: center; }

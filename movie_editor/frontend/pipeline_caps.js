@@ -41,7 +41,9 @@
   }
 
   function defaultSceneSourceType(st) {
-    return usesChainSampler(st) ? "carry" : "empty";
+    // t2v ("empty") is no longer a user-facing mode — new scenes default to an i2v
+    // anchor (image). Anchorless scenes still fall back to t2v in the engine.
+    return usesChainSampler(st) ? "carry" : "image";
   }
 
   function sourceLabel(type) {

@@ -1789,7 +1789,7 @@ if web is not None and PromptServer is not None:
             oi = None
         return web.json_response({
             "ports": nodes.pipeline_ports(oi),
-            "core_producers": nodes.core_producers(),
+            "core_producers": nodes.core_producers(oi),
             "requirements": nodes.pipeline_requirements(),
             "wiring": pipeline_wiring.wiring_rules_payload(),
         })

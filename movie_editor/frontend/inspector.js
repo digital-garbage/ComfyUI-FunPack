@@ -5,8 +5,9 @@
   const body = document.getElementById("inspector-body");
   const title = document.getElementById("inspector-title");
 
+  // t2v ("empty") is intentionally not selectable — scenes are i2v/v2v/carry. An
+  // anchorless scene still falls back to t2v in the engine (effectiveSourceType).
   const SRC = [
-    ["empty", "Empty · text-to-video"],
     ["image", "Image · i2v anchor"],
     ["generated_frame", "From generated frame"],
     ["v2v", "Video · v2v source"],
@@ -130,12 +131,15 @@
 
   function availableSourceOptions(st) {
     if (PC()?.usesChainSampler(st)) return SRC;
-    return SRC.filter(([v]) => v === "empty" || v === "image");
+    return SRC.filter(([v]) => v === "image");
   }
 
   function renderSourceField(st, root, scene) {
     const chain = PC()?.usesChainSampler(st);
-    const stored = root.source?.type || (chain ? "carry" : "empty");
+    // t2v is removed as a mode — surface a legacy/default "empty" scene as the i2v
+    // anchor option (no committed change until the user edits or assigns an anchor).
+    let stored = root.source?.type || (chain ? "carry" : "image");
+    if (stored === "empty") stored = "image";
     const opts = availableSourceOptions(st);
     if (!opts.some(([v]) => v === stored) && PC()?.isChainOnlySource(stored)) {
       const note = el("div", "insp-hint");
@@ -146,7 +150,7 @@
     opts.forEach(([v, label]) => {
       const o = el("option", null, label);
       o.value = v;
-      if (v === stored || (!opts.some(([vv]) => vv === stored) && v === "empty")) o.selected = true;
+      if (v === stored) o.selected = true;
       src.append(o);
     });
     if (stored && !opts.some(([v]) => v === stored)) {

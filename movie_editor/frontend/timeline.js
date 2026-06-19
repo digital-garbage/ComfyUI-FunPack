@@ -601,9 +601,26 @@
       });
     }
 
-    // i2v anchors are set on the PLAN, not here — the timeline is the rendered result.
-    // (Drop an image onto a Plan card to anchor that scene.) Video clips still drop on the
-    // timeline track below.
+    // Drop an image (or video) from the Media bin onto a generative clip to set its i2v
+    // anchor. This used to live on the Plan card; the single-timeline layout moved it here.
+    if (!subclip && S.isGenerativeScene(scene)) {
+      clip.addEventListener("dragover", (e) => {
+        if (!e.dataTransfer.types.includes("application/funpack-media")) return;
+        e.preventDefault(); e.stopPropagation();
+        e.dataTransfer.dropEffect = "copy";
+        clip.classList.add("drop-target");
+      });
+      clip.addEventListener("dragleave", (e) => {
+        if (!clip.contains(e.relatedTarget)) clip.classList.remove("drop-target");
+      });
+      clip.addEventListener("drop", (e) => {
+        clip.classList.remove("drop-target");
+        const id = e.dataTransfer.getData("application/funpack-media");
+        if (!id) return;
+        e.preventDefault(); e.stopPropagation();
+        S.assignMediaToScene(scene.id, id);
+      });
+    }
 
     // i2v anchor thumbnail (image + mixed + generated_frame)
     const mref = anchorMediaRef(scene, p);

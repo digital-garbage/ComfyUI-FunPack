@@ -537,6 +537,19 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
         for o in node_outputs(object_info.get(s.get("node_class")) or {}):
             producers.setdefault(o["type"], []).append((f"out:{sid}:{o['name']}", f"{lbl} · {o['name']}"))
 
+    # Slot inputs that pull from a core output (input_sources "core:<cid>:<idx>") so each
+    # core output can show where it's tapped — e.g. Studio · cond → MyCustomSampler · positive.
+    slot_consumers: dict[tuple[str, int], list[str]] = {}
+    for s in slots:
+        lbl = slot_label.get(s.get("id"), s.get("id"))
+        for inp, src in (s.get("input_sources") or {}).items():
+            if isinstance(src, str) and src.startswith("core:"):
+                try:
+                    _, ccid, cidx = src.split(":", 2)
+                    slot_consumers.setdefault((ccid, int(cidx)), []).append(f"{lbl} · {inp}")
+                except ValueError:
+                    pass
+
     open_by_node: dict[str, dict] = {}
     for (cid, inp, t, req) in OPEN_PORTS:
         open_by_node.setdefault(cid, {})[inp] = (t, req)
@@ -575,7 +588,9 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
         outputs = []
         for i, o in enumerate(node_outputs(nd or {})):
             dests = [f"{d} · {di}" for (oi, d, di) in rev.get(cid, []) if oi == i]
-            outputs.append({"name": o["name"], "type": o["type"], "to": dests})
+            dests += slot_consumers.get((cid, i), [])
+            outputs.append({"name": o["name"], "type": o["type"], "to": dests,
+                            "source_id": f"core:{cid}:{i}"})
         nodes.append({"id": cid, "class": cls,
                       "display_name": (nd or {}).get("display_name", cls),
                       "installed": cls in object_info,

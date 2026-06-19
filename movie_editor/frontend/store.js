@@ -1016,6 +1016,7 @@
     if (!scene(id)) return;
     state.selectedOverlayId = null;
     state.selectedAudioTrackId = null;
+    state.mediaPreviewId = null;  // tapping a clip exits the transient media-bin preview
 
     if (range && _selectionAnchorId && order.includes(_selectionAnchorId)) {
       const a = order.indexOf(_selectionAnchorId);

@@ -329,13 +329,35 @@ def pipeline_requirements() -> list[dict]:
     return PIPELINE_REQUIREMENTS
 
 
-def core_producers() -> list[dict]:
-    """Typed outputs from the fixed core that slot nodes can source from."""
-    return [
+def core_producers(object_info: dict | None = None) -> list[dict]:
+    """Typed outputs from the fixed core that slot nodes can source from.
+
+    The project primitives are always available. When ``object_info`` is supplied, every
+    installed core node's outputs are exposed too — so in Full control a custom node (e.g.
+    a replacement sampler) can be fed Studio's model / conditioning / sigmas, or the
+    sampler's latent. The slot picker only offers these in Full control (see allowedSources);
+    build() resolves the chosen ``core:<id>:<idx>`` via _resolve_source."""
+    out = [
         {"id": "core:frames:0", "type": "INT",   "label": "Project frames (primitive)"},
         {"id": "core:fps:0",    "type": "FLOAT",  "label": "Project FPS (primitive)"},
         {"id": "core:f2i:0",    "type": "INT",    "label": "Project FPS as int (primitive)"},
     ]
+    if not object_info:
+        return out
+    from . import builder  # lazy: avoid import cycle at module load
+    seen = {p["id"] for p in out}
+    for cid, cls in builder.CORE.items():
+        nd = object_info.get(cls)
+        if not nd:
+            continue
+        node_label = nd.get("display_name", cls)
+        for i, o in enumerate(node_outputs(nd)):
+            pid = f"core:{cid}:{i}"
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append({"id": pid, "type": o["type"], "label": f"{node_label} → {o['name']}"})
+    return out
 
 
 def pipeline_ports(object_info: dict | None = None) -> list[dict]:
