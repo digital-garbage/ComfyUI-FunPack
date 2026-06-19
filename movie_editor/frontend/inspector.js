@@ -245,6 +245,7 @@
     const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
     body.append(field("Prompt", ta));
+    if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
     renderSourceField(st, root, scene);
     if (PC()?.usesChainSampler(st)) {
       if ((root.source?.type) === "generated_frame") renderGeneratedFrameSource(st, root);
@@ -493,11 +494,16 @@
     }
     if (pv.parse_error) { const w = el("div", "pv-warn"); w.append(el("span", null, "▲")); w.append(el("span", null, "ComfyUI offline — preview paused")); box.append(w); }
     const parsed = pv.parsed || {};
-    if (parsed.anchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }
+    // Anchor disabled (editor setting): the backend still reports a leading anchor, but
+    // generation folds it into Scene 1 — show it that way so the preview matches.
+    const foldAnchor = parsed.anchor && !S.getEditorSetting("anchorEnabled");
+    if (parsed.anchor && !foldAnchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge anchor", "anchor")); l.append(el("span", null, parsed.anchor)); box.append(l); }
+    if (foldAnchor) { const l = el("div", "pv-line"); l.append(el("span", "pv-badge", "S1")); l.append(el("span", null, parsed.anchor)); box.append(l); }
+    const sBase = foldAnchor ? 2 : 1;
     const rkeys = pv.scene_refinement_keys || [];
     (parsed.scenes || []).forEach((s, i) => {
       const l = el("div", "pv-line");
-      l.append(el("span", "pv-badge", "S" + (i + 1)));
+      l.append(el("span", "pv-badge", "S" + (i + sBase)));
       // Refinement key(s) this scene will steer with (matches generation exactly)
       const rk = rkeys[i];
       if (rk && rk.keys && rk.keys.length) {

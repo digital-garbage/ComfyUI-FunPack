@@ -168,7 +168,14 @@
       || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || "";
     const val = gpDraft != null ? gpDraft : live;
 
-    wrap.append(el("div", "lib-form-title", "Global prompt"));
+    const titleRow = el("div", "compose-head");
+    titleRow.append(el("div", "lib-form-title", "Global prompt"));
+    const addSc = el("button", "btn ghost tiny", "＋ Add shortcut");
+    addSc.title = "Insert a shortcut trigger — browse by category";
+    addSc.onclick = () => openShortcutPicker((trig) => insertIntoCompose(trig));
+    titleRow.append(addSc);
+    wrap.append(titleRow);
+
     const ta = el("textarea", "lib-in compose-ta"); ta.rows = 14; ta.value = val;
     ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
     ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); };
@@ -176,9 +183,131 @@
     wrap.append(el("div", "insp-hint",
       "Edits apply automatically and stay in sync with the timeline's per-scene prompts. Shortcuts expand at generation time."));
     composeTextarea = ta;
+    if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
     return wrap;
   }
   let composeTextarea = null;
+
+  // Insert text at the compose textarea's caret (or append), then re-sync the timeline.
+  function insertIntoCompose(text) {
+    const ta = composeTextarea;
+    if (!ta) return;
+    const v = ta.value;
+    let s = ta.selectionStart, e = ta.selectionEnd;
+    if (s == null) { s = e = v.length; }
+    // Pad with a space when butting up against existing words.
+    const before = v.slice(0, s), after = v.slice(e);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    const ins = lead + text + trail;
+    ta.value = before + ins + after;
+    const caret = s + ins.length;
+    ta.focus(); ta.setSelectionRange(caret, caret);
+    gpDraft = ta.value;
+    S.scheduleGlobalPromptApply(ta.value);
+  }
+
+  // ── shortcut picker (browse by Category → [Sub-category →] Shortcut) ────────────
+  // Builds the grouped tree from the shortcut library + managed category list, then
+  // drills down. Direct (no sub-category) shortcuts sit beside the sub-category folders.
+  function buildShortcutTree() {
+    const lc = (s) => String(s || "").toLowerCase();
+    const cats = (S.get().shortcutCategories || []).map((c) => ({ name: c.name, subs: (c.sub_categories || []).slice() }));
+    const find = (name) => cats.find((c) => lc(c.name) === lc(name));
+    const tree = new Map();   // category name → { subs: Map<sub, [sc]>, direct: [sc] }
+    const ensure = (name) => {
+      if (!tree.has(name)) tree.set(name, { subs: new Map(), direct: [] });
+      return tree.get(name);
+    };
+    cats.forEach((c) => { const n = ensure(c.name); c.subs.forEach((s) => n.subs.set(s, [])); });
+    const UNCAT = "Uncategorized";
+    (S.get().shortcuts || []).forEach((sc) => {
+      if (sc.enabled === false) return;
+      const cat = (sc.category || "").trim();
+      if (!cat) { ensure(UNCAT).direct.push(sc); return; }
+      const node = ensure(cat);
+      const sub = (sc.sub_category || "").trim();
+      if (!sub) { node.direct.push(sc); return; }
+      // Match sub-category case-insensitively to its managed name, else create.
+      const known = find(cat) && find(cat).subs.find((s) => lc(s) === lc(sub));
+      const key = known || sub;
+      if (!node.subs.has(key)) node.subs.set(key, []);
+      node.subs.get(key).push(sc);
+    });
+    // Drop empty categories that have no shortcuts at all (managed-but-unused).
+    for (const [name, node] of [...tree]) {
+      const hasAny = node.direct.length || [...node.subs.values()].some((a) => a.length);
+      if (!hasAny) tree.delete(name);
+    }
+    return tree;
+  }
+
+  function openShortcutPicker(onPick) {
+    const tree = buildShortcutTree();
+    if (!tree.size) { alert("No shortcuts yet. Add some in the Shortcuts tab."); return; }
+    let path = [];   // [] | [category] | [category, sub]
+
+    openModal("Add shortcut", (content, close) => {
+      const box = el("div", "sc-picker");
+      function pickShortcut(sc) {
+        const trig = (sc.triggers || [])[0] || sc.name;
+        if (trig) onPick(trig);
+        close();
+      }
+      function shortcutRow(sc) {
+        const r = el("button", "sc-pick-item");
+        r.append(el("span", "sc-pick-name", (sc.triggers || [])[0] || sc.name));
+        const rep = (sc.replacements || [])[0];
+        if (rep) r.append(el("span", "sc-pick-prompt", rep));
+        r.onclick = () => pickShortcut(sc);
+        return r;
+      }
+      function paint() {
+        clear(box);
+        const crumb = el("div", "sc-crumb");
+        const home = el("button", "sc-crumb-link", "Categories");
+        home.onclick = () => { path = []; paint(); };
+        crumb.append(home);
+        path.forEach((p, i) => {
+          crumb.append(el("span", "sc-crumb-sep", "›"));
+          const link = el("button", "sc-crumb-link", p);
+          link.onclick = () => { path = path.slice(0, i + 1); paint(); };
+          crumb.append(link);
+        });
+        box.append(crumb);
+
+        const list = el("div", "sc-pick-list");
+        if (path.length === 0) {
+          [...tree.keys()].forEach((name) => {
+            const node = tree.get(name);
+            const count = node.direct.length + [...node.subs.values()].reduce((n, a) => n + a.length, 0);
+            const b = el("button", "sc-pick-folder");
+            b.append(el("span", "sc-pick-name", name));
+            b.append(el("span", "sc-pick-count", String(count)));
+            b.onclick = () => { path = [name]; paint(); };
+            list.append(b);
+          });
+        } else if (path.length === 1) {
+          const node = tree.get(path[0]);
+          [...node.subs.entries()].forEach(([sub, arr]) => {
+            if (!arr.length) return;
+            const b = el("button", "sc-pick-folder");
+            b.append(el("span", "sc-pick-name", sub));
+            b.append(el("span", "sc-pick-count", String(arr.length)));
+            b.onclick = () => { path = [path[0], sub]; paint(); };
+            list.append(b);
+          });
+          node.direct.forEach((sc) => list.append(shortcutRow(sc)));
+        } else {
+          const node = tree.get(path[0]);
+          (node.subs.get(path[1]) || []).forEach((sc) => list.append(shortcutRow(sc)));
+        }
+        box.append(list);
+      }
+      paint();
+      content.append(box);
+    });
+  }
 
   // ── shortcuts ─────────────────────────────────────────────────────────────────
   function openShortcutEditor(item) {

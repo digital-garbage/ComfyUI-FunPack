@@ -240,6 +240,7 @@
         } },
       ],
       Settings: [
+        { label: "Editor settings…", action: () => window.EditorSettingsModal.open() },
         { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
           action: () => window.EngineSettingsModal.open() },
         { sep: true },

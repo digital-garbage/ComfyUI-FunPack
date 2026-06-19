@@ -1,0 +1,146 @@
+// Shortcut autocomplete: as the user types in a prompt field, suggest matching
+// shortcut triggers. Toggled by the "Prompt autocomplete" editor setting.
+// Reusable: ShortcutAutocomplete.attach(textarea) — safe to call once per field.
+(function () {
+  const { el } = window.dom;
+  const S = window.Store;
+
+  const DELIMS = /[,\n;]/;          // token boundaries — a trigger lives between delimiters
+  const MIN_QUERY = 2;
+  const MAX_ITEMS = 8;
+
+  function enabled() { return !!S.getEditorSetting("autocomplete"); }
+
+  // Every (trigger, shortcut) pair — a shortcut with multiple triggers is searchable by each.
+  function triggerIndex() {
+    const out = [];
+    (S.get().shortcuts || []).forEach((s) => {
+      if (s.enabled === false) return;
+      (s.triggers || []).forEach((t) => {
+        const trig = String(t || "").trim();
+        if (trig) out.push({ trigger: trig, sc: s });
+      });
+    });
+    return out;
+  }
+
+  function matches(query) {
+    const q = query.toLowerCase();
+    const scored = [];
+    for (const e of triggerIndex()) {
+      const tl = e.trigger.toLowerCase();
+      const at = tl.indexOf(q);
+      if (at < 0) continue;
+      scored.push({ ...e, rank: at === 0 ? 0 : 1, pos: at });
+    }
+    scored.sort((a, b) => a.rank - b.rank || a.pos - b.pos || a.trigger.length - b.trigger.length);
+    // De-dupe identical triggers (same phrase shared by multiple shortcuts).
+    const seen = new Set();
+    const uniq = [];
+    for (const e of scored) {
+      const k = e.trigger.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k); uniq.push(e);
+      if (uniq.length >= MAX_ITEMS) break;
+    }
+    return uniq;
+  }
+
+  // The token currently under the caret: text since the last delimiter, left-trimmed.
+  function currentQuery(ta) {
+    const caret = ta.selectionStart;
+    if (caret == null || caret !== ta.selectionEnd) return null;
+    const text = ta.value.slice(0, caret);
+    let start = caret;
+    while (start > 0 && !DELIMS.test(text[start - 1])) start--;
+    while (start < caret && /\s/.test(text[start])) start++;   // skip leading whitespace
+    const query = text.slice(start, caret);
+    if (query.trim().length < MIN_QUERY) return null;
+    return { start, end: caret, query };
+  }
+
+  function attach(ta) {
+    if (!ta || ta._acAttached) return;
+    ta._acAttached = true;
+
+    let menu = null;
+    let items = [];
+    let active = -1;
+    let span = null;
+
+    function close() {
+      if (menu) { menu.remove(); menu = null; }
+      items = []; active = -1; span = null;
+    }
+
+    function accept(i) {
+      if (!span || !items[i]) return;
+      const trig = items[i].trigger;
+      const v = ta.value;
+      ta.value = v.slice(0, span.start) + trig + v.slice(span.end);
+      const caret = span.start + trig.length;
+      ta.setSelectionRange(caret, caret);
+      close();
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.focus();
+    }
+
+    function paintActive() {
+      if (!menu) return;
+      [...menu.children].forEach((c, i) => c.classList.toggle("active", i === active));
+      const cur = menu.children[active];
+      if (cur) cur.scrollIntoView({ block: "nearest" });
+    }
+
+    function open(found, sp) {
+      close();
+      span = sp; items = found; active = 0;
+      menu = el("div", "ac-menu");
+      found.forEach((e, i) => {
+        const row = el("div", "ac-item" + (i === 0 ? " active" : ""));
+        row.append(el("span", "ac-trigger", e.trigger));
+        const rep = (e.sc.replacements || [])[0];
+        if (rep) row.append(el("span", "ac-prompt", rep));
+        const tag = [e.sc.category, e.sc.sub_category].filter(Boolean).join(" · ");
+        if (tag) row.append(el("span", "ac-cat", tag));
+        row.addEventListener("mousedown", (ev) => { ev.preventDefault(); accept(i); });
+        row.addEventListener("mouseenter", () => { active = i; paintActive(); });
+        menu.append(row);
+      });
+      document.body.append(menu);
+      position();
+    }
+
+    function position() {
+      if (!menu) return;
+      const r = ta.getBoundingClientRect();
+      menu.style.left = r.left + "px";
+      menu.style.top = (r.bottom + 2) + "px";
+      menu.style.minWidth = Math.min(r.width, 420) + "px";
+      menu.style.maxWidth = Math.max(r.width, 320) + "px";
+    }
+
+    function refresh() {
+      if (!enabled()) { close(); return; }
+      const sp = currentQuery(ta);
+      if (!sp) { close(); return; }
+      const found = matches(sp.query);
+      if (!found.length) { close(); return; }
+      open(found, sp);
+    }
+
+    ta.addEventListener("input", refresh);
+    ta.addEventListener("click", refresh);
+    ta.addEventListener("keydown", (e) => {
+      if (!menu) return;
+      if (e.key === "ArrowDown") { e.preventDefault(); active = (active + 1) % items.length; paintActive(); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); active = (active - 1 + items.length) % items.length; paintActive(); }
+      else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); accept(active); }
+      else if (e.key === "Escape") { e.preventDefault(); close(); }
+    });
+    ta.addEventListener("blur", () => setTimeout(close, 120));
+    window.addEventListener("scroll", () => { if (menu) position(); }, true);
+  }
+
+  window.ShortcutAutocomplete = { attach };
+})();

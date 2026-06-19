@@ -35,6 +35,33 @@
     ratingLabels: [],        // FunPack Studio V2 rating options
   };
 
+  // ── editor settings ─────────────────────────────────────────────────────────
+  // Per-browser editor preferences (not part of the project file). Govern how the
+  // prompt is parsed/edited, not what is generated from already-distributed scenes.
+  const EDITOR_SETTINGS_KEY = "funpack_editor_settings";
+  const EDITOR_SETTINGS_DEFAULTS = { autocomplete: true, anchorEnabled: true };
+  function _loadEditorSettings() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(EDITOR_SETTINGS_KEY) || "{}");
+      return { ...EDITOR_SETTINGS_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+    } catch (_) { return { ...EDITOR_SETTINGS_DEFAULTS }; }
+  }
+  let _editorSettings = _loadEditorSettings();
+  function getEditorSettings() { return { ..._editorSettings }; }
+  function getEditorSetting(key) { return _editorSettings[key]; }
+  function setEditorSetting(key, val) {
+    if (_editorSettings[key] === val) return;
+    _editorSettings = { ..._editorSettings, [key]: val };
+    try { localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify(_editorSettings)); } catch (_) {}
+    notify();
+    // Anchor toggle changes how the global prompt maps onto the timeline — re-split now.
+    if (key === "anchorEnabled" && state.project) {
+      const cur = (state.project.global_prompt
+        || state.preview?.display_prompt || state.preview?.combined_prompt || "").trim();
+      if (cur) { _pinnedGlobalPrompt = cur; applyGlobalPromptQuiet(cur).catch(() => {}); }
+    }
+  }
+
   const listeners = new Set();
   const SAVE_DEBOUNCE_MS = 5000;        // discrete edits (dropdowns, toggles)
   const SAVE_SILENT_DEBOUNCE_MS = 20000; // typing in fields — flushed on blur / generate
@@ -445,6 +472,12 @@
     // Parser kept everything in anchor with no scene chunks — fold into one scene.
     if (!hasSceneText && anchor) {
       return { anchor: "", scenes: [{ text: anchor }], transitions: [] };
+    }
+    // Anchor disabled (editor setting): the leading pre-first-split text is Scene 1,
+    // not a shared anchor. Fold it in as the first scene; the split trigger that began
+    // the old Scene 1 becomes the seam between new Scene 1 and Scene 2 (inferred from text).
+    if (!_editorSettings.anchorEnabled && anchor) {
+      return { anchor: "", scenes: [{ text: anchor }, ...scenes], transitions };
     }
     return { anchor: v.anchor || "", scenes, transitions };
   }
@@ -3783,6 +3816,7 @@
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, addCategory,
+    getEditorSettings, getEditorSetting, setEditorSetting,
     loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,
