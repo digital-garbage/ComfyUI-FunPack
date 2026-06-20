@@ -47,9 +47,21 @@
     head.append(el("span", "clip-src", SRC_ICON[srcType] || "▦"));
   }
 
-  function appendClipHeadBar(head, durSec, fps, onRemove, removeTitle) {
+  // `reorder` (optional): { canLeft, canRight, onLeft, onRight } adds inline move
+  // controls so clips can be reordered directly on the timeline (not just the Edit menu).
+  function appendClipHeadBar(head, durSec, fps, onRemove, removeTitle, reorder) {
     const bar = el("div", "clip-head-bar");
     bar.append(el("span", "clip-dur", timecode(durSec, fps)));
+    if (reorder) {
+      const mk = (glyph, can, fn, title) => {
+        const b = el("button", "clip-move btn ghost tiny" + (can ? "" : " disabled"), glyph);
+        b.type = "button"; b.title = title; b.disabled = !can;
+        if (can) b.onclick = (e) => { e.stopPropagation(); fn(); };
+        return b;
+      };
+      bar.append(mk("◀", reorder.canLeft, reorder.onLeft, "Move clip left"));
+      bar.append(mk("▶", reorder.canRight, reorder.onRight, "Move clip right"));
+    }
     const rm = el("button", "clip-rm btn ghost tiny danger", "Remove");
     rm.type = "button";
     rm.title = removeTitle || "Remove clip (Delete / Backspace)";
@@ -530,7 +542,7 @@
   }
 
   // ── clip ───────────────────────────────────────────────────────────────────────
-  function clipEl(st, p, scene, index, leftPx, widthPx) {
+  function clipEl(st, p, scene, index, total, leftPx, widthPx) {
     const unitCuts = (p.scenes || []).filter((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id)).length;
     const subclip = (scene.cut_offset_frames || 0) > 0;
     const src = sceneSourceForClip(scene, p);
@@ -645,7 +657,12 @@
     const head = el("div", "clip-head");
     head.append(el("span", "clip-no", S.isVideoClip(scene) ? "V" : p2(index + 1)));
     appendSrcBadge(head, srcType);
-    appendClipHeadBar(head, sDur(scene, p), sFps(scene, p), () => S.removeScene(scene.id));
+    appendClipHeadBar(head, sDur(scene, p), sFps(scene, p), () => S.removeScene(scene.id), null, {
+      canLeft: index > 0,
+      canRight: total != null && index < total - 1,
+      onLeft: () => S.moveTimelineClip(scene.id, -1),
+      onRight: () => S.moveTimelineClip(scene.id, 1),
+    });
     clip.append(head);
 
     const root = unitCuts > 1
@@ -1897,7 +1914,7 @@
     lay.forEach(({ seg, o, d }) => {
       if (seg.kind === "gap") return;
       if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
-      else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));
+      else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), scenes.length, o * pxPerSec, d * pxPerSec));
     });
     for (let i = 0; i < scenes.length - 1; i++) {
       const prevSeg = segs.find((s) => s.kind === "scene" && s.scene.id === scenes[i].id);
