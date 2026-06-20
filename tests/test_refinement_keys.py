@@ -83,6 +83,41 @@ def test_verbatim_split_shortcut_driven_split_still_works(monkeypatch):
     assert "<break>" in v["anchor"]
 
 
+def test_split_scenes_splits_on_expansion_keyed_transition(monkeypatch):
+    """Regression: split_scenes (the canonical generation/preview/key splitter) must cut when a
+    shortcut's EXPANSION is a transition phrase (e.g. 'cut'->'Scene cut.'), not only when the
+    shortcut's TRIGGER word is itself in the transition DB. It previously matched only the raw
+    trigger, so an expansion-keyed split marker produced ONE scene here while the verbatim editor
+    split produced TWO — and the disagreement collapsed the timeline's middle scenes."""
+    db = _db({
+        "cut": (["cut"], ["Scene cut."], ""),
+        "qcut": (["qcut"], ["The video rapidly cuts, showing the next view."], ""),
+    })
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {
+        "scene cut.": {"placement": "silent", "visual_effect": None},
+        "the video rapidly cuts, showing the next view.": {"placement": "start", "visual_effect": None},
+    })
+    prompt = "a dog runs cut a cat sleeps cut a bird flies"
+    s = conditioning.split_scenes(prompt)
+    assert len(s["scenes"]) == 2           # silent 'cut' x2 -> anchor + 2 scenes
+    assert s["anchor_expanded"] == "a dog runs"
+    # The canonical split must agree with the verbatim editor split (no collapse).
+    v = conditioning.split_timeline_verbatim(prompt)
+    assert len(v["scenes"]) == len(s["scenes"])
+    # Non-silent 'qcut' too.
+    assert len(conditioning.split_scenes("a dog runs qcut a cat sleeps qcut a bird flies")["scenes"]) == 2
+
+
+def test_split_scenes_no_false_cut_from_generic_label_in_expansion(monkeypatch):
+    """A content shortcut whose expansion merely CONTAINS 'scene 2' must NOT cut — only a
+    user-defined custom transition phrase does (the generic label is never matched on expansions)."""
+    db = _db({"desc": (["desc"], ["a wide shot like scene 2 of a film"], "")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    assert len(conditioning.split_scenes("a dog runs desc here")["scenes"]) == 1
+
+
 def test_verbatim_split_still_splits_on_literal_cuts(monkeypatch):
     """The fix must not suppress real, user-typed scene cuts."""
     db = _db({"closeup": (["<closeup>"], ["a tight close-up"], "closeupkey")})  # no cut in replacement

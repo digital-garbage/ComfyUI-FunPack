@@ -905,7 +905,15 @@ def split_scenes(prompt, placement="start"):
         raw = text[pc.get("orig_start", 0):pc.get("orig_end", 0)]
         exp = expanded_full[pc.get("exp_start", 0):pc.get("exp_end", 0)]
         if pc.get("is_shortcut"):
+            # A shortcut is a transition when its TRIGGER word is in the DB (e.g. a literal
+            # "qcut" entry) OR when its EXPANSION resolves to a transition phrase (the common
+            # case: a "cut" shortcut expanding to the "Scene cut." split phrase). Match either,
+            # so an expansion-keyed split marker still cuts here exactly as it does in the
+            # verbatim editor split. Generic "scene <N>" is intentionally NOT matched on
+            # expansions — only user-defined custom triggers — so incidental labels never cut.
             info = custom_map.get(_norm(raw))
+            if info is None:
+                info = custom_map.get(_norm(exp))
             if info is not None:                          # transition-trigger shortcut
                 _transition(raw, exp, info)
             else:                                         # content shortcut: text + its key
