@@ -3637,25 +3637,42 @@
     } catch (e) { alert("Save failed: " + e.message); }
   }
   async function deleteTransition(name) { try { state.transitions = (await API.deleteTransition(name)).transitions || []; notify(); } catch (e) { console.error(e); } }
-  async function importShortcuts(file) {
+  async function importShortcuts(file, mode) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      const r = await API.importShortcuts(data);
+      const r = await API.importShortcuts(data, mode);
       state.shortcuts = r.shortcuts || state.shortcuts;
       if (r.categories) state.shortcutCategories = r.categories;
       notify();
       return r.imported;
-    } catch (e) { alert("Import failed: " + e.message); return 0; }
+    } catch (e) { alert("Import failed: " + e.message); return null; }
   }
-  async function importTransitions(file) {
+  async function importTransitions(file, mode) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      const r = await API.importTransitions(data);
+      const r = await API.importTransitions(data, mode);
       state.transitions = r.transitions || state.transitions; notify();
       return r.imported;
-    } catch (e) { alert("Import failed: " + e.message); return 0; }
+    } catch (e) { alert("Import failed: " + e.message); return null; }
+  }
+  async function clearShortcuts() {
+    try {
+      const r = await API.clearShortcuts();
+      state.shortcuts = r.shortcuts || [];
+      state.shortcutCategories = r.categories || [];
+      notify();
+      return true;
+    } catch (e) { alert("Delete-all failed: " + e.message); return false; }
+  }
+  async function clearTransitions() {
+    try {
+      const r = await API.clearTransitions();
+      state.transitions = r.transitions || [];
+      notify();
+      return true;
+    } catch (e) { alert("Delete-all failed: " + e.message); return false; }
   }
 
   // Apply a split-marker library item to the selected scene seam (generation prompt).
@@ -3815,10 +3832,10 @@
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
-    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, addCategory,
+    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,
     getEditorSettings, getEditorSetting, setEditorSetting,
     loadCharacters, saveCharacter, deleteCharacter,
-    loadTransitions, saveTransition, deleteTransition, importTransitions,
+    loadTransitions, saveTransition, deleteTransition, importTransitions, clearTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,
     applySplitMarkerToSelection, applyTransitionToSelection, insertShortcutIntoSelection,
     setSceneRating: (id, v) => {

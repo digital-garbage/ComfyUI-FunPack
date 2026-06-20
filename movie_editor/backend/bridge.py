@@ -290,13 +290,18 @@ def export_shortcuts() -> dict:
     return _funpack_attr("templates", "load_shortcut_db")()
 
 
-def import_shortcuts(incoming: dict) -> dict:
+def import_shortcuts(incoming: dict, replace: bool = False) -> dict:
     shortcut_items = _funpack_attr("templates", "shortcut_items")
     load_shortcut_db = _funpack_attr("templates", "load_shortcut_db")
     save_shortcut_db = _funpack_attr("templates", "save_shortcut_db")
     normalize_shortcut_db = _funpack_attr("templates", "normalize_shortcut_db")
     imported = normalize_shortcut_db(incoming)
     data = load_shortcut_db()
+    # Replace wipes the existing set (categories included, since they come bundled in
+    # the imported db) so the imported file becomes the whole library; Merge overlays.
+    if replace:
+        data["shortcuts"] = {}
+        data["categories"] = imported.get("categories", []) or []
     shortcuts = data.setdefault("shortcuts", {})
     count = 0
     for key, item in imported.get("shortcuts", {}).items():
@@ -308,17 +313,32 @@ def import_shortcuts(incoming: dict) -> dict:
     return {"imported": count, "shortcuts": shortcut_items(data), "categories": _shortcut_categories()}
 
 
+def clear_shortcuts() -> dict:
+    """Wipe every shortcut (and managed categories) — the Delete-all action."""
+    shortcut_items = _funpack_attr("templates", "shortcut_items")
+    load_shortcut_db = _funpack_attr("templates", "load_shortcut_db")
+    save_shortcut_db = _funpack_attr("templates", "save_shortcut_db")
+    data = load_shortcut_db()
+    data["shortcuts"] = {}
+    data["categories"] = []
+    save_shortcut_db(data)
+    data = load_shortcut_db()
+    return {"shortcuts": shortcut_items(data), "categories": _shortcut_categories()}
+
+
 def export_transitions() -> dict:
     return _funpack_attr("templates", "load_transition_db")()
 
 
-def import_transitions(incoming: dict) -> dict:
+def import_transitions(incoming: dict, replace: bool = False) -> dict:
     transition_items = _funpack_attr("templates", "transition_items")
     load_transition_db = _funpack_attr("templates", "load_transition_db")
     save_transition_db = _funpack_attr("templates", "save_transition_db")
     normalize_transition_db = _funpack_attr("templates", "normalize_transition_db")
     imported = normalize_transition_db(incoming)
     data = load_transition_db()
+    if replace:
+        data["transitions"] = {}
     transitions = data.setdefault("transitions", {})
     count = 0
     for key, item in imported.get("transitions", {}).items():
@@ -328,6 +348,119 @@ def import_transitions(incoming: dict) -> dict:
     save_transition_db(data)
     data = load_transition_db()
     return {"imported": count, "transitions": transition_items(data)}
+
+
+def clear_transitions() -> dict:
+    """Wipe every split marker — the Delete-all action."""
+    transition_items = _funpack_attr("templates", "transition_items")
+    load_transition_db = _funpack_attr("templates", "load_transition_db")
+    save_transition_db = _funpack_attr("templates", "save_transition_db")
+    data = load_transition_db()
+    data["transitions"] = {}
+    save_transition_db(data)
+    data = load_transition_db()
+    return {"transitions": transition_items(data)}
+
+
+# ── FunPack file manager (Composer ▸ Files) ──────────────────────────────────
+# A read/delete view over the on-disk FunPack state so the user can audit and
+# purge files the editor created without leaving the UI. Two roots only:
+#   • template store  → templates.json / shortcuts.json / promptsplit.json
+#   • refinement keys → <key>.json + sidecars (.sampler_ctx.json) + value/latent .pt
+# Anything outside these resolved directories is unreachable (no traversal).
+
+def _funpack_file_roots() -> dict:
+    template_store_dir = _funpack_attr("templates", "template_store_dir")
+    refinement_store_dir = _funpack_attr("templates", "refinement_store_dir")
+    return {
+        "library": {
+            "label": "Prompt library",
+            "dir": Path(template_store_dir()),
+            "names": ["templates.json", "shortcuts.json", "promptsplit.json", "transitions.json"],
+        },
+        "refinements": {
+            "label": "Refinement keys",
+            "dir": Path(refinement_store_dir()),
+            "names": None,  # whole directory
+        },
+    }
+
+
+def _classify_refinement_file(name: str) -> str:
+    low = name.lower()
+    if low.endswith(".sampler_ctx.json"):
+        return "sampler context"
+    if low.endswith(".pt"):
+        return "value/latent tensor"
+    if low.endswith(".json"):
+        return "refinement key"
+    return "other"
+
+
+def list_funpack_files() -> dict:
+    groups = []
+    for gid, spec in _funpack_file_roots().items():
+        d: Path = spec["dir"]
+        files = []
+        if d.is_dir():
+            if spec["names"] is None:
+                entries = sorted(p.name for p in d.iterdir() if p.is_file())
+            else:
+                entries = [n for n in spec["names"] if (d / n).is_file()]
+            for n in entries:
+                p = d / n
+                try:
+                    stat = p.stat()
+                except OSError:
+                    continue
+                row = {"name": n, "size": stat.st_size, "mtime": stat.st_mtime}
+                if gid == "refinements":
+                    row["kind"] = _classify_refinement_file(n)
+                files.append(row)
+        groups.append({"id": gid, "label": spec["label"], "dir": str(d), "files": files})
+    return {"groups": groups}
+
+
+def _resolve_funpack_file(group: str, name: str) -> Path:
+    spec = _funpack_file_roots().get(group)
+    if not spec:
+        raise ValueError(f"Unknown file group: {group}")
+    # Reject any path component — only a bare basename within the root is valid.
+    if not name or name != Path(name).name or name in (".", ".."):
+        raise ValueError("Invalid file name.")
+    d: Path = spec["dir"]
+    if spec["names"] is not None and name not in spec["names"]:
+        raise ValueError("File is not managed by this group.")
+    path = (d / name)
+    if path.resolve().parent != d.resolve():
+        raise ValueError("File is outside the managed directory.")
+    return path
+
+
+def delete_funpack_file(group: str, name: str) -> dict:
+    path = _resolve_funpack_file(group, name)
+    if path.is_file():
+        path.unlink()
+    return list_funpack_files()
+
+
+def clear_funpack_files(group: str) -> dict:
+    spec = _funpack_file_roots().get(group)
+    if not spec:
+        raise ValueError(f"Unknown file group: {group}")
+    d: Path = spec["dir"]
+    if d.is_dir():
+        names = spec["names"]
+        for p in d.iterdir():
+            if not p.is_file():
+                continue
+            if names is not None and p.name not in names:
+                continue
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    return list_funpack_files()
 
 
 # ── Loopback HTTP to ComfyUI (queue + results) ───────────────────────────────

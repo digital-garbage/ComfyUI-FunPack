@@ -1284,9 +1284,17 @@ if web is not None and PromptServer is not None:
             incoming = await req.json()
             if not isinstance(incoming, dict) or "shortcuts" not in incoming:
                 raise web.HTTPBadRequest(reason="Payload must be a shortcuts database JSON.")
-            return web.json_response(bridge.import_shortcuts(incoming))
+            replace = req.query.get("mode", "merge") == "replace"
+            return web.json_response(bridge.import_shortcuts(incoming, replace=replace))
         except web.HTTPException:
             raise
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/library/shortcuts/clear")
+    async def _shortcuts_clear(_req):
+        try:
+            return web.json_response(bridge.clear_shortcuts())
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
@@ -1307,9 +1315,40 @@ if web is not None and PromptServer is not None:
             incoming = await req.json()
             if not isinstance(incoming, dict) or "transitions" not in incoming:
                 raise web.HTTPBadRequest(reason="Payload must be a transitions database JSON.")
-            return web.json_response(bridge.import_transitions(incoming))
+            replace = req.query.get("mode", "merge") == "replace"
+            return web.json_response(bridge.import_transitions(incoming, replace=replace))
         except web.HTTPException:
             raise
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/library/transitions/clear")
+    async def _transitions_clear(_req):
+        try:
+            return web.json_response(bridge.clear_transitions())
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    # --- API: FunPack file manager (Composer ▸ Files) ---
+    @routes.get(UI_PREFIX + "/api/files")
+    async def _files_list(_req):
+        try:
+            return web.json_response(bridge.list_funpack_files())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"groups": [], "error": str(e)})
+
+    @routes.delete(UI_PREFIX + "/api/files/{group}/{name}")
+    async def _files_delete(req):
+        try:
+            return web.json_response(
+                bridge.delete_funpack_file(req.match_info["group"], req.match_info["name"]))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/files/{group}/clear")
+    async def _files_clear(req):
+        try:
+            return web.json_response(bridge.clear_funpack_files(req.match_info["group"]))
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 

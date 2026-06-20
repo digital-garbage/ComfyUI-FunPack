@@ -108,6 +108,25 @@
     const o = el("option", null, label); o.value = value; if (selected) o.selected = true; return o;
   }
 
+  // Ask whether an import should Merge into the current library or Replace it
+  // wholesale. Calls onPick("merge" | "replace") — or never, if cancelled.
+  function chooseImportMode(kind, onPick) {
+    openStackModal(`Import ${kind}`, (content, close) => {
+      const box = el("div", "lib-form lib-form-modal");
+      box.append(el("div", "insp-hint",
+        `Merge keeps your current ${kind} and adds the imported ones (a matching name overwrites). `
+        + `Replace deletes every current ${kind} first, then loads the file.`));
+      const actions = el("div", "lib-form-actions");
+      const merge = el("button", "btn primary tiny", "Merge");
+      merge.onclick = () => { close(); onPick("merge"); };
+      const replace = el("button", "btn danger tiny", "Replace all");
+      replace.onclick = () => { close(); onPick("replace"); };
+      const cancel = el("button", "btn ghost tiny", "Cancel"); cancel.onclick = close;
+      actions.append(merge, replace, cancel); box.append(actions);
+      content.append(box);
+    });
+  }
+
   // A "＋ Add ▾" split button with a small dropdown of [label, action] entries.
   function addDropdown(entries) {
     const wrap = el("div", "composer-add");
@@ -404,14 +423,23 @@
     const expBtn = el("a", "btn ghost tiny", "↑ Export");
     expBtn.href = API.exportShortcutsUrl(); expBtn.download = "funpack_shortcuts.json"; expBtn.title = "Download shortcuts as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
-    impFile.onchange = async () => {
-      if (!impFile.files[0]) return;
-      const n = await S.importShortcuts(impFile.files[0]); impFile.value = "";
-      if (n != null) alert(`Imported ${n} shortcut(s).`);
+    impFile.onchange = () => {
+      const file = impFile.files[0]; impFile.value = "";
+      if (!file) return;
+      chooseImportMode("shortcuts", async (mode) => {
+        const n = await S.importShortcuts(file, mode);
+        if (n != null) alert(`Imported ${n} shortcut(s)${mode === "replace" ? " (replaced existing)" : ""}.`);
+      });
     };
     const impBtn = el("button", "btn ghost tiny", "↓ Import"); impBtn.title = "Import shortcuts from JSON";
     impBtn.onclick = () => impFile.click();
-    toolbar.append(addBtn, expBtn, impBtn, impFile); wrap.append(toolbar);
+    const delAll = el("button", "btn danger tiny", "✕ Delete all");
+    delAll.title = "Delete every shortcut and category";
+    delAll.onclick = async () => {
+      if (!(st.shortcuts || []).length) { alert("No shortcuts to delete."); return; }
+      if (confirm("Delete ALL shortcuts and categories? This cannot be undone.")) await S.clearShortcuts();
+    };
+    toolbar.append(addBtn, expBtn, impBtn, delAll, impFile); wrap.append(toolbar);
 
     const list = el("div", "lib-list");
     const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${s.category || ""} ${s.sub_category || ""} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
@@ -476,14 +504,23 @@
     const expBtn = el("a", "btn ghost tiny", "↑ Export");
     expBtn.href = API.exportTransitionsUrl(); expBtn.download = "funpack_promptsplit.json"; expBtn.title = "Download split markers as JSON";
     const impFile = el("input"); impFile.type = "file"; impFile.accept = ".json"; impFile.style.display = "none";
-    impFile.onchange = async () => {
-      if (!impFile.files[0]) return;
-      const n = await S.importTransitions(impFile.files[0]); impFile.value = "";
-      if (n != null) alert(`Imported ${n} split marker(s).`);
+    impFile.onchange = () => {
+      const file = impFile.files[0]; impFile.value = "";
+      if (!file) return;
+      chooseImportMode("split markers", async (mode) => {
+        const n = await S.importTransitions(file, mode);
+        if (n != null) alert(`Imported ${n} split marker(s)${mode === "replace" ? " (replaced existing)" : ""}.`);
+      });
     };
     const impBtn = el("button", "btn ghost tiny", "↓ Import"); impBtn.title = "Import split markers from JSON";
     impBtn.onclick = () => impFile.click();
-    toolbar.append(addBtn, expBtn, impBtn, impFile); wrap.append(toolbar);
+    const delAll = el("button", "btn danger tiny", "✕ Delete all");
+    delAll.title = "Delete every split marker";
+    delAll.onclick = async () => {
+      if (!(st.transitions || []).length) { alert("No split markers to delete."); return; }
+      if (confirm("Delete ALL split markers? This cannot be undone.")) await S.clearTransitions();
+    };
+    toolbar.append(addBtn, expBtn, impBtn, delAll, impFile); wrap.append(toolbar);
 
     const list = el("div", "lib-list");
     const items = filtered(st.transitions || [], q.Splits, (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
@@ -508,8 +545,90 @@
     return wrap;
   }
 
+  // ── files (FunPack on-disk file manager) ────────────────────────────────────────
+  // A read/purge view over the files FunPack writes: the prompt library JSONs and the
+  // refinement-key store (keys + sidecars + value/latent tensors). Lets the user audit
+  // and delete them without leaving the editor. Fetched on demand, not held in the store.
+  let filesData = null;
+  let filesLoading = false;
+
+  function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  async function loadFiles() {
+    filesLoading = true;
+    try { filesData = await API.listFiles(); }
+    catch (e) { filesData = { groups: [], error: e.message }; }
+    filesLoading = false;
+    if (tab === "Files") render();
+  }
+
+  // After a file mutation that could touch the prompt-library JSONs, re-pull the
+  // Shortcuts/Splits state so those tabs never show entries whose file is now gone.
+  function refreshLibraryAfterFileChange() {
+    if (S.loadShortcuts) S.loadShortcuts();
+    if (S.loadTransitions) S.loadTransitions();
+  }
+
+  function filesTab() {
+    const wrap = el("div", "bin");
+    const toolbar = el("div", "bin-toolbar");
+    const refresh = el("button", "btn ghost tiny", "↻ Refresh"); refresh.onclick = () => loadFiles();
+    toolbar.append(refresh);
+    wrap.append(toolbar);
+
+    if (filesData == null) { if (!filesLoading) loadFiles(); wrap.append(el("div", "pj-meta", "Loading…")); return wrap; }
+    if (filesData.error) wrap.append(el("div", "pj-meta", "Error: " + filesData.error));
+
+    (filesData.groups || []).forEach((g) => {
+      const sec = el("div", "files-group");
+      const head = el("div", "files-group-head");
+      head.append(el("div", "files-group-title", g.label));
+      if (g.files.length) {
+        const clr = el("button", "btn danger tiny", "✕ Delete all");
+        clr.title = "Delete every file in this group";
+        clr.onclick = async () => {
+          if (!confirm(`Delete ALL ${g.files.length} file(s) under "${g.label}"? This cannot be undone.`)) return;
+          try { filesData = await API.clearFiles(g.id); refreshLibraryAfterFileChange(); render(); }
+          catch (e) { alert("Delete-all failed: " + e.message); }
+        };
+        head.append(clr);
+      }
+      sec.append(head);
+      sec.append(el("div", "files-dir", g.dir));
+
+      const list = el("div", "files-list");
+      if (!g.files.length) {
+        list.append(el("div", "pj-meta", "No files."));
+      } else {
+        g.files.forEach((f) => {
+          const row = el("div", "files-row");
+          const main = el("div", "files-main");
+          main.append(el("div", "files-name", f.name));
+          const meta = [fmtBytes(f.size), f.kind || ""].filter(Boolean).join(" · ");
+          main.append(el("div", "files-meta", meta));
+          row.append(main);
+          const del = el("button", "ic-btn danger", "✕"); del.title = "Delete file";
+          del.onclick = async () => {
+            if (!confirm(`Delete "${f.name}"? This cannot be undone.`)) return;
+            try { filesData = await API.deleteFile(g.id, f.name); refreshLibraryAfterFileChange(); render(); }
+            catch (e) { alert("Delete failed: " + e.message); }
+          };
+          row.append(del); list.append(row);
+        });
+      }
+      sec.append(list);
+      wrap.append(sec);
+    });
+    return wrap;
+  }
+
   // ── window + tabs ────────────────────────────────────────────────────────────────
-  const TABS = ["Compose", "Shortcuts", "Splits"];
+  const TABS = ["Compose", "Shortcuts", "Splits", "Files"];
   function render() {
     if (!win) return;
     const st = S.get();
@@ -520,8 +639,14 @@
     TABS.forEach((name) => {
       const b = el("button", "bin-tab" + (tab === name ? " active" : ""), name);
       b.title = name === "Splits" ? "Split markers (generation prompt)"
-        : name === "Compose" ? "Global prompt — the whole montage" : name;
-      b.onclick = () => { if (tab === name) return; tab = name; closeModal(); render(); };
+        : name === "Compose" ? "Global prompt — the whole montage"
+          : name === "Files" ? "FunPack files on disk — audit & purge" : name;
+      b.onclick = () => {
+        if (tab === name) return;
+        tab = name; closeModal();
+        if (name === "Files") filesData = null;   // re-fetch fresh on every open
+        render();
+      };
       tabs.append(b);
     });
     shell.append(tabs);
@@ -529,7 +654,8 @@
     scroll.append(
       tab === "Compose" ? composeTab(st)
         : tab === "Shortcuts" ? shortcutsTab(st)
-          : splitMarkersTab(st),
+          : tab === "Splits" ? splitMarkersTab(st)
+            : filesTab(),
     );
     shell.append(scroll);
     root.append(shell);
