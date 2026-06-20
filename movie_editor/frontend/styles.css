@@ -1502,7 +1502,7 @@ body.tour-mode { overflow: hidden; }
 .compose-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 
 /* Shortcut autocomplete dropdown (anchored under the prompt field) */
-.ac-menu { position: fixed; z-index: 9000; max-height: 240px; overflow-y: auto;
+.ac-menu { position: fixed; z-index: 99999; max-height: 240px; overflow-y: auto;
   background: #16140f; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 4px; }
 .ac-item { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 5px; cursor: pointer; }
 .ac-item.active { background: var(--amber-soft); }

@@ -24,7 +24,9 @@
     return out;
   }
 
-  function matches(query) {
+  // Triggers whose text contains `query` (substring, so "@golden" matches "golden"),
+  // prefix matches ranked first, identical triggers de-duped.
+  function matchTriggers(query) {
     const q = query.toLowerCase();
     const scored = [];
     for (const e of triggerIndex()) {
@@ -34,7 +36,6 @@
       scored.push({ ...e, rank: at === 0 ? 0 : 1, pos: at });
     }
     scored.sort((a, b) => a.rank - b.rank || a.pos - b.pos || a.trigger.length - b.trigger.length);
-    // De-dupe identical triggers (same phrase shared by multiple shortcuts).
     const seen = new Set();
     const uniq = [];
     for (const e of scored) {
@@ -46,17 +47,32 @@
     return uniq;
   }
 
-  // The token currently under the caret: text since the last delimiter, left-trimmed.
-  function currentQuery(ta) {
+  // What to suggest under the caret. The query is a TRAILING WORD-RUN of the current
+  // token (text since the last delimiter): we try the longest run first ("golden ho"),
+  // then shorter tails ("ho"), and use the longest run that matches any trigger. This
+  // means suggestions surface mid-prose (you don't have to retype from a comma), while
+  // the replaced span stays a clean unit so accepting can't duplicate words.
+  function suggestionsFor(ta) {
     const caret = ta.selectionStart;
     if (caret == null || caret !== ta.selectionEnd) return null;
     const text = ta.value.slice(0, caret);
-    let start = caret;
-    while (start > 0 && !DELIMS.test(text[start - 1])) start--;
-    while (start < caret && /\s/.test(text[start])) start++;   // skip leading whitespace
-    const query = text.slice(start, caret);
-    if (query.trim().length < MIN_QUERY) return null;
-    return { start, end: caret, query };
+    let dStart = caret;
+    while (dStart > 0 && !DELIMS.test(text[dStart - 1])) dStart--;
+    // Word-run start offsets within the token, in order (longest run → shortest).
+    const starts = [];
+    let prevWs = true;
+    for (let i = dStart; i < caret; i++) {
+      const ws = /\s/.test(text[i]);
+      if (!ws && prevWs) starts.push(i);
+      prevWs = ws;
+    }
+    for (const start of starts) {
+      const run = text.slice(start, caret);
+      if (run.trim().length < MIN_QUERY) continue;
+      const found = matchTriggers(run);
+      if (found.length) return { span: { start, end: caret }, items: found };
+    }
+    return null;
   }
 
   function attach(ta) {
@@ -122,11 +138,9 @@
 
     function refresh() {
       if (!enabled()) { close(); return; }
-      const sp = currentQuery(ta);
-      if (!sp) { close(); return; }
-      const found = matches(sp.query);
-      if (!found.length) { close(); return; }
-      open(found, sp);
+      const res = suggestionsFor(ta);
+      if (!res) { close(); return; }
+      open(res.items, res.span);
     }
 
     ta.addEventListener("input", refresh);
