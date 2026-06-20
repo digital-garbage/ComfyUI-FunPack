@@ -333,7 +333,7 @@
       }
       if (!badge) {
         badge = el("div", "clip-rated");
-        const anchor = clipEl.querySelector(".clip-chars") || clipEl.querySelector(".clip-text");
+        const anchor = clipEl.querySelector(".clip-text");
         if (anchor && anchor.nextSibling) clipEl.insertBefore(badge, anchor.nextSibling);
         else clipEl.append(badge);
       }
@@ -659,16 +659,6 @@
       ? ((mref && (st.mediaBin || []).find((m) => m.id === mref)?.name) || "Video clip")
       : ((frozen && frozen.text) || scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
     clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" && label !== "Video clip" ? "" : " empty"), label));
-
-    const charIds = S.sceneCharacterIds(scene.id);
-    if (charIds.length) {
-      const chars = el("div", "clip-chars");
-      charIds.forEach((cid) => {
-        const c = (st.characters || []).find((x) => x.id === cid);
-        chars.append(el("span", "clip-char", c?.name || cid));
-      });
-      clip.append(chars);
-    }
 
     const rating = sceneRatingDisplay(st, scene);
     if (rating) {

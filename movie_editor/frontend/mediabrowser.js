@@ -1,4 +1,4 @@
-// Left zone (Assets): projects + media bin only. Characters/Shortcuts/Splits live in the Composer;
+// Left zone (Assets): projects + media bin only. Shortcuts/Splits live in the Composer;
 // per-clip effects & transitions live in the Properties inspector.
 (function () {
   const { el, clear } = window.dom;

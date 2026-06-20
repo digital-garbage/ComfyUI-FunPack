@@ -65,7 +65,6 @@
         scene_count: st.preview.parsed?.scenes?.length,
       } : null,
       models: st.models,
-      chars: st.characters?.length,
       media: st.mediaBin?.length,
       targets: st.imageTargets?.length,
     });
@@ -129,7 +128,6 @@
       projects: st.projects?.length,
       media: st.mediaBin?.length,
       mediaPreview: st.mediaPreviewId,
-      chars: st.characters?.length,
       shortcuts: st.shortcuts?.length,
       transitions: st.transitions?.length,
       nleEffects: st.nleEffects?.length,

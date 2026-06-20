@@ -30,7 +30,6 @@
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
     shortcuts: [],           // prompt shortcut library
     shortcutCategories: [],  // managed grouping list: [{name, sub_categories:[]}]
-    characters: [],          // global character library
     imageTargets: [],        // where an image asset can be wired [{value,label}]
     ratingLabels: [],        // FunPack Studio V2 rating options
   };
@@ -117,36 +116,15 @@
   }
   function get() { return state; }
 
-  function _assignedCharacterIds(project) {
-    const ids = new Set();
-    (project?.scenes || []).forEach((s) => (s.character_ids || []).forEach((id) => ids.add(id)));
-    return ids;
-  }
-
-  function _characterPreviewKey(project) {
-    const assigned = _assignedCharacterIds(project);
-    return (state.characters || [])
-      .filter((c) => assigned.has(c.id))
-      .map((c) => [
-        c.id, c.name, c.appearance, c.body, c.wardrobe, c.always_include, c.never_include,
-        c.face_ref, c.body_ref, c.detail_ref,
-      ].join("\x1f"))
-      .sort()
-      .join("|");
-  }
-
   function _promptPreviewKey(project) {
     if (!project) return "";
     return JSON.stringify({
       anchor: project.anchor,
       global_prompt: project.global_prompt,
       intro_transition: project.intro_transition,
-      character_bible: project.character_bible,
-      characters: _characterPreviewKey(project),
       scenes: (project.scenes || []).map((s) => ({
         text: s.text,
         excluded: s.excluded,
-        character_ids: s.character_ids,
         transition_to_next: s.transition_to_next,
         source_type: s.source?.type,
         media_ref: s.source?.media_ref,
@@ -919,7 +897,7 @@
   function _patchSceneTarget(id, patch) {
     const s = scene(id); if (!s) return null;
     const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
-    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null || patch.character_ids != null))
+    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null))
       ? root.id : id;
     return scene(targetId);
   }
@@ -969,7 +947,6 @@
 
   function _applyScenePatch(id, patch, quiet) {
     const t = _patchSceneTarget(id, patch); if (!t) return;
-    const charsChanged = patch.character_ids != null;
     const anchorChanged = _anchorPatchChanged(t, patch);
     if (anchorChanged) _stampRenderSourceBeforeAnchorChange(t);
     const merged = { ...patch };
@@ -977,13 +954,9 @@
     if (!quiet && !window.EditorHistory?.isApplying()) _historyRecord();
     Object.assign(t, merged);
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
-    if (charsChanged) _invalidateGlobalPromptDraft();
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
       _localDirty = true; _renderAfterSave = true; notify(); commit();
-    } else if (charsChanged) {
-      notify();
-      _syncPromptPreview();
     } else if (_patchAffectsCombinedPrompt(merged)) {
       syncGlobalPromptFromTimeline();
       if (quiet) scheduleSaveSilent();
@@ -1111,7 +1084,6 @@
       text: sc.text || "",
       source: JSON.parse(JSON.stringify(sc.source || {})),
       guides: JSON.parse(JSON.stringify(sc.guides || [])),
-      character_ids: [...(sc.character_ids || [])],
       effects: JSON.parse(JSON.stringify(sc.effects || {})),
       frames: sc.frames,
       frames_mode: sc.frames_mode,
@@ -1138,7 +1110,6 @@
     sc.text = archive.text || "";
     sc.source = JSON.parse(JSON.stringify(archive.source || { type: "carry" }));
     sc.guides = JSON.parse(JSON.stringify(archive.guides || []));
-    sc.character_ids = [...(archive.character_ids || [])];
     sc.effects = JSON.parse(JSON.stringify(archive.effects || {}));
     sc.frames = archive.frames;
     sc.frames_mode = archive.frames_mode;
@@ -3581,45 +3552,6 @@
     notify();
   }
   async function loadShortcuts() { try { const r = await API.shortcuts(); state.shortcuts = r.shortcuts || []; state.shortcutCategories = r.categories || []; } catch (_) { state.shortcuts = []; state.shortcutCategories = []; } notify(); }
-  async function loadCharacters() { try { state.characters = (await API.characters()).characters || []; } catch (_) { state.characters = []; } notify(); }
-  function _characterAssignedToProject(charId) {
-    if (!charId || !state.project) return false;
-    return (state.project.scenes || []).some((s) => (s.character_ids || []).includes(charId));
-  }
-
-  async function saveCharacter(item) {
-    try {
-      state.characters = (await API.saveCharacter(item)).characters || state.characters;
-      const cid = item.id || item.original_id;
-      if (_characterAssignedToProject(cid)) {
-        _invalidateGlobalPromptDraft();
-        await refreshPreview(true);
-      } else notify();
-    } catch (e) { alert("Save failed: " + e.message); }
-  }
-  async function deleteCharacter(id) {
-    try {
-      const wasAssigned = _characterAssignedToProject(id);
-      state.characters = (await API.deleteCharacter(id)).characters || [];
-      if (wasAssigned) {
-        _invalidateGlobalPromptDraft();
-        await refreshPreview(true);
-      } else notify();
-    } catch (e) { console.error(e); }
-  }
-
-  function sceneCharacterIds(sceneId) {
-    const s = scene(sceneId); if (!s) return [];
-    const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
-    return [...(root?.character_ids || s.character_ids || [])];
-  }
-
-  function toggleSceneCharacter(sceneId, charId) {
-    const s = scene(sceneId); if (!s || !charId) return;
-    const ids = sceneCharacterIds(sceneId);
-    const next = ids.includes(charId) ? ids.filter((x) => x !== charId) : [...ids, charId];
-    patchScene(sceneId, { character_ids: next });
-  }
   async function saveShortcut(item) { try { const r = await API.saveShortcut(item); state.shortcuts = r.shortcuts || state.shortcuts; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { alert("Save failed: " + e.message); } }
   async function deleteShortcut(name) { try { const r = await API.deleteShortcut(name); state.shortcuts = r.shortcuts || []; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { console.error(e); } }
   async function addCategory(category, subCategory) {
@@ -3796,7 +3728,6 @@
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
     await loadNleLibrary();
     await loadShortcuts();
-    await loadCharacters();
     await loadMedia();
     try { state.ratingLabels = (await API.ratingLabels()).labels || []; } catch (_) { state.ratingLabels = []; }
     await loadModels();
@@ -3812,7 +3743,6 @@
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
     patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
     addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
-    sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, audioTrackEndSec, hasOverlayOrAudioContent,
@@ -3834,7 +3764,6 @@
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,
     getEditorSettings, getEditorSetting, setEditorSetting,
-    loadCharacters, saveCharacter, deleteCharacter,
     loadTransitions, saveTransition, deleteTransition, importTransitions, clearTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,
     applySplitMarkerToSelection, applyTransitionToSelection, insertShortcutIntoSelection,

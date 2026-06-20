@@ -55,7 +55,7 @@ def save(project: Project) -> Project:
 
 def create(name: str = "Untitled") -> Project:
     project = Project(name=name)
-    project.anchor = "Optional: describe characters or the world shared by all scenes"
+    project.anchor = "Optional: describe the subjects or world shared by all scenes"
     project.scenes = [Scene(text="Describe your first scene here…")]
     return save(project)
 

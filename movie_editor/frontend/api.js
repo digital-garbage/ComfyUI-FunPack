@@ -93,9 +93,6 @@
     listFiles: () => j("GET", API("/files")),
     deleteFile: (group, name) => j("DELETE", API(`/files/${encodeURIComponent(group)}/${encodeURIComponent(name)}`)),
     clearFiles: (group) => j("POST", API(`/files/${encodeURIComponent(group)}/clear`), {}),
-    characters: () => j("GET", API("/library/characters")),
-    saveCharacter: (item) => j("POST", API("/library/characters"), item),
-    deleteCharacter: (id) => j("DELETE", API(`/library/characters/${encodeURIComponent(id)}`)),
     nleLibrary: () => j("GET", API("/library/nle")),
 
     // media bin
