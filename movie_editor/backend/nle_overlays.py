@@ -172,12 +172,14 @@ def render_text_overlay_png(ov: dict, canvas_w: int, canvas_h: int, out_path: st
     probe = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
     bbox = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align=align, stroke_width=eff_stroke)
-    tw = max(1, bbox[2] - bbox[0])
-    th = max(1, bbox[3] - bbox[1])
+    # Pillow >= 10 may return float bbox coords; Image.new() and crop boxes need ints.
+    bx0, by0, bx1, by1 = (int(round(v)) for v in bbox)
+    tw = max(1, bx1 - bx0)
+    th = max(1, by1 - by0)
     margin = eff_stroke + (shadow_off if shadow else 0) + max(4, size // 8)
     layer = Image.new("RGBA", (tw + margin * 2 + shadow_off, th + margin * 2 + shadow_off), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
-    ox, oy = margin - bbox[0], margin - bbox[1]
+    ox, oy = margin - bx0, margin - by0
     if shadow:
         draw.multiline_text((ox + shadow_off, oy + shadow_off), text, font=font, fill=shadow_fill,
                             spacing=spacing, align=align, stroke_width=eff_stroke, stroke_fill=shadow_fill)
