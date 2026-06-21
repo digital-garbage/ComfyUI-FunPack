@@ -288,6 +288,42 @@ def test_generic_scene_label_splits_but_is_never_encoded(monkeypatch):
     assert "cut" in real["scenes"][0]["expanded"]
 
 
+def test_split_scenes_from_segments_uses_explicit_boundaries(monkeypatch):
+    """The editor hands Studio its OWN scene list, so boundaries never need an in-text delimiter.
+    One segment = exactly one scene; anchor keys fold into every scene; no 'scene N' anywhere."""
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: _db({}))
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes_from_segments(
+        "", ["a red car drives down a street", "the car stops at a cafe", "a woman exits"])
+    assert [s["expanded"] for s in out["scenes"]] == [
+        "a red car drives down a street", "the car stops at a cafe", "a woman exits"]
+    for s in out["scenes"]:
+        assert "scene 1" not in s["expanded"].lower() and "scene 2" not in s["expanded"].lower()
+
+
+def test_split_scenes_from_segments_preserves_empty_scene(monkeypatch):
+    """A text-less i2v scene must KEEP its slot (count = editor scene count), not be dropped —
+    otherwise per-scene anchors/seeds shift by one. It becomes an empty (anchor-only) scene."""
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: _db({}))
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes_from_segments("", ["", "a red car", "the cafe"])
+    assert len(out["scenes"]) == 3
+    assert out["scenes"][0]["expanded"] == ""
+    assert [s["expanded"] for s in out["scenes"][1:]] == ["a red car", "the cafe"]
+
+
+def test_split_scenes_from_segments_folds_anchor_and_keys(monkeypatch):
+    """Anchor text + anchor keys fold into every scene, exactly like split_scenes()."""
+    db = _db({"anc": (["zeta"], ["ZZZ"], "anchorKey"), "a": (["alpha"], ["AAA"], "keyA")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes_from_segments("zeta", ["alpha here", "plain scene"])
+    assert out["anchor_expanded"] == "ZZZ"
+    assert out["scenes"][0]["keys"] == {"anchorKey", "keyA"}
+    assert out["scenes"][1]["keys"] == {"anchorKey"}
+    assert "AAA" in out["scenes"][0]["expanded"]
+
+
 def test_split_scenes_single_scene(monkeypatch):
     db = _db({"hero": (["hero"], ["a knight"], "mykey")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)

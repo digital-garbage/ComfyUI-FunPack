@@ -960,6 +960,47 @@ def split_scenes(prompt, placement="start"):
     return {"anchor": anchor["raw"].strip(), "anchor_expanded": anchor["exp"].strip(), "scenes": scenes}
 
 
+def split_scenes_from_segments(anchor, segments, placement="start"):
+    """Canonical scene structure from EXPLICIT per-scene boundaries supplied by the caller (the
+    Movie Editor's own scene list) instead of re-deriving boundaries from in-text delimiters.
+
+    The editor already KNOWS where each scene starts (they are separate Scene objects), so it
+    hands us that list directly — no `scene N` marker ever has to be injected into the prompt.
+    `anchor` is the shared prefix text; `segments` is one raw text per editor scene (each may
+    carry its own leading transition trigger, which supplies that scene's effect). Each segment
+    becomes EXACTLY one scene; its shortcut expansion + refinement keys + effect come from
+    split_scenes (reused per item, where there is no boundary ambiguity), and the anchor keys
+    fold into every scene — identical semantics to split_scenes(), same output shape."""
+    def _flatten(split_out):
+        # Collapse a split_scenes() result to one scene: any leading anchor text + every
+        # sub-scene joined; first non-None effect wins; keys unioned.
+        raw_parts, exp_parts, keys, effect = [], [], set(), None
+        ar = (split_out.get("anchor") or "").strip()
+        ae = (split_out.get("anchor_expanded") or "").strip()
+        if ar:
+            raw_parts.append(ar)
+        if ae:
+            exp_parts.append(ae)
+        for s in (split_out.get("scenes") or []):
+            r = (s.get("raw") or "").strip()
+            e = (s.get("expanded") or "").strip()
+            if r:
+                raw_parts.append(r)
+            if e:
+                exp_parts.append(e)
+            keys |= set(s.get("keys") or set())
+            if effect is None and s.get("effect"):
+                effect = s.get("effect")
+        return " ".join(raw_parts).strip(), " ".join(exp_parts).strip(), keys, effect
+
+    a_raw, a_exp, anchor_keys, _ = _flatten(split_scenes(str(anchor or ""), placement=placement))
+    scenes = []
+    for i, seg in enumerate(segments or []):
+        r, e, k, eff = _flatten(split_scenes(str(seg or ""), placement=placement))
+        scenes.append({"index": i, "raw": r, "expanded": e, "keys": anchor_keys | k, "effect": eff})
+    return {"anchor": a_raw, "anchor_expanded": a_exp, "scenes": scenes}
+
+
 def refinement_key_pool_for(prompt):
     """Every non-default refinement key the prompt activates (anchor + all scenes) — the exact
     set a session reset wipes. Derived from the one canonical split."""
@@ -11672,7 +11713,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   steer_mode="relative", absolute_strength=0.6,
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
-                  guess_freeze_seed=True, movie_editor_scene_ratings=None):
+                  guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
@@ -12211,13 +12252,41 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         current_scene_seed_source = str(_seed_source or "fresh seed")
         if split_by_transitions:
             try:
-                canonical = split_scenes(_raw_positive_prompt, placement=split_transition_placement)
-                canon_scenes = [s for s in (canonical.get("scenes", []) or [])
-                                if (s.get("expanded") or "").strip()]
+                # Prefer EXPLICIT scene boundaries handed in by the caller (the Movie Editor
+                # passes its own scene list). Falls back to text-splitting the prompt only for
+                # raw node-pack use where there is no structured scene list. Either way no
+                # `scene N` delimiter is ever needed in the prompt.
+                structural = isinstance(scene_segments, dict) and scene_segments.get("scenes") is not None
+                if structural:
+                    canonical = split_scenes_from_segments(
+                        scene_segments.get("anchor", ""), scene_segments.get("scenes", []),
+                        placement=split_transition_placement)
+                    # The editor's scene list is authoritative on COUNT — one conditioning scene
+                    # per editor scene. Keep every scene, including a text-less i2v scene (it stays
+                    # at its index as an anchor-only conditioning); dropping it would shift anchors.
+                    canon_scenes = list(canonical.get("scenes", []) or [])
+                else:
+                    canonical = split_scenes(_raw_positive_prompt, placement=split_transition_placement)
+                    canon_scenes = [s for s in (canonical.get("scenes", []) or [])
+                                    if (s.get("expanded") or "").strip()]
                 if len(canon_scenes) >= 1:
-                    segments = [(canonical.get("anchor_expanded", ""), None)] + \
-                               [(s.get("expanded", ""), s.get("effect")) for s in canon_scenes]
-                    split_scene_texts, split_scene_effects = self._v2_transition_scene_texts(segments)
+                    anchor_exp = (canonical.get("anchor_expanded", "") or "").strip()
+                    if structural:
+                        # Fold the anchor into each scene WITHOUT dropping empties (mirrors
+                        # _v2_transition_scene_texts but count-preserving for the structural path).
+                        split_scene_texts, split_scene_effects = [], []
+                        for s in canon_scenes:
+                            seg = (s.get("expanded") or "").strip()
+                            if anchor_exp and seg:
+                                sep = " " if anchor_exp[-1] in ".!?," else ", "
+                                split_scene_texts.append(anchor_exp + sep + seg)
+                            else:
+                                split_scene_texts.append(anchor_exp or seg)
+                            split_scene_effects.append(s.get("effect"))
+                    else:
+                        segments = [(anchor_exp, None)] + \
+                                   [(s.get("expanded", ""), s.get("effect")) for s in canon_scenes]
+                        split_scene_texts, split_scene_effects = self._v2_transition_scene_texts(segments)
                     scene_refinement_keys = [set(s.get("keys") or set()) for s in canon_scenes]
                     current_scene_seeds = self._v2_scene_seed_values(seed, len(split_scene_texts), _scene_seeds)
                     current_scene_seed_source = (
@@ -14364,6 +14433,7 @@ class FunPackStudio:
             _seed_source=seed_source,
             _scene_seeds=scene_seed_memory,
             movie_editor_scene_ratings=_me_scene_ratings,
+            scene_segments=(rf.get("scenes") if isinstance(rf.get("scenes"), dict) else None),
         )
 
         # --- Conditioning Adjust ---

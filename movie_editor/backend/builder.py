@@ -299,6 +299,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             _ss = {}
         _rf = _ss.get("refiner") if isinstance(_ss.get("refiner"), dict) else {}
         _rf["split_by_transitions"] = True
+        # Explicit scene boundaries from the editor (no `scene N` markers in the prompt).
+        # Studio (split_scenes_from_segments) uses this list directly to split scenes.
+        _seg = params.get("scene_segments")
+        if isinstance(_seg, dict) and _seg.get("scenes"):
+            _rf["scenes"] = _seg
         # reset_session also lives in studio_settings.refiner — armed per-run by the editor
         # (first run after the user clicks "Reset Studio session"); explicit so it's never
         # left on from a previous run.

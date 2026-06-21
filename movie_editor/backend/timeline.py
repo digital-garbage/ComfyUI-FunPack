@@ -694,42 +694,54 @@ def _leading_trigger_re():
 
 def build_combined_prompt(project: Project, include_excluded: bool = False,
                           for_generation: bool = False) -> str:
-    """The master prompt = anchor + scene texts.
+    """The master prompt = anchor + scene texts, joined VERBATIM.
 
-    Display (for_generation=False): a verbatim join — transition triggers/shortcuts stay
-    in-text exactly as typed, so it round-trips with the global prompt.
+    Transition triggers/shortcuts stay in-text exactly as typed, so it round-trips with the
+    global prompt. NOTHING is injected — not even for generation. Scene boundaries for
+    generation are passed STRUCTURALLY via build_generation_scene_segments() (Studio uses that
+    list directly), so we never have to smuggle a `scene N` delimiter into the prompt. The
+    `for_generation` flag is kept for call-site compatibility but no longer changes the output.
+    """
+    scenes = [
+        s for s in project.scenes
+        if (include_excluded or not s.excluded) and is_generative_scene(s)
+    ]
+    parts: list[str] = []
+    anchor = effective_anchor(project)
+    if anchor:
+        parts.append(anchor)
+    for _uid, group in group_generative_units(scenes):
+        text = (gen_unit_root(group).text or "").strip()
+        if text:
+            parts.append(text)
+    return " ".join(p for p in parts if p).strip()
 
-    Generation (for_generation=True): Studio must split into EXACTLY one scene per timeline
-    scene, but a `carry` scene's text has no leading transition, so Studio would merge it
-    with the previous one (only the first scene gets generated). So before any scene whose
-    text doesn't already begin with a transition trigger we inject a separator (the seam's
-    transition_to_next, else the generic 'scene N' label) to force the split. This affects
-    only what's sent to Studio, never the displayed global prompt.
+
+def build_generation_scene_segments(project: Project, include_excluded: bool = False) -> dict:
+    """The run's scene boundaries, handed to Studio structurally so no `scene N` marker is ever
+    injected into the prompt. The editor already knows every boundary (each generative unit is a
+    scene), so we just list them.
+
+    Returns {"anchor": <shared prefix text>, "scenes": [<raw unit text>, ...]} where each unit's
+    text is prefixed with its REAL leading transition (intro_transition for the first unit, the
+    previous unit's transition_to_next otherwise) when one exists — so Studio's per-scene split
+    still picks up the transition's visual effect. A `carry` unit with no transition is just its
+    text (effect = none). Studio (split_scenes_from_segments) expands shortcuts + extracts keys
+    per item; one unit = exactly one scene.
     """
     scenes = [
         s for s in project.scenes
         if (include_excluded or not s.excluded) and is_generative_scene(s)
     ]
     units = group_generative_units(scenes)
-    parts: list[str] = []
-    anchor = effective_anchor(project)
-    if anchor:
-        parts.append(anchor)
-    # Only inject separators for a MULTI-unit run: editorial subclips count as one unit.
-    inject = for_generation and len(units) > 1
-    trig_re = _leading_trigger_re() if inject else None
+    out: list[str] = []
     for i, (_uid, group) in enumerate(units):
-        root = gen_unit_root(group)
-        text = (root.text or "").strip()
-        if inject and not (text and trig_re and trig_re.match(text)):
-            prev_root = gen_unit_root(units[i - 1][1]) if i > 0 else None
-            marker = (project.intro_transition or "").strip() if i == 0 else ((prev_root.transition_to_next if prev_root else "") or "").strip()
-            if not marker:
-                marker = f"scene {i + 1}"
-            parts.append(marker)
-        if text:
-            parts.append(text)
-    return " ".join(p for p in parts if p).strip()
+        text = (gen_unit_root(group).text or "").strip()
+        prev_root = gen_unit_root(units[i - 1][1]) if i > 0 else None
+        trans = ((project.intro_transition or "").strip() if i == 0
+                 else ((prev_root.transition_to_next if prev_root else "") or "").strip())
+        out.append((trans + " " + text).strip() if trans else text)
+    return {"anchor": effective_anchor(project), "scenes": out}
 
 
 def _scene_run_fingerprint(sc: Scene) -> str:

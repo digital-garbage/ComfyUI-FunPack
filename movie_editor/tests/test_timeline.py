@@ -16,6 +16,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     Scene,
     STUDIO_DEFAULT_GUIDE,
     build_combined_prompt,
+    build_generation_scene_segments,
     build_auto_continuity_guides,
     build_mixed_solo_guides_payload,
     build_scene_anchors_payload,
@@ -40,7 +41,7 @@ def _project(**kw):
     return p
 
 
-def test_anchor_plus_two_scenes_emits_separators():
+def test_generation_prompt_is_verbatim_no_injected_separators():
     p = _project(
         anchor="red-haired heroine",
         intro_transition="cut to",
@@ -50,15 +51,16 @@ def test_anchor_plus_two_scenes_emits_separators():
         ],
     )
     prompt = build_combined_prompt(p, for_generation=True)
-    # anchor first, intro marker before scene 0, scene marker before scene 1
-    assert prompt.startswith("red-haired heroine")
-    assert "cut to" in prompt
-    assert "blur" in prompt
-    assert prompt.index("cut to") < prompt.index("flying")
-    assert prompt.index("blur") < prompt.index("landing")
+    # anchor + scene texts, VERBATIM — nothing injected.
+    assert prompt == "red-haired heroine flying over the city landing on a rooftop"
+    assert "scene 1" not in prompt and "scene 2" not in prompt
+    # boundaries + the real transitions travel STRUCTURALLY instead of in the prompt
+    seg = build_generation_scene_segments(p)
+    assert seg["anchor"] == "red-haired heroine"
+    assert seg["scenes"] == ["cut to flying over the city", "blur landing on a rooftop"]
 
 
-def test_generation_prompt_fingerprint_includes_split_markers():
+def test_generation_prompt_fingerprint_has_no_split_markers():
     p = _project(
         anchor="red-haired heroine",
         intro_transition="cut to",
@@ -68,9 +70,9 @@ def test_generation_prompt_fingerprint_includes_split_markers():
         ],
     )
     fp = generation_prompt_fingerprint(p, p)
-    assert "cut to" in fp["generation_prompt"]
-    assert "blur" in fp["generation_prompt"]
-    assert fp["display_prompt"] != fp["generation_prompt"]
+    # generation prompt is now verbatim (boundaries are structural) — no injected separators
+    assert "scene 1" not in fp["generation_prompt"]
+    assert fp["generation_prompt"] == "red-haired heroine flying over the city landing on a rooftop"
 
 
 def test_generation_prompt_hash_changes_when_text_changes():
@@ -90,15 +92,18 @@ def test_generation_run_hash_changes_when_anchor_changes():
     assert r1["run_hash"] != r2["run_hash"]
 
 
-def test_missing_markers_fall_back_to_scene_labels():
+def test_carry_scenes_have_no_injected_labels():
     p = _project(
         anchor="a knight",
         scenes=[{"text": "in a forest"}, {"text": "at a castle"}],
     )
     prompt = build_combined_prompt(p, for_generation=True)
-    # No explicit markers -> generic "scene N" boundaries so the split still separates.
-    assert "scene 1" in prompt
-    assert "scene 2" in prompt
+    # carry scenes (no transition) used to get an injected 'scene N' label — no longer.
+    assert "scene 1" not in prompt and "scene 2" not in prompt
+    assert prompt == "a knight in a forest at a castle"
+    # the two boundaries are still there, structurally
+    seg = build_generation_scene_segments(p)
+    assert seg["scenes"] == ["in a forest", "at a castle"]
 
 
 def test_video_clips_excluded_from_combined_prompt():

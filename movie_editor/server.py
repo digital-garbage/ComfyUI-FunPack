@@ -25,6 +25,7 @@ from .backend.nle_overlays import build_overlay_video_filter, prepare_overlay_ex
 from .backend.timeline import (
     Project,
     build_combined_prompt,
+    build_generation_scene_segments,
     collapse_generative_units,
     continuity_media_refs,
     effective_negative_prompt,
@@ -1507,6 +1508,9 @@ if web is not None and PromptServer is not None:
                 "studio_inputs": _run_studio_inputs(
                     target, active_scenes, prompt_changed=prompt_changed, models=models_cfg,
                 ),
+                # Scene boundaries handed to Studio structurally (the editor knows them) so the
+                # generation prompt stays clean — no injected `scene N` delimiters.
+                "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),

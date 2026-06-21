@@ -3,7 +3,9 @@
 from pathlib import Path
 
 from movie_editor.backend import bridge
-from movie_editor.backend.timeline import Project, Scene
+from movie_editor.backend.timeline import (
+    Project, Scene, build_combined_prompt, build_generation_scene_segments,
+)
 from movie_editor.server import (
     _build_render_filter,
     _clip_bytes_for_media,
@@ -183,6 +185,24 @@ def test_studio_inputs_skips_custom_conditioning():
     p = _project([])
     p.conditioning_slot = "custom"
     assert _run_studio_inputs(p, p.scenes) == {}
+
+
+def test_generation_prompt_has_no_injected_scene_markers():
+    # The generation prompt must be the verbatim text the user wrote — never an injected
+    # 'scene N' delimiter. Boundaries travel structurally via build_generation_scene_segments.
+    p = _project(scenes=[
+        {"id": "s1", "text": "a red car drives down a street", "source": {"type": "image", "media_ref": "img1"}},
+        {"id": "s2", "text": "the car stops at a cafe", "source": {"type": "carry"}},
+        {"id": "s3", "text": "a woman exits the cafe", "source": {"type": "carry"}},
+    ])
+    gen = build_combined_prompt(p, for_generation=True)
+    assert "scene 1" not in gen.lower()
+    assert "scene 2" not in gen.lower()
+    assert gen == "a red car drives down a street the car stops at a cafe a woman exits the cafe"
+    # boundaries are carried structurally instead — one entry per generative scene
+    seg = build_generation_scene_segments(p)
+    assert seg["scenes"] == [
+        "a red car drives down a street", "the car stops at a cafe", "a woman exits the cafe"]
 
 
 def test_score_slider_sampler_inputs_pass_through():
