@@ -7,13 +7,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class _FakeRoutes:
+    # Mirror every verb server.py registers (this fake is installed into sys.modules
+    # as `server`, so a real server.py import elsewhere registers against it).
     def get(self, _p):
         return lambda f: f
 
     def post(self, _p):
         return lambda f: f
 
+    def put(self, _p):
+        return lambda f: f
+
     def delete(self, _p):
+        return lambda f: f
+
+    def patch(self, _p):
         return lambda f: f
 
 
