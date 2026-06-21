@@ -210,7 +210,9 @@
     };
     body.append(field("Source", src));
     const eff = PC()?.effectiveSourceType(root, st) || stored;
-    if (eff === "image") renderImageSource(st, root, body);
+    // image + mixed both pick an anchor image here (renderImageSource branches on mixed);
+    // anchor_guide uses its own picker (image + guide strength).
+    if (eff === "image" || eff === "mixed") renderImageSource(st, root, body);
     if (eff === "anchor_guide") renderAnchorGuideSource(st, root, body);
   }
 
