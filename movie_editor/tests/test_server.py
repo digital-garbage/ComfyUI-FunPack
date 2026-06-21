@@ -185,6 +185,21 @@ def test_studio_inputs_skips_custom_conditioning():
     assert _run_studio_inputs(p, p.scenes) == {}
 
 
+def test_score_slider_sampler_inputs_pass_through():
+    # FreeSliders score_slider is a plain sampler knob (like embed_guidance): the editor
+    # sets it in sampler_inputs and _run_sampler_inputs must carry it through untouched
+    # so builder.py can stamp it onto the Chain Sampler node.
+    full = _project(
+        scenes=[{"id": "s1", "text": "a"}, {"id": "s2", "text": "b", "source": {"type": "carry"}}],
+        sampler_inputs={"score_slider": True, "score_slider_strength": 2.0,
+                        "embed_guidance_source": "relative"},
+    )
+    samp = _run_sampler_inputs(full, 2, full=full)
+    assert samp["score_slider"] is True
+    assert samp["score_slider_strength"] == 2.0
+    assert samp["embed_guidance_source"] == "relative"
+
+
 def test_shortcut_seed_uses_sampler_inputs():
     p = _project([], sampler_inputs={"seed": 4242})
     assert _shortcut_seed(p) == 4242
