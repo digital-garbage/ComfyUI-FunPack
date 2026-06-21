@@ -8,13 +8,13 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
   <a href="https://cloud.vast.ai/?ref_id=308176"><img src="https://img.shields.io/badge/Run%20on-Vast.ai-BCFF41?style=for-the-badge&amp;logoColor=000000" alt="Vast.ai" height="36"></a>
 </p>
 
-## Dev and Cutting Edge branches
+## Dev and other non-main branches
 
 The `dev` branch is intended for testing unfinished changes, implementing new logic and basically, flipping everything just because I can. It can be broken, renamed, or changed without warning.
 
 Use only `main` if you want the most stable version of this node pack. Bug reports based on `dev` version will be ignored.
 
-Cutting edge branch is designed for testing the most advanced yet most breaking changes and features. I do not recommend using cutting_edge branch unless it's strictly necessary for your workflow (e.g. a feature you wanted got a rework or else) - any sort of stability is not guaranteed.
+From time to time other short-lived branches may appear for the most advanced yet most breaking changes and features (e.g. a large rework in progress). I do not recommend using any non-`main` branch unless it's strictly necessary for your workflow — any sort of stability is not guaranteed, and such branches can be force-pushed or deleted at any time.
 
 ## Version 3.0 — Cutting Room and development direction
 
