@@ -12462,10 +12462,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if eff_key and isinstance(learning_profile, dict) and learning_profile.get("key") in {"like", "loved_it", "nailed_it"}:
                     bless_attention_maps(eff_key)
                     try:
-                        from .ltx_enhancements import bless_attn_weights
+                        from .ltx_enhancements import bless_attn_weights, bless_kv
                     except ImportError:
-                        from ltx_enhancements import bless_attn_weights
+                        from ltx_enhancements import bless_attn_weights, bless_kv
                     bless_attn_weights(eff_key)
+                    bless_kv(eff_key)
 
                 patched_model = build_enhancements(
                     patched_model,

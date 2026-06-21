@@ -275,6 +275,78 @@ def bless_attn_weights(refinement_key):
 
 
 # ---------------------------------------------------------------------------
+# Raw K/V identity bank (BachVid-style)
+#
+# The blessed-attn store above keeps only a per-token IMPORTANCE weight (output
+# norm). BachVid (arxiv 2510.21696) instead reuses the raw attention Keys and
+# Values from a liked "identity" generation and re-injects them into later runs,
+# so character appearance carries across scenes/sessions without a reference
+# image or any training. We capture K/V at the IDENTITY_BLOCKS during the
+# mid-sigma window and lerp the running gen's K/V toward the blessed K/V at the
+# same token positions (the packed-safe, RoPE-safe analogue of the paper's
+# concat-and-attend; same seq positions => no RoPE surgery, no mask changes).
+# Stored as {block_idx: {"k": [seq, D] half, "v": [seq, D] half}}, batch-mean.
+# ---------------------------------------------------------------------------
+
+def _kv_temp_path(refinement_key):
+    return os.path.join(_maps_dir(), f"kv_temp_{_safe_key(refinement_key)}.pt")
+
+
+def _kv_blessed_path(refinement_key):
+    return os.path.join(_maps_dir(), f"kv_blessed_{_safe_key(refinement_key)}.pt")
+
+
+def _load_blessed_kv(refinement_key):
+    path = _kv_blessed_path(refinement_key)
+    if not os.path.exists(path):
+        return None
+    try:
+        data = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(data, dict) or not data:
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def bless_kv(refinement_key):
+    """EMA-merge temp K/V identity bank into blessed. Call on liked ratings."""
+    src = _kv_temp_path(refinement_key)
+    dst = _kv_blessed_path(refinement_key)
+    if not os.path.exists(src):
+        return False
+    try:
+        new_data = torch.load(src, map_location="cpu", weights_only=True)
+        if os.path.exists(dst):
+            old_data = torch.load(dst, map_location="cpu", weights_only=True)
+            merged = {}
+            for b in set(old_data) | set(new_data):
+                o, n = old_data.get(b), new_data.get(b)
+                if not isinstance(n, dict):
+                    merged[b] = o
+                    continue
+                if not isinstance(o, dict):
+                    merged[b] = n
+                    continue
+                entry = {}
+                for tk in ("k", "v"):
+                    ot, nt = o.get(tk), n.get(tk)
+                    if isinstance(ot, torch.Tensor) and isinstance(nt, torch.Tensor) and ot.shape == nt.shape:
+                        entry[tk] = (0.8 * ot.float() + 0.2 * nt.float()).half()
+                    else:
+                        entry[tk] = nt if isinstance(nt, torch.Tensor) else ot
+                merged[b] = entry
+            torch.save(merged, dst)
+        else:
+            torch.save(new_data, dst)
+        print(f"[FunPackEnhancements] Blessed K/V identity bank for key '{refinement_key}'")
+        return True
+    except Exception as e:
+        print(f"[FunPackEnhancements] K/V bless failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Creativity latent save / load
 # ---------------------------------------------------------------------------
 
@@ -376,6 +448,8 @@ def clear_refinement_data(refinement_key):
         _creativity_latent_path(norm),
         _attn_weights_temp_path(norm),
         _attn_weights_blessed_path(norm),
+        _kv_temp_path(norm),
+        _kv_blessed_path(norm),
     ):
         try:
             if os.path.exists(path):
@@ -709,12 +783,17 @@ def _extend_v_pe(kwargs, n_ref):
 def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, inject_strength,
                               sigma_state=None, sigma_gate=(0.2, 0.5),
                               attn_capture_buf=None, attn_inject=None, attn_inject_strength=0.0,
-                              attn_sigma_gate=(0.35, 0.85)):
+                              attn_sigma_gate=(0.35, 0.85),
+                              kv_capture_buf=None, kv_inject=None, kv_inject_strength=0.0,
+                              kv_sigma_gate=(0.35, 0.85), kvlock_scale=None):
     """
     Builds a single patches_replace["dit"] replacement function that applies:
       - attention temperature (temp_scale != 1.0)
       - attention weight capture (attn_capture_buf) — output norm proxy per token position
       - attention weight inject (attn_inject) — V scaling by accumulated importance
+      - raw K/V capture (kv_capture_buf) — BachVid identity bank, batch-mean per position
+      - raw K/V inject (kv_inject) — lerp K/V toward blessed identity at matched positions;
+        injection strength is multiplied by kvlock_scale[0] (KV-Lock variance schedule, 1.0 = off)
       - hidden state capture (capture_buf)
       - hidden state injection (inject_tensor), sigma-gated
     All in one pass through the block.
@@ -726,13 +805,15 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
     do_inject = inject_tensor is not None
     do_attn_capture = attn_capture_buf is not None
     do_attn_inject = attn_inject is not None and attn_inject_strength > 0
-    do_attn_patch = do_temperature or do_attn_capture or do_attn_inject
+    do_kv_capture = kv_capture_buf is not None
+    do_kv_inject = kv_inject is not None and kv_inject_strength > 0
+    do_attn_patch = do_temperature or do_attn_capture or do_attn_inject or do_kv_capture or do_kv_inject
 
     if not do_temperature and not do_capture and not do_inject and not do_attn_patch:
         return None
 
     def replacement(args, extra):
-        # --- Attention patch (temperature + attn capture + attn inject) ---
+        # --- Attention patch (temperature + attn capture/inject + K/V capture/inject) ---
         if do_attn_patch:
             s = temp_scale if do_temperature else 1.0
             orig_attn = attn_mod.optimized_attention
@@ -740,14 +821,40 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
 
             def _attn_body(q, k, v, orig_fn, extra_args, extra_kwargs):
                 v_use = v
+                k_use = k
+                sigma = sigma_state[0] if sigma_state is not None else 0.0
+                # --- BachVid K/V inject: lerp toward blessed identity at matched positions ---
+                if do_kv_inject and kv_sigma_gate[0] <= sigma <= kv_sigma_gate[1]:
+                    try:
+                        scale_mul = float(kvlock_scale[0]) if kvlock_scale is not None else 1.0
+                        alpha = max(0.0, min(0.6, kv_inject_strength * scale_mul))
+                        if alpha > 0.0:
+                            k_id = kv_inject.get("k")
+                            v_id = kv_inject.get("v")
+                            if isinstance(k_id, torch.Tensor) and k_id.shape[0] == k.shape[1] and k_id.shape[1] == k.shape[2]:
+                                k_id = k_id.to(device=k.device, dtype=k.dtype)
+                                k_use = k.lerp(k_id.unsqueeze(0).expand_as(k), alpha)
+                            if isinstance(v_id, torch.Tensor) and v_id.shape[0] == v.shape[1] and v_id.shape[1] == v.shape[2]:
+                                v_id = v_id.to(device=v.device, dtype=v.dtype)
+                                v_use = v.lerp(v_id.unsqueeze(0).expand_as(v), alpha)
+                    except Exception:
+                        k_use, v_use = k, v
                 if do_attn_inject and attn_inject.shape[0] == v.shape[1]:
-                    sigma = sigma_state[0] if sigma_state is not None else 0.0
                     if attn_sigma_gate[0] <= sigma <= attn_sigma_gate[1]:
                         imp = attn_inject.to(device=v.device, dtype=torch.float32)
                         imp = imp / imp.mean().clamp(min=1e-6)
                         scale = (1.0 + attn_inject_strength * (imp - 1.0)).to(v.dtype)
-                        v_use = v * scale.unsqueeze(0).unsqueeze(-1)
-                result = orig_fn(q * s, k * s, v_use, *extra_args, **extra_kwargs)
+                        v_use = v_use * scale.unsqueeze(0).unsqueeze(-1)
+                result = orig_fn(q * s, k_use * s, v_use, *extra_args, **extra_kwargs)
+                # --- BachVid K/V capture: batch-mean K/V at this position, last-in-window wins ---
+                if do_kv_capture and kv_sigma_gate[0] <= sigma <= kv_sigma_gate[1]:
+                    try:
+                        kv_capture_buf[block_idx] = {
+                            "k": k.detach().float().mean(dim=0).half().cpu(),
+                            "v": v.detach().float().mean(dim=0).half().cpu(),
+                        }
+                    except Exception:
+                        pass
                 if do_attn_capture:
                     try:
                         imp_cap = result.detach().float().norm(dim=-1).mean(dim=0).cpu()
@@ -885,6 +992,16 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     blessed_attn = _load_blessed_attn_weights(refinement_key) if refinement_key else None
     attn_inject_strength = max(0.04, min(0.18, reward * 0.18)) if blessed_attn else 0.0
 
+    # --- BachVid raw K/V identity bank ---
+    # Capture K/V on every keyed run (temp bank, promoted on Perfect); inject the
+    # blessed identity K/V when one exists. Strength scales with reward like the
+    # importance-weight inject above. kvlock_scale is the shared multiplier the
+    # KV-Lock variance scheduler (Phase 2) writes per step; 1.0 = passthrough.
+    kv_capture_buf = {} if refinement_key else None
+    blessed_kv = _load_blessed_kv(refinement_key) if refinement_key else None
+    kv_inject_strength = max(0.04, min(0.22, reward * 0.22)) if blessed_kv else 0.0
+    kvlock_scale = [1.0]
+
     # --- Technique 2: temperature map ---
     temperature_map = _derive_temperature_map(rating_profile, reward, vf_score=vf_score)
     # temperature → q/k scale: scale = 1/sqrt(temp)
@@ -937,11 +1054,16 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
 
     # --- Install per-block patches_replace ---
     needs_injection = bool(lazy_injects) or bool(blessed_maps)
-    attn_active_blocks = set(IDENTITY_BLOCKS) if attn_capture_buf is not None or blessed_attn else set()
+    kv_active = kv_capture_buf is not None or bool(blessed_kv)
+    attn_active_blocks = set(IDENTITY_BLOCKS) if (attn_capture_buf is not None or blessed_attn or kv_active) else set()
     all_blocks = set(temperature_map.keys()) | (all_injection_blocks if (capture_buf is not None or needs_injection) else set()) | attn_active_blocks
 
     if all_blocks:
         to = model.model_options.setdefault("transformer_options", {})
+        # Expose the KV-Lock multiplier so the sampler's variance scheduler (Phase 2)
+        # can drive the BachVid injection strength step-by-step via this same list.
+        if kv_active:
+            to["funpack_kvlock_scale"] = kvlock_scale
         pr = to.setdefault("patches_replace", {})
         dit = pr.setdefault("dit", {})
 
@@ -964,13 +1086,19 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             cap = capture_buf if (capture_buf is not None and (is_anchor or is_identity)) else None
 
             attn_inj = blessed_attn.get(block_idx) if blessed_attn else None
+            kv_cap = kv_capture_buf if (kv_capture_buf is not None and is_identity) else None
+            kv_inj = blessed_kv.get(block_idx) if (blessed_kv and is_identity) else None
             replacement = _build_block_replacement(
                 block_idx, t_scale, cap, inj_tensor, inj_strength,
-                sigma_state=sigma_state if (inj_tensor is not None or attn_inj is not None) else None,
+                sigma_state=sigma_state if (inj_tensor is not None or attn_inj is not None or kv_inj is not None or kv_cap is not None) else None,
                 sigma_gate=inj_gate,
                 attn_capture_buf=attn_capture_buf,
                 attn_inject=attn_inj,
                 attn_inject_strength=attn_inject_strength,
+                kv_capture_buf=kv_cap,
+                kv_inject=kv_inj if isinstance(kv_inj, dict) else None,
+                kv_inject_strength=kv_inject_strength,
+                kvlock_scale=kvlock_scale,
             )
             if replacement is not None:
                 # Compose with any existing replacement (e.g. from STG/PAG)
@@ -1264,6 +1392,30 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
             return result
 
         model.model_options["model_function_wrapper"] = _attn_finalizer
+
+    # --- K/V identity bank finalizer: save kv_capture_buf to temp file ---
+    if kv_capture_buf is not None and refinement_key:
+        _kv_buf = kv_capture_buf
+        _kv_rk = refinement_key
+        _kv_saved = [False]
+        existing_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _kv_finalizer(apply_fn, args, _ew=existing_wrapper, _buf=_kv_buf,
+                          _rk=_kv_rk, _saved=_kv_saved):
+            if _ew is not None:
+                result = _ew(apply_fn, args)
+            else:
+                result = apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+            # Overwrite each call so the last (cleanest) mid-window capture wins.
+            if len(_buf) >= len(IDENTITY_BLOCKS):
+                try:
+                    torch.save(dict(_buf), _kv_temp_path(_rk))
+                    _saved[0] = True
+                except Exception as e:
+                    print(f"[FunPackEnhancements] K/V bank save failed: {e}")
+            return result
+
+        model.model_options["model_function_wrapper"] = _kv_finalizer
 
     # Hook cleanup is handled by _sigma_tracker's scene-transition logic.
     # _active_handles is cleared on each sigma reset and at the end.
