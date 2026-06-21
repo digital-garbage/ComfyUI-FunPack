@@ -452,6 +452,50 @@ def test_path_outcomes_skips_runs_with_no_identifiable_path():
     assert "no identifiable path" in status
 
 
+def test_path_outcomes_ignores_just_forget_it():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "path_outcomes": {}}
+    run = _path_run(refiner, "woman walking through neon rain", global_state, seed=7)
+    status = refiner._v2_update_path_outcomes(
+        global_state, run, normalize_refiner_v2_rating("-Just forget it-"), 1
+    )
+    assert global_state["path_outcomes"] == {}
+    assert "skips learning" in status
+
+
+def test_rating_is_discard_targets_forget_and_refusal_only():
+    refiner = FunPackVideoRefinerV2()
+    assert refiner._v2_rating_is_discard(normalize_refiner_v2_rating("-Just forget it-")) is True
+    refusal = dict(normalize_refiner_v2_rating("Perfect"))
+    refusal["refusal_filtered"] = True
+    assert refiner._v2_rating_is_discard(refusal) is True
+    # Normal ratings and the other skip_learning workflow modes must NOT be treated as discards.
+    assert refiner._v2_rating_is_discard(normalize_refiner_v2_rating("Awful")) is False
+    assert refiner._v2_rating_is_discard(normalize_refiner_v2_rating("Perfect")) is False
+
+
+def test_just_forget_it_does_not_store_feedback_history_or_intent_expansion():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"advisor_feedback_history": [], "intent_expansion_memory": {}}
+    forget = normalize_refiner_v2_rating("-Just forget it-")
+
+    # The guard the refine_v2 flow uses before either feedback sink fires.
+    if not refiner._v2_rating_is_discard(forget):
+        refiner._v2_update_advisor_feedback_history(global_state, "make the dress red", forget["label"], 1)
+        refiner._v2_update_intent_expansion(global_state, "a woman in a dress", "make the dress red")
+
+    assert global_state["advisor_feedback_history"] == []
+    assert global_state["intent_expansion_memory"] == {}
+
+    # Sanity: a normal rating with the same feedback DOES store it.
+    normal = normalize_refiner_v2_rating("Missing details")
+    if not refiner._v2_rating_is_discard(normal):
+        refiner._v2_update_advisor_feedback_history(global_state, "make the dress red", normal["label"], 2)
+        refiner._v2_update_intent_expansion(global_state, "a woman in a dress", "make the dress red")
+    assert len(global_state["advisor_feedback_history"]) == 1
+    assert global_state["intent_expansion_memory"]
+
+
 def test_intent_alignment_stores_pairs_and_bad_tokens_to_omit():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}

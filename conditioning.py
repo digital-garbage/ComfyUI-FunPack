@@ -10285,6 +10285,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         entries = global_state.get("intent_expansion_memory", {}).get(key, [])
         return "; ".join(entries) if entries else ""
 
+    def _v2_rating_is_discard(self, learning_profile):
+        """True when the run must leave NO trace in refiner state — the user's
+        '-Just forget it-' ('Just ignore it') rating or an auto-discarded enhancer
+        refusal. Distinct from the other skip_learning states (continue / fresh_prompt),
+        which are active workflow modes that still legitimately capture user feedback."""
+        if not isinstance(learning_profile, dict):
+            return False
+        return learning_profile.get("key") == "forget" or bool(learning_profile.get("refusal_filtered"))
+
     def _v2_update_advisor_feedback_history(self, global_state, feedback_prompt, rating_label, iter_num, limit=10):
         feedback = str(feedback_prompt or "").strip()
         if not feedback:
@@ -12123,9 +12132,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "scene_refinement_keys": [sorted(s) for s in scene_refinement_keys],
                 "gen_context": current_gen_context,
             }
-        self._v2_update_advisor_feedback_history(global_state, feedback_prompt, advisor_rating_label, int(global_state.get("total_iterations", 0)))
-        if feedback_prompt and intent_source_prompt and not current_prompt_refusal:
-            self._v2_update_intent_expansion(global_state, intent_source_prompt, feedback_prompt)
+        # "-Just forget it-" ("Just ignore it") and auto-discarded refusals must leave NO
+        # trace: skip the feedback-learning sinks too, not only the rating-learning ones above.
+        if not self._v2_rating_is_discard(learning_profile):
+            self._v2_update_advisor_feedback_history(global_state, feedback_prompt, advisor_rating_label, int(global_state.get("total_iterations", 0)))
+            if feedback_prompt and intent_source_prompt and not current_prompt_refusal:
+                self._v2_update_intent_expansion(global_state, intent_source_prompt, feedback_prompt)
         state["global"] = global_state
         self._v2_save_state(state, refinement_key)
 
