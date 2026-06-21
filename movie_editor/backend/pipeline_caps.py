@@ -61,7 +61,7 @@ def effective_source_type(scene: Scene, chain_available: bool) -> str:
 def source_needs_anchor_media(scene: Scene, chain_available: bool) -> bool:
     """True when generation expects a media-bin asset for this scene's source."""
     st = effective_source_type(scene, chain_available)
-    return st in ("image", "mixed", "generated_frame", "v2v")
+    return st in ("image", "mixed", "generated_frame", "v2v", "anchor_guide")
 
 
 def is_chain_only_source_type(st: str) -> bool:

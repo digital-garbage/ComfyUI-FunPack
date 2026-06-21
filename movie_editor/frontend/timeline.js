@@ -7,7 +7,7 @@
   const body = document.getElementById("timeline-body");
   const meta = document.getElementById("timeline-meta");
 
-  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑", video: "▶", v2v: "⟳" };
+  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑", video: "▶", v2v: "⟳", anchor_guide: "◓" };
 
   function genUnitRootScene(scene, p) {
     const uid = scene.gen_unit_id || scene.id;
@@ -23,7 +23,7 @@
   function anchorMediaRef(scene, p) {
     const src = sceneSourceForClip(scene, p);
     const t = src.type;
-    if (t === "image" || t === "mixed" || t === "generated_frame" || t === "video" || t === "v2v") return src.media_ref || null;
+    if (t === "image" || t === "mixed" || t === "generated_frame" || t === "video" || t === "v2v" || t === "anchor_guide") return src.media_ref || null;
     return null;
   }
 
@@ -42,6 +42,15 @@
       g.title = "Continues from prior scene — i2v guides only, no new anchor";
       g.textContent = "⇥";
       head.append(g);
+      return;
+    }
+    if (srcType === "anchor_guide") {
+      const stack = el("span", "clip-src-stack");
+      stack.title = "Anchor as guide — image steers via a frame-0 guide; latent empty (i2v bypassed)";
+      stack.append(el("span", "clip-anchor-mark", "◓"));
+      stack.append(el("span", "clip-guide-mark", "⇥"));
+      head.append(stack);
+      head.append(el("span", "clip-src-label", "guide"));
       return;
     }
     head.append(el("span", "clip-src", SRC_ICON[srcType] || "▦"));

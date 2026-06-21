@@ -87,7 +87,7 @@ def _anchor_media_ref(scene: Scene) -> Optional[str]:
         return None
     ref = getattr(src, "media_ref", None)
     stype = src.type or "carry"
-    if ref and stype in ("image", "mixed", "generated_frame"):
+    if ref and stype in ("image", "mixed", "generated_frame", "anchor_guide"):
         return ref
     return None
 
@@ -229,7 +229,7 @@ def scene_anchor_media_refs(target: Project) -> list[str]:
             continue
         stype = source_type(sc)
         ref = src.media_ref
-        if ref and stype in ("image", "generated_frame", "mixed"):
+        if ref and stype in ("image", "generated_frame", "mixed", "anchor_guide"):
             refs.append(ref)
     return list(dict.fromkeys(refs))
     """Optional per-scene guide (only used when project guide_settings.stack_enabled)."""
@@ -284,17 +284,6 @@ def _self_image_guide(media_ref: str, strength: float) -> dict:
         "apply_at": 0,
         "strength": max(0.0, min(1.0, float(strength))),
     }
-
-
-def anchor_guide_media_refs(target: Project) -> list[str]:
-    """Media-bin ids used as frame-0 guides by anchor_guide scenes (copied guide-only)."""
-    refs: list[str] = []
-    for sc in target.scenes:
-        if sc.excluded:
-            continue
-        if is_anchor_guide(sc) and sc.source and sc.source.media_ref:
-            refs.append(sc.source.media_ref)
-    return list(dict.fromkeys(refs))
 
 
 def build_self_image_guides(target: Project) -> Optional[dict]:

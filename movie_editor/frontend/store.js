@@ -2551,7 +2551,7 @@
   // back to carry / i2v guides, not a broken anchor).
   function _anchorAvailable(s) {
     const t = s.source && s.source.type;
-    if (t !== "image" && t !== "generated_frame" && t !== "mixed" && t !== "v2v") return false;
+    if (t !== "image" && t !== "generated_frame" && t !== "mixed" && t !== "v2v" && t !== "anchor_guide") return false;
     const ref = s.source.media_ref;
     return !!(ref && (state.mediaBin || []).some((m) => m.id === ref));
   }
@@ -3687,7 +3687,7 @@
     if (t === "empty") return false;
     if (isGenSubclip(s)) return true;
     if (t === "carry" || t === "mixed") return true;
-    if ((t === "image" || t === "generated_frame") && _anchorAvailable(s)) return false;
+    if ((t === "image" || t === "generated_frame" || t === "anchor_guide") && _anchorAvailable(s)) return false;
     return true;
   }
 
@@ -3724,8 +3724,10 @@
       if (!asset.duration_sec) _probeVideoClipDuration(sceneId, mediaId);
       return;
     }
-    // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides).
-    const patch = { source: { ...(s.source || {}), type: "image", media_ref: mediaId } };
+    // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides), but
+    // keep an existing anchor_guide scene in guide mode (its image is still the anchor).
+    const keepType = s.source?.type === "anchor_guide" ? "anchor_guide" : "image";
+    const patch = { source: { ...(s.source || {}), type: keepType, media_ref: mediaId } };
     if ((s.source?.media_ref || null) !== mediaId) patch.guides = [];
     patchScene(sceneId, patch);
   }

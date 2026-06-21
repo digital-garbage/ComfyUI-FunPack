@@ -46,22 +46,25 @@
       : "Image-to-video anchor for this scene. Drag from the Media bin onto the clip, or Browse here."));
   }
 
-  // "Anchor as guide": the image is a frame-0 guide only; the latent stays empty (t2v).
+  // "Anchor as guide": the image still feeds the pipeline (it's the anchor — e.g. an Image
+  // Transform derives width/height from it) AND steers as a frame-0 guide; the i2v node is
+  // bypassed so the latent stays empty (t2v). The image is required, like any anchor.
   function renderAnchorGuideSource(st, scene, parent) {
     parent = parent || body;
     const ref = scene.source?.media_ref;
     const pick = window.MediaPicker.create({
       value: ref,
       mediaBin: st.mediaBin,
-      noneLabel: "— choose guide image —",
+      noneLabel: "— choose anchor / guide image —",
       onChange: (mediaRef) => {
         S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "anchor_guide", media_ref: mediaRef } });
       },
     });
-    parent.append(field("Guide image", pick));
+    parent.append(field("Anchor image (guide mode)", pick));
     parent.append(el("div", "insp-hint",
-      "Steers this scene from frame 0 without locking it — the latent stays empty (text-to-video). "
-      + "Use it for a soft visual reference instead of a hard i2v start."));
+      "The image feeds the pipeline like any anchor (so nodes that need it — e.g. Image Transform "
+      + "for width/height — still get it) and steers this scene from a frame-0 guide, but the i2v node "
+      + "is bypassed so the latent stays empty (text-to-video). Required, like any anchor."));
 
     const cur = scene.source?.guide_strength;
     const val = cur == null ? 0.35 : cur;
@@ -75,10 +78,11 @@
     };
     row.append(slider);
     parent.append(row);
-    if (!window.EditorSettingsModal || !S.getEditorSetting("anchorGuideHasI2v")) {
-      parent.append(el("div", "insp-hint",
-        "Built-in pipeline: no extra setup — the empty latent is automatic. If you run a custom i2v node, "
-        + "declare it in Editor settings → Anchor as guide so it can be bypassed on this pass."));
+    if (!S.getEditorSetting("anchorGuideHasI2v")) {
+      parent.append(el("div", "insp-hint warn",
+        "No i2v node declared — the latent won't be emptied. Declare your i2v node in "
+        + "Editor settings → Anchor as guide so it's bypassed on this pass (otherwise this runs as a "
+        + "normal i2v anchor with an added frame-0 guide)."));
     }
   }
 

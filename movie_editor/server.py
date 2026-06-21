@@ -282,7 +282,10 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_av
         ref = getattr(src, "media_ref", None)
         tgt = getattr(src, "target", None)
         stype = pipeline_caps.effective_source_type(sc, chain_available)
-        if stype not in ("image", "generated_frame", "mixed") or not ref:
+        # anchor_guide feeds its image into the pipeline like any anchor (e.g. an Image
+        # Transform that derives width/height); the i2v node is bypassed elsewhere so the
+        # latent stays empty. So it copies as a normal anchor here.
+        if stype not in ("image", "generated_frame", "mixed", "anchor_guide") or not ref:
             continue
         _add_ref(ref, tgt, sc.id, set_primary=True)
     for ref in (extra_refs or []):
@@ -1486,14 +1489,9 @@ if web is not None and PromptServer is not None:
             else target.num_frames_per_scene
         )
         try:
-            from .backend.timeline import anchor_guide_media_refs
-            extra_refs = (
-                continuity_media_refs(p, target) + anchor_guide_media_refs(target)
-                if caps["chain_sampler"] else []
-            )
             media_pack = _prepare_media(
                 target,
-                extra_refs,
+                continuity_media_refs(p, target) if caps["chain_sampler"] else [],
                 chain_available=caps["chain_sampler"],
             )
             sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p, models=models_cfg)
