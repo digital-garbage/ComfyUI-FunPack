@@ -1,24 +1,14 @@
-// Reusable OS-style floating window: drag, close, minimize (to a dock pill), maximize/restore.
+// Reusable OS-style floating window: drag, close, minimize (roll-up in place), maximize/restore.
 // Foundation for Composer now; Models / Engine settings can adopt it later.
 //
 //   const win = window.FloatingWindow.create({ id, title, subtitle, width, height, onClose });
 //   win.open();  win.body  // mount your content into win.body
 //
-// One shared minimized-dock at bottom-left; one shared z-counter so click-to-front works.
+// Minimize collapses the window to its title bar where it sits (a "window shade"); click the
+// bar or the button again to expand. One shared z-counter so click-to-front works.
 (function () {
   const { el, clear } = window.dom;
   let zTop = 4000;
-
-  // Lazily-created strip that holds minimized window pills.
-  let dock = null;
-  function dockEl() {
-    if (!dock) {
-      dock = el("div", "fw-dock");
-      dock.id = "fw-dock";
-      document.body.append(dock);
-    }
-    return dock;
-  }
 
   function create(opts) {
     opts = opts || {};
@@ -54,7 +44,8 @@
     let placed = false;       // has it been centred / positioned yet
     let maximized = false;
     let pre = null;           // geometry saved before maximize
-    let pill = null;          // minimized dock pill
+    let collapsed = false;    // rolled up to the title bar in place
+    let preH = null;          // height saved before collapse
 
     function front() { root.style.zIndex = ++zTop; }
 
@@ -74,10 +65,9 @@
       root.style.left = x + "px"; root.style.top = y + "px";
     }
 
-    function isOpen() { return !root.hidden && !pill; }
+    function isOpen() { return !root.hidden; }
 
     function open() {
-      removePill();
       root.hidden = false;
       if (!placed) { center(); placed = true; }
       else clampIntoView();
@@ -86,30 +76,36 @@
     }
 
     function close() {
-      removePill();
       root.hidden = true;
       if (opts.onClose) opts.onClose();
     }
 
     function toggle() { isOpen() ? close() : open(); }
 
-    function removePill() {
-      if (pill) { pill.remove(); pill = null; }
+    // Roll the window up to just its title bar, in place. Toggles.
+    function minimize() {
+      if (collapsed) { expand(); return; }
+      if (maximized) restore();
+      preH = root.style.height;
+      collapsed = true;
+      root.classList.add("fw-collapsed");
+      root.style.height = "";
+      bMin.textContent = "+"; bMin.title = "Expand";
+      front();
     }
 
-    function minimize() {
-      if (pill) return;
-      root.hidden = true;
-      pill = el("div", "fw-pill");
-      pill.append(el("span", "fw-pill-dot"), el("span", null, opts.title || "Window"));
-      const x = el("button", "fw-pill-x", "✕");
-      x.title = "Close"; x.onclick = (e) => { e.stopPropagation(); close(); };
-      pill.append(x);
-      pill.onclick = () => open();
-      dockEl().append(pill);
+    function expand() {
+      if (!collapsed) return;
+      collapsed = false;
+      root.classList.remove("fw-collapsed");
+      if (preH) root.style.height = preH;
+      bMin.textContent = "—"; bMin.title = "Minimize";
+      clampIntoView();
+      front();
     }
 
     function maximize() {
+      if (collapsed) expand();
       if (maximized) { restore(); return; }
       pre = { left: root.style.left, top: root.style.top, w: root.style.width, h: root.style.height };
       maximized = true;
@@ -127,7 +123,7 @@
     bMin.onclick = minimize;
     bMax.onclick = maximize;
     bClose.onclick = close;
-    bar.ondblclick = (e) => { if (e.target.closest(".fw-btn")) return; maximize(); };
+    bar.ondblclick = (e) => { if (e.target.closest(".fw-btn")) return; collapsed ? expand() : maximize(); };
     root.addEventListener("mousedown", front, true);
 
     // ── drag by titlebar ────────────────────────────────────────────────────────
@@ -177,7 +173,7 @@
 
     return {
       root, body, titleEl: titleText,
-      open, close, toggle, minimize, maximize, restore, isOpen,
+      open, close, toggle, minimize, expand, maximize, restore, isOpen,
       setTitle(t) { titleText.textContent = t; },
     };
   }

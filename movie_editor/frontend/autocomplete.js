@@ -93,8 +93,13 @@
       if (!span || !items[i]) return;
       const trig = items[i].trigger;
       const v = ta.value;
-      ta.value = v.slice(0, span.start) + trig + v.slice(span.end);
-      const caret = span.start + trig.length;
+      const after = v.slice(span.end);
+      // Finish the shortcut: drop a trailing space so the caret is ready for the next
+      // one (and the menu doesn't re-open on the just-completed trigger). Skip it when a
+      // space or delimiter already follows.
+      const sep = /^(\s|[,;]|$)/.test(after) ? "" : " ";
+      ta.value = v.slice(0, span.start) + trig + sep + after;
+      const caret = span.start + trig.length + sep.length;
       ta.setSelectionRange(caret, caret);
       close();
       ta.dispatchEvent(new Event("input", { bubbles: true }));

@@ -1467,18 +1467,11 @@ body.tour-mode { overflow: hidden; }
 }
 .fw.fw-maxed .fw-grip { display: none; }
 
-/* minimized pills, bottom-left */
-.fw-dock { position: fixed; left: 12px; bottom: 12px; z-index: 4100; display: flex; gap: 8px; }
-.fw-pill {
-  display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
-  background: var(--ink-2); border: 1px solid var(--line); border-radius: 20px; padding: 5px 8px 5px 12px;
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: .5px; color: var(--muted);
-  box-shadow: var(--shadow); transition: color .12s, border-color .12s;
-}
-.fw-pill:hover { color: var(--amber-2); border-color: var(--muted); }
-.fw-pill-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 6px var(--teal-soft); }
-.fw-pill-x { width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--faint); cursor: pointer; }
-.fw-pill-x:hover { background: var(--ink-3); color: var(--danger); }
+/* minimized = rolled up to the title bar, in place */
+.fw.fw-collapsed { height: auto !important; }
+.fw.fw-collapsed .fw-body,
+.fw.fw-collapsed .fw-grip { display: none; }
+.fw.fw-collapsed .fw-bar { border-bottom: 0; }
 
 /* ───────────────────────── COMPOSER content ───────────────────────── */
 .composer-shell { display: flex; flex-direction: column; width: 100%; min-height: 0; }
