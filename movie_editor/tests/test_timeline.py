@@ -15,7 +15,6 @@ from movie_editor.backend.timeline import (  # noqa: E402
     Project,
     Scene,
     STUDIO_DEFAULT_GUIDE,
-    build_character_bible_anchor,
     build_combined_prompt,
     build_auto_continuity_guides,
     build_mixed_solo_guides_payload,
@@ -26,7 +25,6 @@ from movie_editor.backend.timeline import (  # noqa: E402
     effective_anchor,
     effective_negative_prompt,
     generation_prompt_fingerprint,
-    normalize_character_bible,
     normalize_continuity_settings,
     resolve_scene_identity_pin,
     collapse_generative_units,
@@ -292,84 +290,30 @@ def test_guide_stack_accumulate_prior():
     assert scene3[1]["source"] == "scene" and scene3[1]["scene_index"] == 1
 
 
-def test_character_bible_merges_into_anchor():
-    p = _project(
-        anchor="dimly lit apartment",
-        character_bible={
-            "name": "Nicole",
-            "appearance": "long red hair, green eyes",
-            "always_include": "photorealistic",
-        },
-        scenes=[{"text": "walks in"}],
-    )
-    anchor = effective_anchor(p)
-    assert anchor.startswith("Character: Nicole.")
-    assert "Appearance: long red hair, green eyes." in anchor
-    assert anchor.endswith("dimly lit apartment")
+def test_effective_anchor_is_manual_text():
+    p = _project(anchor="dimly lit apartment", scenes=[{"text": "walks in"}])
+    assert effective_anchor(p) == "dimly lit apartment"
     prompt = build_combined_prompt(p)
-    assert "Character: Nicole." in prompt
+    assert prompt.startswith("dimly lit apartment")
 
 
-def test_character_bible_never_include_merges_negative():
+def test_effective_negative_is_manual_text():
+    p = _project(negative_prompt="blurry, low quality", scenes=[{"text": "a"}])
+    assert effective_negative_prompt(p) == "blurry, low quality"
+
+
+def test_project_identity_pin_from_continuity_settings():
     p = _project(
-        negative_prompt="blurry, low quality",
-        character_bible={"never_include": "extra limbs, deformed hands"},
-        scenes=[{"text": "a"}],
-    )
-    neg = effective_negative_prompt(p)
-    assert "blurry" in neg
-    assert "extra limbs" in neg
-
-
-def test_scene_characters_merge_into_prompt(monkeypatch):
-    char_map = {
-        "c1": {"id": "c1", "name": "Nicole", "appearance": "red hair"},
-        "c2": {"id": "c2", "name": "Alex", "appearance": "tall"},
-    }
-    monkeypatch.setattr(
-        "movie_editor.backend.timeline._load_character_map",
-        lambda: char_map,
-    )
-    p = _project(scenes=[
-        {"text": "walks in", "character_ids": ["c1"]},
-        {"text": "sits down", "character_ids": ["c1", "c2"]},
-    ])
-    prompt = build_combined_prompt(p, for_generation=True)
-    assert "Character: Nicole." in prompt
-    assert "Character: Alex." in prompt
-    assert prompt.index("Nicole") < prompt.index("walks")
-    assert prompt.index("Alex") < prompt.index("sits")
-
-
-def test_scene_character_face_ref_drives_identity_pin(monkeypatch):
-    char_map = {"c1": {"id": "c1", "name": "Nicole", "face_ref": "face1"}}
-    monkeypatch.setattr(
-        "movie_editor.backend.timeline._load_character_map",
-        lambda: char_map,
-    )
-    p = _project(
-        continuity_settings={"identity_pin_ref": "other"},
+        continuity_settings={"identity_pin_ref": "pin1"},
         scenes=[
             {"id": "s1", "text": "a", "source": {"type": "carry"}},
-            {"id": "s2", "text": "b", "source": {"type": "carry"}, "character_ids": ["c1"]},
+            {"id": "s2", "text": "b", "source": {"type": "carry"}},
         ],
     )
     cs = continuity_settings_for_run(p)
-    sc2 = p.scenes[1]
-    assert resolve_scene_identity_pin(sc2, char_map, cs) == "face1"
+    assert resolve_scene_identity_pin(cs) == "pin1"
     guides = build_auto_continuity_guides(p, p)
-    assert guides["scenes"][1][0]["media_ref"] == "face1"
-
-
-def test_character_bible_refs_in_continuity_media():
-    p = _project(
-        character_bible={"face_ref": "f1", "body_ref": "b1", "detail_ref": "d1"},
-        scenes=[{"text": "a"}],
-    )
-    refs = continuity_media_refs(p, p)
-    assert refs == ["f1", "b1", "d1"]
-    p.continuity_settings = {"auto_enabled": False}
-    assert continuity_media_refs(p, p) == []
+    assert guides["scenes"][0][0]["media_ref"] == "pin1"
 
 
 def test_stale_identity_pin_ignored_when_auto_off():
@@ -390,25 +334,6 @@ def test_scene_anchor_media_refs():
     from movie_editor.backend.timeline import scene_anchor_media_refs
 
     assert scene_anchor_media_refs(p) == ["frame1"]
-
-
-def test_scene_character_media_refs(monkeypatch):
-    char_map = {"c1": {"id": "c1", "face_ref": "f1", "body_ref": "b1"}}
-    monkeypatch.setattr(
-        "movie_editor.backend.timeline._load_character_map",
-        lambda: char_map,
-    )
-    p = _project(scenes=[{"text": "a", "character_ids": ["c1"]}])
-    from movie_editor.backend.timeline import character_media_refs_for_project
-    assert character_media_refs_for_project(p, char_map) == ["f1", "b1"]
-
-
-def test_character_bible_changes_generation_hash():
-    p = _project(scenes=[{"text": "walks"}])
-    h1 = generation_prompt_fingerprint(p, p)["prompt_hash"]
-    p.character_bible = {"name": "Alex"}
-    h2 = generation_prompt_fingerprint(p, p)["prompt_hash"]
-    assert h1 != h2
 
 
 def test_projects_store_crud(tmp_path, monkeypatch):

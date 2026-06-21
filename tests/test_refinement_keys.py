@@ -83,6 +83,41 @@ def test_verbatim_split_shortcut_driven_split_still_works(monkeypatch):
     assert "<break>" in v["anchor"]
 
 
+def test_split_scenes_splits_on_expansion_keyed_transition(monkeypatch):
+    """Regression: split_scenes (the canonical generation/preview/key splitter) must cut when a
+    shortcut's EXPANSION is a transition phrase (e.g. 'cut'->'Scene cut.'), not only when the
+    shortcut's TRIGGER word is itself in the transition DB. It previously matched only the raw
+    trigger, so an expansion-keyed split marker produced ONE scene here while the verbatim editor
+    split produced TWO — and the disagreement collapsed the timeline's middle scenes."""
+    db = _db({
+        "cut": (["cut"], ["Scene cut."], ""),
+        "qcut": (["qcut"], ["The video rapidly cuts, showing the next view."], ""),
+    })
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {
+        "scene cut.": {"placement": "silent", "visual_effect": None},
+        "the video rapidly cuts, showing the next view.": {"placement": "start", "visual_effect": None},
+    })
+    prompt = "a dog runs cut a cat sleeps cut a bird flies"
+    s = conditioning.split_scenes(prompt)
+    assert len(s["scenes"]) == 2           # silent 'cut' x2 -> anchor + 2 scenes
+    assert s["anchor_expanded"] == "a dog runs"
+    # The canonical split must agree with the verbatim editor split (no collapse).
+    v = conditioning.split_timeline_verbatim(prompt)
+    assert len(v["scenes"]) == len(s["scenes"])
+    # Non-silent 'qcut' too.
+    assert len(conditioning.split_scenes("a dog runs qcut a cat sleeps qcut a bird flies")["scenes"]) == 2
+
+
+def test_split_scenes_no_false_cut_from_generic_label_in_expansion(monkeypatch):
+    """A content shortcut whose expansion merely CONTAINS 'scene 2' must NOT cut — only a
+    user-defined custom transition phrase does (the generic label is never matched on expansions)."""
+    db = _db({"desc": (["desc"], ["a wide shot like scene 2 of a film"], "")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    assert len(conditioning.split_scenes("a dog runs desc here")["scenes"]) == 1
+
+
 def test_verbatim_split_still_splits_on_literal_cuts(monkeypatch):
     """The fix must not suppress real, user-typed scene cuts."""
     db = _db({"closeup": (["<closeup>"], ["a tight close-up"], "closeupkey")})  # no cut in replacement
@@ -131,55 +166,16 @@ def test_expand_with_map_tags_pieces(monkeypatch):
     assert keyed == {"keyA", "keyB"}
 
 
-def test_prompt_scene_shortcut_keys_per_scene(monkeypatch):
+def test_studio_scene_refinement_keys_canonical(monkeypatch):
+    """Attribution is read off the canonical split — one set per scene, no scene_count, no
+    divergence fallback (count reconciliation now lives in the generation guard, not here)."""
     db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    # generic "scene N" labels split: chunk0=anchor (no key), chunk1=alpha->A, chunk2=beta->B
-    n, scene_sets, all_keys = conditioning.prompt_scene_shortcut_keys(
-        "wide shot scene 1 alpha here scene 2 beta here"
-    )
-    assert n == 2
-    assert scene_sets[0] == {"keyA"}
-    assert scene_sets[1] == {"keyB"}
-    assert all_keys == {"keyA", "keyB"}
-
-
-def test_prompt_scene_shortcut_keys_anchor_in_every_scene(monkeypatch):
-    # anchor-bound key participates in every scene; per-scene keys add on top.
-    db = _db({"anc": (["zeta"], ["ZZZ"], "anchorKey"),
-              "a": (["alpha"], ["AAA"], "keyA"),
-              "b": (["beta"], ["BBB"], "keyB")})
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    n, scene_sets, _ = conditioning.prompt_scene_shortcut_keys(
-        "zeta intro scene 1 alpha here scene 2 beta here"
-    )
-    assert n == 2
-    assert scene_sets[0] == {"anchorKey", "keyA"}
-    assert scene_sets[1] == {"anchorKey", "keyB"}
-
-
-def test_prompt_scene_shortcut_keys_no_keys(monkeypatch):
-    db = _db({"a": (["alpha"], ["AAA"], "")})  # default key only
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    n, scene_sets, all_keys = conditioning.prompt_scene_shortcut_keys("alpha scene 2 stuff")
-    assert n == 0 and scene_sets == [] and all_keys == set()
-
-
-def test_studio_scene_refinement_keys_fallback(monkeypatch):
-    db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
-    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "start", "visual_effect": "none"}})
     studio = conditioning.FunPackVideoRefinerV2()
-    raw = "wide shot scene 1 alpha here scene 2 beta here"  # attribution finds 2 scenes
-    # scene_count matches -> precise per-scene
-    assert studio._v2_scene_refinement_keys(raw, 2) == [{"keyA"}, {"keyB"}]
-    # scene_count diverges (advisor rewrote / stacking) -> default key only (empty sets), NOT the
-    # all-keys union; a union here would train every key on every scene (cross-contamination).
-    out = studio._v2_scene_refinement_keys(raw, 3)
-    assert out == [set(), set(), set()]
+    raw = "wide shot cut alpha here cut beta here"
+    assert studio._v2_scene_refinement_keys(raw) == [{"keyA"}, {"keyB"}]
 
 
 def test_studio_scene_refinement_keys_no_bindings(monkeypatch):
@@ -187,18 +183,20 @@ def test_studio_scene_refinement_keys_no_bindings(monkeypatch):
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
     studio = conditioning.FunPackVideoRefinerV2()
-    assert studio._v2_scene_refinement_keys("alpha scene 2 here", 2) == [set(), set()]
+    # no keyed shortcuts -> every scene is the default key (all empty sets)
+    out = studio._v2_scene_refinement_keys("alpha scene 2 here")
+    assert out and all(s == set() for s in out)
 
 
 def test_resolver_matches_studio(monkeypatch):
     """The Movie Editor preview resolver and the Studio generation path are one function."""
     db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "start", "visual_effect": "none"}})
     studio = conditioning.FunPackVideoRefinerV2()
-    raw = "wide shot scene 1 alpha here scene 2 beta here"
-    for n in (2, 3):
-        assert conditioning.resolve_scene_refinement_keys(raw, n) == studio._v2_scene_refinement_keys(raw, n)
+    raw = "wide shot cut alpha here cut beta here"
+    assert conditioning.resolve_scene_refinement_keys(raw) == studio._v2_scene_refinement_keys(raw)
 
 
 def test_reset_prompt_keys_union_excludes_primary(monkeypatch):
@@ -233,17 +231,85 @@ def test_reset_prompt_keys_skips_when_primary_only(monkeypatch):
     assert studio._v2_reset_prompt_keys("default", "plain prompt") == []
 
 
+def test_split_scenes_canonical_model(monkeypatch):
+    """The one canonical split reports per-scene raw + expanded text + keys; anchor keys fold into
+    every scene; only real transition triggers (here 'cut') split; the reset pool is the union."""
+    db = _db({"anc": (["zeta"], ["ZZZ"], "anchorKey"),
+              "a": (["alpha"], ["AAA"], "keyA"),
+              "b": (["beta"], ["BBB"], "keyB")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "start", "visual_effect": "none"}})
+    out = conditioning.split_scenes("zeta intro cut alpha here cut beta here")
+    scenes = out["scenes"]
+    assert len(scenes) == 2
+    assert scenes[0]["keys"] == {"anchorKey", "keyA"}
+    assert scenes[1]["keys"] == {"anchorKey", "keyB"}
+    assert "alpha" in scenes[0]["raw"]       # verbatim text preserved
+    assert "AAA" in scenes[0]["expanded"]    # expanded text available for generation
+    assert conditioning.refinement_key_pool_for(
+        "zeta intro cut alpha here cut beta here") == {"anchorKey", "keyA", "keyB"}
+
+
+def test_split_scenes_single_scene(monkeypatch):
+    db = _db({"hero": (["hero"], ["a knight"], "mykey")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes("hero stands in a field")
+    assert len(out["scenes"]) == 1
+    assert out["scenes"][0]["keys"] == {"mykey"}
+    assert conditioning.refinement_key_pool_for("hero stands in a field") == {"mykey"}
+
+
+def test_split_scenes_ignores_triggers_inside_expansions(monkeypatch):
+    """Regression: a transition word that only appears INSIDE a shortcut's expansion must NOT
+    create a phantom cut (the 'Scene cut.' / 'scene 2' trap that produced 4 chunks instead of 2)."""
+    db = _db({"qcut": (["qcut"], ["The video rapidly cuts to the next view."], ""),
+              "cut": (["cut"], ["Scene cut."], ""),          # expansion contains the word 'cut'
+              "man": (["man"], ["a man, scene 2 framing, stands"], ""),  # expansion contains 'scene 2'
+              "a1": (["act1"], ["a backflip"], "keyA"),
+              "a3": (["act3"], ["sitting"], "cs")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"qcut": {"placement": "start", "visual_effect": "none"},
+                                 "cut": {"placement": "silent", "visual_effect": "none"}})
+    out = conditioning.split_scenes("char a woman man qcut act1 cut act3")
+    assert len(out["scenes"]) == 2                # exactly two — no phantom splits
+    assert out["scenes"][0]["keys"] == {"keyA"}
+    assert out["scenes"][1]["keys"] == {"cs"}
+    assert "Scene cut." not in out["scenes"][1]["expanded"]  # silent trigger dropped
+
+
+def test_split_scenes_literal_scene_label_still_splits(monkeypatch):
+    """The generic 'scene N' label MUST still split when it's LITERAL text — the Movie Editor
+    injects it into the generation prompt to force a split for a unit with no leading trigger
+    (build_combined_prompt for_generation). But the SAME label inside a shortcut expansion must NOT
+    split (that was the user's phantom 'scene 2'). One rule: literal cuts, expansion-content doesn't."""
+    db = _db({"qcut": (["qcut"], ["rapid cut"], ""),
+              "tth": (["tth"], ["a backflip"], ""),
+              "cof": (["cof"], ["sitting, scene 9 of many"], "cs")})  # 'scene 9' INSIDE expansion
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"qcut": {"placement": "start", "visual_effect": "none"}})
+    # explicit qcut leads scene 0; the editor-injected literal 'scene 2' leads scene 1
+    out = conditioning.split_scenes("CHAR a woman man qcut tth scene 2 cof")
+    assert len(out["scenes"]) == 2
+    assert out["scenes"][0]["keys"] == set()      # tth has no key
+    assert out["scenes"][1]["keys"] == {"cs"}     # cof, despite 'scene 9' in its expansion
+    assert out["anchor"] == "CHAR a woman man"
+
+
 def test_single_scene_with_custom_key_is_detected(monkeypatch):
     """Regression: a custom key fired in a single-logical-scene prompt MUST be detected (was
     silently dropped to empty when the old code compared scene counts and fell back)."""
     db = _db({"hero": (["hero"], ["a tall knight"], "mykey")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
     monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    assert conditioning.resolve_scene_refinement_keys("hero stands in a field", 1) == [{"mykey"}]
+    assert conditioning.resolve_scene_refinement_keys("hero stands in a field") == [{"mykey"}]
     # two custom keys in one scene -> both detected
     db2 = _db({"hero": (["hero"], ["knight"], "mykey"), "vil": (["villain"], ["masked"], "badguy")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db2)
-    assert conditioning.resolve_scene_refinement_keys("hero meets villain", 1) == [{"mykey", "badguy"}]
+    assert conditioning.resolve_scene_refinement_keys("hero meets villain") == [{"mykey", "badguy"}]
 
 
 def test_resolve_reads_keys_per_scene(monkeypatch):
@@ -251,8 +317,9 @@ def test_resolve_reads_keys_per_scene(monkeypatch):
     no scene-count comparison)."""
     db = _db({"a": (["alpha"], ["AAA"], "keyA"), "b": (["beta"], ["BBB"], "keyB")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    out = conditioning.resolve_scene_refinement_keys("wide scene 1 alpha here scene 2 beta here", 2)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "start", "visual_effect": "none"}})
+    out = conditioning.resolve_scene_refinement_keys("wide cut alpha here cut beta here")
     assert out == [{"keyA"}, {"keyB"}]
 
 
@@ -315,7 +382,8 @@ def test_bridge_scene_refinement_keys_preview(monkeypatch):
     from movie_editor.backend import bridge
     db = _db({"a": (["alpha"], ["AAA"], "keyA")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
-    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
-    out = bridge.scene_refinement_keys("wide shot scene 1 alpha here scene 2 plain", 2, "myproj")
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "start", "visual_effect": "none"}})
+    out = bridge.scene_refinement_keys("wide shot cut alpha here cut plain", "myproj")
     assert out[0] == {"keys": ["keyA"], "uses_default": False, "default_key": "myproj"}
     assert out[1] == {"keys": ["myproj"], "uses_default": True, "default_key": "myproj"}

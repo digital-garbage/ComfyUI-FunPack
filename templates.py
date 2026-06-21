@@ -31,9 +31,6 @@ TEMPLATE_NONE = "-None-"
 REFINEMENT_KEY_NONE = "-None-"
 SCENE_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
-SCENE_DB_VERSION = 1
-SCENE_STATE_FIELD = "scene_builder"
-SCENE_CATEGORY_SOURCES = {"auto", "refiner", "user"}
 WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
 SCENE_CATEGORIES = {
     "negative": {"bad", "blurry", "worst", "low", "noise", "deformed", "artifact", "ugly", "broken"},
@@ -67,9 +64,6 @@ def template_store_dir():
 def template_store_path():
     return os.path.join(template_store_dir(), "templates.json")
 
-
-def scene_store_path():
-    return os.path.join(template_store_dir(), "scenes.json")
 
 
 def shortcut_store_path():
@@ -278,33 +272,65 @@ def template_names():
     return [TEMPLATE_NONE] + names
 
 
-def empty_scene_db():
-    return {
-        "version": SCENE_DB_VERSION,
-        "source": "ComfyUI-FunPack",
-        "universal_memory": {},
-        "scenes": {},
-    }
-
-
 def empty_shortcut_db():
     return {
         "version": 1,
         "source": "ComfyUI-FunPack",
         "shortcuts": {},
+        # Managed grouping list for the Composer. Each entry is
+        # {"name": <category>, "sub_categories": [<sub>, ...]}. Persisted so a
+        # category survives even with no shortcut assigned to it yet.
+        "categories": [],
     }
 
 
-def normalize_scene_db(data):
-    if not isinstance(data, dict):
-        data = empty_scene_db()
-    data.setdefault("version", SCENE_DB_VERSION)
-    data.setdefault("source", "ComfyUI-FunPack")
-    if not isinstance(data.get("universal_memory"), dict):
-        data["universal_memory"] = {}
-    if not isinstance(data.get("scenes"), dict):
-        data["scenes"] = {}
-    return data
+def _clean_label(value):
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def normalize_category_list(value):
+    """List of {"name", "sub_categories": [...]} — deduped (case-insensitive),
+    order-preserving, sub-categories nested under their parent category."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    index = {}  # lower(name) -> position in out
+    for entry in value:
+        if isinstance(entry, str):
+            entry = {"name": entry, "sub_categories": []}
+        if not isinstance(entry, dict):
+            continue
+        name = _clean_label(entry.get("name"))
+        if not name:
+            continue
+        key = name.lower()
+        if key not in index:
+            index[key] = len(out)
+            out.append({"name": name, "sub_categories": []})
+        bucket = out[index[key]]["sub_categories"]
+        seen = {s.lower() for s in bucket}
+        for sub in entry.get("sub_categories", []) or []:
+            sub = _clean_label(sub)
+            if sub and sub.lower() not in seen:
+                seen.add(sub.lower())
+                bucket.append(sub)
+    return out
+
+
+def _union_category(categories, name, sub=""):
+    """Ensure `name` (and optional `sub`) exists in the managed list. Mutates + returns."""
+    name = _clean_label(name)
+    if not name:
+        return categories
+    key = name.lower()
+    entry = next((c for c in categories if c["name"].lower() == key), None)
+    if entry is None:
+        entry = {"name": name, "sub_categories": []}
+        categories.append(entry)
+    sub = _clean_label(sub)
+    if sub and sub.lower() not in {s.lower() for s in entry["sub_categories"]}:
+        entry["sub_categories"].append(sub)
+    return categories
 
 
 def shortcut_key(value):
@@ -360,6 +386,10 @@ def normalize_shortcut_item(item, fallback_name=""):
         # key (no special handling). A non-default key means "when this shortcut fires,
         # this key is being trained" — Studio steers/rates the scene against it.
         "refinement_key": normalize_refinement_key(item.get("refinement_key", "")),
+        # Optional grouping for the Composer (free-text). Sub-category is only
+        # meaningful under a category, but we store both verbatim.
+        "category": re.sub(r"\s+", " ", str(item.get("category") or "").strip()),
+        "sub_category": re.sub(r"\s+", " ", str(item.get("sub_category") or "").strip()),
         "created_at": created,
         "updated_at": str(item.get("updated_at") or now_iso()),
     }
@@ -384,6 +414,12 @@ def normalize_shortcut_db(data):
     data["version"] = 1
     data["source"] = "ComfyUI-FunPack"
     data["shortcuts"] = normalized
+    # Managed category list: normalize, then union any category/sub-category a
+    # shortcut references so the list never loses a grouping that's in use.
+    categories = normalize_category_list(data.get("categories"))
+    for shortcut in normalized.values():
+        _union_category(categories, shortcut.get("category"), shortcut.get("sub_category"))
+    data["categories"] = categories
     return data
 
 
@@ -445,6 +481,22 @@ def delete_shortcut_item(name):
         data.setdefault("shortcuts", {}).pop(key, None)
         save_shortcut_db(data)
     return key, data
+
+
+def shortcut_categories(data=None):
+    data = load_shortcut_db() if data is None else normalize_shortcut_db(data)
+    return data.get("categories", [])
+
+
+def add_shortcut_category(name, sub_category=""):
+    """Add a category (and optionally a sub-category under it) to the managed list."""
+    name = _clean_label(name)
+    if not name:
+        raise ValueError("Category name is required.")
+    data = load_shortcut_db()
+    _union_category(data.setdefault("categories", []), name, sub_category)
+    save_shortcut_db(data)
+    return load_shortcut_db()
 
 
 # --- Custom transition DB --------------------------------------------------
@@ -665,410 +717,6 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
     return expanded, applied
 
 
-def load_scene_db(refinement_key=""):
-    key = normalize_refinement_key(refinement_key)
-    if key:
-        state, _, _ = load_refinement_key_state(key, create=False)
-        if isinstance(state, dict):
-            return normalize_scene_db(state.get(SCENE_STATE_FIELD, {}))
-        return empty_scene_db()
-
-    path = scene_store_path()
-    if not os.path.exists(path):
-        return empty_scene_db()
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except (json.JSONDecodeError, OSError, ValueError):
-        return empty_scene_db()
-
-    return normalize_scene_db(data)
-
-
-def save_scene_db(data, refinement_key=""):
-    key = normalize_refinement_key(refinement_key)
-    data = normalize_scene_db(data)
-    if key:
-        state, _, _ = load_refinement_key_state(key, create=True)
-        if isinstance(state, dict):
-            state[SCENE_STATE_FIELD] = data
-            save_refinement_key_state(state, key)
-        return
-
-    os.makedirs(template_store_dir(), exist_ok=True)
-    with open(scene_store_path(), "w", encoding="utf-8") as file:
-        json.dump(data, file, indent=2, sort_keys=True)
-
-
-def scene_names(refinement_key=""):
-    data = load_scene_db(refinement_key)
-    names = sorted(
-        name for name in data.get("scenes", {}).keys()
-        if isinstance(name, str) and name.strip()
-    )
-    return [SCENE_NONE] + names
-
-
-def normalize_scene_name(value):
-    value = str(value or "").strip()
-    if not value or value == SCENE_NONE:
-        return ""
-    return value
-
-
-def normalize_scene_key(value):
-    value = re.sub(r"[^\w'’]+", " ", str(value or "").strip().lower(), flags=re.UNICODE)
-    return re.sub(r"\s+", " ", value).strip()
-
-
-def normalize_scene_text_spacing(value):
-    text = re.sub(r"[ \t\r\f\v]+", " ", str(value or "")).strip()
-    text = re.sub(r"\s+([,.])", r"\1", text)
-    text = re.sub(r"([,.])([^\s,.])", r"\1 \2", text)
-    return text.strip()
-
-
-def scene_token_words(text):
-    return [
-        token.lower()
-        for token in re.findall(r"[\w'’.-]+", str(text or ""), flags=re.UNICODE)
-        if any(char.isalpha() for char in token) and len(token.strip("._-")) >= 2
-    ]
-
-
-def categorize_scene_phrase(text, source="positive"):
-    if source == "negative":
-        return "negative"
-    words = set(scene_token_words(text))
-    best = ("details", 0)
-    for category, keywords in SCENE_CATEGORIES.items():
-        if category == "negative":
-            continue
-        score = len(words & keywords)
-        if score > best[1]:
-            best = (category, score)
-    return best[0]
-
-
-def extract_scene_phrases(text, source="positive", include_words=False):
-    phrases = []
-    seen = set()
-    for raw in re.split(r"[,;.\n]+", normalize_scene_text_spacing(text)):
-        clean = re.sub(r"\s+", " ", raw).strip(" ,;:.").strip()
-        if len(clean) < 2:
-            continue
-        key = clean.lower()
-        if key in seen:
-            continue
-        words = scene_token_words(clean)
-        if not words:
-            continue
-        seen.add(key)
-        phrases.append({
-            "text": clean,
-            "key": key,
-            "source": source,
-            "category": categorize_scene_phrase(clean, source),
-            "tokens": words,
-        })
-        if include_words:
-            for word in words:
-                word_key = word.lower().strip("._-")
-                if len(word_key) < 3 or word_key in SCENE_STOP_WORDS or word_key in seen:
-                    continue
-                seen.add(word_key)
-                phrases.append({
-                    "text": word_key,
-                    "key": word_key,
-                    "source": source,
-                    "category": categorize_scene_phrase(word_key, source),
-                    "tokens": [word_key],
-                })
-    return phrases
-
-
-def remember_scene_phrases(data, positive_prompt="", negative_prompt=""):
-    memory = data.setdefault("universal_memory", {})
-    changed = False
-    for source, prompt in (("positive", positive_prompt), ("negative", negative_prompt)):
-        for phrase in extract_scene_phrases(prompt, source, include_words=True):
-            key = phrase["key"]
-            current = memory.setdefault(key, {
-                "text": phrase["text"],
-                "source": source,
-                "category": phrase["category"],
-                "tokens": phrase["tokens"],
-                "count": 0,
-                "created_at": now_iso(),
-                "category_source": "auto",
-                "category_locked": False,
-            })
-            if not bool(current.get("category_locked")):
-                current["text"] = current.get("text") or phrase["text"]
-                current["source"] = source
-                current["category"] = phrase["category"]
-                current["tokens"] = phrase["tokens"]
-                current["category_source"] = str(current.get("category_source") or "auto")
-            current["count"] = int(current.get("count", 0) or 0) + 1
-            current["updated_at"] = now_iso()
-            changed = True
-    return changed
-
-
-def scene_memory_items(data):
-    memory = data.get("universal_memory", {}) if isinstance(data, dict) else {}
-    items = []
-    for key, item in memory.items():
-        if not isinstance(item, dict):
-            continue
-        text = str(item.get("text") or key).strip()
-        if not text:
-            continue
-        items.append({
-            "text": text,
-            "key": str(key),
-            "source": item.get("source", "positive"),
-            "category": item.get("category", "details"),
-            "category_source": item.get("category_source", "auto"),
-            "category_locked": bool(item.get("category_locked")),
-            "tokens": item.get("tokens", scene_token_words(text)),
-            "count": int(item.get("count", 0) or 0),
-            "wildcard": bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip()),
-        })
-    return sorted(items, key=lambda item: (item["category"], item["text"].lower()))
-
-
-def normalize_scene_memory_items(value):
-    if isinstance(value, dict):
-        iterable = value.items()
-    elif isinstance(value, list):
-        iterable = ((None, item) for item in value)
-    else:
-        return {}
-
-    memory = {}
-    for fallback_key, item in iterable:
-        if isinstance(item, str):
-            item = {"text": item}
-        if not isinstance(item, dict):
-            continue
-        text = re.sub(r"\s+", " ", str(item.get("text") or fallback_key or "").strip())
-        if not text:
-            continue
-        key = normalize_scene_key(item.get("key") or text) or text.lower()
-        source = "negative" if item.get("source") == "negative" or item.get("category") == "negative" else "positive"
-        category = str(item.get("category") or categorize_scene_phrase(text, source)).strip().lower()
-        if category not in SCENE_CATEGORIES:
-            category = "negative" if source == "negative" else "details"
-        tokens = scene_token_words(text)
-        wildcard = bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip())
-        category_source = str(item.get("category_source") or "auto").strip().lower()
-        if category_source not in SCENE_CATEGORY_SOURCES:
-            category_source = "user" if bool(item.get("category_locked")) else "auto"
-        category_locked = bool(item.get("category_locked")) or category_source == "user"
-        memory[key] = {
-            "text": text,
-            "source": source,
-            "category": category,
-            "category_source": category_source,
-            "category_locked": category_locked,
-            "tokens": tokens,
-            "count": max(0, int(item.get("count", 0) or 0)),
-            "created_at": str(item.get("created_at") or now_iso()),
-            "updated_at": now_iso(),
-            "wildcard": wildcard,
-        }
-    return memory
-
-
-def scene_memory_authority_changed(previous, current):
-    if not isinstance(previous, dict) or not isinstance(current, dict):
-        return True
-    return any(
-        str(previous.get(field, "")).strip().lower() != str(current.get(field, "")).strip().lower()
-        for field in ("text", "source", "category")
-    )
-
-
-def apply_scene_database_authority(previous_memory, incoming_memory):
-    previous_memory = previous_memory if isinstance(previous_memory, dict) else {}
-    incoming_memory = incoming_memory if isinstance(incoming_memory, dict) else {}
-    resolved = {}
-    for key, item in incoming_memory.items():
-        if not isinstance(item, dict):
-            continue
-        current = dict(item)
-        previous = previous_memory.get(key)
-        if isinstance(previous, dict) and not scene_memory_authority_changed(previous, current):
-            current["category_source"] = str(previous.get("category_source") or "auto")
-            current["category_locked"] = bool(previous.get("category_locked"))
-        else:
-            current["category_source"] = "user"
-            current["category_locked"] = True
-        resolved[key] = current
-    return resolved
-
-
-def normalize_scene_phrase_list(value):
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            value = [value]
-    if not isinstance(value, list):
-        return []
-    result = []
-    seen = set()
-    for item in value:
-        text = item.get("text") if isinstance(item, dict) else item
-        clean = normalize_scene_text_spacing(text).strip(" ,;:.").strip()
-        key = clean.lower()
-        if not clean or key in seen:
-            continue
-        seen.add(key)
-        result.append(clean)
-    return result
-
-
-def parse_scene_payload(value):
-    if isinstance(value, dict):
-        payload = value
-    elif isinstance(value, str) and value.strip():
-        try:
-            payload = json.loads(value)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            payload = {}
-    else:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    return {
-        "positive_phrases": normalize_scene_phrase_list(payload.get("positive_phrases", [])),
-        "negative_phrases": normalize_scene_phrase_list(payload.get("negative_phrases", [])),
-    }
-
-
-def scene_text_or_payload(text, phrases):
-    text = str(text or "").strip()
-    if text:
-        return text
-    return scene_text_from_phrases(phrases)
-
-
-def scene_payload_from_scene(scene):
-    if not isinstance(scene, dict):
-        return {"positive_phrases": [], "negative_phrases": []}
-    return {
-        "positive_phrases": normalize_scene_phrase_list(scene.get("positive_phrases", [])),
-        "negative_phrases": normalize_scene_phrase_list(scene.get("negative_phrases", [])),
-    }
-
-
-def scene_text_from_phrases(phrases):
-    return ", ".join(normalize_scene_phrase_list(phrases))
-
-
-def scene_prompt_text(scene, text_field, phrases_field):
-    if not isinstance(scene, dict):
-        return ""
-    if text_field in scene:
-        return str(scene.get(text_field) or "")
-    return scene_text_from_phrases(scene.get(phrases_field, []))
-
-
-def scene_from_texts(name, aliases, output_mode, positive_text, negative_text, refinement_key=""):
-    positive_text = normalize_scene_text_spacing(positive_text)
-    negative_text = normalize_scene_text_spacing(negative_text)
-    return {
-        "name": normalize_scene_name(name),
-        "aliases": aliases_from_text(aliases),
-        "output_mode": output_mode if output_mode in {"Manual", "Auto", "Learning"} else "Manual",
-        "refinement_key": normalize_refinement_key(refinement_key),
-        "positive_text": positive_text,
-        "negative_text": negative_text,
-        "positive_phrases": normalize_scene_phrase_list(extract_scene_phrases(positive_text, "positive")),
-        "negative_phrases": normalize_scene_phrase_list(extract_scene_phrases(negative_text, "negative")),
-    }
-
-
-def aliases_from_text(value):
-    aliases = []
-    seen = set()
-    if isinstance(value, list):
-        raw_values = value
-    else:
-        raw_values = re.split(r"[,;\n]+", str(value or ""))
-    for raw in raw_values:
-        clean = re.sub(r"\s+", " ", raw).strip()
-        key = normalize_scene_key(clean)
-        if clean and key not in seen:
-            seen.add(key)
-            aliases.append(clean)
-    return aliases
-
-
-def scene_exact_match(intent_prompt, scenes):
-    intent = normalize_scene_key(intent_prompt)
-    if not intent:
-        return "", None
-    padded = f" {intent} "
-    for name, scene in sorted(scenes.items(), key=lambda item: len(item[0]), reverse=True):
-        keys = [name]
-        if isinstance(scene, dict):
-            keys.extend(scene.get("aliases", []) if isinstance(scene.get("aliases"), list) else [])
-        for key in keys:
-            clean = normalize_scene_key(key)
-            if clean and f" {clean} " in padded:
-                return name, scene
-    return "", None
-
-
-def scene_fuzzy_match(intent_prompt, scenes):
-    intent_words = set(scene_token_words(intent_prompt))
-    if not intent_words:
-        return "", None
-    best = ("", None, 0.0)
-    for name, scene in scenes.items():
-        keys = [name]
-        if isinstance(scene, dict):
-            keys.extend(scene.get("aliases", []) if isinstance(scene.get("aliases"), list) else [])
-        for key in keys:
-            key_words = set(scene_token_words(key))
-            if not key_words:
-                continue
-            overlap = len(intent_words & key_words)
-            if overlap < max(1, len(key_words)):
-                continue
-            score = overlap / max(len(key_words), 1)
-            if score > best[2]:
-                best = (name, scene, score)
-    return best[0], best[1]
-
-
-def find_scene_for_intent(intent_prompt, scenes):
-    name, scene = scene_exact_match(intent_prompt, scenes)
-    if name:
-        return name, scene, "exact"
-    name, scene = scene_fuzzy_match(intent_prompt, scenes)
-    if name:
-        return name, scene, "fuzzy"
-    return "", None, "none"
-
-
-def scene_field_summary(scene):
-    if not isinstance(scene, dict):
-        return "none"
-    fields = []
-    for field in ("positive_phrases", "negative_phrases", "refinement_key"):
-        if scene.get(field):
-            fields.append(field)
-    if scene.get("positive_text"):
-        fields.append("positive_text")
-    if scene.get("negative_text"):
-        fields.append("negative_text")
-    return ", ".join(fields) if fields else "none"
-
-
 def normalize_template_name(value):
     value = str(value or "").strip()
     if not value or value == TEMPLATE_NONE:
@@ -1145,57 +793,6 @@ def resolve_wildcards(text, seed=0):
         previous = current
         current = WILDCARD_RE.sub(replace, current)
     return current
-
-
-def resolve_scene_database_wildcards(text, scene_db):
-    text = str(text or "")
-    if not text or not isinstance(scene_db, dict):
-        return text
-
-    wildcard_phrases = {}
-    for item in scene_db.get("universal_memory", {}).values():
-        if not isinstance(item, dict):
-            continue
-        wildcard = bool(item.get("wildcard")) or bool(str(item.get("wildcard_group") or "").strip())
-        phrase = str(item.get("text") or "").strip()
-        if not wildcard or not phrase:
-            continue
-        wildcard_phrases[normalize_scene_key(phrase)] = phrase
-
-    if not wildcard_phrases:
-        return text
-
-    parts = re.split(r"([,;.\n]+)", text)
-    changed = False
-    run = []
-
-    def flush_run():
-        nonlocal changed, run
-        unique_keys = sorted({phrase_key for _, phrase_key in run})
-        if len(unique_keys) >= 2:
-            keep = random.choice(unique_keys)
-            for index, phrase_key in run:
-                if phrase_key != keep:
-                    parts[index] = ""
-                    changed = True
-        run = []
-
-    for index in range(0, len(parts), 2):
-        phrase_key = normalize_scene_key(parts[index])
-        if phrase_key and phrase_key in wildcard_phrases:
-            run.append((index, phrase_key))
-        else:
-            flush_run()
-    flush_run()
-
-    if not changed:
-        return text
-
-    output = "".join(parts)
-    output = re.sub(r"\s*([,;.])\s*([,;.]\s*)+", r"\1 ", output)
-    output = re.sub(r"(?:^|[\s,;.])+\n", "\n", output)
-    output = re.sub(r"\s+", " ", output.replace("\n", ", ")).strip(" ,;.")
-    return output
 
 
 def prompt_key_for_refiner(prompt, mode):
@@ -1353,120 +950,6 @@ async def funpack_templates_import(request):
     return web.json_response({"imported": imported, "templates": template_names()})
 
 
-@PromptServer.instance.routes.get("/funpack/scenes")
-async def funpack_scenes(request):
-    key = normalize_refinement_key(request.query.get("key", ""))
-    data = load_scene_db(key)
-    return web.json_response(
-        {
-            "scenes": scene_names(key),
-            "path": refinement_key_path(key) if key else scene_store_path(),
-            "refinement_key": key,
-            "data": data,
-            "memory": scene_memory_items(data),
-        },
-        headers={"Cache-Control": "no-store, max-age=0"},
-    )
-
-
-@PromptServer.instance.routes.get("/funpack/scenes/export")
-async def funpack_scenes_export(request):
-    key = normalize_refinement_key(request.query.get("key", ""))
-    data = load_scene_db(key)
-    return web.json_response(
-        data,
-        headers={
-            "Cache-Control": "no-store, max-age=0",
-            "Content-Disposition": f"attachment; filename=funpack_scenes_{key or 'global'}.json",
-        },
-    )
-
-
-@PromptServer.instance.routes.post("/funpack/scenes/scene")
-async def funpack_scene_save(request):
-    key = normalize_refinement_key(request.query.get("key", ""))
-    body = await request.json()
-    if not isinstance(body, dict):
-        return web.json_response({"error": "Scene payload must be an object."}, status=400)
-
-    action = str(body.get("action") or "save").lower()
-    name = normalize_scene_name(body.get("name"))
-    if not name:
-        return web.json_response({"error": "Scene name is required."}, status=400)
-
-    data = load_scene_db(key)
-    scenes = data.setdefault("scenes", {})
-    if action == "delete":
-        scenes.pop(name, None)
-        save_scene_db(data, key)
-        return web.json_response({"deleted": name, "scenes": scene_names(key), "data": data})
-
-    previous = scenes.get(name, {}) if isinstance(scenes.get(name), dict) else {}
-    scene = scene_from_texts(
-        name,
-        body.get("aliases", previous.get("aliases", [])),
-        body.get("mode") or body.get("output_mode") or previous.get("output_mode", "Manual"),
-        body.get("positive_text", previous.get("positive_text", "")),
-        body.get("negative_text", previous.get("negative_text", "")),
-        key,
-    )
-    scene["created_at"] = previous.get("created_at", now_iso())
-    scene["updated_at"] = now_iso()
-    scenes[name] = scene
-    save_scene_db(data, key)
-    return web.json_response({"saved": name, "scenes": scene_names(key), "data": data})
-
-
-@PromptServer.instance.routes.post("/funpack/scenes/database")
-async def funpack_scene_database_save(request):
-    key = normalize_refinement_key(request.query.get("key", ""))
-    body = await request.json()
-    if not isinstance(body, dict):
-        return web.json_response({"error": "Database payload must be an object."}, status=400)
-
-    incoming = body.get("universal_memory", body.get("memory", {}))
-    memory = normalize_scene_memory_items(incoming)
-    data = load_scene_db(key)
-    memory = apply_scene_database_authority(data.get("universal_memory", {}), memory)
-    data["universal_memory"] = memory
-    save_scene_db(data, key)
-    return web.json_response({"saved": len(memory), "data": data, "memory": scene_memory_items(data)})
-
-
-@PromptServer.instance.routes.post("/funpack/scenes/import")
-async def funpack_scenes_import(request):
-    key = normalize_refinement_key(request.query.get("key", ""))
-    incoming = await request.json()
-    if not isinstance(incoming, dict):
-        return web.json_response({"error": "Imported file is not a scene database."}, status=400)
-
-    data = load_scene_db(key)
-    imported_memory = incoming.get("universal_memory", {})
-    if isinstance(imported_memory, dict):
-        memory = data.setdefault("universal_memory", {})
-        for memory_key, item in imported_memory.items():
-            if isinstance(item, dict):
-                memory[str(memory_key)] = item
-
-    imported_scenes = incoming.get("scenes", {})
-    if not isinstance(imported_scenes, dict):
-        return web.json_response({"error": "Imported file does not contain a scenes object."}, status=400)
-
-    scenes = data.setdefault("scenes", {})
-    imported = 0
-    for name, scene in imported_scenes.items():
-        clean_name = normalize_scene_name(name)
-        if not clean_name or not isinstance(scene, dict):
-            continue
-        item = dict(scene)
-        item["name"] = clean_name
-        item["updated_at"] = now_iso()
-        scenes[clean_name] = item
-        imported += 1
-    save_scene_db(data, key)
-    return web.json_response({"imported": imported, "scenes": scene_names(key), "refinement_key": key})
-
-
 @PromptServer.instance.routes.get("/funpack/shortcuts")
 async def funpack_shortcuts(_):
     data = load_shortcut_db()
@@ -1475,6 +958,7 @@ async def funpack_shortcuts(_):
             "path": shortcut_store_path(),
             "data": data,
             "shortcuts": shortcut_items(data),
+            "categories": shortcut_categories(data),
         },
         headers={"Cache-Control": "no-store, max-age=0"},
     )
@@ -1504,13 +988,13 @@ async def funpack_shortcut_save(request):
         if not name:
             return web.json_response({"error": "Shortcut name is required."}, status=400)
         key, data = delete_shortcut_item(name)
-        return web.json_response({"deleted": key, "data": data, "shortcuts": shortcut_items(data)})
+        return web.json_response({"deleted": key, "data": data, "shortcuts": shortcut_items(data), "categories": shortcut_categories(data)})
 
     try:
         key, data = save_shortcut_item(body)
     except ValueError as error:
         return web.json_response({"error": str(error)}, status=400)
-    return web.json_response({"saved": key, "data": data, "shortcuts": shortcut_items(data)})
+    return web.json_response({"saved": key, "data": data, "shortcuts": shortcut_items(data), "categories": shortcut_categories(data)})
 
 
 @PromptServer.instance.routes.post("/funpack/shortcuts/import")
@@ -1530,7 +1014,7 @@ async def funpack_shortcuts_import(request):
             count += 1
     save_shortcut_db(data)
     data = load_shortcut_db()
-    return web.json_response({"imported": count, "data": data, "shortcuts": shortcut_items(data)})
+    return web.json_response({"imported": count, "data": data, "shortcuts": shortcut_items(data), "categories": shortcut_categories(data)})
 
 
 @PromptServer.instance.routes.get("/funpack/transitions")
@@ -1833,254 +1317,3 @@ class FunPackRefinementKeyLoader:
             return ("", "No refinement key selected. Pick an existing key or type a new key name.")
         _, loaded_key, status = load_refinement_key_state(target, create=bool(create_if_missing))
         return (loaded_key if loaded_key else target, status)
-
-
-class FunPackSceneBuilder:
-    CATEGORY = "FunPack/Scene"
-    RETURN_TYPES = ("STRING", "STRING", "FUNPACK_LORA_STACK", "STRING")
-    RETURN_NAMES = (
-        "positive_prompt",
-        "negative_prompt",
-        "lora_stack",
-        "status",
-    )
-    FUNCTION = "build_scene"
-    OUTPUT_NODE = True
-    DESCRIPTION = "Builds named scene presets from manually selected universal prompt phrases."
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "scene_name": ("STRING", {"default": "", "multiline": False}),
-                "mode": (["Manual", "Auto", "Learning"], {"default": "Manual"}),
-                "scene": (scene_names(), {"default": SCENE_NONE}),
-                "aliases": ("STRING", {"default": "", "multiline": False}),
-                "action": (["load", "save", "update", "delete"], {"default": "load"}),
-                "scene_positive": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "placeholder": "Write or arrange positive scene words and phrases here.",
-                }),
-                "scene_negative": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "placeholder": "Write or arrange negative scene words and phrases here.",
-                }),
-                "refinement_key": ("STRING", {"default": "", "multiline": False}),
-                "scene_payload": ("STRING", {"default": "{}", "multiline": False}),
-            },
-            "optional": {
-                "intent_prompt": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "forceInput": True,
-                    "tooltip": "Connected intent text used for Auto scene detection.",
-                }),
-                "positive_prompt": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "forceInput": True,
-                    "tooltip": "Connected positive prompt used only to collect universal scene phrase memory.",
-                }),
-                "negative_prompt": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "forceInput": True,
-                    "tooltip": "Connected negative prompt used only to collect universal negative phrase memory.",
-                }),
-                "refinement_key_input": ("STRING", {
-                    "default": "",
-                    "multiline": False,
-                    "forceInput": True,
-                    "tooltip": "Optional linked refinement key, for example from FunPack Refinement Key Loader.",
-                }),
-                "lora_stack": ("FUNPACK_LORA_STACK", {
-                    "tooltip": "Optional current LoRA stack. Scene Builder passes it through unchanged so Refiner can use it for suggestions.",
-                }),
-            },
-        }
-
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("nan")
-
-    @classmethod
-    def VALIDATE_INPUTS(cls, scene=None, **kwargs):
-        return True
-
-    def _manual_scene(self, selected_name, scene_name, aliases, mode, scene_positive, scene_negative, refinement_key, payload):
-        target_name = normalize_scene_name(scene_name) or selected_name
-        positive_text = scene_text_or_payload(scene_positive, payload["positive_phrases"])
-        negative_text = scene_text_or_payload(scene_negative, payload["negative_phrases"])
-        return scene_from_texts(target_name, aliases, mode, positive_text, negative_text, refinement_key)
-
-    def _shortcut_seed(self, refinement_key, prompt):
-        key = f"{normalize_refinement_key(refinement_key)}::{str(prompt or '')}"
-        return int(md5(key.encode("utf-8")).hexdigest()[:12], 16)
-
-    def _shortcut_status(self, applied):
-        if not applied:
-            return "Shortcuts: none."
-        labels = []
-        for item in applied[:8]:
-            labels.append(f"{item.get('trigger', '')}->{item.get('replacement', '')}")
-        suffix = f", ... ({len(applied)} total)" if len(applied) > 8 else ""
-        return f"Shortcuts: expanded {len(applied)} activation(s): {', '.join(labels)}{suffix}."
-
-    def _outputs_for_scene(self, name, scene, scene_db=None, lora_stack=None, source="Manual"):
-        positive = scene_prompt_text(scene, "positive_text", "positive_phrases")
-        negative = scene_prompt_text(scene, "negative_text", "negative_phrases")
-        positive, shortcut_applied = apply_prompt_shortcuts(
-            positive,
-            seed=self._shortcut_seed(scene.get("refinement_key", "") if isinstance(scene, dict) else "", positive),
-        )
-        positive = resolve_scene_database_wildcards(positive, scene_db)
-        negative = resolve_scene_database_wildcards(negative, scene_db)
-        lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
-        status = (
-            f"Scene Builder {source}: '{name or scene.get('name', '') or 'unsaved'}'. "
-            f"Stored fields: {scene_field_summary(scene)}.\n"
-            f"Positive phrases: {len(scene.get('positive_phrases', []) or [])}. "
-            f"Negative phrases: {len(scene.get('negative_phrases', []) or [])}. "
-            f"LoRA stack pass-through: {lora_count} LoRA(s).\n"
-            f"{self._shortcut_status(shortcut_applied)}"
-        )
-        return (positive, negative, lora_stack, status)
-
-    def _learning_outputs(self, positive_prompt, negative_prompt, lora_stack=None, refinement_key=""):
-        positive, shortcut_applied = apply_prompt_shortcuts(
-            str(positive_prompt or ""),
-            seed=self._shortcut_seed(refinement_key, positive_prompt),
-        )
-        negative = str(negative_prompt or "")
-        lora_count = len(lora_stack.get("loras", [])) if isinstance(lora_stack, dict) else 0
-        status = (
-            "Scene Builder Learning: pass-through active. "
-            f"Collected positive source: {'yes' if positive else 'no'}. "
-            f"Collected negative source: {'yes' if negative else 'no'}. "
-            f"LoRA stack pass-through: {lora_count} LoRA(s).\n"
-            f"{self._shortcut_status(shortcut_applied)}"
-        )
-        return (positive, negative, lora_stack, status)
-
-    def _empty_outputs(self, status):
-        return ("", "", None, status)
-
-    def build_scene(
-        self,
-        scene_name,
-        mode="Manual",
-        scene=SCENE_NONE,
-        aliases="",
-        action="load",
-        scene_positive="",
-        scene_negative="",
-        refinement_key="",
-        scene_payload="{}",
-        intent_prompt="",
-        positive_prompt="",
-        negative_prompt="",
-        refinement_key_input="",
-        lora_stack=None,
-        output_mode=None,
-    ):
-        linked_key = normalize_refinement_key(refinement_key_input)
-        if linked_key:
-            refinement_key = linked_key
-        selected_name = normalize_scene_name(scene)
-        if output_mode in {"Manual", "Auto", "Learning"}:
-            mode = output_mode
-        mode = mode if mode in {"Manual", "Auto", "Learning"} else "Manual"
-        action = action if action in {"load", "save", "update", "delete"} else "load"
-        payload = parse_scene_payload(scene_payload)
-
-        data = load_scene_db(refinement_key)
-        memory_positive = "\n".join(
-            item for item in (
-                positive_prompt,
-                scene_positive,
-                scene_text_from_phrases(payload.get("positive_phrases", [])),
-            )
-            if str(item or "").strip()
-        )
-        memory_negative = "\n".join(
-            item for item in (
-                negative_prompt,
-                scene_negative,
-                scene_text_from_phrases(payload.get("negative_phrases", [])),
-            )
-            if str(item or "").strip()
-        )
-        memory_changed = remember_scene_phrases(data, memory_positive, memory_negative)
-        scenes = data.setdefault("scenes", {})
-        manual = self._manual_scene(
-            selected_name,
-            scene_name,
-            aliases,
-            mode,
-            scene_positive,
-            scene_negative,
-            refinement_key,
-            payload,
-        )
-
-        if action == "delete":
-            if not selected_name or selected_name not in scenes:
-                if memory_changed:
-                    save_scene_db(data, refinement_key)
-                return self._empty_outputs("Delete skipped: no selected scene.")
-            deleted = scenes.pop(selected_name)
-            save_scene_db(data, refinement_key)
-            return self._empty_outputs(
-                f"Deleted scene '{selected_name}'. Removed fields: {scene_field_summary(deleted)}."
-            )
-
-        if action == "save":
-            target_name = normalize_scene_name(scene_name) or selected_name
-            if not target_name:
-                if memory_changed:
-                    save_scene_db(data, refinement_key)
-                return self._empty_outputs("Save skipped: enter a scene name.")
-            manual["name"] = target_name
-            manual["created_at"] = scenes.get(target_name, {}).get("created_at", now_iso())
-            manual["updated_at"] = now_iso()
-            scenes[target_name] = manual
-            save_scene_db(data, refinement_key)
-            return self._outputs_for_scene(target_name, manual, data, lora_stack, "Manual saved")
-
-        if action == "update":
-            target_name = selected_name or normalize_scene_name(scene_name)
-            if not target_name:
-                if memory_changed:
-                    save_scene_db(data, refinement_key)
-                return self._empty_outputs("Update skipped: select a scene or enter a scene name.")
-            previous = scenes.get(target_name, {})
-            manual["name"] = target_name
-            manual["created_at"] = previous.get("created_at", now_iso()) if isinstance(previous, dict) else now_iso()
-            manual["updated_at"] = now_iso()
-            scenes[target_name] = manual
-            save_scene_db(data, refinement_key)
-            return self._outputs_for_scene(target_name, manual, data, lora_stack, "Manual updated")
-
-        if mode == "Learning":
-            if memory_changed:
-                save_scene_db(data, refinement_key)
-            return self._learning_outputs(positive_prompt, negative_prompt, lora_stack, refinement_key)
-
-        if mode == "Auto":
-            matched_name, matched_scene, match_type = find_scene_for_intent(intent_prompt, scenes)
-            if matched_name and isinstance(matched_scene, dict):
-                if memory_changed:
-                    save_scene_db(data, refinement_key)
-                return self._outputs_for_scene(matched_name, matched_scene, data, lora_stack, f"Auto {match_type}")
-
-        if action == "load" and selected_name and selected_name in scenes and not scene_positive and not scene_negative:
-            selected_scene = scenes.get(selected_name, {})
-            if memory_changed:
-                save_scene_db(data, refinement_key)
-            return self._outputs_for_scene(selected_name, selected_scene, data, lora_stack, "Manual loaded")
-
-        if memory_changed:
-            save_scene_db(data, refinement_key)
-        return self._outputs_for_scene(manual.get("name", ""), manual, data, lora_stack, "Manual")

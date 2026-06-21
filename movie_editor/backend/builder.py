@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 from . import config
 from . import pipeline_wiring
-from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs, _combo_default
+from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs, _combo_default, _combo_choices
 
 # ── fixed core ────────────────────────────────────────────────────────────────
 # logical id -> class_type
@@ -172,6 +172,32 @@ def _widget_defaults(node_def: Optional[dict]) -> dict:
     return out
 
 
+def _widget_choices(node_def: Optional[dict]) -> dict:
+    """{name: [choices]} for combo widgets, per the LIVE object_info (e.g. installed
+    LoRA files). Used to coerce a saved slot value that no longer exists (renamed/
+    removed file) back to a current choice instead of being sent to ComfyUI as-is."""
+    out = {}
+    if not node_def:
+        return out
+    inp = node_def.get("input") or {}
+    for group in ("required", "optional"):
+        for name, spec in (inp.get(group) or {}).items():
+            if not isinstance(spec, (list, tuple)) or not spec:
+                continue
+            t = spec[0]
+            opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if opts.get("forceInput"):
+                continue
+            if isinstance(t, list):
+                if t:
+                    out[name] = t
+            elif isinstance(t, str) and "COMBO" in t.upper():
+                choices = _combo_choices(opts)
+                if choices:
+                    out[name] = choices
+    return out
+
+
 # ── reference workflow ────────────────────────────────────────────────────────
 
 def load_reference() -> dict:
@@ -311,12 +337,18 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         slot_def[s["id"]] = nd
         inputs = _widget_defaults(nd)
         defaults = dict(inputs)
+        choices = _widget_choices(nd)
         inputs.update(s.get("inputs") or {})
-        # Coerce stale/invalid combo values (e.g. a saved "[object Object]" or a dict from
-        # an earlier bug) back to the node's default key.
+        # Coerce stale/invalid combo values back to the node's current default key:
+        # a saved "[object Object]" or dict from an earlier bug, or a value (e.g. a
+        # LoRA filename) that was renamed/removed and no longer appears in the live
+        # choices list — the Models menu shows the live choices, so the saved value
+        # should fall back to match what the selector actually displays.
         for wname, wval in list(inputs.items()):
             if isinstance(wval, dict) or wval == "[object Object]":
                 inputs[wname] = defaults.get(wname, "")
+            elif wname in choices and wval not in choices[wname]:
+                inputs[wname] = defaults.get(wname, choices[wname][0])
         graph[sid] = {"class_type": cls, "inputs": inputs}
         if cls not in object_info:
             msg = f"Slot node '{cls}' is not installed in ComfyUI."
@@ -505,6 +537,19 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
         for o in node_outputs(object_info.get(s.get("node_class")) or {}):
             producers.setdefault(o["type"], []).append((f"out:{sid}:{o['name']}", f"{lbl} · {o['name']}"))
 
+    # Slot inputs that pull from a core output (input_sources "core:<cid>:<idx>") so each
+    # core output can show where it's tapped — e.g. Studio · cond → MyCustomSampler · positive.
+    slot_consumers: dict[tuple[str, int], list[str]] = {}
+    for s in slots:
+        lbl = slot_label.get(s.get("id"), s.get("id"))
+        for inp, src in (s.get("input_sources") or {}).items():
+            if isinstance(src, str) and src.startswith("core:"):
+                try:
+                    _, ccid, cidx = src.split(":", 2)
+                    slot_consumers.setdefault((ccid, int(cidx)), []).append(f"{lbl} · {inp}")
+                except ValueError:
+                    pass
+
     open_by_node: dict[str, dict] = {}
     for (cid, inp, t, req) in OPEN_PORTS:
         open_by_node.setdefault(cid, {})[inp] = (t, req)
@@ -543,7 +588,9 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
         outputs = []
         for i, o in enumerate(node_outputs(nd or {})):
             dests = [f"{d} · {di}" for (oi, d, di) in rev.get(cid, []) if oi == i]
-            outputs.append({"name": o["name"], "type": o["type"], "to": dests})
+            dests += slot_consumers.get((cid, i), [])
+            outputs.append({"name": o["name"], "type": o["type"], "to": dests,
+                            "source_id": f"core:{cid}:{i}"})
         nodes.append({"id": cid, "class": cls,
                       "display_name": (nd or {}).get("display_name", cls),
                       "installed": cls in object_info,

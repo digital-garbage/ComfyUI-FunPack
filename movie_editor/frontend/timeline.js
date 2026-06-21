@@ -7,7 +7,7 @@
   const body = document.getElementById("timeline-body");
   const meta = document.getElementById("timeline-meta");
 
-  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑", video: "▶", v2v: "⟳" };
+  const SRC_ICON = { empty: "▦", image: "◐", generated_frame: "⛶", carry: "⇥", mixed: "◑", video: "▶", v2v: "⟳", anchor_guide: "◓" };
 
   function genUnitRootScene(scene, p) {
     const uid = scene.gen_unit_id || scene.id;
@@ -23,7 +23,7 @@
   function anchorMediaRef(scene, p) {
     const src = sceneSourceForClip(scene, p);
     const t = src.type;
-    if (t === "image" || t === "mixed" || t === "generated_frame" || t === "video" || t === "v2v") return src.media_ref || null;
+    if (t === "image" || t === "mixed" || t === "generated_frame" || t === "video" || t === "v2v" || t === "anchor_guide") return src.media_ref || null;
     return null;
   }
 
@@ -44,12 +44,33 @@
       head.append(g);
       return;
     }
+    if (srcType === "anchor_guide") {
+      const stack = el("span", "clip-src-stack");
+      stack.title = "Anchor as guide — image steers via a frame-0 guide; latent empty (i2v bypassed)";
+      stack.append(el("span", "clip-anchor-mark", "◓"));
+      stack.append(el("span", "clip-guide-mark", "⇥"));
+      head.append(stack);
+      head.append(el("span", "clip-src-label", "guide"));
+      return;
+    }
     head.append(el("span", "clip-src", SRC_ICON[srcType] || "▦"));
   }
 
-  function appendClipHeadBar(head, durSec, fps, onRemove, removeTitle) {
+  // `reorder` (optional): { canLeft, canRight, onLeft, onRight } adds inline move
+  // controls so clips can be reordered directly on the timeline (not just the Edit menu).
+  function appendClipHeadBar(head, durSec, fps, onRemove, removeTitle, reorder) {
     const bar = el("div", "clip-head-bar");
     bar.append(el("span", "clip-dur", timecode(durSec, fps)));
+    if (reorder) {
+      const mk = (glyph, can, fn, title) => {
+        const b = el("button", "clip-move btn ghost tiny" + (can ? "" : " disabled"), glyph);
+        b.type = "button"; b.title = title; b.disabled = !can;
+        if (can) b.onclick = (e) => { e.stopPropagation(); fn(); };
+        return b;
+      };
+      bar.append(mk("◀", reorder.canLeft, reorder.onLeft, "Move clip left"));
+      bar.append(mk("▶", reorder.canRight, reorder.onRight, "Move clip right"));
+    }
     const rm = el("button", "clip-rm btn ghost tiny danger", "Remove");
     rm.type = "button";
     rm.title = removeTitle || "Remove clip (Delete / Backspace)";
@@ -333,37 +354,13 @@
       }
       if (!badge) {
         badge = el("div", "clip-rated");
-        const anchor = clipEl.querySelector(".clip-chars") || clipEl.querySelector(".clip-text");
+        const anchor = clipEl.querySelector(".clip-text");
         if (anchor && anchor.nextSibling) clipEl.insertBefore(badge, anchor.nextSibling);
         else clipEl.append(badge);
       }
       badge.title = "Rated for FunPack Studio on next generation";
       badge.textContent = "★ " + label;
     });
-  }
-
-  function toolbarConvertButton(st) {
-    const id = st.selectedSceneId;
-    if (!id) return null;
-    const sc = S.scene(id);
-    if (!sc) return null;
-    if (S.isVideoClip(sc)) {
-      const btn = el("button", "btn ghost tiny", "Convert to scene");
-      btn.dataset.convertClip = "1";
-      btn.title = sc.scene_archive
-        ? "Restore prompt, source, guides, and settings from before this was locked as video"
-        : "Make this a generative v2v scene (prompt + Generate)";
-      btn.onclick = () => S.convertToScene(sc.id);
-      return btn;
-    }
-    if (S.isGenerativeScene(sc)) {
-      const btn = el("button", "btn ghost tiny", "Convert to video");
-      btn.dataset.convertClip = "1";
-      btn.title = "Lock as a plain video clip — skipped by Generate; settings saved for Convert back to scene";
-      btn.onclick = () => S.convertToVideo(sc.id);
-      return btn;
-    }
-    return null;
   }
 
   function exportSaveTitles(hasSel, saveable, saveableN, selN) {
@@ -439,17 +436,6 @@
       const sc = focusId ? S.scene(focusId) : null;
       const sepTrack = sc && S.separatedTrackForScene ? S.separatedTrackForScene(sc.id) : null;
       rmSep.disabled = !sepTrack;
-    }
-    const oldConv = bar.querySelector("[data-convert-clip]");
-    const freshConv = toolbarConvertButton(st);
-    if (oldConv) {
-      if (freshConv) oldConv.replaceWith(freshConv);
-      else oldConv.remove();
-    } else if (freshConv) {
-      const anchor = bar.querySelector("[data-separate-audio]") || bar.querySelector("[data-remove-sep-audio]") || bar.querySelector("[data-save-mediabin]") || bar.querySelector("[data-export-scene]");
-      if (anchor?.nextSibling) bar.insertBefore(freshConv, anchor.nextSibling);
-      else if (anchor) anchor.after(freshConv);
-      else bar.append(freshConv);
     }
     const oldRating = bar.querySelector(".tl-rating-block");
     const freshRating = toolbarRatingBlock(st, st.project);
@@ -565,14 +551,15 @@
   }
 
   // ── clip ───────────────────────────────────────────────────────────────────────
-  function clipEl(st, p, scene, index, leftPx, widthPx) {
+  function clipEl(st, p, scene, index, total, leftPx, widthPx) {
     const unitCuts = (p.scenes || []).filter((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id)).length;
     const subclip = (scene.cut_offset_frames || 0) > 0;
     const src = sceneSourceForClip(scene, p);
     const srcType = src.type || "empty";
     const clip = el("div", "clip" + clipSelClass(st, scene.id)
       + (S.isVideoClip(scene) ? " clip-video" : "")
-      + (scene.excluded ? " excluded" : "")
+      + (scene.excluded && !scene.removed_from_plan ? " excluded" : "")
+      + (scene.removed_from_plan ? " off-plan" : "")
       + (hasRender(st, scene.id) ? " rendered" : (!scene.excluded && S.isGenerativeScene(scene) ? " pending" : ""))
       + (hasRender(st, scene.id) && S.renderIsStale?.(scene.id) ? " stale-render" : "")
       + (unitCuts > 1 ? " gen-cut" : "") + (subclip ? " subclip" : "")
@@ -635,16 +622,26 @@
       });
     }
 
-    // accept a media asset dragged from the bin → sets this clip's source
-    clip.addEventListener("dragover", (e) => { if (e.dataTransfer.types.includes("application/funpack-media")) { e.preventDefault(); clip.classList.add("drop-target"); } });
-    clip.addEventListener("dragleave", () => clip.classList.remove("drop-target"));
-    clip.addEventListener("drop", (e) => {
-      const id = e.dataTransfer.getData("application/funpack-media");
-      clip.classList.remove("drop-target");
-      // Dropping on a clip sets ITS anchor; stop the event reaching the track-level
-      // drop (which would otherwise also create a brand-new clip).
-      if (id) { e.preventDefault(); e.stopPropagation(); S.assignMediaToScene(scene.id, id); }
-    });
+    // Drop an image (or video) from the Media bin onto a generative clip to set its i2v
+    // anchor. This used to live on the Plan card; the single-timeline layout moved it here.
+    if (!subclip && S.isGenerativeScene(scene)) {
+      clip.addEventListener("dragover", (e) => {
+        if (!e.dataTransfer.types.includes("application/funpack-media")) return;
+        e.preventDefault(); e.stopPropagation();
+        e.dataTransfer.dropEffect = "copy";
+        clip.classList.add("drop-target");
+      });
+      clip.addEventListener("dragleave", (e) => {
+        if (!clip.contains(e.relatedTarget)) clip.classList.remove("drop-target");
+      });
+      clip.addEventListener("drop", (e) => {
+        clip.classList.remove("drop-target");
+        const id = e.dataTransfer.getData("application/funpack-media");
+        if (!id) return;
+        e.preventDefault(); e.stopPropagation();
+        S.assignMediaToScene(scene.id, id);
+      });
+    }
 
     // i2v anchor thumbnail (image + mixed + generated_frame)
     const mref = anchorMediaRef(scene, p);
@@ -669,26 +666,25 @@
     const head = el("div", "clip-head");
     head.append(el("span", "clip-no", S.isVideoClip(scene) ? "V" : p2(index + 1)));
     appendSrcBadge(head, srcType);
-    appendClipHeadBar(head, sDur(scene, p), sFps(scene, p), () => S.removeScene(scene.id));
+    appendClipHeadBar(head, sDur(scene, p), sFps(scene, p), () => S.removeScene(scene.id), null, {
+      canLeft: index > 0,
+      canRight: total != null && index < total - 1,
+      onLeft: () => S.moveTimelineClip(scene.id, -1),
+      onRight: () => S.moveTimelineClip(scene.id, 1),
+    });
     clip.append(head);
 
     const root = unitCuts > 1
       ? (p.scenes || []).find((s) => (s.gen_unit_id || s.id) === (scene.gen_unit_id || scene.id) && !(s.cut_offset_frames > 0))
       : null;
+    // The timeline clip is the RESULT: show what it was actually generated with (the frozen
+    // render prompt), not the live plan text — editing a scene in the plan must not mutate the
+    // already-generated video here. Falls back to live plan text only when not yet generated.
+    const frozen = !S.isVideoClip(scene) && S.renderPromptForScene ? S.renderPromptForScene(scene.id) : null;
     const label = S.isVideoClip(scene)
       ? ((mref && (st.mediaBin || []).find((m) => m.id === mref)?.name) || "Video clip")
-      : (scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
+      : ((frozen && frozen.text) || scene.text || (root && root.text) || (subclip ? "cut" : "empty scene"));
     clip.append(el("div", "clip-text" + (label && label !== "empty scene" && label !== "cut" && label !== "Video clip" ? "" : " empty"), label));
-
-    const charIds = S.sceneCharacterIds(scene.id);
-    if (charIds.length) {
-      const chars = el("div", "clip-chars");
-      charIds.forEach((cid) => {
-        const c = (st.characters || []).find((x) => x.id === cid);
-        chars.append(el("span", "clip-char", c?.name || cid));
-      });
-      clip.append(chars);
-    }
 
     const rating = sceneRatingDisplay(st, scene);
     if (rating) {
@@ -1057,6 +1053,8 @@
     const OUI = window.OverlayUI;
     const editing = existing && existing.kind === "text";
     const state = {
+      ...(OUI.TEXT_STYLE_DEFAULTS || {}),
+      ...(editing ? existing : {}),
       text: editing ? (existing.text || "") : "Title",
       font_size: editing ? (existing.font_size != null ? existing.font_size : 42) : 42,
       font_family: editing ? (existing.font_family || "system-ui") : "system-ui",
@@ -1078,9 +1076,7 @@
 
     const syncPreview = () => {
       previewInner.textContent = state.text || "Title";
-      previewInner.style.fontSize = state.font_size + "px";
-      previewInner.style.color = state.color;
-      previewInner.style.fontFamily = OUI.cssFamily(state.font_family);
+      OUI.applyTextCss(previewInner, state, state.font_size);
       previewInner.style.opacity = state.opacity;
     };
     syncPreview();
@@ -1112,6 +1108,11 @@
     row2.append(OUI.field("Color", color));
     form.append(row2);
 
+    form.append(OUI.textStyleControls(
+      (k) => state[k],
+      (patch) => { Object.assign(state, patch); syncPreview(); },
+    ));
+
     const op = el("input");
     op.type = "range"; op.min = "0"; op.max = "1"; op.step = "0.05";
     op.value = state.opacity;
@@ -1135,6 +1136,11 @@
         font_family: state.font_family,
         color: state.color,
         opacity: state.opacity,
+        bold: !!state.bold, italic: !!state.italic,
+        text_align: state.text_align, line_spacing: state.line_spacing,
+        stroke_width: state.stroke_width, stroke_color: state.stroke_color,
+        shadow: !!state.shadow, shadow_color: state.shadow_color,
+        bg_enabled: !!state.bg_enabled, bg_color: state.bg_color, bg_opacity: state.bg_opacity,
         label: "Text",
       };
       if (editing) S.updateOverlayTrack(existing.id, payload);
@@ -1772,8 +1778,6 @@
     rmSepAud.disabled = !sepTrack;
     rmSepAud.onclick = () => { if (sepTrack) S.removeAudioTrack(sepTrack.id); };
     bar.append(split); bar.append(del); bar.append(selBadge); bar.append(exp); bar.append(saveBin); bar.append(sepAud); bar.append(rmSepAud);
-    const conv = toolbarConvertButton(st);
-    if (conv) bar.append(conv);
     bar.append(toolbarRatingBlock(st, p));
 
     const spacer = el("div", "tl-spacer"); bar.append(spacer);
@@ -1911,19 +1915,15 @@
       const asset = (st.mediaBin || []).find((m) => m.id === id);
       if (asset?.kind === "video") {
         e.preventDefault();
-        S.addVideoClip(id);
-      } else if (asset?.kind === "image") {
-        // CapCut-style: drop an image on empty timeline → default-length generative
-        // scene anchored to it. (Dropping ON a clip sets that clip's anchor instead;
-        // that handler stops propagation so this one doesn't also fire.)
-        e.preventDefault();
-        S.addImageClip(id);
+        S.addVideoClip(id); // a finished video is a result — it belongs on the timeline
       }
+      // Images are i2v ANCHORS — drop them on a Plan card (or the Plan strip) instead, so
+      // the timeline (the rendered result) is never changed by setting up a generation.
     });
     lay.forEach(({ seg, o, d }) => {
       if (seg.kind === "gap") return;
       if (seg.kind === "ghost") track.append(ghostClipEl(st, p, seg.ghost, o * pxPerSec, d * pxPerSec));
-      else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), o * pxPerSec, d * pxPerSec));
+      else track.append(clipEl(st, p, seg.scene, scenes.indexOf(seg.scene), scenes.length, o * pxPerSec, d * pxPerSec));
     });
     for (let i = 0; i < scenes.length - 1; i++) {
       const prevSeg = segs.find((s) => s.kind === "scene" && s.scene.id === scenes[i].id);
@@ -1978,18 +1978,19 @@
       ?? JSON.stringify({ sel: st.selectedSceneId, sels: st.selectedSceneIds });
     const fpRat = _ratingsFingerprint(st);
     if (fpData !== _lastDataFp) {
+      const ok = render(st);
+      if (!ok) return false; // render declined (focus/drag/scroll) — retry on next notify
       _lastDataFp = fpData;
       _lastSelFp = fpSel;
       _lastRatFp = fpRat;
-      const ok = render(st);
-      if (_pendingAutoFit && ok && st.project) {
+      if (_pendingAutoFit && st.project) {
         _pendingAutoFit = false;
         if (_autoFitEnabled) {
           const total = S.previewTotalSec ? S.previewTotalSec() : tlTotalSec;
           requestAnimationFrame(() => { if (total > 0) fit(total); });
         }
       }
-      return;
+      return true;
     }
     if (fpRat !== _lastRatFp) {
       _lastRatFp = fpRat;

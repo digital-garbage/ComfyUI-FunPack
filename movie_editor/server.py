@@ -282,7 +282,10 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_av
         ref = getattr(src, "media_ref", None)
         tgt = getattr(src, "target", None)
         stype = pipeline_caps.effective_source_type(sc, chain_available)
-        if stype not in ("image", "generated_frame", "mixed") or not ref:
+        # anchor_guide feeds its image into the pipeline like any anchor (e.g. an Image
+        # Transform that derives width/height); the i2v node is bypassed elsewhere so the
+        # latent stays empty. So it copies as a normal anchor here.
+        if stype not in ("image", "generated_frame", "mixed", "anchor_guide") or not ref:
             continue
         _add_ref(ref, tgt, sc.id, set_primary=True)
     for ref in (extra_refs or []):
@@ -448,8 +451,10 @@ def _run_sampler_inputs(
     from .backend.timeline import (
         build_auto_continuity_guides,
         build_scene_guides_payload,
+        build_self_image_guides,
         continuity_settings_for_run,
         is_mixed_source,
+        merge_scene_guide_payloads,
         normalize_guide_settings,
     )
 
@@ -462,6 +467,11 @@ def _run_sampler_inputs(
     auto_guides = build_auto_continuity_guides(proj, target) if cs["auto_enabled"] else None
     manual_guides = build_scene_guides_payload(target) if manual_stack else None
     guides = manual_guides or auto_guides
+
+    # Self-image guides: a scene's own image as a frame-0 guide (anchor_guide → empty
+    # latent; mixed → reinforces the anchor so the first scene still gets a guide).
+    # Independent of continuity/manual stacks, so merge it in rather than replace.
+    guides = merge_scene_guide_payloads(guides, build_self_image_guides(target))
 
     if guides:
         samp["funpack_scene_guides"] = json.dumps(guides)
@@ -518,6 +528,31 @@ def _missing_scene_anchor_media(target: Project, *, chain_available: bool = True
         if not media.path_for(ref):
             missing.append(ref)
     return missing
+
+
+def _apply_node_overrides(graph: dict, overrides: Optional[list]) -> list[str]:
+    """Force widget inputs on built-graph nodes (e.g. the user's 'Anchor as guide' i2v
+    bypass — set a node's toggle/combo to a chosen state). Each override is
+    {node, input, value}; ``node`` is a built-graph key ('studio', a slot id, or
+    'slot_<id>'). Returns the keys actually applied (for the report)."""
+    applied: list[str] = []
+    for ov in overrides or []:
+        if not isinstance(ov, dict):
+            continue
+        nid = str(ov.get("node") or "").strip()
+        inp = ov.get("input")
+        if not nid or not inp:
+            continue
+        key = nid if nid in graph else ("slot_" + nid if ("slot_" + nid) in graph else None)
+        if not key:
+            continue
+        cur = graph[key].get("inputs", {}).get(inp)
+        # Never clobber a wired socket ([node_id, idx]) — only widget values are forced.
+        if isinstance(cur, list):
+            continue
+        graph[key].setdefault("inputs", {})[inp] = ov.get("value")
+        applied.append(f"{key}.{inp}")
+    return applied
 
 
 def _attach_scene_anchors(samp: dict, media_pack: Optional[dict], target: Project) -> dict:
@@ -1143,7 +1178,8 @@ if web is not None and PromptServer is not None:
                 result["expected_scenes"] = validation["expected_scenes"]
                 result["parsed_scenes"] = len(parsed.get("scenes", []))
                 result["scene_refinement_keys"] = bridge.scene_refinement_keys(
-                    prompt, len(parsed.get("scenes", [])), p.refinement_key)
+                    prompt, p.refinement_key)
+                result["refinement_key_pool"] = bridge.refinement_key_pool(prompt)
             except Exception as e:  # noqa: BLE001
                 result["parse_error"] = str(e)
             return web.json_response(result)
@@ -1160,7 +1196,8 @@ if web is not None and PromptServer is not None:
             result["expected_scenes"] = expected
             result["parsed_scenes"] = got
             result["scene_refinement_keys"] = bridge.scene_refinement_keys(
-                prompt, got, p.refinement_key)
+                prompt, p.refinement_key)
+            result["refinement_key_pool"] = bridge.refinement_key_pool(prompt)
             if expected and got != expected:
                 result["warning"] = (
                     f"Studio split produced {got} scene(s) but the timeline has {expected}. "
@@ -1226,27 +1263,10 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
-    @routes.get(UI_PREFIX + "/api/library/characters")
-    async def _characters(_req):
+    @routes.post(UI_PREFIX + "/api/library/categories")
+    async def _category_save(req):
         try:
-            from .backend import characters as char_lib
-            return web.json_response(char_lib.list_characters())
-        except Exception as e:  # noqa: BLE001
-            return web.json_response({"characters": [], "error": str(e)})
-
-    @routes.post(UI_PREFIX + "/api/library/characters")
-    async def _character_save(req):
-        try:
-            from .backend import characters as char_lib
-            return web.json_response(char_lib.save_character(await req.json()))
-        except Exception as e:  # noqa: BLE001
-            raise web.HTTPBadRequest(reason=str(e))
-
-    @routes.delete(UI_PREFIX + "/api/library/characters/{cid}")
-    async def _character_delete(req):
-        try:
-            from .backend import characters as char_lib
-            return web.json_response(char_lib.delete_character(req.match_info["cid"]))
+            return web.json_response(bridge.save_category(await req.json()))
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
@@ -1275,9 +1295,17 @@ if web is not None and PromptServer is not None:
             incoming = await req.json()
             if not isinstance(incoming, dict) or "shortcuts" not in incoming:
                 raise web.HTTPBadRequest(reason="Payload must be a shortcuts database JSON.")
-            return web.json_response(bridge.import_shortcuts(incoming))
+            replace = req.query.get("mode", "merge") == "replace"
+            return web.json_response(bridge.import_shortcuts(incoming, replace=replace))
         except web.HTTPException:
             raise
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/library/shortcuts/clear")
+    async def _shortcuts_clear(_req):
+        try:
+            return web.json_response(bridge.clear_shortcuts())
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
@@ -1298,9 +1326,40 @@ if web is not None and PromptServer is not None:
             incoming = await req.json()
             if not isinstance(incoming, dict) or "transitions" not in incoming:
                 raise web.HTTPBadRequest(reason="Payload must be a transitions database JSON.")
-            return web.json_response(bridge.import_transitions(incoming))
+            replace = req.query.get("mode", "merge") == "replace"
+            return web.json_response(bridge.import_transitions(incoming, replace=replace))
         except web.HTTPException:
             raise
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/library/transitions/clear")
+    async def _transitions_clear(_req):
+        try:
+            return web.json_response(bridge.clear_transitions())
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    # --- API: FunPack file manager (Composer ▸ Files) ---
+    @routes.get(UI_PREFIX + "/api/files")
+    async def _files_list(_req):
+        try:
+            return web.json_response(bridge.list_funpack_files())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"groups": [], "error": str(e)})
+
+    @routes.delete(UI_PREFIX + "/api/files/{group}/{name}")
+    async def _files_delete(req):
+        try:
+            return web.json_response(
+                bridge.delete_funpack_file(req.match_info["group"], req.match_info["name"]))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.post(UI_PREFIX + "/api/files/{group}/clear")
+    async def _files_clear(req):
+        try:
+            return web.json_response(bridge.clear_funpack_files(req.match_info["group"]))
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
@@ -1457,6 +1516,12 @@ if web is not None and PromptServer is not None:
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)
+        # Anchor-as-guide i2v bypass: force the user-declared node's widget(s) to the
+        # configured state so the latent stays empty. Only honoured for runs the client
+        # marked as carrying an anchor_guide scene.
+        applied_ovr = _apply_node_overrides(graph, body.get("node_overrides"))
+        if applied_ovr:
+            report.setdefault("node_overrides", []).extend(applied_ovr)
         try:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001
@@ -1780,7 +1845,7 @@ if web is not None and PromptServer is not None:
             oi = None
         return web.json_response({
             "ports": nodes.pipeline_ports(oi),
-            "core_producers": nodes.core_producers(),
+            "core_producers": nodes.core_producers(oi),
             "requirements": nodes.pipeline_requirements(),
             "wiring": pipeline_wiring.wiring_rules_payload(),
         })

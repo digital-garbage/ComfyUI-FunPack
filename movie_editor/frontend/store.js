@@ -29,10 +29,42 @@
     mediaBin: [],            // uploaded assets [{id,name,kind,...}]
     mediaPreviewId: null,    // transient image preview in the player (not scene assignment)
     shortcuts: [],           // prompt shortcut library
-    characters: [],          // global character library
+    shortcutCategories: [],  // managed grouping list: [{name, sub_categories:[]}]
     imageTargets: [],        // where an image asset can be wired [{value,label}]
     ratingLabels: [],        // FunPack Studio V2 rating options
   };
+
+  // ── editor settings ─────────────────────────────────────────────────────────
+  // Per-browser editor preferences (not part of the project file). Govern how the
+  // prompt is parsed/edited, not what is generated from already-distributed scenes.
+  const EDITOR_SETTINGS_KEY = "funpack_editor_settings";
+  const EDITOR_SETTINGS_DEFAULTS = {
+    autocomplete: true, anchorEnabled: true,
+    // "Anchor as guide" i2v bypass: declare a custom i2v node so it can be forced
+    // to a state (value-only) on anchor_guide runs. anchorGuideBypass = {node, input, value}.
+    anchorGuideHasI2v: false, anchorGuideBypass: null,
+  };
+  function _loadEditorSettings() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(EDITOR_SETTINGS_KEY) || "{}");
+      return { ...EDITOR_SETTINGS_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
+    } catch (_) { return { ...EDITOR_SETTINGS_DEFAULTS }; }
+  }
+  let _editorSettings = _loadEditorSettings();
+  function getEditorSettings() { return { ..._editorSettings }; }
+  function getEditorSetting(key) { return _editorSettings[key]; }
+  function setEditorSetting(key, val) {
+    if (_editorSettings[key] === val) return;
+    _editorSettings = { ..._editorSettings, [key]: val };
+    try { localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify(_editorSettings)); } catch (_) {}
+    notify();
+    // Anchor toggle changes how the global prompt maps onto the timeline — re-split now.
+    if (key === "anchorEnabled" && state.project) {
+      const cur = (state.project.global_prompt
+        || state.preview?.display_prompt || state.preview?.combined_prompt || "").trim();
+      if (cur) { _pinnedGlobalPrompt = cur; applyGlobalPromptQuiet(cur).catch(() => {}); }
+    }
+  }
 
   const listeners = new Set();
   const SAVE_DEBOUNCE_MS = 5000;        // discrete edits (dropdowns, toggles)
@@ -47,6 +79,8 @@
   // stale optimistic DOM (scene prompt text could read blank until reload/regenerate).
   let _renderAfterSave = false;
   let _selectionAnchorId = null;  // shift-click range anchor
+  let _modelsSaveTimer = null;    // debounce exposed-control (node input) saves
+  let _modelsSaveDirty = false;
 
   function notify() { listeners.forEach((fn) => { try { fn(state); } catch (e) { console.error(e); } }); }
   function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -87,36 +121,15 @@
   }
   function get() { return state; }
 
-  function _assignedCharacterIds(project) {
-    const ids = new Set();
-    (project?.scenes || []).forEach((s) => (s.character_ids || []).forEach((id) => ids.add(id)));
-    return ids;
-  }
-
-  function _characterPreviewKey(project) {
-    const assigned = _assignedCharacterIds(project);
-    return (state.characters || [])
-      .filter((c) => assigned.has(c.id))
-      .map((c) => [
-        c.id, c.name, c.appearance, c.body, c.wardrobe, c.always_include, c.never_include,
-        c.face_ref, c.body_ref, c.detail_ref,
-      ].join("\x1f"))
-      .sort()
-      .join("|");
-  }
-
   function _promptPreviewKey(project) {
     if (!project) return "";
     return JSON.stringify({
       anchor: project.anchor,
       global_prompt: project.global_prompt,
       intro_transition: project.intro_transition,
-      character_bible: project.character_bible,
-      characters: _characterPreviewKey(project),
       scenes: (project.scenes || []).map((s) => ({
         text: s.text,
         excluded: s.excluded,
-        character_ids: s.character_ids,
         transition_to_next: s.transition_to_next,
         source_type: s.source?.type,
         media_ref: s.source?.media_ref,
@@ -221,11 +234,25 @@
   }
 
   let _globalApplyTimer = null;
+  let _pendingGlobalPromptText = null;   // latest typed global prompt awaiting distribution
   function scheduleGlobalPromptApply(text) {
+    _pendingGlobalPromptText = text;
     clearTimeout(_globalApplyTimer);
     _globalApplyTimer = setTimeout(() => {
-      applyGlobalPromptQuiet(text).catch((e) => console.warn("Global prompt apply failed:", e));
+      _globalApplyTimer = null;
+      const t = _pendingGlobalPromptText; _pendingGlobalPromptText = null;
+      applyGlobalPromptQuiet(t).catch((e) => console.warn("Global prompt apply failed:", e));
     }, 500);
+  }
+
+  // Materialize a still-debounced global-prompt edit into scene.text NOW (screen = truth). Called
+  // before generate/save so a prompt typed faster than the 500ms debounce isn't left undistributed
+  // — otherwise we'd save (and generate from) stale scene text while the screen shows the new prompt.
+  async function flushGlobalPromptApply() {
+    if (_globalApplyTimer) { clearTimeout(_globalApplyTimer); _globalApplyTimer = null; }
+    if (_pendingGlobalPromptText == null) return;
+    const t = _pendingGlobalPromptText; _pendingGlobalPromptText = null;
+    await applyGlobalPromptQuiet(t);
   }
 
   function _normalizeSceneText(t) {
@@ -270,6 +297,7 @@
       state.sceneRenders[id] = {
         media: ghost.media,
         inSec: ghost.inSec || 0,
+        durationSec: ghost.durationSec != null ? ghost.durationSec : undefined,
       };
     }
     return sc;
@@ -428,11 +456,18 @@
     if (!hasSceneText && anchor) {
       return { anchor: "", scenes: [{ text: anchor }], transitions: [] };
     }
+    // Anchor disabled (editor setting): the leading pre-first-split text is Scene 1,
+    // not a shared anchor. Fold it in as the first scene; the split trigger that began
+    // the old Scene 1 becomes the seam between new Scene 1 and Scene 2 (inferred from text).
+    if (!_editorSettings.anchorEnabled && anchor) {
+      return { anchor: "", scenes: [{ text: anchor }, ...scenes], transitions };
+    }
     return { anchor: v.anchor || "", scenes, transitions };
   }
 
   function _afterTimelineStructureChange() {
     _pinnedGlobalPrompt = null;
+    _ensureTimelineOrder();
     _syncSeparatedAudioTracks();
     syncGlobalPromptFromTimeline();
   }
@@ -625,6 +660,7 @@
     state.gen = { state: "idle", promptId: null, media: [], msg: "" };
     state.sceneRenders = JSON.parse(JSON.stringify(state.project.scene_renders || {}));
     state.sceneGhosts = JSON.parse(JSON.stringify(state.project.scene_ghosts || []));
+    _ensureTimelineOrder();
     normalizeOverlayLanes(state.project);
     state.models = JSON.parse(JSON.stringify(state.project.models || { slots: [] }));
     if (_clearOrphanRatings()) {
@@ -737,6 +773,7 @@
   // commit promise when it flushed, else null.
   function flushSave() {
     clearTimeout(saveTimer); saveTimer = null;
+    flushModelsSave();  // persist any debounced exposed-control (node input) edits too
     if (!_localDirty && !_commitPromise) return null;
     return commit();
   }
@@ -865,7 +902,7 @@
   function _patchSceneTarget(id, patch) {
     const s = scene(id); if (!s) return null;
     const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
-    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null || patch.character_ids != null))
+    const targetId = (root && isGenSubclip(s) && (patch.text != null || patch.rating != null || patch.source != null))
       ? root.id : id;
     return scene(targetId);
   }
@@ -915,7 +952,6 @@
 
   function _applyScenePatch(id, patch, quiet) {
     const t = _patchSceneTarget(id, patch); if (!t) return;
-    const charsChanged = patch.character_ids != null;
     const anchorChanged = _anchorPatchChanged(t, patch);
     if (anchorChanged) _stampRenderSourceBeforeAnchorChange(t);
     const merged = { ...patch };
@@ -923,13 +959,9 @@
     if (!quiet && !window.EditorHistory?.isApplying()) _historyRecord();
     Object.assign(t, merged);
     if (merged.source) _syncGenUnitSource(genUnitRoot(genUnitId(t)) || t);
-    if (charsChanged) _invalidateGlobalPromptDraft();
     if (anchorChanged) {
       clearTimeout(saveTimer); saveTimer = null;
       _localDirty = true; _renderAfterSave = true; notify(); commit();
-    } else if (charsChanged) {
-      notify();
-      _syncPromptPreview();
     } else if (_patchAffectsCombinedPrompt(merged)) {
       syncGlobalPromptFromTimeline();
       if (quiet) scheduleSaveSilent();
@@ -995,6 +1027,7 @@
     if (!scene(id)) return;
     state.selectedOverlayId = null;
     state.selectedAudioTrackId = null;
+    state.mediaPreviewId = null;  // tapping a clip exits the transient media-bin preview
 
     if (range && _selectionAnchorId && order.includes(_selectionAnchorId)) {
       const a = order.indexOf(_selectionAnchorId);
@@ -1056,7 +1089,6 @@
       text: sc.text || "",
       source: JSON.parse(JSON.stringify(sc.source || {})),
       guides: JSON.parse(JSON.stringify(sc.guides || [])),
-      character_ids: [...(sc.character_ids || [])],
       effects: JSON.parse(JSON.stringify(sc.effects || {})),
       frames: sc.frames,
       frames_mode: sc.frames_mode,
@@ -1083,7 +1115,6 @@
     sc.text = archive.text || "";
     sc.source = JSON.parse(JSON.stringify(archive.source || { type: "carry" }));
     sc.guides = JSON.parse(JSON.stringify(archive.guides || []));
-    sc.character_ids = [...(archive.character_ids || [])];
     sc.effects = JSON.parse(JSON.stringify(archive.effects || {}));
     sc.frames = archive.frames;
     sc.frames_mode = archive.frames_mode;
@@ -1309,6 +1340,35 @@
     notify(); scheduleSave();
   }
 
+  // Remove a scene from the PLAN. If its gen-unit has a generated clip, KEEP that clip on the
+  // timeline: mark the unit `excluded` (so generation + prompt skip it everywhere) and
+  // `removed_from_plan` (hide from the plan strip; export keeps it because it has a render).
+  // If nothing was generated, it's a plain delete.
+  function removeFromPlan(id) {
+    if (!state.project) return;
+    const s = scene(id); if (!s) return;
+    const uid = genUnitId(s);
+    const unit = (state.project.scenes || []).filter((x) => genUnitId(x) === uid);
+    const rendered = isVideoClip(s) || unit.some((x) => state.sceneRenders[x.id] && state.sceneRenders[x.id].media);
+    if (!rendered) { removeScene(id); return; }
+    _historyRecord();
+    unit.forEach((x) => { x.excluded = true; x.removed_from_plan = true; });
+    syncGlobalPromptFromTimeline();
+    notify(); scheduleSave();
+  }
+
+  // Bring a removed-from-plan scene back into the plan (re-enable generation).
+  function restoreToPlan(id) {
+    if (!state.project) return;
+    const s = scene(id); if (!s) return;
+    const uid = genUnitId(s);
+    _historyRecord();
+    (state.project.scenes || []).filter((x) => genUnitId(x) === uid)
+      .forEach((x) => { x.excluded = false; x.removed_from_plan = false; });
+    syncGlobalPromptFromTimeline();
+    notify(); scheduleSave();
+  }
+
   function removeSelectedScenes() {
     if (!state.project) return;
     let ids = [...new Set(state.selectedSceneIds || [])].filter((sid) => scene(sid));
@@ -1342,13 +1402,48 @@
       if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
       return sceneDurationSec(sc);
     }
-    const g = seg.ghost;
-    const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
-    const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
-    return (frames || 1) / (fps || 25);
+    return _ghostDurationSec(seg.ghost);
   }
 
-  // Preview/timeline layout: live scenes interleaved with removed-scene ghosts.
+  // ── timeline (cut) order — independent of plan (scenes) order ─────────────────
+  // The timeline is the RESULT; its order is project.timeline_order (scene ids), which the
+  // plan can never move. Self-healing: keep existing order, drop ids whose scene is gone,
+  // append new scenes in plan order. Empty falls back to plan order (back-compat / fresh).
+  function _ensureTimelineOrder() {
+    const p = state.project; if (!p) return;
+    const ids = (p.scenes || []).map((s) => s.id);
+    const idSet = new Set(ids);
+    const cur = (Array.isArray(p.timeline_order) ? p.timeline_order : []).filter((id) => idSet.has(id));
+    const inCur = new Set(cur);
+    for (const id of ids) if (!inCur.has(id)) cur.push(id);
+    p.timeline_order = cur;
+  }
+
+  function orderedTimelineScenes() {
+    const p = state.project; if (!p) return [];
+    const byId = new Map((p.scenes || []).map((s) => [s.id, s]));
+    const order = (Array.isArray(p.timeline_order) && p.timeline_order.length)
+      ? p.timeline_order : (p.scenes || []).map((s) => s.id);
+    const out = []; const seen = new Set();
+    for (const id of order) { const s = byId.get(id); if (s && !seen.has(id)) { out.push(s); seen.add(id); } }
+    for (const s of (p.scenes || [])) if (!seen.has(s.id)) { out.push(s); seen.add(s.id); }
+    return out;
+  }
+
+  // Reorder the CUT (timeline_order) only — never the plan. Selected clip ± 1 slot.
+  function moveTimelineClip(id, delta) {
+    const p = state.project; if (!p) return;
+    _ensureTimelineOrder();
+    const order = p.timeline_order;
+    const i = order.indexOf(id); if (i < 0) return;
+    const j = Math.max(0, Math.min(order.length - 1, i + delta));
+    if (i === j) return;
+    _historyRecord();
+    order.splice(i, 1); order.splice(j, 0, id);
+    notify(); scheduleSave();
+  }
+
+  // Preview/timeline layout: result clips (cut order) interleaved with removed-scene ghosts.
   function buildPreviewSegments() {
     const p = state.project;
     if (!p) return [];
@@ -1367,7 +1462,7 @@
       ordered.push({ kind: "ghost", ghost: g, id: `ghost:${g.id}` });
     };
     for (const g of (byAnchor.get("__start__") || [])) pushGhost(g);
-    for (const sc of (p.scenes || [])) {
+    for (const sc of orderedTimelineScenes()) {
       ordered.push({ kind: "scene", scene: sc, id: sc.id });
       for (const g of (byAnchor.get(sc.id) || [])) pushGhost(g);
       const gapSec = Math.max(0, +(sc.gap_after_sec || 0));
@@ -1476,7 +1571,7 @@
       return;
     }
     const fps = sceneEffFps(s);
-    const curFrames = sceneEffFrames(s);
+    const curFrames = Math.max(1, Math.round(sceneDurationSec(s) * fps)); // trim from what's shown
     const trimFrames = Math.max(1, Math.round(trim * fps));
     const rawNext = curFrames - trimFrames;
     if (rawNext < 9) return;
@@ -1505,13 +1600,36 @@
   function redo() { window.EditorHistory?.redo(window.Store); }
 
 
-  // A scene's duration in seconds (respecting per-scene frames/fps modes).
-  function sceneDurationSec(sc) {
+  // Length (s) this scene was ACTUALLY rendered at, frozen at generation time. Null until
+  // generated (or for old renders saved before this was captured — they fall back to plan).
+  function renderDurationSec(sceneId) {
+    const r = state.sceneRenders[sceneId];
+    return r && r.durationSec != null ? r.durationSec : null;
+  }
+
+  // The PLANNED length (s) from the per-scene frames/fps modes — what the next Generate will
+  // produce. Ignores any existing render. Use this for "what will generate", not playback.
+  function _planDurationSec(sc) {
     const p = state.project; if (!p || !sc) return 0;
     if (isVideoClip(sc) && sc.source_dur != null) return sc.source_dur;
     const fps = sceneEffFps(sc, p) || 25;
     const frames = sceneEffFrames(sc, p) || 1;
     return frames / fps;
+  }
+
+  // A scene's duration in seconds for layout / playback / trimming. A generated render is
+  // IMMUTABLE: once made it keeps the length it was rendered at, so changing the project or
+  // scene default can never truncate it or make its tail unreachable — regenerate or trim to
+  // change it. An explicit per-scene length (timeline/custom mode), a slip-trim duration, or
+  // a split (which clears the frozen length) all take precedence and fall back to the plan.
+  function sceneDurationSec(sc) {
+    if (!sc) return 0;
+    const rd = renderDurationSec(sc.id);
+    if (rd != null && !isVideoClip(sc) && sc.source_dur == null
+        && (sc.frames_mode || "project") === "project") {
+      return rd;
+    }
+    return _planDurationSec(sc);
   }
 
   // Insert or adjust a black/silent pause after this clip (seconds).
@@ -1538,7 +1656,7 @@
       s.source_dur = target;
       s.frames = snapFrames(target * fps);
     } else {
-      const curFrames = sceneEffFrames(s);
+      const curFrames = Math.max(1, Math.round(sceneDurationSec(s) * fps)); // resize from what's shown
       const nextFrames = _framesFromDuration(target, fps, curFrames);
       if (nextFrames === curFrames) return;
       s.frames = nextFrames;
@@ -1591,6 +1709,7 @@
     // at the first half's out-point (its in-point + first-half duration).
     const r = state.sceneRenders[id];
     if (r && r.media) {
+      delete r.durationSec; // a split is an explicit re-length: both halves revert to plan layout
       state.sceneRenders[second.id] = {
         media: r.media,
         inSec: (r.inSec || 0) + cutSec,
@@ -2371,6 +2490,8 @@
   }
 
   async function _flushSaveForGenerate() {
+    await flushGlobalPromptApply();   // distribute any just-typed global prompt into scenes first
+    await flushModelsSave();          // persist exposed-control edits before building the graph
     await flushSave();
     if (_localDirty) {
       throw new Error(
@@ -2430,7 +2551,7 @@
   // back to carry / i2v guides, not a broken anchor).
   function _anchorAvailable(s) {
     const t = s.source && s.source.type;
-    if (t !== "image" && t !== "generated_frame" && t !== "mixed" && t !== "v2v") return false;
+    if (t !== "image" && t !== "generated_frame" && t !== "mixed" && t !== "v2v" && t !== "anchor_guide") return false;
     const ref = s.source.media_ref;
     return !!(ref && (state.mediaBin || []).some((m) => m.id === ref));
   }
@@ -2479,12 +2600,19 @@
 
   // Record a completed run's output: map each of the run's scenes to the one source
   // video at its cumulative in-point, so splits/deletes later play the right portions.
-  function _pruneGhostsAfterRegen(recordedSceneIds) {
+  function _pruneGhostsAfterRegen(recordedSceneIds, protectedGhostIds) {
     const ids = new Set(recordedSceneIds || []);
-    state.sceneGhosts = (state.sceneGhosts || []).filter((g) => !ids.has(g.afterSceneId) && !ids.has(g.id));
+    const keep = new Set(protectedGhostIds || []);
+    // Drop ghosts superseded by this run's fresh renders (anchored after, or sharing id with, a
+    // recorded scene) — but never a ghost that just received its own finished media this pass.
+    state.sceneGhosts = (state.sceneGhosts || []).filter(
+      (g) => keep.has(g.id) || (!ids.has(g.afterSceneId) && !ids.has(g.id))
+    );
   }
 
   function _ghostDurationSec(g) {
+    if (!g) return 0;
+    if (g.durationSec != null) return g.durationSec; // frozen real length once rendered
     const p = state.project;
     const fps = (g.fps_mode !== "project" && g.fps != null) ? g.fps : p.frame_rate;
     const frames = (g.frames_mode !== "project" && g.frames != null) ? g.frames : p.num_frames_per_scene;
@@ -2651,6 +2779,10 @@
     let chainSceneIdx = 0;
     let clearedRating = false;
     const recordedSceneIds = [];
+    // Ghosts of scenes removed mid-generation that just received their finished media in this
+    // pass. They must survive _pruneGhostsAfterRegen — they ARE the fresh result, not the stale
+    // pre-regen render the prune is meant to drop.
+    const completedGhostIds = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
       if (_removedDuringGen.has(id)) {
@@ -2660,9 +2792,11 @@
           const ghost = ghosts[gi];
           const sameUnit = lastChain && genUnitId(lastChain) === genUnitId(ghost);
           const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, ghost, sceneLayout, chainSceneIdx, sourceSpanSec);
-          ghosts[gi] = { ...ghost, media: primary, inSec, pendingGen: false };
+          const ghostDur = _ghostDurationSec(ghost); // freeze before any project change can shrink it
+          ghosts[gi] = { ...ghost, media: primary, inSec, durationSec: ghostDur, pendingGen: false };
           state.sceneGhosts = ghosts;
-          sourceEnd = inSec + _ghostDurationSec(ghost);
+          completedGhostIds.push(id);
+          sourceEnd = inSec + ghostDur;
           lastChain = ghost;
           if (!sameUnit) chainSceneIdx += 1;
         }
@@ -2674,15 +2808,16 @@
       const inSec = sameUnit ? sourceEnd : _recordInSec(lastChain, sourceEnd, sc, sceneLayout, chainSceneIdx, sourceSpanSec);
       const renderPrompt = _queuedRenderPrompts[id] || _snapshotRenderPrompt(id);
       delete _queuedRenderPrompts[id];
-      state.sceneRenders[id] = { media: primary, inSec, renderPrompt };
+      const realDur = _planDurationSec(sc); // freeze the length this render was actually made at
+      state.sceneRenders[id] = { media: primary, inSec, renderPrompt, durationSec: realDur };
       recordedSceneIds.push(id);
       const root = genUnitRoot(genUnitId(sc));
       if (root && root.rating) { root.rating = ""; clearedRating = true; }
-      sourceEnd = inSec + sceneDurationSec(sc);
+      sourceEnd = inSec + realDur;
       lastChain = sc;
       if (!sameUnit) chainSceneIdx += 1;
     }
-    _pruneGhostsAfterRegen(recordedSceneIds);
+    _pruneGhostsAfterRegen(recordedSceneIds, completedGhostIds);
     _syncSeparatedTracksAfterRegen(recordedSceneIds);
     if (clearedRating) scheduleSaveSilent();
     if (recordedSceneIds.length) {
@@ -2811,16 +2946,23 @@
     );
   }
 
-  // Every refinement key a reset will wipe: the project/default key plus every non-default
-  // key whose shortcut fires in the current prompt (those keys also get TRAINED per scene, so
-  // a reset must clear them too). Mirrors the backend _v2_reset_prompt_keys union.
+  // Every refinement key a reset will wipe: the project/default key plus every non-default key
+  // whose shortcut fires anywhere in the prompt. Uses the scene-count-independent
+  // refinement_key_pool, which mirrors the backend _v2_reset_prompt_keys EXACTLY — the per-scene
+  // scene_refinement_keys can drop a key via its divergence fallback, which would under-report and
+  // let the reset silently wipe a key the user wasn't warned about. Falls back to the per-scene
+  // list only for an older preview payload without the pool.
   function sessionResetKeys() {
     const pv = state.preview || {};
     const defKey = (state.project?.refinement_key || "default").trim() || "default";
     const out = new Set([defKey]);
-    (pv.scene_refinement_keys || []).forEach((rk) => {
-      if (rk && !rk.uses_default) (rk.keys || []).forEach((k) => { if (k) out.add(k); });
-    });
+    if (Array.isArray(pv.refinement_key_pool)) {
+      pv.refinement_key_pool.forEach((k) => { if (k) out.add(k); });
+    } else {
+      (pv.scene_refinement_keys || []).forEach((rk) => {
+        if (rk && !rk.uses_default) (rk.keys || []).forEach((k) => { if (k) out.add(k); });
+      });
+    }
     return [...out];
   }
 
@@ -2845,13 +2987,28 @@
   }
 
   // Generate one run (single scene, or an explicit list of scene ids). Returns success.
+  // i2v-node bypass overrides for a run that contains an "Anchor as guide" scene, when the
+  // user has declared a custom i2v node in Editor settings (built-in pipeline needs none).
+  function _anchorGuideNodeOverrides(sceneIds) {
+    if (!getEditorSetting("anchorGuideHasI2v")) return null;
+    const cfg = getEditorSetting("anchorGuideBypass");
+    if (!cfg || !cfg.node || !cfg.input) return null;
+    const hasAG = (sceneIds || []).some((id) => {
+      const s = scene(id);
+      return s && s.source && s.source.type === "anchor_guide";
+    });
+    if (!hasAG) return null;
+    return [{ node: cfg.node, input: cfg.input, value: cfg.value }];
+  }
+
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession) {
     _interrupted = false;
     _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
+      const overrides = _anchorGuideNodeOverrides(sceneIds);
       const r = await _retryOnTunnel(
-        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession),
+        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides),
         10,
       );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }
@@ -3019,8 +3176,8 @@
   function _renderClips() {
     const p = state.project;
     const out = [];
-    for (const sc of (p.scenes || [])) {
-      if (sc.excluded) continue;
+    for (const sc of orderedTimelineScenes()) {
+      if (sc.excluded && !sc.removed_from_plan) continue; // removed-from-plan clips stay in the cut
       const r = state.sceneRenders[sc.id];
       const fps = (sc.fps_mode !== "project" && sc.fps != null ? sc.fps : p.frame_rate) || 25;
       const tFrames = sc.transition_frames || 0;
@@ -3326,18 +3483,34 @@
     notify();
   }
 
-  // Edit a configured node input from the main editor (an "exposed" control) and persist.
-  async function setModelInput(slotId, name, value) {
-    const slot = (state.models.slots || []).find((s) => s.id === slotId);
-    if (!slot) return;
-    slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
-    notify();
+  // Persisting a node input hits the server; typing a weight used to fire one save PER
+  // KEYSTROKE and notify twice (before + after the await), which rebuilt the inspector and
+  // yanked the field. Now: update in place + notify once (cheap, and the field is data-k
+  // protected from rebuild), and DEBOUNCE the network save. flushModelsSave() runs on field
+  // blur and before generate (via flushSave / _flushSaveForGenerate).
+  function _scheduleModelsSave() {
+    _modelsSaveDirty = true;
+    clearTimeout(_modelsSaveTimer);
+    _modelsSaveTimer = setTimeout(() => { _modelsSaveTimer = null; flushModelsSave(); }, 500);
+  }
+  async function flushModelsSave() {
+    if (!_modelsSaveTimer && !_modelsSaveDirty) return;
+    clearTimeout(_modelsSaveTimer); _modelsSaveTimer = null; _modelsSaveDirty = false;
     try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
     catch (e) { console.error("saveModels failed", e); }
   }
 
+  // Edit a configured node input from the main editor (an "exposed" control) and persist.
+  function setModelInput(slotId, name, value) {
+    const slot = (state.models.slots || []).find((s) => s.id === slotId);
+    if (!slot) return;
+    slot.inputs = slot.inputs || {}; slot.inputs[name] = value;
+    notify();
+    _scheduleModelsSave();
+  }
+
   // Set a linked control's shared value (writes through to all member inputs) and persist.
-  async function setModelLink(linkId, value) {
+  function setModelLink(linkId, value) {
     const link = (state.models.links || []).find((l) => l.id === linkId);
     if (!link) return;
     link.value = value;
@@ -3346,8 +3519,7 @@
       if (s) { s.inputs = s.inputs || {}; s.inputs[m.input] = value; }
     });
     notify();
-    try { state.models = await API.saveModels(state.project?.id, state.models); notify(); }
-    catch (e) { console.error("saveModels failed", e); }
+    _scheduleModelsSave();
   }
 
   // ── media bin + libraries ─────────────────────────────────────────────────────
@@ -3399,48 +3571,17 @@
     }
     notify();
   }
-  async function loadShortcuts() { try { state.shortcuts = (await API.shortcuts()).shortcuts || []; } catch (_) { state.shortcuts = []; } notify(); }
-  async function loadCharacters() { try { state.characters = (await API.characters()).characters || []; } catch (_) { state.characters = []; } notify(); }
-  function _characterAssignedToProject(charId) {
-    if (!charId || !state.project) return false;
-    return (state.project.scenes || []).some((s) => (s.character_ids || []).includes(charId));
-  }
-
-  async function saveCharacter(item) {
+  async function loadShortcuts() { try { const r = await API.shortcuts(); state.shortcuts = r.shortcuts || []; state.shortcutCategories = r.categories || []; } catch (_) { state.shortcuts = []; state.shortcutCategories = []; } notify(); }
+  async function saveShortcut(item) { try { const r = await API.saveShortcut(item); state.shortcuts = r.shortcuts || state.shortcuts; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { alert("Save failed: " + e.message); } }
+  async function deleteShortcut(name) { try { const r = await API.deleteShortcut(name); state.shortcuts = r.shortcuts || []; if (r.categories) state.shortcutCategories = r.categories; notify(); } catch (e) { console.error(e); } }
+  async function addCategory(category, subCategory) {
     try {
-      state.characters = (await API.saveCharacter(item)).characters || state.characters;
-      const cid = item.id || item.original_id;
-      if (_characterAssignedToProject(cid)) {
-        _invalidateGlobalPromptDraft();
-        await refreshPreview(true);
-      } else notify();
-    } catch (e) { alert("Save failed: " + e.message); }
+      const r = await API.saveCategory({ category, sub_category: subCategory || "" });
+      if (r.categories) state.shortcutCategories = r.categories;
+      notify();
+      return true;
+    } catch (e) { alert("Add category failed: " + e.message); return false; }
   }
-  async function deleteCharacter(id) {
-    try {
-      const wasAssigned = _characterAssignedToProject(id);
-      state.characters = (await API.deleteCharacter(id)).characters || [];
-      if (wasAssigned) {
-        _invalidateGlobalPromptDraft();
-        await refreshPreview(true);
-      } else notify();
-    } catch (e) { console.error(e); }
-  }
-
-  function sceneCharacterIds(sceneId) {
-    const s = scene(sceneId); if (!s) return [];
-    const root = isGenSubclip(s) ? genUnitRoot(genUnitId(s)) : s;
-    return [...(root?.character_ids || s.character_ids || [])];
-  }
-
-  function toggleSceneCharacter(sceneId, charId) {
-    const s = scene(sceneId); if (!s || !charId) return;
-    const ids = sceneCharacterIds(sceneId);
-    const next = ids.includes(charId) ? ids.filter((x) => x !== charId) : [...ids, charId];
-    patchScene(sceneId, { character_ids: next });
-  }
-  async function saveShortcut(item) { try { state.shortcuts = (await API.saveShortcut(item)).shortcuts || state.shortcuts; notify(); } catch (e) { alert("Save failed: " + e.message); } }
-  async function deleteShortcut(name) { try { state.shortcuts = (await API.deleteShortcut(name)).shortcuts || []; notify(); } catch (e) { console.error(e); } }
   async function saveTransition(item) {
     try {
       state.transitions = (await API.saveTransition(item)).transitions || state.transitions;
@@ -3448,23 +3589,42 @@
     } catch (e) { alert("Save failed: " + e.message); }
   }
   async function deleteTransition(name) { try { state.transitions = (await API.deleteTransition(name)).transitions || []; notify(); } catch (e) { console.error(e); } }
-  async function importShortcuts(file) {
+  async function importShortcuts(file, mode) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      const r = await API.importShortcuts(data);
-      state.shortcuts = r.shortcuts || state.shortcuts; notify();
+      const r = await API.importShortcuts(data, mode);
+      state.shortcuts = r.shortcuts || state.shortcuts;
+      if (r.categories) state.shortcutCategories = r.categories;
+      notify();
       return r.imported;
-    } catch (e) { alert("Import failed: " + e.message); return 0; }
+    } catch (e) { alert("Import failed: " + e.message); return null; }
   }
-  async function importTransitions(file) {
+  async function importTransitions(file, mode) {
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      const r = await API.importTransitions(data);
+      const r = await API.importTransitions(data, mode);
       state.transitions = r.transitions || state.transitions; notify();
       return r.imported;
-    } catch (e) { alert("Import failed: " + e.message); return 0; }
+    } catch (e) { alert("Import failed: " + e.message); return null; }
+  }
+  async function clearShortcuts() {
+    try {
+      const r = await API.clearShortcuts();
+      state.shortcuts = r.shortcuts || [];
+      state.shortcutCategories = r.categories || [];
+      notify();
+      return true;
+    } catch (e) { alert("Delete-all failed: " + e.message); return false; }
+  }
+  async function clearTransitions() {
+    try {
+      const r = await API.clearTransitions();
+      state.transitions = r.transitions || [];
+      notify();
+      return true;
+    } catch (e) { alert("Delete-all failed: " + e.message); return false; }
   }
 
   // Apply a split-marker library item to the selected scene seam (generation prompt).
@@ -3527,7 +3687,7 @@
     if (t === "empty") return false;
     if (isGenSubclip(s)) return true;
     if (t === "carry" || t === "mixed") return true;
-    if ((t === "image" || t === "generated_frame") && _anchorAvailable(s)) return false;
+    if ((t === "image" || t === "generated_frame" || t === "anchor_guide") && _anchorAvailable(s)) return false;
     return true;
   }
 
@@ -3564,8 +3724,10 @@
       if (!asset.duration_sec) _probeVideoClipDuration(sceneId, mediaId);
       return;
     }
-    // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides).
-    const patch = { source: { ...(s.source || {}), type: "image", media_ref: mediaId } };
+    // Drag-drop is an explicit new anchor — use image i2v (not mixed/carry guides), but
+    // keep an existing anchor_guide scene in guide mode (its image is still the anchor).
+    const keepType = s.source?.type === "anchor_guide" ? "anchor_guide" : "image";
+    const patch = { source: { ...(s.source || {}), type: keepType, media_ref: mediaId } };
     if ((s.source?.media_ref || null) !== mediaId) patch.guides = [];
     patchScene(sceneId, patch);
   }
@@ -3588,7 +3750,6 @@
     try { const t = await API.transitions(); state.transitions = t.transitions || []; } catch (_) { state.transitions = []; }
     await loadNleLibrary();
     await loadShortcuts();
-    await loadCharacters();
     await loadMedia();
     try { state.ratingLabels = (await API.ratingLabels()).labels || []; } catch (_) { state.ratingLabels = []; }
     await loadModels();
@@ -3602,9 +3763,8 @@
     get, set, subscribe, notify, init,
     scheduleSaveFromHistory, notifyHistoryState,
     refreshProjectList, loadProject, newProject, deleteProject, downloadProject, importProject,
-    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, dismissGhost, moveScene, moveSceneTo, scene,
+    patchProject, patchProjectQuiet, patchScene, patchSceneQuiet, flushSave, selectScene, addScene, removeScene, removeSelectedScenes, removeFromPlan, restoreToPlan, dismissGhost, moveScene, moveSceneTo, moveTimelineClip, scene,
     addVideoClip, addImageClip, convertToVideo, convertToScene, isVideoClip, isGenerativeScene,
-    sceneCharacterIds, toggleSceneCharacter,
     genUnitId, isGenSubclip, genUnitRoot, genUnitSceneIds,
     renderPromptForScene, renderPromptMismatch, renderAnchorMismatch, renderMediaLabel, renderIsStale,
     buildPreviewSegments, previewTotalSec, audioTrackEndSec, hasOverlayOrAudioContent,
@@ -3624,9 +3784,9 @@
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
-    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts,
-    loadCharacters, saveCharacter, deleteCharacter,
-    loadTransitions, saveTransition, deleteTransition, importTransitions,
+    loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,
+    getEditorSettings, getEditorSetting, setEditorSetting,
+    loadTransitions, saveTransition, deleteTransition, importTransitions, clearTransitions,
     loadNleLibrary, applyNleEffect, applyNleVideoTransition,
     applySplitMarkerToSelection, applyTransitionToSelection, insertShortcutIntoSelection,
     setSceneRating: (id, v) => {

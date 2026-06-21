@@ -41,153 +41,19 @@ def normalize_guide_settings(raw: Optional[dict]) -> dict[str, bool]:
     }
 
 
-def normalize_character_bible(raw: Optional[dict]) -> dict[str, Any]:
-    """Structured character profile — text merges into the anchor; face ref can drive identity pin."""
-    raw = raw or {}
-    return {
-        "name": str(raw.get("name", "")).strip(),
-        "appearance": str(raw.get("appearance", "")).strip(),
-        "body": str(raw.get("body", "")).strip(),
-        "wardrobe": str(raw.get("wardrobe", "")).strip(),
-        "always_include": str(raw.get("always_include", "")).strip(),
-        "never_include": str(raw.get("never_include", "")).strip(),
-        "face_ref": raw.get("face_ref") or None,
-        "body_ref": raw.get("body_ref") or None,
-        "detail_ref": raw.get("detail_ref") or None,
-        "sync_identity_pin": bool(raw.get("sync_identity_pin", True)),
-    }
+def effective_anchor(project: Project) -> str:
+    """The project's manual anchor text (prepended to every scene by Studio)."""
+    return (project.anchor or "").strip()
 
 
-def build_character_bible_anchor(bible: Optional[dict]) -> str:
-    """Render one character profile into anchor prose."""
-    return build_characters_anchor([bible] if bible else [])
+def effective_negative_prompt(project: Project) -> str:
+    """The project's manual negative prompt."""
+    return (project.negative_prompt or "").strip()
 
 
-def build_characters_anchor(characters: list[Optional[dict]]) -> str:
-    """Merge multiple character profiles into one anchor block."""
-    blocks: list[str] = []
-    for raw in characters:
-        b = normalize_character_bible(raw)
-        if not any(b[k] for k in ("name", "appearance", "body", "wardrobe", "always_include")):
-            continue
-        parts: list[str] = []
-        if b["name"]:
-            parts.append(f"Character: {b['name']}.")
-        if b["appearance"]:
-            parts.append(f"Appearance: {b['appearance']}.")
-        if b["body"]:
-            parts.append(f"Body: {b['body']}.")
-        if b["wardrobe"]:
-            parts.append(f"Wardrobe: {b['wardrobe']}.")
-        if b["always_include"]:
-            text = b["always_include"].rstrip(".")
-            parts.append(text + ".")
-        blocks.append(" ".join(parts).strip())
-    return " ".join(blocks).strip()
-
-
-def _load_character_map() -> dict[str, dict]:
-    try:
-        from .characters import load_character_map
-    except ImportError:
-        from characters import load_character_map  # type: ignore
-    return load_character_map()
-
-
-def _project_uses_scene_characters(project: Project) -> bool:
-    return any((s.character_ids or []) for s in project.scenes)
-
-
-def _characters_for_scene(scene: Scene, char_map: dict[str, dict]) -> list[dict]:
-    return [char_map[cid] for cid in (scene.character_ids or []) if cid in char_map]
-
-
-def _scene_character_prefix(scene: Scene, char_map: dict[str, dict]) -> str:
-    return build_characters_anchor(_characters_for_scene(scene, char_map))
-
-
-def effective_anchor(project: Project, char_map: Optional[dict[str, dict]] = None) -> str:
-    """Manual project anchor + legacy project.character_bible when no per-scene characters."""
-    char_map = char_map if char_map is not None else _load_character_map()
-    parts: list[str] = []
-    if not _project_uses_scene_characters(project):
-        legacy = build_character_bible_anchor(project.character_bible)
-        if legacy:
-            parts.append(legacy)
-    manual = (project.anchor or "").strip()
-    if manual:
-        parts.append(manual)
-    return " ".join(parts).strip()
-
-
-def effective_negative_prompt(project: Project, char_map: Optional[dict[str, dict]] = None) -> str:
-    """Project negative plus never_include from scene characters (and legacy bible)."""
-    char_map = char_map if char_map is not None else _load_character_map()
-    manual = (project.negative_prompt or "").strip()
-    never_parts: list[str] = []
-    seen: set[str] = set()
-    if not _project_uses_scene_characters(project):
-        leg = normalize_character_bible(project.character_bible)["never_include"]
-        if leg:
-            never_parts.append(leg)
-    for scene in project.scenes:
-        if scene.excluded:
-            continue
-        for cid in (scene.character_ids or []):
-            if cid in seen:
-                continue
-            seen.add(cid)
-            c = char_map.get(cid)
-            if not c:
-                continue
-            never = normalize_character_bible(c)["never_include"]
-            if never:
-                never_parts.append(never)
-    never = ", ".join(never_parts).strip()
-    if never and manual:
-        return f"{manual}, {never}"
-    return never or manual
-
-
-def resolve_scene_identity_pin(
-    scene: Scene,
-    char_map: dict[str, dict],
-    cs: dict[str, Any],
-) -> Optional[str]:
-    """First assigned character with a face ref drives the pin for this scene."""
-    for cid in (scene.character_ids or []):
-        c = char_map.get(cid)
-        if c and c.get("face_ref"):
-            return c["face_ref"]
+def resolve_scene_identity_pin(cs: dict[str, Any]) -> Optional[str]:
+    """Project-level identity pin reference for continuity guides, if set."""
     return cs.get("identity_pin_ref")
-
-
-def character_media_refs_for_project(project: Project, char_map: Optional[dict[str, dict]] = None) -> list[str]:
-    char_map = char_map if char_map is not None else _load_character_map()
-    refs: list[str] = []
-    if not _project_uses_scene_characters(project):
-        refs.extend(character_bible_media_refs(project))
-    seen: set[str] = set()
-    for scene in project.scenes:
-        if scene.excluded:
-            continue
-        for c in _characters_for_scene(scene, char_map):
-            for key in ("face_ref", "body_ref", "detail_ref"):
-                ref = c.get(key)
-                if ref and ref not in seen:
-                    seen.add(ref)
-                    refs.append(ref)
-    return refs
-
-
-def character_bible_media_refs(project: Project) -> list[str]:
-    b = normalize_character_bible(project.character_bible)
-    refs: list[str] = []
-    for key in ("face_ref", "body_ref", "detail_ref"):
-        ref = b.get(key)
-        if ref:
-            refs.append(ref)
-    return refs
 
 
 def continuity_settings_for_run(project: Project) -> dict[str, Any]:
@@ -221,7 +87,7 @@ def _anchor_media_ref(scene: Scene) -> Optional[str]:
         return None
     ref = getattr(src, "media_ref", None)
     stype = src.type or "carry"
-    if ref and stype in ("image", "mixed", "generated_frame"):
+    if ref and stype in ("image", "mixed", "generated_frame", "anchor_guide"):
         return ref
     return None
 
@@ -267,11 +133,11 @@ def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dic
     if not active_target:
         return None
 
-    char_map = _load_character_map()
     decay = cs["guide_decay"]
+    project_pin = resolve_scene_identity_pin(cs)
 
-    def _pin_for(sc: Scene) -> Optional[str]:
-        return resolve_scene_identity_pin(sc, char_map, cs)
+    def _pin_for(_sc: Scene) -> Optional[str]:
+        return project_pin
 
     def _entries_for_index(full_idx: int, chain_idx: int, scene: Scene) -> list[dict]:
         entries: list[dict] = []
@@ -327,19 +193,11 @@ def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dic
 def continuity_media_refs(full: Project, target: Project) -> list[str]:
     """Media-bin ids that must exist for the active continuity/guide path."""
     cs = continuity_settings_for_run(full)
-    char_map = _load_character_map()
     refs: list[str] = []
 
     if cs["auto_enabled"]:
-        refs.extend(character_media_refs_for_project(full, char_map))
         if cs["identity_pin_ref"]:
             refs.append(cs["identity_pin_ref"])
-        for sc in full.scenes:
-            if sc.excluded:
-                continue
-            pin = resolve_scene_identity_pin(sc, char_map, cs)
-            if pin:
-                refs.append(pin)
         payload = build_auto_continuity_guides(full, target)
         if payload:
             for scene_list in payload.get("scenes") or []:
@@ -371,7 +229,7 @@ def scene_anchor_media_refs(target: Project) -> list[str]:
             continue
         stype = source_type(sc)
         ref = src.media_ref
-        if ref and stype in ("image", "generated_frame", "mixed"):
+        if ref and stype in ("image", "generated_frame", "mixed", "anchor_guide"):
             refs.append(ref)
     return list(dict.fromkeys(refs))
     """Optional per-scene guide (only used when project guide_settings.stack_enabled)."""
@@ -402,6 +260,79 @@ def scene_anchor_media_refs(target: Project) -> list[str]:
 
 def is_mixed_source(scene: Scene) -> bool:
     return (scene.source.type or "carry") == "mixed"
+
+
+def is_anchor_guide(scene: Scene) -> bool:
+    return source_type(scene) == "anchor_guide"
+
+
+def anchor_guide_strength(scene: Scene) -> float:
+    """The guide pull for an anchor_guide scene, clamped to a sane 0..1 range."""
+    raw = getattr(scene.source, "guide_strength", None) if scene.source else None
+    val = STUDIO_DEFAULT_GUIDE["strength"] if raw is None else float(raw)
+    return max(0.0, min(1.0, val))
+
+
+def _self_image_guide(media_ref: str, strength: float) -> dict:
+    """A frame-0 guide from the scene's OWN image (anchor_guide mode). Unlike the
+    continuity identity-pin guide, the strength is the user's choice (full 0..1)."""
+    return {
+        "enabled": True,
+        "source": "image",
+        "media_ref": media_ref,
+        "frame_idx": 0,
+        "apply_at": 0,
+        "strength": max(0.0, min(1.0, float(strength))),
+    }
+
+
+def build_self_image_guides(target: Project) -> Optional[dict]:
+    """Per-scene frame-0 guide from a scene's OWN image, for modes that want the input
+    image to steer via guide attention. Merged onto continuity/manual stacks by the caller:
+
+      - anchor_guide: the image is ONLY a guide (latent stays empty); per-scene strength.
+      - mixed: the image is also the i2v anchor; this adds a reinforcing frame-0 guide so
+        even the first scene (no prior to carry) gets guide attention from its own image.
+    """
+    active = [s for s in target.scenes if not s.excluded]
+    per_scene: list[Optional[list[dict]]] = []
+    any_guide = False
+    for sc in active:
+        ref = sc.source.media_ref if sc.source else None
+        if ref and is_anchor_guide(sc):
+            per_scene.append([_self_image_guide(ref, anchor_guide_strength(sc))])
+            any_guide = True
+        elif ref and is_mixed_source(sc):
+            per_scene.append([_self_image_guide(ref, STUDIO_DEFAULT_GUIDE["strength"])])
+            any_guide = True
+        else:
+            per_scene.append(None)
+    if not any_guide:
+        return None
+    return {"stack_enabled": True, "accumulate_prior": False, "scenes": per_scene}
+
+
+def merge_scene_guide_payloads(base: Optional[dict], extra: Optional[dict]) -> Optional[dict]:
+    """Overlay two funpack_scene_guides payloads, combining per-scene entry lists by index."""
+    if not base:
+        return extra
+    if not extra:
+        return base
+    a = base.get("scenes") or []
+    b = extra.get("scenes") or []
+    merged: list[Optional[list[dict]]] = []
+    for i in range(max(len(a), len(b))):
+        ea = a[i] if i < len(a) else None
+        eb = b[i] if i < len(b) else None
+        if ea and eb:
+            merged.append(list(ea) + list(eb))
+        else:
+            merged.append(ea or eb)
+    return {
+        "stack_enabled": True,
+        "accumulate_prior": bool(base.get("accumulate_prior") or extra.get("accumulate_prior")),
+        "scenes": merged,
+    }
 
 
 def source_type(scene: Scene) -> str:
@@ -458,20 +389,25 @@ class SceneSource:
     it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v).
 
     ``video`` = locked NLE clip (imported or converted from a scene); never generated.
-    ``v2v`` = generative scene using a video file as the source (video-to-video)."""
-    type: str = "carry"  # carry | empty | image | generated_frame | mixed | video | v2v
-    media_ref: Optional[str] = None              # asset id — image/mixed anchor (Img2Video)
+    ``v2v`` = generative scene using a video file as the source (video-to-video).
+    ``anchor_guide`` = image steers via a guide at frame 0, but the latent stays EMPTY
+    (t2v). The image is never the i2v anchor; ``guide_strength`` sets its pull (0..1)."""
+    type: str = "carry"  # carry | empty | image | generated_frame | mixed | video | v2v | anchor_guide
+    media_ref: Optional[str] = None              # asset id — image/mixed anchor (Img2Video); anchor_guide guide image
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
     target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
+    guide_strength: Optional[float] = None       # anchor_guide: guide pull (0..1), None -> default 0.35
 
     @staticmethod
     def from_dict(d: Optional[dict]) -> "SceneSource":
         d = d or {}
+        gs = d.get("guide_strength")
         return SceneSource(
             type=d.get("type", "carry"),
             media_ref=d.get("media_ref"),
             frame_ref=d.get("frame_ref"),
             target=d.get("target"),
+            guide_strength=float(gs) if gs is not None else None,
         )
 
 
@@ -527,8 +463,6 @@ class Scene:
     cut_offset_frames: int = 0
     # Per-scene guide overrides (only when project.guide_settings.stack_enabled).
     guides: list = field(default_factory=list)
-    # Character library ids assigned to this scene (merged into its prompt on generate).
-    character_ids: list = field(default_factory=list)
     # Source trim inside generated media (slip edit): in-point seconds and optional duration.
     source_in: float = 0.0
     source_dur: Optional[float] = None
@@ -537,6 +471,9 @@ class Scene:
     scene_archive: Optional[dict] = None
     # Editorial pause (black/silent) after this clip before the next timeline segment.
     gap_after_sec: float = 0.0
+    # Removed from the PLAN but its generated clip stays on the TIMELINE. Also `excluded`,
+    # so generation/prompt skip it everywhere; export keeps it because it has a render.
+    removed_from_plan: bool = False
 
     @staticmethod
     def from_dict(d: dict) -> "Scene":
@@ -561,11 +498,11 @@ class Scene:
             gen_unit_id=d.get("gen_unit_id"),
             cut_offset_frames=int(d.get("cut_offset_frames", 0) or 0),
             guides=list(d.get("guides") or []),
-            character_ids=[str(x) for x in (d.get("character_ids") or []) if x],
             source_in=float(d.get("source_in") or 0),
             source_dur=d.get("source_dur"),
             scene_archive=d.get("scene_archive"),
             gap_after_sec=float(d.get("gap_after_sec") or 0),
+            removed_from_plan=bool(d.get("removed_from_plan", False)),
         )
 
     def to_dict(self) -> dict:
@@ -587,8 +524,7 @@ class Scene:
 class Project:
     id: str = field(default_factory=_new_id)
     name: str = "Untitled"
-    anchor: str = ""               # extra anchor text (character bible prepends before this)
-    character_bible: dict = field(default_factory=dict)
+    anchor: str = ""               # extra anchor text prepended to every scene
     # Optional master prompt in Studio combined syntax. When the user edits it and
     # hits Apply, the editor reparses it into anchor + scenes + transitions (normal
     # Studio behaviour). Stored verbatim so the field round-trips; not used at build.
@@ -644,6 +580,9 @@ class Project:
     # Persisted editor session: generated clip refs + preview ghosts (survive reload).
     scene_renders: dict = field(default_factory=dict)
     scene_ghosts: list = field(default_factory=list)
+    # Cut order: scene ids in TIMELINE (result) order, independent of plan (scenes) order.
+    # Empty = follow plan order (back-compat). Reordering the plan never touches this.
+    timeline_order: list = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -653,7 +592,6 @@ class Project:
             id=d.get("id") or _new_id(),
             name=str(d.get("name", "Untitled")),
             anchor=str(d.get("anchor", "")),
-            character_bible=dict(d.get("character_bible") or {}),
             global_prompt=str(d.get("global_prompt", "")),
             negative_prompt=str(d.get("negative_prompt", "")),
             intro_transition=str(d.get("intro_transition", "")),
@@ -679,6 +617,7 @@ class Project:
             generation_meta=dict(d.get("generation_meta") or {}),
             scene_renders=dict(d.get("scene_renders") or {}),
             scene_ghosts=list(d.get("scene_ghosts") or []),
+            timeline_order=list(d.get("timeline_order") or []),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )
@@ -772,9 +711,8 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
         if (include_excluded or not s.excluded) and is_generative_scene(s)
     ]
     units = group_generative_units(scenes)
-    char_map = _load_character_map()
     parts: list[str] = []
-    anchor = effective_anchor(project, char_map)
+    anchor = effective_anchor(project)
     if anchor:
         parts.append(anchor)
     # Only inject separators for a MULTI-unit run: editorial subclips count as one unit.
@@ -783,9 +721,6 @@ def build_combined_prompt(project: Project, include_excluded: bool = False,
     for i, (_uid, group) in enumerate(units):
         root = gen_unit_root(group)
         text = (root.text or "").strip()
-        char_prefix = _scene_character_prefix(root, char_map)
-        if char_prefix:
-            text = f"{char_prefix} {text}".strip() if text else char_prefix
         if inject and not (text and trig_re and trig_re.match(text)):
             prev_root = gen_unit_root(units[i - 1][1]) if i > 0 else None
             marker = (project.intro_transition or "").strip() if i == 0 else ((prev_root.transition_to_next if prev_root else "") or "").strip()
@@ -811,16 +746,11 @@ def generation_prompt_fingerprint(project: Project, target: Optional[Project] = 
     active = [s for s in tgt.scenes if not s.excluded]
     cs = continuity_settings_for_run(project)
     gs = normalize_guide_settings(project.guide_settings)
-    char_map = _load_character_map()
-    char_key = "|".join(
-        f"{s.id}:{','.join(s.character_ids or [])}" for s in active
-    )
     run_key = "\n".join([
         text_hash,
         "|".join(_scene_run_fingerprint(s) for s in active),
-        char_key,
         cs.get("identity_pin_ref") or "",
-        effective_negative_prompt(project, char_map),
+        effective_negative_prompt(project),
         "stack" if gs["stack_enabled"] else "",
     ])
     run_hash = hashlib.sha256(run_key.encode("utf-8")).hexdigest()[:24]

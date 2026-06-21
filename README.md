@@ -8,13 +8,13 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
   <a href="https://cloud.vast.ai/?ref_id=308176"><img src="https://img.shields.io/badge/Run%20on-Vast.ai-BCFF41?style=for-the-badge&amp;logoColor=000000" alt="Vast.ai" height="36"></a>
 </p>
 
-## Dev and Cutting Edge branches
+## Dev and other non-main branches
 
 The `dev` branch is intended for testing unfinished changes, implementing new logic and basically, flipping everything just because I can. It can be broken, renamed, or changed without warning.
 
 Use only `main` if you want the most stable version of this node pack. Bug reports based on `dev` version will be ignored.
 
-Cutting edge branch is designed for testing the most advanced yet most breaking changes and features. I do not recommend using cutting_edge branch unless it's strictly necessary for your workflow (e.g. a feature you wanted got a rework or else) - any sort of stability is not guaranteed.
+From time to time other short-lived branches may appear for the most advanced yet most breaking changes and features (e.g. a large rework in progress). I do not recommend using any non-`main` branch unless it's strictly necessary for your workflow — any sort of stability is not guaranteed, and such branches can be force-pushed or deleted at any time.
 
 ## Version 3.0 — Cutting Room and development direction
 
@@ -72,7 +72,6 @@ Start with:
 - [`docs/FunPackVideoRefinerV2QuickGuide.md`](docs/FunPackVideoRefinerV2QuickGuide.md) for a short Discord-friendly Refiner V2 guide
 - [`docs/FunPackLTXAVSceneChainSampler.md`](docs/FunPackLTXAVSceneChainSampler.md) for split-scene LTXV/LTXAV continuation
 - [`docs/FunPackLoraWorkflow.md`](docs/FunPackLoraWorkflow.md) for the LoRA/refiner helper workflow
-- [`docs/FunPackSceneBuilder.md`](docs/FunPackSceneBuilder.md) for scene preset workflows
 
 Version history is available in [CHANGELOG.md](CHANGELOG.md).
 
@@ -109,6 +108,7 @@ I express my deepest gratitude to:
 - [ComfyUI-LTXVideo](https://github.com/Lightricks/ComfyUI-LTXVideo) — LTX model loaders and nodes used by the built-in Cutting Room pipeline;
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite) — video combine and helper nodes for montage export;
 - [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) — utility nodes used by the built-in pipeline;
+- [OpenCut](https://github.com/opencut-app/opencut-classic) — the in-browser non-linear video editor whose UI and interaction patterns inspired the FunPack Movie Editor;
 - ComfyUI and its whole community.
 
 Without all of you, this project would've been impossible.

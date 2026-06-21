@@ -53,37 +53,35 @@
     </div>
   </nav>
 
-  <!-- ───────────────────────── WORKSPACE ───────────────────────── -->
+  <!-- ───────── WORKSPACE — OpenCut-style NLE: Assets | Preview | Properties / Timeline ───────── -->
   <div class="workspace" id="workspace">
-    <section class="dock" id="dock">
-      <div class="dock-panels" id="dock-panels">
-        <aside class="zone media dock-panel" id="media-zone" data-dock="media">
-          <div class="zone-head"><span class="zone-title">Media Browser</span></div>
-          <div class="zone-body" id="media-body"></div>
-        </aside>
+    <section class="main-row" id="main-row">
+      <aside class="zone media dock-panel" id="media-zone" data-dock="media">
+        <div class="zone-head"><span class="zone-title">Assets</span></div>
+        <div class="zone-body" id="media-body"></div>
+      </aside>
 
-        <div class="splitter splitter-v" id="split-left" title="Drag to resize"></div>
+      <div class="splitter splitter-v" id="split-left" title="Drag to resize"></div>
 
-        <section class="right-stack" id="right-stack">
-          <div class="zone preview dock-panel" id="preview-zone" data-dock="preview">
-            <div class="zone-head">
-              <span class="zone-title">Preview</span>
-              <span class="zone-head-right" id="preview-status"></span>
-            </div>
-            <div class="zone-body program" id="preview-body"></div>
-          </div>
-          <div class="splitter splitter-h" id="split-mid" title="Drag to resize"></div>
-          <div class="zone inspector dock-panel" id="inspector-zone" data-dock="settings">
-            <div class="zone-head"><span class="zone-title" id="inspector-title">Inspector</span></div>
-            <div class="zone-body" id="inspector-body"></div>
-          </div>
-        </section>
-      </div>
+      <section class="zone preview dock-panel" id="preview-zone" data-dock="preview">
+        <div class="zone-head">
+          <span class="zone-title">Preview</span>
+          <span class="zone-head-right" id="preview-status"></span>
+        </div>
+        <div class="zone-body program" id="preview-body"></div>
+      </section>
+
+      <div class="splitter splitter-v" id="split-right" title="Drag to resize"></div>
+
+      <section class="zone inspector dock-panel" id="inspector-zone" data-dock="settings">
+        <div class="zone-head"><span class="zone-title" id="inspector-title">Properties</span></div>
+        <div class="zone-body" id="inspector-body"></div>
+      </section>
     </section>
 
     <div class="splitter splitter-h" id="split-bottom" title="Drag to resize"></div>
 
-    <!-- BOTTOM: timeline -->
+    <!-- BOTTOM: timeline (single source of truth — recipe for a clip lives in Properties) -->
     <section class="zone timeline" id="timeline-zone">
       <div class="zone-head">
         <span class="zone-title">Timeline</span>
@@ -91,6 +89,9 @@
         <div class="zone-head-right">
           <span id="timeline-meta"></span>
           <nav class="dock-tabs" id="dock-tabs" aria-label="Workspace panels"></nav>
+          <button class="composer-btn" id="composer-btn" type="button" title="Open the Composer — global prompt, shortcuts, split markers">
+            <span class="composer-dot">◆</span> Composer
+          </button>
         </div>
       </div>
       <div class="zone-body" id="timeline-body"></div>
@@ -102,6 +103,7 @@
 
   <script src="api.js"></script>
   <script src="dom.js"></script>
+  <script src="floating_window.js"></script>
   <script src="restart_ui.js"></script>
   <script src="pipeline_caps.js"></script>
   <script src="tour_mode.js"></script>
@@ -121,6 +123,8 @@
   <script src="overlay_preview.js"></script>
   <script src="sampler_panel.js"></script>
   <script src="engine_settings.js"></script>
+  <script src="editor_settings.js"></script>
+  <script src="autocomplete.js"></script>
   <script src="slot_picker.js"></script>
   <script src="welcome.js"></script>
   <script src="pipeline_setup.js"></script>
@@ -128,6 +132,7 @@
   <script src="rating_picker.js"></script>
   <script src="waveform.js"></script>
   <script src="timeline.js"></script>
+  <script src="composer.js"></script>
   <script src="tour.js"></script>
   <script src="app.js"></script>
 </body>

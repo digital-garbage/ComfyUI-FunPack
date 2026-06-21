@@ -48,6 +48,30 @@ def test_prepare_overlay_export_rasterizes_text():
         assert os.path.isfile(paths[0])
 
 
+def test_render_text_overlay_styled():
+    """All rich-text style props render without error and grow the PNG vs. plain."""
+    if not _HAS_PIL:
+        import pytest
+        pytest.skip("Pillow not installed")
+    with tempfile.TemporaryDirectory() as tmp:
+        plain = render_text_overlay_png(
+            {"text": "Style\nme", "font_size": 40}, 768, 512, os.path.join(tmp, "plain.png"),
+        )
+        styled = render_text_overlay_png(
+            {
+                "text": "Style\nme", "font_size": 40, "color": "#ffcc00",
+                "bold": True, "italic": True, "text_align": "left", "line_spacing": 1.6,
+                "stroke_width": 4, "stroke_color": "#000000",
+                "shadow": True, "shadow_color": "#222222",
+                "bg_enabled": True, "bg_color": "#003355", "bg_opacity": 0.6, "opacity": 1.0,
+            },
+            768, 512, os.path.join(tmp, "styled.png"),
+        )
+        assert os.path.isfile(os.path.join(tmp, "styled.png"))
+        # Background box + outline + shadow + italic shear must enlarge the raster.
+        assert styled[0] >= plain[0] and styled[1] >= plain[1]
+
+
 def test_resolve_fontfile_optional():
     from movie_editor.backend.nle_overlays import _resolve_fontfile
     assert _resolve_fontfile("system-ui") is not None or _resolve_fontfile("arial") is not None

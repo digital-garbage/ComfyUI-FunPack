@@ -162,6 +162,25 @@
   function specFor(slot) { return specByClass[slot.node_class] || null; }
   function inputSpecFor(slot, name) { return ((specFor(slot) || {}).inputs || []).find((w) => w.name === name) || null; }
 
+  // Numeric widget bounds/step/default straight from the node's object_info opts, so an
+  // exposed control (e.g. a LoRA strength) gets its real min/max/step instead of step=1.
+  function numMeta(spec) {
+    const o = (spec && spec.options) || {};
+    const m = {};
+    if (o.min != null) m.min = o.min;
+    if (o.max != null) m.max = o.max;
+    if (o.step != null) m.step = o.step;
+    const def = o.default != null ? o.default : (spec && spec.default);
+    if (def != null) m.default = def;
+    return m;
+  }
+  function applyNumMeta(ctrl, meta, isFloat) {
+    if (meta.min != null) ctrl.min = String(meta.min);
+    if (meta.max != null) ctrl.max = String(meta.max);
+    if (meta.step != null) ctrl.step = String(meta.step);
+    else if (isFloat) ctrl.step = "any";
+  }
+
   // Exposed controls and shared links snapshot their combo `choices` at expose time (so the main
   // editor can render dropdowns without re-fetching object_info). Those snapshots go stale after
   // a model-list refresh — a newly installed LoRA/checkpoint shows up inside the Models menu (live
@@ -169,23 +188,26 @@
   // choices from the freshly loaded spec. Returns true if anything changed (caller persists).
   function refreshExposedChoices() {
     let changed = false;
-    (config.slots || []).forEach((slot) => {
-      (slot.exposed || []).forEach((e) => {
-        if (e.kind !== "combo") return;
-        const w = inputSpecFor(slot, e.name);
-        if (w && Array.isArray(w.choices) && JSON.stringify(w.choices) !== JSON.stringify(e.choices || [])) {
-          e.choices = w.choices.slice(); changed = true;
+    const syncMeta = (target, w) => {
+      if (!w) return;
+      if (target.kind === "combo") {
+        if (Array.isArray(w.choices) && JSON.stringify(w.choices) !== JSON.stringify(target.choices || [])) {
+          target.choices = w.choices.slice(); changed = true;
         }
-      });
+      } else if (target.kind === "int" || target.kind === "float") {
+        const meta = numMeta(w);
+        ["min", "max", "step", "default"].forEach((k) => {
+          if (meta[k] != null && target[k] !== meta[k]) { target[k] = meta[k]; changed = true; }
+        });
+      }
+    };
+    (config.slots || []).forEach((slot) => {
+      (slot.exposed || []).forEach((e) => syncMeta(e, inputSpecFor(slot, e.name)));
     });
     (config.links || []).forEach((link) => {
-      if (link.kind !== "combo") return;
       const first = (link.members || [])[0];
       const slot = first && slotById(first.slotId);
-      const w = slot && inputSpecFor(slot, first.input);
-      if (w && Array.isArray(w.choices) && JSON.stringify(w.choices) !== JSON.stringify(link.choices || [])) {
-        link.choices = w.choices.slice(); changed = true;
-      }
+      syncMeta(link, slot && inputSpecFor(slot, first.input));
     });
     return changed;
   }
@@ -219,9 +241,11 @@
   function isExposed(slot, name) { return (slot.exposed || []).some((e) => e.name === name); }
   function toggleExpose(slot, spec) {
     slot.exposed = slot.exposed || [];
-    if (isExposed(slot, spec.name)) slot.exposed = slot.exposed.filter((e) => e.name !== spec.name);
-    else slot.exposed.push({ name: spec.name, kind: spec.kind,
-                             choices: spec.kind === "combo" ? (spec.choices || []) : undefined, label: spec.name });
+    if (isExposed(slot, spec.name)) { slot.exposed = slot.exposed.filter((e) => e.name !== spec.name); return; }
+    const e = { name: spec.name, kind: spec.kind, label: spec.name };
+    if (spec.kind === "combo") e.choices = spec.choices || [];
+    else if (spec.kind === "int" || spec.kind === "float") Object.assign(e, numMeta(spec));
+    slot.exposed.push(e);
   }
   function eyeButton(slot, spec) {
     const b = el("button", "eye-btn" + (isExposed(slot, spec.name) ? " on" : ""), "◉");
@@ -240,12 +264,17 @@
       ctrl = el("select");
       (spec.choices || []).forEach((c) => { const o = el("option", null, String(c)); o.value = c; if (c === value) o.selected = true; ctrl.append(o); });
       if (!spec.choices || !spec.choices.length) { ctrl.append(el("option", null, "(none installed)")); ctrl.disabled = true; }
+      // A saved value that no longer exists (renamed/removed file) leaves nothing
+      // selected — the browser then shows the first option without persisting it,
+      // so the stale value silently goes to generation. Persist what's displayed.
+      else if (value != null && !spec.choices.includes(value)) onChange(spec.choices[0]);
       ctrl.onchange = () => onChange(ctrl.value);
     } else if (spec.kind === "boolean") {
       ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!value; ctrl.style.width = "auto";
       ctrl.onchange = () => onChange(ctrl.checked);
     } else if (spec.kind === "int" || spec.kind === "float") {
-      ctrl = el("input"); ctrl.type = "number"; if (spec.kind === "float") ctrl.step = "any";
+      ctrl = el("input"); ctrl.type = "number";
+      applyNumMeta(ctrl, numMeta(spec), spec.kind === "float");
       ctrl.value = value != null ? value : (spec.default != null ? spec.default : "");
       ctrl.oninput = () => onChange(spec.kind === "int" ? parseInt(ctrl.value || "0", 10) : parseFloat(ctrl.value || "0"));
     } else {
@@ -641,23 +670,19 @@
       const q = search.value.trim().toLowerCase();
       const f = q ? curList.filter((c) => (c.display_name + " " + c.class + " " + (c.category || "")).toLowerCase().includes(q)) : curList;
       const shown = f.slice(0, 300);
-      fill(shown, f.length ? `${f.length} node${f.length > 1 ? "s" : ""} — pick one…${f.length > 300 ? " (showing first 300)" : ""}` : "No match");
+      fill(shown, f.length ? `${f.length} node${f.length > 1 ? "s" : ""} — pick one…${f.length > 300 ? " (showing first 300)" : ""}` : (curList.length ? "No match" : "No matching nodes"));
     }
     search.oninput = applyFilter;
 
     typeSel.onchange = async () => {
       curRole = typeSel.value; curCand = null; curList = []; addBtn.disabled = true; clear(preview);
-      search.style.display = curRole === "__any__" ? "" : "none"; search.value = "";
+      search.value = ""; search.style.display = curRole ? "" : "none";
       nodeSel.innerHTML = ""; nodeSel.append(new Option("Loading…", "")); nodeSel.disabled = true;
       if (!curRole) { nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); return; }
       try {
-        if (curRole === "__any__") {
-          curList = await ensureAllNodes();
-          applyFilter();
-        } else {
-          curList = await candidates(curRole);
-          fill(curList, curList.length ? "Loader Node…" : "No matching nodes");
-        }
+        // Search/filter applies to every mode now — role candidates and "Any node" alike.
+        curList = curRole === "__any__" ? await ensureAllNodes() : await candidates(curRole);
+        applyFilter();
       } catch (e) {
         nodeSel.innerHTML = ""; nodeSel.append(new Option("Error: " + (e && e.message ? e.message : "node list unavailable"), ""));
         console.error("[Models] node list failed:", e);
@@ -872,6 +897,10 @@
         const link = { id: uid(), name: nm.trim() || def, kind: first.kind,
           choices: first.kind === "combo" ? (first.choices || []) : undefined, value: val,
           members: linkSel.map((s) => ({ slotId: s.slotId, input: s.input })), exposed: false };
+        if (first.kind === "int" || first.kind === "float") {
+          const w = s0 && inputSpecFor(s0, first.input);
+          if (w) Object.assign(link, numMeta(w));
+        }
         ensureLinks().push(link);
         applyLinkValue(link, val);
         linkMode = false; linkSel = []; await persist(); render();
@@ -946,7 +975,10 @@
       });
       card.append(box);
     }
-    const outs = (n.outputs || []).filter((o) => (o.to || []).length);
+    // Show every core output. In Full control these are tappable as slot input sources
+    // (pick "<node> → <output>" in a slot's Input sources), so the user can, e.g., feed a
+    // replacement sampler with Studio's conditioning. In guided mode they're informational.
+    const outs = n.outputs || [];
     if (outs.length) {
       const box = el("div", "wire-box");
       box.append(el("div", "wire-title", "Outputs → destinations"));
@@ -954,7 +986,12 @@
         const row = el("div", "wire-row");
         row.append(el("span", "wire-out", `${o.name} (${o.type})`));
         row.append(el("span", "wire-arrow", "→"));
-        row.append(el("span", "wire-dest", o.to.join(", ")));
+        const dest = (o.to || []).length
+          ? o.to.join(", ")
+          : (config.full_control ? "available — pick in a slot's Input sources" : "—");
+        const destEl = el("span", "wire-dest", dest);
+        if (!(o.to || []).length && !config.full_control) destEl.classList.add("wire-muted");
+        row.append(destEl);
         box.append(row);
       });
       card.append(box);
@@ -1057,6 +1094,10 @@
     reconcileOpenPortWiring();
     try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || []; } catch (_) { coreNodes = []; }
     await prewarmSpecs();
+    // Backfill numeric bounds/step (and combo choices) onto controls exposed before this
+    // metadata was captured, so opening Models once upgrades existing projects. persist()
+    // dispatches funpack-models-changed → the store reloads and the inspector re-renders.
+    if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
 
     overlay = el("div", "modal-overlay");
     const modal = el("div", "modal");

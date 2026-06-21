@@ -124,9 +124,9 @@
   function applyTextStyle(box, ov, rect) {
     const scale = frameScale(rect);
     box.textContent = ov.text || "Text";
-    box.style.fontSize = Math.max(8, (ov.font_size || 42) * scale) + "px";
-    box.style.color = ov.color || "#ffffff";
-    if (OUI) box.style.fontFamily = OUI.cssFamily(ov.font_family);
+    const fontPx = Math.max(8, (ov.font_size || 42) * scale);
+    if (OUI && OUI.applyTextCss) OUI.applyTextCss(box, ov, fontPx);
+    else { box.style.fontSize = fontPx + "px"; box.style.color = ov.color || "#ffffff"; }
   }
 
   function applyImageSize(img, ov, rect) {

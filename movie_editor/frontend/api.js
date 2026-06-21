@@ -79,15 +79,20 @@
     saveTransition: (item) => j("POST", API("/library/transitions"), item),
     deleteTransition: (name) => j("DELETE", API(`/library/transitions/${encodeURIComponent(name)}`)),
     exportTransitionsUrl: () => API("/library/transitions/export"),
-    importTransitions: (data) => j("POST", API("/library/transitions/import"), data),
+    importTransitions: (data, mode) => j("POST", API(`/library/transitions/import?mode=${mode || "merge"}`), data),
+    clearTransitions: () => j("POST", API("/library/transitions/clear"), {}),
     shortcuts: () => j("GET", API("/library/shortcuts")),
+    saveCategory: (payload) => j("POST", API("/library/categories"), payload),
     saveShortcut: (item) => j("POST", API("/library/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),
     exportShortcutsUrl: () => API("/library/shortcuts/export"),
-    importShortcuts: (data) => j("POST", API("/library/shortcuts/import"), data),
-    characters: () => j("GET", API("/library/characters")),
-    saveCharacter: (item) => j("POST", API("/library/characters"), item),
-    deleteCharacter: (id) => j("DELETE", API(`/library/characters/${encodeURIComponent(id)}`)),
+    importShortcuts: (data, mode) => j("POST", API(`/library/shortcuts/import?mode=${mode || "merge"}`), data),
+    clearShortcuts: () => j("POST", API("/library/shortcuts/clear"), {}),
+
+    // FunPack file manager (Composer ▸ Files)
+    listFiles: () => j("GET", API("/files")),
+    deleteFile: (group, name) => j("DELETE", API(`/files/${encodeURIComponent(group)}/${encodeURIComponent(name)}`)),
+    clearFiles: (group) => j("POST", API(`/files/${encodeURIComponent(group)}/clear`), {}),
     nleLibrary: () => j("GET", API("/library/nle")),
 
     // media bin
@@ -130,8 +135,8 @@
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
-    generate: (id, onlyScene, sceneIds, resetSession) =>
-      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession }),
+    generate: (id, onlyScene, sceneIds, resetSession, nodeOverrides) =>
+      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
     ratingLabels: () => j("GET", API("/rating-labels")),

@@ -19,7 +19,7 @@
         },
         {
           q: "Missing media for continuity or guide stack.",
-          a: "A bin asset or character reference was deleted or moved. Re-upload the file in Media, or clear the broken guide or character assignment in the Inspector.",
+          a: "A bin asset referenced by a guide was deleted or moved. Re-upload the file in Media, or clear the broken guide in the Inspector.",
         },
       ],
     },
@@ -132,7 +132,6 @@
           gen_unit_id: "tour-s1",
           cut_offset_frames: 0,
           guides: [],
-          character_ids: ["tour-char-1"],
           source_in: 0,
           source_dur: null,
         },
@@ -153,7 +152,6 @@
           gen_unit_id: "tour-s2",
           cut_offset_frames: 0,
           guides: [],
-          character_ids: [],
           source_in: 0.5,
           source_dur: 4.2,
         },
@@ -174,7 +172,6 @@
           gen_unit_id: "tour-s3",
           cut_offset_frames: 0,
           guides: [],
-          character_ids: [],
           source_in: 0,
           source_dur: null,
         },
@@ -285,15 +282,6 @@
       ],
       mediaPreviewId: null,
       shortcuts: [{ id: "tour-sh-1", name: "golden hour", triggers: ["@golden"], replacements: ["warm sunset light"] }],
-      characters: [{
-        id: "tour-char-1",
-        name: "Traveler",
-        appearance: "Mid-30s, calm expression",
-        body: "",
-        wardrobe: "Light coat",
-        always_include: "",
-        never_include: "",
-      }],
       imageTargets: [],
       ratingLabels: ["good", "great", "bad"],
     };
@@ -329,7 +317,6 @@
     API.listMedia = ok({ media: demo.mediaBin });
     API.transitions = ok({ transitions: demo.transitions });
     API.shortcuts = ok({ shortcuts: demo.shortcuts });
-    API.characters = ok({ characters: demo.characters });
     API.nleLibrary = ok({ effects: demo.nleEffects, video_transitions: demo.nleVideoTransitions });
     API.refreshModels = ok({});
     API.generate = ok({ prompt_id: "tour-demo" });
@@ -448,14 +435,14 @@
       id: "inspector-scene",
       title: "Scene inspector",
       target: "#inspector-body",
-      body: "Edit the prompt, source type (Empty, Image, Carry), transitions, and characters for the selected scene. Deselect all clips to edit project anchor, seed, and global timing.",
+      body: "Edit the prompt and source type (Empty, Image, Carry) for the selected scene. Deselect all clips to edit project anchor, seed, and global timing. The whole-montage global prompt lives in the Composer.",
       pad: 8,
     },
     {
       id: "transitions",
       title: "Transitions and seams",
       target: "#timeline-body .seam-cut",
-      body: "Seams between clips are transition markers in your montage text (generation) plus optional video crossfades (post-render). Custom split markers live in Media - Splits.",
+      body: "Seams between clips are transition markers in your montage text (generation) plus optional video crossfades (post-render). Custom split markers live in the Composer.",
       pad: 8,
       optionalTarget: "#timeline-body",
     },
@@ -500,15 +487,11 @@
       alsoHighlight: '[data-tour="export-scene"]',
     },
     {
-      id: "media-libraries",
-      title: "Media libraries",
-      target: ".bin-tabs",
-      body: "Characters, Shortcuts, Splits, Effects, and Transitions bins feed Studio and the timeline. Import or create entries here instead of retyping them per scene.",
+      id: "composer",
+      title: "Composer",
+      target: "#composer-btn",
+      body: "Shortcuts and Split markers live in the Composer — a window you open from here. Create them once and reuse them across scenes instead of retyping. (Per-clip effects and video transitions are edited in Properties.)",
       pad: 6,
-      before: () => {
-        const tab = document.querySelector('.bin-tab');
-        if (tab) tab.scrollIntoView({ block: "nearest" });
-      },
     },
     {
       id: "project-io",

@@ -737,6 +737,9 @@
 
   // ── transport actions ──────────────────────────────────────────────────────
   function _seekNow(sec) {
+    // Any transport scrub/seek exits the transient media-bin preview so the program
+    // resumes following the playhead (otherwise it stays frozen on the previewed image).
+    if (S.get().mediaPreviewId) S.clearMediaPreview();
     _phSec = Math.max(0, sec);
     const clip = _clipAt(_phSec);
     if (!clip) {
@@ -808,6 +811,7 @@
   }
 
   function _play() {
+    if (S.get().mediaPreviewId) S.clearMediaPreview();
     // At (or past) the end of the timeline → loop the playhead back to the start.
     if (_phSec >= (_totalSecCur || 0) - 0.05 || !_clipFrom(_phSec)) _phSec = 0;
     const clip = _clipFrom(_phSec);
