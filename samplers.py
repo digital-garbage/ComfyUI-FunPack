@@ -1899,6 +1899,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
                     "tooltip": "Per-step nudge strength toward the liked conditioning direction. Keep small — the direction is applied at every step so it compounds. 0.01-0.03 is typical.",
                 }),
+                "score_slider": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "FreeSliders-style taste guidance in SCORE space. Instead of nudging the conditioning once (embed_guidance), it runs 3 forward passes on quality-phase steps — base, taste+, taste- — and steers the noise prediction along eps_+ minus eps_-. Stronger, prompt-faithful taste push; ~2x cost on late steps. Uses the same learned direction + source + refinement_key_input as embed_guidance (needs 3+ liked generations). Video-only (audio unaffected).",
+                }),
+                "score_slider_strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.25,
+                    "tooltip": "Slider amount (eta). How hard to push the noise prediction along the learned taste axis. 1.0 is a clear, safe push; raise toward 3.0 for a stronger effect (paper's saturation range). 0 = off.",
+                }),
                 "transition_duration": ("INT", {
                     "default": 16, "min": 0, "max": 128, "step": 2,
                     "tooltip": "Extra pixel frames of fade beyond the blend zone on each side of a scene boundary. 0 = disable all transition effects.",
@@ -2735,6 +2743,68 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _embed_wrapper
         return old_wrapper
 
+    def _build_score_slider_wrapper(self, model, liked_dir, eta):
+        """FreeSliders (arxiv 2511.00103) in score space, sourced from the learned taste.
+
+        embed_guidance nudges the conditioning embedding once per step. FreeSliders
+        instead works in noise-prediction space: synthesize a +/- concept pair from
+        the base conditioning and the learned liked direction (no concept prompts
+        needed), then combine predictions
+            eps_mod = eps_base + eta * (eps_+ - eps_-)
+        where c_+/- = base_cond +/- a calibrated step of the liked direction. Three
+        forward passes on low-sigma (quality-phase) steps only; a single pass at high
+        sigma reproduces the paper's k-step base-only warmup and keeps the 2x cost off
+        the early steps. Video-only: the +/- conds are audio-protected and the eps blend
+        is confined to the packed video stream, so audio rides eps_base. Returns the
+        previous wrapper so the caller can restore it.
+
+        Composes with embed_guidance: when both are on, all three passes route through
+        the embed wrapper, so its nudge cancels in (eps_+ - eps_-) and only the slider
+        axis remains, while eps_base still carries the embed steering."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+        fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _slider_wrapper(apply_fn, args, _fixed=fixed_dir, _eta=float(eta)):
+            c = args.get("c") or {}
+            cond = c.get("c_crossattn")
+            ts = args.get("timestep")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                sigma = 1.0
+            ramp = max(0.0, 1.0 - sigma * 2.0)  # base-only warmup at high sigma
+            if cond is None or _eta == 0.0 or ramp <= 0.0:
+                return _call(apply_fn, args)
+            try:
+                d = _fixed.to(cond.device, cond.dtype).expand_as(cond)
+                # Calibrated finite-difference step along the taste axis (per-token,
+                # mirrors _v2_apply_direction's NORM_SCALE=0.3 calibration but halved
+                # so the symmetric +/- spread stays non-destructive).
+                step = d * (0.15 * cond.norm(dim=-1, keepdim=True))
+                cond_plus = self._protect_audio(cond + step, cond)
+                cond_minus = self._protect_audio(cond - step, cond)
+                eps_base = _call(apply_fn, args)
+                args_plus = dict(args); cp = dict(c); cp["c_crossattn"] = cond_plus; args_plus["c"] = cp
+                args_minus = dict(args); cm = dict(c); cm["c_crossattn"] = cond_minus; args_minus["c"] = cm
+                eps_plus = _call(apply_fn, args_plus)
+                eps_minus = _call(apply_fn, args_minus)
+                delta = (eps_plus - eps_minus) * (_eta * ramp)
+                vmask = _packed_video_mask(model, args["input"])
+                if vmask is not None and vmask.shape[-1] == delta.shape[-1]:
+                    delta = delta * vmask.to(delta.device, delta.dtype)
+                return eps_base + delta
+            except Exception as _e:
+                print(f"[FunPackSceneChain] score_slider failed ({_e}), using base prediction")
+                return _call(apply_fn, args)
+
+        model.model_options["model_function_wrapper"] = _slider_wrapper
+        return old_wrapper
+
     def _resolve_frame_index(self, total, frame_idx):
         total = max(0, int(total))
         if total <= 0:
@@ -3142,6 +3212,7 @@ class FunPackLTXAVSceneChainSampler:
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
                embed_guidance=False, embed_guidance_strength=0.02,
                embed_guidance_source="relative",
+               score_slider=False, score_slider_strength=1.0,
                transition_duration=16, decode_tile_size=0,
                decode_noise_scale=0.0, decode_timestep=0.05,
                refinement_key_input="", funpack_scene_guides="",
@@ -3169,6 +3240,7 @@ class FunPackLTXAVSceneChainSampler:
                 carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                 embed_guidance, embed_guidance_strength, transition_duration,
                 decode_tile_size, refinement_key_input, embed_guidance_source,
+                score_slider, score_slider_strength,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3191,18 +3263,21 @@ class FunPackLTXAVSceneChainSampler:
         _value_fn = None
         _eg_source = str(embed_guidance_source or "relative").lower()
         _eg_key = self._absolute_key() if _eg_source == "absolute" else refinement_key_input
-        if embed_guidance and _eg_key:
+        if (embed_guidance or score_slider) and _eg_key:
             _liked_dir = self._load_liked_direction(_eg_key)
             if _liked_dir is None:
-                print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): no liked direction found (need 3+ liked generations)")
+                print(f"[FunPackSceneChain] taste steering ({_eg_source}): no liked direction found (need 3+ liked generations)")
             else:
                 _value_fn = self._load_value_function(_eg_key)
-                if _value_fn:
-                    ready = _value_fn.is_ready()
-                    mode = f"value function ({_value_fn.n_trained} samples, ascent {'on' if ready else 'pending'})"
-                else:
-                    mode = "fixed direction"
-                print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): active via {mode}, strength={embed_guidance_strength}")
+                if embed_guidance:
+                    if _value_fn:
+                        ready = _value_fn.is_ready()
+                        mode = f"value function ({_value_fn.n_trained} samples, ascent {'on' if ready else 'pending'})"
+                    else:
+                        mode = "fixed direction"
+                    print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): active via {mode}, strength={embed_guidance_strength}")
+                if score_slider:
+                    print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -3314,6 +3389,10 @@ class FunPackLTXAVSceneChainSampler:
             if embed_guidance and _liked_dir is not None:
                 run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
+            _slider_old_wrapper = None
+            if score_slider and _liked_dir is not None:
+                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength})")
+                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength)
             # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
             # whatever is installed (e.g. embed guidance). Restored right after sampling,
             # before the embed-guidance restore, so the wrappers unwind in install order.
@@ -3349,6 +3428,12 @@ class FunPackLTXAVSceneChainSampler:
             if _temporal_applied:
                 if _temporal_prev_wrapper is not None:
                     model.model_options["model_function_wrapper"] = _temporal_prev_wrapper
+                elif "model_function_wrapper" in model.model_options:
+                    del model.model_options["model_function_wrapper"]
+            # Unwind in reverse install order: slider was installed on top of embed.
+            if score_slider and _liked_dir is not None:
+                if _slider_old_wrapper is not None:
+                    model.model_options["model_function_wrapper"] = _slider_old_wrapper
                 elif "model_function_wrapper" in model.model_options:
                     del model.model_options["model_function_wrapper"]
             if embed_guidance and _liked_dir is not None:
@@ -3550,7 +3635,8 @@ class FunPackLTXAVSceneChainSampler:
                             latent_template, num_frames_per_scene, frame_overlap, cfg, max_scenes,
                             use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                             embed_guidance, embed_guidance_strength, transition_duration,
-                            decode_tile_size, refinement_key_input, embed_guidance_source="relative"):
+                            decode_tile_size, refinement_key_input, embed_guidance_source="relative",
+                            score_slider=False, score_slider_strength=1.0):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -3589,6 +3675,7 @@ class FunPackLTXAVSceneChainSampler:
                 carry_i2v_guides=carry_i2v_guides, mid_scene_guide=mid_scene_guide,
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
                 embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
+                score_slider=score_slider, score_slider_strength=score_slider_strength,
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 unique_id=None, prompt=None,
