@@ -7138,11 +7138,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         entry["concepts"] = signature["concepts"]
         entry["config"] = signature["config"]
         if seed is not None:
+            # "avoid": this seed draw produced a genuine LOW-QUALITY result, so the planner
+            # should not reuse it. Wrong-* ratings are excluded — they mean "good gen, the
+            # words/identity were off" (skip_value_function), i.e. the seed itself was fine.
+            avoid = bool(reward < 0.0 and not rating_profile.get("skip_value_function"))
             seeds = entry.setdefault("seeds", [])
             seeds.append({
                 "seed": seed,
                 "outcome": outcome_key,
                 "reward": round(reward, 6),
+                "avoid": avoid,
                 "iteration": int(iter_num),
             })
             entry["seeds"] = seeds[-V2_PATH_OUTCOME_MAX_SEEDS_PER_ARM:]
@@ -7217,6 +7222,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state["successful_seed_memory"] = self._v2_trim_successful_seed_memory(memory)
         return f"Seed memory: stored seed {seed} for {touched} concept(s)."
 
+    def _v2_path_disliked_seeds(self, path_memory, concepts):
+        """Seeds that produced a genuine low-quality result for any concept-matching arm in
+        the path-outcome memory. These are AVOIDED when routing the next seed — the planner's
+        'do not repeat what the user disliked' guarantee (path-planner Phase 2)."""
+        disliked = set()
+        if not isinstance(path_memory, dict) or not path_memory:
+            return disliked
+        concept_set = {str(c).strip().lower() for c in (concepts or []) if str(c).strip()}
+        if not concept_set:
+            return disliked
+        for arm in path_memory.values():
+            if not isinstance(arm, dict):
+                continue
+            arm_concepts = {str(c).strip().lower() for c in (arm.get("concepts") or [])}
+            if not (arm_concepts & concept_set):
+                continue
+            for sample in arm.get("seeds", []) or []:
+                if not isinstance(sample, dict) or not sample.get("avoid"):
+                    continue
+                try:
+                    disliked.add(int(sample.get("seed")))
+                except (TypeError, ValueError):
+                    continue
+        return disliked
+
     def _v2_choose_successful_seed(self, refinement_key, prompt, fallback_seed, seed_output_connected=False, reset_session=False):
         fallback_seed = int(fallback_seed)
         if not seed_output_connected:
@@ -7224,10 +7254,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if reset_session:
             return fallback_seed, "fresh seed; session reset", None
         state, _ = self._v2_load_state(refinement_key, reset_session=False)
-        memory = state.get("global", {}).get("successful_seed_memory", {}) if isinstance(state, dict) else {}
-        if not isinstance(memory, dict) or not memory:
-            return fallback_seed, "fresh seed; no successful seed memory", None
+        global_state = state.get("global", {}) if isinstance(state, dict) else {}
+        memory = global_state.get("successful_seed_memory", {}) if isinstance(global_state, dict) else {}
         concepts = self._v2_seed_concepts_from_text(prompt)
+        # Path-planner AVOIDANCE: never reuse a seed that gave a disliked result for these
+        # concepts, and prefer a fresh seed if the fallback itself is one we should avoid.
+        disliked = self._v2_path_disliked_seeds(global_state.get("path_outcomes", {}), concepts)
+        avoided_note = f"; avoiding {len(disliked)} disliked seed(s)" if disliked else ""
+        while fallback_seed in disliked:
+            fallback_seed = random.randint(1, 0xffffffffffffffff)
+        if not isinstance(memory, dict) or not memory:
+            return fallback_seed, f"fresh seed; no successful seed memory{avoided_note}", None
         candidates = []
         for concept in concepts:
             entry = memory.get(concept)
@@ -7235,11 +7272,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 continue
             for item in entry.get("seeds", []) or []:
                 if isinstance(item, dict):
+                    try:
+                        if int(item.get("seed")) in disliked:
+                            continue  # liked once, disliked later — drop it
+                    except (TypeError, ValueError):
+                        pass
                     candidates.append((concept, item))
         if not candidates:
-            return fallback_seed, "fresh seed; no concept seed match", None
+            return fallback_seed, f"fresh seed; no concept seed match{avoided_note}", None
         if random.random() >= V2_SEED_REUSE_CHANCE:
-            return fallback_seed, "fresh seed; successful seed memory skipped", None
+            return fallback_seed, f"fresh seed; successful seed memory skipped{avoided_note}", None
         candidates.sort(
             key=lambda pair: (int(pair[1].get("hit_count", 0)), int(pair[1].get("last_iteration", 0))),
             reverse=True,
@@ -7248,7 +7290,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         try:
             seed = int(item.get("seed"))
         except (TypeError, ValueError):
-            return fallback_seed, "fresh seed; selected memory seed invalid", None
+            return fallback_seed, f"fresh seed; selected memory seed invalid{avoided_note}", None
         scene_seeds = []
         for value in item.get("scene_seeds") or []:
             try:
@@ -7256,7 +7298,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             except (TypeError, ValueError):
                 pass
         scene_seeds = scene_seeds or None
-        return seed, f"successful seed memory: reused {seed} from '{concept}'", scene_seeds
+        return seed, f"successful seed memory: reused {seed} from '{concept}'{avoided_note}", scene_seeds
 
     def _v2_conditioning_vector(self, conditioning):
         if not isinstance(conditioning, torch.Tensor) or conditioning.dim() <= 1:

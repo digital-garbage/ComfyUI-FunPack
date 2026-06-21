@@ -1934,6 +1934,55 @@ def test_successful_seed_reuse_matches_concepts(monkeypatch, tmp_path):
     assert "successful seed memory" in source
 
 
+def test_path_outcomes_marks_quality_dislikes_for_avoidance_but_not_wrong_ratings():
+    refiner = FunPackVideoRefinerV2()
+    gs = {"phrase_memory": {}, "path_outcomes": {}}
+    prompt = "woman walking through neon rain"
+
+    refiner._v2_update_path_outcomes(gs, _path_run(refiner, prompt, gs, seed=10), normalize_refiner_v2_rating("Awful"), 1)
+    refiner._v2_update_path_outcomes(gs, _path_run(refiner, prompt, gs, seed=20), normalize_refiner_v2_rating("Wrong appearance"), 2)
+    refiner._v2_update_path_outcomes(gs, _path_run(refiner, prompt, gs, seed=30), normalize_refiner_v2_rating("Perfect"), 3)
+
+    samples = {s["seed"]: s for arm in gs["path_outcomes"].values() for s in arm["seeds"]}
+    assert samples[10]["avoid"] is True   # Awful = genuine low quality
+    assert samples[20]["avoid"] is False  # Wrong appearance = seed was fine, words were off
+    assert samples[30]["avoid"] is False  # Perfect
+
+    disliked = refiner._v2_path_disliked_seeds(gs["path_outcomes"], ["neon", "rain"])
+    assert disliked == {10}
+
+
+def test_choose_seed_avoids_disliked_and_drops_later_disliked_reuse(monkeypatch, tmp_path):
+    refiner = FunPackVideoRefinerV2()
+    state_path = tmp_path / "state.json"
+    refiner._v2_state_path = lambda refinement_key: str(state_path)
+    state_path.write_text(json.dumps({
+        "version": 2,
+        "global": {
+            # 'neon' seed 777 was liked once, but the path memory later marks it disliked.
+            "successful_seed_memory": {
+                "neon": {"concept": "neon", "seeds": [{"seed": 777, "hit_count": 2, "last_iteration": 5}]}
+            },
+            "path_outcomes": {
+                "arm1": {
+                    "concepts": ["neon", "rain"],
+                    "seeds": [{"seed": 777, "avoid": True, "reward": -0.9}],
+                },
+            },
+        },
+        "prompt_histories": {},
+        "last_run": None,
+    }))
+    monkeypatch.setattr("conditioning.random.random", lambda: 0.05)  # would reuse if any candidate left
+
+    seed, source, _ = refiner._v2_choose_successful_seed(
+        "seed-test", "KaiSa in neon rain", 123, seed_output_connected=True,
+    )
+
+    assert seed != 777, "a seed marked disliked in path memory must never be reused"
+    assert "avoiding 1 disliked seed" in source
+
+
 def test_split_by_transitions_attaches_scene_seeds(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"
