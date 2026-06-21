@@ -135,8 +135,8 @@
     gitCheckout: (branch) => j("POST", API("/git/checkout"), { branch }),
 
     // generate (a single scene, or an explicit run of scene ids = one chain request)
-    generate: (id, onlyScene, sceneIds, resetSession) =>
-      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession }),
+    generate: (id, onlyScene, sceneIds, resetSession, nodeOverrides) =>
+      j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
     ratingLabels: () => j("GET", API("/rating-labels")),

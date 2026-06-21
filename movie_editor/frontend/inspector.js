@@ -13,6 +13,7 @@
     ["v2v", "Video · v2v source"],
     ["carry", "Carry i2v guide · continue previous"],
     ["mixed", "Mixed · Img2Video anchor + prior guides"],
+    ["anchor_guide", "Anchor as guide · image steers, empty latent"],
   ];
 
   function field(labelText, control) {
@@ -43,6 +44,42 @@
     parent.append(el("div", "insp-hint", isMixed
       ? "Starting frame for this scene; prior-scene guides stay active (◐+⇥ on the timeline)."
       : "Image-to-video anchor for this scene. Drag from the Media bin onto the clip, or Browse here."));
+  }
+
+  // "Anchor as guide": the image is a frame-0 guide only; the latent stays empty (t2v).
+  function renderAnchorGuideSource(st, scene, parent) {
+    parent = parent || body;
+    const ref = scene.source?.media_ref;
+    const pick = window.MediaPicker.create({
+      value: ref,
+      mediaBin: st.mediaBin,
+      noneLabel: "— choose guide image —",
+      onChange: (mediaRef) => {
+        S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "anchor_guide", media_ref: mediaRef } });
+      },
+    });
+    parent.append(field("Guide image", pick));
+    parent.append(el("div", "insp-hint",
+      "Steers this scene from frame 0 without locking it — the latent stays empty (text-to-video). "
+      + "Use it for a soft visual reference instead of a hard i2v start."));
+
+    const cur = scene.source?.guide_strength;
+    const val = cur == null ? 0.35 : cur;
+    const row = el("label", "field");
+    row.append(el("span", null, `Guide strength · ${Number(val).toFixed(2)}`));
+    const slider = el("input"); slider.type = "range"; slider.min = "0"; slider.max = "1"; slider.step = "0.05";
+    slider.value = String(val); slider.dataset.k = "ag-strength";
+    slider.oninput = () => { row.firstChild.textContent = `Guide strength · ${Number(slider.value).toFixed(2)}`; };
+    slider.onchange = () => {
+      S.patchScene(scene.id, { source: { ...(scene.source || {}), type: "anchor_guide", guide_strength: parseFloat(slider.value) } });
+    };
+    row.append(slider);
+    parent.append(row);
+    if (!window.EditorSettingsModal || !S.getEditorSetting("anchorGuideHasI2v")) {
+      parent.append(el("div", "insp-hint",
+        "Built-in pipeline: no extra setup — the empty latent is automatic. If you run a custom i2v node, "
+        + "declare it in Editor settings → Anchor as guide so it can be bypassed on this pass."));
+    }
   }
 
   function renderGeneratedFrameSource(st, scene) {
@@ -170,6 +207,7 @@
     body.append(field("Source", src));
     const eff = PC()?.effectiveSourceType(root, st) || stored;
     if (eff === "image") renderImageSource(st, root, body);
+    if (eff === "anchor_guide") renderAnchorGuideSource(st, root, body);
   }
 
   function renderVideoSource(st, scene, parent, label) {

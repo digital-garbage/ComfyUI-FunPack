@@ -446,10 +446,12 @@ def _run_sampler_inputs(
         return {}
     import json
     from .backend.timeline import (
+        build_anchor_guide_guides,
         build_auto_continuity_guides,
         build_scene_guides_payload,
         continuity_settings_for_run,
         is_mixed_source,
+        merge_scene_guide_payloads,
         normalize_guide_settings,
     )
 
@@ -462,6 +464,10 @@ def _run_sampler_inputs(
     auto_guides = build_auto_continuity_guides(proj, target) if cs["auto_enabled"] else None
     manual_guides = build_scene_guides_payload(target) if manual_stack else None
     guides = manual_guides or auto_guides
+
+    # Anchor-as-guide: the scene's own image as a frame-0 guide (latent stays empty).
+    # Independent of continuity/manual stacks, so merge it in rather than replace.
+    guides = merge_scene_guide_payloads(guides, build_anchor_guide_guides(target))
 
     if guides:
         samp["funpack_scene_guides"] = json.dumps(guides)
@@ -518,6 +524,31 @@ def _missing_scene_anchor_media(target: Project, *, chain_available: bool = True
         if not media.path_for(ref):
             missing.append(ref)
     return missing
+
+
+def _apply_node_overrides(graph: dict, overrides: Optional[list]) -> list[str]:
+    """Force widget inputs on built-graph nodes (e.g. the user's 'Anchor as guide' i2v
+    bypass — set a node's toggle/combo to a chosen state). Each override is
+    {node, input, value}; ``node`` is a built-graph key ('studio', a slot id, or
+    'slot_<id>'). Returns the keys actually applied (for the report)."""
+    applied: list[str] = []
+    for ov in overrides or []:
+        if not isinstance(ov, dict):
+            continue
+        nid = str(ov.get("node") or "").strip()
+        inp = ov.get("input")
+        if not nid or not inp:
+            continue
+        key = nid if nid in graph else ("slot_" + nid if ("slot_" + nid) in graph else None)
+        if not key:
+            continue
+        cur = graph[key].get("inputs", {}).get(inp)
+        # Never clobber a wired socket ([node_id, idx]) — only widget values are forced.
+        if isinstance(cur, list):
+            continue
+        graph[key].setdefault("inputs", {})[inp] = ov.get("value")
+        applied.append(f"{key}.{inp}")
+    return applied
 
 
 def _attach_scene_anchors(samp: dict, media_pack: Optional[dict], target: Project) -> dict:
@@ -1454,9 +1485,14 @@ if web is not None and PromptServer is not None:
             else target.num_frames_per_scene
         )
         try:
+            from .backend.timeline import anchor_guide_media_refs
+            extra_refs = (
+                continuity_media_refs(p, target) + anchor_guide_media_refs(target)
+                if caps["chain_sampler"] else []
+            )
             media_pack = _prepare_media(
                 target,
-                continuity_media_refs(p, target) if caps["chain_sampler"] else [],
+                extra_refs,
                 chain_available=caps["chain_sampler"],
             )
             sampler_inputs = _run_sampler_inputs(target, active_scene_count, full=p, models=models_cfg)
@@ -1481,6 +1517,12 @@ if web is not None and PromptServer is not None:
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)
+        # Anchor-as-guide i2v bypass: force the user-declared node's widget(s) to the
+        # configured state so the latent stays empty. Only honoured for runs the client
+        # marked as carrying an anchor_guide scene.
+        applied_ovr = _apply_node_overrides(graph, body.get("node_overrides"))
+        if applied_ovr:
+            report.setdefault("node_overrides", []).extend(applied_ovr)
         try:
             result = await bridge.queue_prompt(graph)
         except Exception as e:  # noqa: BLE001

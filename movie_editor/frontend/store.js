@@ -38,7 +38,12 @@
   // Per-browser editor preferences (not part of the project file). Govern how the
   // prompt is parsed/edited, not what is generated from already-distributed scenes.
   const EDITOR_SETTINGS_KEY = "funpack_editor_settings";
-  const EDITOR_SETTINGS_DEFAULTS = { autocomplete: true, anchorEnabled: true };
+  const EDITOR_SETTINGS_DEFAULTS = {
+    autocomplete: true, anchorEnabled: true,
+    // "Anchor as guide" i2v bypass: declare a custom i2v node so it can be forced
+    // to a state (value-only) on anchor_guide runs. anchorGuideBypass = {node, input, value}.
+    anchorGuideHasI2v: false, anchorGuideBypass: null,
+  };
   function _loadEditorSettings() {
     try {
       const raw = JSON.parse(localStorage.getItem(EDITOR_SETTINGS_KEY) || "{}");
@@ -2982,13 +2987,28 @@
   }
 
   // Generate one run (single scene, or an explicit list of scene ids). Returns success.
+  // i2v-node bypass overrides for a run that contains an "Anchor as guide" scene, when the
+  // user has declared a custom i2v node in Editor settings (built-in pipeline needs none).
+  function _anchorGuideNodeOverrides(sceneIds) {
+    if (!getEditorSetting("anchorGuideHasI2v")) return null;
+    const cfg = getEditorSetting("anchorGuideBypass");
+    if (!cfg || !cfg.node || !cfg.input) return null;
+    const hasAG = (sceneIds || []).some((id) => {
+      const s = scene(id);
+      return s && s.source && s.source.type === "anchor_guide";
+    });
+    if (!hasAG) return null;
+    return [{ node: cfg.node, input: cfg.input, value: cfg.value }];
+  }
+
   async function _generateRun(sceneIds, onlyScene, prefix, resetSession) {
     _interrupted = false;
     _markGenInFlight(sceneIds);
     set({ gen: { state: "queuing", promptId: null, media: [], msg: `${prefix}: queuing…`, step: 0, maxStep: 0 } });
     try {
+      const overrides = _anchorGuideNodeOverrides(sceneIds);
       const r = await _retryOnTunnel(
-        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession),
+        () => API.generate(state.project.id, onlyScene || null, onlyScene ? null : sceneIds, !!resetSession, overrides),
         10,
       );
       if (!r.prompt_id) { set({ gen: { ...state.gen, state: "error", msg: "No prompt id returned." } }); return false; }

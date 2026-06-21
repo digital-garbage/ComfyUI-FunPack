@@ -262,6 +262,81 @@ def is_mixed_source(scene: Scene) -> bool:
     return (scene.source.type or "carry") == "mixed"
 
 
+def is_anchor_guide(scene: Scene) -> bool:
+    return source_type(scene) == "anchor_guide"
+
+
+def anchor_guide_strength(scene: Scene) -> float:
+    """The guide pull for an anchor_guide scene, clamped to a sane 0..1 range."""
+    raw = getattr(scene.source, "guide_strength", None) if scene.source else None
+    val = STUDIO_DEFAULT_GUIDE["strength"] if raw is None else float(raw)
+    return max(0.0, min(1.0, val))
+
+
+def _self_image_guide(media_ref: str, strength: float) -> dict:
+    """A frame-0 guide from the scene's OWN image (anchor_guide mode). Unlike the
+    continuity identity-pin guide, the strength is the user's choice (full 0..1)."""
+    return {
+        "enabled": True,
+        "source": "image",
+        "media_ref": media_ref,
+        "frame_idx": 0,
+        "apply_at": 0,
+        "strength": max(0.0, min(1.0, float(strength))),
+    }
+
+
+def anchor_guide_media_refs(target: Project) -> list[str]:
+    """Media-bin ids used as frame-0 guides by anchor_guide scenes (copied guide-only)."""
+    refs: list[str] = []
+    for sc in target.scenes:
+        if sc.excluded:
+            continue
+        if is_anchor_guide(sc) and sc.source and sc.source.media_ref:
+            refs.append(sc.source.media_ref)
+    return list(dict.fromkeys(refs))
+
+
+def build_anchor_guide_guides(target: Project) -> Optional[dict]:
+    """Per-scene funpack_scene_guides for anchor_guide scenes in this run: each such
+    scene gets a frame-0 guide from its own image; the latent itself stays empty (t2v)."""
+    active = [s for s in target.scenes if not s.excluded]
+    per_scene: list[Optional[list[dict]]] = []
+    any_guide = False
+    for sc in active:
+        if is_anchor_guide(sc) and sc.source and sc.source.media_ref:
+            per_scene.append([_self_image_guide(sc.source.media_ref, anchor_guide_strength(sc))])
+            any_guide = True
+        else:
+            per_scene.append(None)
+    if not any_guide:
+        return None
+    return {"stack_enabled": True, "accumulate_prior": False, "scenes": per_scene}
+
+
+def merge_scene_guide_payloads(base: Optional[dict], extra: Optional[dict]) -> Optional[dict]:
+    """Overlay two funpack_scene_guides payloads, combining per-scene entry lists by index."""
+    if not base:
+        return extra
+    if not extra:
+        return base
+    a = base.get("scenes") or []
+    b = extra.get("scenes") or []
+    merged: list[Optional[list[dict]]] = []
+    for i in range(max(len(a), len(b))):
+        ea = a[i] if i < len(a) else None
+        eb = b[i] if i < len(b) else None
+        if ea and eb:
+            merged.append(list(ea) + list(eb))
+        else:
+            merged.append(ea or eb)
+    return {
+        "stack_enabled": True,
+        "accumulate_prior": bool(base.get("accumulate_prior") or extra.get("accumulate_prior")),
+        "scenes": merged,
+    }
+
+
 def source_type(scene: Scene) -> str:
     return (scene.source.type if scene.source else None) or "carry"
 
@@ -316,20 +391,25 @@ class SceneSource:
     it onto EmptyLTXVLatent (empty/t2v) or LTXV Image to Video (image/i2v).
 
     ``video`` = locked NLE clip (imported or converted from a scene); never generated.
-    ``v2v`` = generative scene using a video file as the source (video-to-video)."""
-    type: str = "carry"  # carry | empty | image | generated_frame | mixed | video | v2v
-    media_ref: Optional[str] = None              # asset id — image/mixed anchor (Img2Video)
+    ``v2v`` = generative scene using a video file as the source (video-to-video).
+    ``anchor_guide`` = image steers via a guide at frame 0, but the latent stays EMPTY
+    (t2v). The image is never the i2v anchor; ``guide_strength`` sets its pull (0..1)."""
+    type: str = "carry"  # carry | empty | image | generated_frame | mixed | video | v2v | anchor_guide
+    media_ref: Optional[str] = None              # asset id — image/mixed anchor (Img2Video); anchor_guide guide image
     frame_ref: Optional[dict[str, Any]] = None   # {scene_id, frame_idx}, for "generated_frame"
     target: Optional[str] = None                 # wire dest for the image: "port:<id>" | "node:<slotId>:<input>"
+    guide_strength: Optional[float] = None       # anchor_guide: guide pull (0..1), None -> default 0.35
 
     @staticmethod
     def from_dict(d: Optional[dict]) -> "SceneSource":
         d = d or {}
+        gs = d.get("guide_strength")
         return SceneSource(
             type=d.get("type", "carry"),
             media_ref=d.get("media_ref"),
             frame_ref=d.get("frame_ref"),
             target=d.get("target"),
+            guide_strength=float(gs) if gs is not None else None,
         )
 
 

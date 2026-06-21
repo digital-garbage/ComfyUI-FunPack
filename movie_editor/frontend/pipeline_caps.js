@@ -1,6 +1,6 @@
 // Shared FunPack pipeline capability flags (Studio / Chain Sampler availability).
 (function () {
-  const CHAIN_ONLY = new Set(["carry", "mixed", "generated_frame", "v2v"]);
+  const CHAIN_ONLY = new Set(["carry", "mixed", "generated_frame", "v2v", "anchor_guide"]);
 
   function models(st) {
     return (st && st.models) || {};
@@ -54,6 +54,7 @@
       v2v: "Video · v2v source",
       carry: "Carry i2v guide · continue previous",
       mixed: "Mixed · Img2Video anchor + prior guides",
+      anchor_guide: "Anchor as guide · image steers, empty latent",
     };
     return map[type] || type;
   }
