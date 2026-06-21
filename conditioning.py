@@ -6158,6 +6158,16 @@ V2_RATING_PROFILES = {
 V2_FEEDBACK_AXES = ("details", "action", "quality")
 V2_ADVISOR_MODES = ["Off", "Only diagnostics", "Only prompt", "Full"]
 
+# outcome key -> reward, for the path planner's Beta posteriors (liked vs disliked rate per arm).
+_V2_KEY_REWARD = {
+    str(profile["key"]): float(profile.get("reward", 0.0))
+    for profile in V2_RATING_PROFILES.values() if isinstance(profile, dict) and profile.get("key")
+}
+# Liked / disliked reward thresholds — shared with the Absolute store (_v2_learn_absolute) so the
+# planner and the global-taste prior agree on what counts as "more of this" vs "not this".
+V2_PATH_LIKED_REWARD = 0.3
+V2_PATH_DISLIKED_REWARD = 0.0
+
 V2_PROMPT_ADVISOR_SYSTEM_PROMPT = """You are a video prompt editor. Rewrite the prompt provided in the user message to fix the specific issue described.
 
 Rules:
@@ -7222,22 +7232,28 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         global_state["successful_seed_memory"] = self._v2_trim_successful_seed_memory(memory)
         return f"Seed memory: stored seed {seed} for {touched} concept(s)."
 
+    def _v2_path_matching_arms(self, path_memory, concepts):
+        """Arms in the path-outcome memory whose concept set overlaps the prompt's concepts."""
+        if not isinstance(path_memory, dict) or not path_memory:
+            return []
+        concept_set = {str(c).strip().lower() for c in (concepts or []) if str(c).strip()}
+        if not concept_set:
+            return []
+        matches = []
+        for arm in path_memory.values():
+            if not isinstance(arm, dict):
+                continue
+            arm_concepts = {str(c).strip().lower() for c in (arm.get("concepts") or [])}
+            if arm_concepts & concept_set:
+                matches.append(arm)
+        return matches
+
     def _v2_path_disliked_seeds(self, path_memory, concepts):
         """Seeds that produced a genuine low-quality result for any concept-matching arm in
         the path-outcome memory. These are AVOIDED when routing the next seed — the planner's
         'do not repeat what the user disliked' guarantee (path-planner Phase 2)."""
         disliked = set()
-        if not isinstance(path_memory, dict) or not path_memory:
-            return disliked
-        concept_set = {str(c).strip().lower() for c in (concepts or []) if str(c).strip()}
-        if not concept_set:
-            return disliked
-        for arm in path_memory.values():
-            if not isinstance(arm, dict):
-                continue
-            arm_concepts = {str(c).strip().lower() for c in (arm.get("concepts") or [])}
-            if not (arm_concepts & concept_set):
-                continue
+        for arm in self._v2_path_matching_arms(path_memory, concepts):
             for sample in arm.get("seeds", []) or []:
                 if not isinstance(sample, dict) or not sample.get("avoid"):
                     continue
@@ -7246,6 +7262,46 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 except (TypeError, ValueError):
                     continue
         return disliked
+
+    def _v2_path_arm_beta(self, arm):
+        """Beta(alpha, beta) posterior over an arm's liked-rate from its outcome counts.
+        Each liked outcome (reward >= V2_PATH_LIKED_REWARD) is a success, each disliked
+        (reward < V2_PATH_DISLIKED_REWARD) a failure; the mild-positive band is ignored.
+        Laplace prior (1, 1) so an unobserved arm is maximally uncertain."""
+        alpha, beta = 1.0, 1.0
+        for key, count in (arm.get("outcomes") or {}).items():
+            reward = _V2_KEY_REWARD.get(str(key), 0.0)
+            try:
+                weight = max(0.0, float(count))
+            except (TypeError, ValueError):
+                continue
+            if reward >= V2_PATH_LIKED_REWARD:
+                alpha += weight
+            elif reward < V2_PATH_DISLIKED_REWARD:
+                beta += weight
+        return alpha, beta
+
+    def _v2_path_explore_decision(self, path_memory, concepts):
+        """Thompson sampling over concept-matching arms vs an uninformed 'explore fresh' arm.
+
+        Draws θ ~ Beta(α, β) for each matching config arm and one draw for a fresh Beta(1,1)
+        exploration arm, then picks the max. Arms with a high liked-rate win → exploit (reuse a
+        good seed); arms dominated by dislikes get a low θ and rarely win → the planner naturally
+        routes to a fresh seed ('do something else'). Returns ``(explore, reason)``, or
+        ``(None, "")`` when there's no path data so the caller keeps its legacy behavior."""
+        arms = self._v2_path_matching_arms(path_memory, concepts)
+        if not arms:
+            return None, ""
+        best_theta, best_arm = -1.0, None
+        for arm in arms:
+            alpha, beta = self._v2_path_arm_beta(arm)
+            theta = random.betavariate(alpha, beta)
+            if theta > best_theta:
+                best_theta, best_arm = theta, arm
+        fresh_theta = random.betavariate(1.0, 1.0)
+        if fresh_theta >= best_theta:
+            return True, f"path planner: explore fresh (best arm θ={best_theta:.2f} < fresh {fresh_theta:.2f})"
+        return False, f"path planner: exploit arm θ={best_theta:.2f} (n={int(best_arm.get('n_pulls', 0))})"
 
     def _v2_choose_successful_seed(self, refinement_key, prompt, fallback_seed, seed_output_connected=False, reset_session=False):
         fallback_seed = int(fallback_seed)
@@ -7280,8 +7336,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     candidates.append((concept, item))
         if not candidates:
             return fallback_seed, f"fresh seed; no concept seed match{avoided_note}", None
-        if random.random() >= V2_SEED_REUSE_CHANCE:
-            return fallback_seed, f"fresh seed; successful seed memory skipped{avoided_note}", None
+        # Explore/exploit gate. With path-outcome data, a Thompson draw over the matching config
+        # arms decides — good arms exploit, dislike-dominated arms route to a fresh seed. With no
+        # path data yet, fall back to the flat reuse chance.
+        explore, plan_reason = self._v2_path_explore_decision(global_state.get("path_outcomes", {}), concepts)
+        if explore is None:
+            explore = random.random() >= V2_SEED_REUSE_CHANCE
+            plan_reason = "successful seed memory skipped"
+        if explore:
+            return fallback_seed, f"fresh seed; {plan_reason}{avoided_note}", None
         candidates.sort(
             key=lambda pair: (int(pair[1].get("hit_count", 0)), int(pair[1].get("last_iteration", 0))),
             reverse=True,

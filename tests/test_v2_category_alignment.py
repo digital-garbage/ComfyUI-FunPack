@@ -1,4 +1,5 @@
 import json
+import random
 import sys
 import types
 from pathlib import Path
@@ -1981,6 +1982,51 @@ def test_choose_seed_avoids_disliked_and_drops_later_disliked_reuse(monkeypatch,
 
     assert seed != 777, "a seed marked disliked in path memory must never be reused"
     assert "avoiding 1 disliked seed" in source
+
+
+def test_path_arm_beta_counts_liked_and_disliked_only():
+    refiner = FunPackVideoRefinerV2()
+    arm = {"outcomes": {"like": 3.0, "awful": 1.0, "missing_action": 5.0}}  # missing_action(0.05)=neutral
+    alpha, beta = refiner._v2_path_arm_beta(arm)
+    assert (alpha, beta) == (4.0, 2.0)  # 1 + 3 likes, 1 + 1 dislike, neutral ignored
+
+
+def test_path_explore_decision_exploits_good_arm(monkeypatch):
+    refiner = FunPackVideoRefinerV2()
+    memory = {"a": {"concepts": ["neon"], "n_pulls": 5, "outcomes": {"like": 5.0}}}
+    draws = iter([0.9, 0.1])  # arm theta high, fresh theta low
+    monkeypatch.setattr("conditioning.random.betavariate", lambda a, b: next(draws))
+    explore, reason = refiner._v2_path_explore_decision(memory, ["neon", "rain"])
+    assert explore is False
+    assert "exploit" in reason
+
+
+def test_path_explore_decision_routes_away_from_disliked_arm(monkeypatch):
+    refiner = FunPackVideoRefinerV2()
+    memory = {"a": {"concepts": ["neon"], "n_pulls": 5, "outcomes": {"awful": 5.0}}}
+    draws = iter([0.1, 0.6])  # arm theta low, fresh theta higher
+    monkeypatch.setattr("conditioning.random.betavariate", lambda a, b: next(draws))
+    explore, reason = refiner._v2_path_explore_decision(memory, ["neon"])
+    assert explore is True
+    assert "explore fresh" in reason
+
+
+def test_path_explore_decision_defers_without_data():
+    refiner = FunPackVideoRefinerV2()
+    explore, reason = refiner._v2_path_explore_decision({}, ["neon"])
+    assert explore is None and reason == ""
+
+
+def test_path_planner_exploits_liked_arm_far_more_than_disliked_arm():
+    refiner = FunPackVideoRefinerV2()
+    liked = {"a": {"concepts": ["neon"], "outcomes": {"like": 30.0}}}
+    disliked = {"a": {"concepts": ["neon"], "outcomes": {"awful": 30.0}}}
+    random.seed(0)
+    liked_explores = sum(refiner._v2_path_explore_decision(liked, ["neon"])[0] for _ in range(300))
+    disliked_explores = sum(refiner._v2_path_explore_decision(disliked, ["neon"])[0] for _ in range(300))
+    # A strongly-liked arm is exploited (rarely explores); a hated arm is fled (mostly explores).
+    assert liked_explores < 60
+    assert disliked_explores > 240
 
 
 def test_split_by_transitions_attaches_scene_seeds(tmp_path):
