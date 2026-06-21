@@ -397,6 +397,61 @@ def test_intent_alignment_removes_rejected_enhancer_only_extra():
     ]
 
 
+def _path_run(refiner, prompt, global_state, *, seed, family="fam", carry=True):
+    return {
+        "prompt": prompt,
+        "phrases": prompt_phrases(refiner, prompt, global_state),
+        "seed": seed,
+        "intent_family_key": family,
+        "gen_context": {
+            "loras": [],
+            "carry_i2v_guides": carry,
+            "frame_overlap": 8,
+            "transitions_enabled": False,
+            "image_fp": "",
+        },
+    }
+
+
+def test_path_outcomes_records_every_rating_not_just_good_ones():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "path_outcomes": {}}
+    prompt = "woman walking through neon rain"
+
+    awful = normalize_refiner_v2_rating("Awful")
+    refiner._v2_update_path_outcomes(global_state, _path_run(refiner, prompt, global_state, seed=11), awful, 1)
+    refiner._v2_update_path_outcomes(global_state, _path_run(refiner, prompt, global_state, seed=22), awful, 2)
+
+    arms = global_state["path_outcomes"]
+    assert len(arms) == 1, "same config differing only by seed must collapse to one arm"
+    arm = next(iter(arms.values()))
+    assert arm["n_pulls"] == 2
+    assert arm["outcomes"].get(awful["key"], 0) > 0
+    # both seeds recorded as samples within the arm
+    assert sorted(s["seed"] for s in arm["seeds"]) == [11, 22]
+
+
+def test_path_outcomes_separates_arms_by_config():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"phrase_memory": {}, "path_outcomes": {}}
+    prompt = "woman walking through neon rain"
+    profile = normalize_refiner_v2_rating("Awful")
+
+    refiner._v2_update_path_outcomes(global_state, _path_run(refiner, prompt, global_state, seed=1, carry=True), profile, 1)
+    refiner._v2_update_path_outcomes(global_state, _path_run(refiner, prompt, global_state, seed=1, carry=False), profile, 2)
+
+    assert len(global_state["path_outcomes"]) == 2, "differing guidance config must be different arms"
+
+
+def test_path_outcomes_skips_runs_with_no_identifiable_path():
+    refiner = FunPackVideoRefinerV2()
+    global_state = {"path_outcomes": {}}
+    profile = normalize_refiner_v2_rating("Awful")
+    status = refiner._v2_update_path_outcomes(global_state, {"seed": 5}, profile, 1)
+    assert global_state["path_outcomes"] == {}
+    assert "no identifiable path" in status
+
+
 def test_intent_alignment_stores_pairs_and_bad_tokens_to_omit():
     refiner = FunPackVideoRefinerV2()
     global_state = {"phrase_memory": {}, "intent_alignment_memory": {}}

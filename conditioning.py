@@ -23,6 +23,15 @@ V2_SEED_REUSE_CHANCE = 0.20
 V2_SEED_MEMORY_MAX_CONCEPTS = 128
 V2_SEED_MEMORY_MAX_PER_CONCEPT = 24
 
+# Path-outcome memory (path-planner Phase 1). A "path" = a per-scene generation config
+# (concepts + family + guidance dims) EXCLUDING the seed; the seed is the random draw
+# WITHIN an arm. Every rating — not just successful ones — is recorded as a labeled
+# outcome on the arm it came from, so a later planner can route away from arms that keep
+# producing disliked results. Counts decay so an arm's recent behavior dominates.
+V2_PATH_OUTCOME_MAX_ARMS = 256
+V2_PATH_OUTCOME_MAX_SEEDS_PER_ARM = 16
+V2_PATH_OUTCOME_DECAY = 0.9
+
 LORA_REFINER_TYPE_PROFILES = {
     "general": {"step": 0.025, "max_offset": 0.20, "min_offset": -0.35, "bad_max_offset": 0.45, "bad_min_offset": -1.35, "culprit_bias": 0.28},
     "action": {"step": 0.046, "max_offset": 0.35, "min_offset": -0.45, "bad_max_offset": 0.75, "bad_min_offset": -2.10, "culprit_bias": 0.16},
@@ -6484,6 +6493,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 "session_source_mean_count": 0,
                 "liked_dir": {},
                 "bad_dir": {},
+                "path_outcomes": {},
             },
             "prompt_histories": {},
             "last_run": None,
@@ -6544,6 +6554,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             data["global"].setdefault("vision_memory", {})
             data["global"].setdefault("loss_history", [])
             data["global"].setdefault("successful_seed_memory", {})
+            data["global"].setdefault("path_outcomes", {})
             return data, "loaded"
         except (json.JSONDecodeError, OSError, ValueError):
             return self._v2_empty_state(refinement_key), "reset unreadable"
@@ -6855,6 +6866,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             target_global, scene_run, profile, iter_num,
             seed_output_connected=bool(seed_output_connected),
         )
+        self._v2_update_path_outcomes(target_global, scene_run, profile, iter_num)
         self._v2_update_intent_family_memory(target_global, scene_run, profile, iter_num, axis_feedback)
         self._v2_update_appearance_anchor(target_global, scene_run, profile, iter_num)
         self._v2_update_negative_prompt_memory(target_global, scene_run, profile, axis_feedback)
@@ -7038,6 +7050,118 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             reverse=True,
         )
         return dict(ordered[:V2_SEED_MEMORY_MAX_CONCEPTS])
+
+    def _v2_path_signature(self, run):
+        """Build a per-scene PATH signature from a (scene) run dict. Returns
+        ``(arm_id, signature)`` or ``(None, None)`` if there's nothing to fingerprint.
+
+        The arm is the generation CONFIG region — semantic family + concept set + guidance
+        dims — and deliberately EXCLUDES the seed: two gens that differ only by seed are the
+        same arm sampled twice. ``arm_id`` is a short stable hash of the canonical signature so
+        identical configs collapse to one entry across runs."""
+        if not isinstance(run, dict):
+            return None, None
+        family = str(run.get("intent_family_key") or "").strip()
+        concepts = sorted(self._v2_seed_concepts_for_run(run))[:12]
+        ctx = run.get("gen_context") if isinstance(run.get("gen_context"), dict) else {}
+        loras = [
+            f"{e.get('name')}:{e.get('type', 'general')}:{round(float(e.get('weight', 1.0)), 2)}"
+            for e in (ctx.get("loras") or []) if isinstance(e, dict) and e.get("name")
+        ]
+        config = {
+            "carry_i2v_guides": ctx.get("carry_i2v_guides"),
+            "frame_overlap": ctx.get("frame_overlap"),
+            "transitions_enabled": ctx.get("transitions_enabled"),
+            "image_fp": str(ctx.get("image_fp") or ""),
+            "loras": sorted(loras),
+        }
+        if not family and not concepts and not loras and not config["image_fp"]:
+            # Nothing distinctive to identify a path by — skip rather than collapse every
+            # context-less run into one meaningless arm.
+            return None, None
+        canonical = json.dumps(
+            {"family": family, "concepts": concepts, "config": config},
+            sort_keys=True, ensure_ascii=False,
+        )
+        arm_id = md5(canonical.encode("utf-8")).hexdigest()[:16]
+        signature = {"family": family, "concepts": concepts, "config": config}
+        return arm_id, signature
+
+    def _v2_update_path_outcomes(self, global_state, run, rating_profile, iter_num):
+        """Record one rating as a labeled outcome on the path (arm) that produced it.
+
+        Learns from EVERY rating, not just successful ones: an "Awful" or "missing details"
+        verdict is exactly the signal a later planner needs to route away from this arm. Outcome
+        counts decay by ``V2_PATH_OUTCOME_DECAY`` before each increment so an arm's *recent*
+        behavior dominates (a config that used to miss details but now delivers drifts clean).
+        Pure instrumentation — does not alter generation yet."""
+        if not isinstance(global_state, dict) or not isinstance(run, dict):
+            return "Path memory: no run to learn from."
+        if not isinstance(rating_profile, dict) or rating_profile.get("skip_learning"):
+            return "Path memory: rating skips learning."
+        arm_id, signature = self._v2_path_signature(run)
+        if not arm_id:
+            return "Path memory: run has no identifiable path."
+        outcome_key = str(rating_profile.get("key") or "unrated")
+        reward = float(rating_profile.get("reward", 0.0) or 0.0)
+        try:
+            seed = int(run.get("seed"))
+        except (TypeError, ValueError):
+            seed = None
+
+        memory = global_state.setdefault("path_outcomes", {})
+        entry = memory.get(arm_id)
+        if not isinstance(entry, dict):
+            entry = {
+                "arm_id": arm_id,
+                "family": signature["family"],
+                "concepts": signature["concepts"],
+                "config": signature["config"],
+                "outcomes": {},
+                "reward_ema": reward,
+                "n_pulls": 0,
+                "seeds": [],
+                "first_iteration": int(iter_num),
+                "last_iteration": int(iter_num),
+            }
+            memory[arm_id] = entry
+
+        outcomes = entry.setdefault("outcomes", {})
+        for key in list(outcomes.keys()):
+            outcomes[key] = round(float(outcomes.get(key, 0.0)) * V2_PATH_OUTCOME_DECAY, 6)
+        outcomes[outcome_key] = round(float(outcomes.get(outcome_key, 0.0)) + 1.0, 6)
+        entry["reward_ema"] = round(0.7 * float(entry.get("reward_ema", reward)) + 0.3 * reward, 6)
+        entry["n_pulls"] = int(entry.get("n_pulls", 0)) + 1
+        entry["last_iteration"] = int(iter_num)
+        # Keep the freshest config/concepts in case guidance dims drift under the same arm.
+        entry["family"] = signature["family"]
+        entry["concepts"] = signature["concepts"]
+        entry["config"] = signature["config"]
+        if seed is not None:
+            seeds = entry.setdefault("seeds", [])
+            seeds.append({
+                "seed": seed,
+                "outcome": outcome_key,
+                "reward": round(reward, 6),
+                "iteration": int(iter_num),
+            })
+            entry["seeds"] = seeds[-V2_PATH_OUTCOME_MAX_SEEDS_PER_ARM:]
+
+        global_state["path_outcomes"] = self._v2_trim_path_outcomes(memory)
+        return f"Path memory: recorded '{outcome_key}' on arm {arm_id} (pull #{entry['n_pulls']})."
+
+    def _v2_trim_path_outcomes(self, memory):
+        """Cap the number of stored arms, dropping the least-recently-touched first."""
+        if not isinstance(memory, dict):
+            return {}
+        if len(memory) <= V2_PATH_OUTCOME_MAX_ARMS:
+            return memory
+        ordered = sorted(
+            memory.items(),
+            key=lambda pair: int(pair[1].get("last_iteration", 0)) if isinstance(pair[1], dict) else 0,
+            reverse=True,
+        )
+        return dict(ordered[:V2_PATH_OUTCOME_MAX_ARMS])
 
     def _v2_update_successful_seed_memory(self, global_state, last_run, rating_profile, iter_num, seed_output_connected=False):
         if not seed_output_connected:
@@ -11537,6 +11661,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 learning_profile,
                 int(global_state.get("total_iterations", 0)) + 1,
                 seed_output_connected=bool(seed_output_connected),
+            )
+            self._v2_update_path_outcomes(
+                global_state,
+                previous_run,
+                learning_profile,
+                int(global_state.get("total_iterations", 0)) + 1,
             )
             intent_family_status, _ = self._v2_update_intent_family_memory(
                 global_state,
