@@ -7303,6 +7303,32 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return True, f"path planner: explore fresh (best arm θ={best_theta:.2f} < fresh {fresh_theta:.2f})"
         return False, f"path planner: exploit arm θ={best_theta:.2f} (n={int(best_arm.get('n_pulls', 0))})"
 
+    def _v2_path_conditioning_plan(self, path_memory, concepts):
+        """Route the CONDITIONING variant for the next gen from the path-outcome memory.
+
+        Aggregates the Beta posteriors of every concept-matching arm into one liked-rate mean
+        and returns a directive for ``_v2_ascend_conditioning``:
+          * "lock"    — liked region: keep the conditioning stable (skip the stochastic search)
+                        so a good direction is held in place rather than perturbed away.
+          * "explore" — disliked region: widen the value-function search to push toward a
+                        different conditioning ("do something else").
+          * "normal"  — ambiguous: today's ascend + standard search.
+        Returns ``(mode, reason)``, or ``(None, "")`` with no path data (caller keeps default)."""
+        arms = self._v2_path_matching_arms(path_memory, concepts)
+        if not arms:
+            return None, ""
+        alpha, beta = 1.0, 1.0
+        for arm in arms:
+            a, b = self._v2_path_arm_beta(arm)
+            alpha += a - 1.0
+            beta += b - 1.0
+        mean = alpha / (alpha + beta)
+        if mean >= 0.6:
+            return "lock", f"path planner: lock conditioning (liked-rate {mean:.2f})"
+        if mean <= 0.4:
+            return "explore", f"path planner: explore conditioning (liked-rate {mean:.2f})"
+        return "normal", f"path planner: normal conditioning (liked-rate {mean:.2f})"
+
     def _v2_choose_successful_seed(self, refinement_key, prompt, fallback_seed, seed_output_connected=False, reset_session=False):
         fallback_seed = int(fallback_seed)
         if not seed_output_connected:
@@ -12476,6 +12502,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # conditioning just before each return below — so it wraps whatever output_conditioning
         # ends up being: single-scene OR multi-scene (transition split). Works WITH transitions.
         _do_batch = int(batch_variants or 1) > 1 and not learning_mode and not prompt_only_mode
+        # Path planner: route the conditioning variant from per-config outcome history — lock a
+        # liked region's conditioning, widen the search to flee a disliked one. None with no data.
+        _conditioning_plan, _conditioning_plan_reason = self._v2_path_conditioning_plan(
+            global_state.get("path_outcomes", {}),
+            self._v2_seed_concepts_from_text(prompt_to_encode),
+        )
+        if _conditioning_plan_reason:
+            print(f"[FunPackVideoRefinerV2] {_conditioning_plan_reason}")
         if split_by_transitions:
             try:
                 scene_texts = split_scene_texts
@@ -12519,7 +12553,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan),
                         status,
                         training_info,
                         loss_graph,
@@ -12537,7 +12571,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -12704,11 +12738,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
               f"({len(cache)} distinct prompt expansion(s)).")
         return out
 
-    def _v2_ascend_conditioning(self, conditioning_list, refinement_key, apply=True):
+    def _v2_ascend_conditioning(self, conditioning_list, refinement_key, apply=True, conditioning_plan=None):
         """Gradient-ascend each conditioning tensor toward higher predicted reward.
         No-op if disabled (apply=False), or if the value function is missing or not yet
         ready (< MIN_SAMPLES ratings). The VF still trains in the background when this is
-        disabled — only the application of guidance is skipped."""
+        disabled — only the application of guidance is skipped.
+
+        conditioning_plan (from _v2_path_conditioning_plan) routes the stochastic search:
+        "lock" skips it (hold a liked region's conditioning), "explore" widens it (push a
+        disliked region elsewhere), otherwise the standard search runs."""
+        plan = conditioning_plan if isinstance(conditioning_plan, str) else None
         if not apply or not conditioning_list or not refinement_key:
             return conditioning_list
         try:
@@ -12727,18 +12766,26 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 tensor, extra = entry[0], entry[1]
                 # Gradient ascent first (exploit known gradient direction)
                 c = vf.ascend(tensor)
-                # Monte Carlo search around ascended point (explore neighbourhood)
-                c = vf.search(c)
+                # Monte Carlo search around ascended point. The path planner routes its breadth:
+                # lock = hold the liked conditioning (no search), explore = wider search.
+                if plan == "lock":
+                    pass
+                elif plan == "explore":
+                    c = vf.search(c, n=32, eps_scale=2.0)
+                else:
+                    c = vf.search(c)
                 c = protect_audio_channels(c, tensor)  # keep audio on the original conditioning
                 ascended.append((c, extra))
-            print(f"[FunPackRefiner] Conditioning ascent+search applied ({vf.n_trained} samples, {len(ascended)} scene(s))")
+            print(f"[FunPackRefiner] Conditioning ascent+search applied "
+                  f"({vf.n_trained} samples, {len(ascended)} scene(s), plan={plan or 'normal'})")
             return ascended
         except Exception as e:
             print(f"[FunPackRefiner] Conditioning ascent failed: {e}")
             return conditioning_list
 
     def _v2_apply_scene_refinement_keys(self, conditioning_list, scene_refinement_keys,
-                                        default_key, value_guidance=True, learning_profile=None):
+                                        default_key, value_guidance=True, learning_profile=None,
+                                        conditioning_plan=None):
         """Relative-mode output steering with per-scene multi-key support.
 
         For each scene entry, look up the non-default keys whose shortcuts fired in it:
@@ -12753,7 +12800,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return conditioning_list
         has_keys = any(scene_refinement_keys or [])
         if not has_keys:
-            return self._v2_ascend_conditioning(conditioning_list, default_key, apply=value_guidance)
+            return self._v2_ascend_conditioning(conditioning_list, default_key, apply=value_guidance,
+                                                conditioning_plan=conditioning_plan)
 
         profile = learning_profile or dict(V2_RATING_PROFILES["Initial discovery"], label="Initial discovery")
         key_state_cache = {}
@@ -12781,7 +12829,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 keys = set(scene_refinement_keys[scene_index] or set())
             if not keys:
                 # default-key path for this scene (per-entry so it matches no-key behaviour)
-                out.append(self._v2_ascend_conditioning([entry], default_key, apply=value_guidance)[0])
+                out.append(self._v2_ascend_conditioning([entry], default_key, apply=value_guidance,
+                                                        conditioning_plan=conditioning_plan)[0])
                 continue
             # Each key contributes only its learned DIRECTIONS here (per-prompt
             # conditioning memory). The value-function ascend+search runs ONCE on the
@@ -12821,7 +12870,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # project default key (the most-trained, most stable VF) rather than any
             # one scene key.
             try:
-                merged = self._v2_ascend_conditioning([(merged, meta)], default_key, apply=value_guidance)[0][0]
+                merged = self._v2_ascend_conditioning([(merged, meta)], default_key, apply=value_guidance,
+                                                       conditioning_plan=conditioning_plan)[0][0]
             except Exception as error:
                 print(f"[FunPackStudio] Merged scene ascend failed: {error}")
             merged = protect_audio_channels(merged, cond)
@@ -13063,7 +13113,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
                                   temporal_style="natural", temporal_fallback_text="",
-                                  scene_refinement_keys=None, learning_profile=None):
+                                  scene_refinement_keys=None, learning_profile=None,
+                                  conditioning_plan=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13079,6 +13130,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,
                 value_guidance=value_guidance, learning_profile=learning_profile,
+                conditioning_plan=conditioning_plan,
             )
         if mode in ("absolute", "both"):
             out = self._v2_apply_absolute(out, float(absolute_strength))

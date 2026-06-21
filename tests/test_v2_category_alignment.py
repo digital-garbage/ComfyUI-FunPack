@@ -2029,6 +2029,20 @@ def test_path_planner_exploits_liked_arm_far_more_than_disliked_arm():
     assert disliked_explores > 240
 
 
+def test_path_conditioning_plan_locks_liked_explores_disliked():
+    refiner = FunPackVideoRefinerV2()
+    liked = {"a": {"concepts": ["neon"], "outcomes": {"like": 10.0}}}
+    disliked = {"a": {"concepts": ["neon"], "outcomes": {"awful": 10.0}}}
+    mixed = {"a": {"concepts": ["neon"], "outcomes": {"like": 5.0, "awful": 5.0}}}
+
+    assert refiner._v2_path_conditioning_plan(liked, ["neon"])[0] == "lock"
+    assert refiner._v2_path_conditioning_plan(disliked, ["neon"])[0] == "explore"
+    assert refiner._v2_path_conditioning_plan(mixed, ["neon"])[0] == "normal"
+    assert refiner._v2_path_conditioning_plan({}, ["neon"]) == (None, "")
+    # No concept overlap -> no matching arms -> defer.
+    assert refiner._v2_path_conditioning_plan(liked, ["desert"]) == (None, "")
+
+
 def test_split_by_transitions_attaches_scene_seeds(tmp_path):
     refiner = FunPackVideoRefinerV2()
     state_path = tmp_path / "state.json"

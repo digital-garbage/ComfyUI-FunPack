@@ -117,14 +117,18 @@ class OnlineValueFunction(nn.Module):
                 prev_reward = reward_val
         return c.detach().to(orig_device, orig_dtype)
 
-    def search(self, conditioning, n=16):
-        """Monte Carlo conditioning search: score N random perturbations, return the best."""
+    def search(self, conditioning, n=16, eps_scale=1.0):
+        """Monte Carlo conditioning search: score N random perturbations, return the best.
+
+        eps_scale widens (>1) or tightens (<1) the perturbation radius. The path planner uses
+        a wider radius to push a disliked config region toward a different conditioning, and the
+        caller skips this search entirely to LOCK a liked region's conditioning in place."""
         if not self.is_ready():
             return conditioning
         mlp_device = next(self.parameters()).device
         orig_device = conditioning.device
         orig_dtype = conditioning.dtype
-        eps = conditioning.float().norm().item() * 0.025
+        eps = conditioning.float().norm().item() * 0.025 * float(eps_scale)
         with torch.inference_mode(False), torch.no_grad():
             c_base = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
             c_base.copy_(conditioning)
