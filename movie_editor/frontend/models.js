@@ -670,23 +670,19 @@
       const q = search.value.trim().toLowerCase();
       const f = q ? curList.filter((c) => (c.display_name + " " + c.class + " " + (c.category || "")).toLowerCase().includes(q)) : curList;
       const shown = f.slice(0, 300);
-      fill(shown, f.length ? `${f.length} node${f.length > 1 ? "s" : ""} — pick one…${f.length > 300 ? " (showing first 300)" : ""}` : "No match");
+      fill(shown, f.length ? `${f.length} node${f.length > 1 ? "s" : ""} — pick one…${f.length > 300 ? " (showing first 300)" : ""}` : (curList.length ? "No match" : "No matching nodes"));
     }
     search.oninput = applyFilter;
 
     typeSel.onchange = async () => {
       curRole = typeSel.value; curCand = null; curList = []; addBtn.disabled = true; clear(preview);
-      search.style.display = curRole === "__any__" ? "" : "none"; search.value = "";
+      search.value = ""; search.style.display = curRole ? "" : "none";
       nodeSel.innerHTML = ""; nodeSel.append(new Option("Loading…", "")); nodeSel.disabled = true;
       if (!curRole) { nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); return; }
       try {
-        if (curRole === "__any__") {
-          curList = await ensureAllNodes();
-          applyFilter();
-        } else {
-          curList = await candidates(curRole);
-          fill(curList, curList.length ? "Loader Node…" : "No matching nodes");
-        }
+        // Search/filter applies to every mode now — role candidates and "Any node" alike.
+        curList = curRole === "__any__" ? await ensureAllNodes() : await candidates(curRole);
+        applyFilter();
       } catch (e) {
         nodeSel.innerHTML = ""; nodeSel.append(new Option("Error: " + (e && e.message ? e.message : "node list unavailable"), ""));
         console.error("[Models] node list failed:", e);
