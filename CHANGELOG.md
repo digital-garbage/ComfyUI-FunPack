@@ -2,12 +2,54 @@
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-06-21
+
+### Added
+- **Cutting Room rebuilt on an OpenCut-style NLE shell.** Three-column layout — Assets (media
+  bin) | Preview (program monitor) | Properties + Timeline — with the prompt-craft tools moved
+  into a **Composer** floating window (drag, minimize-to-title-bar roll-up, maximize) holding
+  **Compose** (the global prompt), **Shortcuts**, **Splits**, and **Files** tabs. Layout borrows
+  from OpenCut — credited in the README.
+- **Prompt autocomplete.** Typing in the global prompt or a scene prompt suggests matching
+  shortcut triggers (trigger + replacement + category); Enter/Tab accepts and finishes the
+  trigger with a trailing space, ready for the next. Includes an Add-shortcut picker (browse by
+  category) and works mid-prose, not only after a delimiter. Toggle in Editor settings.
+- **"Anchor as guide" scene source.** The scene image still feeds the pipeline like any anchor
+  (so nodes that need it — e.g. an Image Transform deriving width/height — still get it) and
+  steers the scene from a frame-0 guide, while the i2v node is bypassed so the latent stays empty
+  (text-to-video). Per-scene guide strength; declare your i2v node + the input/state to force in
+  Editor settings → Anchor as guide.
+- **Mixed mode also attaches the scene's own image as a frame-0 guide**, so even the first scene
+  (nothing prior to carry) gets guide attention from its image, on top of the carried prior-scene
+  guides. The Mixed anchor image now also shows an inspector picker (parity with image modes).
+- **Per-browser Editor settings** — prompt autocomplete, shared-anchor toggle, and the
+  Anchor-as-guide i2v bypass config.
+- **Richer text-overlay styling** — bold/italic, alignment, outline, shadow, and a background box.
+- **Composer file management** — Replace/Merge on import, Delete-all, and a Files tab to audit and
+  purge FunPack files on disk.
+- **Inline clip reorder controls** on the timeline; **managed Shortcut categories / sub-categories**
+  for the Compose tab; the node search/filter is now available in every Add-Model mode (not just
+  "Any node").
+
+### Changed
+- **Canonical scene splitter.** `split_scenes` was rewritten as a single piece-walker shared by
+  every consumer (preview + generation), removing the old offset-projection band-aids and divergent
+  split paths. "Wrong appearance" ratings now act as a consistency anchor.
+- Generated renders are **immutable and full-length** — later plan/trim edits never truncate an
+  existing clip. Timeline cut order is independent of plan order; a clip shows what it was generated
+  with, not live plan text; removing a scene from the plan keeps its generated clip on the timeline.
+  i2v anchors drop on the **Plan**, not the timeline.
+- Exposed controls honor real min/max/step, and autosave no longer eats in-progress input.
+
 ### Removed
 - Removed the `FunPack Scene Builder` node and the Studio Scene Builder feature (the per-key
   scene database, saved scenes, the Studio **Scene** tab, and scene-database wildcard cleanup).
   It was redundant — helpful on paper but effectively unused, with no way to drive it from the
   Cutting Room, and it risked interfering with shortcuts. Shortcuts, transition splitting, and
   refinement keys are unchanged. Studio now always uses the connected `positive_prompt`.
+- Removed the **character feature** (no UI surface remained) and the **"Convert to video / scene"**
+  buttons.
+- Removed **FunPackNormalizingSampler** (redundant).
 
 ### Fixed
 - "Reset Studio session" silently wiped keys it never listed. The confirmation read the per-scene
@@ -16,6 +58,17 @@
   fired in the prompt). So a second key you were training could be cleared without ever appearing
   in the confirmation. The preview now exposes `refinement_key_pool` (mirrors the backend reset
   exactly) and the confirmation lists from it, so what's shown is precisely what gets wiped.
+- A single-transition "silent" split leaked the trigger word into conditioning.
+- Shortcut autocomplete never suggested inside prose prompts; `split_scenes` dropped a scene when a
+  transition was keyed by expansion; styled text overlays crashed on newer Pillow (float bbox → int).
+- The global prompt is now materialized before generate (the screen is the source of truth); the
+  timeline re-renders after prompt edits; stale LoRA/combo slot values coerce to live choices; the
+  Composer "Minimize" rolls the window up in place instead of acting like Close; the autocomplete
+  menu can no longer be orphaned on screen when a panel re-renders.
+
+### Notes
+FunPack 3.x development focuses on the Cutting Room frontend; pre-3.0 ComfyUI graph nodes remain
+supported with bugfixes only.
 
 ## [3.0.2] - 2026-06-15
 
