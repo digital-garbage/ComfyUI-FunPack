@@ -297,15 +297,24 @@ def anchor_guide_media_refs(target: Project) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
-def build_anchor_guide_guides(target: Project) -> Optional[dict]:
-    """Per-scene funpack_scene_guides for anchor_guide scenes in this run: each such
-    scene gets a frame-0 guide from its own image; the latent itself stays empty (t2v)."""
+def build_self_image_guides(target: Project) -> Optional[dict]:
+    """Per-scene frame-0 guide from a scene's OWN image, for modes that want the input
+    image to steer via guide attention. Merged onto continuity/manual stacks by the caller:
+
+      - anchor_guide: the image is ONLY a guide (latent stays empty); per-scene strength.
+      - mixed: the image is also the i2v anchor; this adds a reinforcing frame-0 guide so
+        even the first scene (no prior to carry) gets guide attention from its own image.
+    """
     active = [s for s in target.scenes if not s.excluded]
     per_scene: list[Optional[list[dict]]] = []
     any_guide = False
     for sc in active:
-        if is_anchor_guide(sc) and sc.source and sc.source.media_ref:
-            per_scene.append([_self_image_guide(sc.source.media_ref, anchor_guide_strength(sc))])
+        ref = sc.source.media_ref if sc.source else None
+        if ref and is_anchor_guide(sc):
+            per_scene.append([_self_image_guide(ref, anchor_guide_strength(sc))])
+            any_guide = True
+        elif ref and is_mixed_source(sc):
+            per_scene.append([_self_image_guide(ref, STUDIO_DEFAULT_GUIDE["strength"])])
             any_guide = True
         else:
             per_scene.append(None)

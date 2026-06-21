@@ -446,9 +446,9 @@ def _run_sampler_inputs(
         return {}
     import json
     from .backend.timeline import (
-        build_anchor_guide_guides,
         build_auto_continuity_guides,
         build_scene_guides_payload,
+        build_self_image_guides,
         continuity_settings_for_run,
         is_mixed_source,
         merge_scene_guide_payloads,
@@ -465,9 +465,10 @@ def _run_sampler_inputs(
     manual_guides = build_scene_guides_payload(target) if manual_stack else None
     guides = manual_guides or auto_guides
 
-    # Anchor-as-guide: the scene's own image as a frame-0 guide (latent stays empty).
+    # Self-image guides: a scene's own image as a frame-0 guide (anchor_guide → empty
+    # latent; mixed → reinforces the anchor so the first scene still gets a guide).
     # Independent of continuity/manual stacks, so merge it in rather than replace.
-    guides = merge_scene_guide_payloads(guides, build_anchor_guide_guides(target))
+    guides = merge_scene_guide_payloads(guides, build_self_image_guides(target))
 
     if guides:
         samp["funpack_scene_guides"] = json.dumps(guides)
