@@ -600,6 +600,79 @@ def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
         return denoised
 
 
+# ---------------------------------------------------------------------------
+# KV-Lock: variance-gated scheduler for BachVid K/V injection (arxiv 2603.09657)
+#
+# BachVid (ltx_enhancements) injects a blessed identity K/V at a fixed,
+# reward-scaled strength. KV-Lock makes that strength adaptive to the model's
+# own confidence: track how much the predicted clean latent x0 still jumps
+# between steps (relative step-change = a cheap proxy for the paper's variance-
+# of-x0 hallucination metric). High instability => the model is still drifting
+# => raise the multiplier so the identity K/V is held harder; once x0 settles,
+# the multiplier falls back toward the base strength. No DDIM inversion (LTXAV
+# inverts poorly) — we lock against the blessed bank, not an inverted source.
+#
+# No-op unless a BachVid K/V bank installed the shared scale list in
+# transformer_options. Never raises — scheduling must not break sampling.
+# ---------------------------------------------------------------------------
+_KVLOCK_TAU = 0.012   # instability threshold (relative x0 step-change)
+_KVLOCK_B = 2.0       # max multiplier (lets injection boost above base strength)
+_KVLOCK_W = 5         # sliding window length (steps)
+
+
+def _kvlock_find_scale_list(model):
+    """Locate the shared kvlock_scale list build_enhancements stored in
+    transformer_options. Returns the mutable list, or None."""
+    for getter in (
+        lambda: model.inner_model.model_patcher.model_options,
+        lambda: model.inner_model.model_options,
+        lambda: model.model_options,
+    ):
+        try:
+            mo = getter()
+            to = mo.get("transformer_options") if isinstance(mo, dict) else None
+            if isinstance(to, dict):
+                lst = to.get("funpack_kvlock_scale")
+                if isinstance(lst, list) and lst:
+                    return lst
+        except Exception:
+            pass
+    return None
+
+
+def _kvlock_schedule(model, denoised, prev_denoised, video_mask, state):
+    """Update the shared kvlock_scale from x0 prediction instability.
+
+    Sets the multiplier read by BachVid's K/V injector on the NEXT model() call.
+    The list lookup is cached (sentinel "miss" = not yet searched). Never raises."""
+    try:
+        if state.get("list", "miss") == "miss":
+            state["list"] = _kvlock_find_scale_list(model)
+        scale_list = state["list"]
+        if scale_list is None or prev_denoised is None:
+            return
+        d = denoised.detach().float()
+        p = prev_denoised.detach().float().to(d.device)
+        if d.shape != p.shape:
+            return
+        if video_mask is not None and video_mask.shape[-1] == d.shape[-1]:
+            m = video_mask.to(d.device)
+            num = ((d - p) * m).norm()
+            den = (d * m).norm().clamp(min=1e-6)
+        else:
+            num = (d - p).norm()
+            den = d.norm().clamp(min=1e-6)
+        instability = float(num / den)
+        deltas = state.setdefault("deltas", [])
+        deltas.append(instability)
+        if len(deltas) > _KVLOCK_W:
+            del deltas[:-_KVLOCK_W]
+        mean_delta = sum(deltas) / len(deltas)
+        scale_list[0] = max(0.0, min(_KVLOCK_B, mean_delta / _KVLOCK_TAU))
+    except Exception:
+        pass
+
+
 def _get_latent_shapes(model):
     """Recover comfy's packed-latent stream shapes [video_shape, audio_shape, ...].
 
@@ -877,6 +950,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     prev_denoised = None
     prev_h = None
     quality_step_index = 0
+    _kvlock_state = {}
 
     # Audio-safe sampling: on a packed LTXAV latent, keep ancestral noise + steering on the
     # video stream and let audio ride the clean deterministic flow (ancestral re-noising
@@ -914,6 +988,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             x = _video_only(x, x_pre, video_mask)
 
         denoised = model(x, sigma * s_in, **extra_args)
+        _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
 
         if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
             _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
@@ -1153,6 +1228,8 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
     prev_denoised = None
     prev_h = None
     quality_step_index = 0
+    _kvlock_state = {}
+    video_mask = _packed_video_mask(model, x)
 
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
@@ -1182,6 +1259,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                          sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             denoised = model(x, sigma * s_in, **extra_args)
+            _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
             if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
@@ -1234,6 +1312,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                          sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             denoised = model(x, sigma * s_in, **extra_args)
+            _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
             if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
                 _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
             if rescue_mode and velocity_target is not None:
@@ -1518,6 +1597,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     prev_denoised = None
     prev_h = None
     ref_scale = [None]  # video-only latent-normalization reference (anti-overbake), opt-in
+    _kvlock_state = {}
 
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
@@ -1532,6 +1612,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             x = _video_only(x, x_pre, video_mask)
 
         denoised = model(x, sigma * s_in, **extra_args)
+        _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
 
         if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
             _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)

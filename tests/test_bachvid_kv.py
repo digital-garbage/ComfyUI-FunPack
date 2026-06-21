@@ -154,6 +154,71 @@ def test_kv_inject_skips_on_shape_mismatch():
     assert torch.allclose(rec["k"].float(), k, atol=1e-4)
 
 
+def _load_kvlock_helpers():
+    """Exec just the KV-Lock helper block from samplers.py (importing the whole
+    module needs a full ComfyUI env). Returns the helper namespace."""
+    import torch as _torch
+    src_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "samplers.py")
+    src = open(src_path).read()
+    snippet = src[src.index("_KVLOCK_TAU"):src.index("def _get_latent_shapes")]
+    ns = {"torch": _torch}
+    exec(snippet, ns)
+    return ns
+
+
+class _Patcher:
+    def __init__(self, mo): self.model_options = mo
+
+
+class _Inner:
+    def __init__(self, mo): self.model_patcher = _Patcher(mo)
+
+
+class _Model:
+    def __init__(self, mo): self.inner_model = _Inner(mo)
+
+
+def test_kvlock_finds_shared_scale_list():
+    ns = _load_kvlock_helpers()
+    shared = [1.0]
+    m = _Model({"transformer_options": {"funpack_kvlock_scale": shared}})
+    assert ns["_kvlock_find_scale_list"](m) is shared
+    # absent bank -> None
+    assert ns["_kvlock_find_scale_list"](_Model({"transformer_options": {}})) is None
+
+
+def test_kvlock_raises_scale_when_prediction_is_unstable():
+    ns = _load_kvlock_helpers()
+    sched = ns["_kvlock_schedule"]
+    shared = [1.0]
+    m = _Model({"transformer_options": {"funpack_kvlock_scale": shared}})
+
+    # Stable trajectory -> small multiplier
+    st = {}
+    d0 = torch.ones(1, 1, 100)
+    sched(m, d0, None, None, st)          # prev None -> no write yet
+    assert shared[0] == 1.0
+    sched(m, d0 + 0.001, d0, None, st)    # tiny step change
+    stable = shared[0]
+
+    # Jumpy trajectory -> clamped to the ceiling
+    st2 = {}
+    shared[0] = 1.0
+    sched(m, torch.ones(1, 1, 100), None, None, st2)
+    sched(m, torch.ones(1, 1, 100) * 2, torch.ones(1, 1, 100), None, st2)
+    jumpy = shared[0]
+
+    assert jumpy > stable
+    assert 0.0 <= stable <= jumpy <= ns["_KVLOCK_B"]
+
+
+def test_kvlock_noop_without_bank_never_raises():
+    ns = _load_kvlock_helpers()
+    m = _Model({"transformer_options": {}})
+    # must not raise and must not invent a list
+    ns["_kvlock_schedule"](m, torch.ones(1, 1, 8), torch.zeros(1, 1, 8), None, {})
+
+
 def test_bless_kv_ema_load_clear_roundtrip():
     import ltx_enhancements as L
 
