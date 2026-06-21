@@ -94,10 +94,12 @@
       const trig = items[i].trigger;
       const v = ta.value;
       const after = v.slice(span.end);
-      // Finish the shortcut: drop a trailing space so the caret is ready for the next
-      // one (and the menu doesn't re-open on the just-completed trigger). Skip it when a
-      // space or delimiter already follows.
-      const sep = /^(\s|[,;]|$)/.test(after) ? "" : " ";
+      // Finish the shortcut with a trailing space so the caret is ready for the next one
+      // AND the menu doesn't re-open on the just-completed trigger (it would match itself).
+      // This includes end-of-text — skip the space ONLY when a space/delimiter already
+      // follows. (An earlier `$` here skipped the space at end-of-text, the common case,
+      // which made the menu stick on the accepted trigger.)
+      const sep = /^(\s|[,;])/.test(after) ? "" : " ";
       ta.value = v.slice(0, span.start) + trig + sep + after;
       const caret = span.start + trig.length + sep.length;
       ta.setSelectionRange(caret, caret);
@@ -115,6 +117,10 @@
 
     function open(found, sp) {
       close();
+      // One menu at a time across the whole app — sweep away any orphan left behind by a
+      // re-rendered/removed textarea (otherwise it strands in the corner with no dismiss).
+      document.querySelectorAll(".ac-menu").forEach((m) => m.remove());
+      if (!ta.isConnected) return;
       span = sp; items = found; active = 0;
       menu = el("div", "ac-menu");
       found.forEach((e, i) => {
@@ -134,6 +140,7 @@
 
     function position() {
       if (!menu) return;
+      if (!ta.isConnected) { close(); return; }
       const r = ta.getBoundingClientRect();
       menu.style.left = r.left + "px";
       menu.style.top = (r.bottom + 2) + "px";
@@ -142,7 +149,7 @@
     }
 
     function refresh() {
-      if (!enabled()) { close(); return; }
+      if (!enabled() || !ta.isConnected) { close(); return; }
       const res = suggestionsFor(ta);
       if (!res) { close(); return; }
       open(res.items, res.span);
@@ -159,6 +166,12 @@
     });
     ta.addEventListener("blur", () => setTimeout(close, 120));
     window.addEventListener("scroll", () => { if (menu) position(); }, true);
+    // A panel re-render can remove this textarea while a menu is open; removal doesn't
+    // fire blur reliably, so watch the DOM and close (+ stop watching) when it detaches.
+    const detachObs = new MutationObserver(() => {
+      if (!ta.isConnected) { close(); detachObs.disconnect(); }
+    });
+    detachObs.observe(document.body, { childList: true, subtree: true });
   }
 
   window.ShortcutAutocomplete = { attach };
