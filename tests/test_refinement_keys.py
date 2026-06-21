@@ -259,6 +259,35 @@ def test_split_scenes_canonical_model(monkeypatch):
         "zeta intro cut alpha here cut beta here") == {"anchorKey", "keyA", "keyB"}
 
 
+def test_generic_scene_label_splits_but_is_never_encoded(monkeypatch):
+    """The generic `scene <N>` label is a pure split DELIMITER (the Movie Editor injects it to
+    force a boundary for a scene with no leading transition). It MUST cut, but MUST NOT appear in
+    any scene's encoded/verbatim text — otherwise 'scene 1', 'scene 2', … pollute the conditioning
+    and the first scene reads as a label-only (anchor-only) scene. Regression for that report."""
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: _db({}))
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+    out = conditioning.split_scenes(
+        "scene 1 a red car drives down a street scene 2 the car stops at a cafe scene 3 a woman exits")
+    scenes = out["scenes"]
+    assert len(scenes) == 3
+    assert [s["expanded"] for s in scenes] == [
+        "a red car drives down a street", "the car stops at a cafe", "a woman exits"]
+    # the literal markers must be gone from BOTH expanded (generation) and raw (editing/attribution)
+    for s in scenes:
+        assert "scene 1" not in s["expanded"].lower()
+        assert "scene 2" not in s["expanded"].lower()
+        assert "scene 3" not in s["expanded"].lower()
+        assert "scene 1" not in s["raw"].lower()
+    # a REAL custom trigger still keeps its configured placement (only generic labels go silent):
+    # 'cut' (placement start) leads — and stays in — the new scene's text.
+    monkeypatch.setattr(templates, "load_custom_transition_triggers",
+                        lambda: {"cut": {"placement": "start", "visual_effect": "none"}})
+    real = conditioning.split_scenes("a dog runs cut a cat sleeps")
+    assert real["anchor_expanded"] == "a dog runs"
+    assert len(real["scenes"]) == 1
+    assert "cut" in real["scenes"][0]["expanded"]
+
+
 def test_split_scenes_single_scene(monkeypatch):
     db = _db({"hero": (["hero"], ["a knight"], "mykey")})
     monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)

@@ -934,7 +934,15 @@ def split_scenes(prompt, placement="start"):
             last = 0
             for m in lit_pat.finditer(raw):
                 segs[-1]["raw"] += raw[last:m.start()]; segs[-1]["exp"] += raw[last:m.start()]
-                _transition(m.group(0), m.group(0), custom_map.get(_norm(m.group(0))) or {})
+                info = custom_map.get(_norm(m.group(0)))
+                if info is None:
+                    # Generic `scene <N>` label: a pure split DELIMITER (the Movie Editor injects
+                    # one to force a boundary for a scene with no leading trigger; a user may also
+                    # type it). It is NEVER content, so cut on it but DROP it ("silent") instead of
+                    # letting it lead the new scene's text. Without this the literal "scene 1",
+                    # "scene 2", … get encoded into each scene's conditioning (prompt pollution).
+                    info = {"placement": "silent"}
+                _transition(m.group(0), m.group(0), info)
                 last = m.end()
             segs[-1]["raw"] += raw[last:]; segs[-1]["exp"] += raw[last:]
         else:
