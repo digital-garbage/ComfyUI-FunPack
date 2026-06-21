@@ -2,6 +2,10 @@
 
 from pathlib import Path
 
+import pytest
+from aiohttp import web
+
+import movie_editor.server as srv
 from movie_editor.backend import bridge
 from movie_editor.backend.timeline import (
     Project, Scene, build_combined_prompt, build_generation_scene_segments,
@@ -185,6 +189,29 @@ def test_studio_inputs_skips_custom_conditioning():
     p = _project([])
     p.conditioning_slot = "custom"
     assert _run_studio_inputs(p, p.scenes) == {}
+
+
+def test_corrupt_project_surfaces_clean_error_not_500(monkeypatch):
+    # A corrupt / schema-incompatible project file used to 500 with no detail on open
+    # (while list_projects still lists it). _project_or_404 must turn that into a clear,
+    # recoverable 4xx with a reason — never a bare unhandled crash.
+    # server.py nulls its `web` when ComfyUI's server module is absent (test env); use real aiohttp.
+    monkeypatch.setattr(srv, "web", web)
+    def _boom(_pid):
+        raise ValueError("bad schema\nsecond line of noise")
+    monkeypatch.setattr(srv.projects, "get", _boom)
+    with pytest.raises(web.HTTPUnprocessableEntity) as ei:
+        srv._project_or_404("p1")
+    reason = ei.value.reason
+    assert "could not be loaded" in reason
+    assert "\n" not in reason  # reason must stay a single header-safe line
+
+
+def test_missing_project_still_404(monkeypatch):
+    monkeypatch.setattr(srv, "web", web)
+    monkeypatch.setattr(srv.projects, "get", lambda _pid: None)
+    with pytest.raises(web.HTTPNotFound):
+        srv._project_or_404("nope")
 
 
 def test_generation_prompt_has_no_injected_scene_markers():

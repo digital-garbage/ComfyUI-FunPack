@@ -649,7 +649,17 @@
   }
 
   async function loadProject(id) {
-    state.project = await API.getProject(id);
+    let loaded;
+    try {
+      loaded = await API.getProject(id);
+    } catch (e) {
+      // Corrupt / incompatible project file: keep the current view, surface why instead of
+      // leaving the app in a half-loaded state.
+      state.notice = `Could not open this project: ${e && e.message ? e.message : e}`;
+      notify();
+      return;
+    }
+    state.project = loaded;
     state.notice = "";
     const first = state.project.scenes[0]?.id || null;
     state.selectedSceneId = first;

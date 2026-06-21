@@ -298,7 +298,14 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_av
 
 
 def _project_or_404(pid: str) -> Project:
-    p = projects.get(pid)
+    try:
+        p = projects.get(pid)
+    except Exception as e:  # noqa: BLE001 — corrupt JSON or schema-incompatible project file
+        # list_projects() skips unreadable files, so such a project still appears in the list
+        # but used to 500 on open with no detail. Surface a clear, recoverable error instead.
+        msg = " ".join(str(e).split())[:200]
+        raise web.HTTPUnprocessableEntity(
+            reason=f"Project '{pid}' could not be loaded (corrupt or incompatible file): {msg}")
     if p is None:
         raise web.HTTPNotFound(reason=f"Project {pid} not found")
     return p
