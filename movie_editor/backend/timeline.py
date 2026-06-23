@@ -519,12 +519,15 @@ class Scene:
         return d
 
     def eff_frames(self, project: "Project") -> int:
-        if self.frames is not None:
+        # Honor frames_mode: only "timeline"/"custom" use the per-scene value. In "project" mode
+        # (the inherit default) a leftover `frames` must be IGNORED so the scene tracks the project
+        # length — otherwise a stale per-scene value makes the scene ignore project length changes.
+        if self.frames_mode in ("timeline", "custom") and self.frames is not None:
             return self.frames
         return project.num_frames_per_scene
 
     def eff_fps(self, project: "Project") -> int:
-        if self.fps is not None:
+        if self.fps_mode in ("timeline", "custom") and self.fps is not None:
             return self.fps
         return project.frame_rate
 
