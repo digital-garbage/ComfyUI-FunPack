@@ -117,6 +117,26 @@ def test_split_scenes_splits_on_expansion_keyed_transition(monkeypatch):
     assert len(conditioning.split_scenes("a dog runs qcut a cat sleeps qcut a bird flies")["scenes"]) == 2
 
 
+def test_postfix_shortcuts_expand_and_key_folds_into_every_scene(monkeypatch):
+    """A shortcut in the postfix must be EXPANDED at generation (not passed verbatim) and its
+    refinement key must fold into every scene — exactly like the anchor. The editor stores the
+    raw postfix; expansion happens here on the generation hit."""
+    db = _db({
+        "cine": (["cine"], ["cinematic, shallow depth of field"], "look"),
+    })
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+
+    out = conditioning.split_scenes_from_segments(
+        "a knight", ["in a forest", "at a castle"], postfix="cine")
+    # The shortcut is expanded, not left as the literal trigger 'cine'.
+    assert out["postfix_expanded"] == "cinematic, shallow depth of field"
+    assert out["postfix"] == "cine"  # raw trigger preserved for round-trip
+    # The postfix's refinement key folds into EVERY scene (like the anchor's).
+    for scene in out["scenes"]:
+        assert "look" in scene["keys"]
+
+
 def test_split_scenes_no_false_cut_from_generic_label_in_expansion(monkeypatch):
     """A content shortcut whose expansion merely CONTAINS 'scene 2' must NOT cut — only a
     user-defined custom transition phrase does (the generic label is never matched on expansions)."""
