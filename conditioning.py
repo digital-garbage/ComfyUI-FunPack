@@ -960,7 +960,7 @@ def split_scenes(prompt, placement="start"):
     return {"anchor": anchor["raw"].strip(), "anchor_expanded": anchor["exp"].strip(), "scenes": scenes}
 
 
-def split_scenes_from_segments(anchor, segments, placement="start"):
+def split_scenes_from_segments(anchor, segments, placement="start", postfix=""):
     """Canonical scene structure from EXPLICIT per-scene boundaries supplied by the caller (the
     Movie Editor's own scene list) instead of re-deriving boundaries from in-text delimiters.
 
@@ -994,11 +994,16 @@ def split_scenes_from_segments(anchor, segments, placement="start"):
         return " ".join(raw_parts).strip(), " ".join(exp_parts).strip(), keys, effect
 
     a_raw, a_exp, anchor_keys, _ = _flatten(split_scenes(str(anchor or ""), placement=placement))
+    # Postfix mirrors the anchor: shortcut-expanded once, its keys fold into every scene, and
+    # its expanded text is appended to each scene downstream (see the structural fold in V2).
+    p_raw, p_exp, postfix_keys, _ = _flatten(split_scenes(str(postfix or ""), placement=placement))
+    shared_keys = anchor_keys | postfix_keys
     scenes = []
     for i, seg in enumerate(segments or []):
         r, e, k, eff = _flatten(split_scenes(str(seg or ""), placement=placement))
-        scenes.append({"index": i, "raw": r, "expanded": e, "keys": anchor_keys | k, "effect": eff})
-    return {"anchor": a_raw, "anchor_expanded": a_exp, "scenes": scenes}
+        scenes.append({"index": i, "raw": r, "expanded": e, "keys": shared_keys | k, "effect": eff})
+    return {"anchor": a_raw, "anchor_expanded": a_exp,
+            "postfix": p_raw, "postfix_expanded": p_exp, "scenes": scenes}
 
 
 def refinement_key_pool_for(prompt):
@@ -12260,7 +12265,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if structural:
                     canonical = split_scenes_from_segments(
                         scene_segments.get("anchor", ""), scene_segments.get("scenes", []),
-                        placement=split_transition_placement)
+                        placement=split_transition_placement,
+                        postfix=scene_segments.get("postfix", ""))
                     # The editor's scene list is authoritative on COUNT — one conditioning scene
                     # per editor scene. Keep every scene, including a text-less i2v scene (it stays
                     # at its index as an anchor-only conditioning); dropping it would shift anchors.
@@ -12271,17 +12277,25 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                                     if (s.get("expanded") or "").strip()]
                 if len(canon_scenes) >= 1:
                     anchor_exp = (canonical.get("anchor_expanded", "") or "").strip()
+                    postfix_exp = (canonical.get("postfix_expanded", "") or "").strip()
                     if structural:
-                        # Fold the anchor into each scene WITHOUT dropping empties (mirrors
-                        # _v2_transition_scene_texts but count-preserving for the structural path).
+                        # Fold the anchor (prefix) and postfix (suffix) into each scene WITHOUT
+                        # dropping empties (mirrors _v2_transition_scene_texts but count-preserving
+                        # for the structural path).
                         split_scene_texts, split_scene_effects = [], []
                         for s in canon_scenes:
                             seg = (s.get("expanded") or "").strip()
                             if anchor_exp and seg:
                                 sep = " " if anchor_exp[-1] in ".!?," else ", "
-                                split_scene_texts.append(anchor_exp + sep + seg)
+                                seg = anchor_exp + sep + seg
                             else:
-                                split_scene_texts.append(anchor_exp or seg)
+                                seg = anchor_exp or seg
+                            if postfix_exp and seg:
+                                sep = " " if seg[-1] in ".!?," else ", "
+                                seg = seg + sep + postfix_exp
+                            elif postfix_exp:
+                                seg = postfix_exp
+                            split_scene_texts.append(seg)
                             split_scene_effects.append(s.get("effect"))
                     else:
                         segments = [(anchor_exp, None)] + \

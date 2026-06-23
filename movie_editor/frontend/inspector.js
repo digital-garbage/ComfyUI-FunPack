@@ -413,6 +413,21 @@
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
     body.append(field("Negative prompt", neg));
 
+    // Postfix: shared text appended to every scene (mirror of the anchor, which is prepended).
+    // Its own project field with an enable toggle — never part of the global prompt.
+    const postEnabled = p.postfix_enabled !== false;
+    const post = el("textarea"); post.rows = 2; post.value = p.postfix || ""; post.dataset.k = "pj-postfix";
+    post.placeholder = "Appended to every scene (e.g. style or quality tags)";
+    post.disabled = !postEnabled;
+    post.oninput = () => S.patchProjectQuiet({ postfix: post.value });
+    const postWrap = el("div", "field");
+    const postHead = el("label", "field-toggle");
+    const postCb = el("input"); postCb.type = "checkbox"; postCb.checked = postEnabled;
+    postCb.onchange = () => { post.disabled = !postCb.checked; S.patchProjectQuiet({ postfix_enabled: postCb.checked }); };
+    postHead.append(postCb, el("span", null, "Postfix"));
+    postWrap.append(postHead, post);
+    body.append(postWrap);
+
     foldSection("Advanced project settings", false, (adv) => {
       adv.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
     });

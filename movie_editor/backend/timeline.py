@@ -51,6 +51,15 @@ def effective_negative_prompt(project: Project) -> str:
     return (project.negative_prompt or "").strip()
 
 
+def effective_postfix(project: Project) -> str:
+    """The project's manual postfix text (appended to every scene by Studio), or "" when
+    the toggle is off. Symmetric to the anchor, which is prepended; the postfix tails each
+    scene's text. Never part of the verbatim global prompt — a separate project setting."""
+    if not getattr(project, "postfix_enabled", True):
+        return ""
+    return (project.postfix or "").strip()
+
+
 def resolve_scene_identity_pin(cs: dict[str, Any]) -> Optional[str]:
     """Project-level identity pin reference for continuity guides, if set."""
     return cs.get("identity_pin_ref")
@@ -530,6 +539,11 @@ class Project:
     # Studio behaviour). Stored verbatim so the field round-trips; not used at build.
     global_prompt: str = ""
     negative_prompt: str = ""      # passed to the neg primitive node in the graph
+    # Shared postfix text appended to EVERY scene (symmetric to anchor, which is prepended).
+    # A standalone project setting — NOT part of the verbatim global prompt. postfix_enabled
+    # toggles it without losing the text.
+    postfix: str = ""
+    postfix_enabled: bool = True
     # Marker separating the anchor from the first scene (Studio needs a trigger to
     # close segments[0]=anchor). Defaults resolved at assembly from the library.
     intro_transition: str = ""
@@ -594,6 +608,8 @@ class Project:
             anchor=str(d.get("anchor", "")),
             global_prompt=str(d.get("global_prompt", "")),
             negative_prompt=str(d.get("negative_prompt", "")),
+            postfix=str(d.get("postfix", "")),
+            postfix_enabled=bool(d.get("postfix_enabled", True)),
             intro_transition=str(d.get("intro_transition", "")),
             scenes=[Scene.from_dict(s) for s in d.get("scenes", [])],
             seed=int(d.get("seed", 1)),
@@ -741,7 +757,8 @@ def build_generation_scene_segments(project: Project, include_excluded: bool = F
         trans = ((project.intro_transition or "").strip() if i == 0
                  else ((prev_root.transition_to_next if prev_root else "") or "").strip())
         out.append((trans + " " + text).strip() if trans else text)
-    return {"anchor": effective_anchor(project), "scenes": out}
+    return {"anchor": effective_anchor(project), "scenes": out,
+            "postfix": effective_postfix(project)}
 
 
 def _scene_run_fingerprint(sc: Scene) -> str:
@@ -763,6 +780,7 @@ def generation_prompt_fingerprint(project: Project, target: Optional[Project] = 
         "|".join(_scene_run_fingerprint(s) for s in active),
         cs.get("identity_pin_ref") or "",
         effective_negative_prompt(project),
+        effective_postfix(project),
         "stack" if gs["stack_enabled"] else "",
     ])
     run_hash = hashlib.sha256(run_key.encode("utf-8")).hexdigest()[:24]

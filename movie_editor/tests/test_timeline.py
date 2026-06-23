@@ -25,6 +25,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     continuity_settings_for_run,
     effective_anchor,
     effective_negative_prompt,
+    effective_postfix,
     generation_prompt_fingerprint,
     normalize_continuity_settings,
     resolve_scene_identity_pin,
@@ -89,6 +90,39 @@ def test_generation_run_hash_changes_when_anchor_changes():
     p.scenes[0].source.media_ref = "img2"
     r2 = generation_prompt_fingerprint(p, p)
     assert r1["prompt_hash"] == r2["prompt_hash"]
+    assert r1["run_hash"] != r2["run_hash"]
+
+
+def test_postfix_travels_in_segments_but_not_global_prompt():
+    p = _project(
+        anchor="a knight",
+        postfix="cinematic, 4k",
+        scenes=[{"text": "in a forest"}, {"text": "at a castle"}],
+    )
+    # Postfix is a separate setting — never part of the verbatim global/combined prompt.
+    prompt = build_combined_prompt(p, for_generation=True)
+    assert "cinematic" not in prompt
+    assert prompt == "a knight in a forest at a castle"
+    # …but it rides along structurally so Studio can append it to every scene.
+    seg = build_generation_scene_segments(p)
+    assert seg["postfix"] == "cinematic, 4k"
+
+
+def test_postfix_toggle_disables_it_without_losing_text():
+    p = _project(postfix="cinematic, 4k", postfix_enabled=False,
+                 scenes=[{"text": "in a forest"}])
+    assert effective_postfix(p) == ""                       # toggled off → inert
+    assert build_generation_scene_segments(p)["postfix"] == ""
+    assert p.postfix == "cinematic, 4k"                     # text is preserved
+    p.postfix_enabled = True
+    assert effective_postfix(p) == "cinematic, 4k"
+
+
+def test_run_hash_changes_when_postfix_changes():
+    p = _project(scenes=[{"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}}])
+    r1 = generation_prompt_fingerprint(p, p)
+    p.postfix = "moody lighting"
+    r2 = generation_prompt_fingerprint(p, p)
     assert r1["run_hash"] != r2["run_hash"]
 
 

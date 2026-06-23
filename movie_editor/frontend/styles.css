@@ -201,6 +201,11 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 
 label.field { display: block; margin-bottom: 12px; }
 label.field > span { display: block; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+/* Field label with an inline enable toggle (e.g. Postfix). Matches the field-label look. */
+.field-toggle { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; cursor: pointer; }
+.field-toggle > input { width: auto; margin: 0; }
+.field-toggle > span { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
+.field > textarea:disabled { opacity: .45; cursor: not-allowed; }
 input, select, textarea {
   width: 100%; background: var(--ink-0); border: 1px solid var(--line); border-radius: 7px;
   padding: 7px 9px; font-size: 13px; outline: none; transition: border-color .12s, box-shadow .12s;
