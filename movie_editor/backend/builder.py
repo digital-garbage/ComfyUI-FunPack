@@ -220,6 +220,13 @@ def _output_index(node_def: Optional[dict], out_name: str) -> int:
     return 0
 
 
+def _infer_slot_output_type(node_def: Optional[dict], out_name: str) -> Optional[str]:
+    for o in node_outputs(node_def or {}):
+        if o.get("name") == out_name:
+            return o.get("type")
+    return None
+
+
 def build(object_info: dict, models_config: dict, params: dict, media: dict | None = None) -> tuple[dict, dict]:
     """Return (graph, report). `params`: prompt, negative_prompt, seed,
     num_frames_per_scene, frame_rate, width, height. `models_config`: {"slots":[...],
@@ -229,6 +236,9 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     graph: dict[str, dict] = {}
     # `blocking` is the subset of problems that should stop generation (required inputs).
     report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [], "blocking": []}
+    # (node_id, input) edges the cycle-breaker must never drop: fixed core-internal links and
+    # explicit user/override wires. Auto-wires and role-default wires are left droppable.
+    protected_edges: set[tuple[str, str]] = set()
 
     # "Disable built-in pipeline": skip the whole fixed FunPack core graph and run only the
     # user-wired nodes. The final result then comes from whatever is wired to the global
@@ -248,6 +258,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             inputs.update(extract_widgets(nd, ref_wv.get(REF_ID.get(cid))))
             for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
                 inputs[inp] = [src, idx]
+                protected_edges.add((cid, inp))
             graph[cid] = {"class_type": cls, "inputs": inputs}
 
         # 2. param overrides on the primitives + sampler seed.
@@ -375,11 +386,13 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     graph.setdefault("media_load", {
                         "class_type": "LoadImage", "inputs": {"image": media["filename"]}})
                     graph[sid]["inputs"][ci_name] = ["media_load", 0]
+                    protected_edges.add((sid, ci_name))
                     report["wired"].append(f"timeline image -> {sid}.{ci_name}")
                 continue
             src = _resolve_source(source, slot_node_id, slot_def, object_info)
             if src:
                 graph[sid]["inputs"][ci_name] = list(src)
+                protected_edges.add((sid, ci_name))
                 report["wired"].append(f"{source} -> {sid}.{ci_name}")
             else:
                 report["unsatisfied"].append(
@@ -423,11 +436,16 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd = slot_def[s["id"]]
+        role_defaults = pipeline_wiring.DEFAULT_WIRES_BY_ROLE.get(s.get("role") or "", {})
         for out_name, target in (s.get("wires") or {}).items():
             if not target:
                 continue
             targets = target if isinstance(target, list) else [target]
             oidx = _output_index(nd, out_name)
+            out_type = _infer_slot_output_type(nd, out_name)
+            # A wire the user explicitly made is protected from the cycle-breaker; one that merely
+            # matches this role's default wiring is droppable (it's what the editor auto-added).
+            is_default = role_defaults.get(out_type) == target
             for t in targets:
                 if not t:
                     continue
@@ -438,6 +456,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     gid = _ensure_global_out()
                     dinput = "images" if t == "global:video" else "audio"
                     graph[gid]["inputs"][dinput] = [sid, oidx]
+                    if not is_default:
+                        protected_edges.add((gid, dinput))
                     report["wired"].append(f"{s.get('node_class')}.{out_name} -> Global {'video' if t == 'global:video' else 'audio'} output")
                     continue
                 dst = _resolve_target(t, port_to_core, slot_node_id)
@@ -449,6 +469,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: target '{t}' node is not in the graph (built-in pipeline disabled?).")
                     continue
                 graph[dnode]["inputs"][dinput] = [sid, oidx]
+                if not is_default:
+                    protected_edges.add((dnode, dinput))
                 report["wired"].append(f"{s.get('node_class')}.{out_name} -> {dnode}.{dinput}")
 
     # 4b. core input overrides. In guided mode only loader-facing open ports may be
@@ -465,6 +487,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             src = _resolve_source(source, slot_node_id, slot_def, object_info)
             if src:
                 graph[cid]["inputs"][inp] = list(src)
+                protected_edges.add((cid, inp))
                 report["wired"].append(f"{source} -> {cid}.{inp} (core override)")
             else:
                 report["unsatisfied"].append(
@@ -493,6 +516,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             if isinstance(src, str) and src.startswith("out:"):
                 active_slots.add(src.split(":", 2)[1])
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
+
+    # Cycle-guard: a default/auto wire that loops (e.g. an upscale node whose IMAGE both feeds the
+    # export AND defaults back to Studio · source_image while it consumes the decoded frames) is
+    # dropped here; an all-explicit loop is reported precisely. Never hand ComfyUI a cyclic graph.
+    _break_cycles(graph, report, protected_edges, _node_labels(slots, slot_node_id, object_info))
 
     for msg in pipeline_wiring.validate_models_wiring(models_config):
         report["blocking"].append(msg)
@@ -654,6 +682,96 @@ def _producers(graph, slots, slot_node_id, slot_def, object_info):
     return out
 
 
+def _reaches_upstream(graph, start, goal):
+    """True if `goal` is upstream of `start` — i.e. `start` transitively consumes `goal`'s
+    output. Used to decide whether wiring `start`'s output into a node would close a loop."""
+    seen = set()
+    stack = [start]
+    while stack:
+        n = stack.pop()
+        if n == goal:
+            return True
+        if n in seen:
+            continue
+        seen.add(n)
+        for v in (graph.get(n, {}).get("inputs", {}) or {}).values():
+            if isinstance(v, list) and len(v) == 2 and isinstance(v[0], str) and v[0] in graph:
+                stack.append(v[0])
+    return False
+
+
+def _edge_input(graph, dst, up):
+    """The input name on `dst` that consumes `up`'s output (or None)."""
+    for inp, val in (graph.get(dst, {}).get("inputs", {}) or {}).items():
+        if isinstance(val, list) and len(val) == 2 and val[0] == up:
+            return inp
+    return None
+
+
+def _find_cycle(graph):
+    """Return a node-id path [a, …, a] forming a dependency cycle, or None. Edges follow the
+    'consumes' direction (a node depends on every node feeding its inputs)."""
+    color: dict[str, int] = {}          # 0/absent=white, 1=gray (on stack), 2=black
+    path: list[str] = []
+
+    def dfs(u):
+        color[u] = 1
+        path.append(u)
+        for val in (graph.get(u, {}).get("inputs", {}) or {}).values():
+            if not (isinstance(val, list) and len(val) == 2 and isinstance(val[0], str)):
+                continue
+            v = val[0]
+            if v not in graph:
+                continue
+            if color.get(v, 0) == 1:                 # back-edge → cycle
+                return path[path.index(v):] + [v]
+            if color.get(v, 0) == 0:
+                hit = dfs(v)
+                if hit:
+                    return hit
+        path.pop()
+        color[u] = 2
+        return None
+
+    for n in list(graph):
+        if color.get(n, 0) == 0:
+            hit = dfs(n)
+            if hit:
+                return hit
+    return None
+
+
+def _break_cycles(graph, report, protected, label):
+    """Guarantee the assembled graph is acyclic. A cycle's first droppable edge (an auto-wire or
+    a role-default wire — NOT a core-internal link or an explicit user/override wire) is removed
+    with a clear note. An all-explicit cycle can't be auto-resolved, so it's reported as blocking
+    with the exact loop — far better than ComfyUI's opaque 'Dependency cycle detected'."""
+    L = lambda nid: label.get(nid, nid)
+    for _ in range(128):                             # bounded: each pass removes >=1 edge
+        cyc = _find_cycle(graph)
+        if not cyc:
+            return
+        dropped = False
+        for i in range(len(cyc) - 1):
+            dst, up = cyc[i], cyc[i + 1]
+            inp = _edge_input(graph, dst, up)
+            if inp is None or (dst, inp) in protected:
+                continue
+            del graph[dst]["inputs"][inp]
+            report["auto_wired"].append(
+                f"Dropped {L(dst)}.{inp} ← {L(up)} to avoid a dependency cycle "
+                f"(auto/default wire). Wire it explicitly if you really want it.")
+            dropped = True
+            break
+        if not dropped:
+            loop = " → ".join(L(n) for n in cyc)
+            msg = (f"Wiring forms a dependency cycle: {loop}. Remove one of these links — "
+                   f"ComfyUI can't run a graph that feeds into itself.")
+            report["unsatisfied"].append(msg)
+            report["blocking"].append(msg)
+            return
+
+
 def _node_labels(slots, slot_node_id, object_info):
     """node_id -> human label ('Role / Name [NodeClass]') for report messages, so users
     don't see opaque ids like 'slot_5u09gm5'."""
@@ -688,12 +806,21 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             continue
         if isinstance(node["inputs"].get(inp), list):
             continue  # already wired (explicit/core)
-        cands = [p for p in producers.get(t, []) if p[0] != node_id]
+        raw = [p for p in producers.get(t, []) if p[0] != node_id]
+        # Never auto-wire a source that already depends on this node — that closes a loop and
+        # ComfyUI rejects the whole graph. Drop such candidates so auto-wire stays acyclic.
+        cands = [p for p in raw if not _reaches_upstream(graph, p[0], node_id)]
         if len(cands) == 1:
             node["inputs"][inp] = [cands[0][0], cands[0][1]]
             report["auto_wired"].append(f"{L(node_id)}.{inp} <- {L(cands[0][0])} ({t})")
         elif len(cands) > 1:
             msg = f"{L(node_id)}.{inp} ({t}): {len(cands)} possible sources — wire it explicitly."
+            report["ambiguous"].append(msg)
+            if required:
+                report["blocking"].append(msg)
+        elif raw:
+            msg = (f"{L(node_id)}.{inp} ({t}): the only available source would form a dependency "
+                   f"cycle — wire it explicitly to a node upstream of it.")
             report["ambiguous"].append(msg)
             if required:
                 report["blocking"].append(msg)

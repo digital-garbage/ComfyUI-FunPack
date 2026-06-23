@@ -55,6 +55,10 @@ OI = {
     "LoadImage": {"input": {"required": {"image": [["a.png"]]}}, "output": ["IMAGE", "MASK"]},
     "ImgProc": {"input": {"required": {"length": ["INT", {"default": 97}], "vae": ["VAE"], "image": ["IMAGE"]}},
                 "output": ["LATENT", "LATENT", "IMAGE"], "output_name": ["latent", "Latent", "output_image"]},
+    "UpscaleModelLoader": {"input": {"required": {"model_name": [["x4.pth"]]}}, "output": ["UPSCALE_MODEL"],
+                           "output_name": ["UPSCALE_MODEL"]},
+    "ImageUpscaleWithModel": {"input": {"required": {"upscale_model": ["UPSCALE_MODEL"], "image": ["IMAGE"]}},
+                              "output": ["IMAGE"], "output_name": ["IMAGE"]},
 }
 
 PARAMS = {"prompt": "scene one", "seed": 42, "num_frames_per_scene": 121, "frame_rate": 24}
@@ -182,6 +186,60 @@ def test_ambiguous_type_is_reported_not_guessed():
     graph, report = builder.build(OI, models, PARAMS)
     assert not isinstance(graph["sampler"]["inputs"].get("vae"), list)  # left unwired
     assert any("FunPackLTXAVSceneChainSampler" in a and ".vae" in a for a in report["ambiguous"])
+
+
+def _loaders():
+    return [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+    ]
+
+
+def test_upscale_before_export_wires_cleanly_and_loader_autofeeds():
+    # The user's scenario: tap decoded frames -> ImageUpscaleWithModel -> replace export frames,
+    # with an UpscaleModelLoader that has no explicit output wire (it should still auto-feed).
+    models = {"full_control": True, "slots": _loaders() + [
+        {"id": "um", "node_class": "UpscaleModelLoader", "inputs": {}, "wires": {}},
+        {"id": "up", "node_class": "ImageUpscaleWithModel", "inputs": {},
+         "input_sources": {"image": "core:sampler:1"},          # decoded video frames
+         "wires": {"IMAGE": "port:VHS_VideoCombine.images"}},   # replace the export frames
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert graph["slot_up"]["inputs"]["image"] == ["sampler", 1]    # decoded frames in
+    assert graph["vhs"]["inputs"]["images"] == ["slot_up", 0]       # upscaled frames out to export
+    assert graph["slot_up"]["inputs"]["upscale_model"] == ["slot_um", 0]  # loader auto-feeds
+    assert builder._find_cycle(graph) is None
+    assert not any("dependency cycle" in m.lower() for m in report["blocking"])  # no cycle block
+
+
+def test_cycle_from_default_source_image_wire_is_dropped():
+    # An image_processing node consumes the decoded frames AND carries the role-default wire back
+    # to Studio · source_image — that loops. The default wire must be dropped, the user's source kept.
+    models = {"full_control": True, "slots": _loaders() + [
+        {"id": "ip", "node_class": "ImgProc", "role": "image_processing", "inputs": {},
+         "input_sources": {"image": "core:sampler:1", "vae": "out:v:VAE"},
+         "wires": {"output_image": "port:FunPackStudio.source_image"}},  # == role default → droppable
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert builder._find_cycle(graph) is None                       # no cycle handed to ComfyUI
+    assert graph["slot_ip"]["inputs"]["image"] == ["sampler", 1]    # user's source preserved
+    src_img = graph["studio"]["inputs"].get("source_image")
+    assert not (isinstance(src_img, list) and src_img[0] == "slot_ip")  # looping default dropped
+    assert any("dependency cycle" in m.lower() for m in report["auto_wired"])
+
+
+def test_all_explicit_cycle_is_reported_not_silently_built():
+    # Two nodes feeding each other through explicit input sources — nothing droppable, so it must
+    # surface as a clear blocking error rather than a graph ComfyUI rejects opaquely.
+    models = {"full_control": True, "slots": _loaders() + [
+        {"id": "a", "node_class": "ImgProc", "inputs": {},
+         "input_sources": {"image": "out:b:output_image", "vae": "out:v:VAE"}, "wires": {}},
+        {"id": "b", "node_class": "ImgProc", "inputs": {},
+         "input_sources": {"image": "out:a:output_image", "vae": "out:v:VAE"}, "wires": {}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert any("dependency cycle" in m.lower() for m in report["blocking"])
 
 
 def test_extract_widgets_handles_control_and_links():
