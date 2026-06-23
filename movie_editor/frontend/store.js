@@ -125,6 +125,8 @@
     if (!project) return "";
     return JSON.stringify({
       anchor: project.anchor,
+      postfix: project.postfix,
+      postfix_enabled: project.postfix_enabled,
       global_prompt: project.global_prompt,
       intro_transition: project.intro_transition,
       scenes: (project.scenes || []).map((s) => ({

@@ -580,6 +580,14 @@
       if (t) l.append(el("span", "pv-badge trans", "→ split"));
       box.append(l);
     });
+    // Postfix is appended to every scene at generation — show it once after the scenes, mirroring
+    // how the anchor (prepended) is shown once above them.
+    if (pv.postfix) {
+      const l = el("div", "pv-line");
+      l.append(el("span", "pv-badge postfix", "postfix"));
+      l.append(el("span", null, pv.postfix));
+      box.append(l);
+    }
     const raw = el("details", "pv-raw"); raw.append(el("summary", null, "generation prompt (sent to Studio)")); raw.append(el("pre", null, pv.combined_prompt || "")); box.append(raw);
     if (pv.display_prompt && pv.display_prompt !== pv.combined_prompt) {
       const disp = el("details", "pv-raw"); disp.append(el("summary", null, "display prompt (timeline view)")); disp.append(el("pre", null, pv.display_prompt)); box.append(disp);

@@ -34,6 +34,7 @@ sys.modules.setdefault(
 import templates
 import conditioning
 from templates import apply_prompt_shortcuts, normalize_shortcut_item
+from movie_editor.backend import bridge
 
 
 def _db(shortcuts):
@@ -135,6 +136,21 @@ def test_postfix_shortcuts_expand_and_key_folds_into_every_scene(monkeypatch):
     # The postfix's refinement key folds into EVERY scene (like the anchor's).
     for scene in out["scenes"]:
         assert "look" in scene["keys"]
+
+
+def test_expand_prompt_fragment_matches_generation_postfix(monkeypatch):
+    """The preview's postfix text must be expanded exactly like generation appends it — same
+    shortcut expansion the chain sampler runs via split_scenes_from_segments."""
+    db = _db({"cine": (["cine"], ["cinematic, shallow depth of field"], "look")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+
+    preview = bridge.expand_prompt_fragment("cine")
+    generation = conditioning.split_scenes_from_segments(
+        "", ["x"], postfix="cine")["postfix_expanded"]
+    assert preview == "cinematic, shallow depth of field"
+    assert preview == generation                       # preview mirrors generation exactly
+    assert bridge.expand_prompt_fragment("") == ""     # disabled/empty postfix shows nothing
 
 
 def test_split_scenes_no_false_cut_from_generic_label_in_expansion(monkeypatch):
