@@ -488,6 +488,9 @@
     _applyDetectedTransitions(next, v.transitions, text);
     state.project.scenes = next;
     state.sceneGhosts = ghostsOut;
+    // The global prompt is authoritative on plan order — reconcile the cut order to it now
+    // (no-op when the user has pinned a manual order; otherwise tracks the plan).
+    _ensureTimelineOrder();
     const prevSel = state.selectedSceneId;
     const stillSel = prevSel && next.some((s) => s.id === prevSel);
     const firstId = stillSel ? prevSel : (next[0]?.id || null);
@@ -1422,6 +1425,10 @@
   function _ensureTimelineOrder() {
     const p = state.project; if (!p) return;
     const ids = (p.scenes || []).map((s) => s.id);
+    // Until the user explicitly pins a custom cut order (◀ ▶), the timeline follows the plan.
+    // This keeps an edit to the global prompt — which rebuilds the plan in its own order — from
+    // leaving a stale id sequence behind that scrambles the clips against their plan badges.
+    if (!p.timeline_manually_ordered) { p.timeline_order = ids; return; }
     const idSet = new Set(ids);
     const cur = (Array.isArray(p.timeline_order) ? p.timeline_order : []).filter((id) => idSet.has(id));
     const inCur = new Set(cur);
@@ -1450,6 +1457,9 @@
     if (i === j) return;
     _historyRecord();
     order.splice(i, 1); order.splice(j, 0, id);
+    // The user has now pinned a custom cut order — a global-prompt edit must preserve it
+    // rather than re-deriving the order from the plan.
+    p.timeline_manually_ordered = true;
     notify(); scheduleSave();
   }
 

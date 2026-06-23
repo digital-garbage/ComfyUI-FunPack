@@ -597,6 +597,10 @@ class Project:
     # Cut order: scene ids in TIMELINE (result) order, independent of plan (scenes) order.
     # Empty = follow plan order (back-compat). Reordering the plan never touches this.
     timeline_order: list = field(default_factory=list)
+    # True once the user explicitly reordered a timeline clip (◀ ▶). Until then the cut order
+    # tracks the plan, so editing the global prompt re-derives it cleanly instead of letting a
+    # stale id sequence scramble the clips against the plan badges.
+    timeline_manually_ordered: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -634,6 +638,7 @@ class Project:
             scene_renders=dict(d.get("scene_renders") or {}),
             scene_ghosts=list(d.get("scene_ghosts") or []),
             timeline_order=list(d.get("timeline_order") or []),
+            timeline_manually_ordered=bool(d.get("timeline_manually_ordered", False)),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )
