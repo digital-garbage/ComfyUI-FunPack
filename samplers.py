@@ -3472,6 +3472,19 @@ class FunPackLTXAVSceneChainSampler:
         if negative is None:
             negative = []
 
+        # Defensively strip any enhancement block hooks left on the shared diffusion
+        # model by a previous run (build_enhancements only removes them on scene
+        # transitions, not at end-of-sampling). This covers runs that don't go through
+        # build_enhancements, so stale hooks can't fire on an unenhanced generation.
+        try:
+            try:
+                from .ltx_enhancements import strip_funpack_block_hooks
+            except ImportError:
+                from ltx_enhancements import strip_funpack_block_hooks
+            strip_funpack_block_hooks(model)
+        except Exception as _e:
+            print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
+
         # Decode-time noise (folded in from LTXV's Set VAE Decoder Noise per the boundary law:
         # the Chain Sampler owns IMAGES decode, so this lives here, not on a separate node).
         # Stamp settings onto a shallow copy of the VAE so we never mutate the shared input.
