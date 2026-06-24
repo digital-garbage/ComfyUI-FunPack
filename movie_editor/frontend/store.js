@@ -627,6 +627,10 @@
           const cur = state.sceneRenders[id];
           if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
           missing++;
+        } else if (token === _validateRendersToken) {
+          // File is on disk: reconcile a stale plan-estimate length with the real encoded
+          // duration for standalone renders (retroactively fixes pre-existing clips on load).
+          _probeRenderDuration(id);
         }
       } catch (_) {
         if (token !== _validateRendersToken) return;
@@ -1298,6 +1302,62 @@
       if (asset && !asset.duration_sec) asset.duration_sec = v.duration;
       _applyVideoClipDuration(sceneId, v.duration);
     };
+  }
+
+  // True when a render's media file belongs to this scene ALONE — i.e. the scene spans the
+  // whole encoded file from its start. Multi-scene chains share one file and partition it via
+  // inSec/durationSec slices, so for those the plan-based slice length is the source of truth
+  // and must NOT be replaced by the whole-file duration.
+  function _renderIsStandalone(sceneId) {
+    const r = state.sceneRenders[sceneId];
+    if (!r?.media?.filename) return false;
+    if ((r.inSec || 0) > 0.001) return false;
+    const fname = r.media.filename;
+    let n = 0;
+    for (const k of Object.keys(state.sceneRenders)) {
+      if (state.sceneRenders[k]?.media?.filename === fname) n++;
+    }
+    return n === 1;
+  }
+
+  // A generated render's frozen durationSec is the PLAN estimate (snapped frames/fps). The
+  // actual encoded file can be slightly longer (LTXAV muxes audio; container fps rounding), so
+  // the clip drew shorter than the real media. For a standalone render (whole file = this scene)
+  // probe the real duration and adopt it — sceneDurationSec already routes render.durationSec for
+  // project-mode scenes, so the timeline/playback then match the file. Idempotent: once adopted,
+  // the values match and re-probing is a no-op.
+  function _probeRenderDuration(sceneId) {
+    if (!state.project) return;
+    const r = state.sceneRenders[sceneId];
+    if (!r?.media || !(r.media.kind === "videos" || r.media.kind === "gifs")) return;
+    if (!_renderIsStandalone(sceneId)) return;
+    const fname = r.media.filename;
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    v.onloadedmetadata = () => {
+      const dur = v.duration;
+      if (!dur || !isFinite(dur)) return;
+      const cur = state.sceneRenders[sceneId];
+      if (!cur || cur.media?.filename !== fname) return;        // scene moved on; don't clobber
+      const old = cur.durationSec;
+      if (old != null && Math.abs(old - dur) < 0.05) return;
+      cur.durationSec = dur;                                     // adopt the real encoded length
+      // A separated-audio track was pinned to the OLD (plan) length at separation time. If it
+      // still matches that length it was auto-pinned, so carry it along; if it differs the user
+      // trimmed it by hand — leave that alone.
+      if (old != null) {
+        const t = separatedTrackForScene(sceneId);
+        if (t && t.pinned_dur != null && Math.abs(t.pinned_dur - old) < 0.02) {
+          t.pinned_dur = dur;
+          if (t.source_dur != null) t.source_dur = dur;
+        }
+      }
+      notify();
+      scheduleSaveSilent();
+    };
+    v.onerror = () => {};
+    v.src = API.resultUrl(state.project.id, r.media);
   }
 
   function _removeSceneNoHistory(id) {
@@ -2841,6 +2901,9 @@
     }
     _pruneGhostsAfterRegen(recordedSceneIds, completedGhostIds);
     _syncSeparatedTracksAfterRegen(recordedSceneIds);
+    // Adopt the real encoded length for standalone renders so the clip matches the file (the
+    // frozen length above is the plan estimate). Chains are skipped by the standalone guard.
+    for (const id of recordedSceneIds) _probeRenderDuration(id);
     if (clearedRating) scheduleSaveSilent();
     if (recordedSceneIds.length) {
       _validateRendersToken++;
