@@ -1922,26 +1922,6 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.25, "min": 0.25, "max": 0.5, "step": 0.05,
                     "tooltip": "Guide attention strength for mid-scene anchor. 0.25 is the minimum — below that audio degrades and character appearance drifts. Above 0.35 causes spatial conflicts when scene composition shifts.",
                 }),
-                "joyai_memory": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "JoyAI-Echo cross-shot memory bank. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video-only in this phase (audio memory + v2a is a separate opt-in).",
-                }),
-                "joyai_memory_size": ("INT", {
-                    "default": 7, "min": 1, "max": 32,
-                    "tooltip": "Max total memory entries injected per scene (JoyAI default 7). Higher = stronger long-range consistency but more guide tokens and slower scenes.",
-                }),
-                "joyai_fix_frames": ("INT", {
-                    "default": 3, "min": 0, "max": 16,
-                    "tooltip": "Number of opening scenes pinned permanently in the bank as a global anchor (JoyAI default 3). They are never pruned; entries beyond them are a rolling most-recent window.",
-                }),
-                "joyai_frame_select": (["center", "first", "random"], {
-                    "default": "center",
-                    "tooltip": "Which frame of each finished scene to store in the bank (JoyAI default 'center').",
-                }),
-                "joyai_memory_strength": ("FLOAT", {
-                    "default": 0.3, "min": 0.25, "max": 0.5, "step": 0.05,
-                    "tooltip": "Guide-attention strength for each memory frame. Same 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts).",
-                }),
                 "embed_guidance": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "Apply the Refiner's learned quality direction at each denoising step, not just once before sampling. Requires refinement_key_input and enough liked generations to have a direction. Adds ~20-30% inference overhead.",
@@ -1982,6 +1962,30 @@ class FunPackLTXAVSceneChainSampler:
                 "embed_guidance_source": (["relative", "absolute"], {
                     "default": "relative",
                     "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
+                }),
+                # NOTE: append-only. New widgets MUST go at the END of the widget sequence (after
+                # every widget the reference workflow already has a positional value for, before the
+                # forceInput sockets below). Inserting earlier desyncs extract_widgets' positional
+                # mapping and lands a numeric on a combo (e.g. joyai_frame_select got 0).
+                "joyai_memory": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "JoyAI-Echo cross-shot memory bank. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video-only in this phase (audio memory + v2a is a separate opt-in).",
+                }),
+                "joyai_memory_size": ("INT", {
+                    "default": 7, "min": 1, "max": 32,
+                    "tooltip": "Max total memory entries injected per scene (JoyAI default 7). Higher = stronger long-range consistency but more guide tokens and slower scenes.",
+                }),
+                "joyai_fix_frames": ("INT", {
+                    "default": 3, "min": 0, "max": 16,
+                    "tooltip": "Number of opening scenes pinned permanently in the bank as a global anchor (JoyAI default 3). They are never pruned; entries beyond them are a rolling most-recent window.",
+                }),
+                "joyai_frame_select": (["center", "first", "random"], {
+                    "default": "center",
+                    "tooltip": "Which frame of each finished scene to store in the bank (JoyAI default 'center').",
+                }),
+                "joyai_memory_strength": ("FLOAT", {
+                    "default": 0.3, "min": 0.25, "max": 0.5, "step": 0.05,
+                    "tooltip": "Guide-attention strength for each memory frame. Same 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts).",
                 }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
