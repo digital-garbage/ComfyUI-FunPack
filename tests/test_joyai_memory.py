@@ -69,3 +69,30 @@ def test_frames_returns_a_copy():
     out = b.frames()
     out.append(99)
     assert b.frames() == [0]   # internal state not mutated by caller
+
+
+def test_paired_audio_aligns_with_video():
+    # Each entry stores a (video, audio) pair; audio() is 1:1 with frames() and shares the policy.
+    b = Bank(max_size=3, num_fix=1)
+    for i in range(5):  # 0..4
+        b.add(i, f"a{i}")
+    assert b.frames() == [0, 3, 4]          # anchor 0 pinned + rolling 3,4
+    assert b.audio() == ["a0", "a3", "a4"]  # audio pruned in lockstep with video
+
+
+def test_audio_defaults_to_none_when_video_only():
+    # Phase-1 path: add(video) with no audio -> audio() is all None, frames() unaffected.
+    b = Bank(max_size=4, num_fix=2)
+    b.add(0)
+    b.add(1)
+    assert b.frames() == [0, 1]
+    assert b.audio() == [None, None]
+
+
+def test_add_none_video_ignores_paired_audio():
+    # A None video frame is dropped even if an audio frame was offered (can't pin orphan audio).
+    b = Bank(max_size=4, num_fix=1)
+    b.add(0, "a0")
+    b.add(None, "a1")
+    assert b.frames() == [0]
+    assert b.audio() == ["a0"]
