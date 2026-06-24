@@ -747,6 +747,37 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
+class _JoyAIMemoryBank:
+    """JoyAI-Echo cross-shot memory: a rolling set of clean prior-shot latent frames.
+
+    Mirrors PairedAudioVideoMemoryBank's policy (JoyAI_Echo configs/inference.yaml): the first
+    ``num_fix`` entries are pinned permanently (the opening shots = global story anchor); the rest
+    is a most-recent window so the total never exceeds ``max_size``. Stores one latent frame per
+    finished scene ([B,C,1,H,W]); the audio half rides the existing protect/pass-through path until
+    the paired-audio phase. Pure bookkeeping — injection is done by the sampler via LTX guide
+    attention, so this class holds no model state and is unit-testable on its own.
+    """
+
+    def __init__(self, max_size=7, num_fix=3):
+        self.max_size = max(1, int(max_size))
+        self.num_fix = max(0, min(int(num_fix), self.max_size))
+        self.entries = []  # list of latent-frame tensors, oldest first
+
+    def add(self, frame):
+        if frame is None:
+            return
+        self.entries.append(frame)
+        if len(self.entries) <= self.max_size:
+            return
+        fixed = self.entries[:self.num_fix]
+        recent = self.entries[self.num_fix:]
+        room = self.max_size - len(fixed)
+        self.entries = fixed + (recent[-room:] if room > 0 else [])
+
+    def frames(self):
+        return list(self.entries)
+
+
 def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
     if sigmas is None or total_steps <= 1:
         return 0
@@ -1890,6 +1921,26 @@ class FunPackLTXAVSceneChainSampler:
                 "mid_scene_guide_strength": ("FLOAT", {
                     "default": 0.25, "min": 0.25, "max": 0.5, "step": 0.05,
                     "tooltip": "Guide attention strength for mid-scene anchor. 0.25 is the minimum — below that audio degrades and character appearance drifts. Above 0.35 causes spatial conflicts when scene composition shifts.",
+                }),
+                "joyai_memory": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "JoyAI-Echo cross-shot memory bank. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video-only in this phase (audio memory + v2a is a separate opt-in).",
+                }),
+                "joyai_memory_size": ("INT", {
+                    "default": 7, "min": 1, "max": 32,
+                    "tooltip": "Max total memory entries injected per scene (JoyAI default 7). Higher = stronger long-range consistency but more guide tokens and slower scenes.",
+                }),
+                "joyai_fix_frames": ("INT", {
+                    "default": 3, "min": 0, "max": 16,
+                    "tooltip": "Number of opening scenes pinned permanently in the bank as a global anchor (JoyAI default 3). They are never pruned; entries beyond them are a rolling most-recent window.",
+                }),
+                "joyai_frame_select": (["center", "first", "random"], {
+                    "default": "center",
+                    "tooltip": "Which frame of each finished scene to store in the bank (JoyAI default 'center').",
+                }),
+                "joyai_memory_strength": ("FLOAT", {
+                    "default": 0.3, "min": 0.25, "max": 0.5, "step": 0.05,
+                    "tooltip": "Guide-attention strength for each memory frame. Same 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts).",
                 }),
                 "embed_guidance": ("BOOLEAN", {
                     "default": False,
@@ -3212,6 +3263,45 @@ class FunPackLTXAVSceneChainSampler:
 
         return result, positive, negative, 1
 
+    def _harvest_joyai_frame(self, sampled, select):
+        """Pick one clean latent frame from a finished scene for the memory bank.
+        'center' (default) / 'first' / 'random', mirroring JoyAI's frame_selection_mode."""
+        tensors = self._latent_tensors(sampled)
+        if not tensors:
+            return None
+        F = self._tensor_frames(tensors[0])
+        if F <= 0:
+            return None
+        if select == "first":
+            idx = 0
+        elif select == "random":
+            idx = int(torch.randint(0, F, (1,)).item())
+        else:
+            idx = F // 2
+        return self._time_slice(tensors[0], idx, idx + 1).detach()
+
+    def _append_joyai_memory_guides(self, chunk, frames, positive, negative, vae, strength):
+        """JoyAI-Echo memory injection: attach every banked prior-shot frame to the current chunk
+        as a clean LTX guide, so attention carries identity/scene forward across the whole chain.
+        The single-anchor mid_scene_guide generalized to N frames — reuses _append_guide_latent
+        per entry. Memory frames are placed at distinct early (prefix) positions, matching JoyAI's
+        sequence-prefix concat. Audio-safe (guide tokens influence via attention, not overwrite).
+        Returns the total appended-frame count so the caller crops them off the output tail."""
+        if not frames:
+            return chunk, positive, negative, 0
+        chunk_tensors = self._latent_tensors(chunk)
+        if not chunk_tensors:
+            return chunk, positive, negative, 0
+        F_chunk = self._tensor_frames(chunk_tensors[0])
+        s = max(0.25, float(strength))  # same audio-safe floor as mid_scene_guide
+        tail = 0
+        for i, gf in enumerate(frames):
+            apply_at = min(max(0, F_chunk - 1), i)  # prefix context: distinct early positions
+            chunk, positive, negative, t = self._append_guide_latent(
+                chunk, gf, apply_at, s, positive, negative, vae,
+            )
+            tail += t
+        return chunk, positive, negative, tail
 
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
@@ -3236,6 +3326,8 @@ class FunPackLTXAVSceneChainSampler:
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
+               joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
+               joyai_frame_select="center", joyai_memory_strength=0.3,
                embed_guidance=False, embed_guidance_strength=0.02,
                embed_guidance_source="relative",
                score_slider=False, score_slider_strength=1.0,
@@ -3267,6 +3359,9 @@ class FunPackLTXAVSceneChainSampler:
                 embed_guidance, embed_guidance_strength, transition_duration,
                 decode_tile_size, refinement_key_input, embed_guidance_source,
                 score_slider, score_slider_strength,
+                joyai_memory=joyai_memory, joyai_memory_size=joyai_memory_size,
+                joyai_fix_frames=joyai_fix_frames, joyai_frame_select=joyai_frame_select,
+                joyai_memory_strength=joyai_memory_strength,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3329,6 +3424,7 @@ class FunPackLTXAVSceneChainSampler:
         scene_outputs: list = []
         scene_media_by_ref = self._parse_scene_anchors(funpack_scene_media_refs)
         scene_runs: list = []
+        joyai_bank = _JoyAIMemoryBank(joyai_memory_size, joyai_fix_frames) if joyai_memory else None
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -3404,7 +3500,13 @@ class FunPackLTXAVSceneChainSampler:
                         chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
-                if mid_scene_guide and not custom_guides:
+                if joyai_memory and joyai_bank is not None and not custom_guides:
+                    mem_frames = joyai_bank.frames()
+                    run_mechanisms.append(f"joyai_memory({len(mem_frames)}/{joyai_memory_size},fix={joyai_fix_frames})")
+                    chunk, scene_positive, scene_negative, guide_tail = self._append_joyai_memory_guides(
+                        chunk, mem_frames, scene_positive, scene_negative, vae, joyai_memory_strength,
+                    )
+                elif mid_scene_guide and not custom_guides:
                     run_mechanisms.append("mid_scene_guide")
                     chunk, scene_positive, scene_negative, guide_tail = self._append_mid_scene_guide(
                         chunk, output, scene_positive, scene_negative, vae, mid_scene_guide_strength,
@@ -3477,6 +3579,10 @@ class FunPackLTXAVSceneChainSampler:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
                 sampled = self._crop_video_tail(sampled, guide_tail)
+            if joyai_bank is not None:
+                # Harvest from the clean, fully-cropped scene so injected guide tails never re-enter
+                # the bank. Scene 0 seeds the pinned anchor (num_fix); later scenes roll in.
+                joyai_bank.add(self._harvest_joyai_frame(sampled, joyai_frame_select))
             scene_outputs.append(self._clone_latent(sampled))
             blend_overlap = 0 if anchor_meta else video_overlap
             output = sampled if output is None else self._blend_latents(output, sampled, blend_overlap)
@@ -3578,6 +3684,7 @@ class FunPackLTXAVSceneChainSampler:
                     "carry_i2v_guides": bool(carry_i2v_guides),
                     "frame_overlap": int(frame_overlap),
                     "transitions_enabled": scene_count > 1,
+                    "joyai_memory": bool(joyai_memory),
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
@@ -3668,7 +3775,9 @@ class FunPackLTXAVSceneChainSampler:
                             use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                             embed_guidance, embed_guidance_strength, transition_duration,
                             decode_tile_size, refinement_key_input, embed_guidance_source="relative",
-                            score_slider=False, score_slider_strength=1.0):
+                            score_slider=False, score_slider_strength=1.0,
+                            joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
+                            joyai_frame_select="center", joyai_memory_strength=0.3):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -3708,6 +3817,9 @@ class FunPackLTXAVSceneChainSampler:
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
                 embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
                 score_slider=score_slider, score_slider_strength=score_slider_strength,
+                joyai_memory=joyai_memory, joyai_memory_size=joyai_memory_size,
+                joyai_fix_frames=joyai_fix_frames, joyai_frame_select=joyai_frame_select,
+                joyai_memory_strength=joyai_memory_strength,
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 unique_id=None, prompt=None,
