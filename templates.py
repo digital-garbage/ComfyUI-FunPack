@@ -229,6 +229,112 @@ def refinement_key_names():
     return [REFINEMENT_KEY_NONE] + sorted(keys)
 
 
+def _refinement_key_files(key):
+    """Every top-level store file that makes up one refinement key: the canonical
+    <key>.json plus its sidecars (<key>.value_fn.pt, <key>.sampler_ctx.json, and any
+    other <key>.<mode>.* file). The attn_maps/ banks + velocity store are handled
+    separately via clear_refinement_data. Used by delete_refinement_key so a key is
+    removed atomically instead of leaving sidecars orphaned."""
+    paths = set()
+    # Known canonical + sidecar modes (deterministic paths).
+    paths.add(refinement_state_path(key, "clip", prefix="refine_v2"))
+    paths.add(refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt"))
+    paths.add(refinement_state_path(key, "sampler_ctx", prefix="refine_v2"))
+    # Defensive: sweep any other top-level <key>.* sidecar so a future sidecar type
+    # can't be orphaned — that orphaning is the whole bug this delete path fixes.
+    directory = refinement_store_dir()
+    if os.path.isdir(directory):
+        try:
+            clip_name = os.path.basename(refinement_state_path(key, "clip", prefix="refine_v2"))
+            stem = clip_name[:-5] if clip_name.lower().endswith(".json") else clip_name
+            for filename in os.listdir(directory):
+                if filename == clip_name or filename.startswith(stem + "."):
+                    full = os.path.join(directory, filename)
+                    if os.path.isfile(full):
+                        paths.add(full)
+        except OSError:
+            pass
+    return paths
+
+
+def delete_refinement_key(refinement_key):
+    """Atomically remove EVERY file that makes up a refinement key — the canonical
+    <key>.json AND its sidecars (value function, sampler context, blessed attention
+    maps / K/V identity banks, creativity latent, velocity-bias store) — plus the
+    in-process velocity memory.
+
+    Deleting only <key>.json (e.g. by hand in the folder) used to orphan the value
+    function and blessed banks; those keep steering future generations and survive a
+    ComfyUI restart, which is the root of 'I cleared the key but generations stayed
+    dirty'. This makes deletion match the user's mental model: key gone = gone."""
+    key = normalize_refinement_key(refinement_key)
+    if not key:
+        return {"deleted": "", "removed": 0, "error": "No refinement key selected."}
+    removed = 0
+    for path in _refinement_key_files(key):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                removed += 1
+        except OSError as exc:
+            print(f"[FunPack] delete key '{key}': could not remove {path}: {exc}")
+    # attn_maps banks (blessed/temp maps, attn weights, K/V) + creativity latent +
+    # the on-disk AND in-process velocity-bias memory.
+    try:
+        try:
+            from .ltx_enhancements import clear_refinement_data
+        except ImportError:
+            from ltx_enhancements import clear_refinement_data
+        clear_refinement_data(key)
+    except Exception as exc:
+        print(f"[FunPack] delete key '{key}': enhancement cleanup failed: {exc}")
+    return {"deleted": key, "removed": removed}
+
+
+def _absolute_store_paths():
+    try:
+        from .conditioning import FUNPACK_ABSOLUTE_KEY
+    except ImportError:
+        from conditioning import FUNPACK_ABSOLUTE_KEY
+    return (
+        refinement_state_path(FUNPACK_ABSOLUTE_KEY, "clip", prefix="refine_v2"),
+        refinement_state_path(FUNPACK_ABSOLUTE_KEY, "value_fn", prefix="refine_v2", extension="pt"),
+    )
+
+
+def absolute_store_info():
+    """Surface the keyless Absolute 'global taste' store — it learns from every rated
+    generation across all prompts, is invisible in the key list (dunder name), and is
+    only otherwise wiped by Session Reset. Returned so the UI can show + clear it."""
+    json_path, vf_path = _absolute_store_paths()
+    info = {"exists": os.path.isfile(json_path) or os.path.isfile(vf_path),
+            "total_iterations": 0, "liked_count": 0, "bad_count": 0}
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+            g = data.get("global", data) if isinstance(data, dict) else {}
+            info["total_iterations"] = int(g.get("total_iterations", 0) or 0)
+            info["liked_count"] = int((g.get("liked_dir") or {}).get("direction_count", 0) or 0)
+            info["bad_count"] = int((g.get("bad_dir") or {}).get("direction_count", 0) or 0)
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+    return info
+
+
+def clear_absolute_store():
+    """Wipe the keyless Absolute taste store (direction pool + global value function)."""
+    removed = 0
+    for path in _absolute_store_paths():
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+                removed += 1
+        except OSError as exc:
+            print(f"[FunPack] clear absolute store: could not remove {path}: {exc}")
+    return {"cleared": True, "removed": removed}
+
+
 def empty_template_db():
     return {
         "version": TEMPLATE_DB_VERSION,
@@ -1194,6 +1300,35 @@ async def funpack_refinement_keys_import_finalize(request):
         except OSError:
             pass
     return _save_imported_refinement_key(incoming, overwrite=_truthy(request.query.get("overwrite")))
+
+
+@PromptServer.instance.routes.post("/funpack/refinement_keys/delete")
+async def funpack_refinement_keys_delete(request):
+    key = normalize_refinement_key(request.query.get("key", ""))
+    if not key:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        key = normalize_refinement_key((body or {}).get("key", ""))
+    if not key:
+        return web.json_response({"error": "No refinement key specified."}, status=400)
+    result = delete_refinement_key(key)
+    result["keys"] = refinement_key_names()
+    return web.json_response(result, headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@PromptServer.instance.routes.get("/funpack/refinement_keys/absolute")
+async def funpack_refinement_keys_absolute(_):
+    return web.json_response(absolute_store_info(),
+                             headers={"Cache-Control": "no-store, max-age=0"})
+
+
+@PromptServer.instance.routes.post("/funpack/refinement_keys/clear_absolute")
+async def funpack_refinement_keys_clear_absolute(_):
+    result = clear_absolute_store()
+    result.update(absolute_store_info())
+    return web.json_response(result, headers={"Cache-Control": "no-store, max-age=0"})
 
 
 @PromptServer.instance.routes.get("/funpack/available_loras")

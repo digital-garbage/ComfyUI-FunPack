@@ -248,6 +248,39 @@
       link.remove();
       URL.revokeObjectURL(url);
     },
+
+    // Atomically delete a refinement key and ALL its sidecars (value function,
+    // blessed attention / K-V banks, creativity latent, velocity store). Deleting
+    // only the visible <key>.json orphans those, and they keep steering future runs
+    // across restarts — the backend sweep is what makes "key deleted" mean it.
+    async deleteRefinementKey(key) {
+      const res = await funpackFetch(
+        "POST", `${FUNPACK}/refinement_keys/delete?key=${encodeURIComponent(key)}&_=${Date.now()}`,
+      );
+      if (!res.ok) {
+        let payload = null;
+        try { payload = await res.json(); } catch (_) {}
+        throw new Error(readApiError(res, payload));
+      }
+      return res.json();
+    },
+
+    // The keyless Absolute "global taste" store — learns from every rated generation
+    // across all prompts, invisible in the key list, applied only in absolute/both
+    // steer mode, and otherwise only wiped by Session Reset.
+    async absoluteStoreInfo() {
+      const res = await funpackFetch("GET", `${FUNPACK}/refinement_keys/absolute?_=${Date.now()}`);
+      return res.json();
+    },
+    async clearAbsoluteStore() {
+      const res = await funpackFetch("POST", `${FUNPACK}/refinement_keys/clear_absolute?_=${Date.now()}`);
+      if (!res.ok) {
+        let payload = null;
+        try { payload = await res.json(); } catch (_) {}
+        throw new Error(readApiError(res, payload));
+      }
+      return res.json();
+    },
   };
 
   window.MovieEditorAPI = ClientAPI;

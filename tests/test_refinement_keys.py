@@ -496,3 +496,42 @@ def test_bridge_scene_refinement_keys_preview(monkeypatch):
     out = bridge.scene_refinement_keys("wide shot cut alpha here cut plain", "myproj")
     assert out[0] == {"keys": ["keyA"], "uses_default": False, "default_key": "myproj"}
     assert out[1] == {"keys": ["myproj"], "uses_default": True, "default_key": "myproj"}
+
+
+def test_delete_refinement_key_sweeps_all_sidecars():
+    """Atomic delete removes the canonical <key>.json AND every sidecar (value fn,
+    sampler ctx, blessed attn maps / K-V banks). Deleting only the .json used to
+    orphan the rest, which kept steering future runs across restarts. Runs against
+    the real store dir under a unique key, with guaranteed cleanup."""
+    import os
+    import ltx_enhancements
+
+    key = "__pytest_delete_sweep__"
+    json_p = templates.refinement_state_path(key, "clip", prefix="refine_v2")
+    vf_p = templates.refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
+    ctx_p = templates.refinement_state_path(key, "sampler_ctx", prefix="refine_v2")
+    bm = ltx_enhancements._blessed_maps_path(key)
+    kv = ltx_enhancements._kv_blessed_path(key)
+    created = [json_p, vf_p, ctx_p, bm, kv]
+    try:
+        for p in created:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write("{}")
+        assert all(os.path.exists(p) for p in created)
+
+        res = templates.delete_refinement_key(key)
+        assert res["deleted"] == key
+        for p in created:
+            assert not os.path.exists(p), f"survived delete: {p}"
+    finally:
+        for p in created:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def test_delete_refinement_key_rejects_empty():
+    assert templates.delete_refinement_key("-None-")["deleted"] == ""
+    assert templates.delete_refinement_key("")["deleted"] == ""

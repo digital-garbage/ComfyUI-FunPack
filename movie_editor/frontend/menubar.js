@@ -82,6 +82,52 @@
     });
   }
 
+  async function deleteRefinementKey() {
+    closeAll();
+    let payload;
+    try { payload = await window.MovieEditorAPI.refinementKeys(); }
+    catch (e) { alert("Could not list refinement keys: " + (e.message || e)); return; }
+    const names = (payload.keys || []).filter((k) => k && k !== "-None-");
+    if (!names.length) { alert("No refinement keys on disk yet."); return; }
+    const cur = _projectRefinementKey();
+    if (!window.SlotPicker) return;
+    window.SlotPicker.open({
+      title: "Delete refinement key",
+      options: names.map((k) => ({ value: k, label: k, hint: k === cur ? "project session" : "" })),
+      onPick: async (key) => {
+        // Atomic: removes the key AND its sidecars (value function, blessed
+        // attention/K-V banks, creativity latent, velocity memory). Deleting only
+        // <key>.json by hand orphans those and they keep steering future runs.
+        if (!confirm(`Delete refinement key "${key}"?\n\nThis removes its learned state AND all sidecars (value function, blessed attention/K-V banks, creativity latent, velocity memory). This cannot be undone.`)) {
+          return;
+        }
+        try {
+          const res = await window.MovieEditorAPI.deleteRefinementKey(key);
+          alert(`Deleted refinement key "${res.deleted || key}" (${res.removed || 0} file(s)).`);
+        } catch (e) {
+          alert("Refinement key delete failed: " + (e.message || e));
+        }
+      },
+    });
+  }
+
+  async function clearGlobalTaste() {
+    closeAll();
+    let info;
+    try { info = await window.MovieEditorAPI.absoluteStoreInfo(); }
+    catch (e) { alert("Could not read the global-taste store: " + (e.message || e)); return; }
+    if (!info.exists) { alert("The Absolute global-taste store is already empty."); return; }
+    if (!confirm(`Clear the Absolute global-taste store?\n\nIt has pooled ${info.total_iterations} rated generation(s) (${info.liked_count} liked / ${info.bad_count} disliked directions) across all prompts. It learns from every rated run and is applied only in absolute/both steer mode. This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await window.MovieEditorAPI.clearAbsoluteStore();
+      alert("Cleared the Absolute global-taste store.");
+    } catch (e) {
+      alert("Clear global taste failed: " + (e.message || e));
+    }
+  }
+
   async function refreshGitStatus() {
     try { _gitStatus = await window.MovieEditorAPI.gitStatus(); }
     catch (_) { _gitStatus = { ok: false }; }
@@ -263,6 +309,8 @@
         { menulabel: "Refinement key" },
         { label: "Export refinement key…", hint: "⬇", action: exportRefinementKey },
         { label: "Import refinement key…", action: () => refinementKeyImportInput.click() },
+        { label: "Delete refinement key…", danger: true, action: deleteRefinementKey },
+        { label: "Clear global taste store…", danger: true, action: clearGlobalTaste },
         { sep: true },
         { menulabel: "Code updates" },
         { label: gitBranchLine, disabled: true },
