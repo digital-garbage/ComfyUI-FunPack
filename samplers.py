@@ -1901,7 +1901,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "score_slider": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "FreeSliders-style taste guidance in SCORE space. Instead of nudging the conditioning once (embed_guidance), it runs 3 forward passes on quality-phase steps — base, taste+, taste- — and steers the noise prediction along eps_+ minus eps_-. Stronger, prompt-faithful taste push; ~2x cost on late steps. Uses the same learned direction + source + refinement_key_input as embed_guidance (needs 3+ liked generations). Video-only (audio unaffected).",
+                    "tooltip": "FreeSliders-style taste guidance in SCORE space. Instead of nudging the conditioning once (embed_guidance), it runs 3 forward passes on quality-phase steps — base, taste+, taste- — and steers the noise prediction along eps_+ minus eps_-. Stronger, prompt-faithful taste push; ~2x cost on late steps. Uses the same learned direction + source + refinement_key_input as embed_guidance (needs 3+ liked generations). Contrastive pair: once 3+ disliked/awful gens are rated, the minus pole switches from a mirror of liked to the real learned BAD direction, so the axis becomes good-vs-bad and actively steers away from what produced rated-bad gens. Video-only (audio unaffected).",
                 }),
                 "score_slider_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.25,
@@ -2682,8 +2682,11 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
-    def _load_liked_direction(self, refinement_key):
-        """Read the liked conditioning direction from the Refiner's state file."""
+    def _load_taste_direction(self, refinement_key, slot="liked_dir"):
+        """Read a learned conditioning direction from the Refiner's global taste store.
+        `slot` is "liked_dir" (accumulated from liked gens) or "bad_dir" (accumulated
+        from awful / strongly-negative gens). Returns a [dim] tensor, or None when the
+        slot lacks the 3+ rated samples that make a direction meaningful."""
         try:
             try:
                 from .conditioning import refinement_state_path, serializable_to_tensor
@@ -2693,16 +2696,20 @@ class FunPackLTXAVSceneChainSampler:
             path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
             with open(path, "r", encoding="utf-8") as f:
                 state = _json.load(f)
-            global_state = state.get("global", state)  # liked_dir lives under state["global"]
-            liked_dir_slot = global_state.get("liked_dir", {})
-            if int(liked_dir_slot.get("direction_count", 0)) < 3:
+            global_state = state.get("global", state)  # directions live under state["global"]
+            dir_slot = global_state.get(slot, {})
+            if int(dir_slot.get("direction_count", 0)) < 3:
                 return None
-            raw = liked_dir_slot.get("direction")
+            raw = dir_slot.get("direction")
             if raw is None:
                 return None
             return serializable_to_tensor(raw)
         except Exception:
             return None
+
+    def _load_liked_direction(self, refinement_key):
+        """Read the liked conditioning direction from the Refiner's state file."""
+        return self._load_taste_direction(refinement_key, "liked_dir")
 
     def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None):
         """Register a model_function_wrapper that nudges conditioning toward the
@@ -2743,7 +2750,7 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _embed_wrapper
         return old_wrapper
 
-    def _build_score_slider_wrapper(self, model, liked_dir, eta):
+    def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None):
         """FreeSliders (arxiv 2511.00103) in score space, sourced from the learned taste.
 
         embed_guidance nudges the conditioning embedding once per step. FreeSliders
@@ -2758,18 +2765,28 @@ class FunPackLTXAVSceneChainSampler:
         is confined to the packed video stream, so audio rides eps_base. Returns the
         previous wrapper so the caller can restore it.
 
+        Contrastive pair: when `bad_dir` is available (3+ disliked/awful gens learned a
+        bad_dir in the same store), the MINUS pole is built from the real disliked
+        direction instead of mirroring liked. The axis becomes (liked - bad) — a true
+        good-vs-bad corrective vector — so the step pushes the noise prediction away from
+        the conditioning region that produced rated-bad gens, not just toward "anti-liked".
+        Falls back to the symmetric +/-liked mirror when no bad_dir exists.
+
         Composes with embed_guidance: when both are on, all three passes route through
         the embed wrapper, so its nudge cancels in (eps_+ - eps_-) and only the slider
         axis remains, while eps_base still carries the embed steering."""
         old_wrapper = model.model_options.get("model_function_wrapper")
         fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
+        bad_fixed = None
+        if bad_dir is not None:
+            bad_fixed = torch.nn.functional.normalize(bad_dir.float(), dim=-1)
 
         def _call(apply_fn, a):
             if old_wrapper is not None:
                 return old_wrapper(apply_fn, a)
             return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
 
-        def _slider_wrapper(apply_fn, args, _fixed=fixed_dir, _eta=float(eta)):
+        def _slider_wrapper(apply_fn, args, _fixed=fixed_dir, _bad=bad_fixed, _eta=float(eta)):
             c = args.get("c") or {}
             cond = c.get("c_crossattn")
             ts = args.get("timestep")
@@ -2785,9 +2802,18 @@ class FunPackLTXAVSceneChainSampler:
                 # Calibrated finite-difference step along the taste axis (per-token,
                 # mirrors _v2_apply_direction's NORM_SCALE=0.3 calibration but halved
                 # so the symmetric +/- spread stays non-destructive).
-                step = d * (0.15 * cond.norm(dim=-1, keepdim=True))
+                scale = 0.15 * cond.norm(dim=-1, keepdim=True)
+                step = d * scale
                 cond_plus = self._protect_audio(cond + step, cond)
-                cond_minus = self._protect_audio(cond - step, cond)
+                if _bad is not None:
+                    # Contrastive minus pole: step toward the learned BAD direction so the
+                    # (eps_+ - eps_-) axis becomes good-vs-bad, steering away from the
+                    # conditioning region that produced rated-bad gens. Same step magnitude
+                    # keeps the pair symmetric in size, asymmetric in direction.
+                    bd = _bad.to(cond.device, cond.dtype).expand_as(cond)
+                    cond_minus = self._protect_audio(cond + bd * scale, cond)
+                else:
+                    cond_minus = self._protect_audio(cond - step, cond)
                 eps_base = _call(apply_fn, args)
                 args_plus = dict(args); cp = dict(c); cp["c_crossattn"] = cond_plus; args_plus["c"] = cp
                 args_minus = dict(args); cm = dict(c); cm["c_crossattn"] = cond_minus; args_minus["c"] = cm
@@ -3260,6 +3286,7 @@ class FunPackLTXAVSceneChainSampler:
         # 'relative' = this prompt's key; 'absolute' = the global, prompt-agnostic taste store
         # (keyless, so it works even without refinement_key_input).
         _liked_dir = None
+        _bad_dir = None
         _value_fn = None
         _eg_source = str(embed_guidance_source or "relative").lower()
         _eg_key = self._absolute_key() if _eg_source == "absolute" else refinement_key_input
@@ -3277,7 +3304,11 @@ class FunPackLTXAVSceneChainSampler:
                         mode = "fixed direction"
                     print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): active via {mode}, strength={embed_guidance_strength}")
                 if score_slider:
-                    print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}")
+                    # Contrastive pole for the slider: the learned bad direction from the same
+                    # store, when 3+ disliked/awful gens have populated it.
+                    _bad_dir = self._load_taste_direction(_eg_key, "bad_dir")
+                    pole = "contrastive (liked-vs-bad)" if _bad_dir is not None else "symmetric (+/-liked)"
+                    print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}, pole={pole}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -3391,8 +3422,9 @@ class FunPackLTXAVSceneChainSampler:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             _slider_old_wrapper = None
             if score_slider and _liked_dir is not None:
-                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength})")
-                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength)
+                _pole = "contrastive" if _bad_dir is not None else "symmetric"
+                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
+                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
             # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
             # whatever is installed (e.g. embed guidance). Restored right after sampling,
             # before the embed-guidance restore, so the wrappers unwind in install order.
