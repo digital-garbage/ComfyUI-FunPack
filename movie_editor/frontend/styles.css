@@ -1160,6 +1160,24 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .composer-preview { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .composer-preview:empty { display: none; }
 
+/* Global-prompt templates bar (above the prompt) */
+.compose-templates { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.compose-templates .compose-tpl-select { flex: 1; min-width: 0; }
+.compose-templates .btn { flex: 0 0 auto; }
+
+/* Variables panel (below the prompt) */
+.compose-vars { margin-top: 8px; }
+.composer-var-toggle { padding-left: 2px; }
+.compose-var-hint { margin-top: 4px; }
+.compose-var-hint.compose-var-warn { color: var(--amber); }
+.compose-var-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.compose-var-row { display: flex; gap: 6px; align-items: center; }
+.compose-var-dollar { color: var(--amber); font-family: var(--font-mono); opacity: 0.8; }
+.compose-var-eq { color: var(--muted); }
+.compose-var-row .compose-var-name { flex: 0 0 30%; min-width: 0; }
+.compose-var-row .compose-var-val { flex: 1; min-width: 0; }
+.compose-var-row .btn { flex: 0 0 auto; }
+
 /* config validation banner */
 /* Pipeline requirements panel */
 .req-panel { margin-bottom: 18px; }

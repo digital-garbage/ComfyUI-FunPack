@@ -770,6 +770,63 @@ def _cleanup_removed_phrases(text):
     return text
 
 
+# ── prompt variables ($name) ────────────────────────────────────────────────────
+# Variables are a project-scoped find/replace layer resolved DEAD LAST — after shortcut
+# expansion AND after the transition split — so they can never create or move a scene cut.
+# A `$name` token is replaced with the variable's text; the text may itself reference other
+# variables (recursive), undefined names are left as literal `$name`, and a variable that
+# references itself anywhere in its own chain is a cycle (left literal, never expanded).
+_VARIABLE_TOKEN = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+_VARIABLE_MAX_DEPTH = 64
+
+
+def _normalize_variables(variables):
+    """Accept either {name: text} or [{"name":, "value":}] and return an ordered-safe dict.
+    Names are stripped of a leading `$` and surrounding whitespace; later entries win."""
+    out = {}
+    if isinstance(variables, dict):
+        items = list(variables.items())
+    elif isinstance(variables, list):
+        items = [
+            (v.get("name"), v.get("value", v.get("content", v.get("text", ""))))
+            for v in variables if isinstance(v, dict)
+        ]
+    else:
+        items = []
+    for name, val in items:
+        key = str(name if name is not None else "").lstrip("$").strip()
+        if key:
+            out[key] = str(val if val is not None else "")
+    return out
+
+
+def resolve_variables(text, variables):
+    """Substitute `$name` tokens in `text` from `variables`. Recursive, cycle-safe (a name in
+    its own expansion chain is left literal), depth-guarded, undefined -> literal `$name`.
+    Returns (resolved_text, sorted list of undefined names referenced)."""
+    var_map = _normalize_variables(variables)
+    if not var_map:
+        return str(text or ""), []
+    undefined = set()
+
+    def _expand(s, stack, depth):
+        if depth > _VARIABLE_MAX_DEPTH:
+            return s
+
+        def _repl(m):
+            name = m.group(1)
+            if name not in var_map:
+                undefined.add(name)
+                return m.group(0)            # undefined -> leave literal
+            if name in stack:
+                return m.group(0)            # cycle -> leave literal, do not recurse
+            return _expand(var_map[name], stack | {name}, depth + 1)
+
+        return _VARIABLE_TOKEN.sub(_repl, s)
+
+    return _expand(str(text or ""), frozenset(), 0), sorted(undefined)
+
+
 def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
     original = str(text or "")
     if not original:

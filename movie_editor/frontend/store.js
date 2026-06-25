@@ -898,6 +898,43 @@
     scheduleSaveSilent();
   }
 
+  // ── prompt variables ($name) + global-prompt templates ──────────────────────
+  function projectVariables() { return (state.project && state.project.variables) || []; }
+  function setProjectVariables(list) {
+    if (!state.project) return;
+    // Normalize: strip a leading $, drop fully-empty rows on persist (kept while editing in the UI).
+    patchProjectQuiet({ variables: (Array.isArray(list) ? list : []).map((v) => ({
+      name: String((v && v.name) || "").replace(/^\$+/, "").trim(),
+      value: String((v && v.value != null) ? v.value : ""),
+    })) });
+  }
+  function promptTemplates() { return (state.project && state.project.prompt_templates) || []; }
+  function savePromptTemplate(name, promptText) {
+    if (!state.project) return;
+    const nm = String(name || "").trim();
+    if (!nm) return;
+    const snapshot = {
+      name: nm,
+      prompt: String(promptText != null ? promptText : (state.project.global_prompt || "")),
+      variables: JSON.parse(JSON.stringify(state.project.variables || [])),
+    };
+    const tpls = (state.project.prompt_templates || []).filter((t) => t && t.name !== nm);
+    tpls.push(snapshot);
+    patchProject({ prompt_templates: tpls });
+  }
+  function deletePromptTemplate(name) {
+    if (!state.project) return;
+    patchProject({ prompt_templates: (state.project.prompt_templates || []).filter((t) => t && t.name !== name) });
+  }
+  async function applyPromptTemplate(name) {
+    if (!state.project) return;
+    const tpl = (state.project.prompt_templates || []).find((t) => t && t.name === name);
+    if (!tpl) return;
+    // Restore the saved variables first, then distribute the prompt (re-splits the timeline).
+    patchProjectQuiet({ variables: JSON.parse(JSON.stringify(tpl.variables || [])) });
+    await applyGlobalPromptQuiet(tpl.prompt || "");
+  }
+
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
 
   function genUnitId(sc) { return (sc && sc.gen_unit_id) || (sc && sc.id) || ""; }
@@ -3867,6 +3904,7 @@
     resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,

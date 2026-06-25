@@ -1523,6 +1523,7 @@ if web is not None and PromptServer is not None:
                 # generation prompt stays clean — no injected `scene N` delimiters.
                 "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
+                "variables": list(target.variables or []),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)

@@ -319,6 +319,10 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # (first run after the user clicks "Reset Studio session"); explicit so it's never
         # left on from a previous run.
         _rf["reset_session"] = bool(params.get("reset_session"))
+        # Project `$name` variables — Studio resolves them dead-last (after split), per scene.
+        _vars = params.get("variables")
+        if isinstance(_vars, (list, dict)) and _vars:
+            _rf["variables"] = _vars
         if _me_scene_ratings:
             _rf["movie_editor_scene_ratings"] = _me_scene_ratings
         _ss["refiner"] = _rf

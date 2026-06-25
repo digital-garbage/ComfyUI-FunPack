@@ -566,6 +566,13 @@ class Project:
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
     sampler_inputs: dict = field(default_factory=dict)
+    # Prompt `$name` variables — a project-scoped find/replace layer resolved at generation AFTER
+    # shortcut-expand and the transition split (so they never affect scene cuts). Ordered list of
+    # {"name": str, "value": str}. Shortcuts may reference variables; resolution is recursive.
+    variables: list = field(default_factory=list)
+    # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
+    # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
+    prompt_templates: list = field(default_factory=list)
     # Refinement key for this project's runs. Feeds the FunPackRefinementKeyLoader (Studio /
     # Chain Sampler / SaveRefinementLatent). "default" = the keyless/default store. Shortcuts
     # bound to a non-default key layer their own per-scene training on top of this.
@@ -629,6 +636,8 @@ class Project:
             sampler_slot=str(d.get("sampler_slot", "funpack")),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
+            variables=list(d.get("variables") or []),
+            prompt_templates=list(d.get("prompt_templates") or []),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),
