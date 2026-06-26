@@ -204,6 +204,7 @@
     { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory" },
     { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory" },
     { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false },
+    { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false },
   ];
 
   const CONTINUITY_DEFAULTS = {
@@ -344,7 +345,7 @@
     { id: "chain_cont", title: "Manual continuity", defaultOpen: false, knobs: ["carry_i2v_guides"] },
     { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength"] },
     { id: "chain_dec", title: "Decode", defaultOpen: false, knobs: ["decode_noise_scale", "decode_timestep", "decode_tile_size"] },
-    { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides"] },
+    { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "bounded_attention_enabled"] },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 

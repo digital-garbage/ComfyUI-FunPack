@@ -12666,7 +12666,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip),
                         status,
                         training_info,
                         loss_graph,
@@ -12684,7 +12684,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13223,11 +13223,84 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
+    def _v2_token_seq_len(self, tokenized):
+        """Best-effort token-sequence length from clip.tokenize()'s output. Structure varies by
+        text-encoder (dict of encoder-name -> nested batch/chunk lists of (id, weight) tuples or
+        plain ids); we just need ANY one real token sequence's length, so recurse and return the
+        first list found whose elements look like tokens. Returns None on anything unexpected —
+        callers must treat that as "can't determine, skip"."""
+        def _walk(node):
+            if isinstance(node, dict):
+                for v in node.values():
+                    r = _walk(v)
+                    if r is not None:
+                        return r
+                return None
+            if isinstance(node, (list, tuple)):
+                if node and all(isinstance(e, (tuple, list)) and len(e) >= 1 for e in node):
+                    return len(node)  # this level IS the token list: [(id, weight), ...]
+                if node and all(isinstance(e, int) for e in node):
+                    return len(node)
+                for e in node:
+                    r = _walk(e)
+                    if r is not None:
+                        return r
+            return None
+        try:
+            return _walk(tokenized)
+        except Exception:
+            return None
+
+    def _v2_bounded_attention_split_tokens(self, text, clip):
+        """EXPERIMENTAL: split a scene prompt into two halves by sentence count (subject 1's
+        description vs subject 2's), then tokenize each half SEPARATELY with the same CLIP/text
+        encoder used for the real encode, to find the approximate token-index boundary between
+        them within the full tokenized sequence. Returns the token count of half 1, or None if
+        the prompt can't be split (single sentence) or clip/tokenization isn't available.
+
+        This is a heuristic, not exact: BPE/SentencePiece merges can shift a few tokens across the
+        boundary vs. tokenizing the two halves separately. Good enough for an experimental,
+        sentence-granularity attention split — not for precise word-level boundaries."""
+        if clip is None:
+            return None
+        text = str(text or "").strip()
+        if not text:
+            return None
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if len(sentences) < 2:
+            return None
+        mid = (len(sentences) + 1) // 2
+        span1 = " ".join(sentences[:mid])
+        try:
+            n1 = self._v2_token_seq_len(clip.tokenize(span1))
+        except Exception:
+            n1 = None
+        return int(n1) if n1 is not None and n1 > 0 else None
+
+    def _v2_apply_bounded_attention(self, conditioning_list, clip, fallback_text=""):
+        """Always-on, cheap text-only step: tag each scene entry with an approximate subject-1/
+        subject-2 token-split boundary (funpack_bound_split_tokens) for the EXPERIMENTAL Bounded
+        Attention sampler toggle to read. Pure metadata — no behavior change unless that sampler
+        toggle is enabled. No-op (and cheap) when the prompt has under two sentences or clip is
+        unavailable."""
+        out = []
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
+            n1 = self._v2_bounded_attention_split_tokens(text, clip)
+            if n1 is not None:
+                meta["funpack_bound_split_tokens"] = n1
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        return out
+
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
                                   temporal_style="natural", temporal_fallback_text="",
                                   scene_refinement_keys=None, learning_profile=None,
-                                  conditioning_plan=None):
+                                  conditioning_plan=None, clip=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13239,6 +13312,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mode = str(steer_mode or "relative").lower()
         out = self._v2_apply_pulse_temporal(conditioning_list, temporal_style)
         out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
+        out = self._v2_apply_bounded_attention(out, clip, fallback_text=temporal_fallback_text)
         if mode in ("relative", "both"):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,

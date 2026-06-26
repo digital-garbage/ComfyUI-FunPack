@@ -2194,6 +2194,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. No effect unless the chosen sampler has alg_enabled on, or no guide frames were appended this scene.",
                 }),
+                "bounded_attention_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: Bounded Attention (arXiv:2403.16990-inspired). Masks text cross-attention so the left half of the frame can only attend to subject-1's prompt tokens and the right half only to subject-2's (split by sentence count, set automatically by Studio) — aims to stop attribute/anatomy bleed between two figures in one frame. No-op on single-sentence prompts or single-subject scenes. Works on any sampler (model-level hook, not sampler-specific).",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2578,7 +2582,8 @@ class FunPackLTXAVSceneChainSampler:
         return result
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
-                      pbar=None, step_offset=0, alg_guide_tail_frames=0):
+                      pbar=None, step_offset=0, alg_guide_tail_frames=0,
+                      bounded_attention_enabled=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -2601,11 +2606,19 @@ class FunPackLTXAVSceneChainSampler:
         if isinstance(extra_options, dict) and sampler.sampler_function is sample_funpack_distilled_flow:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
 
-        sampled = comfy.sample.sample_custom(
-            model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
-            noise_mask=latent.get("noise_mask"), seed=int(seed),
-            callback=_progress_cb if pbar is not None else None,
-        )
+        # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
+        # the toggles above which only work on Distilled Flow), so install/remove here rather
+        # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
+        _ba_handles = self._install_bounded_attention(model, latent, positive) if bounded_attention_enabled else []
+
+        try:
+            sampled = comfy.sample.sample_custom(
+                model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
+                noise_mask=latent.get("noise_mask"), seed=int(seed),
+                callback=_progress_cb if pbar is not None else None,
+            )
+        finally:
+            self._remove_bounded_attention(_ba_handles)
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
         return latent
@@ -3613,6 +3626,83 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    def _bounded_attention_region_mask(self, t, h, w, device):
+        """[T*H*W] region id per video token: 0 = left half (by width), 1 = right half.
+        Assumes (t, h, w) row-major flattening — matches the packed-latent layout
+        _alg_blur_frames already relies on; LTX's patchify is 1:1 so the transformer's
+        token order should match. Best-effort for an experimental feature, not guaranteed
+        if that assumption ever changes upstream."""
+        idx = torch.arange(t * h * w, device=device)
+        w_idx = idx % w
+        return (w_idx >= (w // 2)).long()
+
+    def _install_bounded_attention(self, model, latent, positive):
+        """EXPERIMENTAL (arXiv:2403.16990-inspired, see [[project_bounded_attention]]): mask the
+        text cross-attention (attn2 only — never audio_attn2, never self-attention) so the LEFT
+        half of the video frame (by width) can only attend to subject-1's prompt tokens and the
+        RIGHT half only to subject-2's, per the sentence-count split Studio recorded as
+        funpack_bound_split_tokens on the scene's conditioning metadata. Pure attention masking,
+        no extra forward pass. Returns [] (no-op) without that metadata, a 5D video tensor, an
+        existing padding mask already in play, or recognizable transformer blocks."""
+        try:
+            n1 = None
+            if isinstance(positive, list) and positive and isinstance(positive[0], (list, tuple)) and len(positive[0]) >= 2:
+                meta = positive[0][1]
+                if isinstance(meta, dict):
+                    n1 = meta.get("funpack_bound_split_tokens")
+            if n1 is None:
+                return []
+            n1 = int(n1)
+            tensors = self._latent_tensors(latent)
+            video = max(tensors, key=lambda v: v.dim())
+            if video.dim() != 5:
+                return []
+            _, _, t, h, w = video.shape
+            if w < 2:
+                return []
+            blocks = model.model.diffusion_model.transformer_blocks
+        except Exception:
+            return []
+        if not blocks:
+            return []
+        region = self._bounded_attention_region_mask(t, h, w, video.device)  # [Q], 0=left, 1=right
+
+        def _hook(_module, args, kwargs):
+            try:
+                if kwargs.get("mask") is not None:
+                    return args, kwargs  # real padding mask already present -> skip, don't fight it
+                x = args[0] if args else None
+                context = kwargs.get("context")
+                if x is None or context is None:
+                    return args, kwargs
+                q = int(x.shape[1])
+                if q != region.shape[0]:
+                    return args, kwargs  # resolution mismatch -> no-op safely
+                k = int(context.shape[1])
+                n1c = max(0, min(k, n1))
+                key_idx = torch.arange(k, device=x.device)
+                allow0 = key_idx < n1c
+                mask = torch.where(region.unsqueeze(1) == 0, allow0.unsqueeze(0), (~allow0).unsqueeze(0))
+                kwargs = dict(kwargs)
+                kwargs["mask"] = mask
+                return args, kwargs
+            except Exception:
+                return args, kwargs
+
+        handles = []
+        for blk in blocks:
+            sub = getattr(blk, "attn2", None)
+            if sub is not None:
+                handles.append(sub.register_forward_pre_hook(_hook, with_kwargs=True))
+        return handles
+
+    def _remove_bounded_attention(self, handles):
+        for h in handles or []:
+            try:
+                h.remove()
+            except Exception:
+                pass
+
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
         internal decoder restores fine detail/grain. Never mutates the shared input VAE. Mirrors
@@ -3648,6 +3738,7 @@ class FunPackLTXAVSceneChainSampler:
                funpack_scene_anchors="",
                funpack_scene_media_refs="",
                alg_blur_guides=False,
+               bounded_attention_enabled=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3689,6 +3780,7 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_memory_strength=joyai_memory_strength,
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 alg_blur_guides=alg_blur_guides,
+                bounded_attention_enabled=bounded_attention_enabled,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3900,6 +3992,7 @@ class FunPackLTXAVSceneChainSampler:
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
+                    bounded_attention_enabled=bounded_attention_enabled,
                 )
             finally:
                 self._remove_v2a_scale(_v2a_handles)
@@ -4129,7 +4222,7 @@ class FunPackLTXAVSceneChainSampler:
                             joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
                             joyai_frame_select="center", joyai_memory_strength=0.3,
                             joyai_audio_memory=False, v2a_grad_scale=1.0,
-                            alg_blur_guides=False):
+                            alg_blur_guides=False, bounded_attention_enabled=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -4176,6 +4269,7 @@ class FunPackLTXAVSceneChainSampler:
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 alg_blur_guides=alg_blur_guides,
+                bounded_attention_enabled=bounded_attention_enabled,
                 unique_id=None, prompt=None,
             )
             last = out
