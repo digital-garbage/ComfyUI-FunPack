@@ -125,6 +125,8 @@
     if (!project) return "";
     return JSON.stringify({
       anchor: project.anchor,
+      postfix: project.postfix,
+      postfix_enabled: project.postfix_enabled,
       global_prompt: project.global_prompt,
       intro_transition: project.intro_transition,
       scenes: (project.scenes || []).map((s) => ({
@@ -488,6 +490,9 @@
     _applyDetectedTransitions(next, v.transitions, text);
     state.project.scenes = next;
     state.sceneGhosts = ghostsOut;
+    // The global prompt is authoritative on plan order — reconcile the cut order to it now
+    // (no-op when the user has pinned a manual order; otherwise tracks the plan).
+    _ensureTimelineOrder();
     const prevSel = state.selectedSceneId;
     const stillSel = prevSel && next.some((s) => s.id === prevSel);
     const firstId = stillSel ? prevSel : (next[0]?.id || null);
@@ -622,6 +627,10 @@
           const cur = state.sceneRenders[id];
           if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
           missing++;
+        } else if (token === _validateRendersToken) {
+          // File is on disk: reconcile a stale plan-estimate length with the real encoded
+          // duration for standalone renders (retroactively fixes pre-existing clips on load).
+          _probeRenderDuration(id);
         }
       } catch (_) {
         if (token !== _validateRendersToken) return;
@@ -887,6 +896,43 @@
     if (_patchAffectsCombinedPrompt(patch)) syncGlobalPromptFromTimeline();
     if (["num_frames_per_scene", "frame_rate", "width", "height"].some((k) => k in patch)) notify();
     scheduleSaveSilent();
+  }
+
+  // ── prompt variables ($name) + global-prompt templates ──────────────────────
+  function projectVariables() { return (state.project && state.project.variables) || []; }
+  function setProjectVariables(list) {
+    if (!state.project) return;
+    // Normalize: strip a leading $, drop fully-empty rows on persist (kept while editing in the UI).
+    patchProjectQuiet({ variables: (Array.isArray(list) ? list : []).map((v) => ({
+      name: String((v && v.name) || "").replace(/^\$+/, "").trim(),
+      value: String((v && v.value != null) ? v.value : ""),
+    })) });
+  }
+  function promptTemplates() { return (state.project && state.project.prompt_templates) || []; }
+  function savePromptTemplate(name, promptText) {
+    if (!state.project) return;
+    const nm = String(name || "").trim();
+    if (!nm) return;
+    const snapshot = {
+      name: nm,
+      prompt: String(promptText != null ? promptText : (state.project.global_prompt || "")),
+      variables: JSON.parse(JSON.stringify(state.project.variables || [])),
+    };
+    const tpls = (state.project.prompt_templates || []).filter((t) => t && t.name !== nm);
+    tpls.push(snapshot);
+    patchProject({ prompt_templates: tpls });
+  }
+  function deletePromptTemplate(name) {
+    if (!state.project) return;
+    patchProject({ prompt_templates: (state.project.prompt_templates || []).filter((t) => t && t.name !== name) });
+  }
+  async function applyPromptTemplate(name) {
+    if (!state.project) return;
+    const tpl = (state.project.prompt_templates || []).find((t) => t && t.name === name);
+    if (!tpl) return;
+    // Restore the saved variables first, then distribute the prompt (re-splits the timeline).
+    patchProjectQuiet({ variables: JSON.parse(JSON.stringify(tpl.variables || [])) });
+    await applyGlobalPromptQuiet(tpl.prompt || "");
   }
 
   function scene(id) { return state.project?.scenes.find((s) => s.id === id) || null; }
@@ -1295,6 +1341,62 @@
     };
   }
 
+  // True when a render's media file belongs to this scene ALONE — i.e. the scene spans the
+  // whole encoded file from its start. Multi-scene chains share one file and partition it via
+  // inSec/durationSec slices, so for those the plan-based slice length is the source of truth
+  // and must NOT be replaced by the whole-file duration.
+  function _renderIsStandalone(sceneId) {
+    const r = state.sceneRenders[sceneId];
+    if (!r?.media?.filename) return false;
+    if ((r.inSec || 0) > 0.001) return false;
+    const fname = r.media.filename;
+    let n = 0;
+    for (const k of Object.keys(state.sceneRenders)) {
+      if (state.sceneRenders[k]?.media?.filename === fname) n++;
+    }
+    return n === 1;
+  }
+
+  // A generated render's frozen durationSec is the PLAN estimate (snapped frames/fps). The
+  // actual encoded file can be slightly longer (LTXAV muxes audio; container fps rounding), so
+  // the clip drew shorter than the real media. For a standalone render (whole file = this scene)
+  // probe the real duration and adopt it — sceneDurationSec already routes render.durationSec for
+  // project-mode scenes, so the timeline/playback then match the file. Idempotent: once adopted,
+  // the values match and re-probing is a no-op.
+  function _probeRenderDuration(sceneId) {
+    if (!state.project) return;
+    const r = state.sceneRenders[sceneId];
+    if (!r?.media || !(r.media.kind === "videos" || r.media.kind === "gifs")) return;
+    if (!_renderIsStandalone(sceneId)) return;
+    const fname = r.media.filename;
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    v.onloadedmetadata = () => {
+      const dur = v.duration;
+      if (!dur || !isFinite(dur)) return;
+      const cur = state.sceneRenders[sceneId];
+      if (!cur || cur.media?.filename !== fname) return;        // scene moved on; don't clobber
+      const old = cur.durationSec;
+      if (old != null && Math.abs(old - dur) < 0.05) return;
+      cur.durationSec = dur;                                     // adopt the real encoded length
+      // A separated-audio track was pinned to the OLD (plan) length at separation time. If it
+      // still matches that length it was auto-pinned, so carry it along; if it differs the user
+      // trimmed it by hand — leave that alone.
+      if (old != null) {
+        const t = separatedTrackForScene(sceneId);
+        if (t && t.pinned_dur != null && Math.abs(t.pinned_dur - old) < 0.02) {
+          t.pinned_dur = dur;
+          if (t.source_dur != null) t.source_dur = dur;
+        }
+      }
+      notify();
+      scheduleSaveSilent();
+    };
+    v.onerror = () => {};
+    v.src = API.resultUrl(state.project.id, r.media);
+  }
+
   function _removeSceneNoHistory(id) {
     if (!state.project) return;
     const arr = state.project.scenes;
@@ -1422,6 +1524,10 @@
   function _ensureTimelineOrder() {
     const p = state.project; if (!p) return;
     const ids = (p.scenes || []).map((s) => s.id);
+    // Until the user explicitly pins a custom cut order (◀ ▶), the timeline follows the plan.
+    // This keeps an edit to the global prompt — which rebuilds the plan in its own order — from
+    // leaving a stale id sequence behind that scrambles the clips against their plan badges.
+    if (!p.timeline_manually_ordered) { p.timeline_order = ids; return; }
     const idSet = new Set(ids);
     const cur = (Array.isArray(p.timeline_order) ? p.timeline_order : []).filter((id) => idSet.has(id));
     const inCur = new Set(cur);
@@ -1450,6 +1556,9 @@
     if (i === j) return;
     _historyRecord();
     order.splice(i, 1); order.splice(j, 0, id);
+    // The user has now pinned a custom cut order — a global-prompt edit must preserve it
+    // rather than re-deriving the order from the plan.
+    p.timeline_manually_ordered = true;
     notify(); scheduleSave();
   }
 
@@ -2829,6 +2938,9 @@
     }
     _pruneGhostsAfterRegen(recordedSceneIds, completedGhostIds);
     _syncSeparatedTracksAfterRegen(recordedSceneIds);
+    // Adopt the real encoded length for standalone renders so the clip matches the file (the
+    // frozen length above is the plan estimate). Chains are skipped by the standalone guard.
+    for (const id of recordedSceneIds) _probeRenderDuration(id);
     if (clearedRating) scheduleSaveSilent();
     if (recordedSceneIds.length) {
       _validateRendersToken++;
@@ -3792,6 +3904,7 @@
     resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,
     loadShortcuts, saveShortcut, deleteShortcut, importShortcuts, clearShortcuts, addCategory,

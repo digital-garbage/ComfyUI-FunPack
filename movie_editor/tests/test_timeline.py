@@ -25,6 +25,7 @@ from movie_editor.backend.timeline import (  # noqa: E402
     continuity_settings_for_run,
     effective_anchor,
     effective_negative_prompt,
+    effective_postfix,
     generation_prompt_fingerprint,
     normalize_continuity_settings,
     resolve_scene_identity_pin,
@@ -92,6 +93,60 @@ def test_generation_run_hash_changes_when_anchor_changes():
     assert r1["run_hash"] != r2["run_hash"]
 
 
+def test_project_mode_scene_inherits_length_ignoring_stale_frames():
+    p = _project(num_frames_per_scene=97, frame_rate=25,
+                 scenes=[{"text": "a", "frames": 49, "frames_mode": "project",
+                          "fps": 12, "fps_mode": "project"}])
+    sc = p.scenes[0]
+    # project mode → the leftover per-scene frames/fps are ignored; the scene tracks the project.
+    assert sc.eff_frames(p) == 97
+    assert sc.eff_fps(p) == 25
+    # changing the project length is now followed (no stale 49)
+    p.num_frames_per_scene = 121
+    assert sc.eff_frames(p) == 121
+
+
+def test_timeline_and_custom_modes_keep_per_scene_length():
+    p = _project(num_frames_per_scene=97,
+                 scenes=[{"text": "a", "frames": 49, "frames_mode": "timeline"},
+                         {"text": "b", "frames": 60, "frames_mode": "custom"}])
+    assert p.scenes[0].eff_frames(p) == 49     # trimmed on the timeline
+    assert p.scenes[1].eff_frames(p) == 60     # locked in the inspector
+
+
+def test_postfix_travels_in_segments_but_not_global_prompt():
+    p = _project(
+        anchor="a knight",
+        postfix="cinematic, 4k",
+        scenes=[{"text": "in a forest"}, {"text": "at a castle"}],
+    )
+    # Postfix is a separate setting — never part of the verbatim global/combined prompt.
+    prompt = build_combined_prompt(p, for_generation=True)
+    assert "cinematic" not in prompt
+    assert prompt == "a knight in a forest at a castle"
+    # …but it rides along structurally so Studio can append it to every scene.
+    seg = build_generation_scene_segments(p)
+    assert seg["postfix"] == "cinematic, 4k"
+
+
+def test_postfix_toggle_disables_it_without_losing_text():
+    p = _project(postfix="cinematic, 4k", postfix_enabled=False,
+                 scenes=[{"text": "in a forest"}])
+    assert effective_postfix(p) == ""                       # toggled off → inert
+    assert build_generation_scene_segments(p)["postfix"] == ""
+    assert p.postfix == "cinematic, 4k"                     # text is preserved
+    p.postfix_enabled = True
+    assert effective_postfix(p) == "cinematic, 4k"
+
+
+def test_run_hash_changes_when_postfix_changes():
+    p = _project(scenes=[{"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}}])
+    r1 = generation_prompt_fingerprint(p, p)
+    p.postfix = "moody lighting"
+    r2 = generation_prompt_fingerprint(p, p)
+    assert r1["run_hash"] != r2["run_hash"]
+
+
 def test_carry_scenes_have_no_injected_labels():
     p = _project(
         anchor="a knight",
@@ -156,11 +211,14 @@ def test_project_roundtrip_preserves_forward_compat_fields():
 
 
 def test_split_subclips_collapse_to_one_generative_unit():
+    # Split subclips carry concrete per-scene lengths in timeline mode (how the split UI makes them).
     p = _project(
         scenes=[
-            {"id": "u1", "text": "one long shot", "frames": 49, "gen_unit_id": "u1", "cut_offset_frames": 0},
-            {"id": "u1b", "text": "", "frames": 49, "gen_unit_id": "u1", "cut_offset_frames": 49},
-            {"id": "s2", "text": "second scene", "frames": 97},
+            {"id": "u1", "text": "one long shot", "frames": 49, "frames_mode": "timeline",
+             "gen_unit_id": "u1", "cut_offset_frames": 0},
+            {"id": "u1b", "text": "", "frames": 49, "frames_mode": "timeline",
+             "gen_unit_id": "u1", "cut_offset_frames": 49},
+            {"id": "s2", "text": "second scene", "frames": 97, "frames_mode": "timeline"},
         ],
     )
     units = group_generative_units(p.scenes)

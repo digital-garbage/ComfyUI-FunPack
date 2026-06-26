@@ -51,6 +51,15 @@ def effective_negative_prompt(project: Project) -> str:
     return (project.negative_prompt or "").strip()
 
 
+def effective_postfix(project: Project) -> str:
+    """The project's manual postfix text (appended to every scene by Studio), or "" when
+    the toggle is off. Symmetric to the anchor, which is prepended; the postfix tails each
+    scene's text. Never part of the verbatim global prompt — a separate project setting."""
+    if not getattr(project, "postfix_enabled", True):
+        return ""
+    return (project.postfix or "").strip()
+
+
 def resolve_scene_identity_pin(cs: dict[str, Any]) -> Optional[str]:
     """Project-level identity pin reference for continuity guides, if set."""
     return cs.get("identity_pin_ref")
@@ -510,12 +519,15 @@ class Scene:
         return d
 
     def eff_frames(self, project: "Project") -> int:
-        if self.frames is not None:
+        # Honor frames_mode: only "timeline"/"custom" use the per-scene value. In "project" mode
+        # (the inherit default) a leftover `frames` must be IGNORED so the scene tracks the project
+        # length — otherwise a stale per-scene value makes the scene ignore project length changes.
+        if self.frames_mode in ("timeline", "custom") and self.frames is not None:
             return self.frames
         return project.num_frames_per_scene
 
     def eff_fps(self, project: "Project") -> int:
-        if self.fps is not None:
+        if self.fps_mode in ("timeline", "custom") and self.fps is not None:
             return self.fps
         return project.frame_rate
 
@@ -530,6 +542,11 @@ class Project:
     # Studio behaviour). Stored verbatim so the field round-trips; not used at build.
     global_prompt: str = ""
     negative_prompt: str = ""      # passed to the neg primitive node in the graph
+    # Shared postfix text appended to EVERY scene (symmetric to anchor, which is prepended).
+    # A standalone project setting — NOT part of the verbatim global prompt. postfix_enabled
+    # toggles it without losing the text.
+    postfix: str = ""
+    postfix_enabled: bool = True
     # Marker separating the anchor from the first scene (Studio needs a trigger to
     # close segments[0]=anchor). Defaults resolved at assembly from the library.
     intro_transition: str = ""
@@ -549,6 +566,13 @@ class Project:
     # corresponding slot == "funpack"). Keys match ComfyUI widget/input names exactly.
     studio_inputs: dict = field(default_factory=dict)
     sampler_inputs: dict = field(default_factory=dict)
+    # Prompt `$name` variables — a project-scoped find/replace layer resolved at generation AFTER
+    # shortcut-expand and the transition split (so they never affect scene cuts). Ordered list of
+    # {"name": str, "value": str}. Shortcuts may reference variables; resolution is recursive.
+    variables: list = field(default_factory=list)
+    # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
+    # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
+    prompt_templates: list = field(default_factory=list)
     # Refinement key for this project's runs. Feeds the FunPackRefinementKeyLoader (Studio /
     # Chain Sampler / SaveRefinementLatent). "default" = the keyless/default store. Shortcuts
     # bound to a non-default key layer their own per-scene training on top of this.
@@ -583,6 +607,10 @@ class Project:
     # Cut order: scene ids in TIMELINE (result) order, independent of plan (scenes) order.
     # Empty = follow plan order (back-compat). Reordering the plan never touches this.
     timeline_order: list = field(default_factory=list)
+    # True once the user explicitly reordered a timeline clip (◀ ▶). Until then the cut order
+    # tracks the plan, so editing the global prompt re-derives it cleanly instead of letting a
+    # stale id sequence scramble the clips against the plan badges.
+    timeline_manually_ordered: bool = False
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -594,6 +622,8 @@ class Project:
             anchor=str(d.get("anchor", "")),
             global_prompt=str(d.get("global_prompt", "")),
             negative_prompt=str(d.get("negative_prompt", "")),
+            postfix=str(d.get("postfix", "")),
+            postfix_enabled=bool(d.get("postfix_enabled", True)),
             intro_transition=str(d.get("intro_transition", "")),
             scenes=[Scene.from_dict(s) for s in d.get("scenes", [])],
             seed=int(d.get("seed", 1)),
@@ -606,6 +636,8 @@ class Project:
             sampler_slot=str(d.get("sampler_slot", "funpack")),
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
+            variables=list(d.get("variables") or []),
+            prompt_templates=list(d.get("prompt_templates") or []),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
             audio_tracks=list(d.get("audio_tracks") or []),
@@ -618,6 +650,7 @@ class Project:
             scene_renders=dict(d.get("scene_renders") or {}),
             scene_ghosts=list(d.get("scene_ghosts") or []),
             timeline_order=list(d.get("timeline_order") or []),
+            timeline_manually_ordered=bool(d.get("timeline_manually_ordered", False)),
             created_at=float(d.get("created_at", time.time())),
             updated_at=float(d.get("updated_at", time.time())),
         )
@@ -741,7 +774,8 @@ def build_generation_scene_segments(project: Project, include_excluded: bool = F
         trans = ((project.intro_transition or "").strip() if i == 0
                  else ((prev_root.transition_to_next if prev_root else "") or "").strip())
         out.append((trans + " " + text).strip() if trans else text)
-    return {"anchor": effective_anchor(project), "scenes": out}
+    return {"anchor": effective_anchor(project), "scenes": out,
+            "postfix": effective_postfix(project)}
 
 
 def _scene_run_fingerprint(sc: Scene) -> str:
@@ -763,6 +797,7 @@ def generation_prompt_fingerprint(project: Project, target: Optional[Project] = 
         "|".join(_scene_run_fingerprint(s) for s in active),
         cs.get("identity_pin_ref") or "",
         effective_negative_prompt(project),
+        effective_postfix(project),
         "stack" if gs["stack_enabled"] else "",
     ])
     run_hash = hashlib.sha256(run_key.encode("utf-8")).hexdigest()[:24]

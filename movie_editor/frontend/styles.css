@@ -201,6 +201,11 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 
 label.field { display: block; margin-bottom: 12px; }
 label.field > span { display: block; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+/* Field label with an inline enable toggle (e.g. Postfix). Matches the field-label look. */
+.field-toggle { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; cursor: pointer; }
+.field-toggle > input { width: auto; margin: 0; }
+.field-toggle > span { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); }
+.field > textarea:disabled { opacity: .45; cursor: not-allowed; }
 input, select, textarea {
   width: 100%; background: var(--ink-0); border: 1px solid var(--line); border-radius: 7px;
   padding: 7px 9px; font-size: 13px; outline: none; transition: border-color .12s, box-shadow .12s;
@@ -545,6 +550,7 @@ input[type=number] { font-family: var(--font-mono); }
 .pv-line { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; font-size: 12.5px; }
 .pv-badge { font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .5px; text-transform: uppercase; color: var(--teal); border: 1px solid #57d0c655; border-radius: 4px; padding: 1px 5px; flex: 0 0 auto; }
 .pv-badge.anchor { color: var(--amber); border-color: #f3a93c55; }
+.pv-badge.postfix { color: var(--amber); border-color: #f3a93c55; }
 .pv-badge.trans { color: var(--faint); border-color: transparent; font-size: 9px; }
 .pv-badge.rkey { color: #c79bf2; border-color: #c79bf255; text-transform: none; letter-spacing: 0; }
 .pv-badge.rkey.default { color: var(--faint); border-color: #ffffff22; }
@@ -1153,6 +1159,24 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .composer-row .btn { flex: 0 0 auto; }
 .composer-preview { margin-top: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .composer-preview:empty { display: none; }
+
+/* Global-prompt templates bar (above the prompt) */
+.compose-templates { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.compose-templates .compose-tpl-select { flex: 1; min-width: 0; }
+.compose-templates .btn { flex: 0 0 auto; }
+
+/* Variables panel (below the prompt) */
+.compose-vars { margin-top: 8px; }
+.composer-var-toggle { padding-left: 2px; }
+.compose-var-hint { margin-top: 4px; }
+.compose-var-hint.compose-var-warn { color: var(--amber); }
+.compose-var-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.compose-var-row { display: flex; gap: 6px; align-items: center; }
+.compose-var-dollar { color: var(--amber); font-family: var(--font-mono); opacity: 0.8; }
+.compose-var-eq { color: var(--muted); }
+.compose-var-row .compose-var-name { flex: 0 0 30%; min-width: 0; }
+.compose-var-row .compose-var-val { flex: 1; min-width: 0; }
+.compose-var-row .btn { flex: 0 0 auto; }
 
 /* config validation banner */
 /* Pipeline requirements panel */

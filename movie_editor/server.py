@@ -29,6 +29,7 @@ from .backend.timeline import (
     collapse_generative_units,
     continuity_media_refs,
     effective_negative_prompt,
+    effective_postfix,
     gen_unit_id,
     group_generative_units,
     is_video_clip,
@@ -1188,6 +1189,9 @@ if web is not None and PromptServer is not None:
                 result["scene_refinement_keys"] = bridge.scene_refinement_keys(
                     prompt, p.refinement_key)
                 result["refinement_key_pool"] = bridge.refinement_key_pool(prompt)
+                # Postfix is appended to every scene at generation but lives outside the prompt —
+                # surface it (expanded) so the preview mirrors what Studio actually encodes.
+                result["postfix"] = bridge.expand_prompt_fragment(effective_postfix(p))
             except Exception as e:  # noqa: BLE001
                 result["parse_error"] = str(e)
             return web.json_response(result)
@@ -1519,6 +1523,7 @@ if web is not None and PromptServer is not None:
                 # generation prompt stays clean — no injected `scene N` delimiters.
                 "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
+                "variables": list(target.variables or []),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)

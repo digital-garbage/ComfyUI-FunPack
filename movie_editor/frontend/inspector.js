@@ -413,6 +413,21 @@
     neg.oninput = () => S.patchProjectQuiet({ negative_prompt: neg.value });
     body.append(field("Negative prompt", neg));
 
+    // Postfix: shared text appended to every scene (mirror of the anchor, which is prepended).
+    // Its own project field with an enable toggle — never part of the global prompt.
+    const postEnabled = p.postfix_enabled !== false;
+    const post = el("textarea"); post.rows = 2; post.value = p.postfix || ""; post.dataset.k = "pj-postfix";
+    post.placeholder = "Appended to every scene (e.g. style or quality tags)";
+    post.disabled = !postEnabled;
+    post.oninput = () => S.patchProjectQuiet({ postfix: post.value });
+    const postWrap = el("div", "field");
+    const postHead = el("label", "field-toggle");
+    const postCb = el("input"); postCb.type = "checkbox"; postCb.checked = postEnabled;
+    postCb.onchange = () => { post.disabled = !postCb.checked; S.patchProjectQuiet({ postfix_enabled: postCb.checked }); };
+    postHead.append(postCb, el("span", null, "Postfix"));
+    postWrap.append(postHead, post);
+    body.append(postWrap);
+
     foldSection("Advanced project settings", false, (adv) => {
       adv.append(numberField("Max scenes", p.max_scenes, (v) => S.patchProjectQuiet({ max_scenes: v }), "pj-max"));
     });
@@ -565,6 +580,14 @@
       if (t) l.append(el("span", "pv-badge trans", "→ split"));
       box.append(l);
     });
+    // Postfix is appended to every scene at generation — show it once after the scenes, mirroring
+    // how the anchor (prepended) is shown once above them.
+    if (pv.postfix) {
+      const l = el("div", "pv-line");
+      l.append(el("span", "pv-badge postfix", "postfix"));
+      l.append(el("span", null, pv.postfix));
+      box.append(l);
+    }
     const raw = el("details", "pv-raw"); raw.append(el("summary", null, "generation prompt (sent to Studio)")); raw.append(el("pre", null, pv.combined_prompt || "")); box.append(raw);
     if (pv.display_prompt && pv.display_prompt !== pv.combined_prompt) {
       const disp = el("details", "pv-raw"); disp.append(el("summary", null, "display prompt (timeline view)")); disp.append(el("pre", null, pv.display_prompt)); box.append(disp);

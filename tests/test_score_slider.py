@@ -26,13 +26,13 @@ import samplers  # noqa: E402
 N = 10  # packed latent length used by the fake model
 
 
-def _make_wrapper(eta, monkeypatch):
+def _make_wrapper(eta, monkeypatch, bad=None):
     s = samplers.FunPackLTXAVSceneChainSampler()
     # Single-stream: audio protect is an identity passthrough.
     monkeypatch.setattr(s, "_protect_audio", lambda steered, original: steered)
     model = types.SimpleNamespace(model_options={})
     liked = torch.ones(16)
-    old = s._build_score_slider_wrapper(model, liked, eta=eta)
+    old = s._build_score_slider_wrapper(model, liked, eta=eta, bad_dir=bad)
     return model.model_options["model_function_wrapper"], old
 
 
@@ -87,3 +87,28 @@ def test_score_slider_strength_scales_push(monkeypatch):
     push3 = float(wrap3(_apply_fn, _args(0.1, cond)).mean()) - base
     assert push3 > push1 > 0
     assert abs(push3 - 3.0 * push1) < 1e-4  # linear in eta
+
+
+def test_contrastive_bad_pole_replaces_symmetric_mirror(monkeypatch):
+    # When bad_dir == liked_dir, both poles step the SAME way, so eps_+ - eps_- collapses
+    # to ~0: the contrastive minus pole genuinely replaces the -liked mirror (which would
+    # still push). Proves the bad direction, not a mirror, defines the minus pole.
+    cond = torch.randn(1, 4, 16)
+    base = float(torch.full((1, 1, N), float(cond.float().mean())).mean())
+    sym, _ = _make_wrapper(2.0, monkeypatch)                      # symmetric +/-liked
+    contra, _ = _make_wrapper(2.0, monkeypatch, bad=torch.ones(16))  # bad == liked
+    sym_push = float(sym(_apply_fn, _args(0.1, cond)).mean()) - base
+    contra_push = float(contra(_apply_fn, _args(0.1, cond)).mean()) - base
+    assert abs(sym_push) > 1e-3       # mirror still pushes
+    assert abs(contra_push) < 1e-5    # collapsed axis -> no push
+
+
+def test_contrastive_bad_pole_steers_away_from_bad(monkeypatch):
+    # bad_dir opposite to liked_dir: minus pole steps negative, plus pole positive, so the
+    # (eps_+ - eps_-) push is positive (toward liked, away from bad) — same sign as the
+    # symmetric case but driven by the real contrastive axis.
+    cond = torch.randn(1, 4, 16)
+    base = float(torch.full((1, 1, N), float(cond.float().mean())).mean())
+    contra, _ = _make_wrapper(2.0, monkeypatch, bad=-torch.ones(16))
+    push = float(contra(_apply_fn, _args(0.1, cond)).mean()) - base
+    assert push > 0

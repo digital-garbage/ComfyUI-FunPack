@@ -7,6 +7,8 @@ const BUTTON_NAMES = new Set([
   "funpack_refinement_key_export",
   "funpack_refinement_key_import",
   "funpack_refinement_key_refresh",
+  "funpack_refinement_key_delete",
+  "funpack_refinement_key_clear_absolute",
 ]);
 
 let cachedKeys = [NONE_KEY];
@@ -186,6 +188,67 @@ async function importRefinementKeyData(data, overwrite) {
   ));
 }
 
+// Atomically delete a refinement key AND all its sidecars (value function, blessed
+// attention maps / K/V banks, creativity latent, velocity store). Deleting only the
+// visible <key>.json by hand orphans those sidecars, which keep steering future runs
+// and survive a restart — the backend sweep fixes that.
+async function deleteKey(node) {
+  const key = selectedKey(node);
+  if (!key) {
+    app.canvas?.prompt?.("Delete refinement key skipped", "Select or type a refinement key first.", () => {});
+    return;
+  }
+  if (!confirm(`Delete refinement key "${key}"?\n\nThis removes its learned state AND all sidecars (value function, blessed attention/K-V banks, creativity latent, velocity memory). This cannot be undone.`)) {
+    return;
+  }
+  try {
+    const res = await api.fetchApi(`/funpack/refinement_keys/delete?key=${encodeURIComponent(key)}&_=${Date.now()}`, {
+      method: "POST", cache: "no-store",
+    });
+    if (!res.ok) {
+      const p = await res.json().catch(() => ({}));
+      throw new Error(p.error || `Delete failed with HTTP ${res.status}`);
+    }
+    const kw = keyWidget(node);
+    if (kw) kw.value = NONE_KEY;
+    await refreshTrackedNodes();
+  } catch (error) {
+    console.warn("FunPack: refinement key delete failed", error);
+    app.canvas?.prompt?.("Refinement key delete failed", error.message || String(error), () => {});
+  }
+}
+
+// Clear the keyless Absolute "global taste" store. It learns from EVERY rated
+// generation across all prompts and is invisible in the key list (dunder name), so it
+// can silently bias output (in absolute/both steer mode) and only Session Reset wipes
+// it otherwise. Surfaced here so it can be inspected + cleared directly.
+async function clearAbsoluteStore() {
+  let info = { total_iterations: 0, liked_count: 0, bad_count: 0, exists: false };
+  try {
+    const r = await api.fetchApi(`/funpack/refinement_keys/absolute?_=${Date.now()}`, { cache: "no-store" });
+    if (r.ok) info = await r.json();
+  } catch (_) { /* fall through with defaults */ }
+  if (!info.exists) {
+    app.canvas?.prompt?.("Global taste store", "The Absolute global-taste store is already empty.", () => {});
+    return;
+  }
+  if (!confirm(`Clear the Absolute global-taste store?\n\nIt has pooled ${info.total_iterations} rated generation(s) (${info.liked_count} liked / ${info.bad_count} disliked directions) across all prompts. This is applied only in absolute/both steer mode. This cannot be undone.`)) {
+    return;
+  }
+  try {
+    const res = await api.fetchApi(`/funpack/refinement_keys/clear_absolute?_=${Date.now()}`, {
+      method: "POST", cache: "no-store",
+    });
+    if (!res.ok) {
+      const p = await res.json().catch(() => ({}));
+      throw new Error(p.error || `Clear failed with HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.warn("FunPack: clear absolute store failed", error);
+    app.canvas?.prompt?.("Clear global taste failed", error.message || String(error), () => {});
+  }
+}
+
 function importKey() {
   const input = document.createElement("input");
   input.type = "file";
@@ -266,6 +329,8 @@ function addButtons(node) {
     new FunPackRefinementKeyButton("funpack_refinement_key_export", "Export", (currentNode) => void exportKey(currentNode)),
     new FunPackRefinementKeyButton("funpack_refinement_key_import", "Import", () => importKey()),
     new FunPackRefinementKeyButton("funpack_refinement_key_refresh", "Refresh", (currentNode) => void refreshNode(currentNode)),
+    new FunPackRefinementKeyButton("funpack_refinement_key_delete", "Delete Key", (currentNode) => void deleteKey(currentNode)),
+    new FunPackRefinementKeyButton("funpack_refinement_key_clear_absolute", "Clear Global Taste", () => void clearAbsoluteStore()),
   ];
   for (const button of buttons) {
     node.addCustomWidget(button);

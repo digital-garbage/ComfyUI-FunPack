@@ -24,6 +24,11 @@ Going forward, **new features and UX work target the Cutting Room frontend**. Th
 
 **3.0.1** adds per-shortcut **refinement keys** (a shortcut can mark which key it trains, with per-scene multi-key steering and a timeline preview of the keys each scene will use) and fixes Cutting Room splitting/anchor bugs — see the [CHANGELOG](CHANGELOG.md).
 
+**3.1.1** adds prompt **`$variables`** and global-prompt **templates** in the Composer, a
+cross-shot **JoyAI-Echo** audio/video memory mode, contrastive-pair **FreeSliders**, and a
+seed-routing **path-outcome planner** that steers future generations away from disliked paths —
+see the [CHANGELOG](CHANGELOG.md) for the full list.
+
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 
 ## Installation

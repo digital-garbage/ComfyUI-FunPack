@@ -68,6 +68,25 @@ def parse_timeline(prompt: str, seed: int = 0) -> dict:
     return {"anchor": s.get("anchor_expanded", ""), "scenes": scenes, "transitions": transitions}
 
 
+def expand_prompt_fragment(text: str) -> str:
+    """Expand shortcuts in a standalone fragment (anchor / postfix) the way generation does —
+    mirrors the _flatten(split_scenes(...)) the chain sampler runs on each, so the preview shows
+    exactly the expanded text Studio will append/prepend. Empty in → empty out."""
+    if not str(text or "").strip():
+        return ""
+    split_fn = _funpack_attr("conditioning", "split_scenes")
+    s = split_fn(str(text))
+    parts = []
+    ae = (s.get("anchor_expanded") or "").strip()
+    if ae:
+        parts.append(ae)
+    for sc in (s.get("scenes", []) or []):
+        e = (sc.get("expanded") or "").strip()
+        if e:
+            parts.append(e)
+    return " ".join(parts).strip()
+
+
 def parse_timeline_raw(prompt: str) -> dict:
     """Split WITHOUT expanding shortcuts — scene texts stay verbatim (shortcuts and
     transition triggers preserved). Used by editing views so the user keeps operating

@@ -2,6 +2,49 @@
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-06-26
+
+### Added
+- **Prompt `$variables` + global-prompt templates.** Define `$name` variables in the Composer and
+  reference them anywhere in the global prompt or scene text; resolved last (after shortcuts and
+  scene splitting), so existing trigger/split behavior is untouched. Recursive/cyclic references
+  fall back to the literal text instead of erroring. Save the current prompt as a reusable
+  template and load it back from a dropdown above the prompt box.
+- **JoyAI-Echo memory mode** on the Scene Chain Sampler — a cross-shot audio/video memory bank
+  built on guide attention: a video memory bank carries visual identity across shots, paired with
+  an audio memory (protected via a masked tail) and a `v2a_grad_scale` control over the native
+  video-to-audio attention hook (1.0 = no-op). Toggle in Engine Settings.
+- **Contrastive-pair FreeSliders.** The minus pole of the score-space taste slider is now
+  synthesized from a learned `bad_dir`, giving a real contrastive pair instead of a single learned
+  direction.
+- **Scene postfix.** Shared text can be appended to every scene, toggleable, with shortcut
+  expansion and key fold-in covered by tests.
+- **Cycle-guard + smart auto-wire** for full-control graphs, so automatic wiring no longer fights
+  manual connections.
+- **Path-outcome planner (phases 1–2d).** Per-scene path-outcome memory with seed-lever-avoidance
+  and Thompson/UCB explore-exploit seed routing, plus conditioning-variant routing — ratings now
+  steer future generations away from disliked/repeated paths.
+- **BachVid + KV-Lock.** Training-free per-key raw K/V identity bank (capture/bless/inject) gated
+  by a variance-of-x0 scheduler that drives injection strength.
+- Clip length on the timeline now adopts the real encoded file duration instead of the plan
+  estimate; project-mode scene length honors `frames_mode` so scenes track project length.
+
+### Changed
+- Scene boundaries are now passed structurally end-to-end; the generic `scene N` injection marker
+  is removed entirely, and a malformed/incompatible split can never reach the encoder.
+- A corrupt or incompatible saved project now opens with a clear error instead of a 500.
+- "Just forget it" (refiner reset) now truly leaves no trace.
+
+### Fixed
+- Leaked Technique-5 forward hooks could survive a reset/key-delete and cause progressive quality
+  drift across runs; hooks are now tagged and stripped on every run.
+- Deleting a refinement key was non-atomic and could orphan its `value_fn`/blessed banks (still
+  applied after "deletion") and leave behind an invisible keyless Absolute store; deletion is now
+  atomic and the keyless Absolute store is surfaced/clearable in the UI.
+- JoyAI memory inputs were inserted in the middle of the sampler's `INPUT_TYPES`, desyncing widget
+  order in the ComfyUI graph; moved to the end.
+- Timeline clip order no longer scrambles after editing the global prompt.
+
 ## [3.1.0] - 2026-06-21
 
 ### Added

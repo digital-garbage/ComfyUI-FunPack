@@ -747,6 +747,42 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
+class _JoyAIMemoryBank:
+    """JoyAI-Echo cross-shot memory: a rolling set of clean prior-shot latent frames.
+
+    Mirrors PairedAudioVideoMemoryBank's policy (JoyAI_Echo configs/inference.yaml): the first
+    ``num_fix`` entries are pinned permanently (the opening shots = global story anchor); the rest
+    is a most-recent window so the total never exceeds ``max_size``. Each entry is a paired
+    (video_frame, audio_frame) of clean latents from a finished scene; the audio half is None until
+    joyai_audio_memory is on. Pure bookkeeping — injection is done by the sampler (video via LTX
+    guide attention, audio via a protected prefix), so this holds no model state and is unit-testable.
+    """
+
+    def __init__(self, max_size=7, num_fix=3):
+        self.max_size = max(1, int(max_size))
+        self.num_fix = max(0, min(int(num_fix), self.max_size))
+        self.entries = []  # list of (video_frame, audio_frame) tuples, oldest first
+
+    def add(self, video_frame, audio_frame=None):
+        if video_frame is None:
+            return
+        self.entries.append((video_frame, audio_frame))
+        if len(self.entries) <= self.max_size:
+            return
+        fixed = self.entries[:self.num_fix]
+        recent = self.entries[self.num_fix:]
+        room = self.max_size - len(fixed)
+        self.entries = fixed + (recent[-room:] if room > 0 else [])
+
+    def frames(self):
+        """Video latent frames, oldest first (the injection order for guide attention)."""
+        return [v for v, _ in self.entries]
+
+    def audio(self):
+        """Paired audio latent frames aligned 1:1 with frames(); entries hold None when audio is off."""
+        return [a for _, a in self.entries]
+
+
 def _find_schedule_anchor_index(sigmas, total_steps, schedule_progress):
     if sigmas is None or total_steps <= 1:
         return 0
@@ -1901,7 +1937,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "score_slider": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "FreeSliders-style taste guidance in SCORE space. Instead of nudging the conditioning once (embed_guidance), it runs 3 forward passes on quality-phase steps — base, taste+, taste- — and steers the noise prediction along eps_+ minus eps_-. Stronger, prompt-faithful taste push; ~2x cost on late steps. Uses the same learned direction + source + refinement_key_input as embed_guidance (needs 3+ liked generations). Video-only (audio unaffected).",
+                    "tooltip": "FreeSliders-style taste guidance in SCORE space. Instead of nudging the conditioning once (embed_guidance), it runs 3 forward passes on quality-phase steps — base, taste+, taste- — and steers the noise prediction along eps_+ minus eps_-. Stronger, prompt-faithful taste push; ~2x cost on late steps. Uses the same learned direction + source + refinement_key_input as embed_guidance (needs 3+ liked generations). Contrastive pair: once 3+ disliked/awful gens are rated, the minus pole switches from a mirror of liked to the real learned BAD direction, so the axis becomes good-vs-bad and actively steers away from what produced rated-bad gens. Video-only (audio unaffected).",
                 }),
                 "score_slider_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 3.0, "step": 0.25,
@@ -1931,6 +1967,40 @@ class FunPackLTXAVSceneChainSampler:
                 "embed_guidance_source": (["relative", "absolute"], {
                     "default": "relative",
                     "tooltip": "Which learned direction embed_guidance steers toward. Relative: this prompt's liked direction (needs refinement_key_input). Absolute: the global, prompt-agnostic taste direction the Refiner accumulates across all prompts — works with no key.",
+                }),
+                # NOTE: append-only. New widgets MUST go at the END of the widget sequence (after
+                # every widget the reference workflow already has a positional value for, before the
+                # forceInput sockets below). Inserting earlier desyncs extract_widgets' positional
+                # mapping and lands a numeric on a combo (e.g. joyai_frame_select got 0).
+                "joyai_memory": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "JoyAI-Echo cross-shot memory bank. Generalizes mid_scene_guide from one anchor to a managed set of clean prior-shot frames injected into each scene via LTX guide attention, so character/scene identity carries across the whole chain (JoyAI-Echo's story-level consistency). The first joyai_fix_frames scenes are pinned permanently as a global anchor; the rest is a rolling most-recent window capped at joyai_memory_size. Supersedes mid_scene_guide when on. Video memory only; pair it with joyai_audio_memory for the soundtrack.",
+                }),
+                "joyai_memory_size": ("INT", {
+                    "default": 7, "min": 1, "max": 32,
+                    "tooltip": "Max total memory entries injected per scene (JoyAI default 7). Higher = stronger long-range consistency but more guide tokens and slower scenes.",
+                }),
+                "joyai_fix_frames": ("INT", {
+                    "default": 3, "min": 0, "max": 16,
+                    "tooltip": "Number of opening scenes pinned permanently in the bank as a global anchor (JoyAI default 3). They are never pruned; entries beyond them are a rolling most-recent window.",
+                }),
+                "joyai_frame_select": (["center", "first", "random"], {
+                    "default": "center",
+                    "tooltip": "Which frame of each finished scene to store in the bank (JoyAI default 'center').",
+                }),
+                "joyai_memory_strength": ("FLOAT", {
+                    "default": 0.3, "min": 0.25, "max": 0.5, "step": 0.05,
+                    "tooltip": "Guide-attention strength for each memory frame. Same 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts).",
+                }),
+                # NOTE: append-only — keep new sampler widgets at the END of this block so the
+                # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
+                "joyai_audio_memory": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "JoyAI-Echo PAIRED AUDIO memory. Alongside each video memory frame, pin the prior shot's clean audio latent into the audio stream so voice/timbre/ambience carry across shots the way the face now does. Deliberately breaks the audio pass-through invariant — off by default. Requires joyai_memory on; no effect on single-stream (video-only) LTXV.",
+                }),
+                "v2a_grad_scale": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.25,
+                    "tooltip": "JoyAI-Echo video->audio coupling. Scales the model's trained video-to-audio cross-attention so the carried audio tracks the new shot's visuals (JoyAI uses 2.0). 1.0 = native model behavior (no change, zero overhead); 0.0 = audio ignores video this run. Only applies when joyai_audio_memory is on.",
                 }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
@@ -2242,6 +2312,21 @@ class FunPackLTXAVSceneChainSampler:
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
             result["samples"] = tensors[0]
+        return result
+
+    def _crop_audio_tail(self, latent, count):
+        """Drop the trailing `count` injected JoyAI audio-memory frames from the audio stream
+        (tensors[1]) after sampling — the audio analogue of _crop_video_tail. No-op for
+        single-stream LTXV (no audio tensor)."""
+        if count <= 0:
+            return latent
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        if len(tensors) < 2 or tensors[1] is None:
+            return latent
+        tensors[1] = tensors[1][:, :, :-count]
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         return result
 
     def _slerp_block(self, a, b, t):
@@ -2682,8 +2767,11 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
-    def _load_liked_direction(self, refinement_key):
-        """Read the liked conditioning direction from the Refiner's state file."""
+    def _load_taste_direction(self, refinement_key, slot="liked_dir"):
+        """Read a learned conditioning direction from the Refiner's global taste store.
+        `slot` is "liked_dir" (accumulated from liked gens) or "bad_dir" (accumulated
+        from awful / strongly-negative gens). Returns a [dim] tensor, or None when the
+        slot lacks the 3+ rated samples that make a direction meaningful."""
         try:
             try:
                 from .conditioning import refinement_state_path, serializable_to_tensor
@@ -2693,16 +2781,20 @@ class FunPackLTXAVSceneChainSampler:
             path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
             with open(path, "r", encoding="utf-8") as f:
                 state = _json.load(f)
-            global_state = state.get("global", state)  # liked_dir lives under state["global"]
-            liked_dir_slot = global_state.get("liked_dir", {})
-            if int(liked_dir_slot.get("direction_count", 0)) < 3:
+            global_state = state.get("global", state)  # directions live under state["global"]
+            dir_slot = global_state.get(slot, {})
+            if int(dir_slot.get("direction_count", 0)) < 3:
                 return None
-            raw = liked_dir_slot.get("direction")
+            raw = dir_slot.get("direction")
             if raw is None:
                 return None
             return serializable_to_tensor(raw)
         except Exception:
             return None
+
+    def _load_liked_direction(self, refinement_key):
+        """Read the liked conditioning direction from the Refiner's state file."""
+        return self._load_taste_direction(refinement_key, "liked_dir")
 
     def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None):
         """Register a model_function_wrapper that nudges conditioning toward the
@@ -2743,7 +2835,7 @@ class FunPackLTXAVSceneChainSampler:
         model.model_options["model_function_wrapper"] = _embed_wrapper
         return old_wrapper
 
-    def _build_score_slider_wrapper(self, model, liked_dir, eta):
+    def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None):
         """FreeSliders (arxiv 2511.00103) in score space, sourced from the learned taste.
 
         embed_guidance nudges the conditioning embedding once per step. FreeSliders
@@ -2758,18 +2850,28 @@ class FunPackLTXAVSceneChainSampler:
         is confined to the packed video stream, so audio rides eps_base. Returns the
         previous wrapper so the caller can restore it.
 
+        Contrastive pair: when `bad_dir` is available (3+ disliked/awful gens learned a
+        bad_dir in the same store), the MINUS pole is built from the real disliked
+        direction instead of mirroring liked. The axis becomes (liked - bad) — a true
+        good-vs-bad corrective vector — so the step pushes the noise prediction away from
+        the conditioning region that produced rated-bad gens, not just toward "anti-liked".
+        Falls back to the symmetric +/-liked mirror when no bad_dir exists.
+
         Composes with embed_guidance: when both are on, all three passes route through
         the embed wrapper, so its nudge cancels in (eps_+ - eps_-) and only the slider
         axis remains, while eps_base still carries the embed steering."""
         old_wrapper = model.model_options.get("model_function_wrapper")
         fixed_dir = torch.nn.functional.normalize(liked_dir.float(), dim=-1)
+        bad_fixed = None
+        if bad_dir is not None:
+            bad_fixed = torch.nn.functional.normalize(bad_dir.float(), dim=-1)
 
         def _call(apply_fn, a):
             if old_wrapper is not None:
                 return old_wrapper(apply_fn, a)
             return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
 
-        def _slider_wrapper(apply_fn, args, _fixed=fixed_dir, _eta=float(eta)):
+        def _slider_wrapper(apply_fn, args, _fixed=fixed_dir, _bad=bad_fixed, _eta=float(eta)):
             c = args.get("c") or {}
             cond = c.get("c_crossattn")
             ts = args.get("timestep")
@@ -2785,9 +2887,18 @@ class FunPackLTXAVSceneChainSampler:
                 # Calibrated finite-difference step along the taste axis (per-token,
                 # mirrors _v2_apply_direction's NORM_SCALE=0.3 calibration but halved
                 # so the symmetric +/- spread stays non-destructive).
-                step = d * (0.15 * cond.norm(dim=-1, keepdim=True))
+                scale = 0.15 * cond.norm(dim=-1, keepdim=True)
+                step = d * scale
                 cond_plus = self._protect_audio(cond + step, cond)
-                cond_minus = self._protect_audio(cond - step, cond)
+                if _bad is not None:
+                    # Contrastive minus pole: step toward the learned BAD direction so the
+                    # (eps_+ - eps_-) axis becomes good-vs-bad, steering away from the
+                    # conditioning region that produced rated-bad gens. Same step magnitude
+                    # keeps the pair symmetric in size, asymmetric in direction.
+                    bd = _bad.to(cond.device, cond.dtype).expand_as(cond)
+                    cond_minus = self._protect_audio(cond + bd * scale, cond)
+                else:
+                    cond_minus = self._protect_audio(cond - step, cond)
                 eps_base = _call(apply_fn, args)
                 args_plus = dict(args); cp = dict(c); cp["c_crossattn"] = cond_plus; args_plus["c"] = cp
                 args_minus = dict(args); cm = dict(c); cm["c_crossattn"] = cond_minus; args_minus["c"] = cm
@@ -3186,6 +3297,140 @@ class FunPackLTXAVSceneChainSampler:
 
         return result, positive, negative, 1
 
+    def _harvest_joyai_frame(self, sampled, select):
+        """Pick one clean latent frame from a finished scene for the memory bank.
+        'center' (default) / 'first' / 'random', mirroring JoyAI's frame_selection_mode."""
+        tensors = self._latent_tensors(sampled)
+        if not tensors:
+            return None
+        F = self._tensor_frames(tensors[0])
+        if F <= 0:
+            return None
+        if select == "first":
+            idx = 0
+        elif select == "random":
+            idx = int(torch.randint(0, F, (1,)).item())
+        else:
+            idx = F // 2
+        return self._time_slice(tensors[0], idx, idx + 1).detach()
+
+    def _append_joyai_memory_guides(self, chunk, frames, positive, negative, vae, strength):
+        """JoyAI-Echo memory injection: attach every banked prior-shot frame to the current chunk
+        as a clean LTX guide, so attention carries identity/scene forward across the whole chain.
+        The single-anchor mid_scene_guide generalized to N frames — reuses _append_guide_latent
+        per entry. Memory frames are placed at distinct early (prefix) positions, matching JoyAI's
+        sequence-prefix concat. Audio-safe (guide tokens influence via attention, not overwrite).
+        Returns the total appended-frame count so the caller crops them off the output tail."""
+        if not frames:
+            return chunk, positive, negative, 0
+        chunk_tensors = self._latent_tensors(chunk)
+        if not chunk_tensors:
+            return chunk, positive, negative, 0
+        F_chunk = self._tensor_frames(chunk_tensors[0])
+        s = max(0.25, float(strength))  # same audio-safe floor as mid_scene_guide
+        tail = 0
+        for i, gf in enumerate(frames):
+            apply_at = min(max(0, F_chunk - 1), i)  # prefix context: distinct early positions
+            chunk, positive, negative, t = self._append_guide_latent(
+                chunk, gf, apply_at, s, positive, negative, vae,
+            )
+            tail += t
+        return chunk, positive, negative, tail
+
+    def _harvest_joyai_audio(self, sampled, select):
+        """Paired clean AUDIO latent frame from a finished scene, position-matched to the video
+        harvest (same center/first/random fraction). None for single-stream LTXV (no audio tensor)."""
+        tensors = self._latent_tensors(sampled)
+        if len(tensors) < 2 or tensors[1] is None:
+            return None
+        F = self._tensor_frames(tensors[1])
+        if F <= 0:
+            return None
+        if select == "first":
+            idx = 0
+        elif select == "random":
+            idx = int(torch.randint(0, F, (1,)).item())
+        else:
+            idx = F // 2
+        return self._time_slice(tensors[1], idx, idx + 1).detach()
+
+    def _append_joyai_audio_memory(self, chunk, audio_frames):
+        """Pin every banked prior-shot AUDIO latent frame into the current chunk's audio stream as a
+        fully protected (mask=0) tail, the audio analogue of the video memory bank. There is no LTX
+        guide-attention API for audio, so memory rides the model's native audio self-attention + the
+        video->audio coupling instead. Returns the appended audio-frame count so the caller crops the
+        tail back off. No-op on single-stream LTXV (no audio tensor)."""
+        frames = [a for a in (audio_frames or []) if a is not None]
+        if not frames:
+            return chunk, 0
+        tensors = self._latent_tensors(chunk)
+        if len(tensors) < 2 or tensors[1] is None:
+            return chunk, 0
+        result = self._clone_latent(chunk)
+        rtensors = self._latent_tensors(result)
+        masks = self._latent_masks(result, len(rtensors))
+        for i in range(len(rtensors)):
+            if masks[i] is None:
+                masks[i] = torch.ones_like(rtensors[i])
+        audio = rtensors[1]
+        amask = masks[1]
+        appended = 0
+        for af in frames:
+            af = af.to(device=audio.device, dtype=audio.dtype)
+            # Only append shape-compatible frames (channels + spatial dims must match the stream).
+            if af.shape[1] != audio.shape[1] or af.shape[3:] != audio.shape[3:]:
+                continue
+            clean = torch.zeros(
+                amask.shape[0], amask.shape[1], af.shape[2], *amask.shape[3:],
+                device=amask.device, dtype=amask.dtype,
+            )
+            audio = torch.cat([audio, af], dim=2)
+            amask = torch.cat([amask, clean], dim=2)
+            appended += int(af.shape[2])
+        if appended == 0:
+            return chunk, 0
+        rtensors[1] = audio
+        masks[1] = amask
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(rtensors)
+            result["noise_mask"] = comfy.nested_tensor.NestedTensor(masks)
+        else:
+            return chunk, 0  # single-stream has no audio tensor to pin
+        return result, appended
+
+    def _install_v2a_scale(self, model, scale):
+        """Scale the model's trained video->audio cross-attention by `scale` (JoyAI's v2a_grad_scale)
+        via reversible PyTorch forward hooks on each AV block's `video_to_audio_attn` submodule
+        (out *= scale). Returns hook handles to remove afterwards. Empty when scale==1.0 (native, no
+        hook installed -> zero overhead / byte-identical) or when the model isn't LTXAV."""
+        if scale is None or abs(float(scale) - 1.0) < 1e-6:
+            return []
+        try:
+            blocks = model.model.diffusion_model.transformer_blocks
+        except Exception:
+            return []
+        if not blocks:
+            return []
+        s = float(scale)
+
+        def _hook(_module, _inputs, output):
+            if isinstance(output, tuple):
+                return (output[0] * s,) + tuple(output[1:])
+            return output * s
+
+        handles = []
+        for blk in blocks:
+            sub = getattr(blk, "video_to_audio_attn", None)
+            if sub is not None:
+                handles.append(sub.register_forward_hook(_hook))
+        return handles
+
+    def _remove_v2a_scale(self, handles):
+        for h in handles or []:
+            try:
+                h.remove()
+            except Exception:
+                pass
 
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
@@ -3210,6 +3455,9 @@ class FunPackLTXAVSceneChainSampler:
                num_frames_per_scene, frame_overlap, cfg, max_scenes, use_same_seed=False,
                carry_i2v_guides=False,
                mid_scene_guide=False, mid_scene_guide_strength=0.4,
+               joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
+               joyai_frame_select="center", joyai_memory_strength=0.3,
+               joyai_audio_memory=False, v2a_grad_scale=1.0,
                embed_guidance=False, embed_guidance_strength=0.02,
                embed_guidance_source="relative",
                score_slider=False, score_slider_strength=1.0,
@@ -3223,6 +3471,19 @@ class FunPackLTXAVSceneChainSampler:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
             negative = []
+
+        # Defensively strip any enhancement block hooks left on the shared diffusion
+        # model by a previous run (build_enhancements only removes them on scene
+        # transitions, not at end-of-sampling). This covers runs that don't go through
+        # build_enhancements, so stale hooks can't fire on an unenhanced generation.
+        try:
+            try:
+                from .ltx_enhancements import strip_funpack_block_hooks
+            except ImportError:
+                from ltx_enhancements import strip_funpack_block_hooks
+            strip_funpack_block_hooks(model)
+        except Exception as _e:
+            print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
 
         # Decode-time noise (folded in from LTXV's Set VAE Decoder Noise per the boundary law:
         # the Chain Sampler owns IMAGES decode, so this lives here, not on a separate node).
@@ -3241,6 +3502,10 @@ class FunPackLTXAVSceneChainSampler:
                 embed_guidance, embed_guidance_strength, transition_duration,
                 decode_tile_size, refinement_key_input, embed_guidance_source,
                 score_slider, score_slider_strength,
+                joyai_memory=joyai_memory, joyai_memory_size=joyai_memory_size,
+                joyai_fix_frames=joyai_fix_frames, joyai_frame_select=joyai_frame_select,
+                joyai_memory_strength=joyai_memory_strength,
+                joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3260,6 +3525,7 @@ class FunPackLTXAVSceneChainSampler:
         # 'relative' = this prompt's key; 'absolute' = the global, prompt-agnostic taste store
         # (keyless, so it works even without refinement_key_input).
         _liked_dir = None
+        _bad_dir = None
         _value_fn = None
         _eg_source = str(embed_guidance_source or "relative").lower()
         _eg_key = self._absolute_key() if _eg_source == "absolute" else refinement_key_input
@@ -3277,7 +3543,11 @@ class FunPackLTXAVSceneChainSampler:
                         mode = "fixed direction"
                     print(f"[FunPackSceneChain] embed_guidance ({_eg_source}): active via {mode}, strength={embed_guidance_strength}")
                 if score_slider:
-                    print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}")
+                    # Contrastive pole for the slider: the learned bad direction from the same
+                    # store, when 3+ disliked/awful gens have populated it.
+                    _bad_dir = self._load_taste_direction(_eg_key, "bad_dir")
+                    pole = "contrastive (liked-vs-bad)" if _bad_dir is not None else "symmetric (+/-liked)"
+                    print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}, pole={pole}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -3298,6 +3568,7 @@ class FunPackLTXAVSceneChainSampler:
         scene_outputs: list = []
         scene_media_by_ref = self._parse_scene_anchors(funpack_scene_media_refs)
         scene_runs: list = []
+        joyai_bank = _JoyAIMemoryBank(joyai_memory_size, joyai_fix_frames) if joyai_memory else None
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -3311,6 +3582,7 @@ class FunPackLTXAVSceneChainSampler:
             carried = 0
             soft_carried = 0
             guide_tail = 0
+            audio_tail = 0
             run_mechanisms: list = []
             anchor_meta = (scene_anchors or {}).get(str(scene_index))
             if output is None:
@@ -3373,7 +3645,17 @@ class FunPackLTXAVSceneChainSampler:
                         chunk, latent_template, scene_positive, scene_negative,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
-                if mid_scene_guide and not custom_guides:
+                if joyai_memory and joyai_bank is not None and not custom_guides:
+                    mem_frames = joyai_bank.frames()
+                    run_mechanisms.append(f"joyai_memory({len(mem_frames)}/{joyai_memory_size},fix={joyai_fix_frames})")
+                    chunk, scene_positive, scene_negative, guide_tail = self._append_joyai_memory_guides(
+                        chunk, mem_frames, scene_positive, scene_negative, vae, joyai_memory_strength,
+                    )
+                    if joyai_audio_memory:
+                        chunk, audio_tail = self._append_joyai_audio_memory(chunk, joyai_bank.audio())
+                        if audio_tail > 0:
+                            run_mechanisms.append(f"joyai_audio_memory({audio_tail})")
+                elif mid_scene_guide and not custom_guides:
                     run_mechanisms.append("mid_scene_guide")
                     chunk, scene_positive, scene_negative, guide_tail = self._append_mid_scene_guide(
                         chunk, output, scene_positive, scene_negative, vae, mid_scene_guide_strength,
@@ -3391,8 +3673,9 @@ class FunPackLTXAVSceneChainSampler:
                 _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
             _slider_old_wrapper = None
             if score_slider and _liked_dir is not None:
-                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength})")
-                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength)
+                _pole = "contrastive" if _bad_dir is not None else "symmetric"
+                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
+                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
             # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
             # whatever is installed (e.g. embed guidance). Restored right after sampling,
             # before the embed-guidance restore, so the wrappers unwind in install order.
@@ -3421,10 +3704,21 @@ class FunPackLTXAVSceneChainSampler:
                     _temporal_prev_wrapper = _cur_wrapper
                     model.model_options["model_function_wrapper"] = _tw
                     _temporal_applied = True
-            sampled = self._sample_chunk(
-                model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
-                pbar=pbar, step_offset=scene_index * steps_per_scene,
-            )
+            # JoyAI v2a coupling: amplify (or mute) the trained video->audio cross-attention for this
+            # scene's denoise. Only when audio memory is on and the scale differs from native (1.0);
+            # hooks are removed immediately after so nothing leaks into later scenes / other nodes.
+            _v2a_handles = []
+            if joyai_audio_memory and audio_tail > 0:
+                _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
+                if _v2a_handles:
+                    run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
+            try:
+                sampled = self._sample_chunk(
+                    model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
+                    pbar=pbar, step_offset=scene_index * steps_per_scene,
+                )
+            finally:
+                self._remove_v2a_scale(_v2a_handles)
             if _temporal_applied:
                 if _temporal_prev_wrapper is not None:
                     model.model_options["model_function_wrapper"] = _temporal_prev_wrapper
@@ -3445,6 +3739,15 @@ class FunPackLTXAVSceneChainSampler:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
                 sampled = self._crop_video_tail(sampled, guide_tail)
+            if audio_tail > 0:
+                sampled = self._crop_audio_tail(sampled, audio_tail)
+            if joyai_bank is not None:
+                # Harvest from the clean, fully-cropped scene so injected memory tails never re-enter
+                # the bank. Scene 0 seeds the pinned anchor (num_fix); later scenes roll in. The audio
+                # half is harvested only when audio memory is on, else stored as None (video-only).
+                v_frame = self._harvest_joyai_frame(sampled, joyai_frame_select)
+                a_frame = self._harvest_joyai_audio(sampled, joyai_frame_select) if joyai_audio_memory else None
+                joyai_bank.add(v_frame, a_frame)
             scene_outputs.append(self._clone_latent(sampled))
             blend_overlap = 0 if anchor_meta else video_overlap
             output = sampled if output is None else self._blend_latents(output, sampled, blend_overlap)
@@ -3546,6 +3849,8 @@ class FunPackLTXAVSceneChainSampler:
                     "carry_i2v_guides": bool(carry_i2v_guides),
                     "frame_overlap": int(frame_overlap),
                     "transitions_enabled": scene_count > 1,
+                    "joyai_memory": bool(joyai_memory),
+                    "joyai_audio_memory": bool(joyai_audio_memory),
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
@@ -3636,7 +3941,10 @@ class FunPackLTXAVSceneChainSampler:
                             use_same_seed, carry_i2v_guides, mid_scene_guide, mid_scene_guide_strength,
                             embed_guidance, embed_guidance_strength, transition_duration,
                             decode_tile_size, refinement_key_input, embed_guidance_source="relative",
-                            score_slider=False, score_slider_strength=1.0):
+                            score_slider=False, score_slider_strength=1.0,
+                            joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
+                            joyai_frame_select="center", joyai_memory_strength=0.3,
+                            joyai_audio_memory=False, v2a_grad_scale=1.0):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -3676,6 +3984,10 @@ class FunPackLTXAVSceneChainSampler:
                 mid_scene_guide_strength=mid_scene_guide_strength, embed_guidance=embed_guidance,
                 embed_guidance_strength=embed_guidance_strength, embed_guidance_source=embed_guidance_source,
                 score_slider=score_slider, score_slider_strength=score_slider_strength,
+                joyai_memory=joyai_memory, joyai_memory_size=joyai_memory_size,
+                joyai_fix_frames=joyai_fix_frames, joyai_frame_select=joyai_frame_select,
+                joyai_memory_strength=joyai_memory_strength,
+                joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 unique_id=None, prompt=None,

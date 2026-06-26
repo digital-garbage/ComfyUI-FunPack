@@ -187,6 +187,9 @@
       || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || "";
     const val = gpDraft != null ? gpDraft : live;
 
+    // Templates: pick one to apply (prompt + variables), Save to snapshot the current state.
+    wrap.append(composeTemplatesBar());
+
     const titleRow = el("div", "compose-head");
     titleRow.append(el("div", "lib-form-title", "Global prompt"));
     const addSc = el("button", "btn ghost tiny", "＋ Add shortcut");
@@ -197,15 +200,140 @@
 
     const ta = el("textarea", "lib-in compose-ta"); ta.rows = 14; ta.value = val;
     ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
-    ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); };
+    ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); updateVarHint(); };
     wrap.append(ta);
     wrap.append(el("div", "insp-hint",
       "Edits apply automatically and stay in sync with the timeline's per-scene prompts. Shortcuts expand at generation time."));
     composeTextarea = ta;
     if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
+
+    // Variables ($name) — collapsible, same toggle pattern as Settings ▸ Built-in pipeline.
+    wrap.append(composeVariables());
     return wrap;
   }
   let composeTextarea = null;
+  let varsOpen = false;          // Variables panel expanded?
+  let varHintEl = null;          // undeclared / cycle hint line under the prompt
+
+  // ── templates bar (above the global prompt) ─────────────────────────────────────
+  function composeTemplatesBar() {
+    const bar = el("div", "compose-templates");
+    const sel = el("select", "lib-in compose-tpl-select");
+    const ph = new Option("Templates…", ""); ph.disabled = true; ph.selected = true; sel.append(ph);
+    (S.promptTemplates() || []).forEach((t) => {
+      const preview = String(t.prompt || "").replace(/\s+/g, " ").slice(0, 48);
+      const o = new Option(`${t.name}${preview ? " — " + preview : ""}`, t.name);
+      sel.append(o);
+    });
+    sel.title = "Apply a saved global prompt + its variables";
+    sel.onchange = () => { const n = sel.value; if (n) S.applyPromptTemplate(n).then(render); };
+    bar.append(sel);
+    const save = el("button", "btn ghost tiny", "Save");
+    save.title = "Save the current global prompt + variables as a template";
+    save.onclick = () => {
+      const name = (window.prompt("Template name:") || "").trim();
+      if (!name) return;
+      const txt = composeTextarea ? composeTextarea.value : (S.get().project.global_prompt || "");
+      S.savePromptTemplate(name, txt);
+      render();
+    };
+    bar.append(save);
+    return bar;
+  }
+
+  // ── variables panel (below the global prompt) ───────────────────────────────────
+  // The list IS the editor: editable name/value rows + Add/Remove. Resolution happens at
+  // generation, after shortcuts + split (Studio), so nothing here touches the timeline.
+  function composeVariables() {
+    const box = el("div", "compose-vars");
+    const toggle = el("button", "btn ghost tiny composer-var-toggle",
+      (varsOpen ? "▾ " : "▸ ") + "Variables");
+    toggle.title = "Project $name variables — substituted into the prompt at generation";
+    toggle.onclick = () => { varsOpen = !varsOpen; render(); };
+    box.append(toggle);
+
+    varHintEl = el("div", "insp-hint compose-var-hint");
+    box.append(varHintEl);
+
+    if (varsOpen) {
+      const list = el("div", "compose-var-list");
+      // Local working copy; committed (persisted) on every edit, re-rendered only on add/remove.
+      const vars = (S.projectVariables() || []).map((v) => ({
+        name: String((v && v.name) || ""), value: String((v && v.value != null) ? v.value : ""),
+      }));
+      const commit = () => S.setProjectVariables(vars);
+      vars.forEach((v, i) => {
+        const row = el("div", "compose-var-row");
+        row.append(el("span", "compose-var-dollar", "$"));
+        const nm = el("input", "lib-in compose-var-name");
+        nm.value = v.name; nm.placeholder = "name";
+        nm.oninput = () => { v.name = nm.value.replace(/^\$+/, ""); commit(); updateVarHint(); };
+        row.append(nm);
+        row.append(el("span", "compose-var-eq", "="));
+        const vv = el("input", "lib-in compose-var-val");
+        vv.value = v.value; vv.placeholder = "value (may reference $other)";
+        vv.oninput = () => { v.value = vv.value; commit(); updateVarHint(); };
+        row.append(vv);
+        const rm = el("button", "btn ghost tiny", "✕");
+        rm.title = "Remove variable";
+        rm.onclick = () => { vars.splice(i, 1); commit(); render(); };
+        row.append(rm);
+        list.append(row);
+      });
+      const add = el("button", "btn ghost tiny", "＋ Add variable");
+      add.onclick = () => { vars.push({ name: "", value: "" }); commit(); render(); };
+      list.append(add);
+      box.append(list);
+    }
+    // Defer so composeTextarea is assigned before the first scan.
+    setTimeout(updateVarHint, 0);
+    return box;
+  }
+
+  // Detect $name cycles among the declared variables (the "yell"); mirrors the safe-degrade
+  // guard in templates.resolve_variables but reports the loop instead of silently leaving it.
+  function detectVarCycles() {
+    const map = {};
+    (S.projectVariables() || []).forEach((v) => {
+      const k = String((v && v.name) || "").replace(/^\$+/, "").trim();
+      if (k) map[k] = String((v && v.value) || "");
+    });
+    const refs = (n) => (String(map[n] || "").match(/\$([A-Za-z_][A-Za-z0-9_]*)/g) || [])
+      .map((m) => m.slice(1)).filter((r) => r in map);
+    const color = {}, path = [], cycles = [];
+    const dfs = (n) => {
+      color[n] = 1; path.push(n);
+      for (const r of refs(n)) {
+        if (color[r] === 1) cycles.push(path.slice(path.indexOf(r)).concat(r));
+        else if (!color[r]) dfs(r);
+      }
+      path.pop(); color[n] = 2;
+    };
+    Object.keys(map).forEach((n) => { if (!color[n]) dfs(n); });
+    return cycles;
+  }
+
+  // Live hint under the prompt: cycle warning takes priority, else list $vars used but not declared.
+  function updateVarHint() {
+    if (!varHintEl) return;
+    const declared = new Set((S.projectVariables() || [])
+      .map((v) => String((v && v.name) || "").replace(/^\$+/, "").trim()).filter(Boolean));
+    const txt = composeTextarea ? composeTextarea.value : "";
+    const used = new Set((txt.match(/\$([A-Za-z_][A-Za-z0-9_]*)/g) || []).map((m) => m.slice(1)));
+    const undeclared = [...used].filter((n) => !declared.has(n));
+    const cycles = detectVarCycles();
+    let msg = "";
+    if (cycles.length) {
+      msg = "⚠ Variable loop: " + cycles[0].map((n) => "$" + n).join(" → ")
+        + " — references itself. Rework it; it won't expand.";
+    } else if (undeclared.length) {
+      msg = "Referencing " + undeclared.map((n) => "$" + n).join(", ")
+        + " — never declared, passed as plain text.";
+    }
+    varHintEl.textContent = msg;
+    varHintEl.classList.toggle("compose-var-warn", !!cycles.length);
+    varHintEl.style.display = msg ? "" : "none";
+  }
 
   // Insert text at the compose textarea's caret (or append), then re-sync the timeline.
   function insertIntoCompose(text) {

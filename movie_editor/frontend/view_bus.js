@@ -53,7 +53,8 @@
       scene: sc,
       proj: sc ? null : {
         name: p.name, anchor: p.anchor, global_prompt: p.global_prompt,
-        negative_prompt: p.negative_prompt, intro_transition: p.intro_transition,
+        negative_prompt: p.negative_prompt, postfix: p.postfix, postfix_enabled: p.postfix_enabled,
+        intro_transition: p.intro_transition,
         seed: p.seed, num_frames_per_scene: p.num_frames_per_scene,
         frame_rate: p.frame_rate, max_scenes: p.max_scenes, width: p.width, height: p.height,
         conditioning_slot: p.conditioning_slot, sampler_slot: p.sampler_slot,

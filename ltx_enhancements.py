@@ -941,6 +941,53 @@ def _is_ltx_model(model):
 
 
 # ---------------------------------------------------------------------------
+# Block-hook leak guard
+# ---------------------------------------------------------------------------
+# Technique-5 forward hooks (see _register_hooks) attach directly to the SHARED
+# diffusion blocks. They are removed on a scene-transition sigma jump, but NOT at
+# end-of-sampling, so a single-scene run (or the final scene of a multi-scene run)
+# leaves them installed. Since the blocks are shared across ModelPatcher clones,
+# the next generation stacks another set — over many gens this compounds into
+# progressive output corruption that survives Session Reset and deleting
+# refinements/ (the hooks live in-process, not on disk). We tag every installed
+# hook and strip any leftovers at the start of each run so accumulation is bounded
+# to a single set and removed before the next sampling pass.
+_FUNPACK_HOOK_TAG = "_funpack_enh_hook"
+
+
+def _funpack_locate_blocks(model):
+    diff = getattr(getattr(model, "model", None), "diffusion_model", None)
+    if diff is None:
+        return None
+    for attr in ("transformer_blocks", "blocks", "joint_blocks", "layers"):
+        candidate = getattr(diff, attr, None)
+        if isinstance(candidate, torch.nn.ModuleList) and len(candidate) >= 28:
+            return candidate
+    return None
+
+
+def strip_funpack_block_hooks(model):
+    """Remove forward / forward-pre hooks this module installed on the shared
+    diffusion blocks in a previous run. Idempotent; safe to call every run."""
+    bl = _funpack_locate_blocks(model)
+    if bl is None:
+        return 0
+    removed = 0
+    for block in bl:
+        for store in (getattr(block, "_forward_hooks", None),
+                      getattr(block, "_forward_pre_hooks", None)):
+            if not store:
+                continue
+            for hid in [hid for hid, fn in list(store.items())
+                        if getattr(fn, _FUNPACK_HOOK_TAG, False)]:
+                store.pop(hid, None)
+                removed += 1
+    if removed:
+        print(f"[FunPackEnhancements] Stripped {removed} leaked block hook(s) from a previous run")
+    return removed
+
+
+# ---------------------------------------------------------------------------
 # Main enhancement builder
 # ---------------------------------------------------------------------------
 
@@ -964,6 +1011,10 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     reward = float(reward) if reward is not None else 0.0
 
     model = model.clone()
+
+    # Strip any block hooks leaked by a previous run before installing fresh ones,
+    # so they cannot stack across generations (see _FUNPACK_HOOK_TAG note above).
+    strip_funpack_block_hooks(model)
 
     # --- VF score for temperature modulation ---
     vf_score = None
@@ -1221,6 +1272,7 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                         return injected
                     except Exception:
                         return None
+                setattr(_hook, _FUNPACK_HOOK_TAG, True)
                 return _hook
 
             def _make_incontext_hooks(block_idx, buf, lazy_ref, strength, gate, s_state):
@@ -1272,6 +1324,8 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
                     except Exception:
                         return None
 
+                setattr(_pre, _FUNPACK_HOOK_TAG, True)
+                setattr(_post, _FUNPACK_HOOK_TAG, True)
                 return _pre, _post
 
             for idx, (buf, lazy_ref, strength, gate) in _hook_block_params.items():

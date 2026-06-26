@@ -34,6 +34,7 @@ sys.modules.setdefault(
 import templates
 import conditioning
 from templates import apply_prompt_shortcuts, normalize_shortcut_item
+from movie_editor.backend import bridge
 
 
 def _db(shortcuts):
@@ -115,6 +116,41 @@ def test_split_scenes_splits_on_expansion_keyed_transition(monkeypatch):
     assert len(v["scenes"]) == len(s["scenes"])
     # Non-silent 'qcut' too.
     assert len(conditioning.split_scenes("a dog runs qcut a cat sleeps qcut a bird flies")["scenes"]) == 2
+
+
+def test_postfix_shortcuts_expand_and_key_folds_into_every_scene(monkeypatch):
+    """A shortcut in the postfix must be EXPANDED at generation (not passed verbatim) and its
+    refinement key must fold into every scene — exactly like the anchor. The editor stores the
+    raw postfix; expansion happens here on the generation hit."""
+    db = _db({
+        "cine": (["cine"], ["cinematic, shallow depth of field"], "look"),
+    })
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+
+    out = conditioning.split_scenes_from_segments(
+        "a knight", ["in a forest", "at a castle"], postfix="cine")
+    # The shortcut is expanded, not left as the literal trigger 'cine'.
+    assert out["postfix_expanded"] == "cinematic, shallow depth of field"
+    assert out["postfix"] == "cine"  # raw trigger preserved for round-trip
+    # The postfix's refinement key folds into EVERY scene (like the anchor's).
+    for scene in out["scenes"]:
+        assert "look" in scene["keys"]
+
+
+def test_expand_prompt_fragment_matches_generation_postfix(monkeypatch):
+    """The preview's postfix text must be expanded exactly like generation appends it — same
+    shortcut expansion the chain sampler runs via split_scenes_from_segments."""
+    db = _db({"cine": (["cine"], ["cinematic, shallow depth of field"], "look")})
+    monkeypatch.setattr(templates, "load_shortcut_db", lambda: db)
+    monkeypatch.setattr(templates, "load_custom_transition_triggers", lambda: {})
+
+    preview = bridge.expand_prompt_fragment("cine")
+    generation = conditioning.split_scenes_from_segments(
+        "", ["x"], postfix="cine")["postfix_expanded"]
+    assert preview == "cinematic, shallow depth of field"
+    assert preview == generation                       # preview mirrors generation exactly
+    assert bridge.expand_prompt_fragment("") == ""     # disabled/empty postfix shows nothing
 
 
 def test_split_scenes_no_false_cut_from_generic_label_in_expansion(monkeypatch):
@@ -460,3 +496,42 @@ def test_bridge_scene_refinement_keys_preview(monkeypatch):
     out = bridge.scene_refinement_keys("wide shot cut alpha here cut plain", "myproj")
     assert out[0] == {"keys": ["keyA"], "uses_default": False, "default_key": "myproj"}
     assert out[1] == {"keys": ["myproj"], "uses_default": True, "default_key": "myproj"}
+
+
+def test_delete_refinement_key_sweeps_all_sidecars():
+    """Atomic delete removes the canonical <key>.json AND every sidecar (value fn,
+    sampler ctx, blessed attn maps / K-V banks). Deleting only the .json used to
+    orphan the rest, which kept steering future runs across restarts. Runs against
+    the real store dir under a unique key, with guaranteed cleanup."""
+    import os
+    import ltx_enhancements
+
+    key = "__pytest_delete_sweep__"
+    json_p = templates.refinement_state_path(key, "clip", prefix="refine_v2")
+    vf_p = templates.refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt")
+    ctx_p = templates.refinement_state_path(key, "sampler_ctx", prefix="refine_v2")
+    bm = ltx_enhancements._blessed_maps_path(key)
+    kv = ltx_enhancements._kv_blessed_path(key)
+    created = [json_p, vf_p, ctx_p, bm, kv]
+    try:
+        for p in created:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w") as fh:
+                fh.write("{}")
+        assert all(os.path.exists(p) for p in created)
+
+        res = templates.delete_refinement_key(key)
+        assert res["deleted"] == key
+        for p in created:
+            assert not os.path.exists(p), f"survived delete: {p}"
+    finally:
+        for p in created:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def test_delete_refinement_key_rejects_empty():
+    assert templates.delete_refinement_key("-None-")["deleted"] == ""
+    assert templates.delete_refinement_key("")["deleted"] == ""
