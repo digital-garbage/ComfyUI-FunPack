@@ -1637,7 +1637,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                                    rescue_prompt_sig=None,
-                                   alg_enabled=False, alg_strength=2.5, alg_sigma_threshold=0.94,
+                                   alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
                                    alg_guide_tail_frames=0):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
@@ -1899,12 +1899,12 @@ class FunPackDistilledFlowSampler:
                     "tooltip": "EXPERIMENTAL: Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame while sigma is above alg_sigma_threshold, then swaps back to the sharp anchor — counters the model's tendency to shortcut to a near-static video that just matches the reference image. No-op without an i2v anchor.",
                 }),
                 "alg_strength": ("FLOAT", {
-                    "default": 2.5, "min": 1.0, "max": 4.0, "step": 0.1,
-                    "tooltip": "Downsample factor for the anchor blur (paper default 2.5). Higher = blurrier anchor during the affected steps. Only used when alg_enabled.",
+                    "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
+                    "tooltip": "Downsample factor for the anchor blur (paper default 2.5, but 2.0 held character/i2v consistency noticeably better in testing here). Higher = blurrier anchor during the affected steps. Only used when alg_enabled.",
                 }),
                 "alg_sigma_threshold": ("FLOAT", {
-                    "default": 0.94, "min": 0.5, "max": 0.999, "step": 0.005,
-                    "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Only used when alg_enabled.",
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Only used when alg_enabled.",
                 }),
             }
         }
@@ -1927,7 +1927,7 @@ class FunPackDistilledFlowSampler:
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
                     normalize_strength=0.0, normalize_start_sigma=0.9,
-                    alg_enabled=False, alg_strength=2.5, alg_sigma_threshold=0.94):
+                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,

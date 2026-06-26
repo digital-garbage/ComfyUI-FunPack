@@ -30,7 +30,7 @@
       velocity_bias_mode: "off", velocity_bias_strength: 0.0,
       velocity_bias_source: "mean", velocity_refinement_key: "default",
       rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2,
-      alg_enabled: false, alg_strength: 2.5, alg_sigma_threshold: 0.94,
+      alg_enabled: false, alg_strength: 2.0, alg_sigma_threshold: 0.975,
     };
   }
 
