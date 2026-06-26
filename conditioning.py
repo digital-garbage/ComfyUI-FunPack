@@ -14552,6 +14552,9 @@ class FunPackStudio:
                     rescue_threshold=float(dc.get("rescue_threshold", 0.15)),
                     rescue_strength=float(dc.get("rescue_strength", 0.2)),
                     rescue_prompt_sig=prompt_sig,
+                    alg_enabled=bool(dc.get("alg_enabled", False)),
+                    alg_strength=float(dc.get("alg_strength", 2.5)),
+                    alg_sigma_threshold=float(dc.get("alg_sigma_threshold", 0.94)),
                     sigmas=sigmas_raw,
                 )
             elif sampler_type == "KSampler":

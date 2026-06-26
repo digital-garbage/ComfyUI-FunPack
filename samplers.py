@@ -747,6 +747,47 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
+def _alg_blur_video_frame0(model, latent_image, kappa):
+    """ALG (arXiv:2506.08456): low-pass filter frame 0 of the packed video stream.
+
+    I2V models over-expose the sharp anchor frame from step 0, which lets the model take a
+    shortcut to a near-static video that just matches the reference. Bilinear downsample-then-
+    upsample of the anchor latent (only frame 0, video stream only) at the configured factor
+    removes the high-frequency content the shortcut needs; ALG's own per-step schedule then
+    swaps this blurred copy back to the sharp original once sigma drops past the threshold.
+    Returns a new tensor with the same shape as latent_image, or None on any failure/mismatch
+    (caller then leaves ALG off — no anchor, no packed video stream, or unexpected layout).
+    """
+    if latent_image is None:
+        return None
+    try:
+        shapes = _get_latent_shapes(model)
+        if not shapes:
+            return None
+        video_idx = max(range(len(shapes)), key=lambda i: (len(tuple(shapes[i])), int(math.prod(tuple(shapes[i])[1:]))))
+        video_shape = tuple(shapes[video_idx])
+        if len(video_shape) != 5:
+            return None  # expects [B, C, T, H, W]
+        b, c, t, h, w = (int(d) for d in video_shape)
+        sizes = [int(math.prod(tuple(s)[1:])) for s in shapes]
+        if sum(sizes) != int(latent_image.shape[-1]):
+            return None  # packed layout doesn't match our assumption -> don't risk it
+        off = sum(sizes[:video_idx])
+        sz = sizes[video_idx]
+        video = latent_image[..., off:off + sz].reshape(b, c, t, h, w)
+        frame0 = video[:, :, 0].clone()  # [B, C, H, W]
+        dh, dw = max(1, round(h / kappa)), max(1, round(w / kappa))
+        down = torch.nn.functional.interpolate(frame0, size=(dh, dw), mode="bilinear", align_corners=False)
+        blurred = torch.nn.functional.interpolate(down, size=(h, w), mode="bilinear", align_corners=False)
+        video_blurred = video.clone()
+        video_blurred[:, :, 0] = blurred.to(video.dtype)
+        out = latent_image.clone()
+        out[..., off:off + sz] = video_blurred.reshape(b, 1, sz)
+        return out
+    except Exception:
+        return None
+
+
 class _JoyAIMemoryBank:
     """JoyAI-Echo cross-shot memory: a rolling set of clean prior-shot latent frames.
 
@@ -1581,7 +1622,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    velocity_bias_mode="off", velocity_bias_strength=0.0,
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
-                                   rescue_prompt_sig=None):
+                                   rescue_prompt_sig=None,
+                                   alg_enabled=False, alg_strength=2.5, alg_sigma_threshold=0.94):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1598,6 +1640,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       the same memory machinery the Hybrid/RF samplers use. On few-step schedules
       the velocity targets may only match a step or two, so apply/rescue fire less
       often than on an 8-step run; they no-op cleanly when no target matches.
+    - EXPERIMENTAL alg_enabled: Adaptive Low-Pass Guidance (arXiv:2506.08456) for i2v
+      anchored chunks. Blurs the anchor frame the model sees while sigma is above
+      alg_sigma_threshold (the near-pure-noise steps), then swaps back to the sharp
+      anchor for the rest of the schedule — counters the model's tendency to shortcut
+      to a near-static video that just matches the sharp reference. No-op when there's
+      no i2v anchor (denoise_mask is None) or the packed latent layout can't be read.
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1635,97 +1683,115 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     ref_scale = [None]  # video-only latent-normalization reference (anti-overbake), opt-in
     _kvlock_state = {}
 
-    for i in comfy.utils.model_trange(total_steps, disable=disable):
-        sigma = sigmas[i]
-        sigma_next = sigmas[i + 1]
-        velocity_target = _velocity_bias_target(sigmas, sigma)
+    # EXPERIMENTAL ALG (arXiv:2506.08456): blur the i2v anchor for the earliest/near-pure-
+    # noise steps, then swap back to the sharp anchor. No-op without a real anchor (no
+    # denoise_mask) or if the packed-latent layout can't be read (helper returns None).
+    alg_sharp_latent_image = getattr(model, "latent_image", None) if alg_enabled else None
+    alg_active = bool(alg_enabled) and extra_args.get("denoise_mask") is not None and alg_sharp_latent_image is not None
+    alg_blurred_latent_image = _alg_blur_video_frame0(model, alg_sharp_latent_image, max(1.01, float(alg_strength))) if alg_active else None
+    alg_active = alg_active and alg_blurred_latent_image is not None
+    if alg_active:
+        print(f"[FunPack AV] ALG on (strength={alg_strength}, sigma_threshold={alg_sigma_threshold}) "
+              f"— anchor blurred while sigma > threshold")
 
-        if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-            x_pre = x
-            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
-                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
-                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
-            x = _video_only(x, x_pre, video_mask)
+    try:
+        for i in comfy.utils.model_trange(total_steps, disable=disable):
+            sigma = sigmas[i]
+            sigma_next = sigmas[i + 1]
+            velocity_target = _velocity_bias_target(sigmas, sigma)
 
-        denoised = model(x, sigma * s_in, **extra_args)
-        _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
+            if alg_active:
+                model.latent_image = alg_blurred_latent_image if float(sigma) > float(alg_sigma_threshold) else alg_sharp_latent_image
 
-        if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
-            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
-        if rescue_mode and velocity_target is not None:
-            denoised = _video_only(_rescue_denoised(
-                denoised, x, sigma, velocity_refinement_key,
-                velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
-                source=velocity_bias_source,
-            ), denoised, video_mask)
+            if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+                x_pre = x
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
+                                         sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                         prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
+                x = _video_only(x, x_pre, video_mask)
 
-        # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
-        denoised = _normalize_video_denoised(
-            denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
-        )
+            denoised = model(x, sigma * s_in, **extra_args)
+            _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
 
-        if callback is not None:
-            callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+            if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
+                _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+            if rescue_mode and velocity_target is not None:
+                denoised = _video_only(_rescue_denoised(
+                    denoised, x, sigma, velocity_refinement_key,
+                    velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                    source=velocity_bias_source,
+                ), denoised, video_mask)
 
-        h = float((sigma - sigma_next).abs().item())
+            # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
+            denoised = _normalize_video_denoised(
+                denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
+            )
 
-        # Adams-Bashforth 2-step multistep correction.
-        # Coefficients for variable step sizes: r = h_current / h_previous.
-        # denoised_eff = (1 + r/2) * denoised - (r/2) * prev_denoised
-        if order >= 2 and prev_denoised is not None and prev_h is not None and prev_h > 1e-7 and h > 1e-7:
-            r = max(0.1, min(5.0, h / prev_h))
-            try:
-                denoised_eff = (1.0 + r / 2.0) * denoised - (r / 2.0) * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
-            except Exception:
+            if callback is not None:
+                callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+
+            h = float((sigma - sigma_next).abs().item())
+
+            # Adams-Bashforth 2-step multistep correction.
+            # Coefficients for variable step sizes: r = h_current / h_previous.
+            # denoised_eff = (1 + r/2) * denoised - (r/2) * prev_denoised
+            if order >= 2 and prev_denoised is not None and prev_h is not None and prev_h > 1e-7 and h > 1e-7:
+                r = max(0.1, min(5.0, h / prev_h))
+                try:
+                    denoised_eff = (1.0 + r / 2.0) * denoised - (r / 2.0) * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
+                except Exception:
+                    denoised_eff = denoised
+            else:
                 denoised_eff = denoised
-        else:
-            denoised_eff = denoised
 
-        # Graduated 2nd order (opt-in, free): ramp the AB2 contribution linearly 0->1 across
-        # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
-        # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
-        # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
-        if ab2_ramp and total_steps > 1:
-            w = i / (total_steps - 1)  # 0 at first step -> 1 at last
-            denoised_eff = denoised + (denoised_eff - denoised) * w
+            # Graduated 2nd order (opt-in, free): ramp the AB2 contribution linearly 0->1 across
+            # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
+            # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
+            # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
+            if ab2_ramp and total_steps > 1:
+                w = i / (total_steps - 1)  # 0 at first step -> 1 at last
+                denoised_eff = denoised + (denoised_eff - denoised) * w
 
-        # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
-        # raw denoised for audio (2nd-order extrapolation corrupts the audio stream).
-        denoised_eff = _video_only(denoised_eff, denoised, video_mask)
+            # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
+            # raw denoised for audio (2nd-order extrapolation corrupts the audio stream).
+            denoised_eff = _video_only(denoised_eff, denoised, video_mask)
 
-        # Store current denoised for the next step's multistep correction.
-        # Reset after a Heun step since x was updated with a corrected direction.
-        prev_denoised = denoised.detach()
-        prev_h = h
+            # Store current denoised for the next step's multistep correction.
+            # Reset after a Heun step since x was updated with a corrected direction.
+            prev_denoised = denoised.detach()
+            prev_h = h
 
-        if sigma_next == 0:
-            x = denoised_eff
-            continue
+            if sigma_next == 0:
+                x = denoised_eff
+                continue
 
-        dt = sigma_next - sigma  # negative: sigmas decrease
+            dt = sigma_next - sigma  # negative: sigmas decrease
 
-        if i >= correction_start_idx:
-            # Heun predictor-corrector.
-            # Predictor: Euler step using the (multistep-corrected) denoised.
-            d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
-            x_pred = x + d1 * dt
-            # Corrector: evaluate model at the predicted x and sigma_next.
-            denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
-            d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
-            # Audio rides the plain euler direction (d1); only video gets the Heun correction.
-            d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
-            x = x + d_use * dt
-            # Heun updates x differently; invalidate multistep history.
-            prev_denoised = None
-            prev_h = None
-        else:
-            d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
-            x = x + d * dt
-            if s_noise > 0.0:
-                sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
-                if sigma_up > 0.0:
-                    # Diversity noise on video only — ancestral-style noise corrupts audio.
-                    x = _video_only(x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up, x, video_mask)
+            if i >= correction_start_idx:
+                # Heun predictor-corrector.
+                # Predictor: Euler step using the (multistep-corrected) denoised.
+                d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+                x_pred = x + d1 * dt
+                # Corrector: evaluate model at the predicted x and sigma_next.
+                denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
+                d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
+                # Audio rides the plain euler direction (d1); only video gets the Heun correction.
+                d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
+                x = x + d_use * dt
+                # Heun updates x differently; invalidate multistep history.
+                prev_denoised = None
+                prev_h = None
+            else:
+                d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+                x = x + d * dt
+                if s_noise > 0.0:
+                    sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
+                    if sigma_up > 0.0:
+                        # Diversity noise on video only — ancestral-style noise corrupts audio.
+                        x = _video_only(x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up, x, video_mask)
+    finally:
+        if alg_active:
+            model.latent_image = alg_sharp_latent_image
 
     return x
 
@@ -1801,6 +1867,19 @@ class FunPackDistilledFlowSampler:
                     "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.025,
                     "tooltip": "Sigma at/below which latent normalization activates and anchors its reference (above it the x0 estimate is meaningless). Only used when normalize_strength > 0.",
                 }),
+                # Appended last on purpose, same rule as ab2_ramp above.
+                "alg_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame while sigma is above alg_sigma_threshold, then swaps back to the sharp anchor — counters the model's tendency to shortcut to a near-static video that just matches the reference image. No-op without an i2v anchor.",
+                }),
+                "alg_strength": ("FLOAT", {
+                    "default": 2.5, "min": 1.01, "max": 4.0, "step": 0.1,
+                    "tooltip": "Downsample factor for the anchor blur (paper default 2.5). Higher = blurrier anchor during the affected steps. Only used when alg_enabled.",
+                }),
+                "alg_sigma_threshold": ("FLOAT", {
+                    "default": 0.94, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Only used when alg_enabled.",
+                }),
             }
         }
 
@@ -1812,7 +1891,8 @@ class FunPackDistilledFlowSampler:
         "ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA). "
         "Adams-Bashforth 2-step multistep for better trajectory accuracy across large sigma jumps, "
         "Heun predictor-corrector on final steps for quality, optional controlled noise for diversity, "
-        "and optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers)."
+        "optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers), and "
+        "experimental ALG anchor de-staticking for i2v chunks."
     )
 
     def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0,
@@ -1820,7 +1900,8 @@ class FunPackDistilledFlowSampler:
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
-                    normalize_strength=0.0, normalize_start_sigma=0.9):
+                    normalize_strength=0.0, normalize_start_sigma=0.9,
+                    alg_enabled=False, alg_strength=2.5, alg_sigma_threshold=0.94):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -1839,6 +1920,9 @@ class FunPackDistilledFlowSampler:
                 "rescue_threshold": rescue_threshold,
                 "rescue_strength": rescue_strength,
                 "rescue_prompt_sig": rescue_prompt_sig,
+                "alg_enabled": alg_enabled,
+                "alg_strength": alg_strength,
+                "alg_sigma_threshold": alg_sigma_threshold,
             }
         )
         return (sampler, prepared_sigmas)
