@@ -1839,6 +1839,95 @@
     _syncSeparatedAudioTracks();
   }
 
+  // Auto Montage: chop an already-rendered "lead" clip into shrinking-length segments
+  // (trailer pacing — cuts get faster toward the end) and interleave a randomly-drawn
+  // segment from a pool of other rendered clips after each one. Pure timeline construction:
+  // every built segment reuses an existing source clip's media via source_in/source_dur
+  // (same mechanism as splitScene), no new generation involved.
+  function autoMontage({ leadId, poolIds, segmentFrames, decay } = {}) {
+    if (!state.project) return;
+    const lead = scene(leadId);
+    if (!lead || !isVideoClip(lead)) return;
+    const pool = (poolIds || []).map((id) => scene(id)).filter((s) => s && isVideoClip(s));
+    if (!pool.length) return;
+
+    const base = Math.max(9, Math.round(segmentFrames || 100));
+    const dk = decay != null ? Math.min(1, Math.max(0.3, decay)) : 1;
+
+    const leadFps = sceneEffFps(lead);
+    const leadTotal = snapFrames((lead.source_dur != null ? lead.source_dur : sceneDurationSec(lead)) * leadFps);
+    const leadSrcIn = lead.source_in || 0;
+
+    // Lead segments stay in chronological order (one continuous shot being interrupted),
+    // shrinking each cycle so cutaways come faster as the take progresses.
+    const leadSegs = [];
+    let consumed = 0, i = 0;
+    while (consumed < leadTotal - 8) {
+      const len = Math.min(leadTotal - consumed, Math.max(9, Math.round(base * Math.pow(dk, i))));
+      leadSegs.push({ start: consumed, frames: snapFrames(len) });
+      consumed += len;
+      i++;
+    }
+    if (!leadSegs.length) return;
+
+    // Pool: chop every selected clip into its own ORDERED queue of base-length
+    // chunks (chronological — never reordered within a clip). Randomness only picks
+    // WHICH clip's queue to draw from next; each draw advances that clip's own cursor,
+    // so a clip's later content can never surface before its own earlier content.
+    const queues = pool.map((s) => {
+      const fps = sceneEffFps(s);
+      const total = snapFrames((s.source_dur != null ? s.source_dur : sceneDurationSec(s)) * fps);
+      const srcIn = s.source_in || 0;
+      const chunks = [];
+      let c = 0;
+      while (c < total - 8) {
+        const len = Math.min(total - c, base);
+        if (len >= 9) chunks.push({ scene: s, fps, start: c, frames: snapFrames(len), srcIn });
+        c += len;
+      }
+      return { chunks, cursor: 0 };
+    }).filter((q) => q.chunks.length);
+    if (!queues.length) return;
+
+    function nextPoolChunk() {
+      let available = queues.filter((q) => q.cursor < q.chunks.length);
+      if (!available.length) {
+        queues.forEach((q) => { q.cursor = 0; }); // every clip exhausted — start each over from its own beginning
+        available = queues;
+      }
+      const q = available[Math.floor(Math.random() * available.length)];
+      return q.chunks[q.cursor++];
+    }
+
+    function buildSegment(src, srcInSec, lenFrames, fps) {
+      const out = JSON.parse(JSON.stringify(src));
+      out.id = "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      out.gen_unit_id = src.id;
+      out.source_in = srcInSec;
+      out.source_dur = lenFrames / fps;
+      out.frames = lenFrames;
+      out.frames_mode = "timeline";
+      out.rating = "";
+      out.transition_to_next = "cut";
+      out.transition_frames = null;
+      return out;
+    }
+
+    _historyRecord();
+    const built = [];
+    leadSegs.forEach((seg) => {
+      built.push(buildSegment(lead, leadSrcIn + seg.start / leadFps, seg.frames, leadFps));
+      const chunk = nextPoolChunk();
+      built.push(buildSegment(chunk.scene, chunk.srcIn + chunk.start / chunk.fps, chunk.frames, chunk.fps));
+    });
+    built[built.length - 1].transition_to_next = "";
+
+    state.project.scenes.push(...built);
+    window.Timeline?.requestAutoFit?.();
+    notify(); scheduleSave();
+    return built.length;
+  }
+
   function moveScene(id, delta) {
     if (!state.project) return;
     _historyRecord();
@@ -3911,7 +4000,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, autoMontage, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,

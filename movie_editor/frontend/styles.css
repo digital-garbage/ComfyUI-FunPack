@@ -793,6 +793,8 @@ input[type=number] { font-family: var(--font-mono); }
 .ov-style-btn.active { border-color: #c084fc; color: #e9d5ff; background: color-mix(in srgb, #c084fc 12%, var(--ink-2)); }
 .ov-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); height: 40px; }
 .ov-check input { accent-color: #c084fc; }
+.ov-checklist { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px; background: var(--ink-2); }
+.ov-modal-wide { width: min(560px, 92vw); }
 .ov-image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 10px; }
 .ov-image-card { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--ink-2); cursor: pointer; text-align: left; }
 .ov-image-card:hover { border-color: color-mix(in srgb, #c084fc 35%, var(--line)); background: color-mix(in srgb, #c084fc 5%, var(--ink-2)); }
