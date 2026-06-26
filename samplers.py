@@ -747,14 +747,21 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
-def _alg_blur_video_frame0(model, latent_image, kappa):
-    """ALG (arXiv:2506.08456): low-pass filter frame 0 of the packed video stream.
+def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0):
+    """ALG (arXiv:2506.08456): low-pass filter selected frames of the packed video stream.
 
     I2V models over-expose the sharp anchor frame from step 0, which lets the model take a
     shortcut to a near-static video that just matches the reference. Bilinear downsample-then-
-    upsample of the anchor latent (only frame 0, video stream only) at the configured factor
-    removes the high-frequency content the shortcut needs; ALG's own per-step schedule then
-    swaps this blurred copy back to the sharp original once sigma drops past the threshold.
+    upsample of the anchor latent (selected frames only, video stream only) at the configured
+    factor removes the high-frequency content the shortcut needs; ALG's own per-step schedule
+    then swaps this blurred copy back to the sharp original once sigma drops past the threshold.
+
+    `frame_indices` is any iterable of frame indices within the video stream's T dimension to
+    blur (each filtered independently) — frame 0 for the genuine i2v anchor, and/or the trailing
+    indices of newly-appended guide-attention frames (mid_scene_guide / carry_i2v_guides-as-guide /
+    configured guides / JoyAI memory — see EXPERIMENTAL alg_blur_guides) when extending the same
+    idea to those. Indices outside the actual frame count are silently skipped.
+
     Returns a new tensor with the same shape as latent_image, or None on any failure/mismatch
     (caller then leaves ALG off — no anchor, no packed video stream, or unexpected layout).
     """
@@ -772,15 +779,22 @@ def _alg_blur_video_frame0(model, latent_image, kappa):
         sizes = [int(math.prod(tuple(s)[1:])) for s in shapes]
         if sum(sizes) != int(latent_image.shape[-1]):
             return None  # packed layout doesn't match our assumption -> don't risk it
+        idxs = {int(i) for i in frame_indices if 0 <= int(i) < t}
+        if tail_count > 0:
+            idxs |= set(range(max(0, t - int(tail_count)), t))
+        idxs = sorted(idxs)
+        if not idxs:
+            return None
         off = sum(sizes[:video_idx])
         sz = sizes[video_idx]
         video = latent_image[..., off:off + sz].reshape(b, c, t, h, w)
-        frame0 = video[:, :, 0].clone()  # [B, C, H, W]
         dh, dw = max(1, round(h / kappa)), max(1, round(w / kappa))
-        down = torch.nn.functional.interpolate(frame0, size=(dh, dw), mode="bilinear", align_corners=False)
-        blurred = torch.nn.functional.interpolate(down, size=(h, w), mode="bilinear", align_corners=False)
         video_blurred = video.clone()
-        video_blurred[:, :, 0] = blurred.to(video.dtype)
+        for idx in idxs:
+            frame = video[:, :, idx]  # [B, C, H, W]
+            down = torch.nn.functional.interpolate(frame, size=(dh, dw), mode="bilinear", align_corners=False)
+            blurred = torch.nn.functional.interpolate(down, size=(h, w), mode="bilinear", align_corners=False)
+            video_blurred[:, :, idx] = blurred.to(video.dtype)
         out = latent_image.clone()
         out[..., off:off + sz] = video_blurred.reshape(b, 1, sz)
         return out
@@ -1623,7 +1637,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                                    rescue_prompt_sig=None,
-                                   alg_enabled=False, alg_strength=2.5, alg_sigma_threshold=0.94):
+                                   alg_enabled=False, alg_strength=2.5, alg_sigma_threshold=0.94,
+                                   alg_guide_tail_frames=0):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1646,6 +1661,11 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       anchor for the rest of the schedule — counters the model's tendency to shortcut
       to a near-static video that just matches the sharp reference. No-op when there's
       no i2v anchor (denoise_mask is None) or the packed latent layout can't be read.
+    - EXPERIMENTAL alg_guide_tail_frames (>0 extends the same idea, not from the paper):
+      additionally blurs that many trailing video frames — the newly-appended guide-
+      attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide /
+      configured guides / JoyAI memory), set by the Scene Chain Sampler's alg_blur_guides
+      toggle right before this chunk's sample call. 0 = untouched (default).
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1686,12 +1706,18 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     # EXPERIMENTAL ALG (arXiv:2506.08456): blur the i2v anchor for the earliest/near-pure-
     # noise steps, then swap back to the sharp anchor. No-op without a real anchor (no
     # denoise_mask) or if the packed-latent layout can't be read (helper returns None).
+    # alg_guide_tail_frames (>0) extends the same idea, beyond the paper, to the trailing
+    # guide-attention frames this scene appended (alg_blur_guides on the Scene Chain Sampler).
     alg_sharp_latent_image = getattr(model, "latent_image", None) if alg_enabled else None
     alg_active = bool(alg_enabled) and extra_args.get("denoise_mask") is not None and alg_sharp_latent_image is not None
-    alg_blurred_latent_image = _alg_blur_video_frame0(model, alg_sharp_latent_image, max(1.01, float(alg_strength))) if alg_active else None
+    alg_blurred_latent_image = _alg_blur_frames(
+        model, alg_sharp_latent_image, max(1.01, float(alg_strength)),
+        frame_indices=(0,), tail_count=int(alg_guide_tail_frames),
+    ) if alg_active else None
     alg_active = alg_active and alg_blurred_latent_image is not None
     if alg_active:
-        print(f"[FunPack AV] ALG on (strength={alg_strength}, sigma_threshold={alg_sigma_threshold}) "
+        print(f"[FunPack AV] ALG on (strength={alg_strength}, sigma_threshold={alg_sigma_threshold}, "
+              f"guide_tail_frames={alg_guide_tail_frames}) "
               f"— anchor blurred while sigma > threshold")
 
     try:
@@ -2107,6 +2133,10 @@ class FunPackLTXAVSceneChainSampler:
                     "multiline": True,
                     "tooltip": "Optional media_ref → filename map for image-type i2v guides in custom guide stacks.",
                 }),
+                "alg_blur_guides": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. No effect unless the chosen sampler has alg_enabled on, or no guide frames were appended this scene.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2491,7 +2521,7 @@ class FunPackLTXAVSceneChainSampler:
         return result
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
-                      pbar=None, step_offset=0):
+                      pbar=None, step_offset=0, alg_guide_tail_frames=0):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -2503,6 +2533,16 @@ class FunPackLTXAVSceneChainSampler:
         def _progress_cb(step, _denoised, _x, _total_steps):
             if pbar is not None:
                 pbar.update_absolute(step_offset + int(step) + 1)
+
+        # EXPERIMENTAL alg_blur_guides: this chunk-specific guide-tail count has to reach
+        # sample_funpack_distilled_flow somehow, but `sampler` is a single KSAMPLER object
+        # built once (per Studio pass) and reused across every chunk — its extra_options dict
+        # is read fresh on every .sample() call (see comfy KSAMPLER.sample), so mutating it
+        # right before this call (and always resetting it, even to 0) is safe and chunk-scoped,
+        # with no risk of leaking into the next chunk or a differently-configured sampler.
+        extra_options = getattr(sampler, "extra_options", None)
+        if isinstance(extra_options, dict) and sampler.sampler_function is sample_funpack_distilled_flow:
+            extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
 
         sampled = comfy.sample.sample_custom(
             model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
@@ -3550,6 +3590,7 @@ class FunPackLTXAVSceneChainSampler:
                refinement_key_input="", funpack_scene_guides="",
                funpack_scene_anchors="",
                funpack_scene_media_refs="",
+               alg_blur_guides=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3590,6 +3631,7 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_fix_frames=joyai_fix_frames, joyai_frame_select=joyai_frame_select,
                 joyai_memory_strength=joyai_memory_strength,
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
+                alg_blur_guides=alg_blur_guides,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3800,6 +3842,7 @@ class FunPackLTXAVSceneChainSampler:
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
+                    alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                 )
             finally:
                 self._remove_v2a_scale(_v2a_handles)
@@ -4028,7 +4071,8 @@ class FunPackLTXAVSceneChainSampler:
                             score_slider=False, score_slider_strength=1.0,
                             joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
                             joyai_frame_select="center", joyai_memory_strength=0.3,
-                            joyai_audio_memory=False, v2a_grad_scale=1.0):
+                            joyai_audio_memory=False, v2a_grad_scale=1.0,
+                            alg_blur_guides=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -4074,6 +4118,7 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
+                alg_blur_guides=alg_blur_guides,
                 unique_id=None, prompt=None,
             )
             last = out
