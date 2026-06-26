@@ -3651,19 +3651,25 @@ class FunPackLTXAVSceneChainSampler:
                 if isinstance(meta, dict):
                     n1 = meta.get("funpack_bound_split_tokens")
             if n1 is None:
+                print("[FunPack AV] Bounded Attention enabled but skipped this scene — prompt "
+                      "didn't split into 2+ sentences (needs subject-1/subject-2 in separate sentences).")
                 return []
             n1 = int(n1)
             tensors = self._latent_tensors(latent)
             video = max(tensors, key=lambda v: v.dim())
             if video.dim() != 5:
+                print("[FunPack AV] Bounded Attention enabled but skipped — couldn't read a 5D video latent.")
                 return []
             _, _, t, h, w = video.shape
             if w < 2:
+                print("[FunPack AV] Bounded Attention enabled but skipped — frame too narrow to split.")
                 return []
             blocks = model.model.diffusion_model.transformer_blocks
         except Exception:
+            print("[FunPack AV] Bounded Attention enabled but skipped — couldn't reach the model's transformer blocks.")
             return []
         if not blocks:
+            print("[FunPack AV] Bounded Attention enabled but skipped — no transformer blocks found.")
             return []
         region = self._bounded_attention_region_mask(t, h, w, video.device)  # [Q], 0=left, 1=right
 
@@ -3694,6 +3700,10 @@ class FunPackLTXAVSceneChainSampler:
             sub = getattr(blk, "attn2", None)
             if sub is not None:
                 handles.append(sub.register_forward_pre_hook(_hook, with_kwargs=True))
+        if handles:
+            print(f"[FunPack AV] Bounded Attention on ({len(handles)} blocks hooked, "
+                  f"split at token {n1}, frame {w}x{h}x{t}) — left half sees tokens <{n1}, "
+                  f"right half sees tokens >={n1}")
         return handles
 
     def _remove_bounded_attention(self, handles):
