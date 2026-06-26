@@ -1638,7 +1638,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                                    rescue_prompt_sig=None,
                                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
-                                   alg_guide_tail_frames=0):
+                                   alg_guide_tail_frames=0,
+                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.9, mg_sigma_threshold=0.975):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1666,6 +1667,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide /
       configured guides / JoyAI memory), set by the Scene Chain Sampler's alg_blur_guides
       toggle right before this chunk's sample call. 0 = untouched (default).
+    - EXPERIMENTAL mg_enabled: Momentum Guidance (arXiv:2602.20360). Keeps a running EMA
+      (decay=mg_decay) of the per-step ODE direction and blends the current step's
+      direction toward it (weight=mg_strength) while sigma is BELOW mg_sigma_threshold —
+      the complementary window to ALG's blur, which only acts above its threshold. The EMA
+      itself accumulates every step (free) so it has real history by the time it starts
+      being applied; only the application is gated. Audio is never touched (video-only).
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1719,6 +1726,32 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         print(f"[FunPack AV] ALG on (strength={alg_strength}, sigma_threshold={alg_sigma_threshold}, "
               f"guide_tail_frames={alg_guide_tail_frames}) "
               f"— anchor blurred while sigma > threshold")
+
+    # EXPERIMENTAL Momentum Guidance (arXiv:2602.20360): EMA of the per-step ODE direction,
+    # blended into the direction actually used once sigma drops below mg_sigma_threshold —
+    # the complementary window to ALG's blur. EMA accumulates every step regardless of
+    # whether it's being applied yet, so there's no cold-start when it switches on.
+    mg_active = bool(mg_enabled)
+    mg_decay = max(0.0, min(0.999, float(mg_decay)))
+    mg_strength = max(0.0, min(1.0, float(mg_strength)))
+    mg_ema = None
+    if mg_active:
+        print(f"[FunPack AV] Momentum Guidance on (strength={mg_strength}, decay={mg_decay}, "
+              f"sigma_threshold={mg_sigma_threshold}) — applied while sigma < threshold")
+
+    def _mg_step(d, video_mask):
+        nonlocal mg_ema
+        if not mg_active:
+            return d
+        d_detached = d.detach()
+        mg_ema = d_detached if mg_ema is None else (mg_decay * mg_ema + (1.0 - mg_decay) * d_detached)
+        if float(sigma) >= float(mg_sigma_threshold) or mg_strength <= 0.0:
+            return d
+        try:
+            blended = d * (1.0 - mg_strength) + mg_ema.to(device=d.device, dtype=d.dtype) * mg_strength
+        except Exception:
+            return d
+        return _video_only(blended, d, video_mask)
 
     try:
         for i in comfy.utils.model_trange(total_steps, disable=disable):
@@ -1803,12 +1836,14 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                 d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
                 # Audio rides the plain euler direction (d1); only video gets the Heun correction.
                 d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
+                d_use = _mg_step(d_use, video_mask)
                 x = x + d_use * dt
                 # Heun updates x differently; invalidate multistep history.
                 prev_denoised = None
                 prev_h = None
             else:
                 d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+                d = _mg_step(d, video_mask)
                 x = x + d * dt
                 if s_noise > 0.0:
                     sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
@@ -1906,6 +1941,22 @@ class FunPackDistilledFlowSampler:
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
                     "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Only used when alg_enabled.",
                 }),
+                "mg_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: Momentum Guidance (arXiv:2602.20360). Keeps a running average of the per-step direction and blends the current step toward it once sigma drops below mg_sigma_threshold — the complementary window to ALG's blur. Smooths the fine-motion/refinement steps; may damp motion as a side effect, untested for video.",
+                }),
+                "mg_strength": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Blend weight toward the momentum average when active (0 = no effect, 1 = fully replace the step's direction with the average). Only used when mg_enabled.",
+                }),
+                "mg_decay": ("FLOAT", {
+                    "default": 0.9, "min": 0.0, "max": 0.99, "step": 0.05,
+                    "tooltip": "EMA decay for the momentum average (higher = longer memory of past steps' directions). Only used when mg_enabled.",
+                }),
+                "mg_sigma_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Momentum guidance applies while sigma is BELOW this value (the opposite window from alg_sigma_threshold) — defaults to the same boundary as ALG for a clean handoff. Only used when mg_enabled.",
+                }),
             }
         }
 
@@ -1917,8 +1968,9 @@ class FunPackDistilledFlowSampler:
         "ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA). "
         "Adams-Bashforth 2-step multistep for better trajectory accuracy across large sigma jumps, "
         "Heun predictor-corrector on final steps for quality, optional controlled noise for diversity, "
-        "optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers), and "
-        "experimental ALG anchor de-staticking for i2v chunks."
+        "optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers), "
+        "experimental ALG anchor de-staticking for i2v chunks, and experimental Momentum "
+        "Guidance smoothing for the complementary (fine-motion) sigma window."
     )
 
     def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0,
@@ -1927,7 +1979,8 @@ class FunPackDistilledFlowSampler:
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
                     normalize_strength=0.0, normalize_start_sigma=0.9,
-                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975):
+                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
+                    mg_enabled=False, mg_strength=0.5, mg_decay=0.9, mg_sigma_threshold=0.975):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -1949,6 +2002,10 @@ class FunPackDistilledFlowSampler:
                 "alg_enabled": alg_enabled,
                 "alg_strength": alg_strength,
                 "alg_sigma_threshold": alg_sigma_threshold,
+                "mg_enabled": mg_enabled,
+                "mg_strength": mg_strength,
+                "mg_decay": mg_decay,
+                "mg_sigma_threshold": mg_sigma_threshold,
             }
         )
         return (sampler, prepared_sigmas)

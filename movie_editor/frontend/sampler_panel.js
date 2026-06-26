@@ -31,6 +31,7 @@
       velocity_bias_source: "mean", velocity_refinement_key: "default",
       rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2,
       alg_enabled: false, alg_strength: 2.0, alg_sigma_threshold: 0.975,
+      mg_enabled: false, mg_strength: 0.5, mg_decay: 0.9, mg_sigma_threshold: 0.975,
     };
   }
 
@@ -266,6 +267,22 @@
         row(container, "sigma threshold",
           numCtrl(dc.alg_sigma_threshold, 0.5, 0.999, 0.005, dk + "-dalgt",
             (v) => { dc.alg_sigma_threshold = v; save(); }));
+      }
+
+      sectionTag(container, "Momentum Guidance (experimental)");
+      row(container, "enabled",
+        checkCtrl(!!dc.mg_enabled, dk + "-dmge", (v) => { dc.mg_enabled = v; saveNow(); }));
+      hint(container, "Momentum Guidance (arXiv:2602.20360). Smooths the step direction toward a running average once sigma drops below the threshold below — the complementary window to ALG's blur. May damp motion as a side effect; experimental.");
+      if (dc.mg_enabled) {
+        row(container, "strength",
+          numCtrl(dc.mg_strength, 0, 1, 0.05, dk + "-dmgs",
+            (v) => { dc.mg_strength = v; save(); }));
+        row(container, "decay",
+          numCtrl(dc.mg_decay, 0, 0.99, 0.05, dk + "-dmgd",
+            (v) => { dc.mg_decay = v; save(); }));
+        row(container, "sigma threshold",
+          numCtrl(dc.mg_sigma_threshold, 0.5, 0.999, 0.005, dk + "-dmgt",
+            (v) => { dc.mg_sigma_threshold = v; save(); }));
       }
 
     } else if (cfg.type === "KSampler") {
