@@ -1711,7 +1711,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     alg_sharp_latent_image = getattr(model, "latent_image", None) if alg_enabled else None
     alg_active = bool(alg_enabled) and extra_args.get("denoise_mask") is not None and alg_sharp_latent_image is not None
     alg_blurred_latent_image = _alg_blur_frames(
-        model, alg_sharp_latent_image, max(1.01, float(alg_strength)),
+        model, alg_sharp_latent_image, max(1.0, float(alg_strength)),
         frame_indices=(0,), tail_count=int(alg_guide_tail_frames),
     ) if alg_active else None
     alg_active = alg_active and alg_blurred_latent_image is not None
@@ -1899,7 +1899,7 @@ class FunPackDistilledFlowSampler:
                     "tooltip": "EXPERIMENTAL: Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame while sigma is above alg_sigma_threshold, then swaps back to the sharp anchor — counters the model's tendency to shortcut to a near-static video that just matches the reference image. No-op without an i2v anchor.",
                 }),
                 "alg_strength": ("FLOAT", {
-                    "default": 2.5, "min": 1.01, "max": 4.0, "step": 0.1,
+                    "default": 2.5, "min": 1.0, "max": 4.0, "step": 0.1,
                     "tooltip": "Downsample factor for the anchor blur (paper default 2.5). Higher = blurrier anchor during the affected steps. Only used when alg_enabled.",
                 }),
                 "alg_sigma_threshold": ("FLOAT", {

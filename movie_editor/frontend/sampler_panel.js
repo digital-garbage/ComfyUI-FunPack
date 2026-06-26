@@ -261,7 +261,7 @@
       hint(container, "Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame during the earliest steps so the model can't shortcut to a near-static video that just matches it. No effect without an i2v anchor.");
       if (dc.alg_enabled) {
         row(container, "blur strength",
-          numCtrl(dc.alg_strength, 1.01, 4, 0.1, dk + "-dalgs",
+          numCtrl(dc.alg_strength, 1.0, 4, 0.1, dk + "-dalgs",
             (v) => { dc.alg_strength = v; save(); }));
         row(container, "sigma threshold",
           numCtrl(dc.alg_sigma_threshold, 0.5, 0.999, 0.005, dk + "-dalgt",
