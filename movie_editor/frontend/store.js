@@ -3631,6 +3631,16 @@
     _scheduleModelsSave();
   }
 
+  // Edit a slot's bypass flag from the main editor (an "exposed" control) and persist.
+  // Top-level on the slot, not slot.inputs, so it never gets sent to ComfyUI as a fake widget.
+  function setModelBypass(slotId, value) {
+    const slot = (state.models.slots || []).find((s) => s.id === slotId);
+    if (!slot) return;
+    slot.bypassed = !!value;
+    notify();
+    _scheduleModelsSave();
+  }
+
   // Set a linked control's shared value (writes through to all member inputs) and persist.
   function setModelLink(linkId, value) {
     const link = (state.models.links || []).find((l) => l.id === linkId);
@@ -3903,7 +3913,7 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,

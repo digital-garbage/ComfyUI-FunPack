@@ -59,6 +59,11 @@ OI = {
                            "output_name": ["UPSCALE_MODEL"]},
     "ImageUpscaleWithModel": {"input": {"required": {"upscale_model": ["UPSCALE_MODEL"], "image": ["IMAGE"]}},
                               "output": ["IMAGE"], "output_name": ["IMAGE"]},
+    "LoraLoader": {"input": {"required": {"model": ["MODEL"], "clip": ["CLIP"],
+                                          "lora_name": [["x.safetensors"]],
+                                          "strength_model": ["FLOAT", {"default": 1.0}],
+                                          "strength_clip": ["FLOAT", {"default": 1.0}]}},
+                  "output": ["MODEL", "CLIP"], "output_name": ["MODEL", "CLIP"]},
 }
 
 PARAMS = {"prompt": "scene one", "seed": 42, "num_frames_per_scene": 121, "frame_rate": 24}
@@ -291,3 +296,46 @@ def test_refinement_key_injected_into_keyloader():
 def test_refinement_key_defaults_when_absent():
     graph, _ = builder.build(OI, {"slots": []}, PARAMS)
     assert graph["keyloader"]["inputs"]["key_name"] == "default"
+
+
+def test_bypassed_lora_drops_node_and_passes_model_clip_through():
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"}, "wires": {}},
+        {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {}},
+        {"id": "lora", "node_class": "LoraLoader", "bypassed": True,
+         "inputs": {"lora_name": "x.safetensors", "strength_model": 0.8, "strength_clip": 0.8,
+                    "model": ["slot_u", 0], "clip": ["slot_c", 0]},
+         "wires": {"MODEL": "port:FunPackStudio.model", "CLIP": "port:FunPackStudio.clip"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    # the LoRA node itself is gone
+    assert "slot_lora" not in graph
+    # Studio's model/clip wire straight to the original loaders, skipping the LoRA
+    assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]
+    assert graph["studio"]["inputs"]["clip"] == ["slot_c", 0]
+    assert any("LoraLoader bypassed" in w for w in report["wired"])
+
+
+def test_non_bypassed_lora_stays_in_graph():
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"}, "wires": {}},
+        {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {}},
+        {"id": "lora", "node_class": "LoraLoader",
+         "inputs": {"lora_name": "x.safetensors", "model": ["slot_u", 0], "clip": ["slot_c", 0]},
+         "wires": {"MODEL": "port:FunPackStudio.model", "CLIP": "port:FunPackStudio.clip"}},
+    ]}
+    graph, _ = builder.build(OI, models, PARAMS)
+    assert "slot_lora" in graph
+    assert graph["studio"]["inputs"]["model"] == ["slot_lora", 0]
+    assert graph["studio"]["inputs"]["clip"] == ["slot_lora", 1]
+
+
+def test_bypass_on_node_with_no_matching_input_leaves_it_active_and_reports():
+    # VaeLoader has no connection_input at all, so there's nothing to pass an output through —
+    # bypass must be a documented no-op here, not a crash or a silently dropped node.
+    models = {"full_control": True, "slots": [
+        {"id": "v", "node_class": "VaeLoader", "bypassed": True, "inputs": {}, "wires": {}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "slot_v" in graph
+    assert any("bypass needs exactly one input" in u for u in report["unsatisfied"])

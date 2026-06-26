@@ -521,6 +521,11 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                 active_slots.add(src.split(":", 2)[1])
     _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
 
+    # 5b. bypass: drop a slot's node from the graph and rewire its consumers straight to
+    # whatever fed its matching-type input, so the node's effect is skipped without losing
+    # its saved configuration (vs. removing the node or zeroing a strength widget every time).
+    _apply_bypass(graph, slots, slot_node_id, slot_def, report)
+
     # Cycle-guard: a default/auto wire that loops (e.g. an upscale node whose IMAGE both feeds the
     # export AND defaults back to Studio · source_image while it consumes the decoded frames) is
     # dropped here; an all-explicit loop is reported precisely. Never hand ComfyUI a cyclic graph.
@@ -833,3 +838,48 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             report["unsatisfied"].append(msg)
             if required:
                 report["blocking"].append(msg)
+
+
+def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
+    """Drop each bypassed slot's node, rewiring its consumers to whatever already feeds its
+    matching-type input (same idea as ComfyUI's node bypass) — only when that mapping is
+    unambiguous (exactly one connection_input per output type). Otherwise leaves the node
+    wired normally and reports why, rather than guessing. Runs after auto-wire so the
+    passthrough source is already resolved to a concrete value/link.
+    """
+    for s in slots:
+        if not s.get("bypassed"):
+            continue
+        sid = slot_node_id.get(s["id"])
+        if not sid or sid not in graph:
+            continue
+        nd = slot_def.get(s["id"]) or {}
+        outs = node_outputs(nd)
+        by_type: dict[str, list[str]] = {}
+        for ci in connection_inputs(nd):
+            by_type.setdefault(ci["type"], []).append(ci["name"])
+        passthrough = {}
+        ok = True
+        for i, o in enumerate(outs):
+            names = by_type.get(o["type"])
+            if not names or len(names) != 1:
+                ok = False
+                break
+            passthrough[i] = graph[sid]["inputs"].get(names[0])
+        if not ok:
+            report["unsatisfied"].append(
+                f"{s.get('node_class')}: bypass needs exactly one input matching each output's "
+                f"type to pass through — this node doesn't have one, so it stays active.")
+            continue
+        for nid, ndata in graph.items():
+            if nid == sid:
+                continue
+            for inp_name, val in list((ndata.get("inputs") or {}).items()):
+                if isinstance(val, list) and len(val) == 2 and val[0] == sid:
+                    replacement = passthrough.get(val[1])
+                    if replacement is not None:
+                        ndata["inputs"][inp_name] = replacement
+                    else:
+                        del ndata["inputs"][inp_name]
+        del graph[sid]
+        report["wired"].append(f"{s.get('node_class')} bypassed (pass-through)")
