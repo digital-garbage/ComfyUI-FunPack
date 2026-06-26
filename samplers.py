@@ -1639,7 +1639,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    rescue_prompt_sig=None,
                                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
                                    alg_guide_tail_frames=0,
-                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.9, mg_sigma_threshold=0.975):
+                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1950,8 +1950,8 @@ class FunPackDistilledFlowSampler:
                     "tooltip": "Blend weight toward the momentum average when active (0 = no effect, 1 = fully replace the step's direction with the average). Only used when mg_enabled.",
                 }),
                 "mg_decay": ("FLOAT", {
-                    "default": 0.9, "min": 0.0, "max": 0.99, "step": 0.05,
-                    "tooltip": "EMA decay for the momentum average (higher = longer memory of past steps' directions). Only used when mg_enabled.",
+                    "default": 0.5, "min": 0.0, "max": 0.99, "step": 0.05,
+                    "tooltip": "EMA decay for the momentum average (higher = longer memory of past steps' directions). On our 8-step schedule, high decay (e.g. 0.9) keeps the EMA anchored to the very first, near-pure-noise step's direction for nearly the whole run — wrong scale, produces garbage regardless of mg_strength. Tested safe (and good) at 0.5 even at mg_strength=1.0. Only used when mg_enabled.",
                 }),
                 "mg_sigma_threshold": ("FLOAT", {
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
@@ -1980,7 +1980,7 @@ class FunPackDistilledFlowSampler:
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
                     normalize_strength=0.0, normalize_start_sigma=0.9,
                     alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
-                    mg_enabled=False, mg_strength=0.5, mg_decay=0.9, mg_sigma_threshold=0.975):
+                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,

@@ -14631,7 +14631,7 @@ class FunPackStudio:
                     alg_sigma_threshold=float(dc.get("alg_sigma_threshold", 0.94)),
                     mg_enabled=bool(dc.get("mg_enabled", False)),
                     mg_strength=float(dc.get("mg_strength", 0.5)),
-                    mg_decay=float(dc.get("mg_decay", 0.9)),
+                    mg_decay=float(dc.get("mg_decay", 0.5)),
                     mg_sigma_threshold=float(dc.get("mg_sigma_threshold", 0.975)),
                     sigmas=sigmas_raw,
                 )
