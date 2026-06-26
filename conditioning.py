@@ -6126,10 +6126,6 @@ class FunPackVideoRefiner:
 
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 
-
-_V2_PERSISTENT_ENCODE_CACHE = {}
-_V2_PERSISTENT_CACHE_MAX = 4096
-
 # Movie Editor sends this when the user did not rate before regenerating: apply session
 # memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
 # Must appear in V2_RATING_LABELS so ComfyUI /prompt validation accepts editor overrides.
@@ -6721,16 +6717,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         use_vision = reference_image is not None and self._gemma3_has_vision(clip)
         img_fp = self._image_fingerprint(reference_image) if use_vision else None
 
+        # Per-call cache ONLY (the encode_cache dict is created fresh by the caller for this
+        # one sample() invocation and never escapes it) — no cross-request/process-lifetime
+        # caching here. The conditioning the model sees must always trace back to what's live
+        # in the current request, never to anything reused from a past one.
         cache_key = (id(clip), prompt_text, img_fp)
         if isinstance(encode_cache, dict):
             cached = encode_cache.get(cache_key)
             if cached is not None:
                 return cached
-        cached = _V2_PERSISTENT_ENCODE_CACHE.get(cache_key)
-        if cached is not None:
-            if isinstance(encode_cache, dict):
-                encode_cache[cache_key] = cached
-            return cached
         try:
             if use_vision:
                 print("[FunPackStudio] Processing input image with Gemma3 vision...")
@@ -6753,8 +6748,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions{vision_tag}")
         if isinstance(encode_cache, dict):
             encode_cache[cache_key] = result
-        if len(_V2_PERSISTENT_ENCODE_CACHE) < _V2_PERSISTENT_CACHE_MAX:
-            _V2_PERSISTENT_ENCODE_CACHE[cache_key] = result
         return result
 
     def _v2_gemma3_tokenizer_status(self):
