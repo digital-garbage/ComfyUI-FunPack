@@ -5,9 +5,12 @@
   const S = window.Store;
   const O = window.OverlayUI;
 
-  function videoClipScenes() {
+  // Any scene with a playable render — an explicit video clip OR a generative scene that's
+  // already been generated (has a sceneRenders entry). Matches the same "has content" check
+  // used elsewhere in the editor (e.g. removeFromPlan), not just clips converted to video.
+  function renderedScenes() {
     const st = S.get();
-    return (st.project?.scenes || []).filter((s) => S.isVideoClip(s) && !s.excluded);
+    return (st.project?.scenes || []).filter((s) => !s.excluded && S.hasPlayableRender(s));
   }
 
   function clipLabel(s) {
@@ -19,19 +22,23 @@
   }
 
   function openAutoMontageDialog() {
-    const clips = videoClipScenes();
+    const clips = renderedScenes();
     if (clips.length < 2) {
-      alert("Auto Montage needs at least two already-rendered clips on the timeline: one lead clip and at least one cutaway clip.");
+      alert("Auto Montage needs at least two already-rendered scenes on the timeline (generated or converted-to-video clips): one lead scene and at least one cutaway scene.");
       return;
     }
     const { body, foot, close } = O.openModal({
       title: "Auto Montage",
-      subtitle: "Cuts the lead clip into shrinking segments and randomly inserts cutaways between them.",
+      subtitle: "Cuts the lead scene into shrinking segments and randomly inserts cutaways between them.",
       widthClass: "ov-modal-wide",
     });
 
-    let leadId = clips[0].id;
-    const poolIds = new Set();
+    // Pre-fill from the current timeline selection when it gives us at least a lead + one
+    // cutaway candidate — matches "select scenes, then click Auto Montage" expectations.
+    const selectedIds = new Set(S.get().selectedSceneIds || []);
+    const selectedEligible = clips.filter((c) => selectedIds.has(c.id));
+    let leadId = (selectedEligible[0] || clips[0]).id;
+    const poolIds = new Set(selectedEligible.slice(1).map((c) => c.id));
 
     const leadSel = document.createElement("select");
     leadSel.className = "ov-input";
@@ -80,7 +87,7 @@
 
     const buildBtn = el("button", "btn primary", "Build montage");
     buildBtn.onclick = () => {
-      if (!poolIds.size) { alert("Pick at least one cutaway clip."); return; }
+      if (!poolIds.size) { alert("Pick at least one cutaway scene."); return; }
       const n = S.autoMontage({
         leadId,
         poolIds: Array.from(poolIds),

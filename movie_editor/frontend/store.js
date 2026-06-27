@@ -1839,24 +1839,44 @@
     _syncSeparatedAudioTracks();
   }
 
-  // Auto Montage: chop an already-rendered "lead" clip into shrinking-length segments
+  // Any scene with playable content, regardless of type: an explicit "video" clip plays
+  // straight off media via source_in/source_dur; a generative scene plays off its OWN
+  // render record (state.sceneRenders[id].media + inSec, with duration driven by `frames`,
+  // same convention used by removeFromPlan/renderMediaLabel elsewhere in this file). Returns
+  // null when neither applies, so callers can treat any scene uniformly via this one shape.
+  function _renderRef(s) {
+    if (!s) return null;
+    const fps = sceneEffFps(s);
+    if (isVideoClip(s)) {
+      return { isVideo: true, media: null, renderPrompt: null,
+               baseInSec: s.source_in || 0, fps, totalSec: s.source_dur != null ? s.source_dur : sceneDurationSec(s) };
+    }
+    const r = state.sceneRenders[s.id];
+    if (!r || !r.media) return null;
+    return { isVideo: false, media: r.media, renderPrompt: r.renderPrompt || null,
+             baseInSec: r.inSec || 0, fps, totalSec: sceneDurationSec(s) };
+  }
+
+  function hasPlayableRender(s) { return _renderRef(s) !== null; }
+
+  // Auto Montage: chop an already-rendered "lead" scene into shrinking-length segments
   // (trailer pacing — cuts get faster toward the end) and interleave a randomly-drawn
-  // segment from a pool of other rendered clips after each one. Pure timeline construction:
-  // every built segment reuses an existing source clip's media via source_in/source_dur
-  // (same mechanism as splitScene), no new generation involved.
+  // segment from a pool of other rendered scenes after each one. Pure timeline construction,
+  // no new generation involved — every built segment reuses an existing scene's already-
+  // rendered media, via source_in/source_dur for an explicit video clip or via a cloned
+  // sceneRenders entry (media + inSec) for a generative scene's own render.
   function autoMontage({ leadId, poolIds, segmentFrames, decay } = {}) {
     if (!state.project) return;
     const lead = scene(leadId);
-    if (!lead || !isVideoClip(lead)) return;
-    const pool = (poolIds || []).map((id) => scene(id)).filter((s) => s && isVideoClip(s));
+    const leadRef = _renderRef(lead);
+    if (!leadRef) return;
+    const pool = (poolIds || []).map((id) => scene(id)).filter((s) => s && hasPlayableRender(s));
     if (!pool.length) return;
 
     const base = Math.max(9, Math.round(segmentFrames || 100));
     const dk = decay != null ? Math.min(1, Math.max(0.3, decay)) : 1;
 
-    const leadFps = sceneEffFps(lead);
-    const leadTotal = snapFrames((lead.source_dur != null ? lead.source_dur : sceneDurationSec(lead)) * leadFps);
-    const leadSrcIn = lead.source_in || 0;
+    const leadTotal = snapFrames(leadRef.totalSec * leadRef.fps);
 
     // Lead segments stay in chronological order (one continuous shot being interrupted),
     // shrinking each cycle so cutaways come faster as the take progresses.
@@ -1870,19 +1890,18 @@
     }
     if (!leadSegs.length) return;
 
-    // Pool: chop every selected clip into its own ORDERED queue of base-length
-    // chunks (chronological — never reordered within a clip). Randomness only picks
-    // WHICH clip's queue to draw from next; each draw advances that clip's own cursor,
-    // so a clip's later content can never surface before its own earlier content.
+    // Pool: chop every selected scene into its own ORDERED queue of base-length
+    // chunks (chronological — never reordered within a scene). Randomness only picks
+    // WHICH scene's queue to draw from next; each draw advances that scene's own cursor,
+    // so a scene's later content can never surface before its own earlier content.
     const queues = pool.map((s) => {
-      const fps = sceneEffFps(s);
-      const total = snapFrames((s.source_dur != null ? s.source_dur : sceneDurationSec(s)) * fps);
-      const srcIn = s.source_in || 0;
+      const ref = _renderRef(s);
+      const total = snapFrames(ref.totalSec * ref.fps);
       const chunks = [];
       let c = 0;
       while (c < total - 8) {
         const len = Math.min(total - c, base);
-        if (len >= 9) chunks.push({ scene: s, fps, start: c, frames: snapFrames(len), srcIn });
+        if (len >= 9) chunks.push({ scene: s, ref, start: c, frames: snapFrames(len) });
         c += len;
       }
       return { chunks, cursor: 0 };
@@ -1892,33 +1911,44 @@
     function nextPoolChunk() {
       let available = queues.filter((q) => q.cursor < q.chunks.length);
       if (!available.length) {
-        queues.forEach((q) => { q.cursor = 0; }); // every clip exhausted — start each over from its own beginning
+        queues.forEach((q) => { q.cursor = 0; }); // every scene exhausted — start each over from its own beginning
         available = queues;
       }
       const q = available[Math.floor(Math.random() * available.length)];
       return q.chunks[q.cursor++];
     }
 
-    function buildSegment(src, srcInSec, lenFrames, fps) {
+    function buildSegment(src, ref, startFrames, lenFrames) {
       const out = JSON.parse(JSON.stringify(src));
-      out.id = "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      const newId = "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      out.id = newId;
       out.gen_unit_id = src.id;
-      out.source_in = srcInSec;
-      out.source_dur = lenFrames / fps;
       out.frames = lenFrames;
-      out.frames_mode = "timeline";
       out.rating = "";
       out.transition_to_next = "cut";
       out.transition_frames = null;
+      const offsetSec = startFrames / ref.fps;
+      if (ref.isVideo) {
+        out.source_in = ref.baseInSec + offsetSec;
+        out.source_dur = lenFrames / ref.fps;
+        out.frames_mode = "timeline";
+      } else {
+        out.cut_offset_frames = (src.cut_offset_frames || 0) + startFrames;
+        state.sceneRenders[newId] = {
+          media: ref.media,
+          inSec: ref.baseInSec + offsetSec,
+          renderPrompt: ref.renderPrompt ? { ...ref.renderPrompt } : undefined,
+        };
+      }
       return out;
     }
 
     _historyRecord();
     const built = [];
     leadSegs.forEach((seg) => {
-      built.push(buildSegment(lead, leadSrcIn + seg.start / leadFps, seg.frames, leadFps));
+      built.push(buildSegment(lead, leadRef, seg.start, seg.frames));
       const chunk = nextPoolChunk();
-      built.push(buildSegment(chunk.scene, chunk.srcIn + chunk.start / chunk.fps, chunk.frames, chunk.fps));
+      built.push(buildSegment(chunk.scene, chunk.ref, chunk.start, chunk.frames));
     });
     built[built.length - 1].transition_to_next = "";
 
@@ -4000,7 +4030,7 @@
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, setSceneGapAfter, splitScene, autoMontage, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
     refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
