@@ -11917,6 +11917,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axis_feedback,
                 learning_profile,
             )
+            # Custom shortcut keys (e.g. a 'cs'-tagged cumshot shortcut) ALSO fire on a plain
+            # single-scene run, not just a rated multi-scene Movie Editor chain — but the
+            # use_me_scene_ratings branch above was the ONLY place that ever trained them, and
+            # it requires BOTH a multi-scene run AND explicit per-scene ratings from the editor.
+            # Most generations are single-scene with one overall rating, so those keys were
+            # never created at all. Train them here too, ADDITIVELY (the default key above keeps
+            # learning exactly as it always has — unlike the multi-scene path, this does NOT make
+            # custom keys exclusive of the default; that exclusivity is the multi-scene path's own
+            # documented design, not something to risk replicating into this far more common,
+            # heavily-relied-upon single-scene path without it being separately tested).
+            if has_previous_run and not learning_profile.get("skip_learning"):
+                fired_keys = set()
+                for ks in (previous_run.get("scene_refinement_keys") or []):
+                    fired_keys |= set(ks or [])
+                fired_keys.discard(str(refinement_key or "").strip())
+                if fired_keys:
+                    trained_keys = self._v2_learn_scene_into_keys(
+                        sorted(fired_keys), refinement_key, previous_run, learning_profile,
+                        int(global_state.get("total_iterations", 0)) + 1, axis_feedback,
+                        bool(seed_output_connected),
+                    )
+                    if trained_keys:
+                        memory_status += f"\nTrained custom key(s): {', '.join(trained_keys)}"
 
         vision_context, vision_status = self._v2_update_vision_memory(
             global_state,
