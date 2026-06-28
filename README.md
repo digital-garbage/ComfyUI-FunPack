@@ -29,6 +29,10 @@ cross-shot **JoyAI-Echo** audio/video memory mode, contrastive-pair **FreeSlider
 seed-routing **path-outcome planner** that steers future generations away from disliked paths —
 see the [CHANGELOG](CHANGELOG.md) for the full list.
 
+**3.1.2** fixes a Cutting Room regression where splitting a clip could undo itself (the second
+half got pushed out as if a full-length clip had been appended) — see the
+[CHANGELOG](CHANGELOG.md).
+
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 
 ## Installation
