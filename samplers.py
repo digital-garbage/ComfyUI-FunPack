@@ -2212,8 +2212,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Which frame of each finished scene to store in the bank (JoyAI default 'center').",
                 }),
                 "joyai_memory_strength": ("FLOAT", {
-                    "default": 0.3, "min": 0.25, "max": 0.5, "step": 0.05,
-                    "tooltip": "Guide-attention strength for each memory frame. Same 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts).",
+                    "default": 0.3, "min": 0.25, "max": 10.0, "step": 0.05,
+                    "tooltip": "Guide-attention strength for each memory frame. 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts). Uncapped at the top: 0.25-0.5 is the audio-safe band, higher values push identity harder but may degrade audio/over-constrain motion.",
                 }),
                 # NOTE: append-only — keep new sampler widgets at the END of this block so the
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
