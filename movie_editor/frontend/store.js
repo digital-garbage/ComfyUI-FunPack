@@ -407,31 +407,19 @@
     const next = [];
     let ghostsOut = [...(ghosts || [])];
     const parsed = parsedScenes || [];
-    const matchByIdx = new Array(parsed.length).fill(null);
 
-    // Pass 1 — exact text match, closest original position wins ties.
-    for (let i = 0; i < parsed.length; i++) {
-      const pt = _normalizeSceneText(parsed[i].text);
-      if (!pt) continue;
-      let best = null, bestDist = Infinity;
-      for (let ri = 0; ri < oldRoots.length; ri++) {
-        const root = oldRoots[ri];
-        if (usedOld.has(root.id)) continue;
-        if (_normalizeSceneText(root.text) !== pt) continue;
-        const dist = Math.abs(ri - i);
-        if (dist < bestDist) { best = root; bestDist = dist; }
-      }
-      if (best) { matchByIdx[i] = best; _markGenUnitUsed(genUnitId(best), usedOld, oldAll); }
-    }
-
-    // Pass 2 — remaining slots take the remaining roots in order (in-place edits).
-    const remainingRoots = oldRoots.filter((r) => !usedOld.has(r.id));
-    let rr = 0;
-    for (let i = 0; i < parsed.length; i++) {
-      if (matchByIdx[i] || rr >= remainingRoots.length) continue;
-      const root = remainingRoots[rr++];
-      matchByIdx[i] = root;
-      _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
+    // Match each parsed slot to the old root that owns its CONTENT — exact text first
+    // (nearest original position breaks ties), then leftover slots take leftover roots in
+    // order. The pure index-based kernel lives in scene_align.js so the two passes can be
+    // unit-tested in node (see scene_align.test.js). Both sides are normalized identically
+    // here before matching, so the kernel can compare raw strings.
+    const matchIdx = window.SceneAlign.matchParsedToRoots(
+      parsed.map((p) => _normalizeSceneText(p.text)),
+      oldRoots.map((r) => _normalizeSceneText(r.text)),
+    );
+    const matchByIdx = matchIdx.map((ri) => (ri >= 0 ? oldRoots[ri] : null));
+    for (const root of matchByIdx) {
+      if (root) _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
     }
 
     // Materialize: matched root → reuse (keeps id/source/render); else ghost by text; else new.
