@@ -93,6 +93,20 @@ def test_core_skeleton_links_and_params():
     assert any("FunPackStudio" in u and ".model" in u for u in report["unsatisfied"])
 
 
+def test_run_output_gets_unique_temp_prefix():
+    # Each build (= one generation run) must give the VHS preview node its OWN filename_prefix
+    # so a later run can't reuse/overwrite an earlier run's temp file — otherwise a previously
+    # rendered scene stops playing once the next scene generates. save_output stays False (temp).
+    g1, _ = builder.build(OI, {"slots": []}, PARAMS)
+    g2, _ = builder.build(OI, {"slots": []}, PARAMS)
+    p1 = g1["vhs"]["inputs"]["filename_prefix"]
+    p2 = g2["vhs"]["inputs"]["filename_prefix"]
+    assert p1.startswith("funpack_preview_")
+    assert p2.startswith("funpack_preview_")
+    assert p1 != p2  # distinct per run
+    assert g1["vhs"]["inputs"]["save_output"] is False
+
+
 def test_explicit_wires_and_autowire():
     models = {"full_control": True, "slots": [
         {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"},

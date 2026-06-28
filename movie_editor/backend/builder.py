@@ -20,6 +20,7 @@ Output is a ComfyUI /prompt graph: {node_id: {class_type, inputs}}.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any, Optional
 
 from . import config
@@ -278,6 +279,13 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         # save_output=False routes VHS_VideoCombine to temp; history reports type="temp",
         # which the result proxy + final-render concat resolve against the temp directory.
         graph["vhs"]["inputs"]["save_output"] = False
+        # Per-run unique filename_prefix so each run's output is its OWN temp file. Without
+        # this, every run shares the default prefix and a later run can reuse/overwrite an
+        # earlier run's filename — so a previously rendered scene stops playing once the next
+        # scene generates, even though its temp file is only really gone on ComfyUI restart.
+        # Each scene records the exact filename ComfyUI returns, so distinct prefixes keep
+        # every scene tied to its own file for the whole session.
+        graph["vhs"]["inputs"]["filename_prefix"] = f"funpack_preview_{uuid.uuid4().hex[:12]}"
 
         # Refinement key for this run. FunPackRefinementKeyLoader resolves target = selected
         # combo OR typed key_name; force the combo to "-None-" so the typed project key wins
@@ -340,6 +348,9 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         nd = object_info.get(vhs_cls)
         g_inputs = _widget_defaults(nd)
         g_inputs["save_output"] = False  # ephemeral, like the core combine
+        # Unique per-build prefix so this whole-timeline preview never collides with a
+        # per-run scene output (or a prior build) in the shared temp dir.
+        g_inputs["filename_prefix"] = f"funpack_global_{uuid.uuid4().hex[:12]}"
         if params.get("frame_rate") is not None and "frame_rate" in g_inputs:
             g_inputs["frame_rate"] = params["frame_rate"]
         graph["global_out"] = {"class_type": vhs_cls, "inputs": g_inputs}
