@@ -1816,7 +1816,12 @@
     second.transition_to_next = s.transition_to_next || "";
     second.transition_frames = s.transition_frames || null;
     s.gen_unit_id = unitId;
-    s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
+    // The split seam between the two halves is an internal HARD CUT: the original clip's
+    // outgoing edge now belongs to the second half. Clear ALL transition fields on the first
+    // half — the prompt transition (transition_to_next), the NLE video blend (video_transition),
+    // and its frame count — so the seam doesn't show/render a phantom (the deep clone already
+    // carried these onto the second half, which correctly keeps them).
+    s.frames = cut; s.transition_to_next = ""; s.transition_frames = null; s.video_transition = "";
     if (playsFromSourceMedia(s)) {
       const srcIn = s.source_in || 0;
       const totalDur = s.source_dur != null ? s.source_dur : (frames / effFps);
