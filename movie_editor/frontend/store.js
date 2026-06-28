@@ -4024,6 +4024,7 @@
     selectAudioTrack, trimAudioTrackLeft, slipAudioTrack, resizeAudioTrack, splitAudioTrack,
     sceneHasEmbeddedAudio, separatedTrackAudioUrl,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec, audioTrackInSec, audioTrackDurSec,
+    audioTrackMaxDurSec,
     overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
     projectCanvasSize, normalizeOverlayTrack,
     addOverlayLane, removeOverlayLane, assignMediaToOverlayLane,
