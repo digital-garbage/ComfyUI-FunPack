@@ -386,9 +386,19 @@
     return sc;
   }
 
-  // Global prompt is authoritative. Parsed scene slots map positionally onto timeline
-  // roots first (scene 1 always reuses the first generative clip), then fall back to
-  // text matching for extras. Unmatched old roots are ghosted or dropped.
+  // Global prompt is authoritative. A scene's id carries its source/anchor AND its render
+  // (state.sceneRenders[id]), so a parsed slot must map onto the old root that owns its
+  // CONTENT — never just the root that happens to sit at the same array index. Matching by
+  // POSITION first was the "stale scene" bug: a reorder/insert/delete in the global prompt
+  // shifted indices, gluing one scene's text onto another scene's anchor+render (and that
+  // wrong mapping then got saved, so it survived restart and key-clears). So:
+  //   Pass 1 — exact normalized-text match (nearest original position breaks ties): pins
+  //            unchanged scenes to their own root through any reorder/insert/delete.
+  //   Pass 2 — leftover slots inherit the leftover roots IN ORDER: an in-place text edit
+  //            keeps its render/anchor; a slot with no root left becomes a fresh scene.
+  // Unmatched old roots are ghosted or dropped (unchanged). The only irreducible case is a
+  // scene that is BOTH reordered AND fully rewritten with no unchanged neighbour to anchor
+  // it — genuinely ambiguous from text alone, so Pass 2 falls back to a positional guess.
   function _alignScenesFromParsed(oldScenes, parsedScenes, ghosts) {
     const oldAll = (oldScenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
     const oldRoots = _generativeRoots(oldScenes);
@@ -396,23 +406,42 @@
     const usedGhost = new Set();
     const next = [];
     let ghostsOut = [...(ghosts || [])];
+    const parsed = parsedScenes || [];
+    const matchByIdx = new Array(parsed.length).fill(null);
 
-    for (let i = 0; i < (parsedScenes || []).length; i++) {
-      const ps = parsedScenes[i];
+    // Pass 1 — exact text match, closest original position wins ties.
+    for (let i = 0; i < parsed.length; i++) {
+      const pt = _normalizeSceneText(parsed[i].text);
+      if (!pt) continue;
+      let best = null, bestDist = Infinity;
+      for (let ri = 0; ri < oldRoots.length; ri++) {
+        const root = oldRoots[ri];
+        if (usedOld.has(root.id)) continue;
+        if (_normalizeSceneText(root.text) !== pt) continue;
+        const dist = Math.abs(ri - i);
+        if (dist < bestDist) { best = root; bestDist = dist; }
+      }
+      if (best) { matchByIdx[i] = best; _markGenUnitUsed(genUnitId(best), usedOld, oldAll); }
+    }
+
+    // Pass 2 — remaining slots take the remaining roots in order (in-place edits).
+    const remainingRoots = oldRoots.filter((r) => !usedOld.has(r.id));
+    let rr = 0;
+    for (let i = 0; i < parsed.length; i++) {
+      if (matchByIdx[i] || rr >= remainingRoots.length) continue;
+      const root = remainingRoots[rr++];
+      matchByIdx[i] = root;
+      _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
+    }
+
+    // Materialize: matched root → reuse (keeps id/source/render); else ghost by text; else new.
+    for (let i = 0; i < parsed.length; i++) {
+      const ps = parsed[i];
       const pt = _normalizeSceneText(ps.text);
-      let match = null;
-
-      if (i < oldRoots.length && !usedOld.has(oldRoots[i].id)) {
-        match = oldRoots[i];
-      }
-
-      if (!match && pt) {
-        match = oldAll.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt);
-      }
+      const match = matchByIdx[i];
 
       if (match) {
         const root = isGenSubclip(match) ? (genUnitRoot(genUnitId(match)) || match) : match;
-        _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
         next.push(_reuseGenerativeRoot(root, ps.text));
         continue;
       }
