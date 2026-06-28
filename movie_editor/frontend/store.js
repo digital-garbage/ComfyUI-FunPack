@@ -1369,6 +1369,7 @@
     if (!r?.media || !(r.media.kind === "videos" || r.media.kind === "gifs")) return;
     if (!_renderIsStandalone(sceneId)) return;
     const fname = r.media.filename;
+    const tok = r._editTok || 0;                                  // snapshot before the async probe
     const v = document.createElement("video");
     v.preload = "metadata";
     v.muted = true;
@@ -1377,6 +1378,7 @@
       if (!dur || !isFinite(dur)) return;
       const cur = state.sceneRenders[sceneId];
       if (!cur || cur.media?.filename !== fname) return;        // scene moved on; don't clobber
+      if ((cur._editTok || 0) !== tok) return;                  // split/re-length happened mid-probe; stale
       const old = cur.durationSec;
       if (old != null && Math.abs(old - dur) < 0.05) return;
       cur.durationSec = dur;                                     // adopt the real encoded length
@@ -1829,6 +1831,7 @@
     const r = state.sceneRenders[id];
     if (r && r.media) {
       delete r.durationSec; // a split is an explicit re-length: both halves revert to plan layout
+      r._editTok = (r._editTok || 0) + 1; // invalidate any in-flight _probeRenderDuration for this scene
       state.sceneRenders[second.id] = {
         media: r.media,
         inSec: (r.inSec || 0) + cutSec,
