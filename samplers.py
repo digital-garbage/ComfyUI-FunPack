@@ -601,6 +601,62 @@ def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
 
 
 # ---------------------------------------------------------------------------
+# Blackwell (sm_120) xformers masked-attention fallback
+# ---------------------------------------------------------------------------
+# On GPUs newer than capability (9, 0), xformers' memory_efficient_attention has no
+# kernel that accepts a tensor attn_bias — every backend is rejected ("No operator
+# found ... too new ... attn_bias type is <class 'torch.Tensor'>"). Unmasked attention
+# still works, which is why i2v ANCHOR scenes generate fine but GUIDE scenes crash: the
+# LTX guide path (comfy/ldm/lightricks/model.py _attention_with_guide_mask) passes a
+# tensor mask. PyTorch SDPA handles masks on every GPU, so when the active backend is
+# xformers on such a device we route only the MASKED calls to attention_pytorch via
+# ComfyUI's per-call optimized_attention_override hook (wrap_attn). Unmasked calls stay
+# on the fast xformers path. This is the programmatic equivalent of the user's
+# --use-pytorch-cross-attention, scoped to masked attention and installed ONLY when this
+# exact failure condition is detected, so other setups are untouched.
+def _funpack_mask_safe_attention_override(func, *args, **kwargs):
+    # `func` is the raw backend ComfyUI selected (attention_xformers). wrap_attn has
+    # already stamped _inside_attn_wrapper into kwargs before calling us, so invoking
+    # attention_pytorch here cannot re-enter the override (no recursion).
+    mask = kwargs.get("mask")
+    if mask is None and len(args) >= 5:
+        mask = args[4]  # (q, k, v, heads, mask, ...)
+    if mask is not None:
+        import comfy.ldm.modules.attention as _am
+        return _am.attention_pytorch(*args, **kwargs)
+    return func(*args, **kwargs)
+
+
+def _funpack_install_mask_safe_attention(model):
+    """When the active attention backend is xformers on a GPU too new for its tensor-bias
+    kernels (capability > (9, 0), e.g. Blackwell sm_120), install a per-call override so
+    MASKED attention (the LTX guide path) falls back to SDPA. No-op on supported GPUs, when
+    ComfyUI already uses a mask-capable backend, or when another override is present.
+    Idempotent; never raises."""
+    try:
+        import comfy.ldm.modules.attention as _am
+        if getattr(_am, "optimized_attention", None) is not getattr(_am, "attention_xformers", None):
+            return  # SDPA / sage / flash / split selected — masks already handled
+        if not torch.cuda.is_available():
+            return
+        major, minor = torch.cuda.get_device_capability()
+        if major <= 9:
+            return  # xformers cutlass/flash tensor-bias kernels support cap <= (9, 0)
+        to = model.model_options.setdefault("transformer_options", {})
+        existing = to.get("optimized_attention_override")
+        if existing is _funpack_mask_safe_attention_override:
+            return  # already installed (idempotent across scenes/runs)
+        if existing is not None:
+            return  # respect another tool's override; don't stomp it
+        to["optimized_attention_override"] = _funpack_mask_safe_attention_override
+        print(f"[FunPack AV] xformers active on capability {major}.{minor} GPU (too new for "
+              "its tensor-bias kernels): routing MASKED attention to PyTorch SDPA so guide "
+              "scenes don't crash. Unmasked attention stays on xformers.")
+    except Exception as _e:
+        print(f"[FunPack AV] mask-safe attention install skipped: {_e}")
+
+
+# ---------------------------------------------------------------------------
 # KV-Lock: variance-gated scheduler for BachVid K/V injection (arxiv 2603.09657)
 #
 # BachVid (ltx_enhancements) injects a blessed identity K/V at a fixed,
@@ -3767,6 +3823,12 @@ class FunPackLTXAVSceneChainSampler:
             strip_funpack_block_hooks(model)
         except Exception as _e:
             print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
+
+        # Blackwell (sm_120) GPUs can't run xformers attention with a tensor mask; the LTX
+        # guide path uses one, so anchor scenes generate but guide scenes crash. Route masked
+        # attention to SDPA when that exact combo is detected (no-op otherwise). Threaded via
+        # transformer_options so it reaches every scene's model forward.
+        _funpack_install_mask_safe_attention(model)
 
         # Decode-time noise (folded in from LTXV's Set VAE Decoder Noise per the boundary law:
         # the Chain Sampler owns IMAGES decode, so this lives here, not on a separate node).
