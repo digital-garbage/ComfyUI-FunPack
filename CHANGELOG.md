@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+## [3.1.3] - 2026-06-29
+
+### Added
+- **ALG anchor de-staticking** (experimental) on the Distilled Flow sampler — adaptive latent
+  guidance that swaps the model's latent image per step (blurred ↔ sharp) to keep i2v anchors from
+  freezing the shot. Opt-in, off by default; `alg_blur_guides` extends it to guide-attention
+  frames.
+- **Momentum Guidance** (experimental, arXiv:2602.20360) on the Distilled Flow sampler — an
+  EMA-of-velocity smoothing paired with ALG over complementary sigma windows. Opt-in, off by
+  default.
+- **Bounded Attention** (experimental) on the Scene Chain Sampler — reduces attribute bleed
+  between multiple subjects via text cross-attention masking, with exact-boundary per-span
+  encoding and activation/skip logging.
+- **Auto Montage.** Build a trailer-style cut from already-rendered clips; works on generated
+  scenes, not just imported video clips.
+- **Bypass mode for Models-modal nodes**, exposable to the main editor via the existing
+  eye-button / exposed-widget pattern.
+- **Conditioning Adjustments** (per-phrase universal steering) are now exposed in Engine Settings.
+- **Reconnect to a running generation after a UI reload.** If the editor is reloaded mid-run it
+  re-attaches to the in-flight generation in ComfyUI's queue — Generate stays blocked, Interrupt
+  is offered, and the result is recorded onto the right scenes when it finishes.
+- **Temp files browser** (Settings ▸ Temp files) — a media-bin-style view over ComfyUI's temp
+  directory (scene previews and other transient outputs); open any item in a new tab or save it to
+  disk before a restart wipes it.
+- **Switch Branch / Update FunPack from the welcome screen**, so you can swap branches or update
+  without first loading a project.
+
+### Changed
+- JoyAI-Echo memory strength is no longer capped at 0.5 (now up to 10.0).
+
+### Fixed
+- **Guide scenes crashed on Blackwell (sm_120) GPUs.** xformers has no masked (tensor-bias)
+  attention kernel there, so guide/mid-scene-guide runs aborted while plain anchors worked; masked
+  attention is now auto-routed to SDPA.
+- Removed a module-level persistent CLIP encode cache that could carry stale conditioning across
+  requests — the UI is the only source of truth.
+- Custom shortcut refinement keys are now trained on single-scene runs too, not only multi-scene
+  runs.
+- Splitting a clip could leave a phantom/duplicated video transition on the first half.
+- A stale scene anchor/render could survive a global-prompt reorder; scene matching is now
+  content-first.
+- A previous scene's preview became unwatchable once the next scene generated (temp files now use
+  a unique per-run prefix).
+- Audio-track resize could overshoot, and keyboard focus could get stuck on the Start(s) input.
+
 ## [3.1.2] - 2026-06-28
 
 ### Fixed

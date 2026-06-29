@@ -33,6 +33,12 @@ see the [CHANGELOG](CHANGELOG.md) for the full list.
 half got pushed out as if a full-length clip had been appended) — see the
 [CHANGELOG](CHANGELOG.md).
 
+**3.1.3** brings several **experimental sampler techniques** (ALG anchor de-staticking and
+Momentum Guidance on Distilled Flow, Bounded Attention for multi-subject scenes), an **Auto
+Montage** trailer builder, a **Temp files** browser, **reconnect-after-reload** for in-flight
+generations, and a Blackwell (sm_120) guide-scene crash fix — see the [CHANGELOG](CHANGELOG.md)
+for the full list.
+
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 
 ## Installation
