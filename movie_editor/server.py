@@ -105,6 +105,54 @@ def _resolve_comfy_media_path(filename: str, subfolder: str = "", type_: str = "
     return os.path.join(base, subfolder or "", filename)
 
 
+_TEMP_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+_TEMP_VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".avi", ".gif"}
+_TEMP_AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
+
+
+def _temp_kind(ext: str) -> Optional[str]:
+    ext = ext.lower()
+    if ext in _TEMP_VIDEO_EXT:
+        return "video"
+    if ext in _TEMP_IMAGE_EXT:
+        return "image"
+    if ext in _TEMP_AUDIO_EXT:
+        return "audio"
+    return None
+
+
+def _list_temp_media() -> list[dict]:
+    """Media files (image/video/audio) sitting in ComfyUI's temp directory — scene
+    previews and other transient outputs that are wiped on restart. Newest first."""
+    import os
+    try:
+        import folder_paths
+        base = folder_paths.get_temp_directory()
+    except Exception:
+        return []
+    out: list[dict] = []
+    for root, _dirs, files in os.walk(base):
+        for name in files:
+            kind = _temp_kind(os.path.splitext(name)[1])
+            if not kind:
+                continue
+            full = os.path.join(root, name)
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            subfolder = os.path.relpath(root, base)
+            out.append({
+                "filename": name,
+                "subfolder": "" if subfolder == "." else subfolder.replace(os.sep, "/"),
+                "kind": kind,
+                "size": st.st_size,
+                "mtime": st.st_mtime,
+            })
+    out.sort(key=lambda i: i.get("mtime", 0), reverse=True)
+    return out
+
+
 def _resolve_clip_src_path(clip: dict) -> str:
     """Absolute path to a render or media-bin file referenced by an export/import clip spec."""
     import os
@@ -1538,8 +1586,17 @@ if web is not None and PromptServer is not None:
         applied_ovr = _apply_node_overrides(graph, body.get("node_overrides"))
         if applied_ovr:
             report.setdefault("node_overrides", []).extend(applied_ovr)
+        # Stamp the queued prompt with our client_id + run identity so a reloaded UI can
+        # re-attach to this generation (block Generate, expose Interrupt, record the result).
+        fp_meta = {
+            "pid": p.id,
+            "scene_ids": list(scene_ids) if scene_ids else None,
+            "only_scene": body.get("only_scene") or None,
+        }
         try:
-            result = await bridge.queue_prompt(graph)
+            result = await bridge.queue_prompt(
+                graph, client_id=bridge.EDITOR_CLIENT_ID, extra_data={"funpack": fp_meta},
+            )
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Failed to queue with ComfyUI: {e}"}, status=502)
         prompt_id = result.get("prompt_id")
@@ -1620,6 +1677,22 @@ if web is not None and PromptServer is not None:
             return web.json_response(await bridge.interrupt())
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": str(e)}, status=502)
+
+    @routes.get(UI_PREFIX + "/api/active")
+    async def _active(_req):
+        # The editor's own in-flight generation, recovered from ComfyUI's queue so a
+        # reloaded UI can re-attach (block Generate, expose Interrupt). Never raises —
+        # an unreachable queue just means "nothing we can re-attach to".
+        try:
+            return web.json_response(await bridge.active_generation())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response(
+                {"running": False, "prompt_id": None, "pid": None,
+                 "scene_ids": [], "only_scene": None, "pending": 0, "error": str(e)})
+
+    @routes.get(UI_PREFIX + "/api/temp")
+    async def _temp_list(_req):
+        return web.json_response({"files": _list_temp_media()})
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/result")
     async def _result(req):

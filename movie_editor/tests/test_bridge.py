@@ -20,6 +20,53 @@ def test_ensure_funpack_path_adds_repo_root():
     assert root in sys.path
 
 
+def _q_item(prompt_id, client_id, funpack=None):
+    extra = {"client_id": client_id}
+    if funpack is not None:
+        extra["funpack"] = funpack
+    return [1, prompt_id, {"graph": True}, extra, ["9"]]
+
+
+def test_select_active_picks_editor_running_job_with_metadata():
+    state = {
+        "queue_running": [_q_item("p1", bridge.EDITOR_CLIENT_ID,
+                                  {"pid": "proj-7", "scene_ids": ["a", "b"], "only_scene": None})],
+        "queue_pending": [_q_item("p2", bridge.EDITOR_CLIENT_ID, {"pid": "proj-7"})],
+    }
+    out = bridge._select_active(state)
+    assert out["running"] is True
+    assert out["prompt_id"] == "p1"
+    assert out["pid"] == "proj-7"
+    assert out["scene_ids"] == ["a", "b"]
+    assert out["pending"] == 1
+
+
+def test_select_active_ignores_foreign_client_jobs():
+    state = {
+        "queue_running": [_q_item("other", "some-comfy-tab")],
+        "queue_pending": [_q_item("other2", "some-comfy-tab")],
+    }
+    out = bridge._select_active(state)
+    assert out["running"] is False
+    assert out["prompt_id"] is None
+    assert out["pending"] == 0
+
+
+def test_select_active_empty_queue():
+    out = bridge._select_active({})
+    assert out == {"running": False, "prompt_id": None, "pid": None,
+                   "scene_ids": [], "only_scene": None, "pending": 0}
+
+
+def test_select_active_running_without_funpack_meta():
+    state = {"queue_running": [_q_item("p1", bridge.EDITOR_CLIENT_ID)]}
+    out = bridge._select_active(state)
+    assert out["running"] is True
+    assert out["prompt_id"] == "p1"
+    assert out["pid"] is None
+    assert out["scene_ids"] == []
+
+
 def test_rating_labels_hide_internal_editor_values(monkeypatch):
     def _fake_attr(_mod, name):
         table = {

@@ -28,6 +28,38 @@ from movie_editor.server import (
 )
 
 CONTINUE = "__funpack_continue__"
+
+
+def test_temp_kind_classifies_media_and_skips_other():
+    assert srv._temp_kind(".mp4") == "video"
+    assert srv._temp_kind(".PNG") == "image"
+    assert srv._temp_kind(".wav") == "audio"
+    assert srv._temp_kind(".txt") is None
+    assert srv._temp_kind(".json") is None
+
+
+def test_list_temp_media_lists_media_newest_first(tmp_path, monkeypatch):
+    (tmp_path / "old.png").write_bytes(b"x")
+    (tmp_path / "new.mp4").write_bytes(b"yy")
+    (tmp_path / "notes.txt").write_text("skip me")
+    sub = tmp_path / "previews"
+    sub.mkdir()
+    (sub / "clip.webm").write_bytes(b"zzz")
+    import os
+    os.utime(tmp_path / "old.png", (1000, 1000))
+    os.utime(tmp_path / "new.mp4", (2000, 2000))
+    os.utime(sub / "clip.webm", (1500, 1500))
+
+    fake = type("FP", (), {"get_temp_directory": staticmethod(lambda: str(tmp_path))})
+    monkeypatch.setitem(__import__("sys").modules, "folder_paths", fake)
+
+    files = srv._list_temp_media()
+    names = [f["filename"] for f in files]
+    assert "notes.txt" not in names
+    assert names == ["new.mp4", "clip.webm", "old.png"]  # newest mtime first
+    clip = next(f for f in files if f["filename"] == "clip.webm")
+    assert clip["subfolder"] == "previews"
+    assert clip["kind"] == "video"
 FRESH = "__funpack_fresh_prompt__"
 
 

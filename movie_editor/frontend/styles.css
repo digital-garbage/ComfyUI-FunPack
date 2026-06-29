@@ -1151,7 +1151,18 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .engine-modal-summary { font-size: 12px; color: var(--muted); font-family: var(--font-mono); margin-bottom: 12px; padding: 8px 10px; background: var(--ink-2); border-radius: 8px; border: 1px solid var(--line); }
 .modal-head { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(#1b1813, #161410); }
 .modal-title { font-family: var(--font-display); font-weight: 700; font-size: 17px; }
-.modal-head-right { margin-left: auto; display: flex; gap: 8px; }
+.modal-head-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* Temp files browser */
+.tmp-count { white-space: nowrap; }
+.tmp-body { margin-top: 12px; }
+.tmp-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); }
+.tmp-card { cursor: default; padding-bottom: 6px; }
+.tmp-card .media-thumb { height: 76px; }
+.tmp-card .media-name { font-size: 11px; word-break: break-all; }
+.tmp-meta { padding: 0 8px; }
+.tmp-card-acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px 0; }
+.tmp-card-acts .btn { flex: 1; white-space: nowrap; }
 .modal-content { padding: 16px; overflow: auto; }
 
 .composer { background: var(--ink-0); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 18px; }

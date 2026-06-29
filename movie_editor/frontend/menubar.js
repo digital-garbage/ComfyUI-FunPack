@@ -289,6 +289,7 @@
         { label: "Editor settings…", action: () => window.EditorSettingsModal.open() },
         { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
           action: () => window.EngineSettingsModal.open() },
+        { label: "Temp files…", action: () => window.TempBrowserModal.open() },
         { sep: true },
         { label: "Models…", action: () => window.ModelsModal.open() },
         { label: "Import ComfyUI Workflow…", disabled: !hasProject(),

@@ -2802,6 +2802,70 @@
     try { await API.interrupt(); } catch (_) {}
   }
 
+  // Re-attach to a generation that was already running when the UI (re)loaded. The job
+  // lives in ComfyUI's still-running queue; bridge.active_generation hands back its
+  // prompt id + the project/scenes it targets. We restore the "running" gen state so
+  // Generate stays blocked and Interrupt is offered — exactly like a live run — and,
+  // when the matching project is loaded, record the result onto its scenes on completion.
+  async function resumeRunningGeneration(act) {
+    if (!act || !act.running || !act.prompt_id) return false;
+    _interrupted = false;
+    // A reloaded montage can have further runs still queued behind the running one. Re-attach
+    // to each in turn so Generate stays blocked (and outputs get recorded) until the queue
+    // drains — not just for the one prompt that happened to be running at reload.
+    let cur = act;
+    let lastPromptId = null;
+    while (cur && cur.running && cur.prompt_id && cur.prompt_id !== lastPromptId && !_interrupted) {
+      lastPromptId = cur.prompt_id;
+      pollStart = Date.now();
+      const sceneIds = (cur.scene_ids && cur.scene_ids.length)
+        ? cur.scene_ids
+        : (cur.only_scene ? [cur.only_scene] : []);
+      const more = cur.pending > 0 ? ` · ${cur.pending} run(s) queued` : "";
+      set({ gen: { state: "running", promptId: cur.prompt_id, media: [], msg: `Generation running (reconnected after reload)…${more}` } });
+      if (state.project && cur.pid && state.project.id === cur.pid && sceneIds.length) {
+        // Full re-attach: poll history and place the output on the run's scenes when done.
+        _markGenInFlight(sceneIds);
+        try { await _pollPromise(cur.prompt_id, sceneIds, "Generation running (reconnected)"); }
+        finally { _clearGenInFlight(sceneIds); }
+      } else {
+        // No matching project loaded (or single-scene run on another project): we can't map
+        // the output, but still surface Interrupt and clear busy when it stops.
+        await _monitorActive(cur.prompt_id);
+      }
+      if (_interrupted) break;
+      // Another queued run may now be executing — re-attach to it.
+      try { cur = await API.active(); } catch (_) { cur = null; }
+    }
+    return true;
+  }
+
+  // Lightweight queue watcher used when we can't fully re-attach (see above). Polls
+  // /active until the prompt leaves the queue or the user interrupts.
+  function _monitorActive(promptId) {
+    return new Promise((resolve) => {
+      _clearGenTimers();
+      pollTimer = setInterval(async () => {
+        if (_interrupted) {
+          _clearGenTimers();
+          set({ gen: { state: "idle", promptId, media: [], msg: "Interrupted." } });
+          resolve();
+          return;
+        }
+        try {
+          const a = await API.active();
+          if (!a || !a.running || a.prompt_id !== promptId) {
+            _clearGenTimers();
+            set({ gen: { state: "done", promptId, media: [], msg: "Generation finished. Open Settings ▸ Temp files to view or save the output, then regenerate to place it." } });
+            resolve();
+          } else {
+            updateGenProgress({ msg: `Generation running (reconnected) ${_elapsed()}` });
+          }
+        } catch (_) { /* transient — keep watching */ }
+      }, 2000);
+    });
+  }
+
   function _elapsed() {
     const s = Math.floor((Date.now() - pollStart) / 1000);
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -4031,8 +4095,24 @@
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
+    // Re-attach to a generation already running in ComfyUI (UI was reloaded mid-run).
+    // Load its project first so Generate is blocked, Interrupt is shown, and the result
+    // lands on the right scenes — then skip the welcome page, there's work in flight.
+    let resumed = false;
+    try {
+      const act = await API.active();
+      if (act && act.running && act.prompt_id) {
+        if (act.pid && (state.projects || []).some((p) => p.id === act.pid)
+            && (!state.project || state.project.id !== act.pid)) {
+          await loadProject(act.pid);
+        }
+        notify();
+        resumeRunningGeneration(act);  // fire-and-forget poll loop
+        resumed = true;
+      }
+    } catch (_) { /* queue unreachable — boot normally */ }
     notify();
-    if (window.WelcomePage) window.WelcomePage.open();
+    if (!resumed && window.WelcomePage) window.WelcomePage.open();
   }
 
   window.Store = {
