@@ -129,8 +129,7 @@
   }
 
   async function refreshGitStatus() {
-    try { _gitStatus = await window.MovieEditorAPI.gitStatus(); }
-    catch (_) { _gitStatus = { ok: false }; }
+    await window.FunPackGit.refresh();
     if (openName === "FunPack") render();
   }
 
@@ -148,72 +147,6 @@
     try { await window.MovieEditorAPI.restart(); } catch (_) { /* connection drops as it execv's - expected */ }
     _waitForComfyReload(msg, Date.now());
   }
-
-  async function updateFunpackAndReload() {
-    let gs = _gitStatus;
-    if (!gs?.ok) {
-      try { gs = await window.MovieEditorAPI.gitStatus(); _gitStatus = gs; } catch (e) { alert(String(e.message || e)); return; }
-    }
-    if (!gs?.ok) { alert(gs?.detail || "Git status unavailable for this install."); return; }
-    if (gs.dirty) {
-      alert("Local changes detected in the FunPack folder.\nCommit or stash them before updating from git.");
-      return;
-    }
-    const branch = gs.branch || "dev";
-    const behind = gs.behind > 0 ? `\n\n${gs.behind} commit(s) available on origin/${branch}.` : "";
-    if (!confirm(`Pull latest "${branch}" from origin and restart ComfyUI?\n\nAny running generation will be lost.${behind}`)) return;
-    const msg = _restartOverlay(`Pulling origin/${branch}…\nComfyUI will restart when the pull finishes.`);
-    try {
-      const res = await window.MovieEditorAPI.gitUpdate(branch);
-      msg.textContent = res.updated
-        ? `Updated ${res.before} → ${res.after}.\nRestarting ComfyUI…`
-        : "Already up to date.\nRestarting ComfyUI…";
-    } catch (e) {
-      window.FunPackRestart?.removeOverlay?.();
-      alert("Update failed: " + (e.message || e));
-      return;
-    }
-    _waitForComfyReload(msg, Date.now());
-  }
-
-  async function switchFunpackBranch() {
-    closeAll();
-    let gs = _gitStatus;
-    if (!gs?.ok) {
-      try { gs = await window.MovieEditorAPI.gitStatus(); _gitStatus = gs; } catch (e) { alert(String(e.message || e)); return; }
-    }
-    if (!gs?.ok) { alert(gs?.detail || "Git status unavailable for this install."); return; }
-    if (gs.dirty) {
-      alert("Local changes detected in the FunPack folder.\nCommit or stash them before switching branches.");
-      return;
-    }
-    const branches = gs.branches || [];
-    if (!branches.length) { alert("No git branches found."); return; }
-    const cur = gs.branch;
-    if (!window.SlotPicker) return;
-    window.SlotPicker.open({
-      title: "Switch FunPack branch",
-      options: branches.map((b) => ({ value: b, label: b, hint: b === cur ? "current" : "" })),
-      onPick: async (branch) => {
-        if (branch === cur) return;
-        if (!confirm(`Switch to "${branch}", pull from origin, and restart ComfyUI?\n\nAny running generation will be lost.`)) return;
-        const msg = _restartOverlay(`Switching to ${branch}…\nComfyUI will restart when ready.`);
-        try {
-          const res = await window.MovieEditorAPI.gitCheckout(branch);
-          msg.textContent = res.updated
-            ? `Switched to ${branch} (${res.before} → ${res.after}).\nRestarting ComfyUI…`
-            : `On ${branch}, already up to date.\nRestarting ComfyUI…`;
-        } catch (e) {
-          window.FunPackRestart?.removeOverlay?.();
-          alert("Branch switch failed: " + (e.message || e));
-          return;
-        }
-        _waitForComfyReload(msg, Date.now());
-      },
-    });
-  }
-
-  let _gitStatus = null;
 
   function promptNewProject() {
     if (window.SlotPicker?.openPrompt) {
@@ -237,7 +170,7 @@
     const recent = (st.projects || []).slice(0, 8).map((p) => ({
       label: p.name, hint: `${p.scene_count}▦`, action: () => S.loadProject(p.id),
     }));
-    const git = _gitStatus;
+    const git = window.FunPackGit.get();
     const gitOk = !!git?.ok;
     const gitBranchLine = gitOk
       ? `Branch: ${git.branch}${git.commit ? " @ " + git.commit : ""}${git.dirty ? " (local changes)" : ""}`
@@ -289,6 +222,7 @@
         { label: "Editor settings…", action: () => window.EditorSettingsModal.open() },
         { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
           action: () => window.EngineSettingsModal.open() },
+        { label: "Temp files…", action: () => window.TempBrowserModal.open() },
         { sep: true },
         { label: "Models…", action: () => window.ModelsModal.open() },
         { label: "Import ComfyUI Workflow…", disabled: !hasProject(),
@@ -314,9 +248,9 @@
         { sep: true },
         { menulabel: "Code updates" },
         { label: gitBranchLine, disabled: true },
-        { label: "Switch branch…", disabled: !gitOk || git?.dirty, action: switchFunpackBranch },
+        { label: "Switch branch…", disabled: !gitOk || git?.dirty, action: () => window.FunPackGit.switchBranch() },
         { label: gitOk && git.behind > 0 ? `Update FunPack and reload (${git.behind} new)` : "Update FunPack and reload",
-          hint: updateHint, disabled: !gitOk || git?.dirty, action: updateFunpackAndReload },
+          hint: updateHint, disabled: !gitOk || git?.dirty, action: () => window.FunPackGit.update() },
         { sep: true },
         { menulabel: "Libraries (in ComfyUI Studio)" },
         { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },

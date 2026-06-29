@@ -386,9 +386,19 @@
     return sc;
   }
 
-  // Global prompt is authoritative. Parsed scene slots map positionally onto timeline
-  // roots first (scene 1 always reuses the first generative clip), then fall back to
-  // text matching for extras. Unmatched old roots are ghosted or dropped.
+  // Global prompt is authoritative. A scene's id carries its source/anchor AND its render
+  // (state.sceneRenders[id]), so a parsed slot must map onto the old root that owns its
+  // CONTENT — never just the root that happens to sit at the same array index. Matching by
+  // POSITION first was the "stale scene" bug: a reorder/insert/delete in the global prompt
+  // shifted indices, gluing one scene's text onto another scene's anchor+render (and that
+  // wrong mapping then got saved, so it survived restart and key-clears). So:
+  //   Pass 1 — exact normalized-text match (nearest original position breaks ties): pins
+  //            unchanged scenes to their own root through any reorder/insert/delete.
+  //   Pass 2 — leftover slots inherit the leftover roots IN ORDER: an in-place text edit
+  //            keeps its render/anchor; a slot with no root left becomes a fresh scene.
+  // Unmatched old roots are ghosted or dropped (unchanged). The only irreducible case is a
+  // scene that is BOTH reordered AND fully rewritten with no unchanged neighbour to anchor
+  // it — genuinely ambiguous from text alone, so Pass 2 falls back to a positional guess.
   function _alignScenesFromParsed(oldScenes, parsedScenes, ghosts) {
     const oldAll = (oldScenes || []).filter((s) => !s.excluded && isGenerativeScene(s));
     const oldRoots = _generativeRoots(oldScenes);
@@ -396,23 +406,30 @@
     const usedGhost = new Set();
     const next = [];
     let ghostsOut = [...(ghosts || [])];
+    const parsed = parsedScenes || [];
 
-    for (let i = 0; i < (parsedScenes || []).length; i++) {
-      const ps = parsedScenes[i];
+    // Match each parsed slot to the old root that owns its CONTENT — exact text first
+    // (nearest original position breaks ties), then leftover slots take leftover roots in
+    // order. The pure index-based kernel lives in scene_align.js so the two passes can be
+    // unit-tested in node (see scene_align.test.js). Both sides are normalized identically
+    // here before matching, so the kernel can compare raw strings.
+    const matchIdx = window.SceneAlign.matchParsedToRoots(
+      parsed.map((p) => _normalizeSceneText(p.text)),
+      oldRoots.map((r) => _normalizeSceneText(r.text)),
+    );
+    const matchByIdx = matchIdx.map((ri) => (ri >= 0 ? oldRoots[ri] : null));
+    for (const root of matchByIdx) {
+      if (root) _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
+    }
+
+    // Materialize: matched root → reuse (keeps id/source/render); else ghost by text; else new.
+    for (let i = 0; i < parsed.length; i++) {
+      const ps = parsed[i];
       const pt = _normalizeSceneText(ps.text);
-      let match = null;
-
-      if (i < oldRoots.length && !usedOld.has(oldRoots[i].id)) {
-        match = oldRoots[i];
-      }
-
-      if (!match && pt) {
-        match = oldAll.find((s) => !usedOld.has(s.id) && _normalizeSceneText(s.text) === pt);
-      }
+      const match = matchByIdx[i];
 
       if (match) {
         const root = isGenSubclip(match) ? (genUnitRoot(genUnitId(match)) || match) : match;
-        _markGenUnitUsed(genUnitId(root), usedOld, oldAll);
         next.push(_reuseGenerativeRoot(root, ps.text));
         continue;
       }
@@ -1816,7 +1833,12 @@
     second.transition_to_next = s.transition_to_next || "";
     second.transition_frames = s.transition_frames || null;
     s.gen_unit_id = unitId;
-    s.frames = cut; s.transition_to_next = ""; s.transition_frames = null;
+    // The split seam between the two halves is an internal HARD CUT: the original clip's
+    // outgoing edge now belongs to the second half. Clear ALL transition fields on the first
+    // half — the prompt transition (transition_to_next), the NLE video blend (video_transition),
+    // and its frame count — so the seam doesn't show/render a phantom (the deep clone already
+    // carried these onto the second half, which correctly keeps them).
+    s.frames = cut; s.transition_to_next = ""; s.transition_frames = null; s.video_transition = "";
     if (playsFromSourceMedia(s)) {
       const srcIn = s.source_in || 0;
       const totalDur = s.source_dur != null ? s.source_dur : (frames / effFps);
@@ -1840,6 +1862,125 @@
     }
     notify(); scheduleSave();
     _syncSeparatedAudioTracks();
+  }
+
+  // Any scene with playable content, regardless of type: an explicit "video" clip plays
+  // straight off media via source_in/source_dur; a generative scene plays off its OWN
+  // render record (state.sceneRenders[id].media + inSec, with duration driven by `frames`,
+  // same convention used by removeFromPlan/renderMediaLabel elsewhere in this file). Returns
+  // null when neither applies, so callers can treat any scene uniformly via this one shape.
+  function _renderRef(s) {
+    if (!s) return null;
+    const fps = sceneEffFps(s);
+    if (isVideoClip(s)) {
+      return { isVideo: true, media: null, renderPrompt: null,
+               baseInSec: s.source_in || 0, fps, totalSec: s.source_dur != null ? s.source_dur : sceneDurationSec(s) };
+    }
+    const r = state.sceneRenders[s.id];
+    if (!r || !r.media) return null;
+    return { isVideo: false, media: r.media, renderPrompt: r.renderPrompt || null,
+             baseInSec: r.inSec || 0, fps, totalSec: sceneDurationSec(s) };
+  }
+
+  function hasPlayableRender(s) { return _renderRef(s) !== null; }
+
+  // Auto Montage: chop an already-rendered "lead" scene into shrinking-length segments
+  // (trailer pacing — cuts get faster toward the end) and interleave a randomly-drawn
+  // segment from a pool of other rendered scenes after each one. Pure timeline construction,
+  // no new generation involved — every built segment reuses an existing scene's already-
+  // rendered media, via source_in/source_dur for an explicit video clip or via a cloned
+  // sceneRenders entry (media + inSec) for a generative scene's own render.
+  function autoMontage({ leadId, poolIds, segmentFrames, decay } = {}) {
+    if (!state.project) return;
+    const lead = scene(leadId);
+    const leadRef = _renderRef(lead);
+    if (!leadRef) return;
+    const pool = (poolIds || []).map((id) => scene(id)).filter((s) => s && hasPlayableRender(s));
+    if (!pool.length) return;
+
+    const base = Math.max(9, Math.round(segmentFrames || 100));
+    const dk = decay != null ? Math.min(1, Math.max(0.3, decay)) : 1;
+
+    const leadTotal = snapFrames(leadRef.totalSec * leadRef.fps);
+
+    // Lead segments stay in chronological order (one continuous shot being interrupted),
+    // shrinking each cycle so cutaways come faster as the take progresses.
+    const leadSegs = [];
+    let consumed = 0, i = 0;
+    while (consumed < leadTotal - 8) {
+      const len = Math.min(leadTotal - consumed, Math.max(9, Math.round(base * Math.pow(dk, i))));
+      leadSegs.push({ start: consumed, frames: snapFrames(len) });
+      consumed += len;
+      i++;
+    }
+    if (!leadSegs.length) return;
+
+    // Pool: chop every selected scene into its own ORDERED queue of base-length
+    // chunks (chronological — never reordered within a scene). Randomness only picks
+    // WHICH scene's queue to draw from next; each draw advances that scene's own cursor,
+    // so a scene's later content can never surface before its own earlier content.
+    const queues = pool.map((s) => {
+      const ref = _renderRef(s);
+      const total = snapFrames(ref.totalSec * ref.fps);
+      const chunks = [];
+      let c = 0;
+      while (c < total - 8) {
+        const len = Math.min(total - c, base);
+        if (len >= 9) chunks.push({ scene: s, ref, start: c, frames: snapFrames(len) });
+        c += len;
+      }
+      return { chunks, cursor: 0 };
+    }).filter((q) => q.chunks.length);
+    if (!queues.length) return;
+
+    function nextPoolChunk() {
+      let available = queues.filter((q) => q.cursor < q.chunks.length);
+      if (!available.length) {
+        queues.forEach((q) => { q.cursor = 0; }); // every scene exhausted — start each over from its own beginning
+        available = queues;
+      }
+      const q = available[Math.floor(Math.random() * available.length)];
+      return q.chunks[q.cursor++];
+    }
+
+    function buildSegment(src, ref, startFrames, lenFrames) {
+      const out = JSON.parse(JSON.stringify(src));
+      const newId = "c" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      out.id = newId;
+      out.gen_unit_id = src.id;
+      out.frames = lenFrames;
+      out.rating = "";
+      out.transition_to_next = "cut";
+      out.transition_frames = null;
+      const offsetSec = startFrames / ref.fps;
+      if (ref.isVideo) {
+        out.source_in = ref.baseInSec + offsetSec;
+        out.source_dur = lenFrames / ref.fps;
+        out.frames_mode = "timeline";
+      } else {
+        out.cut_offset_frames = (src.cut_offset_frames || 0) + startFrames;
+        state.sceneRenders[newId] = {
+          media: ref.media,
+          inSec: ref.baseInSec + offsetSec,
+          renderPrompt: ref.renderPrompt ? { ...ref.renderPrompt } : undefined,
+        };
+      }
+      return out;
+    }
+
+    _historyRecord();
+    const built = [];
+    leadSegs.forEach((seg) => {
+      built.push(buildSegment(lead, leadRef, seg.start, seg.frames));
+      const chunk = nextPoolChunk();
+      built.push(buildSegment(chunk.scene, chunk.ref, chunk.start, chunk.frames));
+    });
+    built[built.length - 1].transition_to_next = "";
+
+    state.project.scenes.push(...built);
+    window.Timeline?.requestAutoFit?.();
+    notify(); scheduleSave();
+    return built.length;
   }
 
   function moveScene(id, delta) {
@@ -2659,6 +2800,70 @@
     _interrupted = true;
     updateGenProgress({ msg: "Interrupting…" });
     try { await API.interrupt(); } catch (_) {}
+  }
+
+  // Re-attach to a generation that was already running when the UI (re)loaded. The job
+  // lives in ComfyUI's still-running queue; bridge.active_generation hands back its
+  // prompt id + the project/scenes it targets. We restore the "running" gen state so
+  // Generate stays blocked and Interrupt is offered — exactly like a live run — and,
+  // when the matching project is loaded, record the result onto its scenes on completion.
+  async function resumeRunningGeneration(act) {
+    if (!act || !act.running || !act.prompt_id) return false;
+    _interrupted = false;
+    // A reloaded montage can have further runs still queued behind the running one. Re-attach
+    // to each in turn so Generate stays blocked (and outputs get recorded) until the queue
+    // drains — not just for the one prompt that happened to be running at reload.
+    let cur = act;
+    let lastPromptId = null;
+    while (cur && cur.running && cur.prompt_id && cur.prompt_id !== lastPromptId && !_interrupted) {
+      lastPromptId = cur.prompt_id;
+      pollStart = Date.now();
+      const sceneIds = (cur.scene_ids && cur.scene_ids.length)
+        ? cur.scene_ids
+        : (cur.only_scene ? [cur.only_scene] : []);
+      const more = cur.pending > 0 ? ` · ${cur.pending} run(s) queued` : "";
+      set({ gen: { state: "running", promptId: cur.prompt_id, media: [], msg: `Generation running (reconnected after reload)…${more}` } });
+      if (state.project && cur.pid && state.project.id === cur.pid && sceneIds.length) {
+        // Full re-attach: poll history and place the output on the run's scenes when done.
+        _markGenInFlight(sceneIds);
+        try { await _pollPromise(cur.prompt_id, sceneIds, "Generation running (reconnected)"); }
+        finally { _clearGenInFlight(sceneIds); }
+      } else {
+        // No matching project loaded (or single-scene run on another project): we can't map
+        // the output, but still surface Interrupt and clear busy when it stops.
+        await _monitorActive(cur.prompt_id);
+      }
+      if (_interrupted) break;
+      // Another queued run may now be executing — re-attach to it.
+      try { cur = await API.active(); } catch (_) { cur = null; }
+    }
+    return true;
+  }
+
+  // Lightweight queue watcher used when we can't fully re-attach (see above). Polls
+  // /active until the prompt leaves the queue or the user interrupts.
+  function _monitorActive(promptId) {
+    return new Promise((resolve) => {
+      _clearGenTimers();
+      pollTimer = setInterval(async () => {
+        if (_interrupted) {
+          _clearGenTimers();
+          set({ gen: { state: "idle", promptId, media: [], msg: "Interrupted." } });
+          resolve();
+          return;
+        }
+        try {
+          const a = await API.active();
+          if (!a || !a.running || a.prompt_id !== promptId) {
+            _clearGenTimers();
+            set({ gen: { state: "done", promptId, media: [], msg: "Generation finished. Open Settings ▸ Temp files to view or save the output, then regenerate to place it." } });
+            resolve();
+          } else {
+            updateGenProgress({ msg: `Generation running (reconnected) ${_elapsed()}` });
+          }
+        } catch (_) { /* transient — keep watching */ }
+      }, 2000);
+    });
   }
 
   function _elapsed() {
@@ -3634,6 +3839,16 @@
     _scheduleModelsSave();
   }
 
+  // Edit a slot's bypass flag from the main editor (an "exposed" control) and persist.
+  // Top-level on the slot, not slot.inputs, so it never gets sent to ComfyUI as a fake widget.
+  function setModelBypass(slotId, value) {
+    const slot = (state.models.slots || []).find((s) => s.id === slotId);
+    if (!slot) return;
+    slot.bypassed = !!value;
+    notify();
+    _scheduleModelsSave();
+  }
+
   // Set a linked control's shared value (writes through to all member inputs) and persist.
   function setModelLink(linkId, value) {
     const link = (state.models.links || []).find((l) => l.id === linkId);
@@ -3880,8 +4095,24 @@
     await loadModels();
     window.addEventListener("funpack-models-changed", loadModels);
     await refreshProjectList();
+    // Re-attach to a generation already running in ComfyUI (UI was reloaded mid-run).
+    // Load its project first so Generate is blocked, Interrupt is shown, and the result
+    // lands on the right scenes — then skip the welcome page, there's work in flight.
+    let resumed = false;
+    try {
+      const act = await API.active();
+      if (act && act.running && act.prompt_id) {
+        if (act.pid && (state.projects || []).some((p) => p.id === act.pid)
+            && (!state.project || state.project.id !== act.pid)) {
+          await loadProject(act.pid);
+        }
+        notify();
+        resumeRunningGeneration(act);  // fire-and-forget poll loop
+        resumed = true;
+      }
+    } catch (_) { /* queue unreachable — boot normally */ }
     notify();
-    if (window.WelcomePage) window.WelcomePage.open();
+    if (!resumed && window.WelcomePage) window.WelcomePage.open();
   }
 
   window.Store = {
@@ -3898,15 +4129,16 @@
     selectAudioTrack, trimAudioTrackLeft, slipAudioTrack, resizeAudioTrack, splitAudioTrack,
     sceneHasEmbeddedAudio, separatedTrackAudioUrl,
     separatedTrackMedia, separatedTrackInSec, separatedTrackDurSec, audioTrackInSec, audioTrackDurSec,
+    audioTrackMaxDurSec,
     overlayTrack, selectOverlay, ensureOverlayLanes, sortedOverlayTracks, overlayLaneById, overlayLaneIndex,
     projectCanvasSize, normalizeOverlayTrack,
     addOverlayLane, removeOverlayLane, assignMediaToOverlayLane,
     bringOverlayToFront, sendOverlayToBack, bringOverlayForward, sendOverlayBackward,
     addImageOverlay, addTextOverlay, updateOverlayTrack, removeOverlayTrack, removeSelectedOverlay,
     isOverlayAudioTrack, isSeparatedAudioTrack,
-    resizeScene, setSceneGapAfter, splitScene, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
+    resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,

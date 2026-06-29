@@ -601,6 +601,62 @@ def _apply_quality_sharpness(denoised, prev_denoised, sharpness):
 
 
 # ---------------------------------------------------------------------------
+# Blackwell (sm_120) xformers masked-attention fallback
+# ---------------------------------------------------------------------------
+# On GPUs newer than capability (9, 0), xformers' memory_efficient_attention has no
+# kernel that accepts a tensor attn_bias — every backend is rejected ("No operator
+# found ... too new ... attn_bias type is <class 'torch.Tensor'>"). Unmasked attention
+# still works, which is why i2v ANCHOR scenes generate fine but GUIDE scenes crash: the
+# LTX guide path (comfy/ldm/lightricks/model.py _attention_with_guide_mask) passes a
+# tensor mask. PyTorch SDPA handles masks on every GPU, so when the active backend is
+# xformers on such a device we route only the MASKED calls to attention_pytorch via
+# ComfyUI's per-call optimized_attention_override hook (wrap_attn). Unmasked calls stay
+# on the fast xformers path. This is the programmatic equivalent of the user's
+# --use-pytorch-cross-attention, scoped to masked attention and installed ONLY when this
+# exact failure condition is detected, so other setups are untouched.
+def _funpack_mask_safe_attention_override(func, *args, **kwargs):
+    # `func` is the raw backend ComfyUI selected (attention_xformers). wrap_attn has
+    # already stamped _inside_attn_wrapper into kwargs before calling us, so invoking
+    # attention_pytorch here cannot re-enter the override (no recursion).
+    mask = kwargs.get("mask")
+    if mask is None and len(args) >= 5:
+        mask = args[4]  # (q, k, v, heads, mask, ...)
+    if mask is not None:
+        import comfy.ldm.modules.attention as _am
+        return _am.attention_pytorch(*args, **kwargs)
+    return func(*args, **kwargs)
+
+
+def _funpack_install_mask_safe_attention(model):
+    """When the active attention backend is xformers on a GPU too new for its tensor-bias
+    kernels (capability > (9, 0), e.g. Blackwell sm_120), install a per-call override so
+    MASKED attention (the LTX guide path) falls back to SDPA. No-op on supported GPUs, when
+    ComfyUI already uses a mask-capable backend, or when another override is present.
+    Idempotent; never raises."""
+    try:
+        import comfy.ldm.modules.attention as _am
+        if getattr(_am, "optimized_attention", None) is not getattr(_am, "attention_xformers", None):
+            return  # SDPA / sage / flash / split selected — masks already handled
+        if not torch.cuda.is_available():
+            return
+        major, minor = torch.cuda.get_device_capability()
+        if major <= 9:
+            return  # xformers cutlass/flash tensor-bias kernels support cap <= (9, 0)
+        to = model.model_options.setdefault("transformer_options", {})
+        existing = to.get("optimized_attention_override")
+        if existing is _funpack_mask_safe_attention_override:
+            return  # already installed (idempotent across scenes/runs)
+        if existing is not None:
+            return  # respect another tool's override; don't stomp it
+        to["optimized_attention_override"] = _funpack_mask_safe_attention_override
+        print(f"[FunPack AV] xformers active on capability {major}.{minor} GPU (too new for "
+              "its tensor-bias kernels): routing MASKED attention to PyTorch SDPA so guide "
+              "scenes don't crash. Unmasked attention stays on xformers.")
+    except Exception as _e:
+        print(f"[FunPack AV] mask-safe attention install skipped: {_e}")
+
+
+# ---------------------------------------------------------------------------
 # KV-Lock: variance-gated scheduler for BachVid K/V injection (arxiv 2603.09657)
 #
 # BachVid (ltx_enhancements) injects a blessed identity K/V at a fixed,
@@ -745,6 +801,61 @@ def _video_only(x_new, x_old, mask):
         return x_old + (x_new - x_old) * mask
     except Exception:
         return x_new
+
+
+def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0):
+    """ALG (arXiv:2506.08456): low-pass filter selected frames of the packed video stream.
+
+    I2V models over-expose the sharp anchor frame from step 0, which lets the model take a
+    shortcut to a near-static video that just matches the reference. Bilinear downsample-then-
+    upsample of the anchor latent (selected frames only, video stream only) at the configured
+    factor removes the high-frequency content the shortcut needs; ALG's own per-step schedule
+    then swaps this blurred copy back to the sharp original once sigma drops past the threshold.
+
+    `frame_indices` is any iterable of frame indices within the video stream's T dimension to
+    blur (each filtered independently) — frame 0 for the genuine i2v anchor, and/or the trailing
+    indices of newly-appended guide-attention frames (mid_scene_guide / carry_i2v_guides-as-guide /
+    configured guides / JoyAI memory — see EXPERIMENTAL alg_blur_guides) when extending the same
+    idea to those. Indices outside the actual frame count are silently skipped.
+
+    Returns a new tensor with the same shape as latent_image, or None on any failure/mismatch
+    (caller then leaves ALG off — no anchor, no packed video stream, or unexpected layout).
+    """
+    if latent_image is None:
+        return None
+    try:
+        shapes = _get_latent_shapes(model)
+        if not shapes:
+            return None
+        video_idx = max(range(len(shapes)), key=lambda i: (len(tuple(shapes[i])), int(math.prod(tuple(shapes[i])[1:]))))
+        video_shape = tuple(shapes[video_idx])
+        if len(video_shape) != 5:
+            return None  # expects [B, C, T, H, W]
+        b, c, t, h, w = (int(d) for d in video_shape)
+        sizes = [int(math.prod(tuple(s)[1:])) for s in shapes]
+        if sum(sizes) != int(latent_image.shape[-1]):
+            return None  # packed layout doesn't match our assumption -> don't risk it
+        idxs = {int(i) for i in frame_indices if 0 <= int(i) < t}
+        if tail_count > 0:
+            idxs |= set(range(max(0, t - int(tail_count)), t))
+        idxs = sorted(idxs)
+        if not idxs:
+            return None
+        off = sum(sizes[:video_idx])
+        sz = sizes[video_idx]
+        video = latent_image[..., off:off + sz].reshape(b, c, t, h, w)
+        dh, dw = max(1, round(h / kappa)), max(1, round(w / kappa))
+        video_blurred = video.clone()
+        for idx in idxs:
+            frame = video[:, :, idx]  # [B, C, H, W]
+            down = torch.nn.functional.interpolate(frame, size=(dh, dw), mode="bilinear", align_corners=False)
+            blurred = torch.nn.functional.interpolate(down, size=(h, w), mode="bilinear", align_corners=False)
+            video_blurred[:, :, idx] = blurred.to(video.dtype)
+        out = latent_image.clone()
+        out[..., off:off + sz] = video_blurred.reshape(b, 1, sz)
+        return out
+    except Exception:
+        return None
 
 
 class _JoyAIMemoryBank:
@@ -1581,7 +1692,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    velocity_bias_mode="off", velocity_bias_strength=0.0,
                                    velocity_bias_source="mean", velocity_refinement_key="default",
                                    rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
-                                   rescue_prompt_sig=None):
+                                   rescue_prompt_sig=None,
+                                   alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
+                                   alg_guide_tail_frames=0,
+                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1598,6 +1712,23 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       the same memory machinery the Hybrid/RF samplers use. On few-step schedules
       the velocity targets may only match a step or two, so apply/rescue fire less
       often than on an 8-step run; they no-op cleanly when no target matches.
+    - EXPERIMENTAL alg_enabled: Adaptive Low-Pass Guidance (arXiv:2506.08456) for i2v
+      anchored chunks. Blurs the anchor frame the model sees while sigma is above
+      alg_sigma_threshold (the near-pure-noise steps), then swaps back to the sharp
+      anchor for the rest of the schedule — counters the model's tendency to shortcut
+      to a near-static video that just matches the sharp reference. No-op when there's
+      no i2v anchor (denoise_mask is None) or the packed latent layout can't be read.
+    - EXPERIMENTAL alg_guide_tail_frames (>0 extends the same idea, not from the paper):
+      additionally blurs that many trailing video frames — the newly-appended guide-
+      attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide /
+      configured guides / JoyAI memory), set by the Scene Chain Sampler's alg_blur_guides
+      toggle right before this chunk's sample call. 0 = untouched (default).
+    - EXPERIMENTAL mg_enabled: Momentum Guidance (arXiv:2602.20360). Keeps a running EMA
+      (decay=mg_decay) of the per-step ODE direction and blends the current step's
+      direction toward it (weight=mg_strength) while sigma is BELOW mg_sigma_threshold —
+      the complementary window to ALG's blur, which only acts above its threshold. The EMA
+      itself accumulates every step (free) so it has real history by the time it starts
+      being applied; only the application is gated. Audio is never touched (video-only).
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1635,97 +1766,149 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     ref_scale = [None]  # video-only latent-normalization reference (anti-overbake), opt-in
     _kvlock_state = {}
 
-    for i in comfy.utils.model_trange(total_steps, disable=disable):
-        sigma = sigmas[i]
-        sigma_next = sigmas[i + 1]
-        velocity_target = _velocity_bias_target(sigmas, sigma)
+    # EXPERIMENTAL ALG (arXiv:2506.08456): blur the i2v anchor for the earliest/near-pure-
+    # noise steps, then swap back to the sharp anchor. No-op without a real anchor (no
+    # denoise_mask) or if the packed-latent layout can't be read (helper returns None).
+    # alg_guide_tail_frames (>0) extends the same idea, beyond the paper, to the trailing
+    # guide-attention frames this scene appended (alg_blur_guides on the Scene Chain Sampler).
+    alg_sharp_latent_image = getattr(model, "latent_image", None) if alg_enabled else None
+    alg_active = bool(alg_enabled) and extra_args.get("denoise_mask") is not None and alg_sharp_latent_image is not None
+    alg_blurred_latent_image = _alg_blur_frames(
+        model, alg_sharp_latent_image, max(1.0, float(alg_strength)),
+        frame_indices=(0,), tail_count=int(alg_guide_tail_frames),
+    ) if alg_active else None
+    alg_active = alg_active and alg_blurred_latent_image is not None
+    if alg_active:
+        print(f"[FunPack AV] ALG on (strength={alg_strength}, sigma_threshold={alg_sigma_threshold}, "
+              f"guide_tail_frames={alg_guide_tail_frames}) "
+              f"— anchor blurred while sigma > threshold")
 
-        if _velocity_bias_enabled(velocity_bias_mode, "apply"):
-            x_pre = x
-            x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
-                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
-                                     prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
-            x = _video_only(x, x_pre, video_mask)
+    # EXPERIMENTAL Momentum Guidance (arXiv:2602.20360): EMA of the per-step ODE direction,
+    # blended into the direction actually used once sigma drops below mg_sigma_threshold —
+    # the complementary window to ALG's blur. EMA accumulates every step regardless of
+    # whether it's being applied yet, so there's no cold-start when it switches on.
+    mg_active = bool(mg_enabled)
+    mg_decay = max(0.0, min(0.999, float(mg_decay)))
+    mg_strength = max(0.0, min(1.0, float(mg_strength)))
+    mg_ema = None
+    if mg_active:
+        print(f"[FunPack AV] Momentum Guidance on (strength={mg_strength}, decay={mg_decay}, "
+              f"sigma_threshold={mg_sigma_threshold}) — applied while sigma < threshold")
 
-        denoised = model(x, sigma * s_in, **extra_args)
-        _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
+    def _mg_step(d, video_mask):
+        nonlocal mg_ema
+        if not mg_active:
+            return d
+        d_detached = d.detach()
+        mg_ema = d_detached if mg_ema is None else (mg_decay * mg_ema + (1.0 - mg_decay) * d_detached)
+        if float(sigma) >= float(mg_sigma_threshold) or mg_strength <= 0.0:
+            return d
+        try:
+            blended = d * (1.0 - mg_strength) + mg_ema.to(device=d.device, dtype=d.dtype) * mg_strength
+        except Exception:
+            return d
+        return _video_only(blended, d, video_mask)
 
-        if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
-            _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
-        if rescue_mode and velocity_target is not None:
-            denoised = _video_only(_rescue_denoised(
-                denoised, x, sigma, velocity_refinement_key,
-                velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
-                source=velocity_bias_source,
-            ), denoised, video_mask)
+    try:
+        for i in comfy.utils.model_trange(total_steps, disable=disable):
+            sigma = sigmas[i]
+            sigma_next = sigmas[i + 1]
+            velocity_target = _velocity_bias_target(sigmas, sigma)
 
-        # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
-        denoised = _normalize_video_denoised(
-            denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
-        )
+            if alg_active:
+                model.latent_image = alg_blurred_latent_image if float(sigma) > float(alg_sigma_threshold) else alg_sharp_latent_image
 
-        if callback is not None:
-            callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+            if _velocity_bias_enabled(velocity_bias_mode, "apply"):
+                x_pre = x
+                x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
+                                         sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                         prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
+                x = _video_only(x, x_pre, video_mask)
 
-        h = float((sigma - sigma_next).abs().item())
+            denoised = model(x, sigma * s_in, **extra_args)
+            _kvlock_schedule(model, denoised, prev_denoised, video_mask, _kvlock_state)
 
-        # Adams-Bashforth 2-step multistep correction.
-        # Coefficients for variable step sizes: r = h_current / h_previous.
-        # denoised_eff = (1 + r/2) * denoised - (r/2) * prev_denoised
-        if order >= 2 and prev_denoised is not None and prev_h is not None and prev_h > 1e-7 and h > 1e-7:
-            r = max(0.1, min(5.0, h / prev_h))
-            try:
-                denoised_eff = (1.0 + r / 2.0) * denoised - (r / 2.0) * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
-            except Exception:
+            if rescue_mode or _velocity_bias_enabled(velocity_bias_mode, "capture"):
+                _capture_velocity_bias(velocity_refinement_key, velocity_target, x, sigma, denoised, prompt_sig=rescue_prompt_sig)
+            if rescue_mode and velocity_target is not None:
+                denoised = _video_only(_rescue_denoised(
+                    denoised, x, sigma, velocity_refinement_key,
+                    velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
+                    source=velocity_bias_source,
+                ), denoised, video_mask)
+
+            # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
+            denoised = _normalize_video_denoised(
+                denoised, video_mask, sigma, ref_scale, normalize_strength, normalize_start_sigma,
+            )
+
+            if callback is not None:
+                callback({"x": x, "i": i, "sigma": sigma, "sigma_hat": sigma, "denoised": denoised})
+
+            h = float((sigma - sigma_next).abs().item())
+
+            # Adams-Bashforth 2-step multistep correction.
+            # Coefficients for variable step sizes: r = h_current / h_previous.
+            # denoised_eff = (1 + r/2) * denoised - (r/2) * prev_denoised
+            if order >= 2 and prev_denoised is not None and prev_h is not None and prev_h > 1e-7 and h > 1e-7:
+                r = max(0.1, min(5.0, h / prev_h))
+                try:
+                    denoised_eff = (1.0 + r / 2.0) * denoised - (r / 2.0) * prev_denoised.to(device=denoised.device, dtype=denoised.dtype)
+                except Exception:
+                    denoised_eff = denoised
+            else:
                 denoised_eff = denoised
-        else:
-            denoised_eff = denoised
 
-        # Graduated 2nd order (opt-in, free): ramp the AB2 contribution linearly 0->1 across
-        # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
-        # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
-        # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
-        if ab2_ramp and total_steps > 1:
-            w = i / (total_steps - 1)  # 0 at first step -> 1 at last
-            denoised_eff = denoised + (denoised_eff - denoised) * w
+            # Graduated 2nd order (opt-in, free): ramp the AB2 contribution linearly 0->1 across
+            # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
+            # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
+            # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
+            if ab2_ramp and total_steps > 1:
+                w = i / (total_steps - 1)  # 0 at first step -> 1 at last
+                denoised_eff = denoised + (denoised_eff - denoised) * w
 
-        # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
-        # raw denoised for audio (2nd-order extrapolation corrupts the audio stream).
-        denoised_eff = _video_only(denoised_eff, denoised, video_mask)
+            # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
+            # raw denoised for audio (2nd-order extrapolation corrupts the audio stream).
+            denoised_eff = _video_only(denoised_eff, denoised, video_mask)
 
-        # Store current denoised for the next step's multistep correction.
-        # Reset after a Heun step since x was updated with a corrected direction.
-        prev_denoised = denoised.detach()
-        prev_h = h
+            # Store current denoised for the next step's multistep correction.
+            # Reset after a Heun step since x was updated with a corrected direction.
+            prev_denoised = denoised.detach()
+            prev_h = h
 
-        if sigma_next == 0:
-            x = denoised_eff
-            continue
+            if sigma_next == 0:
+                x = denoised_eff
+                continue
 
-        dt = sigma_next - sigma  # negative: sigmas decrease
+            dt = sigma_next - sigma  # negative: sigmas decrease
 
-        if i >= correction_start_idx:
-            # Heun predictor-corrector.
-            # Predictor: Euler step using the (multistep-corrected) denoised.
-            d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
-            x_pred = x + d1 * dt
-            # Corrector: evaluate model at the predicted x and sigma_next.
-            denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
-            d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
-            # Audio rides the plain euler direction (d1); only video gets the Heun correction.
-            d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
-            x = x + d_use * dt
-            # Heun updates x differently; invalidate multistep history.
-            prev_denoised = None
-            prev_h = None
-        else:
-            d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
-            x = x + d * dt
-            if s_noise > 0.0:
-                sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
-                if sigma_up > 0.0:
-                    # Diversity noise on video only — ancestral-style noise corrupts audio.
-                    x = _video_only(x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up, x, video_mask)
+            if i >= correction_start_idx:
+                # Heun predictor-corrector.
+                # Predictor: Euler step using the (multistep-corrected) denoised.
+                d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+                x_pred = x + d1 * dt
+                # Corrector: evaluate model at the predicted x and sigma_next.
+                denoised_pred = model(x_pred, sigma_next * s_in, **extra_args)
+                d2 = k_diffusion_sampling.to_d(x_pred, sigma_next, denoised_pred)
+                # Audio rides the plain euler direction (d1); only video gets the Heun correction.
+                d_use = _video_only((d1 + d2) / 2.0, d1, video_mask)
+                d_use = _mg_step(d_use, video_mask)
+                x = x + d_use * dt
+                # Heun updates x differently; invalidate multistep history.
+                prev_denoised = None
+                prev_h = None
+            else:
+                d = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
+                d = _mg_step(d, video_mask)
+                x = x + d * dt
+                if s_noise > 0.0:
+                    sigma_up = math.sqrt(max(0.0, float(sigma.item()) ** 2 - float(sigma_next.item()) ** 2))
+                    if sigma_up > 0.0:
+                        # Diversity noise on video only — ancestral-style noise corrupts audio.
+                        x = _video_only(x + noise_sampler(sigma, sigma_next) * s_noise * sigma_up, x, video_mask)
+    finally:
+        if alg_active:
+            model.latent_image = alg_sharp_latent_image
 
     return x
 
@@ -1801,6 +1984,35 @@ class FunPackDistilledFlowSampler:
                     "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.025,
                     "tooltip": "Sigma at/below which latent normalization activates and anchors its reference (above it the x0 estimate is meaningless). Only used when normalize_strength > 0.",
                 }),
+                # Appended last on purpose, same rule as ab2_ramp above.
+                "alg_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: Adaptive Low-Pass Guidance (arXiv:2506.08456). Blurs the i2v anchor frame while sigma is above alg_sigma_threshold, then swaps back to the sharp anchor — counters the model's tendency to shortcut to a near-static video that just matches the reference image. No-op without an i2v anchor.",
+                }),
+                "alg_strength": ("FLOAT", {
+                    "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
+                    "tooltip": "Downsample factor for the anchor blur (paper default 2.5, but 2.0 held character/i2v consistency noticeably better in testing here). Higher = blurrier anchor during the affected steps. Only used when alg_enabled.",
+                }),
+                "alg_sigma_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Only used when alg_enabled.",
+                }),
+                "mg_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: Momentum Guidance (arXiv:2602.20360). Keeps a running average of the per-step direction and blends the current step toward it once sigma drops below mg_sigma_threshold — the complementary window to ALG's blur. Smooths the fine-motion/refinement steps; may damp motion as a side effect, untested for video.",
+                }),
+                "mg_strength": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Blend weight toward the momentum average when active (0 = no effect, 1 = fully replace the step's direction with the average). Only used when mg_enabled.",
+                }),
+                "mg_decay": ("FLOAT", {
+                    "default": 0.5, "min": 0.0, "max": 0.99, "step": 0.05,
+                    "tooltip": "EMA decay for the momentum average (higher = longer memory of past steps' directions). On our 8-step schedule, high decay (e.g. 0.9) keeps the EMA anchored to the very first, near-pure-noise step's direction for nearly the whole run — wrong scale, produces garbage regardless of mg_strength. Tested safe (and good) at 0.5 even at mg_strength=1.0. Only used when mg_enabled.",
+                }),
+                "mg_sigma_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Momentum guidance applies while sigma is BELOW this value (the opposite window from alg_sigma_threshold) — defaults to the same boundary as ALG for a clean handoff. Only used when mg_enabled.",
+                }),
             }
         }
 
@@ -1812,7 +2024,9 @@ class FunPackDistilledFlowSampler:
         "ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA). "
         "Adams-Bashforth 2-step multistep for better trajectory accuracy across large sigma jumps, "
         "Heun predictor-corrector on final steps for quality, optional controlled noise for diversity, "
-        "and optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers)."
+        "optional velocity bias + reactive rescue (shared with the Hybrid/RF samplers), "
+        "experimental ALG anchor de-staticking for i2v chunks, and experimental Momentum "
+        "Guidance smoothing for the complementary (fine-motion) sigma window."
     )
 
     def get_sampler(self, order=2, final_correction_steps=1, s_noise=0.0,
@@ -1820,7 +2034,9 @@ class FunPackDistilledFlowSampler:
                     velocity_bias_source="mean", velocity_refinement_key="default",
                     rescue_mode=False, rescue_threshold=0.15, rescue_strength=0.2,
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
-                    normalize_strength=0.0, normalize_start_sigma=0.9):
+                    normalize_strength=0.0, normalize_start_sigma=0.9,
+                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
+                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -1839,6 +2055,13 @@ class FunPackDistilledFlowSampler:
                 "rescue_threshold": rescue_threshold,
                 "rescue_strength": rescue_strength,
                 "rescue_prompt_sig": rescue_prompt_sig,
+                "alg_enabled": alg_enabled,
+                "alg_strength": alg_strength,
+                "alg_sigma_threshold": alg_sigma_threshold,
+                "mg_enabled": mg_enabled,
+                "mg_strength": mg_strength,
+                "mg_decay": mg_decay,
+                "mg_sigma_threshold": mg_sigma_threshold,
             }
         )
         return (sampler, prepared_sigmas)
@@ -1989,8 +2212,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Which frame of each finished scene to store in the bank (JoyAI default 'center').",
                 }),
                 "joyai_memory_strength": ("FLOAT", {
-                    "default": 0.3, "min": 0.25, "max": 0.5, "step": 0.05,
-                    "tooltip": "Guide-attention strength for each memory frame. Same 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts).",
+                    "default": 0.3, "min": 0.25, "max": 10.0, "step": 0.05,
+                    "tooltip": "Guide-attention strength for each memory frame. 0.25 floor as mid_scene_guide (below it audio degrades and identity drifts). Uncapped at the top: 0.25-0.5 is the audio-safe band, higher values push identity harder but may degrade audio/over-constrain motion.",
                 }),
                 # NOTE: append-only — keep new sampler widgets at the END of this block so the
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
@@ -2022,6 +2245,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "",
                     "multiline": True,
                     "tooltip": "Optional media_ref → filename map for image-type i2v guides in custom guide stacks.",
+                }),
+                "alg_blur_guides": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. No effect unless the chosen sampler has alg_enabled on, or no guide frames were appended this scene.",
+                }),
+                "bounded_attention_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: Bounded Attention (arXiv:2403.16990) + Structured Diffusion Guidance (arXiv:2212.05032)-style exact split. Studio splits multi-sentence scene prompts by sentence count and encodes each half SEPARATELY (no shared tokenization, exact boundary), then this masks text cross-attention so the left half of the frame can only attend to subject-1's tokens and the right half only to subject-2's — aims to stop attribute/anatomy bleed between two figures in one frame. No-op on single-sentence prompts or single-subject scenes. Works on any sampler (model-level hook, not sampler-specific).",
                 }),
             },
             "hidden": {
@@ -2407,7 +2638,8 @@ class FunPackLTXAVSceneChainSampler:
         return result
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
-                      pbar=None, step_offset=0):
+                      pbar=None, step_offset=0, alg_guide_tail_frames=0,
+                      bounded_attention_enabled=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -2420,11 +2652,29 @@ class FunPackLTXAVSceneChainSampler:
             if pbar is not None:
                 pbar.update_absolute(step_offset + int(step) + 1)
 
-        sampled = comfy.sample.sample_custom(
-            model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
-            noise_mask=latent.get("noise_mask"), seed=int(seed),
-            callback=_progress_cb if pbar is not None else None,
-        )
+        # EXPERIMENTAL alg_blur_guides: this chunk-specific guide-tail count has to reach
+        # sample_funpack_distilled_flow somehow, but `sampler` is a single KSAMPLER object
+        # built once (per Studio pass) and reused across every chunk — its extra_options dict
+        # is read fresh on every .sample() call (see comfy KSAMPLER.sample), so mutating it
+        # right before this call (and always resetting it, even to 0) is safe and chunk-scoped,
+        # with no risk of leaking into the next chunk or a differently-configured sampler.
+        extra_options = getattr(sampler, "extra_options", None)
+        if isinstance(extra_options, dict) and sampler.sampler_function is sample_funpack_distilled_flow:
+            extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
+
+        # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
+        # the toggles above which only work on Distilled Flow), so install/remove here rather
+        # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
+        _ba_handles = self._install_bounded_attention(model, latent, positive) if bounded_attention_enabled else []
+
+        try:
+            sampled = comfy.sample.sample_custom(
+                model, noise, float(cfg), sampler, sigmas, positive, negative, samples,
+                noise_mask=latent.get("noise_mask"), seed=int(seed),
+                callback=_progress_cb if pbar is not None else None,
+            )
+        finally:
+            self._remove_bounded_attention(_ba_handles)
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
         return latent
@@ -3432,6 +3682,93 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    def _bounded_attention_region_mask(self, t, h, w, device):
+        """[T*H*W] region id per video token: 0 = left half (by width), 1 = right half.
+        Assumes (t, h, w) row-major flattening — matches the packed-latent layout
+        _alg_blur_frames already relies on; LTX's patchify is 1:1 so the transformer's
+        token order should match. Best-effort for an experimental feature, not guaranteed
+        if that assumption ever changes upstream."""
+        idx = torch.arange(t * h * w, device=device)
+        w_idx = idx % w
+        return (w_idx >= (w // 2)).long()
+
+    def _install_bounded_attention(self, model, latent, positive):
+        """EXPERIMENTAL (arXiv:2403.16990-inspired, see [[project_bounded_attention]]): mask the
+        text cross-attention (attn2 only — never audio_attn2, never self-attention) so the LEFT
+        half of the video frame (by width) can only attend to subject-1's prompt tokens and the
+        RIGHT half only to subject-2's, per the sentence-count split Studio recorded as
+        funpack_bound_split_tokens on the scene's conditioning metadata. Pure attention masking,
+        no extra forward pass. Returns [] (no-op) without that metadata, a 5D video tensor, an
+        existing padding mask already in play, or recognizable transformer blocks."""
+        try:
+            n1 = None
+            if isinstance(positive, list) and positive and isinstance(positive[0], (list, tuple)) and len(positive[0]) >= 2:
+                meta = positive[0][1]
+                if isinstance(meta, dict):
+                    n1 = meta.get("funpack_bound_split_tokens")
+            if n1 is None:
+                print("[FunPack AV] Bounded Attention enabled but skipped this scene — prompt "
+                      "didn't split into 2+ sentences (needs subject-1/subject-2 in separate sentences).")
+                return []
+            n1 = int(n1)
+            tensors = self._latent_tensors(latent)
+            video = max(tensors, key=lambda v: v.dim())
+            if video.dim() != 5:
+                print("[FunPack AV] Bounded Attention enabled but skipped — couldn't read a 5D video latent.")
+                return []
+            _, _, t, h, w = video.shape
+            if w < 2:
+                print("[FunPack AV] Bounded Attention enabled but skipped — frame too narrow to split.")
+                return []
+            blocks = model.model.diffusion_model.transformer_blocks
+        except Exception:
+            print("[FunPack AV] Bounded Attention enabled but skipped — couldn't reach the model's transformer blocks.")
+            return []
+        if not blocks:
+            print("[FunPack AV] Bounded Attention enabled but skipped — no transformer blocks found.")
+            return []
+        region = self._bounded_attention_region_mask(t, h, w, video.device)  # [Q], 0=left, 1=right
+
+        def _hook(_module, args, kwargs):
+            try:
+                if kwargs.get("mask") is not None:
+                    return args, kwargs  # real padding mask already present -> skip, don't fight it
+                x = args[0] if args else None
+                context = kwargs.get("context")
+                if x is None or context is None:
+                    return args, kwargs
+                q = int(x.shape[1])
+                if q != region.shape[0]:
+                    return args, kwargs  # resolution mismatch -> no-op safely
+                k = int(context.shape[1])
+                n1c = max(0, min(k, n1))
+                key_idx = torch.arange(k, device=x.device)
+                allow0 = key_idx < n1c
+                mask = torch.where(region.unsqueeze(1) == 0, allow0.unsqueeze(0), (~allow0).unsqueeze(0))
+                kwargs = dict(kwargs)
+                kwargs["mask"] = mask
+                return args, kwargs
+            except Exception:
+                return args, kwargs
+
+        handles = []
+        for blk in blocks:
+            sub = getattr(blk, "attn2", None)
+            if sub is not None:
+                handles.append(sub.register_forward_pre_hook(_hook, with_kwargs=True))
+        if handles:
+            print(f"[FunPack AV] Bounded Attention on ({len(handles)} blocks hooked, "
+                  f"split at token {n1}, frame {w}x{h}x{t}) — left half sees tokens <{n1}, "
+                  f"right half sees tokens >={n1}")
+        return handles
+
+    def _remove_bounded_attention(self, handles):
+        for h in handles or []:
+            try:
+                h.remove()
+            except Exception:
+                pass
+
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
         internal decoder restores fine detail/grain. Never mutates the shared input VAE. Mirrors
@@ -3466,6 +3803,8 @@ class FunPackLTXAVSceneChainSampler:
                refinement_key_input="", funpack_scene_guides="",
                funpack_scene_anchors="",
                funpack_scene_media_refs="",
+               alg_blur_guides=False,
+               bounded_attention_enabled=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3484,6 +3823,12 @@ class FunPackLTXAVSceneChainSampler:
             strip_funpack_block_hooks(model)
         except Exception as _e:
             print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
+
+        # Blackwell (sm_120) GPUs can't run xformers attention with a tensor mask; the LTX
+        # guide path uses one, so anchor scenes generate but guide scenes crash. Route masked
+        # attention to SDPA when that exact combo is detected (no-op otherwise). Threaded via
+        # transformer_options so it reaches every scene's model forward.
+        _funpack_install_mask_safe_attention(model)
 
         # Decode-time noise (folded in from LTXV's Set VAE Decoder Noise per the boundary law:
         # the Chain Sampler owns IMAGES decode, so this lives here, not on a separate node).
@@ -3506,6 +3851,8 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_fix_frames=joyai_fix_frames, joyai_frame_select=joyai_frame_select,
                 joyai_memory_strength=joyai_memory_strength,
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
+                alg_blur_guides=alg_blur_guides,
+                bounded_attention_enabled=bounded_attention_enabled,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3716,6 +4063,8 @@ class FunPackLTXAVSceneChainSampler:
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
+                    alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
+                    bounded_attention_enabled=bounded_attention_enabled,
                 )
             finally:
                 self._remove_v2a_scale(_v2a_handles)
@@ -3944,7 +4293,8 @@ class FunPackLTXAVSceneChainSampler:
                             score_slider=False, score_slider_strength=1.0,
                             joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
                             joyai_frame_select="center", joyai_memory_strength=0.3,
-                            joyai_audio_memory=False, v2a_grad_scale=1.0):
+                            joyai_audio_memory=False, v2a_grad_scale=1.0,
+                            alg_blur_guides=False, bounded_attention_enabled=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -3990,6 +4340,8 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
+                alg_blur_guides=alg_blur_guides,
+                bounded_attention_enabled=bounded_attention_enabled,
                 unique_id=None, prompt=None,
             )
             last = out

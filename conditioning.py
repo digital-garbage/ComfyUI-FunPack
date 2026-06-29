@@ -6126,10 +6126,6 @@ class FunPackVideoRefiner:
 
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 
-
-_V2_PERSISTENT_ENCODE_CACHE = {}
-_V2_PERSISTENT_CACHE_MAX = 4096
-
 # Movie Editor sends this when the user did not rate before regenerating: apply session
 # memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
 # Must appear in V2_RATING_LABELS so ComfyUI /prompt validation accepts editor overrides.
@@ -6721,16 +6717,15 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         use_vision = reference_image is not None and self._gemma3_has_vision(clip)
         img_fp = self._image_fingerprint(reference_image) if use_vision else None
 
+        # Per-call cache ONLY (the encode_cache dict is created fresh by the caller for this
+        # one sample() invocation and never escapes it) — no cross-request/process-lifetime
+        # caching here. The conditioning the model sees must always trace back to what's live
+        # in the current request, never to anything reused from a past one.
         cache_key = (id(clip), prompt_text, img_fp)
         if isinstance(encode_cache, dict):
             cached = encode_cache.get(cache_key)
             if cached is not None:
                 return cached
-        cached = _V2_PERSISTENT_ENCODE_CACHE.get(cache_key)
-        if cached is not None:
-            if isinstance(encode_cache, dict):
-                encode_cache[cache_key] = cached
-            return cached
         try:
             if use_vision:
                 print("[FunPackStudio] Processing input image with Gemma3 vision...")
@@ -6753,8 +6748,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions{vision_tag}")
         if isinstance(encode_cache, dict):
             encode_cache[cache_key] = result
-        if len(_V2_PERSISTENT_ENCODE_CACHE) < _V2_PERSISTENT_CACHE_MAX:
-            _V2_PERSISTENT_ENCODE_CACHE[cache_key] = result
         return result
 
     def _v2_gemma3_tokenizer_status(self):
@@ -11924,6 +11917,29 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 axis_feedback,
                 learning_profile,
             )
+            # Custom shortcut keys (e.g. a 'cs'-tagged cumshot shortcut) ALSO fire on a plain
+            # single-scene run, not just a rated multi-scene Movie Editor chain — but the
+            # use_me_scene_ratings branch above was the ONLY place that ever trained them, and
+            # it requires BOTH a multi-scene run AND explicit per-scene ratings from the editor.
+            # Most generations are single-scene with one overall rating, so those keys were
+            # never created at all. Train them here too, ADDITIVELY (the default key above keeps
+            # learning exactly as it always has — unlike the multi-scene path, this does NOT make
+            # custom keys exclusive of the default; that exclusivity is the multi-scene path's own
+            # documented design, not something to risk replicating into this far more common,
+            # heavily-relied-upon single-scene path without it being separately tested).
+            if has_previous_run and not learning_profile.get("skip_learning"):
+                fired_keys = set()
+                for ks in (previous_run.get("scene_refinement_keys") or []):
+                    fired_keys |= set(ks or [])
+                fired_keys.discard(str(refinement_key or "").strip())
+                if fired_keys:
+                    trained_keys = self._v2_learn_scene_into_keys(
+                        sorted(fired_keys), refinement_key, previous_run, learning_profile,
+                        int(global_state.get("total_iterations", 0)) + 1, axis_feedback,
+                        bool(seed_output_connected),
+                    )
+                    if trained_keys:
+                        memory_status += f"\nTrained custom key(s): {', '.join(trained_keys)}"
 
         vision_context, vision_status = self._v2_update_vision_memory(
             global_state,
@@ -12666,7 +12682,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                             guess_mode=guess_mode, guess_direction=guess_direction, guess_range=guess_range,
                             guess_freeze_seed=guess_freeze_seed)
                     return (
-                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan),
+                        self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache),
                         status,
                         training_info,
                         loss_graph,
@@ -12684,7 +12700,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 repair_feedback, current_family_slot, _vf_for_memory, _concept_dir,
                 _concept_strength, _current_final)
         return (
-            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan),
+            self._v2_finalize_conditioning(output_conditioning, refinement_key, value_guidance, steer_mode, absolute_strength, spread_cap=_guess_spread_cap, temporal_style=temporal_style, temporal_fallback_text=prompt_to_encode, scene_refinement_keys=scene_refinement_keys, learning_profile=learning_profile, conditioning_plan=_conditioning_plan, clip=clip, encode_cache=encode_cache),
             status + enhancement_status,
             training_info,
             loss_graph,
@@ -13223,11 +13239,61 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
         return out
 
+    def _v2_bounded_attention_split_encode(self, text, clip, encode_cache=None):
+        """EXPERIMENTAL, Structured-Diffusion-Guidance-style: split a scene prompt into two
+        halves by sentence count (subject 1's description vs subject 2's) and encode each half
+        SEPARATELY through the real text encoder, then concatenate the two resulting conditioning
+        tensors end to end. Unlike tokenizing each half just to COUNT tokens (the original,
+        approximate version of this), this gives an EXACT boundary — span 1's tokens and span 2's
+        tokens are never part of the same tokenization run, so there's no BPE/SentencePiece merge
+        ambiguity at the seam, and no possibility of cross-span leakage even before any masking
+        is applied. Returns (combined_cond, n1) or (None, None) if the prompt can't be split
+        (single sentence) or either half fails to encode."""
+        text = str(text or "").strip()
+        if not text or clip is None:
+            return None, None
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if len(sentences) < 2:
+            return None, None
+        mid = (len(sentences) + 1) // 2
+        span1 = " ".join(sentences[:mid])
+        span2 = " ".join(sentences[mid:])
+        cond1, _, _ = self._v2_encode_prompt(clip, span1, encode_cache=encode_cache)
+        cond2, _, _ = self._v2_encode_prompt(clip, span2, encode_cache=encode_cache)
+        if not isinstance(cond1, torch.Tensor) or not isinstance(cond2, torch.Tensor):
+            return None, None
+        try:
+            cond2 = cond2.to(device=cond1.device, dtype=cond1.dtype)
+            combined = torch.cat([cond1, cond2], dim=1)
+        except Exception:
+            return None, None
+        return combined, int(cond1.shape[1])
+
+    def _v2_apply_bounded_attention(self, conditioning_list, clip, fallback_text="", encode_cache=None):
+        """Always-on, cheap text-only step: for scenes with 2+ sentences, replace the scene's
+        conditioning with the exact-boundary concatenated encoding above and tag the split point
+        (funpack_bound_split_tokens) for the EXPERIMENTAL Bounded Attention sampler toggle to
+        read. No behavior change unless that sampler toggle is enabled — the original single-
+        sentence-or-fewer encoding (and metadata) passes through untouched either way."""
+        out = []
+        for entry in conditioning_list or []:
+            if not (isinstance(entry, (list, tuple)) and len(entry) >= 2 and isinstance(entry[1], dict)):
+                out.append(entry)
+                continue
+            cond, meta = entry[0], dict(entry[1])
+            text = str(meta.get("funpack_scene_text") or "").strip() or str(fallback_text or "")
+            combined, n1 = self._v2_bounded_attention_split_encode(text, clip, encode_cache=encode_cache)
+            if combined is not None:
+                cond = combined
+                meta["funpack_bound_split_tokens"] = n1
+            out.append([cond, meta] if isinstance(entry, list) else (cond, meta))
+        return out
+
     def _v2_finalize_conditioning(self, conditioning_list, refinement_key, value_guidance,
                                   steer_mode, absolute_strength, spread_cap=None,
                                   temporal_style="natural", temporal_fallback_text="",
                                   scene_refinement_keys=None, learning_profile=None,
-                                  conditioning_plan=None):
+                                  conditioning_plan=None, clip=None, encode_cache=None):
         """Single output hook for both steering modes. Relative = per-key VF ascend (current
         behaviour). Absolute = global taste pull. Both = layer them. Finally, if Interactive
         Guessing has learned a safe-spread ceiling, clamp the output conditioning's video-channel
@@ -13239,6 +13305,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         mode = str(steer_mode or "relative").lower()
         out = self._v2_apply_pulse_temporal(conditioning_list, temporal_style)
         out = self._v2_apply_auto_temporal(out, temporal_style, fallback_text=temporal_fallback_text)
+        out = self._v2_apply_bounded_attention(out, clip, fallback_text=temporal_fallback_text, encode_cache=encode_cache)
         if mode in ("relative", "both"):
             out = self._v2_apply_scene_refinement_keys(
                 out, scene_refinement_keys, refinement_key,
@@ -14552,6 +14619,13 @@ class FunPackStudio:
                     rescue_threshold=float(dc.get("rescue_threshold", 0.15)),
                     rescue_strength=float(dc.get("rescue_strength", 0.2)),
                     rescue_prompt_sig=prompt_sig,
+                    alg_enabled=bool(dc.get("alg_enabled", False)),
+                    alg_strength=float(dc.get("alg_strength", 2.5)),
+                    alg_sigma_threshold=float(dc.get("alg_sigma_threshold", 0.94)),
+                    mg_enabled=bool(dc.get("mg_enabled", False)),
+                    mg_strength=float(dc.get("mg_strength", 0.5)),
+                    mg_decay=float(dc.get("mg_decay", 0.5)),
+                    mg_sigma_threshold=float(dc.get("mg_sigma_threshold", 0.975)),
                     sigmas=sigmas_raw,
                 )
             elif sampler_type == "KSampler":

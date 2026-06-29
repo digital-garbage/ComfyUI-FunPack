@@ -497,8 +497,16 @@ class ComfyError(RuntimeError):
     pass
 
 
-async def queue_prompt(graph: dict, client_id: Optional[str] = None) -> dict:
+# Stable client_id stamped on every editor-queued prompt so a reloaded UI can tell its
+# own in-flight generation apart from unrelated ComfyUI jobs (see active_generation).
+EDITOR_CLIENT_ID = "funpack-movie-editor"
+
+
+async def queue_prompt(graph: dict, client_id: Optional[str] = None,
+                       extra_data: Optional[dict] = None) -> dict:
     payload = {"prompt": graph, "client_id": client_id or uuid.uuid4().hex}
+    if extra_data:
+        payload["extra_data"] = dict(extra_data)
     async with await _session() as s:
         async with s.post(_url("/prompt"), json=payload) as r:
             data = await r.json()
@@ -586,6 +594,51 @@ async def is_running(prompt_id: str) -> bool:
             if len(item) > 1 and item[1] == prompt_id:
                 return True
     return False
+
+
+def _queue_item_extra(item: list) -> dict:
+    """extra_data dict from a /queue tuple [number, prompt_id, prompt, extra_data, ...]."""
+    extra = item[3] if len(item) > 3 else None
+    return extra if isinstance(extra, dict) else {}
+
+
+def _select_active(queue_state: dict) -> dict:
+    """Pick the editor's own in-flight generation out of a /queue snapshot.
+
+    Filters by EDITOR_CLIENT_ID so unrelated ComfyUI jobs are ignored, and reads back the
+    ``funpack`` payload (project id + target scenes) stamped at queue time so a reloaded
+    client can re-attach and record the result onto the right scenes."""
+    running, pending = [], []
+    for item in queue_state.get("queue_running", []) or []:
+        if _queue_item_extra(item).get("client_id") == EDITOR_CLIENT_ID:
+            running.append(item)
+    for item in queue_state.get("queue_pending", []) or []:
+        if _queue_item_extra(item).get("client_id") == EDITOR_CLIENT_ID:
+            pending.append(item)
+    out = {"running": bool(running), "prompt_id": None, "pid": None,
+           "scene_ids": [], "only_scene": None, "pending": len(pending)}
+    if running:
+        item = running[0]
+        out["prompt_id"] = item[1] if len(item) > 1 else None
+        fp = _queue_item_extra(item).get("funpack") or {}
+        if isinstance(fp, dict):
+            out["pid"] = fp.get("pid")
+            out["scene_ids"] = fp.get("scene_ids") or []
+            out["only_scene"] = fp.get("only_scene")
+    return out
+
+
+async def active_generation() -> dict:
+    """The editor's own in-flight generation, recovered from ComfyUI's queue.
+
+    Survives a UI reload: the queue lives in the (still-running) ComfyUI process, so the
+    reloaded client can re-block Generate, expose Interrupt, and record the result when it
+    finishes. See _select_active for the filtering."""
+    async with await _session() as s:
+        async with s.get(_url("/queue")) as r:
+            r.raise_for_status()
+            state = await r.json()
+    return _select_active(state)
 
 
 _object_info_cache = {"data": None}

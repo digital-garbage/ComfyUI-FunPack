@@ -255,6 +255,22 @@
     return b;
   }
 
+  // ── bypass: skip this node's effect (pass its inputs straight through) without
+  // losing its configuration — same "expose to main editor" pattern as a widget value.
+  const BYPASS_NAME = "__bypass";
+  function toggleBypassExpose(slot) {
+    slot.exposed = slot.exposed || [];
+    if (isExposed(slot, BYPASS_NAME)) { slot.exposed = slot.exposed.filter((e) => e.name !== BYPASS_NAME); return; }
+    slot.exposed.push({ name: BYPASS_NAME, kind: "boolean", label: `Bypass ${slotName(slot)}`, isBypass: true });
+  }
+  function bypassEyeButton(slot) {
+    const b = el("button", "eye-btn" + (isExposed(slot, BYPASS_NAME) ? " on" : ""), "◉");
+    b.type = "button";
+    b.title = isExposed(slot, BYPASS_NAME) ? "Hide bypass toggle from main editor window" : "Show bypass toggle in main editor window";
+    b.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); toggleBypassExpose(slot); await persist(); render(); };
+    return b;
+  }
+
   // ── widget field rendering from object_info spec ─────────────────────────────
   function widgetField(spec, value, onChange) {
     const wrap = el("label", "field");
@@ -411,9 +427,15 @@
     head.append(ren);
     const nExp = (slot.exposed || []).length;
     if (nExp) head.append(el("span", "slot-badge exposed", `◉ ${nExp}`));
+    if (slot.bypassed) head.append(el("span", "slot-badge warn", "bypassed"));
     if (errs) head.append(el("span", "slot-badge bad", `${errs} error${errs > 1 ? "s" : ""}`));
     else if (warns) head.append(el("span", "slot-badge warn", `${warns} warning${warns > 1 ? "s" : ""}`));
     else head.append(el("span", "slot-badge ok", "ready"));
+    const byp = el("button", "btn ghost tiny" + (slot.bypassed ? " on" : ""), slot.bypassed ? "bypassed" : "bypass");
+    byp.title = "Skip this node's effect (pass its inputs straight through) without losing its configuration.";
+    byp.onclick = async (e) => { e.stopPropagation(); slot.bypassed = !slot.bypassed; await persist(); render(); };
+    head.append(byp);
+    head.append(bypassEyeButton(slot));
     const rm = el("button", "btn ghost tiny danger", "remove");
     rm.onclick = async (e) => { e.stopPropagation(); config.slots = config.slots.filter((s) => s.id !== slot.id); expanded.delete(slot.id); await persist(); render(); };
     head.append(rm);

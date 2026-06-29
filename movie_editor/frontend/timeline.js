@@ -1390,12 +1390,13 @@
       const baseLeft = startSec * pxPerSec;
       const baseDur = durSec;
       const anchors = timelineSnapAnchorsPx(st, p);
+      const maxDur = S.audioTrackMaxDurSec ? S.audioTrackMaxDurSec(track) : Infinity;
       let finalDur = durSec;
       coalescedDrag(e, (dx) => {
         const rightPx = snapPx(baseLeft + baseDur * pxPerSec + dx, anchors, 10);
-        finalDur = Math.max(0.1, (rightPx - baseLeft) / pxPerSec);
+        finalDur = Math.min(maxDur, Math.max(0.1, (rightPx - baseLeft) / pxPerSec));
         block.style.width = Math.max(finalDur * pxPerSec, 48) + "px";
-        tip.textContent = `${finalDur.toFixed(2)}s`;
+        tip.textContent = finalDur >= maxDur ? `${finalDur.toFixed(2)}s (max — end of source)` : `${finalDur.toFixed(2)}s`;
       }, () => {
         block.classList.remove("trimming"); tip.remove();
         S.resizeAudioTrack(track.id, finalDur);
@@ -2049,7 +2050,15 @@
 
   window.addEventListener("keydown", (e) => {
     const a = document.activeElement;
-    if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) return;
+    // Inline numeric fields on clips (e.g. audio track "Start (s)") can keep keyboard focus
+    // after a stray click without the user noticing they're "in" a text field. Letters like
+    // i/o/s/Delete are meaningless inside a number input anyway, so blur it and let the
+    // clip-level shortcut through rather than silently swallowing the keystroke.
+    if (a && a.tagName === "INPUT" && a.type === "number" && a.closest(".tl-aud-clip, .tl-clip")) {
+      a.blur();
+    } else if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable)) {
+      return;
+    }
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const st = S.get();
     if (!st.project) return;

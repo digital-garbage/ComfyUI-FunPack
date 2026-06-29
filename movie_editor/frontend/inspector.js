@@ -659,8 +659,12 @@
       }
     });
     slotItems.forEach(([slot, d]) => {
-      const ctrl = exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v),
-        "exp-" + slot.id + "-" + d.name);
+      // Bypass is a slot-level flag (slot.bypassed), not a real node input — route it
+      // separately so it never gets sent to ComfyUI as a fake widget value.
+      const ctrl = d.isBypass
+        ? exposedControl(d, !!slot.bypassed, (v) => S.setModelBypass(slot.id, v), "exp-" + slot.id + "-bypass")
+        : exposedControl(d, (slot.inputs || {})[d.name], (v) => S.setModelInput(slot.id, d.name, v),
+          "exp-" + slot.id + "-" + d.name);
       wrap.append(field(`${slotLabel(slot)} · ${d.label || d.name}`, ctrl));
     });
     body.append(wrap);

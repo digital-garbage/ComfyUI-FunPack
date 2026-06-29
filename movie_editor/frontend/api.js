@@ -139,9 +139,31 @@
       j("POST", API(`/projects/${id}/generate`), { only_scene: onlyScene || null, scene_ids: sceneIds || null, reset_session: !!resetSession, node_overrides: nodeOverrides || null }),
     status: (id, promptId) => j("GET", API(`/projects/${id}/status/${promptId}`)),
     progress: () => j("GET", API("/progress")),
+    // The editor's own in-flight generation, recovered from ComfyUI's queue (survives a UI reload).
+    active: () => j("GET", API("/active")),
     ratingLabels: () => j("GET", API("/rating-labels")),
     log: (limit) => j("GET", API("/log" + (limit ? `?limit=${limit}` : ""))),
     interrupt: () => j("POST", API("/interrupt")),
+
+    // ComfyUI temp folder browser (scene previews & other transient outputs, wiped on restart).
+    listTemp: () => j("GET", API("/temp")),
+    // Served by ComfyUI's own same-origin /view endpoint — no editor route needed.
+    tempFileUrl: (f) => "/view?" + new URLSearchParams({
+      filename: f.filename, subfolder: f.subfolder || "", type: "temp", t: String(f.mtime || Date.now()),
+    }).toString(),
+    async downloadTempFile(f) {
+      const res = await fetch(this.tempFileUrl(f), { cache: "no-store" });
+      if (!res.ok) throw new Error(`Could not fetch ${f.filename} (HTTP ${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = f.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    },
     renderFinal: (id, clips) => j("POST", API(`/projects/${id}/render`), { clips }),
     renderFinalStatus: (id, jobId) => j("GET", API(`/projects/${id}/render/${encodeURIComponent(jobId)}`)),
     exportClip: (id, clip) => j("POST", API(`/projects/${id}/export-clip`), { clip }),

@@ -93,6 +93,7 @@
       const cur = rf[f.name] != null ? rf[f.name] : f.default;
       if (cur !== f.default) n++;
     });
+    n += parseAdjustments(p).filter(adjIsActive).length;
     return n;
   }
 
@@ -102,6 +103,64 @@
     const next = JSON.stringify({ ...cur, refiner: { ...rf, ...patch } });
     if (now) S.setStudioInputNow("studio_settings", next);
     else S.setStudioInput("studio_settings", next);
+  }
+
+  // Conditioning adjustments — universal per-phrase steering. Stored as the FunPackStudio
+  // `adjustments` widget (JSON [{phrase, strength}]), a top-level studio_input the builder
+  // wires straight onto the node. Each phrase is CLIP-encoded and shifts conditioning toward
+  // (+) / away (−) from it on EVERY generation, regardless of prompt. The backend ignores
+  // blank/zero rows, so we persist the list as-is (no need to prune while editing).
+  function parseAdjustments(p) {
+    const si = (p && p.studio_inputs) || {};
+    try {
+      const v = JSON.parse(si.adjustments || "[]");
+      return Array.isArray(v) ? v.map((i) => ({ phrase: String(i.phrase || ""), strength: +i.strength || 0 })) : [];
+    } catch (_) { return []; }
+  }
+
+  function adjIsActive(i) {
+    return !!String(i.phrase || "").trim() && Math.abs(+i.strength || 0) > 1e-6;
+  }
+
+  function persistAdjustments(items, now) {
+    const json = JSON.stringify(items);
+    if (now) S.setStudioInputNow("adjustments", json);
+    else S.setStudioInput("adjustments", json);
+  }
+
+  function renderStudioAdjustments(parent) {
+    const sec = collapsibleSection(parent, "studio_adjust", "Conditioning adjustments", false);
+    sec.append(el("div", "insp-hint",
+      "Universal per-phrase steering: each phrase is encoded by CLIP and shifts conditioning "
+      + "toward (+) or away (−) from it on every generation, regardless of the prompt. "
+      + "Typical range −0.3 to +0.3."));
+    const items = parseAdjustments(S.get().project);
+    if (!items.length) sec.append(el("div", "insp-hint", "No adjustments. Add a phrase below."));
+    items.forEach((item, idx) => {
+      const row = el("div", "fields-row studio-adjust-row");
+      const phrase = el("input"); phrase.type = "text"; phrase.placeholder = "phrase or word";
+      phrase.value = item.phrase; phrase.dataset.k = "adj-phrase-" + idx; phrase.style.flex = "1";
+      phrase.oninput = () => { items[idx].phrase = phrase.value; persistAdjustments(items, false); };
+      const strength = el("input"); strength.type = "number";
+      strength.step = "0.05"; strength.min = "-1"; strength.max = "1";
+      strength.value = item.strength; strength.dataset.k = "adj-str-" + idx; strength.style.width = "72px";
+      strength.title = "Positive steers toward the phrase, negative away.";
+      strength.oninput = () => { items[idx].strength = parseFloat(strength.value || "0"); persistAdjustments(items, false); };
+      const del = el("button", "btn ghost tiny", "✕"); del.type = "button"; del.title = "Remove";
+      del.onclick = () => { items.splice(idx, 1); persistAdjustments(items, true); };
+      row.append(phrase, strength, del);
+      sec.append(row);
+    });
+    const add = el("button", "btn ghost tiny", "+ Add phrase"); add.type = "button";
+    add.onclick = () => {
+      items.push({ phrase: "", strength: 0.1 });
+      persistAdjustments(items, true);
+      setTimeout(() => {
+        const inputs = document.querySelectorAll('[data-k^="adj-phrase-"]');
+        inputs[inputs.length - 1]?.focus();
+      }, 0);
+    };
+    sec.append(add);
   }
 
   function renderStudioRefinerBool(parent, rf, f) {
@@ -159,6 +218,8 @@
     const refSec = collapsibleSection(card.body, "studio_ref", "Refinement", false);
     STUDIO_REFINER_ADVANCED.forEach((f) => renderStudioRefinerField(refSec, rf, f));
 
+    renderStudioAdjustments(card.body);
+
     const sampSec = collapsibleSection(card.body, "studio_samp", "Sampler algorithm", false);
     function persistSamplers(updatedSamplers, quiet) {
       const { cur } = parseStudioSettings(S.get().project);
@@ -177,7 +238,7 @@
     }
 
     card.body.append(el("div", "insp-hint",
-      "Scene text and transitions come from the timeline. Advisor, LoRA, batch training, and adjustments remain in the ComfyUI Studio popup on the graph."));
+      "Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
   }
 
   const SAMPLER_KNOBS = [
@@ -200,9 +261,11 @@
     { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory" },
     { name: "joyai_fix_frames",      label: "Pinned anchors",        kind: "int",   default: 3,     min: 0, max: 16, step: 1, dependsOn: "joyai_memory" },
     { name: "joyai_frame_select",    label: "Frame select",          kind: "combo", choices: ["center", "first", "random"], default: "center", dependsOn: "joyai_memory" },
-    { name: "joyai_memory_strength", label: "Memory strength",       kind: "float", default: 0.3,   min: 0.25, max: 0.5, step: 0.05, dependsOn: "joyai_memory" },
+    { name: "joyai_memory_strength", label: "Memory strength",       kind: "float", default: 0.3,   min: 0.25, max: 10.0, step: 0.05, dependsOn: "joyai_memory" },
     { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory" },
     { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory" },
+    { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false },
+    { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false },
   ];
 
   const CONTINUITY_DEFAULTS = {
@@ -343,7 +406,7 @@
     { id: "chain_cont", title: "Manual continuity", defaultOpen: false, knobs: ["carry_i2v_guides"] },
     { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength"] },
     { id: "chain_dec", title: "Decode", defaultOpen: false, knobs: ["decode_noise_scale", "decode_timestep", "decode_tile_size"] },
-    { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale"] },
+    { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "bounded_attention_enabled"] },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 

@@ -34,6 +34,12 @@
     renderBtn.disabled = !hasProject() || busy(st);
     renderBtn.onclick = () => S.renderFinal();
     mount.append(renderBtn);
+
+    const montageBtn = el("button", "btn ghost compact", "⚡ Auto Montage");
+    montageBtn.title = "Build a trailer-style cut from already-rendered clips";
+    montageBtn.disabled = !hasProject() || busy(st);
+    montageBtn.onclick = () => window.MontageDialog?.open();
+    mount.append(montageBtn);
   }
 
   if (window.ViewBus) window.ViewBus.subscribeActionbar(render);
