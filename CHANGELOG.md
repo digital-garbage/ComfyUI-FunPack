@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [3.1.2] - 2026-06-28
+
+### Fixed
+- **Cutting Room: splitting a clip could undo itself.** An async probe that adopts a render's
+  real encoded file duration could resolve *after* a split and silently rewrite the first half's
+  length back to the full original — pushing the second half later, which looked like "a
+  full-length scene got appended to the end of the timeline" instead of an in-place split. The
+  probe now carries an edit token that the split bumps, so a stale probe result is discarded
+  instead of overwriting a fresh split.
+
 ## [3.1.1] - 2026-06-26
 
 ### Added
