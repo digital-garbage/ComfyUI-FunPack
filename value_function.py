@@ -1,7 +1,15 @@
 """Online value function for reward-guided sampling.
 
-Trains a small MLP incrementally on user-rated generations.
-At inference, provides ∂reward/∂conditioning as a per-step steering gradient.
+Trains a small ENSEMBLE of MLPs incrementally on user-rated generations (pairwise ranking,
+not absolute-reward regression — see train_on). At inference, provides an ensemble-pessimistic
+∂reward/∂conditioning as a per-step steering gradient: gradient-ascent-style steering is prone
+to walking into regions a single undertrained value function scores confidently but wrongly
+(confirmed live in this project — an earlier version collapsed to a degenerate "static
+character" attractor). Independently bootstrap-trained ensemble members disagree exactly in
+those blind-spot regions; that disagreement damps the steering step toward zero instead of
+trusting it. See [[project_ltxav_manipulation]] (the original collapse) and
+[[research_2026_training_free_candidates]] (why plain gradient ascent on a small reward model
+is the class of method this replaces, not a novel invention).
 """
 
 import os
@@ -16,18 +24,23 @@ class OnlineValueFunction(nn.Module):
     BUFFER_SIZE = 100
     BATCH_SIZE = 16
     TRAIN_STEPS = 20
+    ENSEMBLE_SIZE = 3  # tiny nets — 3x forward/backward is still near-zero vs a diffusion step
 
     def __init__(self, hidden_dim):
         super().__init__()
         self.hidden_dim = hidden_dim
         mid = min(256, hidden_dim // 4)
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim, mid),
-            nn.SiLU(),
-            nn.Linear(mid, 64),
-            nn.SiLU(),
-            nn.Linear(64, 1),
-        )
+
+        def _make_net():
+            return nn.Sequential(
+                nn.Linear(hidden_dim, mid),
+                nn.SiLU(),
+                nn.Linear(mid, 64),
+                nn.SiLU(),
+                nn.Linear(64, 1),
+            )
+
+        self.nets = nn.ModuleList([_make_net() for _ in range(self.ENSEMBLE_SIZE)])
         self._optimizer = None
         self.buffer_c = []  # compressed conditioning tensors [hidden_dim]
         self.buffer_r = []  # reward floats
@@ -48,10 +61,48 @@ class OnlineValueFunction(nn.Module):
         return c.mean(dim=0)
 
     def forward(self, c):
-        return self.net(c)
+        """Ensemble MEAN prediction. Used by search() and anywhere only a score (not a
+        gradient) is needed — those call sites are unaffected by the ensemble change."""
+        return torch.stack([net(c) for net in self.nets], dim=0).mean(dim=0)
+
+    def _ensemble_grad(self, c):
+        """Per-member reward + gradient w.r.t. c (must already require grad), reduced to
+        (mean_reward, mean_grad, agreement). agreement in [0,1] is the mean pairwise cosine
+        similarity between members' gradient DIRECTIONS — high when the ensemble agrees which
+        way improves the input, low when they don't (the blind-spot signal)."""
+        compressed = self.compress(c)
+        rewards, grads = [], []
+        for net in self.nets:
+            r = net(compressed.unsqueeze(0))
+            g, = torch.autograd.grad(r, c, retain_graph=True)
+            rewards.append(r.detach())
+            grads.append(g)
+        mean_reward = torch.stack(rewards).mean()
+        mean_grad = torch.stack(grads).mean(dim=0)
+        n = len(grads)
+        if n > 1:
+            unit = torch.stack([F.normalize(g.flatten().float(), dim=0) for g in grads])
+            sim = unit @ unit.T
+            agreement = float(((sim.sum() - n) / (n * (n - 1))).clamp(0.0, 1.0).item())
+        else:
+            agreement = 1.0
+        return mean_reward, mean_grad, agreement
 
     def train_on(self, conditioning, reward):
-        """Add a new (conditioning, reward) sample and do a few training steps."""
+        """Add a new (conditioning, reward) sample, then train each ensemble member via
+        pairwise ranking on its OWN independently-sampled pairs from the buffer: Bradley-Terry
+        loss -log(sigmoid(V(winner) - V(loser))), same objective DPO derives its update from.
+        Only needs the ORDER between two rated generations to be right, not the absolute
+        reward magnitude — more robust than MSE regression at 10-100 samples, and
+        correct-by-construction for hand-tuned reward gaps that don't perfectly agree with
+        intent (e.g. two "great" ratings a tier apart in reward but not in quality — ranking
+        loss only needs both to beat a worse rating, never needs their gap to mean anything).
+        Reward numbers/labels are untouched by this — see _v2_reward_admissible in
+        conditioning.py for what's allowed to reach this buffer.
+
+        Independent per-member pair sampling (bootstrap-style), on top of independent random
+        init, is what gives the ensemble a meaningful disagreement signal later — members that
+        saw identical data every step would converge to near-identical blind spots too."""
         with torch.inference_mode(False), torch.enable_grad():
             c = self.compress(conditioning.clone()).detach().cpu()
             self.buffer_c.append(c)
@@ -62,17 +113,36 @@ class OnlineValueFunction(nn.Module):
             if len(self.buffer_c) < 2:
                 return
             device = next(self.parameters()).device
+            n = len(self.buffer_c)
             for _ in range(self.TRAIN_STEPS):
-                idx = random.sample(range(len(self.buffer_c)), min(self.BATCH_SIZE, len(self.buffer_c)))
-                c_b = torch.stack([self.buffer_c[i] for i in idx]).to(device)
-                r_b = torch.tensor([self.buffer_r[i] for i in idx], device=device).unsqueeze(1)
                 self.optimizer.zero_grad()
-                F.mse_loss(self.forward(c_b), r_b).backward()
+                total_loss = None
+                for net in self.nets:
+                    idx_win, idx_lose = [], []
+                    for _ in range(self.BATCH_SIZE):
+                        i, j = random.sample(range(n), 2)
+                        if self.buffer_r[i] == self.buffer_r[j]:
+                            continue  # tie — no ranking signal, skip
+                        if self.buffer_r[i] < self.buffer_r[j]:
+                            i, j = j, i  # i = winner (higher reward), j = loser
+                        idx_win.append(i)
+                        idx_lose.append(j)
+                    if not idx_win:
+                        continue  # this member's draw was all ties; try again next step
+                    c_win = torch.stack([self.buffer_c[i] for i in idx_win]).to(device)
+                    c_lose = torch.stack([self.buffer_c[i] for i in idx_lose]).to(device)
+                    margin = net(c_win) - net(c_lose)
+                    member_loss = -F.logsigmoid(margin).mean()
+                    total_loss = member_loss if total_loss is None else total_loss + member_loss
+                if total_loss is None:
+                    continue
+                total_loss.backward()
                 self.optimizer.step()
         self.n_trained += 1
 
     def gradient(self, conditioning):
-        """∂reward/∂conditioning — same shape as input."""
+        """∂reward/∂conditioning — same shape as input, scaled by ensemble agreement
+        (near 0 when members disagree on direction, near 1 when they concur)."""
         mlp_device = next(self.parameters()).device
         orig_device = conditioning.device
         with torch.inference_mode(False), torch.enable_grad():
@@ -81,12 +151,16 @@ class OnlineValueFunction(nn.Module):
             c_fresh = torch.empty(conditioning.shape, dtype=torch.float32, device=mlp_device)
             c_fresh.copy_(conditioning)
             c_fresh.requires_grad_(True)
-            reward = self.forward(self.compress(c_fresh).unsqueeze(0))
-            reward.backward()
-        return c_fresh.grad.to(orig_device, conditioning.dtype)
+            _, mean_grad, agreement = self._ensemble_grad(c_fresh)
+        return (mean_grad * agreement).to(orig_device, conditioning.dtype)
 
     def ascend(self, conditioning):
-        """Gradient ascent on conditioning until reward plateaus. Self-terminating, no user params."""
+        """Gradient ascent on conditioning until reward plateaus. Self-terminating, no user
+        params. Each step is scaled by ensemble agreement — low agreement (an OOD/blind-spot
+        region none of the bootstrap-trained members actually learned) shrinks the step toward
+        zero, which combined with the plateau-based early exit means ascent naturally stalls
+        instead of confidently walking into a spurious high-score region — the failure mode
+        that produced the documented "static character" collapse under a single value function."""
         if not self.is_ready():
             return conditioning
         mlp_device = next(self.parameters()).device
@@ -102,11 +176,10 @@ class OnlineValueFunction(nn.Module):
             c = c_orig.clone()
             for _ in range(50):
                 c = c.detach().requires_grad_(True)
-                reward = self.forward(self.compress(c).unsqueeze(0))
-                reward.backward()
+                reward, grad, agreement = self._ensemble_grad(c)
                 reward_val = reward.item()
-                grad = F.normalize(c.grad.float(), dim=-1)
-                c = c.detach() + step_size * grad
+                step = F.normalize(grad.float(), dim=-1) * agreement
+                c = c.detach() + step_size * step
                 # Project back if displacement exceeds cap
                 delta = c - c_orig
                 disp = delta.norm()
@@ -161,7 +234,23 @@ class OnlineValueFunction(nn.Module):
     def load(cls, path):
         data = torch.load(path, map_location="cpu", weights_only=False)
         vf = cls(hidden_dim=data["hidden_dim"])
-        vf.load_state_dict(data["state_dict"])
+        try:
+            vf.load_state_dict(data["state_dict"])
+        except Exception:
+            # Pre-ensemble checkpoint (single "net.*" instead of "nets.<i>.*"). Warm-start
+            # every ensemble member from the one saved net rather than discarding trained
+            # weights outright — they'll diverge from there as independent bootstrap training
+            # proceeds. If even this remapping fails, members stay at fresh random init; either
+            # way the buffer below (the actually irreplaceable part — real accumulated ratings)
+            # is restored unconditionally, regardless of whether the weights loaded.
+            legacy_sd = data["state_dict"]
+            if all(k.startswith("net.") for k in legacy_sd):
+                remapped = {k[len("net."):]: v for k, v in legacy_sd.items()}
+                for net in vf.nets:
+                    try:
+                        net.load_state_dict(remapped)
+                    except Exception:
+                        pass
         buf = data["buffer_c"]
         vf.buffer_c = [buf[i] for i in range(len(buf))]
         vf.buffer_r = list(data["buffer_r"])

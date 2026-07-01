@@ -6947,7 +6947,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_learn_scene_into_state(
                     key_global, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
                 )
-                if not profile.get("skip_learning") and not profile.get("skip_value_function"):
+                if not profile.get("skip_learning") and self._v2_reward_admissible(profile):
                     self._v2_train_value_function(
                         refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt"),
                         scene_run.get("conditioning"),
@@ -7027,7 +7027,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seed_memory_status = self._v2_learn_scene_into_state(
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
-            if refinement_key and not profile.get("skip_value_function"):
+            if refinement_key and self._v2_reward_admissible(profile):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     scene_run.get("conditioning"),
@@ -11896,7 +11896,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
             # off still builds the VF, so enabling guidance later works immediately.
             if (has_previous_run and refinement_key and not learning_profile.get("skip_learning")
-                    and not learning_profile.get("skip_value_function")):
+                    and self._v2_reward_admissible(learning_profile)):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     (previous_run or {}).get("conditioning"),
@@ -13057,6 +13057,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except OSError as e:
             print(f"[FunPackRefiner] Absolute store save failed: {e}")
 
+    def _v2_reward_admissible(self, profile):
+        """Should this rating's reward reach the value function(s)? Wrong-* labels are
+        skip_value_function=True by default (a "good gen, wrong axis" mismatch carries no
+        quality signal on its own — see the comment on V2_RATING_PROFILES). But the loved
+        modifier ("Wrong action|loved" etc.) is the user explicitly overriding that: they're
+        saying the QUALITY was still great despite the mismatch, which is a genuine positive
+        quality signal, not noise. normalize_refiner_v2_rating already reflects this in the
+        reward NUMBER (max(reward, 0.85) when loved_modifier is set) — this just controls
+        whether that (now-correct) number is allowed to reach training at all."""
+        return not profile.get("skip_value_function") or bool(profile.get("loved_modifier"))
+
     def _v2_train_value_function(self, vf_path, payload, reward):
         """Add one (conditioning, reward) sample to the value function at vf_path. Shared by
         the per-key (relative) and keyless (absolute) reward assets. Returns n_trained or None."""
@@ -13126,8 +13137,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Wrong-* repair ratings carry no quality signal — Absolute is purely reward-driven
         # ("do I like this in general"), so feeding a repair reward here would store a good gen as
         # global bad-taste and train the keyless VF on a mislabel. Repair belongs to the relative
-        # per-key direction/category memory, not the global taste prior.
-        if learning_profile.get("skip_value_function"):
+        # per-key direction/category memory, not the global taste prior. Exception: loved_modifier
+        # ("Wrong action|loved") is the user overriding that assumption — see _v2_reward_admissible.
+        if not self._v2_reward_admissible(learning_profile):
             return
         payload = previous_run.get("conditioning")
         if not isinstance(payload, dict):
