@@ -93,7 +93,9 @@ def _scene_layout_from_history(hist_entry: dict, fps: float) -> Optional[list]:
 
 
 def _resolve_comfy_media_path(filename: str, subfolder: str = "", type_: str = "output") -> Optional[str]:
-    """Absolute path to a ComfyUI output/temp media file (None if dirs unavailable)."""
+    """Absolute path to a ComfyUI output/temp media file (None if dirs unavailable).
+
+    Refuses paths that escape the output/temp base directory ('..' traversal)."""
     import os
     if not filename:
         return None
@@ -102,7 +104,11 @@ def _resolve_comfy_media_path(filename: str, subfolder: str = "", type_: str = "
         base = folder_paths.get_output_directory() if type_ == "output" else folder_paths.get_temp_directory()
     except Exception:
         return None
-    return os.path.join(base, subfolder or "", filename)
+    base = os.path.abspath(base)
+    full = os.path.abspath(os.path.join(base, subfolder or "", os.path.basename(filename)))
+    if os.path.commonpath((full, base)) != base:
+        return None
+    return full
 
 
 _TEMP_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
@@ -1697,16 +1703,25 @@ if web is not None and PromptServer is not None:
     @routes.get(UI_PREFIX + "/api/projects/{pid}/result")
     async def _result(req):
         import os
+        path = _resolve_comfy_media_path(
+            req.query.get("filename", ""),
+            req.query.get("subfolder", ""),
+            req.query.get("type", "output"),
+        )
         if req.method == "HEAD":
             _project_or_404(req.match_info["pid"])
-            path = _resolve_comfy_media_path(
-                req.query.get("filename", ""),
-                req.query.get("subfolder", ""),
-                req.query.get("type", "output"),
-            )
             if not path or not os.path.isfile(path):
                 raise web.HTTPNotFound()
             return web.Response()
+        # Serve straight from disk: FileResponse streams with Range support, so the player
+        # can seek and a busy ComfyUI can't stall the transfer. The old path buffered the
+        # WHOLE video through a loopback /view fetch into one non-range response — during a
+        # concurrent run's save that crawled or aborted, leaving clips unplayable.
+        if path and os.path.isfile(path):
+            import mimetypes as _mt
+            ctype = _mt.guess_type(path)[0] or "application/octet-stream"
+            return web.FileResponse(path, headers={"Content-Type": ctype})
+        # Fallback (custom output dirs the resolver doesn't know): loopback /view fetch.
         try:
             data, ctype = await bridge.fetch_view(
                 req.query.get("filename", ""),

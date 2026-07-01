@@ -212,7 +212,9 @@
       display_prompt: pin,
       combined_prompt: pin,
     };
-    _dispatchGlobalPromptUpdated(pin);
+    // The pin is the last COMPLETED apply — while newer typed text is still debouncing or
+    // mid-parse, broadcasting it would rewind the Compose textarea to older text.
+    if (!globalPromptApplyPending()) _dispatchGlobalPromptUpdated(pin);
   }
 
   function syncGlobalPromptFromTimeline() {
@@ -237,6 +239,16 @@
 
   let _globalApplyTimer = null;
   let _pendingGlobalPromptText = null;   // latest typed global prompt awaiting distribution
+  let _applySeq = 0;                     // ordering token — an older apply must never clobber a newer one
+  let _applyInFlight = 0;
+
+  // True while typed global-prompt text is still debouncing or mid-parse. During that window
+  // any funpack-global-prompt-updated dispatch would carry STALE text (the last completed
+  // apply), so consumers (Composer textarea) must not overwrite the user's draft with it.
+  function globalPromptApplyPending() {
+    return _pendingGlobalPromptText != null || !!_globalApplyTimer || _applyInFlight > 0;
+  }
+
   function scheduleGlobalPromptApply(text) {
     _pendingGlobalPromptText = text;
     clearTimeout(_globalApplyTimer);
@@ -537,20 +549,30 @@
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;
     if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) return true;
-    _historyRecord();
-    let res;
-    try { res = await API.parsePrompt(state.project.id, trimmed); }
-    catch (e) {
-      console.warn("Global prompt parse failed:", e);
-      return false;
+    const seq = ++_applySeq;
+    _applyInFlight++;
+    try {
+      _historyRecord();
+      let res;
+      try { res = await API.parsePrompt(state.project.id, trimmed); }
+      catch (e) {
+        console.warn("Global prompt parse failed:", e);
+        return false;
+      }
+      // The user typed more while this parse was in flight: a newer apply is scheduled (or
+      // already running). Distributing this OLDER text now would re-split the timeline to a
+      // stale prompt and dispatch a stale updated event — drop it and let the newer one win.
+      if (seq !== _applySeq || _pendingGlobalPromptText != null) return false;
+      if (!await _distributeGlobalPrompt(trimmed, res)) return false;
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      _localDirty = true;
+      scheduleSaveSilent();
+      refreshPreview(true);
+      return true;
+    } finally {
+      _applyInFlight--;
     }
-    if (!await _distributeGlobalPrompt(trimmed, res)) return false;
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    _localDirty = true;
-    scheduleSaveSilent();
-    refreshPreview(true);
-    return true;
   }
 
   function _syncPromptPreview() {
@@ -639,21 +661,21 @@
       }
       try {
         const res = await fetch(API.resultUrl(state.project.id, r.media), { method: "HEAD" });
-        if (!res.ok) {
+        // Drop a render ONLY on a definitive "file is gone" (404). A busy server, a dropped
+        // tunnel, or any 5xx is transient — deleting here (and autosaving the deletion!)
+        // permanently lost clips when the UI reloaded while another run was still saving.
+        if (res.status === 404) {
           if (token !== _validateRendersToken) return;
           const cur = state.sceneRenders[id];
           if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
           missing++;
-        } else if (token === _validateRendersToken) {
+        } else if (res.ok && token === _validateRendersToken) {
           // File is on disk: reconcile a stale plan-estimate length with the real encoded
           // duration for standalone renders (retroactively fixes pre-existing clips on load).
           _probeRenderDuration(id);
         }
       } catch (_) {
-        if (token !== _validateRendersToken) return;
-        const cur = state.sceneRenders[id];
-        if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
-        missing++;
+        // Network-level failure — can't tell missing from unreachable; keep the render.
       }
     }));
     if (token !== _validateRendersToken) return;
@@ -1350,11 +1372,17 @@
     const v = document.createElement("video");
     v.preload = "metadata";
     v.src = API.mediaUrl(mediaId);
+    // Always release the probe's media connection — detached <video>s hold their socket
+    // until GC and count against Chrome's per-origin connection cap.
+    const release = () => { try { v.removeAttribute("src"); v.load(); } catch (_) {} };
+    v.onerror = release;
     v.onloadedmetadata = () => {
-      if (!v.duration || !isFinite(v.duration)) return;
+      const dur = v.duration;
+      release();
+      if (!dur || !isFinite(dur)) return;
       const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
-      if (asset && !asset.duration_sec) asset.duration_sec = v.duration;
-      _applyVideoClipDuration(sceneId, v.duration);
+      if (asset && !asset.duration_sec) asset.duration_sec = dur;
+      _applyVideoClipDuration(sceneId, dur);
     };
   }
 
@@ -1390,8 +1418,10 @@
     const v = document.createElement("video");
     v.preload = "metadata";
     v.muted = true;
+    const release = () => { try { v.removeAttribute("src"); v.load(); } catch (_) {} };
     v.onloadedmetadata = () => {
       const dur = v.duration;
+      release(); // metadata read — free the connection before touching state
       if (!dur || !isFinite(dur)) return;
       const cur = state.sceneRenders[sceneId];
       if (!cur || cur.media?.filename !== fname) return;        // scene moved on; don't clobber
@@ -1412,7 +1442,7 @@
       notify();
       scheduleSaveSilent();
     };
-    v.onerror = () => {};
+    v.onerror = release;
     v.src = API.resultUrl(state.project.id, r.media);
   }
 
@@ -4138,7 +4168,7 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,

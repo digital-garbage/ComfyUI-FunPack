@@ -488,12 +488,17 @@
         });
         row.append(pick);
       }
+      // data-k marks these as typing fields so an autosave notify can't rebuild the
+      // inspector out from under the caret (same protection as every other text/number input).
       const fi = el("input"); fi.type = "number"; fi.value = g.frame_idx != null ? g.frame_idx : 0; fi.title = "Source frame_idx";
+      fi.dataset.k = `guide-${idx}-frame`;
       fi.oninput = () => { guides[idx] = { ...g, frame_idx: parseInt(fi.value || "0", 10) }; persist(guides, true); };
       const ai = el("input"); ai.type = "number"; ai.value = g.apply_at != null ? g.apply_at : 0; ai.title = "apply_at";
+      ai.dataset.k = `guide-${idx}-apply`;
       ai.oninput = () => { guides[idx] = { ...g, apply_at: parseInt(ai.value || "0", 10) }; persist(guides, true); };
       const si = el("input"); si.type = "number"; si.min = "0.25"; si.max = "0.5"; si.step = "0.05";
       si.value = g.strength != null ? g.strength : 0.35; si.title = "Strength";
+      si.dataset.k = `guide-${idx}-strength`;
       si.oninput = () => { guides[idx] = { ...g, strength: parseFloat(si.value || "0.35") }; persist(guides, true); };
       row.append(field("frame", fi)); row.append(field("apply", ai)); row.append(field("str", si));
       const rm = el("button", "btn ghost tiny danger", "✕");

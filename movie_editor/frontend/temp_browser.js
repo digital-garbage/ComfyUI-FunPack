@@ -7,8 +7,23 @@
 
   let overlay = null;
   let files = [];
+  // Probe <video> elements still holding a network connection. Chrome keeps stalled media
+  // connections open and allows only ~6 per origin — a grid of live <video> thumbnails
+  // starved the pool so /view tabs wouldn't load and even generate/API calls hung until a
+  // ComfyUI reboot. Thumbnails are snapshotted to a canvas and the probe released at once.
+  const _probes = new Set();
 
-  function close() { if (overlay) { overlay.remove(); overlay = null; } }
+  function _releaseProbe(vid) {
+    _probes.delete(vid);
+    try { vid.removeAttribute("src"); vid.load(); } catch (_) {}
+  }
+
+  function _releaseAllProbes() { [..._probes].forEach(_releaseProbe); }
+
+  function close() {
+    _releaseAllProbes();
+    if (overlay) { overlay.remove(); overlay = null; }
+  }
 
   function _fmtSize(n) {
     if (!n && n !== 0) return "";
@@ -29,13 +44,23 @@
       const ph = el("span", "media-icon media-vid-ph", "▶");
       thumb.append(ph);
       const vid = document.createElement("video");
-      vid.className = "media-vid-thumb";
       vid.muted = true; vid.preload = "metadata"; vid.playsInline = true;
       vid.src = url;
+      _probes.add(vid);
+      vid.onerror = () => _releaseProbe(vid);
       vid.onloadeddata = () => {
-        if (!thumb.isConnected) return;
-        ph.remove();
-        if (!thumb.querySelector("video")) thumb.append(vid);
+        if (thumb.isConnected && !thumb.querySelector("canvas")) {
+          const canvas = document.createElement("canvas");
+          canvas.className = "media-vid-thumb";
+          canvas.width = vid.videoWidth || 320;
+          canvas.height = vid.videoHeight || 180;
+          try {
+            canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
+            ph.remove();
+            thumb.append(canvas);
+          } catch (_) {}
+        }
+        _releaseProbe(vid); // frame captured — free the media connection immediately
       };
       return;
     }
@@ -89,6 +114,7 @@
   }
 
   async function refresh(body, countEl) {
+    _releaseAllProbes(); // drop probes from the previous grid before rebuilding
     body.append(el("div", "pj-meta", "Loading…"));
     try {
       files = (await API.listTemp()).files || [];

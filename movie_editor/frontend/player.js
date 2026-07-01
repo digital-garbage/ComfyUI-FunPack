@@ -441,6 +441,25 @@
     }
   }
 
+  // A failed load must not leave a permanently dead element in the pool: the URL never
+  // changes, so without a retry the clip stays unplayable until a full page reload (seen
+  // when previewing run 1's video while ComfyUI was GIL-bound saving run 2). Bounded
+  // backoff, cache-busted so a poisoned browser cache entry can't be replayed.
+  const MAX_VIDEO_RETRIES = 4;
+  function _scheduleVideoRetry(url, v) {
+    const n = (v._pmRetries || 0) + 1;
+    if (n > MAX_VIDEO_RETRIES) return;
+    v._pmRetries = n;
+    clearTimeout(v._pmRetryTimer);
+    v._pmRetryTimer = setTimeout(() => {
+      v._pmRetryTimer = null;
+      if (pool.get(url) !== v) return; // dropped from the pool meanwhile
+      const sep = url.includes("?") ? "&" : "?";
+      v.src = url + sep + "r=" + Date.now();
+      v.load();
+    }, 1500 * n);
+  }
+
   function _ensureVideo(url, clip) {
     let v = pool.get(url);
     if (v) {
@@ -457,6 +476,7 @@
     zoom.append(v);
     viewport.append(zoom);
     v.addEventListener("loadedmetadata", () => {
+      v._pmRetries = 0; // healthy again — restore the full retry budget
       const pending = v._pmSeekPending != null ? v._pmSeekPending : (v === _active ? _seekPending : null);
       if (pending != null) {
         _applyVideoTime(v, pending, !_playing);
@@ -471,6 +491,9 @@
     v.addEventListener("error", () => {
       const clips = _urlClips.get(url);
       if (clips) [...clips].forEach((c) => _fallbackSegmentClip(c));
+      // Segment clips fell back to their base URL above (and unregistered); anything still
+      // registered here has no alternative URL — retry this one instead of staying dead.
+      if (_urlClips.has(url)) _scheduleVideoRetry(url, v);
     });
     v.addEventListener("ended", () => {
       if (v !== _active || _isSeeking() || _clipBoundaryToken) return;
@@ -486,11 +509,15 @@
     const urls = new Set(_clips.filter((c) => c.media || c.binUrl || c.streamUrl).map((c) => _clipUrl(c)));
     urls.forEach((u) => {
       const clip = _clips.find((c) => _clipUrl(c) === u);
-      _ensureVideo(u, clip);
+      const v = _ensureVideo(u, clip);
+      // Clip rebuild (e.g. a run just completed): give exhausted-but-errored elements a
+      // fresh recovery attempt — the failure was likely the server being busy back then.
+      if (v.error && !v._pmRetryTimer) { v._pmRetries = 0; _scheduleVideoRetry(u, v); }
     });
     for (const [u, v] of [...pool]) {
       if (urls.has(u)) continue;
       v.pause();
+      clearTimeout(v._pmRetryTimer);
       v._pmFx?.viewport.remove();
       pool.delete(u);
       if (_active === v) { _active = null; }
@@ -501,6 +528,7 @@
     _stopTick();
     for (const [, v] of pool) {
       v.pause();
+      clearTimeout(v._pmRetryTimer);
       v._pmFx?.viewport.remove();
     }
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;

@@ -232,14 +232,22 @@
       const dur = vid.duration || sDur(scene, st.project);
       vid.currentTime = Math.max(0, Math.min(time, dur - 0.01));
     });
+    // Free the media connection once the strip is captured (or abandoned) — a detached
+    // <video> keeps its socket until GC, and those add up against Chrome's 6-per-origin cap.
+    const release = () => { try { vid.removeAttribute("src"); vid.load(); } catch (_) {} };
+    vid.onerror = release;
     vid.onloadeddata = async () => {
-      if (!strip.isConnected) return;
+      if (!strip.isConnected) { release(); return; }
       const dur = vid.duration || sDur(scene, st.project);
       const inSec = (r.inSec || 0) + (scene.source_in || 0);
-      for (let i = 0; i < n; i++) {
-        if (!strip.isConnected) return;
-        const t = inSec + (dur * (i + 0.5) / n);
-        await captureAt(t);
+      try {
+        for (let i = 0; i < n; i++) {
+          if (!strip.isConnected) return;
+          const t = inSec + (dur * (i + 0.5) / n);
+          await captureAt(t);
+        }
+      } finally {
+        release();
       }
     };
   }
