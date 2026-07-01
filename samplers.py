@@ -2254,6 +2254,16 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "EXPERIMENTAL: Bounded Attention (arXiv:2403.16990) + Structured Diffusion Guidance (arXiv:2212.05032)-style exact split. Studio splits multi-sentence scene prompts by sentence count and encodes each half SEPARATELY (no shared tokenization, exact boundary), then this masks text cross-attention so the left half of the frame can only attend to subject-1's tokens and the right half only to subject-2's — aims to stop attribute/anatomy bleed between two figures in one frame. No-op on single-sentence prompts or single-subject scenes. Works on any sampler (model-level hook, not sampler-specific).",
                 }),
+                # NOTE: append-only — keep new sampler widgets at the END of this block so the
+                # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
+                "output_guidance": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: sibling of embed_guidance, but the learned quality direction is trained on and applied to the model's own predicted OUTPUT (x0_hat) instead of the input conditioning — a separate value function (needs its own 10+ rated generations to activate; see refinement key's *.x0_snapshot.pt / *.value_fn_x0.pt). Same near-zero mechanism as embed_guidance (one backward pass through a small MLP, no extra model forward pass), applied post-prediction rather than pre-input. Requires refinement_key_input. Cost unmeasured yet — treat as embed_guidance-shaped until benchmarked, not assumed cheaper.",
+                }),
+                "output_guidance_strength": ("FLOAT", {
+                    "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
+                    "tooltip": "Per-step correction strength applied to the model's predicted output. Same scale/units as embed_guidance_strength — start there and adjust.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3016,6 +3026,95 @@ class FunPackLTXAVSceneChainSampler:
             return vf if vf.is_ready() else None
         except Exception:
             return None
+
+    def _load_output_value_function(self, refinement_key):
+        """Load the output-space (x0_hat) value function if trained and ready. Sibling of
+        _load_value_function, trained on the sampler's own predicted output instead of the
+        input conditioning — see value_function.LatentValueFunction."""
+        try:
+            try:
+                from .value_function import LatentValueFunction
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import LatentValueFunction
+                from conditioning import refinement_state_path
+            import os as _os
+            path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
+            if not _os.path.exists(path):
+                return None
+            with torch.inference_mode(False):
+                vf = LatentValueFunction.load(path)
+            return vf if vf.is_ready() else None
+        except Exception:
+            return None
+
+    def _save_output_value_snapshot(self, refinement_key, denoised, video_mask):
+        """End-of-run: pool the final x0_hat (video-only, audio excluded — same convention as
+        embed_guidance/velocity-bias) down to a small vector and persist it so the NEXT rating
+        cycle can pair it with a reward and train the output-space value function. The raw
+        latent is never persisted (too large; N varies per run) — only this compressed vector,
+        mirroring how the Refiner already persists conditioning into last_run for the
+        equivalent conditioning-space training path."""
+        try:
+            try:
+                from .value_function import LatentValueFunction, compress_packed_latent
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import LatentValueFunction, compress_packed_latent
+                from conditioning import refinement_state_path
+            import os as _os
+            target = denoised if video_mask is None else denoised * video_mask
+            with torch.inference_mode(False), torch.no_grad():
+                compressed = compress_packed_latent(
+                    target.detach().float(), LatentValueFunction.DEFAULT_HIDDEN_DIM
+                ).cpu()
+            path = refinement_state_path(refinement_key, "x0_snapshot", prefix="refine_v2", extension="pt")
+            _os.makedirs(_os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            torch.save(compressed, tmp)
+            _os.replace(tmp, path)  # atomic — a rating read never sees a partial write
+        except Exception as e:
+            print(f"[FunPackSceneChain] output value snapshot save failed: {e}")
+
+    def _build_output_guidance_wrapper(self, model, value_fn, strength):
+        """Sibling of _build_embed_guidance_wrapper, but corrects the model's OUTPUT
+        (x0_hat) instead of nudging the INPUT conditioning. value_fn.gradient() backprops
+        through its own compress() step, so feeding it the full-shape denoised prediction
+        returns a same-shape gradient — a direct, single-pass correction (no extra forward
+        pass through the base model; the only added cost is one backward pass through the
+        value function's few-hundred-parameter MLP). Video-only via the packed AV mask,
+        same convention as embed_guidance/velocity-bias. Borrows NoiseTilt's core idea
+        (train the reward signal on the model's own prediction, not the input) without its
+        SDE noise-term mechanism, which has no analogue in this deterministic-ODE sampler —
+        see [[research_2026_training_free_candidates]]."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _output_wrapper(apply_fn, args, _vf=value_fn, _s=strength):
+            denoised = _call(apply_fn, args)
+            ts = args.get("timestep")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                sigma = 1.0
+            scale = max(0.0, 1.0 - sigma * 2.0)  # same late-step ramp as embed_guidance
+            if scale <= 0:
+                return denoised
+            try:
+                grad = _vf.gradient(denoised)
+                mask = _packed_video_mask(model, denoised)
+                corrected = denoised + (_s * scale) * grad
+                return _video_only(corrected, denoised, mask) if mask is not None else corrected
+            except Exception as e:
+                print(f"[FunPackSceneChain] output_guidance: gradient failed ({e}), passing through")
+                return denoised
+
+        model.model_options["model_function_wrapper"] = _output_wrapper
+        return old_wrapper
 
     def _load_taste_direction(self, refinement_key, slot="liked_dir"):
         """Read a learned conditioning direction from the Refiner's global taste store.
@@ -3805,6 +3904,7 @@ class FunPackLTXAVSceneChainSampler:
                funpack_scene_media_refs="",
                alg_blur_guides=False,
                bounded_attention_enabled=False,
+               output_guidance=False, output_guidance_strength=0.02,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3853,6 +3953,7 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 alg_blur_guides=alg_blur_guides,
                 bounded_attention_enabled=bounded_attention_enabled,
+                output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3895,6 +3996,19 @@ class FunPackLTXAVSceneChainSampler:
                     _bad_dir = self._load_taste_direction(_eg_key, "bad_dir")
                     pole = "contrastive (liked-vs-bad)" if _bad_dir is not None else "symmetric (+/-liked)"
                     print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}, pole={pole}")
+
+        # Output-space value function for output_guidance — sibling of the block above, but
+        # keyed on refinement_key_input directly (relative-only for now, no absolute mode yet)
+        # since it's trained on the sampler's own predicted output, not on prompt conditioning.
+        _output_value_fn = None
+        if output_guidance and refinement_key_input:
+            _output_value_fn = self._load_output_value_function(refinement_key_input)
+            if _output_value_fn is None:
+                print("[FunPackSceneChain] output_guidance: value function not ready yet "
+                      "(needs 10+ rated generations to reach MIN_SAMPLES)")
+            else:
+                print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
+                      f"strength={output_guidance_strength}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -4023,6 +4137,12 @@ class FunPackLTXAVSceneChainSampler:
                 _pole = "contrastive" if _bad_dir is not None else "symmetric"
                 run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
                 _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
+            _output_old_wrapper = None
+            if output_guidance and _output_value_fn is not None:
+                # Installed outermost (after embed_guidance/score_slider) so it corrects
+                # whatever prediction those already produced, not the raw base prediction.
+                run_mechanisms.append(f"output_guidance({output_guidance_strength})")
+                _output_old_wrapper = self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
             # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
             # whatever is installed (e.g. embed guidance). Restored right after sampling,
             # before the embed-guidance restore, so the wrappers unwind in install order.
@@ -4073,7 +4193,13 @@ class FunPackLTXAVSceneChainSampler:
                     model.model_options["model_function_wrapper"] = _temporal_prev_wrapper
                 elif "model_function_wrapper" in model.model_options:
                     del model.model_options["model_function_wrapper"]
-            # Unwind in reverse install order: slider was installed on top of embed.
+            # Unwind in reverse install order: output_guidance was installed outermost (on top
+            # of score_slider, which was on top of embed_guidance).
+            if output_guidance and _output_value_fn is not None:
+                if _output_old_wrapper is not None:
+                    model.model_options["model_function_wrapper"] = _output_old_wrapper
+                elif "model_function_wrapper" in model.model_options:
+                    del model.model_options["model_function_wrapper"]
             if score_slider and _liked_dir is not None:
                 if _slider_old_wrapper is not None:
                     model.model_options["model_function_wrapper"] = _slider_old_wrapper
@@ -4204,6 +4330,15 @@ class FunPackLTXAVSceneChainSampler:
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
 
+        # Snapshot the final output for output_guidance's NEXT training cycle (the rating that
+        # scores THIS run pairs with this snapshot, not with denoised — see
+        # _save_output_value_snapshot). Independent of the output_guidance toggle itself: a
+        # snapshot from an unguided run is still valid training data. video_mask=None because
+        # `output["samples"]` is the final unpacked latent (standard per-node layout), not the
+        # sampler-internal packed AV tensor _packed_video_mask expects.
+        if refinement_key_input and isinstance(output, dict) and isinstance(output.get("samples"), torch.Tensor):
+            self._save_output_value_snapshot(refinement_key_input, output["samples"], None)
+
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
 
     # --- Batch Training -----------------------------------------------------
@@ -4294,7 +4429,8 @@ class FunPackLTXAVSceneChainSampler:
                             joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
                             joyai_frame_select="center", joyai_memory_strength=0.3,
                             joyai_audio_memory=False, v2a_grad_scale=1.0,
-                            alg_blur_guides=False, bounded_attention_enabled=False):
+                            alg_blur_guides=False, bounded_attention_enabled=False,
+                            output_guidance=False, output_guidance_strength=0.02):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -4342,6 +4478,7 @@ class FunPackLTXAVSceneChainSampler:
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 alg_blur_guides=alg_blur_guides,
                 bounded_attention_enabled=bounded_attention_enabled,
+                output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 unique_id=None, prompt=None,
             )
             last = out

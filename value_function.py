@@ -178,3 +178,42 @@ class OnlineValueFunction(nn.Module):
         return cls(hidden_dim=hidden_dim) if hidden_dim is not None else None
 
 
+def compress_packed_latent(x, hidden_dim):
+    """Pool a packed AV latent [B,1,N] (LTXAV's flattened video/audio stream layout — see
+    samplers._get_latent_shapes) down to a fixed-size [hidden_dim] vector, differentiably.
+
+    N varies per generation (scene length/resolution), unlike text conditioning's fixed
+    encoder width, so adaptive pooling (not a plain mean) is what makes a single value
+    function usable across differently-shaped runs. Idempotent on already-compressed input
+    (shape [hidden_dim]) so the same call works whether fed a live raw latent (inference,
+    where autograd needs to flow through this op to produce a full-shape gradient) or a
+    pre-compressed snapshot loaded back from disk (training, where the raw latent was never
+    persisted — only this vector was, to keep the sidecar file small)."""
+    if x.dim() == 1 and x.shape[0] == hidden_dim:
+        return x
+    c = x.float()
+    if c.dim() == 1:
+        c = c.view(1, 1, -1)
+    elif c.dim() == 2:
+        c = c.unsqueeze(1)
+    elif c.dim() > 3:
+        c = c.reshape(c.shape[0], 1, -1)
+    pooled = F.adaptive_avg_pool1d(c, hidden_dim)  # [B,1,hidden_dim]
+    return pooled.mean(dim=0).reshape(-1)  # average over batch (usually B=1, a no-op) -> [hidden_dim]
+
+
+class LatentValueFunction(OnlineValueFunction):
+    """OnlineValueFunction trained on the SAMPLER'S OWN predicted output (a packed-latent
+    x0_hat estimate) instead of the input text conditioning — same tiny-MLP mechanism, just
+    fed a different, more direct signal. See [[research_2026_training_free_candidates]] /
+    NoiseTilt for the idea this borrows (reward gradient computed from the model's own
+    prediction) and [[project_embed_guidance]] for the conditioning-space sibling this
+    complements. Cost stays the same as embed_guidance: one backward pass through a few
+    hundred params, no extra diffusion-model forward pass."""
+
+    DEFAULT_HIDDEN_DIM = 512
+
+    def compress(self, x):
+        return compress_packed_latent(x, self.hidden_dim)
+
+

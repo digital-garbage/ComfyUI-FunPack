@@ -11904,6 +11904,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 )
                 if n is not None:
                     print(f"[FunPackRefiner] Value function updated — {n} samples")
+                # output_guidance's value function, trained on the sampler's x0_snapshot from the
+                # run this rating scores (whole-run granularity — see _v2_train_output_value_function
+                # for why this sits at the single overall-reward call site, not the per-scene ones).
+                n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
+                if n_out is not None:
+                    print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
@@ -13071,6 +13077,36 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                     return vf.n_trained
         except Exception as e:
             print(f"[FunPackRefiner] Value function training failed: {e}")
+        return None
+
+    def _v2_train_output_value_function(self, refinement_key, reward):
+        """Sibling of _v2_train_value_function for output_guidance: pairs the same reward with
+        the x0_hat snapshot the Chain Sampler wrote at the END of the run this rating scores
+        (refinement_key.x0_snapshot.pt — see FunPackLTXAVSceneChainSampler._save_output_value_snapshot),
+        not with any conditioning payload. No-op if the sampler never wrote a snapshot (e.g. no
+        refinement_key_input was wired on the sampler, or no generation has completed yet)."""
+        if not refinement_key:
+            return None
+        try:
+            import os as _os
+            import torch as _torch
+            try:
+                from .value_function import LatentValueFunction
+            except ImportError:
+                from value_function import LatentValueFunction
+            snap_path = refinement_state_path(refinement_key, "x0_snapshot", prefix="refine_v2", extension="pt")
+            if not _os.path.exists(snap_path):
+                return None
+            vf_path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
+            with _torch.inference_mode(False), _torch.enable_grad():
+                snapshot = _torch.load(snap_path, map_location="cpu", weights_only=False)
+                vf = LatentValueFunction.load_or_create(vf_path, hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
+                if vf is not None:
+                    vf.train_on(snapshot, float(reward))
+                    vf.save(vf_path)
+                    return vf.n_trained
+        except Exception as e:
+            print(f"[FunPackRefiner] Output value function training failed: {e}")
         return None
 
     def _v2_learn_absolute(self, previous_run, learning_profile):
