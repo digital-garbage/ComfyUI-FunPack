@@ -1168,6 +1168,8 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .modal-content { padding: 16px; overflow: auto; }
 
 .composer { background: var(--ink-0); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 18px; }
+.composer.flash { animation: composer-flash .9s ease; }
+@keyframes composer-flash { 0%, 100% { box-shadow: none; border-color: var(--line); } 25% { box-shadow: 0 0 0 2px var(--amber); border-color: var(--amber); } }
 .composer-title { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--amber); margin-bottom: 10px; }
 .composer-row { display: flex; gap: 10px; align-items: center; }
 .composer-row select { flex: 1; }

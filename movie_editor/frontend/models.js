@@ -793,9 +793,18 @@
         if (req.role_hint) {
           const addBtn = el("button", "btn ghost tiny req-add", "+ Add");
           addBtn.onclick = () => {
-            // pre-scroll the composer to the right role and expand it
-            const typeSelEl = document.querySelector(".composer select");
-            if (typeSelEl) { typeSelEl.value = req.role_hint; typeSelEl.dispatchEvent(new Event("change")); }
+            // Pre-select the composer's Model Type to this role. On a fresh/empty
+            // project the composer sits below the (all-missing) requirements list and
+            // scrolls out of the modal's visible area, so the selection alone was
+            // invisible — scroll it into view and flash it so the click is felt.
+            const composerEl = document.querySelector(".composer");
+            const typeSelEl = composerEl && composerEl.querySelector("select");
+            if (typeSelEl) {
+              typeSelEl.value = req.role_hint;
+              typeSelEl.dispatchEvent(new Event("change"));
+              composerEl.scrollIntoView({ behavior: "smooth", block: "center" });
+              composerEl.classList.remove("flash"); void composerEl.offsetWidth; composerEl.classList.add("flash");
+            }
           };
           row.append(addBtn);
         }
