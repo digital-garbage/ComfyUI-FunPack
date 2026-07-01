@@ -252,6 +252,8 @@
     { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance" },
     { name: "score_slider",          label: "Score slider",          kind: "bool",  default: false },
     { name: "score_slider_strength", label: "Slider strength (eta)", kind: "float", default: 1.0,   min: 0, max: 3, step: 0.25, dependsOn: "score_slider" },
+    { name: "output_guidance",       label: "Output guidance",       kind: "bool",  default: false },
+    { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance" },
     { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
     { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
     { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64 },
@@ -404,7 +406,7 @@
     { id: "chain_auto", title: "Auto continuity", defaultOpen: true, knobs: [] },
     { id: "chain_timing", title: "Timing", defaultOpen: false, knobs: ["frame_overlap", "transition_duration", "use_same_seed"] },
     { id: "chain_cont", title: "Manual continuity", defaultOpen: false, knobs: ["carry_i2v_guides"] },
-    { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength"] },
+    { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "output_guidance", "output_guidance_strength"] },
     { id: "chain_dec", title: "Decode", defaultOpen: false, knobs: ["decode_noise_scale", "decode_timestep", "decode_tile_size"] },
     { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "bounded_attention_enabled"] },
   ];
