@@ -14674,6 +14674,7 @@ class FunPackStudio:
                     mg_strength=float(dc.get("mg_strength", 0.5)),
                     mg_decay=float(dc.get("mg_decay", 0.5)),
                     mg_sigma_threshold=float(dc.get("mg_sigma_threshold", 0.975)),
+                    quality_sharpness=float(dc.get("quality_sharpness", 0.0)),
                     sigmas=sigmas_raw,
                 )
             elif sampler_type == "KSampler":

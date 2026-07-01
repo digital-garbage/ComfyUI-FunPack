@@ -1695,7 +1695,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    rescue_prompt_sig=None,
                                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
                                    alg_guide_tail_frames=0,
-                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
+                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
+                                   quality_sharpness=0.0):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1729,6 +1730,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       the complementary window to ALG's blur, which only acts above its threshold. The EMA
       itself accumulates every step (free) so it has real history by the time it starts
       being applied; only the application is gated. Audio is never touched (video-only).
+    - Optional quality_sharpness: temporal-average unsharp on the x0 prediction, applied only
+      during the final Heun-correction steps (same mechanism as the Hybrid Euler 2S sampler's
+      quality-phase sharpening, ported here). Free (no extra model eval), video-only.
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1836,6 +1840,11 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                     velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                     source=velocity_bias_source,
                 ), denoised, video_mask)
+
+            # Restore high-frequency detail during the final Heun-correction steps (free,
+            # video-only) — same unsharp mechanism as the Hybrid Euler 2S sampler.
+            if i >= correction_start_idx:
+                denoised = _video_only(_apply_quality_sharpness(denoised, prev_denoised, quality_sharpness), denoised, video_mask)
 
             # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
             denoised = _normalize_video_denoised(
@@ -2013,6 +2022,11 @@ class FunPackDistilledFlowSampler:
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
                     "tooltip": "Momentum guidance applies while sigma is BELOW this value (the opposite window from alg_sigma_threshold) — defaults to the same boundary as ALG for a clean handoff. Only used when mg_enabled.",
                 }),
+                # Appended last on purpose, same rule as ab2_ramp above.
+                "quality_sharpness": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Restores fine detail via temporal-average unsharp on the x0 prediction, applied only during the final Heun-correction steps (final_correction_steps > 0 required to have any effect). 0 disables. 0.2-0.4 typical. Free (no extra model eval), video-only.",
+                }),
             }
         }
 
@@ -2036,7 +2050,8 @@ class FunPackDistilledFlowSampler:
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
                     normalize_strength=0.0, normalize_start_sigma=0.9,
                     alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
-                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
+                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
+                    quality_sharpness=0.0):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -2062,6 +2077,7 @@ class FunPackDistilledFlowSampler:
                 "mg_strength": mg_strength,
                 "mg_decay": mg_decay,
                 "mg_sigma_threshold": mg_sigma_threshold,
+                "quality_sharpness": quality_sharpness,
             }
         )
         return (sampler, prepared_sigmas)

@@ -25,7 +25,7 @@
 
   function defaultDistilled() {
     return {
-      order: 2, final_correction_steps: 1, ab2_ramp: false,
+      order: 2, final_correction_steps: 1, ab2_ramp: false, quality_sharpness: 0.0,
       normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0,
       velocity_bias_mode: "off", velocity_bias_strength: 0.0,
       velocity_bias_source: "mean", velocity_refinement_key: "default",
@@ -251,6 +251,10 @@
       row(container, "final correction steps",
         intCtrl(dc.final_correction_steps, 0, 3, dk + "-dfcs",
           (v) => { dc.final_correction_steps = v; save(); }));
+      row(container, "quality sharpness",
+        numCtrl(dc.quality_sharpness, 0, 1, 0.01, dk + "-dqs",
+          (v) => { dc.quality_sharpness = v; save(); }));
+      hint(container, "Free unsharp mask on the final-correction steps only (needs final correction steps > 0). 0 = off, 0.2-0.4 typical.");
       row(container, "s_noise",
         numCtrl(dc.s_noise, 0, 0.5, 0.01, dk + "-dsn",
           (v) => { dc.s_noise = v; save(); }));
