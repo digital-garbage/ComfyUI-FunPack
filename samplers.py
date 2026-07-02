@@ -4226,7 +4226,8 @@ class FunPackLTXAVSceneChainSampler:
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
-                _phase_sampling += _time.perf_counter() - _t_sample0
+                _scene_sample_s = _time.perf_counter() - _t_sample0
+                _phase_sampling += _scene_sample_s
             finally:
                 self._remove_v2a_scale(_v2a_handles)
             if _temporal_applied:
@@ -4274,8 +4275,19 @@ class FunPackLTXAVSceneChainSampler:
                 "seed_used": scene_seed,
                 "mechanisms": run_mechanisms,
             })
+            # Per-scene sampling time + appended-token context: guide/carry scenes sample a
+            # LONGER sequence (carried head + guide/audio tails) and take the masked-attention
+            # path when guide strengths != 1.0 — this line makes any per-scene overhead
+            # attributable at a glance instead of hiding inside the run total.
+            _scene_extras = (
+                (f", carried={carried + soft_carried}f" if (carried + soft_carried) > 0 else "")
+                + (f", guide_tail={guide_tail}f" if guide_tail > 0 else "")
+                + (f", audio_tail={audio_tail}f" if audio_tail > 0 else "")
+            )
+            print(f"[FunPackSceneChain] Scene {scene_index + 1}: sampling {_scene_sample_s:.1f}s{_scene_extras}")
             report_lines.append(
-                f"Scene {scene_index + 1}: seed={scene_seed}, text={scene_meta['text']}"
+                f"Scene {scene_index + 1}: seed={scene_seed}, sampling {_scene_sample_s:.1f}s{_scene_extras}, "
+                f"text={scene_meta['text']}"
                 + (f" | encode≠text" if scene_meta["encode_text"] != scene_meta["text"] else "")
             )
 
