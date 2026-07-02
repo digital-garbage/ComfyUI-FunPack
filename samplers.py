@@ -2,6 +2,7 @@ import copy
 import hashlib
 import math
 import os
+import time as _time
 
 import torch
 
@@ -4094,6 +4095,28 @@ class FunPackLTXAVSceneChainSampler:
             except Exception as e:
                 print(f"[FunPackSceneChain] block_steer setup failed (continuing without): {e}")
 
+        # Phase timing + quantized-path census: "the matmuls got faster" and "the video
+        # arrives sooner" are different claims — the report separates sampling, decode,
+        # and everything else so an optimization's real ceiling is visible. The census
+        # calls out quantized layers that weight patches (LoRA / refiner attn deltas) or
+        # emulation force OFF the fast path — those dequantize on every call.
+        _t_run0 = _time.perf_counter()
+        _phase_sampling = 0.0
+        _phase_decode = 0.0
+        try:
+            _q_total = _q_off = 0
+            for _qm in model.model.diffusion_model.modules():
+                if getattr(_qm, "quant_format", None):
+                    _q_total += 1
+                    if len(getattr(_qm, "weight_function", []) or []) > 0 or getattr(_qm, "_full_precision_mm", False):
+                        _q_off += 1
+            if _q_total:
+                print(f"[FunPackSceneChain] quantized layers: {_q_total} total, {_q_off} forced OFF "
+                      "the quantized matmul path (weight patches / emulation)"
+                      + (" — those dequantize every call, slower than bf16" if _q_off else ""))
+        except Exception:
+            pass
+
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
             first_scene_seed = int(seed)
@@ -4264,12 +4287,14 @@ class FunPackLTXAVSceneChainSampler:
                 if _v2a_handles:
                     run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
             try:
+                _t_sample0 = _time.perf_counter()
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
+                _phase_sampling += _time.perf_counter() - _t_sample0
             finally:
                 self._remove_v2a_scale(_v2a_handles)
             if _temporal_applied:
@@ -4331,6 +4356,7 @@ class FunPackLTXAVSceneChainSampler:
 
         images = None
         if want_image:
+            _t_dec0 = _time.perf_counter()
             video_tensor = self._latent_tensors(output)[0]
             if decode_tile_size > 0:
                 try:
@@ -4343,9 +4369,19 @@ class FunPackLTXAVSceneChainSampler:
                 b, t, h, w, c = decoded.shape
                 decoded = decoded.reshape(b * t, h, w, c)
             images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
+            _phase_decode = _time.perf_counter() - _t_dec0
 
         if images is None:
             images = torch.zeros(1, 8, 8, 3)
+
+        _t_total = _time.perf_counter() - _t_run0
+        _phase_other = max(0.0, _t_total - _phase_sampling - _phase_decode)
+        _timing = (f"Timing: total {_t_total:.1f}s = sampling {_phase_sampling:.1f}s "
+                   f"({100.0 * _phase_sampling / max(_t_total, 1e-9):.0f}%) + VAE decode "
+                   f"{_phase_decode:.1f}s ({100.0 * _phase_decode / max(_t_total, 1e-9):.0f}%) + "
+                   f"other {_phase_other:.1f}s")
+        report_lines.append(_timing)
+        print(f"[FunPackSceneChain] {_timing}")
 
         import json as _json
         final_frames = self._tensor_frames(self._latent_tensors(output)[0])
