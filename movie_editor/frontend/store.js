@@ -2758,6 +2758,8 @@
     [/\.clip.*no source/i,       "Missing text encoder — add a CLIP loader in Models."],
     [/not installed/i,           "A configured node class is not installed in ComfyUI — check Models for details."],
     [/Node registry unavailable/i, "ComfyUI is offline or still starting up — wait a moment and try again."],
+    [/prompt_no_outputs|Prompt has no outputs/i,
+      "The graph reached ComfyUI without any output node. Usually the built-in pipeline is disabled for this project (Models → Enable built-in pipeline), or your custom pipeline needs a final IMAGE wired to the 🌐 Global video output."],
     [/HTTP 53[0-9]|HTTP 52[24]|HTTP 502|Failed to fetch|NetworkError|Load failed/i,
       "Cloudflare tunnel lost contact with the vast.ai instance. GPU work may still be running — wait, refresh, and check ComfyUI output. If it keeps failing, use vast.ai direct port access or restart the tunnel."],
   ];

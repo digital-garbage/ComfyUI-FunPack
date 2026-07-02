@@ -220,7 +220,10 @@
       ],
       Settings: [
         { label: "Editor settings…", action: () => window.EditorSettingsModal.open() },
-        { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
+        // Never grey this out over pipeline state: the modal itself explains WHY Studio /
+        // Chain Sampler knobs are unavailable (built-in pipeline disabled, custom slots)
+        // and links to Models — a silently disabled item just looks broken.
+        { label: "Engine settings…", disabled: !hasProject(),
           action: () => window.EngineSettingsModal.open() },
         { label: "Temp files…", action: () => window.TempBrowserModal.open() },
         { sep: true },

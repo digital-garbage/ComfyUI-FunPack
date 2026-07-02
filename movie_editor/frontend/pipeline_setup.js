@@ -232,7 +232,18 @@
     }
     const ownBtn = el("button", "btn", "No, I'll use my own pipeline");
     ownBtn.type = "button";
-    ownBtn.onclick = () => useOwnPipeline();
+    // This PERSISTS disable_core on the project — without a warning it read like a
+    // harmless "dismiss", then Generate failed ("no outputs") and Studio/Chain Sampler
+    // settings vanished with no visible cause.
+    ownBtn.onclick = () => {
+      if (!confirm(
+        "This DISABLES the built-in FunPack pipeline for this project and saves that choice.\n\n"
+        + "Generation will then run ONLY the nodes you wire yourself in Models — until you wire "
+        + "a final IMAGE to the 🌐 Global video output, Generate has nothing to run.\n\n"
+        + "You can re-enable it any time: Models → Enable built-in pipeline.\n\nContinue?"
+      )) return;
+      useOwnPipeline();
+    };
     foot.append(ownBtn);
     const dismissBtn = el("button", "btn ghost", "Close");
     dismissBtn.type = "button";
