@@ -245,25 +245,49 @@ def log_nvfp4_diagnostics(model, device=None):
             #   * GEMM alone beats bf16, quantization dominates -> per-call overhead
             #     problem (x1232 layers/step); needs static input scales or fusion.
             #   * GEMM alone loses to bf16 -> the FP4 kernel isn't engaging at all.
+            results = {}
             for m in (1024, 16384):
                 x = torch.randn(m, 4096, dtype=torch.bfloat16, device=d)
                 t_bf16 = _timed(lambda: torch.nn.functional.linear(x, w))
                 t_quant = _timed(lambda: quant_ops.QuantizedTensor.from_float(x, "TensorCoreNVFP4Layout"))
+                # Same quantization with a PREcomputed static scale: isolates the amax
+                # reduction (which per-layer input_scale calibration could remove) from
+                # tensor-construction/kernel-launch overhead (which it can't).
+                s = (x.abs().amax() / (448.0 * 6.0)).float()
+                t_quant_s = _timed(lambda: quant_ops.QuantizedTensor.from_float(x, "TensorCoreNVFP4Layout", scale=s))
                 qx = quant_ops.QuantizedTensor.from_float(x, "TensorCoreNVFP4Layout")
                 t_gemm = _timed(lambda: torch.nn.functional.linear(qx, qw))
                 total = t_quant + t_gemm
-                if t_gemm < t_bf16 * 0.8 and total < t_bf16 * 0.8:
-                    verdict = "FAST PATH ACTIVE (net win incl. input quant)"
-                elif t_gemm < t_bf16 * 0.8:
-                    verdict = "FP4 GEMM fast but INPUT QUANTIZATION dominates — overhead-bound"
-                else:
-                    verdict = "FP4 GEMM NOT faster than bf16 — kernel not engaging"
+                results[m] = (t_bf16, t_quant, t_quant_s, t_gemm)
                 lines.append(
                     f"  probe 4096x4096 @ M={m}: bf16 {t_bf16 * 1e3:.3f} ms | "
-                    f"input-quant {t_quant * 1e3:.3f} ms + fp4-gemm {t_gemm * 1e3:.3f} ms "
-                    f"= {total * 1e3:.3f} ms ({t_bf16 / max(total, 1e-9):.2f}x net, "
-                    f"{t_bf16 / max(t_gemm, 1e-9):.2f}x gemm-only) -> {verdict}")
+                    f"input-quant {t_quant * 1e3:.3f} ms (static-scale {t_quant_s * 1e3:.3f} ms) "
+                    f"+ fp4-gemm {t_gemm * 1e3:.3f} ms = {total * 1e3:.3f} ms "
+                    f"({t_bf16 / max(total, 1e-9):.2f}x net, {t_bf16 / max(t_gemm, 1e-9):.2f}x gemm-only)")
                 del x, qx
+
+            # Verdict from the LARGE-M run (realistic video token counts); small-M numbers
+            # are launch-overhead dominated by nature and must not drive the conclusion.
+            t_bf16, t_quant, t_quant_s, t_gemm = results[16384]
+            total = t_quant + t_gemm
+            if t_gemm < t_bf16 * 0.8 and total < t_bf16 * 0.8:
+                lines.append("  verdict: FAST PATH ACTIVE — FP4 GEMMs win at real token counts. "
+                             "If end-to-end speed still looks flat, the input-quant overhead "
+                             f"(~{t_quant * 1e3:.2f} ms/layer-call, largely size-independent) is "
+                             "cancelling the win on SMALL layers: prefer scope 'video blocks' "
+                             "(skips the audio branch, whose matmuls are too small to profit).")
+                if t_quant_s < t_quant * 0.6:
+                    lines.append("  note: static input scales would reclaim most of the input-quant "
+                                 "cost (amax dominates) — calibration support is worth building.")
+                else:
+                    lines.append("  note: static input scales would NOT help much "
+                                 "(overhead is construction/launch, not amax).")
+            elif t_gemm < t_bf16 * 0.8:
+                lines.append("  verdict: FP4 GEMM fast but INPUT QUANTIZATION dominates even at "
+                             "large M — overhead-bound; scope down to the largest layers only.")
+            else:
+                lines.append("  verdict: FP4 GEMM not faster than bf16 even at M=16384 — the "
+                             "kernel is not engaging; report these numbers upstream.")
         except Exception as e:  # noqa: BLE001
             lines.append(f"  GEMM probe failed: {e}")
     else:
