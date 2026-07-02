@@ -5,7 +5,8 @@
   "version": "1.0.0",
   "description": "Auto-generate the FunPack Cutting Room feature showcase (annotated gallery + walkthrough video) by driving the built-in in-app tour. No models or GPU required.",
   "scripts": {
-    "capture": "node capture.mjs"
+    "capture": "node capture.mjs",
+    "capture:clean": "node capture_clean.mjs"
   },
   "dependencies": {
     "playwright": "^1.50.0"

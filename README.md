@@ -13,6 +13,18 @@ A set of ComfyUI nodes for experimenting with video generation workflows based o
 >
 > With this said - FunPack is provided "as is". Stable, uninterrupted work is NOT guaranteed even on main branch. But that doesn't mean bugs won't be fixed - you are free to file a bug report and I will most likely fix it in the nearest time.
 
+## What it looks like
+
+FunPack 3.x ships the **Cutting Room** - a full non-linear video editor living in your browser, inside ComfyUI. A real timeline with per-scene prompts, ratings and audio lanes, a program monitor, a media bin, and one-click generation driving FunPack Studio + the Scene Chain Sampler - no graph wiring required.
+
+![FunPack Cutting Room - timeline, preview monitor, media bin, and scene inspector](docs/images/cutting-room.png)
+
+| The Composer - global prompt, shortcuts, split markers, `$variables` | Engine Settings - Studio + Chain Sampler knobs without touching a graph |
+| --- | --- |
+| ![Composer window](docs/images/composer.png) | ![Engine Settings dialog](docs/images/engine-settings.png) |
+
+Want a guided look at every panel? Open the editor and press **Help ▸ Welcome tour** - the same tour also auto-generates a full annotated gallery and walkthrough video via [`tools/showcase`](tools/showcase).
+
 ## Dev and other non-main branches
 
 The `dev` branch is intended for testing unfinished changes, implementing new logic and basically, flipping everything just because I can. It can be broken, renamed, or changed without warning.
