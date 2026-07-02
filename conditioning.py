@@ -11910,21 +11910,6 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
                 if n_out is not None:
                     print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
-                # Block Steering: the same reward pairs with the sampler's staged per-block
-                # activity fingerprint (refinement_key.block_snapshot.pt) — feeds the
-                # liked/disliked/credit block profile the Chain Sampler steers from. No-op
-                # when the sampler ran without block_steer (no snapshot staged).
-                try:
-                    try:
-                        from . import block_steer as _bsmod
-                    except ImportError:
-                        import block_steer as _bsmod
-                    n_blocks = _bsmod.update_profile_with_rating(
-                        refinement_key, float(learning_profile.get("reward", 0.0)))
-                    if n_blocks is not None:
-                        print(f"[FunPackRefiner] Block profile updated — {n_blocks} rated run(s)")
-                except Exception as _bse:
-                    print(f"[FunPackRefiner] Block profile update failed: {_bse}")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
