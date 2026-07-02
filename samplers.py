@@ -4069,16 +4069,20 @@ class FunPackLTXAVSceneChainSampler:
                     else:
                         _bs_recorder = _bsmod.BlockActivityRecorder(len(_bs_blocks))
                         _bs_handles = _bsmod.install_recorder(model, _bs_recorder)
-                        _bs_scores = _bsmod.load_block_scores(refinement_key_input)
-                        if _bs_scores is not None and _bs_scores.numel() == len(_bs_blocks):
+                        _bs_scores, _bs_status = _bsmod.block_scores_with_status(refinement_key_input)
+                        if _bs_scores is not None and _bs_scores.numel() != len(_bs_blocks):
+                            _bs_scores, _bs_status = None, (
+                                f"profile was learned on a {_bs_scores.numel()}-block model, this one has "
+                                f"{len(_bs_blocks)} — relearning")
+                        if _bs_scores is not None:
                             _gains = _bsmod.gains_from_scores(_bs_scores, block_steer_strength)
                             _bs_handles += _bsmod.install_steer(model, _gains)
                             _dev = max(abs(g - 1.0) for g in _gains) if _gains else 0.0
                             print(f"[FunPackSceneChain] block_steer: steering active "
                                   f"({len(_bs_blocks)} blocks, max gain deviation ±{_dev:.3f})")
                         else:
-                            print("[FunPackSceneChain] block_steer: learning only — profile not "
-                                  "ready yet (needs 2+ rated runs for this key), steering is a no-op.")
+                            print(f"[FunPackSceneChain] block_steer: learning only — {_bs_status}; "
+                                  "steering is a no-op this run.")
                         _bs_vf = _output_value_fn or self._load_output_value_function(refinement_key_input)
                         if _bs_vf is not None:
                             _bs_wrapper_old = model.model_options.get("model_function_wrapper")
@@ -4439,8 +4443,17 @@ class FunPackLTXAVSceneChainSampler:
         # snapshot from an unguided run is still valid training data. video_mask=None because
         # `output["samples"]` is the final unpacked latent (standard per-node layout), not the
         # sampler-internal packed AV tensor _packed_video_mask expects.
-        if refinement_key_input and isinstance(output, dict) and isinstance(output.get("samples"), torch.Tensor):
-            self._save_output_value_snapshot(refinement_key_input, output["samples"], None)
+        # On LTX-AV the output is a NESTED tensor (video+audio) — the old plain-Tensor gate
+        # silently skipped it, so the output value function NEVER received a sample on AV
+        # ("not ready yet (needs 10+)" forever). Snapshot the video stream (largest tensor),
+        # matching the video-only convention of the in-flight guidance path.
+        if refinement_key_input and isinstance(output, dict):
+            _snap = output.get("samples")
+            if self._is_nested(_snap):
+                _parts = [t for t in _snap.unbind() if isinstance(t, torch.Tensor) and t.numel() > 0]
+                _snap = max(_parts, key=lambda t: t.numel()) if _parts else None
+            if isinstance(_snap, torch.Tensor):
+                self._save_output_value_snapshot(refinement_key_input, _snap, None)
 
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
 

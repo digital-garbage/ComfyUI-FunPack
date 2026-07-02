@@ -213,7 +213,10 @@ class FunPackNVFP4ModelLoader:
         import folder_paths
 
         path = folder_paths.get_full_path_or_raise("diffusion_models", unet_name)
-        sd = comfy.utils.load_torch_file(path)
+        # return_metadata is NOT optional here: LTX-AV variants carry their architecture
+        # config in the safetensors metadata, and detection without it builds the WRONG
+        # model (6 vs 9 ada params, connector dims) -> size-mismatch wall on load.
+        sd, metadata = comfy.utils.load_torch_file(path, return_metadata=True)
 
         if mm.supports_nvfp4_compute(mm.get_torch_device()):
             logging.info("[FunPack NVFP4] FP4 tensor-core compute available - native GEMM path.")
@@ -247,7 +250,7 @@ class FunPackNVFP4ModelLoader:
             f"(scope='{quantize_scope}', full-precision blocks: {sorted(keep) or 'none'})."
         )
 
-        model = comfy.sd.load_diffusion_model_state_dict(sd)
+        model = comfy.sd.load_diffusion_model_state_dict(sd, metadata=metadata)
         if model is None:
             raise RuntimeError("ComfyUI could not detect the model type after NVFP4 patching.")
         return (model,)

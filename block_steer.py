@@ -47,10 +47,17 @@ except ImportError:
 # Steering never moves a block's residual contribution by more than this, regardless of
 # strength widget or how lopsided the learned scores are.
 MAX_GAIN_DELTA = 0.10
-# Profile readiness: at least this many rating-paired runs (liked+disliked pools)…
+# Profile readiness: at least this many rating-paired runs…
 MIN_RATED_RUNS = 2
+# …with at least this much reward spread. Attribution is the per-block COVARIANCE between
+# reward and activity across runs — if every run is rated the same there is nothing to
+# attribute, no matter how many runs were paired (the v1 liked/disliked-EMA design failed
+# exactly there: 16 same-pole ratings produced zero contrast and looked "not ready").
+MIN_REWARD_STD = 0.05
 # …or this many value-credit runs, before scores are considered meaningful.
 MIN_CREDIT_RUNS = 2
+# Rolling history of (activity fingerprint, reward) pairs kept per key.
+HISTORY_MAX = 32
 # Blend weights when both attribution signals are available.
 RATING_WEIGHT = 0.6
 CREDIT_WEIGHT = 0.4
@@ -250,14 +257,12 @@ def _ema(old, x, n):
 
 def update_profile_with_rating(refinement_key, reward):
     """Pair the staged snapshot with a rating reward (called by the Refiner at the same
-    site that trains the output value function). Folds:
-      * every run into the all-runs mean (the contrast baseline),
-      * reward >= 0.3 into the liked profile, reward <= 0.0 into the disliked profile
-        (the mild-positive band is too ambiguous to move either pole - same rule as the
-        Absolute store),
-      * the run's value credit (rating-independent, self-supervised) into the credit EMA.
-    Consumes the snapshot so one run is never paired twice. Returns the number of
-    rating-paired runs, or None when there was nothing to pair."""
+    site that trains the output value function). Appends (activity fingerprint, reward)
+    to a rolling per-key history — EVERY admissible reward contributes with its actual
+    value (no liked/disliked pole thresholds, no dead band) — and folds the run's value
+    credit (rating-independent, self-supervised) into the credit EMA. Consumes the
+    snapshot so one run is never paired twice. Returns the number of rating-paired runs
+    in the history, or None when there was nothing to pair."""
     if not refinement_key:
         return None
     try:
@@ -272,19 +277,17 @@ def update_profile_with_rating(refinement_key, reward):
         prof = {}
         if os.path.exists(prof_path):
             prof = torch.load(prof_path, map_location="cpu", weights_only=False)
-            if int(prof.get("n_blocks", -1)) != activity.numel():
-                prof = {}  # different model depth - start fresh
+            # Different model depth OR a v1 pole-EMA profile (pre-history): start fresh.
+            if int(prof.get("n_blocks", -1)) != activity.numel() or ("history_act" not in prof and "liked_n" in prof):
+                prof = {}
         prof["n_blocks"] = activity.numel()
 
-        prof["all_mean"] = _ema(prof.get("all_mean"), activity, prof.get("all_n", 0))
-        prof["all_n"] = int(prof.get("all_n", 0)) + 1
-        r = float(reward)
-        if r >= 0.3:
-            prof["liked"] = _ema(prof.get("liked"), activity, prof.get("liked_n", 0))
-            prof["liked_n"] = int(prof.get("liked_n", 0)) + 1
-        elif r <= 0.0:
-            prof["disliked"] = _ema(prof.get("disliked"), activity, prof.get("disliked_n", 0))
-            prof["disliked_n"] = int(prof.get("disliked_n", 0)) + 1
+        row = activity.float().reshape(1, -1)
+        rw = torch.tensor([float(reward)], dtype=torch.float32)
+        ha, hr = prof.get("history_act"), prof.get("history_rw")
+        prof["history_act"] = row if ha is None else torch.cat([ha, row], dim=0)[-HISTORY_MAX:]
+        prof["history_rw"] = rw if hr is None else torch.cat([hr, rw], dim=0)[-HISTORY_MAX:]
+
         credit = snap.get("credit")
         if isinstance(credit, torch.Tensor) and credit.numel() == activity.numel():
             prof["credit"] = _ema(prof.get("credit"), credit, prof.get("credit_n", 0))
@@ -294,7 +297,7 @@ def update_profile_with_rating(refinement_key, reward):
         torch.save(prof, tmp)
         os.replace(tmp, prof_path)
         os.remove(snap_path)  # consumed - never pair one run with two ratings
-        return int(prof.get("liked_n", 0)) + int(prof.get("disliked_n", 0))
+        return int(prof["history_rw"].numel())
     except Exception as e:
         print(f"[FunPackBlockSteer] profile update failed: {e}")
         return None
@@ -306,30 +309,33 @@ def _normalize(v):
     return v / m if m > _EPS else None
 
 
-def load_block_scores(refinement_key):
-    """Combined, normalized per-block scores in [-1, 1] (zero-mean, unit max-abs), or
-    None while the profile lacks enough paired data. Rating contrast is liked-vs-
-    disliked when both poles exist, else the available pole against the all-runs mean."""
+def block_scores_with_status(refinement_key):
+    """(scores, status): combined normalized per-block scores in [-1, 1] (zero-mean,
+    unit max-abs), or (None, why-not). Rating attribution is the per-block covariance
+    between reward and activity across the run history; value credit blends in when
+    trained. `status` is a user-facing sentence for the sampler log."""
     if not refinement_key:
-        return None
+        return None, "no refinement key wired"
     try:
         prof_path = _state_path(refinement_key, "block_profile")
         if not os.path.exists(prof_path):
-            return None
+            return None, "no profile yet — rate a generation made with block_steer on"
         prof = torch.load(prof_path, map_location="cpu", weights_only=False)
-        liked, disliked = prof.get("liked"), prof.get("disliked")
-        liked_n, disliked_n = int(prof.get("liked_n", 0)), int(prof.get("disliked_n", 0))
-        all_mean, all_n = prof.get("all_mean"), int(prof.get("all_n", 0))
+        ha, hr = prof.get("history_act"), prof.get("history_rw")
         credit, credit_n = prof.get("credit"), int(prof.get("credit_n", 0))
 
         rating_part = None
-        if liked_n + disliked_n >= MIN_RATED_RUNS:
-            if liked is not None and disliked is not None:
-                rating_part = _normalize(liked - disliked)
-            elif liked is not None and all_mean is not None and all_n >= 2:
-                rating_part = _normalize(liked - all_mean)
-            elif disliked is not None and all_mean is not None and all_n >= 2:
-                rating_part = _normalize(-(disliked - all_mean))
+        n = int(hr.numel()) if isinstance(hr, torch.Tensor) else 0
+        if not isinstance(ha, torch.Tensor) or n < MIN_RATED_RUNS:
+            rating_status = f"needs {MIN_RATED_RUNS}+ rated runs for this key (have {n})"
+        elif float(hr.std()) < MIN_REWARD_STD:
+            rating_status = (f"{n} rated runs but all rated alike — rate both good AND bad "
+                             "runs so blocks have something to contrast")
+        else:
+            cov = ((hr - hr.mean()).unsqueeze(1) * (ha - ha.mean(dim=0))).sum(dim=0)
+            rating_part = _normalize(cov)
+            rating_status = "flat activity across runs" if rating_part is None else "ready"
+
         credit_part = _normalize(credit) if (credit is not None and credit_n >= MIN_CREDIT_RUNS) else None
 
         if rating_part is not None and credit_part is not None:
@@ -337,11 +343,18 @@ def load_block_scores(refinement_key):
         else:
             combined = rating_part if rating_part is not None else credit_part
         if combined is None:
-            return None
-        return _normalize(combined)
+            return None, rating_status
+        scores = _normalize(combined)
+        if scores is None:
+            return None, "flat combined scores"
+        return scores, "ready"
     except Exception as e:
-        print(f"[FunPackBlockSteer] score load failed: {e}")
-        return None
+        return None, f"score load failed: {e}"
+
+
+def load_block_scores(refinement_key):
+    """Scores only (None while not ready) — see block_scores_with_status."""
+    return block_scores_with_status(refinement_key)[0]
 
 
 def gains_from_scores(scores, strength):

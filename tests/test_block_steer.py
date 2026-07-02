@@ -144,25 +144,28 @@ def test_credit_wrapper_scores_and_credits():
     assert int(cv.argmax()) == 0
 
 
+def _rec_with(activity):
+    r = bs.BlockActivityRecorder(activity.numel())
+    r.sums = activity.clone().float(); r.counts = torch.ones(activity.numel())
+    return r
+
+
 def test_snapshot_profile_scores_gains_roundtrip(store):
     key = "toykey"
-    def _rec_with(activity):
-        r = bs.BlockActivityRecorder(N_BLOCKS)
-        r.sums = activity.clone(); r.counts = torch.ones(N_BLOCKS)
-        return r
-
     base = torch.full((N_BLOCKS,), 0.5)
-    hot = base.clone(); hot[10] = 1.5    # block 10 fires hard on liked runs
-    cold = base.clone(); cold[2] = 1.5   # block 2 fires hard on disliked runs
+    hot = base.clone(); hot[10] = 1.5    # block 10 fires hard on the GOOD run
+    cold = base.clone(); cold[2] = 1.5   # block 2 fires hard on the BAD run
 
     assert bs.save_run_snapshot(key, _rec_with(hot))
     assert bs.update_profile_with_rating(key, 1.0) == 1        # Perfect
     assert bs.update_profile_with_rating(key, 1.0) is None     # snapshot consumed - no double pair
-    assert bs.load_block_scores(key) is None                   # 1 rated run < MIN_RATED_RUNS
+    scores, status = bs.block_scores_with_status(key)
+    assert scores is None and "have 1" in status               # 1 rated run < MIN_RATED_RUNS
 
     assert bs.save_run_snapshot(key, _rec_with(cold))
     assert bs.update_profile_with_rating(key, -0.9) == 2       # Awful
-    scores = bs.load_block_scores(key)
+    scores, status = bs.block_scores_with_status(key)
+    assert status == "ready"
     assert scores is not None and scores.shape == (N_BLOCKS,)
     assert int(scores.argmax()) == 10 and int(scores.argmin()) == 2
     assert abs(float(scores.mean())) < 1e-5                    # zero-mean: redistributes, no drift
@@ -177,26 +180,48 @@ def test_snapshot_profile_scores_gains_roundtrip(store):
     assert min(gains_hi) >= 1.0 - bs.MAX_GAIN_DELTA - 1e-6
 
 
-def test_mild_positive_band_moves_neither_pole(store):
+def test_same_pole_ratings_need_contrast_not_more_runs(store):
+    """The v1 regression: MANY rated runs, all rated alike -> the profile must say WHY
+    it can't steer (no reward contrast), not pretend it needs more runs."""
+    key = "samepole"
+    for _ in range(16):
+        assert bs.save_run_snapshot(key, _rec_with(torch.rand(N_BLOCKS)))
+        assert bs.update_profile_with_rating(key, 1.0) is not None
+    scores, status = bs.block_scores_with_status(key)
+    assert scores is None
+    assert "rated alike" in status and "16" in status
+    # one contrasting rating unlocks attribution
+    assert bs.save_run_snapshot(key, _rec_with(torch.rand(N_BLOCKS)))
+    bs.update_profile_with_rating(key, -0.9)
+    scores, status = bs.block_scores_with_status(key)
+    assert scores is not None and status == "ready"
+
+
+def test_every_reward_value_contributes(store):
+    """No dead band: mild rewards like Missing action (0.05) / Wrong details (0.20)
+    count with their actual value instead of being dropped."""
     key = "mild"
-    r = bs.BlockActivityRecorder(N_BLOCKS)
-    r.sums = torch.rand(N_BLOCKS); r.counts = torch.ones(N_BLOCKS)
-    assert bs.save_run_snapshot(key, r)
-    assert bs.update_profile_with_rating(key, 0.1) == 0  # (0, 0.3): ambiguous, neither pole
-    prof = torch.load(bs._state_path(key, "block_profile"), weights_only=False)
-    assert prof.get("liked") is None and prof.get("disliked") is None
-    assert prof["all_n"] == 1  # still feeds the contrast baseline
+    base = torch.full((N_BLOCKS,), 0.5)
+    hi = base.clone(); hi[7] = 1.2
+    lo = base.clone(); lo[21] = 1.2
+    bs.save_run_snapshot(key, _rec_with(hi)); bs.update_profile_with_rating(key, 0.35)
+    bs.save_run_snapshot(key, _rec_with(lo)); bs.update_profile_with_rating(key, 0.05)
+    scores, status = bs.block_scores_with_status(key)
+    assert status == "ready"
+    assert int(scores.argmax()) == 7 and int(scores.argmin()) == 21
 
 
-def test_depth_mismatch_resets_profile(store):
+def test_depth_mismatch_and_v1_profile_reset(store):
     key = "depth"
-    r = bs.BlockActivityRecorder(N_BLOCKS)
-    r.sums = torch.rand(N_BLOCKS); r.counts = torch.ones(N_BLOCKS)
-    bs.save_run_snapshot(key, r)
+    bs.save_run_snapshot(key, _rec_with(torch.rand(N_BLOCKS)))
     bs.update_profile_with_rating(key, 1.0)
-    r2 = bs.BlockActivityRecorder(N_BLOCKS + 4)  # different model depth
-    r2.sums = torch.rand(N_BLOCKS + 4); r2.counts = torch.ones(N_BLOCKS + 4)
-    bs.save_run_snapshot(key, r2)
+    r2 = torch.rand(N_BLOCKS + 4)  # different model depth
+    bs.save_run_snapshot(key, _rec_with(r2))
     assert bs.update_profile_with_rating(key, 1.0) == 1  # fresh profile, not a mixed one
     prof = torch.load(bs._state_path(key, "block_profile"), weights_only=False)
     assert prof["n_blocks"] == N_BLOCKS + 4
+    # a v1 pole-EMA profile on disk (liked_n, no history) is discarded, not mixed in
+    torch.save({"n_blocks": N_BLOCKS, "liked": torch.rand(N_BLOCKS), "liked_n": 16},
+               bs._state_path(key, "block_profile"))
+    bs.save_run_snapshot(key, _rec_with(torch.rand(N_BLOCKS)))
+    assert bs.update_profile_with_rating(key, 1.0) == 1
