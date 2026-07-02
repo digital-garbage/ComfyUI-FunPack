@@ -170,6 +170,96 @@ def quantize_state_dict_nvfp4(sd, scope="video blocks", keep_first_blocks=2,
     return out, targets, keep
 
 
+def log_nvfp4_diagnostics(model, device=None):
+    """Print everything needed to tell WHY NVFP4 is (or is not) fast on this machine.
+
+    'Loaded fine' and 'runs fast' are different claims. The three ways the fast path
+    silently degrades, in the order they bite:
+      1. comfy_kitchen's CUDA backend is disabled when torch is built for CUDA < 13 -
+         quantized matmuls then fall through to the pure-PyTorch eager backend, which
+         is CORRECT but no faster than bf16 (the exact "speed didn't change" symptom).
+      2. The GPU lacks FP4 tensor cores (pre-Blackwell) - core flags every nvfp4 layer
+         _full_precision_mm and dequantizes (visible in the layer census below).
+      3. Everything is native but the quantized scope is too small a slice of the
+         total step time to move the needle.
+    A timed 4096x4096 GEMM probe settles it empirically: on a native FP4 path the
+    quantized matmul must beat bf16 clearly; parity or worse means emulation."""
+    lines = []
+    try:
+        import comfy_kitchen as ck
+        for name, info in ck.list_backends().items():
+            if info.get("available"):
+                caps = info.get("capabilities") or []
+                lines.append(f"  ck backend '{name}': AVAILABLE, scaled_mm_nvfp4="
+                             f"{'yes' if 'scaled_mm_nvfp4' in caps else 'NO'}")
+            else:
+                lines.append(f"  ck backend '{name}': unavailable ({info.get('unavailable_reason')})")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"  comfy_kitchen introspection failed: {e}")
+    cap = torch.cuda.get_device_capability(device) if torch.cuda.is_available() else None
+    lines.append(f"  torch {torch.__version__} | cuda build {torch.version.cuda} | device capability {cap}")
+    if torch.version.cuda is not None:
+        try:
+            if tuple(map(int, str(torch.version.cuda).split(".")))[0] < 13:
+                lines.append("  ⚠ torch is built for CUDA < 13 -> comfy_kitchen DISABLES its CUDA "
+                             "backend -> nvfp4 matmuls run on the eager (pure PyTorch) backend: "
+                             "correct but NO speedup. Install a cu13x torch build to unlock FP4 GEMMs.")
+        except Exception:  # noqa: BLE001
+            pass
+
+    n_q = n_emul = 0
+    try:
+        for m in model.model.diffusion_model.modules():
+            if getattr(m, "quant_format", None) == "nvfp4":
+                n_q += 1
+                if getattr(m, "_full_precision_mm", False):
+                    n_emul += 1
+        lines.append(f"  nvfp4 layers in loaded model: {n_q}"
+                     + (f" — {n_emul} flagged FULL-PRECISION EMULATION (no FP4 compute on this GPU)"
+                        if n_emul else " — all on the quantized matmul path"))
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"  layer census failed: {e}")
+
+    if torch.cuda.is_available():
+        try:
+            import time
+            import comfy.quant_ops as quant_ops
+            d = torch.device(device) if device is not None else torch.device("cuda")
+            w = torch.randn(4096, 4096, dtype=torch.bfloat16, device=d)
+            x = torch.randn(1024, 4096, dtype=torch.bfloat16, device=d)
+            qw = quant_ops.QuantizedTensor.from_float(w, "TensorCoreNVFP4Layout", scale="recalculate")
+
+            def _timed(fn, n=30):
+                for _ in range(5):
+                    fn()
+                torch.cuda.synchronize(d)
+                t0 = time.perf_counter()
+                for _ in range(n):
+                    fn()
+                torch.cuda.synchronize(d)
+                return (time.perf_counter() - t0) / n
+
+            t_bf16 = _timed(lambda: torch.nn.functional.linear(x, w))
+
+            def _q():
+                qx = quant_ops.QuantizedTensor.from_float(x, "TensorCoreNVFP4Layout")
+                torch.nn.functional.linear(qx, qw)
+
+            t_q = _timed(_q)
+            verdict = ("FAST PATH ACTIVE" if t_q < t_bf16 * 0.8
+                       else "NO SPEEDUP — emulated or overhead-bound")
+            lines.append(f"  GEMM probe 4096x4096 @ bs1024 (incl. dynamic input quant): "
+                         f"bf16 {t_bf16 * 1e3:.3f} ms vs nvfp4 {t_q * 1e3:.3f} ms "
+                         f"({t_bf16 / max(t_q, 1e-9):.2f}x) -> {verdict}")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"  GEMM probe failed: {e}")
+    else:
+        lines.append("  GEMM probe skipped (no CUDA device)")
+
+    print("[FunPack NVFP4] diagnostics:\n" + "\n".join(lines))
+    return {"nvfp4_layers": n_q, "emulated_layers": n_emul}
+
+
 class FunPackNVFP4ModelLoader:
     """EXPERIMENTAL: load a diffusion model with on-the-fly NVFP4 quantization.
 
@@ -253,4 +343,8 @@ class FunPackNVFP4ModelLoader:
         model = comfy.sd.load_diffusion_model_state_dict(sd, metadata=metadata)
         if model is None:
             raise RuntimeError("ComfyUI could not detect the model type after NVFP4 patching.")
+        try:
+            log_nvfp4_diagnostics(model, device)
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"[FunPack NVFP4] diagnostics failed: {e}")
         return (model,)

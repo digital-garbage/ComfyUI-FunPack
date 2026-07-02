@@ -161,3 +161,29 @@ def test_core_mixed_precision_linear_loads_and_forwards(disabled):
     assert y.shape == y_ref.shape
     rel = (y.float() - y_ref.float()).abs().mean() / (y_ref.float().abs().mean() + 1e-8)
     assert rel < 0.25, f"relative error too high: {rel:.3f} (disabled={disabled})"
+
+
+def test_diagnostics_reports_layer_census(capsys):
+    """log_nvfp4_diagnostics counts nvfp4 layers + emulation flags and never raises
+    (GEMM probe skipped without CUDA)."""
+    import types
+    from nvfp4_patch import log_nvfp4_diagnostics
+
+    class _Q:
+        quant_format = "nvfp4"
+        _full_precision_mm = False
+
+    class _QEmul(_Q):
+        _full_precision_mm = True
+
+    class _Diff(torch.nn.Module):
+        def modules(self):
+            return [self, _Q(), _Q(), _QEmul()]
+
+    model = types.SimpleNamespace(model=types.SimpleNamespace(diffusion_model=_Diff()))
+    out = log_nvfp4_diagnostics(model, None)
+    assert out == {"nvfp4_layers": 3, "emulated_layers": 1}
+    text = capsys.readouterr().out
+    assert "nvfp4 layers in loaded model: 3" in text
+    assert "EMULATION" in text
+    assert "GEMM probe skipped" in text or "GEMM probe" in text
