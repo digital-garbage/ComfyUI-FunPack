@@ -187,3 +187,55 @@ def test_diagnostics_reports_layer_census(capsys):
     assert "nvfp4 layers in loaded model: 3" in text
     assert "EMULATION" in text
     assert "GEMM probe skipped" in text or "GEMM probe" in text
+
+
+def test_input_scale_injection_and_core_load(tmp_path, monkeypatch):
+    """Calibration sidecar -> inject_input_scales matches by suffix across checkpoint
+    prefixes, and core's MixedPrecisionOps Linear registers the injected input_scale
+    and still forwards correctly."""
+    from nvfp4_patch import inject_input_scales, _scales_path
+    import nvfp4_patch as np_mod
+
+    ckpt = str(tmp_path / "model.safetensors")
+    sidecar = _scales_path(ckpt)
+    assert sidecar.endswith("model.safetensors.json")
+
+    cal = {"transformer_blocks.1.attn1.to_q": 12.5}
+    w = _w()
+    sd = {"model.diffusion_model.transformer_blocks.1.attn1.to_q.weight": w,
+          "model.diffusion_model.transformer_blocks.1.attn1.to_q.bias": torch.zeros(D, dtype=torch.bfloat16)}
+    out, targets, _ = quantize_state_dict_nvfp4(sd, "video blocks", 0, 0)
+    n = inject_input_scales(out, targets, cal)
+    assert n == 1
+    key = "model.diffusion_model.transformer_blocks.1.attn1.to_q.input_scale"
+    assert key in out and out[key].dtype == torch.float32
+    assert float(out[key]) == pytest.approx(12.5 * np_mod.CALIBRATION_MARGIN / (448.0 * 6.0))
+
+    # core load consumes it: input_scale becomes a registered parameter
+    import comfy.ops
+    ops = comfy.ops.mixed_precision_ops({}, torch.bfloat16, disabled=[])
+    lin = ops.Linear(D, D, bias=True, device="cpu", dtype=torch.bfloat16)
+    layer_sd = {k.replace("model.diffusion_model.transformer_blocks.1.attn1.to_q.", ""): v
+                for k, v in out.items()}
+    missing, unexpected = lin.load_state_dict(layer_sd, strict=False)
+    assert not missing and not unexpected
+    assert isinstance(getattr(lin, "input_scale", None), torch.nn.Parameter)
+    x = torch.randn(2, 4, D, dtype=torch.bfloat16) * 0.5
+    with torch.no_grad():
+        y = lin.forward(x)
+    y_ref = torch.nn.functional.linear(x, w)
+    rel = (y.float() - y_ref.float()).abs().mean() / (y_ref.float().abs().mean() + 1e-8)
+    assert y.shape == y_ref.shape and rel < 0.3
+
+    # no calibration entry for a layer -> nothing injected for it
+    sd2 = {"transformer_blocks.2.attn1.to_q.weight": _w()}
+    out2, targets2, _ = quantize_state_dict_nvfp4(sd2, "video blocks", 0, 0)
+    assert inject_input_scales(out2, targets2, cal) == 0
+
+
+def test_load_calibration_reads_sidecar(tmp_path, monkeypatch):
+    import nvfp4_patch as np_mod
+    monkeypatch.setattr(np_mod, "_scales_path", lambda p: str(tmp_path / "s.json"))
+    assert np_mod.load_calibration("whatever") is None
+    (tmp_path / "s.json").write_text('{"amax": {"a.b": 3.0}, "margin": 1.25}')
+    assert np_mod.load_calibration("whatever") == {"a.b": 3.0}

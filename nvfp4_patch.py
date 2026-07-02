@@ -38,9 +38,122 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 
 import torch
+
+# ---------------------------------------------------------------------------
+# Static input-scale calibration
+# ---------------------------------------------------------------------------
+# Core quantizes each layer's INPUT dynamically (amax reduction + quantize) on every
+# call unless the layer has a static `input_scale` parameter. Live probe on sm_120:
+# the dynamic path costs ~0.30 ms/layer-call and a provided scale cuts it to ~0.11 ms
+# (amax dominates) - across ~800 quantized layers that is a top-line cost of every
+# model call. Calibration is capture-then-freeze: a "calibrate" run records each
+# quantized layer's input amax via forward-pre-hooks into a per-checkpoint sidecar;
+# later loads inject `input_scale = amax * MARGIN / (448 * 6)` into the state dict,
+# where core's loader picks it up natively. MARGIN leaves headroom because NVFP4
+# clips activations above the scale; per the disposable-keys philosophy the sidecar
+# is per-machine and rebuilt in one run whenever absent.
+CALIBRATION_MARGIN = 1.25
+_F8F4_MAX = 448.0 * 6.0  # F8_E4M3_MAX * F4_E2M1_MAX
+INPUT_SCALE_MODES = ["dynamic", "auto-calibrate"]
+
+
+def _scales_path(checkpoint_path):
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "refinements", "nvfp4_scales")
+    return os.path.join(base, os.path.basename(checkpoint_path) + ".json")
+
+
+def load_calibration(checkpoint_path):
+    """{module_path: input_amax} recorded by a previous calibrate run, or None."""
+    try:
+        p = _scales_path(checkpoint_path)
+        if not os.path.exists(p):
+            return None
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        amax = data.get("amax") or {}
+        return {str(k): float(v) for k, v in amax.items()} or None
+    except Exception as e:  # noqa: BLE001
+        logging.warning(f"[FunPack NVFP4] could not read calibration sidecar: {e}")
+        return None
+
+
+def inject_input_scales(sd, target_weight_keys, calibration, margin=CALIBRATION_MARGIN):
+    """Add `<layer>.input_scale` next to each quantized weight whose module path has a
+    calibrated amax. Keys are matched by suffix so any checkpoint prefix
+    ('model.diffusion_model.' or none) works. Returns the number injected."""
+    injected = 0
+    for k in target_weight_keys:
+        prefix = k[: -len("weight")]           # '...transformer_blocks.3.attn1.to_q.'
+        module_path = prefix.rstrip(".")
+        for cal_key, amax in calibration.items():
+            if module_path == cal_key or module_path.endswith("." + cal_key):
+                sd[prefix + "input_scale"] = torch.tensor(
+                    float(amax) * margin / _F8F4_MAX, dtype=torch.float32)
+                injected += 1
+                break
+    return injected
+
+
+def install_calibration_capture(model, checkpoint_path):
+    """Forward-pre-hooks on every quantized Linear recording the running input amax.
+    The sidecar is written on the first full sweep and refreshed periodically; hooks
+    live for the model instance's lifetime (a calibration run is expected to be
+    slightly SLOWER - it pays the amax it is trying to eliminate, once)."""
+    store = {"amax": {}, "writes": 0, "calls": 0}
+    path = _scales_path(checkpoint_path)
+
+    def _flush():
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"amax": store["amax"], "margin": CALIBRATION_MARGIN}, f)
+            os.replace(tmp, path)
+            store["writes"] += 1
+        except Exception as e:  # noqa: BLE001
+            logging.warning(f"[FunPack NVFP4] calibration flush failed: {e}")
+
+    hooked = 0
+    try:
+        for name, m in model.model.diffusion_model.named_modules():
+            if getattr(m, "quant_format", None) != "nvfp4":
+                continue
+
+            def _hook(_module, args, _name=name):
+                try:
+                    x = args[0] if args else None
+                    if isinstance(x, torch.Tensor):
+                        a = float(x.detach().abs().amax())
+                        if a > store["amax"].get(_name, 0.0):
+                            store["amax"][_name] = a
+                    store["calls"] += 1
+                    if store["calls"] % 4096 == 0:
+                        _flush()
+                except Exception:
+                    pass
+
+            m.register_forward_pre_hook(_hook)
+            hooked += 1
+    except Exception as e:  # noqa: BLE001
+        logging.warning(f"[FunPack NVFP4] calibration capture install failed: {e}")
+        return 0
+
+    if hooked:
+        # First flush after one full model call so a single generation is enough.
+        def _first_flush_hook(_module, _args):
+            if store["writes"] == 0 and len(store["amax"]) >= hooked:
+                _flush()
+        try:
+            last = [m for _, m in model.model.diffusion_model.named_modules()
+                    if getattr(m, "quant_format", None) == "nvfp4"][-1]
+            last.register_forward_pre_hook(_first_flush_hook)
+        except Exception:
+            pass
+    return hooked
 
 QUANTIZE_SCOPES = [
     "video blocks",         # video-branch Linears in middle blocks (default, safest)
@@ -330,10 +443,19 @@ class FunPackNVFP4ModelLoader:
                                               "tooltip": "First N transformer blocks stay full precision."}),
                 "keep_last_blocks": ("INT", {"default": 2, "min": 0, "max": 16,
                                              "tooltip": "Last N transformer blocks stay full precision."}),
+                "input_scales": (INPUT_SCALE_MODES, {
+                    "default": "dynamic",
+                    "tooltip": "auto-calibrate: first run records each layer's input range "
+                               "(slightly slower) into a per-checkpoint sidecar; every later "
+                               "load injects static input scales, removing the per-call amax "
+                               "cost (~0.2 ms x every quantized layer x every step). Reload "
+                               "the model after the calibration run to activate.",
+                }),
             }
         }
 
-    def load(self, unet_name, quantize_scope, keep_first_blocks, keep_last_blocks):
+    def load(self, unet_name, quantize_scope, keep_first_blocks, keep_last_blocks,
+             input_scales="dynamic"):
         import comfy.model_management as mm
         import comfy.sd
         import comfy.utils
@@ -377,9 +499,27 @@ class FunPackNVFP4ModelLoader:
             f"(scope='{quantize_scope}', full-precision blocks: {sorted(keep) or 'none'})."
         )
 
+        calibration = load_calibration(path) if input_scales == "auto-calibrate" else None
+        if calibration:
+            injected = inject_input_scales(sd, targets, calibration)
+            logging.info(
+                f"[FunPack NVFP4] static input scales ACTIVE on {injected}/{len(targets)} layers "
+                f"(calibrated {len(calibration)}, margin {CALIBRATION_MARGIN}x) — per-call input "
+                "amax eliminated. Delete the sidecar under refinements/nvfp4_scales/ to recalibrate."
+            )
+
         model = comfy.sd.load_diffusion_model_state_dict(sd, metadata=metadata)
         if model is None:
             raise RuntimeError("ComfyUI could not detect the model type after NVFP4 patching.")
+
+        if input_scales == "auto-calibrate" and not calibration:
+            hooked = install_calibration_capture(model, path)
+            logging.info(
+                f"[FunPack NVFP4] CALIBRATING input scales on {hooked} layers this session "
+                "(slightly slower). Run one full generation, then reload the model (change any "
+                "widget or restart) — static scales activate on the next load."
+            )
+
         try:
             log_nvfp4_diagnostics(model, device)
         except Exception as e:  # noqa: BLE001
