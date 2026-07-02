@@ -4283,6 +4283,7 @@ class FunPackLTXAVSceneChainSampler:
                 (f", carried={carried + soft_carried}f" if (carried + soft_carried) > 0 else "")
                 + (f", guide_tail={guide_tail}f" if guide_tail > 0 else "")
                 + (f", audio_tail={audio_tail}f" if audio_tail > 0 else "")
+                + (f" [{', '.join(run_mechanisms)}]" if run_mechanisms else "")
             )
             print(f"[FunPackSceneChain] Scene {scene_index + 1}: sampling {_scene_sample_s:.1f}s{_scene_extras}")
             report_lines.append(
