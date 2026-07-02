@@ -2280,6 +2280,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
                     "tooltip": "Per-step correction strength applied to the model's predicted output. Same scale/units as embed_guidance_strength — start there and adjust.",
                 }),
+                "block_steer": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: RLHF at the model level. Measures which transformer blocks do the work each run (per-block video-residual activity, ~free), pairs those fingerprints with your ratings (plus per-step value-function credit when output_guidance's VF is trained), and on later runs redistributes emphasis: blocks correlated with your Perfects get boosted, blocks correlated with Awfuls damped (video residual only — audio untouched, hard ±10% cap). Learns automatically while on; exact no-op until 2+ rated runs (or 2+ value-credit runs) for this key. Requires refinement_key_input.",
+                }),
+                "block_steer_strength": ("FLOAT", {
+                    "default": 0.05, "min": 0.01, "max": 0.15, "step": 0.005,
+                    "tooltip": "Max per-block residual gain deviation (scores are normalized to ±1, so 0.05 = up to ±5% per block; hard-capped at ±10% regardless). Start low — this reshapes the model's internal emphasis, not the conditioning.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3921,6 +3929,7 @@ class FunPackLTXAVSceneChainSampler:
                alg_blur_guides=False,
                bounded_attention_enabled=False,
                output_guidance=False, output_guidance_strength=0.02,
+               block_steer=False, block_steer_strength=0.05,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4025,6 +4034,61 @@ class FunPackLTXAVSceneChainSampler:
             else:
                 print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
                       f"strength={output_guidance_strength}")
+
+        # Block Steering (see block_steer.py): run-level machinery, installed once for the
+        # whole chain. The recorder + steer hooks are tagged module hooks (the defensive
+        # strip above cleans any leak); the value-credit wrapper goes in INNERMOST so all
+        # per-scene wrappers (embed/score/output guidance, temporal) stack on top and see
+        # it as their old_wrapper — it scores the base model's own prediction.
+        _bs_recorder = None
+        _bs_handles = []
+        _bs_wrapper_old = None
+        _bs_wrapper_installed = False
+        if block_steer:
+            try:
+                try:
+                    from . import block_steer as _bsmod
+                except ImportError:
+                    import block_steer as _bsmod
+                if not refinement_key_input:
+                    print("[FunPackSceneChain] block_steer: no refinement_key_input wired — "
+                          "nothing to learn into or steer from, skipping.")
+                else:
+                    # Recover from a credit wrapper leaked by a crashed previous run.
+                    _leaked = model.model_options.get("model_function_wrapper")
+                    if getattr(_leaked, "_funpack_block_steer", False):
+                        _old = getattr(_leaked, "_funpack_old", None)
+                        if _old is not None:
+                            model.model_options["model_function_wrapper"] = _old
+                        else:
+                            del model.model_options["model_function_wrapper"]
+                        print("[FunPackSceneChain] block_steer: stripped a leaked credit wrapper from a previous run")
+                    _bs_blocks = _bsmod._funpack_locate_blocks(model)
+                    if _bs_blocks is None:
+                        print("[FunPackSceneChain] block_steer: couldn't locate transformer blocks — skipping.")
+                    else:
+                        _bs_recorder = _bsmod.BlockActivityRecorder(len(_bs_blocks))
+                        _bs_handles = _bsmod.install_recorder(model, _bs_recorder)
+                        _bs_scores = _bsmod.load_block_scores(refinement_key_input)
+                        if _bs_scores is not None and _bs_scores.numel() == len(_bs_blocks):
+                            _gains = _bsmod.gains_from_scores(_bs_scores, block_steer_strength)
+                            _bs_handles += _bsmod.install_steer(model, _gains)
+                            _dev = max(abs(g - 1.0) for g in _gains) if _gains else 0.0
+                            print(f"[FunPackSceneChain] block_steer: steering active "
+                                  f"({len(_bs_blocks)} blocks, max gain deviation ±{_dev:.3f})")
+                        else:
+                            print("[FunPackSceneChain] block_steer: learning only — profile not "
+                                  "ready yet (needs 2+ rated runs for this key), steering is a no-op.")
+                        _bs_vf = _output_value_fn or self._load_output_value_function(refinement_key_input)
+                        if _bs_vf is not None:
+                            _bs_wrapper_old = model.model_options.get("model_function_wrapper")
+                            _w = _bsmod.make_credit_wrapper(_bs_wrapper_old, _bs_recorder, _bs_vf)
+                            _w._funpack_block_steer = True
+                            _w._funpack_old = _bs_wrapper_old
+                            model.model_options["model_function_wrapper"] = _w
+                            _bs_wrapper_installed = True
+            except Exception as e:
+                print(f"[FunPackSceneChain] block_steer setup failed (continuing without): {e}")
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -4345,6 +4409,29 @@ class FunPackLTXAVSceneChainSampler:
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
+
+        # Block Steering teardown: drop hooks, restore the wrapper chain, and stage this
+        # run's activity fingerprint for the NEXT rating cycle (same stage-then-pair
+        # convention as the x0 snapshot below).
+        if _bs_recorder is not None:
+            try:
+                try:
+                    from . import block_steer as _bsmod
+                except ImportError:
+                    import block_steer as _bsmod
+                _bsmod.remove_handles(_bs_handles)
+                if _bs_wrapper_installed:
+                    if _bs_wrapper_old is not None:
+                        model.model_options["model_function_wrapper"] = _bs_wrapper_old
+                    elif "model_function_wrapper" in model.model_options:
+                        del model.model_options["model_function_wrapper"]
+                if _bsmod.save_run_snapshot(refinement_key_input, _bs_recorder):
+                    _cs = _bs_recorder.credit_steps
+                    print(f"[FunPackSceneChain] block_steer: staged activity fingerprint "
+                          f"({int(_bs_recorder.counts.max())} calls"
+                          + (f", value credit from {_cs} steps" if _cs else "") + ")")
+            except Exception as e:
+                print(f"[FunPackSceneChain] block_steer teardown failed: {e}")
 
         # Snapshot the final output for output_guidance's NEXT training cycle (the rating that
         # scores THIS run pairs with this snapshot, not with denoised — see
