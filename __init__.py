@@ -20,6 +20,7 @@ if __package__:
         FunPackVideoStitch,
     )
     from .model_management import FunPackApplyLoraWeights, FunPackLoraLoader
+    from .nvfp4_patch import FunPackNVFP4ModelLoader
     from .samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     from .templates import FunPackRefinementKeyLoader
     try:
@@ -63,6 +64,10 @@ else:
         FunPackApplyLoraWeights = None
         FunPackLoraLoader = None
     try:
+        from nvfp4_patch import FunPackNVFP4ModelLoader
+    except Exception:
+        FunPackNVFP4ModelLoader = None
+    try:
         from samplers import FunPackHybridEuler2SSampler, FunPackDistilledFlowSampler, FunPackLTXAVSceneChainSampler
     except Exception:
         FunPackHybridEuler2SSampler = None
@@ -96,6 +101,7 @@ NODE_CLASS_MAPPINGS = {
     "FunPackLTXAVSceneChainSampler": FunPackLTXAVSceneChainSampler,
     "FunPackApplyLoraWeights": FunPackApplyLoraWeights,
     "FunPackLoraLoader": FunPackLoraLoader,
+    "FunPackNVFP4ModelLoader": FunPackNVFP4ModelLoader,
     "FunPackRefinementKeyLoader": FunPackRefinementKeyLoader,
 }
 NODE_CLASS_MAPPINGS = {name: cls for name, cls in NODE_CLASS_MAPPINGS.items() if cls is not None}
@@ -121,6 +127,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FunPackLTXAVSceneChainSampler": "FunPack LTXAV Scene Chain Sampler",
     "FunPackApplyLoraWeights": "FunPack Apply LoRA Weights",
     "FunPackLoraLoader": "FunPack LoRA Loader",
+    "FunPackNVFP4ModelLoader": "FunPack NVFP4 Model Loader (Experimental)",
     "FunPackRefinementKeyLoader": "FunPack Refinement Key Loader",
 }
 
