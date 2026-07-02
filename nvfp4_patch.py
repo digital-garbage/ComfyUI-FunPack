@@ -226,7 +226,6 @@ def log_nvfp4_diagnostics(model, device=None):
             import comfy.quant_ops as quant_ops
             d = torch.device(device) if device is not None else torch.device("cuda")
             w = torch.randn(4096, 4096, dtype=torch.bfloat16, device=d)
-            x = torch.randn(1024, 4096, dtype=torch.bfloat16, device=d)
             qw = quant_ops.QuantizedTensor.from_float(w, "TensorCoreNVFP4Layout", scale="recalculate")
 
             def _timed(fn, n=30):
@@ -239,18 +238,32 @@ def log_nvfp4_diagnostics(model, device=None):
                 torch.cuda.synchronize(d)
                 return (time.perf_counter() - t0) / n
 
-            t_bf16 = _timed(lambda: torch.nn.functional.linear(x, w))
-
-            def _q():
+            # Decomposed probe at two token counts: M=1024 (small scene chunk) and
+            # M=16384 (realistic video token count). Times the input quantization and
+            # the FP4 GEMM SEPARATELY — "no speedup" has two very different fixes
+            # depending on which one is at fault:
+            #   * GEMM alone beats bf16, quantization dominates -> per-call overhead
+            #     problem (x1232 layers/step); needs static input scales or fusion.
+            #   * GEMM alone loses to bf16 -> the FP4 kernel isn't engaging at all.
+            for m in (1024, 16384):
+                x = torch.randn(m, 4096, dtype=torch.bfloat16, device=d)
+                t_bf16 = _timed(lambda: torch.nn.functional.linear(x, w))
+                t_quant = _timed(lambda: quant_ops.QuantizedTensor.from_float(x, "TensorCoreNVFP4Layout"))
                 qx = quant_ops.QuantizedTensor.from_float(x, "TensorCoreNVFP4Layout")
-                torch.nn.functional.linear(qx, qw)
-
-            t_q = _timed(_q)
-            verdict = ("FAST PATH ACTIVE" if t_q < t_bf16 * 0.8
-                       else "NO SPEEDUP — emulated or overhead-bound")
-            lines.append(f"  GEMM probe 4096x4096 @ bs1024 (incl. dynamic input quant): "
-                         f"bf16 {t_bf16 * 1e3:.3f} ms vs nvfp4 {t_q * 1e3:.3f} ms "
-                         f"({t_bf16 / max(t_q, 1e-9):.2f}x) -> {verdict}")
+                t_gemm = _timed(lambda: torch.nn.functional.linear(qx, qw))
+                total = t_quant + t_gemm
+                if t_gemm < t_bf16 * 0.8 and total < t_bf16 * 0.8:
+                    verdict = "FAST PATH ACTIVE (net win incl. input quant)"
+                elif t_gemm < t_bf16 * 0.8:
+                    verdict = "FP4 GEMM fast but INPUT QUANTIZATION dominates — overhead-bound"
+                else:
+                    verdict = "FP4 GEMM NOT faster than bf16 — kernel not engaging"
+                lines.append(
+                    f"  probe 4096x4096 @ M={m}: bf16 {t_bf16 * 1e3:.3f} ms | "
+                    f"input-quant {t_quant * 1e3:.3f} ms + fp4-gemm {t_gemm * 1e3:.3f} ms "
+                    f"= {total * 1e3:.3f} ms ({t_bf16 / max(total, 1e-9):.2f}x net, "
+                    f"{t_bf16 / max(t_gemm, 1e-9):.2f}x gemm-only) -> {verdict}")
+                del x, qx
         except Exception as e:  # noqa: BLE001
             lines.append(f"  GEMM probe failed: {e}")
     else:
