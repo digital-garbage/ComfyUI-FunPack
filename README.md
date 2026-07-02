@@ -3,10 +3,15 @@
 A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
 
 <p align="left">
-  <a href="https://ko-fi.com/M4M61MBGIT"><img src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Ko-fi" height="36"></a>&nbsp;
-  <a href="https://patreon.com/digitalgarbage?utm_medium=unknown&amp;utm_source=join_link&amp;utm_campaign=creatorshare_creator&amp;utm_content=copyLink"><img src="https://c5.patreon.com/external/logo/become_a_patron_button.png" alt="Patreon" height="36"></a>&nbsp;
+  <a href="https://ko-fi.com/M4M61MBGIT"><img src="https://img.shields.io/badge/Support%20me%20on%20Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Ko-fi" height="36"></a>&nbsp;
+  <a href="https://patreon.com/digitalgarbage?utm_medium=unknown&amp;utm_source=join_link&amp;utm_campaign=creatorshare_creator&amp;utm_content=copyLink"><img src="https://img.shields.io/badge/Become%20a%20Patron-FF424D?style=for-the-badge&amp;logo=patreon&amp;logoColor=white" alt="Patreon" height="36"></a>&nbsp;
   <a href="https://cloud.vast.ai/?ref_id=308176"><img src="https://img.shields.io/badge/Run%20on-Vast.ai-BCFF41?style=for-the-badge&amp;logoColor=000000" alt="Vast.ai" height="36"></a>
 </p>
+
+> [!IMPORTANT]
+> FunPack is the project maintained by one person. Finding bugs, or features not working as intended, all alone - is nearly impossible - especially in an advanced piece of software like Editor. I've tried my best to make setup and acquaintance with FunPack as easy as possible, introducing multiple failsafes, but I can't envision how exactly you will use it.
+>
+> With this said - FunPack is provided "as is". Stable, uninterrupted work is NOT guaranteed even on main branch. But that doesn't mean bugs won't be fixed - you are free to file a bug report and I will most likely fix it in the nearest time.
 
 ## Dev and other non-main branches
 
