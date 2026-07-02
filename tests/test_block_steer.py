@@ -165,17 +165,28 @@ def test_snapshot_profile_scores_gains_roundtrip(store):
     assert bs.save_run_snapshot(key, _rec_with(cold))
     assert bs.update_profile_with_rating(key, -0.9) == 2       # Awful
     scores, status = bs.block_scores_with_status(key)
-    assert status == "ready"
+    assert scores is None and "have 2" in status               # correlation needs 3+
+
+    assert bs.save_run_snapshot(key, _rec_with(base))
+    assert bs.update_profile_with_rating(key, 0.2) == 3        # neutral third run
+    scores, status = bs.block_scores_with_status(key)
+    assert status.startswith("ready")
+    assert "corr" in status and "confidence" in status
     assert scores is not None and scores.shape == (N_BLOCKS,)
     assert int(scores.argmax()) == 10 and int(scores.argmin()) == 2
     assert abs(float(scores.mean())) < 1e-5                    # zero-mean: redistributes, no drift
-    assert float(scores.abs().max()) == pytest.approx(1.0, abs=1e-5)
+    # confidence ramp: 3 runs -> young profile steers gently, not at unit strength
+    conf = (3 - 2) / (bs.CONFIDENCE_FULL_AT - 2)
+    assert float(scores.abs().max()) == pytest.approx(conf, abs=1e-4)
 
     gains = bs.gains_from_scores(scores, 0.05)
-    assert max(gains) == pytest.approx(1.0 + 0.05, abs=1e-4)
-    assert min(gains) == pytest.approx(1.0 - 0.05, abs=1e-4)
+    # gains follow the (asymmetric, zero-mean) scores exactly; the largest deviation
+    # on either side is bounded by strength * confidence
+    assert max(gains) == pytest.approx(1.0 + 0.05 * float(scores.max()), abs=1e-4)
+    assert min(gains) == pytest.approx(1.0 + 0.05 * float(scores.min()), abs=1e-4)
+    assert max(abs(g - 1.0) for g in gains) == pytest.approx(0.05 * conf, abs=1e-4)
     # hard cap regardless of strength widget
-    gains_hi = bs.gains_from_scores(scores, 5.0)
+    gains_hi = bs.gains_from_scores(scores, 50.0)
     assert max(gains_hi) <= 1.0 + bs.MAX_GAIN_DELTA + 1e-6
     assert min(gains_hi) >= 1.0 - bs.MAX_GAIN_DELTA - 1e-6
 
@@ -194,7 +205,7 @@ def test_same_pole_ratings_need_contrast_not_more_runs(store):
     assert bs.save_run_snapshot(key, _rec_with(torch.rand(N_BLOCKS)))
     bs.update_profile_with_rating(key, -0.9)
     scores, status = bs.block_scores_with_status(key)
-    assert scores is not None and status == "ready"
+    assert scores is not None and status.startswith("ready")
 
 
 def test_every_reward_value_contributes(store):
@@ -206,8 +217,9 @@ def test_every_reward_value_contributes(store):
     lo = base.clone(); lo[21] = 1.2
     bs.save_run_snapshot(key, _rec_with(hi)); bs.update_profile_with_rating(key, 0.35)
     bs.save_run_snapshot(key, _rec_with(lo)); bs.update_profile_with_rating(key, 0.05)
+    bs.save_run_snapshot(key, _rec_with(base)); bs.update_profile_with_rating(key, 0.20)
     scores, status = bs.block_scores_with_status(key)
-    assert status == "ready"
+    assert status.startswith("ready")
     assert int(scores.argmax()) == 7 and int(scores.argmin()) == 21
 
 

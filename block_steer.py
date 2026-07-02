@@ -47,13 +47,21 @@ except ImportError:
 # Steering never moves a block's residual contribution by more than this, regardless of
 # strength widget or how lopsided the learned scores are.
 MAX_GAIN_DELTA = 0.10
-# Profile readiness: at least this many rating-paired runs…
-MIN_RATED_RUNS = 2
-# …with at least this much reward spread. Attribution is the per-block COVARIANCE between
+# Profile readiness: at least this many rating-paired runs (with 2, per-block correlation
+# is degenerate — every block correlates ±1 trivially)…
+MIN_RATED_RUNS = 3
+# …with at least this much reward spread. Attribution is the per-block CORRELATION between
 # reward and activity across runs — if every run is rated the same there is nothing to
 # attribute, no matter how many runs were paired (the v1 liked/disliked-EMA design failed
 # exactly there: 16 same-pole ratings produced zero contrast and looked "not ready").
+# Correlation, not raw covariance: run-mean activity is nearly deterministic (averaged
+# over ~1200 steps it varies in the 4th decimal run-to-run), so raw covariance is
+# numerically dead ("flat activity across runs") — but a tiny variation that CONSISTENTLY
+# tracks reward is exactly the signal we want, and correlation is scale-free.
 MIN_REWARD_STD = 0.05
+# Confidence ramp: scores scale by min(1, (runs - 2) / 6) so a young profile steers
+# gently (correlation over 3 runs is noisy) and reaches full strength around 8 runs.
+CONFIDENCE_FULL_AT = 8
 # …or this many value-credit runs, before scores are considered meaningful.
 MIN_CREDIT_RUNS = 2
 # Rolling history of (activity fingerprint, reward) pairs kept per key.
@@ -234,6 +242,9 @@ def save_run_snapshot(refinement_key, recorder: BlockActivityRecorder):
     fp = recorder.fingerprint()
     if fp is None:
         return False
+    # Store RELATIVE emphasis (mean-normalized): run-global scale differences (step
+    # counts, schedulers, scene counts) must not masquerade as per-block signal.
+    fp = fp / (fp.mean() + _EPS)
     try:
         path = _state_path(refinement_key, "block_snapshot")
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -277,10 +288,15 @@ def update_profile_with_rating(refinement_key, reward):
         prof = {}
         if os.path.exists(prof_path):
             prof = torch.load(prof_path, map_location="cpu", weights_only=False)
-            # Different model depth OR a v1 pole-EMA profile (pre-history): start fresh.
-            if int(prof.get("n_blocks", -1)) != activity.numel() or ("history_act" not in prof and "liked_n" in prof):
+            # Start fresh on: different model depth, a v1 pole-EMA profile, or a v2
+            # profile whose fingerprints predate mean-normalization (raw scales would
+            # poison the correlation).
+            if (int(prof.get("n_blocks", -1)) != activity.numel()
+                    or ("history_act" not in prof and "liked_n" in prof)
+                    or int(prof.get("fp_version", 1)) < 3):
                 prof = {}
         prof["n_blocks"] = activity.numel()
+        prof["fp_version"] = 3
 
         row = activity.float().reshape(1, -1)
         rw = torch.tensor([float(reward)], dtype=torch.float32)
@@ -325,16 +341,27 @@ def block_scores_with_status(refinement_key):
         credit, credit_n = prof.get("credit"), int(prof.get("credit_n", 0))
 
         rating_part = None
+        peak_corr = 0.0
         n = int(hr.numel()) if isinstance(hr, torch.Tensor) else 0
+        conf = min(1.0, max(0.0, (n - (MIN_RATED_RUNS - 1)) / float(CONFIDENCE_FULL_AT - (MIN_RATED_RUNS - 1))))
         if not isinstance(ha, torch.Tensor) or n < MIN_RATED_RUNS:
             rating_status = f"needs {MIN_RATED_RUNS}+ rated runs for this key (have {n})"
         elif float(hr.std()) < MIN_REWARD_STD:
             rating_status = (f"{n} rated runs but all rated alike — rate both good AND bad "
                              "runs so blocks have something to contrast")
         else:
-            cov = ((hr - hr.mean()).unsqueeze(1) * (ha - ha.mean(dim=0))).sum(dim=0)
-            rating_part = _normalize(cov)
-            rating_status = "flat activity across runs" if rating_part is None else "ready"
+            # Per-block Pearson correlation between reward and activity. Scale-free:
+            # run-mean activity varies only in the 4th decimal run-to-run, so raw
+            # covariance is numerically dead — but consistency with reward isn't.
+            rc = hr - hr.mean()
+            ac = ha - ha.mean(dim=0)
+            corr = (rc.unsqueeze(1) * ac).sum(dim=0) / (
+                (rc.square().sum().sqrt() * ac.square().sum(dim=0).sqrt()) + _EPS)
+            corr = corr.clamp(-1.0, 1.0)
+            peak_corr = float(corr.abs().max())
+            rating_part = _normalize(corr)
+            rating_status = ("no block's activity varies at all across runs"
+                             if rating_part is None else "ready")
 
         credit_part = _normalize(credit) if (credit is not None and credit_n >= MIN_CREDIT_RUNS) else None
 
@@ -347,7 +374,11 @@ def block_scores_with_status(refinement_key):
         scores = _normalize(combined)
         if scores is None:
             return None, "flat combined scores"
-        return scores, "ready"
+        # Confidence ramp: correlation over few runs is noisy — steer gently until the
+        # history has substance. Applied AFTER normalization so it survives into gains.
+        scores = scores * conf
+        return scores, (f"ready ({n} runs, peak |corr| {peak_corr:.2f}, "
+                        f"confidence {conf:.2f})")
     except Exception as e:
         return None, f"score load failed: {e}"
 

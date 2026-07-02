@@ -4080,7 +4080,7 @@ class FunPackLTXAVSceneChainSampler:
                             _bs_handles += _bsmod.install_steer(model, _gains)
                             _dev = max(abs(g - 1.0) for g in _gains) if _gains else 0.0
                             print(f"[FunPackSceneChain] block_steer: steering active "
-                                  f"({len(_bs_blocks)} blocks, max gain deviation ±{_dev:.3f})")
+                                  f"({len(_bs_blocks)} blocks, max gain deviation ±{_dev:.3f}, {_bs_status})")
                         else:
                             print(f"[FunPackSceneChain] block_steer: learning only — {_bs_status}; "
                                   "steering is a no-op this run.")
