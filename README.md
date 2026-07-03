@@ -1,6 +1,6 @@
 # ComfyUI-FunPack
 
-A set of ComfyUI nodes for experimenting with video generation workflows based on WAN, HunyuanVideo, LTX, and similar models.
+**FunPack turns ComfyUI into an AI movie studio.** At its heart is the **Cutting Room** — a full browser-based non-linear video editor where you write a script, arrange scenes on a real timeline, and generate a complete montage with one click. Behind it sits a self-improving generation engine: rate your clips and FunPack learns your taste, steering future generations toward what you liked. The nodes that power all of this (Studio, Video Refiner V2, the LTXAV Scene Chain Sampler, and more) remain fully usable in classic ComfyUI graph workflows with WAN, HunyuanVideo, LTX, and similar models.
 
 <p align="left">
   <a href="https://ko-fi.com/M4M61MBGIT"><img src="https://img.shields.io/badge/Support%20me%20on%20Ko--fi-FF5E5B?style=for-the-badge&amp;logo=kofi&amp;logoColor=white" alt="Ko-fi" height="36"></a>&nbsp;
@@ -29,7 +29,7 @@ Want a guided look at every panel? Open the editor and press **Help ▸ Welcome 
 
 The `dev` branch is intended for testing unfinished changes, implementing new logic and basically, flipping everything just because I can. It can be broken, renamed, or changed without warning.
 
-Use only `main` if you want the most stable version of this node pack. Bug reports based on `dev` version will be ignored.
+Use only `main` if you want the most stable version of FunPack. Bug reports based on `dev` version will be ignored.
 
 From time to time other short-lived branches may appear for the most advanced yet most breaking changes and features (e.g. a large rework in progress). I do not recommend using any non-`main` branch unless it's strictly necessary for your workflow — any sort of stability is not guaranteed, and such branches can be force-pushed or deleted at any time.
 
@@ -109,7 +109,7 @@ Version history is available in [CHANGELOG.md](CHANGELOG.md).
 
 ## Feedback
 
-If you have suggestions, questions, or ideas for new nodes, feel free to open an issue or submit a pull request.
+If you have suggestions, questions, or ideas for new features, feel free to open an issue or submit a pull request.
 
 ## Intent
 
