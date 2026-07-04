@@ -805,9 +805,11 @@ def _video_only(x_new, x_old, mask):
 
 
 def _video_span(model, x):
-    """(offset, size) of the video stream inside a packed AV latent [B,1,N], or None
-    when the layout can't be verified (same guards and stream heuristic as
-    _packed_video_mask — mismatch means don't risk slicing)."""
+    """(offset, size, stream_shape) of the video stream inside a packed AV latent
+    [B,1,N], or None when the layout can't be verified (same guards and stream
+    heuristic as _packed_video_mask — mismatch means don't risk slicing).
+    stream_shape is the per-stream latent shape comfy packed from (e.g.
+    (B, C, T, H, W)), so callers can recover frame geometry from the flat span."""
     try:
         shapes = _get_latent_shapes(model)
         if not shapes or len(shapes) <= 1:
@@ -819,7 +821,7 @@ def _video_span(model, x):
         if sum(sizes) != n:
             return None
         video_idx = max(range(len(shapes)), key=lambda i: (len(tuple(shapes[i])), sizes[i]))
-        return sum(sizes[:video_idx]), sizes[video_idx]
+        return sum(sizes[:video_idx]), sizes[video_idx], tuple(shapes[video_idx])
     except Exception:
         return None
 
@@ -2338,6 +2340,18 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
                     "tooltip": "Per-step correction strength applied to the model's predicted output. Same scale/units as embed_guidance_strength — start there and adjust.",
                 }),
+                "dynashift": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL DynaShift: a negative prompt at CFG=1, driven by YOUR bad ratings instead of text. Ratings 'Awful' and 'Wrong appearance' store that run's video latent in a per-key negative bank; during sampling, frames that start to look like a banked bad generation are steered away (projection removal) until the match drops below the threshold. Alignment-free in time (chain position / guide tails don't matter); negatives from a different resolution are skipped; each negative is weighted by prompt similarity so unrelated bad gens steer less. Requires refinement_key_input; silent until the bank has at least one entry. No extra model pass — near-zero overhead. Audio untouched.",
+                }),
+                "dynashift_strength": ("FLOAT", {
+                    "default": 0.3, "min": 0.05, "max": 1.0, "step": 0.05,
+                    "tooltip": "Fraction of the matched negative component removed per fully-gated late step (accumulates over ~4 quality-phase steps). 0.3 is a gentle nudge; 1.0 removes the matched component outright each step.",
+                }),
+                "dynashift_threshold": ("FLOAT", {
+                    "default": 0.6, "min": 0.3, "max": 0.95, "step": 0.05,
+                    "tooltip": "Frame-similarity gate: a current frame must match a banked negative frame above this cosine similarity before any steering applies. Steering strength ramps from 0 at the threshold to full at similarity 1.0, so it self-releases once the unwanted feature is gone. Lower = more aggressive (risks steering away from legitimately similar content).",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3193,7 +3207,7 @@ class FunPackLTXAVSceneChainSampler:
             try:
                 span = _video_span(model, denoised)
                 if span is not None:
-                    off, sz = span
+                    off, sz, _shape = span
                     target = denoised[..., off:off + sz]
                 else:
                     target = denoised  # single-stream: full tensor IS the training domain
@@ -3213,6 +3227,130 @@ class FunPackLTXAVSceneChainSampler:
                 return denoised
 
         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_output_wrapper, old_wrapper)
+        return old_wrapper
+
+    def _build_dynashift_wrapper(self, model, negatives, strength, threshold):
+        """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory.
+
+        A negative prompt at CFG=1: the repulsor is not a second text pass but the
+        stored video latents of generations the user rated as containing something
+        unwanted (see negative_memory.py — awful / wrong-appearance ratings feed the
+        bank). Per late step:
+          1. each current video frame is pooled to a fixed descriptor and compared
+             (cosine) against every stored negative frame — alignment-free in time,
+             so scene position, chain length and guide tails don't matter; only the
+             spatial latent geometry (C, H, W) must match (others are skipped);
+          2. each negative is weighted by prompt similarity (stored cond vs current
+             c_crossattn mean), so bad gens from unrelated prompts steer less;
+          3. frames matching above `threshold` get the matched negative frame's
+             component subtracted (positive projection removal, coefficient clamped
+             at 0 so anti-aligned frames are never pushed TOWARD the negative),
+             scaled by how far above threshold the match is — steering fades to a
+             no-op as soon as the unwanted feature is gone ("until it's gone").
+
+        Cost: one pooled similarity matrix + one masked subtraction per step; no
+        extra model forward pass, no uncond pass. Audio byte-identical by
+        construction (video span only, cat back). Frame-level (not sub-frame) v1:
+        the "mask" is temporal + magnitude gating; unmatched frames are untouched."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+        _desc_dim = 512
+        _prep = {}  # device -> (desc [Tall,512] fp32, units [Tall,D] fp16, owner [Tall], conds)
+        _warned = [False]
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _frame_desc(frames_f32):
+            d = torch.nn.functional.adaptive_avg_pool1d(frames_f32.unsqueeze(1), _desc_dim).squeeze(1)
+            return torch.nn.functional.normalize(d, dim=-1)
+
+        def _prepare(device, c, h, w):
+            key = (str(device), c, h, w)
+            if key in _prep:
+                return _prep[key]
+            descs, units, owners, conds = [], [], [], []
+            skipped = 0
+            for i, entry in enumerate(negatives):
+                lat = entry.get("latent")
+                if not isinstance(lat, torch.Tensor) or lat.dim() != 4 or \
+                        lat.shape[0] != c or lat.shape[2] != h or lat.shape[3] != w:
+                    skipped += 1
+                    continue
+                frames = lat.permute(1, 0, 2, 3).reshape(lat.shape[1], -1).to(device)
+                f32 = frames.float()
+                descs.append(_frame_desc(f32))
+                units.append(torch.nn.functional.normalize(f32, dim=-1).to(torch.float16))
+                owners.extend([len(conds)] * frames.shape[0])
+                conds.append(entry.get("cond"))
+            if skipped and not _warned[0]:
+                _warned[0] = True
+                print(f"[FunPackSceneChain] dynashift: {skipped} negative(s) skipped "
+                      "(different latent resolution than this run)")
+            prepared = None
+            if descs:
+                prepared = (torch.cat(descs, dim=0), torch.cat(units, dim=0),
+                            torch.tensor(owners, device=device), conds)
+            _prep[key] = prepared
+            return prepared
+
+        def _cond_weights(conds, c_dict, device):
+            cur = (c_dict or {}).get("c_crossattn")
+            if cur is None or not any(isinstance(cv, torch.Tensor) for cv in conds):
+                return torch.ones(len(conds), device=device)
+            cm = cur.detach().float()
+            cm = cm.mean(dim=tuple(range(cm.dim() - 1)))  # -> [D]
+            weights = []
+            for cv in conds:
+                if isinstance(cv, torch.Tensor) and cv.numel() == cm.numel():
+                    sim = torch.nn.functional.cosine_similarity(
+                        cm, cv.to(device).float(), dim=0)
+                    weights.append(sim.clamp(0.0, 1.0))
+                else:
+                    weights.append(torch.ones((), device=device))
+            return torch.stack(weights)
+
+        def _dynashift_wrapper(apply_fn, args, _s=float(strength), _thr=float(threshold)):
+            denoised = _call(apply_fn, args)
+            ts = args.get("timestep")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                sigma = 1.0
+            ramp = max(0.0, 1.0 - sigma * 2.0)  # same late-step ramp as the other wrappers
+            if ramp <= 0.0 or _s <= 0.0:
+                return denoised
+            try:
+                span = _video_span(model, denoised)
+                if span is None:
+                    return denoised
+                off, sz, shape = span
+                c, t, h, w = int(shape[-4]), int(shape[-3]), int(shape[-2]), int(shape[-1])
+                prepared = _prepare(denoised.device, c, h, w)
+                if prepared is None:
+                    return denoised
+                desc, units, owner, conds = prepared
+                cur = denoised[..., off:off + sz].reshape(c, t, h, w)
+                cur_f = cur.permute(1, 0, 2, 3).reshape(t, -1).float()
+                sims = _frame_desc(cur_f) @ desc.T                     # [T, Tall]
+                sims = sims * _cond_weights(conds, args.get("c"), denoised.device)[owner]
+                best, idx = sims.max(dim=1)                            # per current frame
+                gate = ((best - _thr) / max(1e-6, 1.0 - _thr)).clamp(0.0, 1.0) * (_s * ramp)
+                if float(gate.max()) <= 0.0:
+                    return denoised
+                matched = units[idx].float()                           # [T, D] unit rows
+                coef = (cur_f * matched).sum(dim=-1).clamp(min=0.0)    # aligned component only
+                new_f = cur_f - (gate * coef).unsqueeze(1) * matched
+                new_span = new_f.reshape(t, c, h, w).permute(1, 0, 2, 3).reshape(1, 1, sz)
+                return torch.cat([denoised[..., :off],
+                                  new_span.to(denoised.dtype),
+                                  denoised[..., off + sz:]], dim=-1)
+            except Exception as e:
+                print(f"[FunPackSceneChain] dynashift failed ({e}), passing through")
+                return denoised
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_dynashift_wrapper, old_wrapper)
         return old_wrapper
 
     def _load_taste_direction(self, refinement_key, slot="liked_dir"):
@@ -4004,6 +4142,7 @@ class FunPackLTXAVSceneChainSampler:
                alg_blur_guides=False,
                bounded_attention_enabled=False,
                output_guidance=False, output_guidance_strength=0.02,
+               dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4057,6 +4196,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_blur_guides=alg_blur_guides,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
+                dynashift=dynashift, dynashift_strength=dynashift_strength,
+                dynashift_threshold=dynashift_threshold,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -4099,6 +4240,28 @@ class FunPackLTXAVSceneChainSampler:
                     _bad_dir = self._load_taste_direction(_eg_key, "bad_dir")
                     pole = "contrastive (liked-vs-bad)" if _bad_dir is not None else "symmetric (+/-liked)"
                     print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}, pole={pole}")
+
+        # DynaShift negative latent memory — loaded once per run. Empty bank = feature
+        # stays silent (nothing rated bad yet for this key); it fills as awful /
+        # wrong-appearance ratings land.
+        _dynashift_negatives = None
+        if dynashift and refinement_key_input:
+            try:
+                try:
+                    from .negative_memory import load_negatives as _load_negs
+                except ImportError:
+                    from negative_memory import load_negatives as _load_negs
+                _dynashift_negatives = _load_negs(refinement_key_input) or None
+            except Exception as _e:
+                print(f"[FunPackSceneChain] dynashift: bank load failed ({_e})")
+            if _dynashift_negatives is None:
+                print("[FunPackSceneChain] dynashift: negative bank empty — rate a bad "
+                      "generation (Awful / Wrong appearance) to populate it")
+            else:
+                print(f"[FunPackSceneChain] dynashift: active with {len(_dynashift_negatives)} "
+                      f"negative(s), strength={dynashift_strength}, threshold={dynashift_threshold}")
+        elif dynashift:
+            print("[FunPackSceneChain] dynashift: requires refinement_key_input — disabled")
 
         # Output-space value function for output_guidance — sibling of the block above, but
         # keyed on refinement_key_input directly (relative-only for now, no absolute mode yet)
@@ -4270,9 +4433,14 @@ class FunPackLTXAVSceneChainSampler:
                     _pole = "contrastive" if _bad_dir is not None else "symmetric"
                     run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
                     self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
+                if dynashift and _dynashift_negatives:
+                    run_mechanisms.append(
+                        f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")
+                    self._build_dynashift_wrapper(
+                        model, _dynashift_negatives, dynashift_strength, dynashift_threshold)
                 if output_guidance and _output_value_fn is not None:
-                    # Installed outermost (after embed_guidance/score_slider) so it corrects
-                    # whatever prediction those already produced, not the raw base prediction.
+                    # Installed outermost (after embed_guidance/score_slider/dynashift) so it
+                    # corrects whatever prediction those already produced, not the raw base one.
                     run_mechanisms.append(f"output_guidance({output_guidance_strength})")
                     self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
                 # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top
@@ -4479,6 +4647,21 @@ class FunPackLTXAVSceneChainSampler:
                 _snap = max(_parts, key=lambda t: t.numel()) if _parts else None
             if isinstance(_snap, torch.Tensor):
                 self._save_output_value_snapshot(refinement_key_input, _snap, None)
+                # DynaShift pending candidate: same run/rating pairing as the snapshot, but
+                # the RAW video latent (fp16) — the rating decides whether it becomes a
+                # negative-bank entry or is discarded (negative_memory.consume_pending).
+                # Saved regardless of the dynashift toggle, same rationale as the snapshot:
+                # a bad rating on an unguided run is still valid negative memory.
+                try:
+                    try:
+                        from .negative_memory import save_pending as _save_neg_pending
+                    except ImportError:
+                        from negative_memory import save_pending as _save_neg_pending
+                    _cond0 = positive[0][0] if isinstance(positive[0], (list, tuple)) else None
+                    _save_neg_pending(refinement_key_input, _snap,
+                                      _cond0 if isinstance(_cond0, torch.Tensor) else None)
+                except Exception as _e:
+                    print(f"[FunPackSceneChain] dynashift pending save failed: {_e}")
 
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
 
@@ -4571,7 +4754,8 @@ class FunPackLTXAVSceneChainSampler:
                             joyai_frame_select="center", joyai_memory_strength=0.3,
                             joyai_audio_memory=False, v2a_grad_scale=1.0,
                             alg_blur_guides=False, bounded_attention_enabled=False,
-                            output_guidance=False, output_guidance_strength=0.02):
+                            output_guidance=False, output_guidance_strength=0.02,
+                            dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -4620,6 +4804,8 @@ class FunPackLTXAVSceneChainSampler:
                 alg_blur_guides=alg_blur_guides,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
+                dynashift=dynashift, dynashift_strength=dynashift_strength,
+                dynashift_threshold=dynashift_threshold,
                 unique_id=None, prompt=None,
             )
             last = out

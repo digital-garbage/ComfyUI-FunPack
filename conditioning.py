@@ -11910,6 +11910,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
                 if n_out is not None:
                     print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
+            # DynaShift negative memory: pair the sampler's pending raw latent with this
+            # rating — promote into the per-key negative bank when the rating says
+            # "something unwanted appeared" (awful / wrong_appearance), discard otherwise.
+            # Separate from the value-function block above because wrong_appearance is
+            # deliberately NOT reward-admissible there (repair semantics), yet it is the
+            # canonical intrusion signal here.
+            if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+                try:
+                    try:
+                        from .negative_memory import consume_pending, NEGATIVE_RATING_KEYS
+                    except ImportError:
+                        from negative_memory import consume_pending, NEGATIVE_RATING_KEYS
+                    n_neg = consume_pending(
+                        refinement_key,
+                        learning_profile.get("key") in NEGATIVE_RATING_KEYS,
+                    )
+                    if n_neg is not None:
+                        print(f"[FunPackRefiner] DynaShift negative bank updated — {n_neg} entr"
+                              f"{'y' if n_neg == 1 else 'ies'}")
+                except Exception as _e:
+                    print(f"[FunPackRefiner] DynaShift negative intake failed: {_e}")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
