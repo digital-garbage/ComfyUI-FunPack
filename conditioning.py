@@ -11911,20 +11911,22 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if n_out is not None:
                     print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
             # DynaShift negative memory: pair the sampler's pending raw latent with this
-            # rating — promote into the per-key negative bank when the rating says
-            # "something unwanted appeared" (awful / wrong_appearance), discard otherwise.
-            # Separate from the value-function block above because wrong_appearance is
-            # deliberately NOT reward-admissible there (repair semantics), yet it is the
-            # canonical intrusion signal here.
+            # rating — promote into the per-key negative bank when the rating marks the run
+            # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
+            # family via reward <= threshold — see negative_memory.is_negative_profile),
+            # discard otherwise. Separate from the value-function block above because
+            # wrong_appearance is deliberately NOT reward-admissible there (repair
+            # semantics), yet it is the canonical intrusion signal here.
             if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
                 try:
                     try:
-                        from .negative_memory import consume_pending, NEGATIVE_RATING_KEYS
+                        from .negative_memory import consume_pending, is_negative_profile
                     except ImportError:
-                        from negative_memory import consume_pending, NEGATIVE_RATING_KEYS
+                        from negative_memory import consume_pending, is_negative_profile
                     n_neg = consume_pending(
                         refinement_key,
-                        learning_profile.get("key") in NEGATIVE_RATING_KEYS,
+                        is_negative_profile(learning_profile),
+                        rating_key=learning_profile.get("key"),
                     )
                     if n_neg is not None:
                         print(f"[FunPackRefiner] DynaShift negative bank updated — {n_neg} entr"

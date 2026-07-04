@@ -57,6 +57,28 @@ def test_pending_promote_and_discard(monkeypatch, tmp_path):
     assert entries[0]["latent"].dtype == torch.float16
 
 
+def test_negative_profile_rule():
+    # Intrusion keys bank regardless of reward.
+    assert negative_memory.is_negative_profile({"key": "awful", "reward": -0.9})
+    assert negative_memory.is_negative_profile({"key": "wrong_appearance", "reward": 0.0})
+    # Quality-missing family banks via the reward threshold.
+    assert negative_memory.is_negative_profile({"key": "missing_quality", "reward": -0.25})
+    assert negative_memory.is_negative_profile({"key": "missing_action_quality", "reward": -0.55})
+    assert negative_memory.is_negative_profile({"key": "missing_details_action_quality", "reward": -0.65})
+    # Near-misses with positive reward stay out - their latents are mostly-wanted content.
+    assert not negative_memory.is_negative_profile({"key": "missing_details", "reward": 0.35})
+    assert not negative_memory.is_negative_profile({"key": "missing_action", "reward": 0.05})
+    assert not negative_memory.is_negative_profile({"key": "like", "reward": 1.0})
+    assert not negative_memory.is_negative_profile(None)
+
+
+def test_promotion_stamps_rating_provenance(monkeypatch, tmp_path):
+    _patch_store(monkeypatch, tmp_path)
+    negative_memory.save_pending("k", torch.randn(1, 4, 3, 2, 2))
+    assert negative_memory.consume_pending("k", promote=True, rating_key="missing_quality") == 1
+    assert negative_memory.load_negatives("k")[0]["rating"] == "missing_quality"
+
+
 def test_ring_buffer_caps_at_max(monkeypatch, tmp_path):
     _patch_store(monkeypatch, tmp_path)
     for i in range(negative_memory.MAX_NEGATIVES + 3):

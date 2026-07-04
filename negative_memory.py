@@ -23,10 +23,31 @@ import torch
 # the store into a museum. Oldest entries roll off; keys are disposable anyway.
 MAX_NEGATIVES = 8
 
-# V2 rating profile keys whose semantics are "something appeared that I did not want".
-# Missing-* ratings are absences, not intrusions - steering away from an absence would
-# push toward arbitrary content, so they never feed the bank.
+# V2 rating profile keys whose semantics are "something appeared that I did not want" -
+# these bank regardless of reward (wrong_appearance carries reward 0.0 because it is a
+# repair signal, but it is THE canonical intrusion rating).
 NEGATIVE_RATING_KEYS = ("awful", "wrong_appearance")
+
+# Ratings without an intrusion label still bank when the profile reward marks the run a
+# genuinely bad OUTCOME: the quality-missing family (Missing quality -0.25 through
+# Missing details+action+quality -0.65) - degradation is visible in the latent, so
+# steering off that attractor is meaningful. Deliberately excludes the near-miss
+# ratings with positive reward (Missing details +0.35, Missing action +0.05): those
+# latents are mostly-correct content, and banking them would repel future runs from
+# material the user actually wants.
+NEGATIVE_REWARD_THRESHOLD = -0.25
+
+
+def is_negative_profile(learning_profile):
+    """True when a V2 rating profile should feed the negative bank."""
+    if not isinstance(learning_profile, dict):
+        return False
+    if learning_profile.get("key") in NEGATIVE_RATING_KEYS:
+        return True
+    try:
+        return float(learning_profile.get("reward", 0.0)) <= NEGATIVE_REWARD_THRESHOLD
+    except (TypeError, ValueError):
+        return False
 
 
 def _state_path(refinement_key, mode):
@@ -73,11 +94,13 @@ def save_pending(refinement_key, video_latent, conditioning=None):
         return False
 
 
-def consume_pending(refinement_key, promote):
+def consume_pending(refinement_key, promote, rating_key=None):
     """Pair the pending latent with the rating that scores its run: promote it into
     the negative bank (ring buffer) or discard it. Always removes the pending file so
     a stale candidate can never be promoted by a later, unrelated rating. Returns the
-    bank size after promotion, or None when nothing was promoted."""
+    bank size after promotion, or None when nothing was promoted. `rating_key` is
+    stored on the entry as provenance (which rating banked it - available for
+    severity-weighted steering later)."""
     if not refinement_key:
         return None
     pending_path = _state_path(refinement_key, "pending_negative")
@@ -88,6 +111,8 @@ def consume_pending(refinement_key, promote):
         if promote:
             pending = torch.load(pending_path, map_location="cpu", weights_only=False)
             if isinstance(pending, dict) and isinstance(pending.get("latent"), torch.Tensor):
+                if rating_key:
+                    pending["rating"] = str(rating_key)
                 store_path = _state_path(refinement_key, "negative_latents")
                 entries = load_negatives(refinement_key)
                 entries.append(pending)
