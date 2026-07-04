@@ -804,6 +804,63 @@ def _video_only(x_new, x_old, mask):
         return x_new
 
 
+def _video_span(model, x):
+    """(offset, size) of the video stream inside a packed AV latent [B,1,N], or None
+    when the layout can't be verified (same guards and stream heuristic as
+    _packed_video_mask — mismatch means don't risk slicing)."""
+    try:
+        shapes = _get_latent_shapes(model)
+        if not shapes or len(shapes) <= 1:
+            return None
+        if not hasattr(x, "shape") or x.dim() < 1:
+            return None
+        n = int(x.shape[-1])
+        sizes = [int(math.prod(tuple(s)[1:])) for s in shapes]
+        if sum(sizes) != n:
+            return None
+        video_idx = max(range(len(shapes)), key=lambda i: (len(tuple(shapes[i])), sizes[i]))
+        return sum(sizes[:video_idx]), sizes[video_idx]
+    except Exception:
+        return None
+
+
+# Per-scene model_function_wrappers (embed guidance / score slider / output guidance /
+# temporal styles) live on the SHARED ModelPatcher. If a run dies between install and
+# restore (interrupt, OOM), the wrapper survives in-process and silently steers every
+# later run, stacking one deeper each time — the exact progressive-corruption failure
+# mode strip_funpack_block_hooks exists for, so we reuse its tag+strip pattern.
+_FUNPACK_SCENE_WRAPPER_TAG = "_funpack_scene_wrapper"
+
+
+def _tag_scene_wrapper(wrapper, prev):
+    """Mark a per-scene wrapper (and remember what it wrapped) so a later run can
+    identify and unwind leaked ones."""
+    setattr(wrapper, _FUNPACK_SCENE_WRAPPER_TAG, True)
+    setattr(wrapper, "_funpack_prev_wrapper", prev)
+    return wrapper
+
+
+def _strip_funpack_scene_wrappers(model):
+    """Unwind FunPack per-scene wrappers leaked by a previous interrupted/failed run.
+    Walks the recorded prev-wrapper chain back to the first non-FunPack wrapper (or
+    none). Idempotent; never raises."""
+    try:
+        w = model.model_options.get("model_function_wrapper")
+        stripped = 0
+        while w is not None and getattr(w, _FUNPACK_SCENE_WRAPPER_TAG, False):
+            w = getattr(w, "_funpack_prev_wrapper", None)
+            stripped += 1
+        if stripped:
+            if w is not None:
+                model.model_options["model_function_wrapper"] = w
+            else:
+                model.model_options.pop("model_function_wrapper", None)
+            print(f"[FunPackSceneChain] Stripped {stripped} leaked scene wrapper(s) from a previous run")
+        return stripped
+    except Exception:
+        return 0
+
+
 def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0):
     """ALG (arXiv:2506.08456): low-pass filter selected frames of the packed video stream.
 
@@ -3096,14 +3153,26 @@ class FunPackLTXAVSceneChainSampler:
     def _build_output_guidance_wrapper(self, model, value_fn, strength):
         """Sibling of _build_embed_guidance_wrapper, but corrects the model's OUTPUT
         (x0_hat) instead of nudging the INPUT conditioning. value_fn.gradient() backprops
-        through its own compress() step, so feeding it the full-shape denoised prediction
-        returns a same-shape gradient — a direct, single-pass correction (no extra forward
-        pass through the base model; the only added cost is one backward pass through the
-        value function's few-hundred-parameter MLP). Video-only via the packed AV mask,
-        same convention as embed_guidance/velocity-bias. Borrows NoiseTilt's core idea
-        (train the reward signal on the model's own prediction, not the input) without its
-        SDE noise-term mechanism, which has no analogue in this deterministic-ODE sampler —
-        see [[research_2026_training_free_candidates]]."""
+        through its own compress() step, so feeding it the denoised prediction returns a
+        same-shape gradient — a direct, single-pass correction (no extra forward pass
+        through the base model; the only added cost is one backward pass through the value
+        function's few-hundred-parameter MLP). Borrows NoiseTilt's core idea (train the
+        reward signal on the model's own prediction, not the input) without its SDE
+        noise-term mechanism, which has no analogue in this deterministic-ODE sampler —
+        see [[research_2026_training_free_candidates]].
+
+        Two invariants the correction depends on:
+        - VIDEO SLICE, not post-hoc mask: the gradient is computed on the packed latent's
+          video span only, because that is the domain the value function was trained on
+          (_save_output_value_snapshot pools the video stream alone). Feeding the full
+          packed AV tensor would shift every adaptive-pooling bucket and let audio
+          contaminate the score.
+        - NORM-CALIBRATED step: the raw MLP gradient reaches each latent element through
+          an adaptive-pool window of ~N/512 elements, so its per-element magnitude is
+          O(1/window) — numerically inert if applied raw. The delta is rescaled so
+          strength means "fraction of the video stream's norm per fully-ramped step"
+          (0.02 = 2%), the same relative-calibration convention as the slider's 0.15 and
+          the Refiner's NORM_SCALE."""
         old_wrapper = model.model_options.get("model_function_wrapper")
 
         def _call(apply_fn, a):
@@ -3122,15 +3191,28 @@ class FunPackLTXAVSceneChainSampler:
             if scale <= 0:
                 return denoised
             try:
-                grad = _vf.gradient(denoised)
-                mask = _packed_video_mask(model, denoised)
-                corrected = denoised + (_s * scale) * grad
-                return _video_only(corrected, denoised, mask) if mask is not None else corrected
+                span = _video_span(model, denoised)
+                if span is not None:
+                    off, sz = span
+                    target = denoised[..., off:off + sz]
+                else:
+                    target = denoised  # single-stream: full tensor IS the training domain
+                grad = _vf.gradient(target)
+                gn = float(grad.float().norm())
+                if gn <= 0.0:
+                    return denoised
+                k = (_s * scale) * float(target.float().norm()) / gn
+                corrected = target + grad * k
+                if span is None:
+                    return corrected
+                return torch.cat(
+                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1
+                )
             except Exception as e:
                 print(f"[FunPackSceneChain] output_guidance: gradient failed ({e}), passing through")
                 return denoised
 
-        model.model_options["model_function_wrapper"] = _output_wrapper
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_output_wrapper, old_wrapper)
         return old_wrapper
 
     def _load_taste_direction(self, refinement_key, slot="liked_dir"):
@@ -3198,7 +3280,7 @@ class FunPackLTXAVSceneChainSampler:
                 return _ew(apply_fn, args)
             return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
-        model.model_options["model_function_wrapper"] = _embed_wrapper
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_embed_wrapper, old_wrapper)
         return old_wrapper
 
     def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None):
@@ -3279,7 +3361,7 @@ class FunPackLTXAVSceneChainSampler:
                 print(f"[FunPackSceneChain] score_slider failed ({_e}), using base prediction")
                 return _call(apply_fn, args)
 
-        model.model_options["model_function_wrapper"] = _slider_wrapper
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_slider_wrapper, old_wrapper)
         return old_wrapper
 
     def _resolve_frame_index(self, total, frame_idx):
@@ -3940,6 +4022,10 @@ class FunPackLTXAVSceneChainSampler:
             strip_funpack_block_hooks(model)
         except Exception as _e:
             print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
+        # Same defense for per-scene model_function_wrappers: normally unwound in the
+        # per-scene finally, but a hard kill between install and restore (or a crash in a
+        # third-party wrapper we chained onto) could still leave one behind in-process.
+        _strip_funpack_scene_wrappers(model)
 
         # Blackwell (sm_120) GPUs can't run xformers attention with a tensor mask; the LTX
         # guide path uses one, so anchor scenes generate but guide scenes crash. Route masked
@@ -4163,62 +4249,60 @@ class FunPackLTXAVSceneChainSampler:
                 elif not custom_guides:
                     guide_tail = 0
 
-            if embed_guidance and _value_fn is not None and _value_fn.is_ready():
-                run_mechanisms.append("embed_guidance_vf_ascend")
-                orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
-                ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
-                scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
-            if embed_guidance and _liked_dir is not None:
-                run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
-                _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
-            _slider_old_wrapper = None
-            if score_slider and _liked_dir is not None:
-                _pole = "contrastive" if _bad_dir is not None else "symmetric"
-                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
-                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
-            _output_old_wrapper = None
-            if output_guidance and _output_value_fn is not None:
-                # Installed outermost (after embed_guidance/score_slider) so it corrects
-                # whatever prediction those already produced, not the raw base prediction.
-                run_mechanisms.append(f"output_guidance({output_guidance_strength})")
-                _output_old_wrapper = self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
-            # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
-            # whatever is installed (e.g. embed guidance). Restored right after sampling,
-            # before the embed-guidance restore, so the wrappers unwind in install order.
-            _temporal_applied = False
-            _temporal_prev_wrapper = None
-            _scene_mode = self._scene_temporal_mode(scene_cond)
-            _scene_mult = self._scene_temporal_mult(scene_cond)
-            _cur_wrapper = model.model_options.get("model_function_wrapper")
-            if _scene_mode == "pulse":
-                try:
-                    from .ltx_enhancements import make_pulse_temporal_wrapper
-                except ImportError:
-                    from ltx_enhancements import make_pulse_temporal_wrapper
-                _tw = make_pulse_temporal_wrapper(_cur_wrapper)
-                if _tw is not None:
-                    _temporal_prev_wrapper = _cur_wrapper
-                    model.model_options["model_function_wrapper"] = _tw
-                    _temporal_applied = True
-            elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
-                try:
-                    from .ltx_enhancements import make_temporal_wrapper
-                except ImportError:
-                    from ltx_enhancements import make_temporal_wrapper
-                _tw = make_temporal_wrapper(_cur_wrapper, _scene_mult)
-                if _tw is not None:
-                    _temporal_prev_wrapper = _cur_wrapper
-                    model.model_options["model_function_wrapper"] = _tw
-                    _temporal_applied = True
-            # JoyAI v2a coupling: amplify (or mute) the trained video->audio cross-attention for this
-            # scene's denoise. Only when audio memory is on and the scale differs from native (1.0);
-            # hooks are removed immediately after so nothing leaks into later scenes / other nodes.
+            # Everything from here through sampling installs per-scene state on the SHARED
+            # model (function wrappers, forward hooks). One snapshot + one finally guarantees
+            # the model leaves this scene exactly as it entered it — even on interrupt/OOM
+            # mid-sampling, where the old per-feature unwind blocks were never reached and
+            # the wrappers leaked in-process, double-steering every later run (same failure
+            # mode as the block-hook leak; see _strip_funpack_scene_wrappers).
+            _scene_base_wrapper = model.model_options.get("model_function_wrapper")
             _v2a_handles = []
-            if joyai_audio_memory and audio_tail > 0:
-                _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
-                if _v2a_handles:
-                    run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
             try:
+                if embed_guidance and _value_fn is not None and _value_fn.is_ready():
+                    run_mechanisms.append("embed_guidance_vf_ascend")
+                    orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
+                    ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
+                    scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
+                if embed_guidance and _liked_dir is not None:
+                    run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
+                    self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
+                if score_slider and _liked_dir is not None:
+                    _pole = "contrastive" if _bad_dir is not None else "symmetric"
+                    run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
+                    self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
+                if output_guidance and _output_value_fn is not None:
+                    # Installed outermost (after embed_guidance/score_slider) so it corrects
+                    # whatever prediction those already produced, not the raw base prediction.
+                    run_mechanisms.append(f"output_guidance({output_guidance_strength})")
+                    self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
+                # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top
+                # of whatever is installed (e.g. embed guidance).
+                _scene_mode = self._scene_temporal_mode(scene_cond)
+                _scene_mult = self._scene_temporal_mult(scene_cond)
+                _cur_wrapper = model.model_options.get("model_function_wrapper")
+                if _scene_mode == "pulse":
+                    try:
+                        from .ltx_enhancements import make_pulse_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_pulse_temporal_wrapper
+                    _tw = make_pulse_temporal_wrapper(_cur_wrapper)
+                    if _tw is not None:
+                        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
+                elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
+                    try:
+                        from .ltx_enhancements import make_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_temporal_wrapper
+                    _tw = make_temporal_wrapper(_cur_wrapper, _scene_mult)
+                    if _tw is not None:
+                        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
+                # JoyAI v2a coupling: amplify (or mute) the trained video->audio cross-attention
+                # for this scene's denoise. Only when audio memory is on and the scale differs
+                # from native (1.0).
+                if joyai_audio_memory and audio_tail > 0:
+                    _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
+                    if _v2a_handles:
+                        run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
                 _t_sample0 = _time.perf_counter()
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
@@ -4230,28 +4314,11 @@ class FunPackLTXAVSceneChainSampler:
                 _phase_sampling += _scene_sample_s
             finally:
                 self._remove_v2a_scale(_v2a_handles)
-            if _temporal_applied:
-                if _temporal_prev_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _temporal_prev_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
-            # Unwind in reverse install order: output_guidance was installed outermost (on top
-            # of score_slider, which was on top of embed_guidance).
-            if output_guidance and _output_value_fn is not None:
-                if _output_old_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _output_old_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
-            if score_slider and _liked_dir is not None:
-                if _slider_old_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _slider_old_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
-            if embed_guidance and _liked_dir is not None:
-                if _eg_old_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _eg_old_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
+                if model.model_options.get("model_function_wrapper") is not _scene_base_wrapper:
+                    if _scene_base_wrapper is not None:
+                        model.model_options["model_function_wrapper"] = _scene_base_wrapper
+                    else:
+                        model.model_options.pop("model_function_wrapper", None)
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
