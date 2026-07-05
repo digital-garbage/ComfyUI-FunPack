@@ -1,5 +1,6 @@
-// "Models" settings modal: configure pluggable node slots for the fixed pipeline.
+// "Models" settings section: configure pluggable node slots for the fixed pipeline.
 // Pick a Model Type -> a Loader Node -> the editor exposes that node's inputs.
+// Lives in the unified Settings window; ModelsModal.open() deep-links to it.
 (function () {
   const { el, clear } = window.dom;
   const API = window.MovieEditorAPI;
@@ -15,7 +16,7 @@
   let coreProducers = [];          // [{id,type,label}]
   let requirements = [];           // [{id,type,label,required,role_hint,hint}]
   let wiringRules = {};            // guided wiring rules from /pipeline-ports
-  let overlay = null;
+  let container = null;           // mounted content root inside the Settings window
   const expanded = new Set();     // slot ids currently expanded (collapsed by default)
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
@@ -1095,10 +1096,9 @@
   }
 
   function render() {
-    if (!overlay) return;
-    const content = overlay.querySelector(".modal-content");
-    clear(content);
-    content.append(body());
+    if (!container) return;
+    clear(container);
+    container.append(body());
   }
 
   async function prewarmSpecs() {
@@ -1111,8 +1111,7 @@
     render();
   }
 
-  async function open() {
-    if (overlay) return;  // already open — don't stack a second modal (orphans handlers)
+  async function loadAll() {
     await ensureRoles();
     try {
       const pp = await API.pipelinePorts();
@@ -1129,23 +1128,42 @@
     // metadata was captured, so opening Models once upgrades existing projects. persist()
     // dispatches funpack-models-changed → the store reloads and the inspector re-renders.
     if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
-
-    overlay = el("div", "modal-overlay");
-    const modal = el("div", "modal");
-    const head = el("div", "modal-head");
-    head.append(el("div", "modal-title", "Models & Pipeline Nodes"));
-    const refresh = el("button", "btn ghost", "↻ Refresh model list"); refresh.onclick = refreshList;
-    const closeModal = () => { if (overlay) overlay.remove(); overlay = null; };
-    const close = el("button", "btn ghost", "✕"); close.onclick = closeModal;
-    const heRight = el("div", "modal-head-right"); heRight.append(refresh); heRight.append(close);
-    head.append(heRight);
-    modal.append(head);
-    modal.append(el("div", "modal-content"));
-    overlay.append(modal);
-    overlay.addEventListener("click", (e) => { if (overlay && e.target === overlay) closeModal(); });
-    document.body.append(overlay);
-    render();
   }
 
-  window.ModelsModal = { open, refresh: async () => { await ensureRoles().catch(() => {}); await doFullRefresh().catch(() => {}); } };
+  function mount(body, ctx) {
+    container = el("div", "models-mount");
+    container.append(el("div", "pj-meta", "Loading models & pipeline…"));
+    body.append(container);
+    const refresh = el("button", "btn ghost tiny", "↻ Refresh model list");
+    refresh.onclick = refreshList;
+    ctx.setActions([refresh]);
+    loadAll()
+      .then(() => { if (container && container.isConnected) render(); })
+      .catch(() => {
+        if (container && container.isConnected) {
+          clear(container);
+          container.append(el("div", "pj-meta", "Could not load models & pipeline."));
+        }
+      });
+    return () => { container = null; };
+  }
+
+  window.SettingsWindow.register({
+    id: "models", group: "Generation", order: 2, title: "Models & Pipeline",
+    subtitle: "Loaders and custom nodes wired into the fixed FunPack pipeline.",
+    keywords: "models loaders unet vae clip lora nodes pipeline wiring workflow import "
+      + "bypass disable core full control links",
+    iconBg: "linear-gradient(180deg,#b18cff,#7a4fd0)",
+    icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8 14 5v6l-6 3.2L2 11V5l6-3.2z"/><path d="M2 5l6 3 6-3M8 8v6.2"/></svg>',
+    mount,
+  });
+
+  window.ModelsModal = {
+    open: () => window.SettingsWindow.open("models"),
+    refresh: async () => {
+      await ensureRoles().catch(() => {});
+      await doFullRefresh().catch(() => {});
+      if (container) render();
+    },
+  };
 })();

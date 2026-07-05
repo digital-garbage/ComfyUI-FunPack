@@ -1,13 +1,10 @@
-// Editor Settings modal: per-browser editor preferences (autocomplete, anchor).
-// Opened from the Settings menu. Distinct from Engine settings (which configures
-// Studio / Chain Sampler behavior on the project).
+// Editor settings: per-browser editor preferences (autocomplete, anchor).
+// A section of the unified Settings window. Distinct from Engine settings
+// (which configures Studio / Chain Sampler behavior on the project).
 (function () {
   const { el } = window.dom;
   const S = window.Store;
   const API = window.MovieEditorAPI;
-
-  let overlay = null;
-  function close() { if (overlay) { overlay.remove(); overlay = null; } }
 
   function labeled(text, control) {
     const l = el("label", "field"); l.append(el("span", null, text)); l.append(control); return l;
@@ -155,17 +152,8 @@
     return row;
   }
 
-  function open() {
-    close();
-    overlay = el("div", "modal-overlay");
-    const box = el("div", "modal");
-    const head = el("div", "modal-head");
-    head.append(el("div", "modal-title", "Editor settings"));
-    const hr = el("div", "modal-head-right");
-    const x = el("button", "btn ghost tiny", "✕"); x.onclick = close;
-    hr.append(x); head.append(hr); box.append(head);
-
-    const content = el("div", "modal-content es-content");
+  function mount(body) {
+    const content = el("div", "es-content");
     content.append(toggleRow(
       "Prompt autocomplete",
       "Suggest matching shortcuts while you type in the global prompt and scene prompts. Shows the trigger, its prompt, and category.",
@@ -175,11 +163,20 @@
       "Text before the first split trigger is a shared anchor prepended to every scene. Turn off to make that leading text Scene 1 instead.",
       "anchorEnabled"));
     content.append(anchorGuideSection());
-
-    box.append(content); overlay.append(box);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    document.body.append(overlay);
+    body.append(content);
   }
 
-  window.EditorSettingsModal = { open, close };
+  window.SettingsWindow.register({
+    id: "editor", group: "", title: "Editor",
+    subtitle: "Per-browser preferences — they apply to this browser, not the project.",
+    keywords: "autocomplete anchor prompt shortcuts i2v bypass guide preferences",
+    iconBg: "linear-gradient(180deg,#6aa9ff,#3b6fd9)",
+    icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.7" fill="#fff" stroke="none"/><circle cx="11" cy="8" r="1.7" fill="#fff" stroke="none"/><circle cx="5" cy="11.5" r="1.7" fill="#fff" stroke="none"/></svg>',
+    mount,
+  });
+
+  window.EditorSettingsModal = {
+    open: () => window.SettingsWindow.open("editor"),
+    close: () => window.SettingsWindow.close(),
+  };
 })();

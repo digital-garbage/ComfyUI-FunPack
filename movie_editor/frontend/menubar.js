@@ -219,6 +219,8 @@
         } },
       ],
       Settings: [
+        { label: "All Settings…", hint: "⌘,", action: () => window.SettingsWindow.open() },
+        { sep: true },
         { label: "Editor settings…", action: () => window.EditorSettingsModal.open() },
         // Never grey this out over pipeline state: the modal itself explains WHY Studio /
         // Chain Sampler knobs are unavailable (built-in pipeline disabled, custom slots)
@@ -363,4 +365,14 @@
   });
   S.subscribe((st) => { render(); renderChips(st); });
   render();
+
+  // Single implementations for maintenance actions, shared with the Settings window
+  // (Refinement & Taste + Updates & ComfyUI sections) — menus stay as shortcuts.
+  window.FunPackMaintenance = {
+    exportRefinementKey,
+    importRefinementKeyFile: () => refinementKeyImportInput.click(),
+    deleteRefinementKey,
+    clearGlobalTaste,
+    restartComfy,
+  };
 })();

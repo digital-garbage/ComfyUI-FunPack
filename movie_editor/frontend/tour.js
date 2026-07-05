@@ -391,7 +391,7 @@
     {
       id: "models-modal",
       title: "Models dialog",
-      target: ".modal-overlay .modal",
+      target: ".settings-win",
       body: "Add each loader type (UNet, VAE, CLIP, and so on), pick the node class, then set widget values from dropdowns. Use Wire to when an output must feed another node or a pipeline port.",
       pad: 12,
       before: () => {
@@ -514,6 +514,7 @@
   }
 
   function closeModalOverlay() {
+    window.SettingsWindow?.close?.(); // settings sections need their cleanup hooks run
     document.querySelectorAll(".modal-overlay").forEach((n) => {
       if (n.closest?.("#tour-root")) return;
       n.remove();

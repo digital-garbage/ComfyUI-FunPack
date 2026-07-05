@@ -1,12 +1,12 @@
-// Engine settings modal: Studio, Chain Sampler, continuity (moved out of Project inspector).
+// Engine settings: Studio, Chain Sampler, continuity (moved out of Project inspector).
+// A section of the unified Settings window.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
 
-  let overlay = null;
+  let _mounted = null; // { scroller, content }
   let unsub = null;
   let _editing = false;
-  let _onKey = null;
 
   const FOLD_KEY = "funpack_engine_fold_";
   function foldOpen(id, def) {
@@ -599,44 +599,22 @@
   }
 
   function render() {
-    if (!overlay) return;
-    const content = overlay.querySelector(".modal-content");
+    if (!_mounted) return;
+    const { scroller, content } = _mounted;
     if (_editing) {
       if (shouldProtect(document.activeElement, content)) return;
       _editing = false;
     }
-    const scrollTop = content.scrollTop;
+    const scrollTop = scroller.scrollTop;
     clear(content);
     renderContent(content, S.get());
-    content.scrollTop = scrollTop;
+    scroller.scrollTop = scrollTop;
   }
 
-  function close() {
-    if (unsub) { unsub(); unsub = null; }
-    if (_onKey) { document.removeEventListener("keydown", _onKey); _onKey = null; }
-    if (overlay) overlay.remove();
-    overlay = null;
-    _editing = false;
-  }
-
-  function open() {
-    if (!S.get().project) return;
-    if (overlay) { render(); return; }
-
-    overlay = el("div", "modal-overlay");
-    const modal = el("div", "modal modal-wide");
-    const head = el("div", "modal-head");
-    head.append(el("div", "modal-title", "Engine Settings"));
-    const closeBtn = el("button", "btn ghost", "✕");
-    closeBtn.onclick = close;
-    const heRight = el("div", "modal-head-right"); heRight.append(closeBtn);
-    head.append(heRight);
-    modal.append(head);
-    const content = el("div", "modal-content engine-modal-content");
-    modal.append(content);
-    overlay.append(modal);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    document.body.append(overlay);
+  function mount(body) {
+    const content = el("div", "engine-modal-content");
+    body.append(content);
+    _mounted = { scroller: body, content };
 
     content.addEventListener("focusin", (e) => {
       const t = e.target;
@@ -649,12 +627,27 @@
       setTimeout(() => { if (!_editing) render(); }, 60);
     });
 
-    _onKey = (e) => { if (e.key === "Escape") close(); };
-    document.addEventListener("keydown", _onKey);
-
     unsub = S.subscribe(() => render());
     render();
+    return () => {
+      if (unsub) { unsub(); unsub = null; }
+      _mounted = null;
+      _editing = false;
+    };
   }
 
-  window.EngineSettingsModal = { open, close };
+  window.SettingsWindow.register({
+    id: "engine", group: "Generation", order: 1, title: "Engine",
+    subtitle: "FunPack Studio, Chain Sampler, and continuity for the open project.",
+    keywords: "studio chain sampler refinement key seed cfg guidance continuity guides presets "
+      + "embed dynashift joyai decode transition overlap steer adjustments temporal",
+    iconBg: "linear-gradient(180deg,#ffb64d,#e07f1f)",
+    icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.2 1.3 3 9h4.1l-1 5.7L12.9 7H8.5l.7-5.7z" fill="#fff"/></svg>',
+    mount,
+  });
+
+  window.EngineSettingsModal = {
+    open: () => window.SettingsWindow.open("engine"),
+    close: () => window.SettingsWindow.close(),
+  };
 })();
