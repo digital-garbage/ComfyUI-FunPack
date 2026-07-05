@@ -11,11 +11,11 @@
       items: [
         {
           q: "I cannot finish model setup - dropdowns are empty.",
-          a: "Use Settings - Refresh model list (or press R in ComfyUI) so loader combos pick up installed checkpoints. Confirm the files exist in your ComfyUI model folders, then restart ComfyUI if you just installed something new.",
+          a: "Use Refresh model list in Settings - Models & Pipeline (or press R in ComfyUI) so loader combos pick up installed checkpoints. Confirm the files exist in your ComfyUI model folders, then restart ComfyUI if you just installed something new.",
         },
         {
           q: "Generate is disabled or fails right away.",
-          a: "Open FunPack in the menu bar and check Workflow template: it must say loaded. Export your graph from ComfyUI with Save (API Format), not the regular UI workflow JSON. Also fill every required slot under Settings - Models.",
+          a: "Open Settings - Updates & ComfyUI and check Workflow template: it must say loaded. Export your graph from ComfyUI with Save (API Format), not the regular UI workflow JSON. Also fill every required slot under Settings - Models & Pipeline.",
         },
         {
           q: "Missing media for continuity or guide stack.",
@@ -384,7 +384,7 @@
       id: "models-menu",
       title: "Set up Models first",
       target: '.menu-btn[data-menu="Settings"]',
-      body: "Before generating, open Settings - Models. Tell Cutting Room which ComfyUI loader nodes and checkpoint files to use. Without this, Generate does not know your hardware setup.",
+      body: "Before generating, open Settings and pick Models & Pipeline in the sidebar. Tell Cutting Room which ComfyUI loader nodes and checkpoint files to use. Without this, Generate does not know your hardware setup.",
       pad: 4,
       before: () => closeMenus(),
     },
@@ -408,7 +408,7 @@
       id: "workflow-template",
       title: "ComfyUI workflow template (API format)",
       target: "#health-chip",
-      body: "Cutting Room queues your graph from a ComfyUI export. In ComfyUI enable dev mode, then Save (API Format) - not the regular UI workflow JSON. Point the app at that file (or import it under Settings - Import ComfyUI Workflow). FunPack menu shows Workflow template: loaded when ready.",
+      body: "Cutting Room queues your graph from a ComfyUI export. In ComfyUI enable dev mode, then Save (API Format) - not the regular UI workflow JSON. Point the app at that file (or use Import workflow in Settings - Models & Pipeline). Settings - Updates & ComfyUI shows Workflow template: loaded when ready.",
       pad: 6,
       before: () => { closeMenus(); closeModalOverlay(); },
     },
@@ -416,7 +416,7 @@
       id: "engine-settings",
       title: "Engine settings",
       target: '.menu-btn[data-menu="Settings"]',
-      body: "Open Settings - Engine settings for continuity, guide stacks, and sampler overrides. Defaults are fine to start; revisit when scene-to-scene identity drifts.",
+      body: "Open Settings and pick Engine for continuity, guide stacks, and sampler overrides. Defaults are fine to start; revisit when scene-to-scene identity drifts.",
       pad: 4,
       before: () => closeMenus(),
     },

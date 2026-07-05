@@ -218,22 +218,50 @@
     icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M8 1.5 9.6 6.4 14.5 8 9.6 9.6 8 14.5 6.4 9.6 1.5 8 6.4 6.4 8 1.5z" fill="#fff"/></svg>',
     mount(body) {
       const M = window.FunPackMaintenance || {};
-      body.append(el("div", "sw-hint",
-        "Refinement keys hold what FunPack has learned from your ratings for a named session. "
-        + "They are stored on this ComfyUI instance as <key>.json plus sidecar banks."));
-      const rows = el("div", "sw-rows");
-      rows.append(actionRow("Export refinement key", "Download a key as <key>.json.", "⬇ Export…", () => M.exportRefinementKey?.()));
-      rows.append(actionRow("Import refinement key", "Load a previously exported <key>.json onto this instance.", "Import…", () => M.importRefinementKeyFile?.()));
-      body.append(rows);
-      body.append(el("div", "sw-rows-label", "Danger zone"));
-      const danger = el("div", "sw-rows");
-      danger.append(actionRow("Delete refinement key",
-        "Removes a key AND all its sidecars (value function, blessed banks, creativity latent, velocity memory).",
-        "Delete…", () => M.deleteRefinementKey?.(), { danger: true }));
-      danger.append(actionRow("Clear global taste store",
-        "Wipes the Absolute store pooled from every rated run (applied in absolute/both steer mode).",
-        "Clear…", () => M.clearGlobalTaste?.(), { danger: true }));
-      body.append(danger);
+      const S = window.Store;
+      const wrap = el("div", "sw-stack");
+      body.append(wrap);
+
+      function render() {
+        clear(wrap);
+        wrap.append(el("div", "sw-hint",
+          "Refinement keys hold what FunPack has learned from your ratings for a named session. "
+          + "They are stored on this ComfyUI instance as <key>.json plus sidecar banks."));
+
+        const st = S ? S.get() : {};
+        const studioOn = !!window.PipelineCaps?.usesFunpackStudio?.(st);
+        const armed = !!st.resetSessionArmed;
+        wrap.append(el("div", "sw-rows-label", "Studio session"));
+        const sess = el("div", "sw-rows");
+        sess.append(actionRow("Reset Studio session",
+          armed
+            ? "Armed — the session's learned keys are wiped on the FIRST run of the next generation. Click to cancel."
+            : "Wipe this session's learned keys on the next generation (asks which keys first).",
+          armed ? "✓ Armed — cancel" : "Reset…",
+          () => S?.resetStudioSession?.(),
+          { disabled: !st.project || !studioOn, danger: !armed }));
+        wrap.append(sess);
+
+        wrap.append(el("div", "sw-rows-label", "Refinement keys"));
+        const rows = el("div", "sw-rows");
+        rows.append(actionRow("Export refinement key", "Download a key as <key>.json.", "⬇ Export…", () => M.exportRefinementKey?.()));
+        rows.append(actionRow("Import refinement key", "Load a previously exported <key>.json onto this instance.", "Import…", () => M.importRefinementKeyFile?.()));
+        wrap.append(rows);
+
+        wrap.append(el("div", "sw-rows-label", "Danger zone"));
+        const danger = el("div", "sw-rows");
+        danger.append(actionRow("Delete refinement key",
+          "Removes a key AND all its sidecars (value function, blessed banks, creativity latent, velocity memory).",
+          "Delete…", () => M.deleteRefinementKey?.(), { danger: true }));
+        danger.append(actionRow("Clear global taste store",
+          "Wipes the Absolute store pooled from every rated run (applied in absolute/both steer mode).",
+          "Clear…", () => M.clearGlobalTaste?.(), { danger: true }));
+        wrap.append(danger);
+      }
+
+      const unsub = S ? S.subscribe(render) : null;
+      render();
+      return () => { if (unsub) unsub(); };
     },
   });
 

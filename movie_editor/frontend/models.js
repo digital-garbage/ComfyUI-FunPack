@@ -1298,9 +1298,13 @@
     body.append(container);
     view = "pipeline";
     linkMode = false; linkSel = [];
+    const imp = el("button", "btn ghost tiny", "⇪ Import workflow…");
+    imp.title = "Import a ComfyUI workflow (API format) as the pipeline";
+    imp.disabled = !window.Store?.get().project;
+    imp.onclick = () => window.WorkflowImportWizard?.open();
     const refresh = el("button", "btn ghost tiny", "↻ Refresh model list");
     refresh.onclick = refreshList;
-    ctx.setActions([refresh]);
+    ctx.setActions([imp, refresh]);
     loadAll()
       .then(() => { if (container && container.isConnected) render(); })
       .catch(() => {
