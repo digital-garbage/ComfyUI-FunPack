@@ -104,6 +104,9 @@
     const v = _active;
     if (!v) return false;
     if (v._pmSeekPending != null) return true;
+    // Mid-reset/reload (no metadata yet) currentTime reads 0 — meaningless; treating it
+    // as a seek keeps the tick from stomping the playhead back to the clip start.
+    if (v.readyState < 1) return true;
     try { if (v.seeking) return true; } catch (_) {}
     return false;
   }
@@ -484,10 +487,23 @@
         if (v === _active) _seekPending = null;
       }
       if (v !== _active) return;
-      if (_playPending) { _playPending = false; v.play().catch(() => {}); }
+      // Resume on _playing too: after a mid-playback media reset there is no _playPending,
+      // but the element came back paused at the restored position and must keep going.
+      if (_playPending || (_playing && v.paused)) { _playPending = false; v.play().catch(() => {}); }
       if (_currentClip) _applyFx(_currentClip, Math.max(0, _phSec - _currentClip.startSec));
     });
     v.addEventListener("seeked", () => { _onVideoSeeked(v); });
+    // A media reset — load()/src swap from the retry path, or the browser dropping an
+    // aborted/poisoned stream (rapid play/pause over the network) — rewinds the element
+    // to 0 and would restart the clip from its beginning. Stash the playhead position so
+    // loadedmetadata seeks back instead; _onVideoSeeked then resumes playback if playing.
+    v.addEventListener("emptied", () => {
+      if (v !== _active || !_currentClip || _currentClip.pending) return;
+      if (_clipUrl(_currentClip) !== url) return;
+      if (v._pmSeekPending == null) {
+        v._pmSeekPending = _clipInSec(_currentClip) + Math.max(0, _phSec - _currentClip.startSec);
+      }
+    });
     v.addEventListener("error", () => {
       const clips = _urlClips.get(url);
       if (clips) [...clips].forEach((c) => _fallbackSegmentClip(c));
