@@ -1,57 +1,40 @@
 // Engine settings: Studio, Chain Sampler, continuity (moved out of Project inspector).
-// A section of the unified Settings window.
+// A section of the unified Settings window with its OWN inner sidebar — categories are
+// always visible (Overview · Studio: Refinement/Adjustments/Sampler · Chain Sampler:
+// Continuity/Timing/Guidance/Decode/Experimental), no long scrolling card list.
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
 
-  let _mounted = null; // { scroller, content }
+  let _mounted = null; // { scroller (pane, set per render), content (shell root) }
   let unsub = null;
   let _editing = false;
+  let view = "overview";
+  function setView(v) { view = v; render(); }
 
-  const FOLD_KEY = "funpack_engine_fold_";
-  function foldOpen(id, def) {
-    const v = localStorage.getItem(FOLD_KEY + id);
-    return v === null ? def : v === "1";
-  }
-  function setFoldOpen(id, open) { localStorage.setItem(FOLD_KEY + id, open ? "1" : "0"); }
-
-  function field(labelText, control) {
-    const l = el("label", "field"); l.append(el("span", null, labelText)); l.append(control); return l;
-  }
-
-  function collapsibleSection(parent, id, title, defaultOpen) {
-    const det = el("details", "insp-fold");
-    det.open = foldOpen(id, defaultOpen);
-    det.addEventListener("toggle", () => setFoldOpen(id, det.open));
-    det.append(el("summary", "insp-fold-sum", title));
-    const inner = el("div", "insp-fold-body");
-    det.append(inner);
-    parent.append(det);
-    return inner;
+  // macOS-style row: title on the left, control on the right. Append into a .sw-rows group.
+  function field(labelText, control, hint) {
+    const row = el("div", "sw-row eng-field");
+    const main = el("div", "sw-row-main");
+    main.append(el("div", "sw-row-title", labelText));
+    if (hint) main.append(el("div", "sw-row-hint", hint));
+    row.append(main, control);
+    return row;
   }
 
-  function engineCard(parent, id, title, defaultOpen) {
-    const card = el("div", "insp-engine");
-    const head = el("button", "insp-engine-head");
-    head.type = "button";
-    let open = foldOpen(id, defaultOpen);
-    const chev = el("span", "insp-engine-chev", open ? "▾" : "▸");
-    const ttl = el("span", "insp-engine-title", title);
-    const badge = el("span", "insp-engine-badge");
-    badge.hidden = true;
-    head.append(chev, ttl, badge);
-    const cardBody = el("div", "insp-engine-body");
-    cardBody.hidden = !open;
-    head.onclick = () => {
-      open = !open;
-      cardBody.hidden = !open;
-      chev.textContent = open ? "▾" : "▸";
-      setFoldOpen(id, open);
-    };
-    card.append(head, cardBody);
-    parent.append(card);
-    return { body: cardBody, setBadge: (n) => { badge.textContent = n > 0 ? `${n} changed` : ""; badge.hidden = n <= 0; } };
+  function toggleField(labelText, checkbox, hint) {
+    checkbox.style.width = "auto";
+    return field(labelText, checkbox, hint);
   }
+
+  function group(parent, label) {
+    if (label) parent.append(el("div", "sw-rows-label", label));
+    const g = el("div", "sw-rows");
+    parent.append(g);
+    return g;
+  }
+
+  function hintEl(text) { return el("div", "sw-hint", text); }
 
   function slotLabelFor(st, slotId) {
     if (!slotId || slotId === "funpack") return null;
@@ -63,6 +46,7 @@
     return (p.scenes || []).filter((s) => !s.excluded).length;
   }
 
+  // ── FunPack Studio: refiner fields ─────────────────────────────────────────
   const STUDIO_REFINER_ESSENTIALS = [
     { name: "vision_conditioning", label: "Vision conditioning", default: true },
     { name: "reference_injection", label: "Reference injection", default: false },
@@ -86,14 +70,14 @@
     return { si, cur, rf };
   }
 
-  function countStudioChanges(p) {
+  function countStudioRefine(p) {
     const { rf } = parseStudioSettings(p);
     let n = 0;
     [...STUDIO_REFINER_ESSENTIALS, ...STUDIO_REFINER_ADVANCED].forEach((f) => {
       const cur = rf[f.name] != null ? rf[f.name] : f.default;
       if (cur !== f.default) n++;
     });
-    n += parseAdjustments(p).filter(adjIsActive).length;
+    if ((p.refinement_key || "default") !== "default") n++;
     return n;
   }
 
@@ -128,50 +112,15 @@
     else S.setStudioInput("adjustments", json);
   }
 
-  function renderStudioAdjustments(parent) {
-    const sec = collapsibleSection(parent, "studio_adjust", "Conditioning adjustments", false);
-    sec.append(el("div", "insp-hint",
-      "Universal per-phrase steering: each phrase is encoded by CLIP and shifts conditioning "
-      + "toward (+) or away (−) from it on every generation, regardless of the prompt. "
-      + "Typical range −0.3 to +0.3."));
-    const items = parseAdjustments(S.get().project);
-    if (!items.length) sec.append(el("div", "insp-hint", "No adjustments. Add a phrase below."));
-    items.forEach((item, idx) => {
-      const row = el("div", "fields-row studio-adjust-row");
-      const phrase = el("input"); phrase.type = "text"; phrase.placeholder = "phrase or word";
-      phrase.value = item.phrase; phrase.dataset.k = "adj-phrase-" + idx; phrase.style.flex = "1";
-      phrase.oninput = () => { items[idx].phrase = phrase.value; persistAdjustments(items, false); };
-      const strength = el("input"); strength.type = "number";
-      strength.step = "0.05"; strength.min = "-1"; strength.max = "1";
-      strength.value = item.strength; strength.dataset.k = "adj-str-" + idx; strength.style.width = "72px";
-      strength.title = "Positive steers toward the phrase, negative away.";
-      strength.oninput = () => { items[idx].strength = parseFloat(strength.value || "0"); persistAdjustments(items, false); };
-      const del = el("button", "btn ghost tiny", "✕"); del.type = "button"; del.title = "Remove";
-      del.onclick = () => { items.splice(idx, 1); persistAdjustments(items, true); };
-      row.append(phrase, strength, del);
-      sec.append(row);
-    });
-    const add = el("button", "btn ghost tiny", "+ Add phrase"); add.type = "button";
-    add.onclick = () => {
-      items.push({ phrase: "", strength: 0.1 });
-      persistAdjustments(items, true);
-      setTimeout(() => {
-        const inputs = document.querySelectorAll('[data-k^="adj-phrase-"]');
-        inputs[inputs.length - 1]?.focus();
-      }, 0);
-    };
-    sec.append(add);
-  }
-
-  function renderStudioRefinerBool(parent, rf, f) {
+  function renderStudioRefinerBool(parentGroup, rf, f) {
     const cur = rf[f.name] != null ? rf[f.name] : f.default;
-    const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur; ctrl.style.width = "auto";
+    const ctrl = el("input"); ctrl.type = "checkbox"; ctrl.checked = !!cur;
     ctrl.dataset.k = "rf-" + f.name;
     ctrl.onchange = () => persistStudioRefiner({ [f.name]: ctrl.checked }, true);
-    parent.append(field(f.label, ctrl));
+    parentGroup.append(toggleField(f.label, ctrl));
   }
 
-  function renderStudioRefinerField(parent, rf, f) {
+  function renderStudioRefinerField(parentGroup, rf, f) {
     if (f.dependsOn) {
       const depVal = rf[f.dependsOn] != null ? rf[f.dependsOn] : STUDIO_REFINER_ADVANCED.find((x) => x.name === f.dependsOn)?.default;
       if (!(f.dependsVals || []).includes(depVal)) return;
@@ -194,53 +143,10 @@
       ctrl.value = val; ctrl.dataset.k = "rf-" + f.name;
       ctrl.oninput = () => persistStudioRefiner({ [f.name]: parseFloat(ctrl.value || "0") }, false);
     }
-    parent.append(field(f.label, ctrl));
+    parentGroup.append(field(f.label, ctrl));
   }
 
-  function renderStudioCard(parent, st) {
-    const p = st.project;
-    const { cur: curSettings, rf } = parseStudioSettings(p);
-    const samplers = curSettings.samplers || null;
-    const card = engineCard(parent, "studio_card", "FunPack Studio", true);
-    card.setBadge(countStudioChanges(p));
-
-    // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
-    // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
-    // bound to a non-default key layer per-scene training on top of this.
-    const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
-    keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
-    keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
-    card.body.append(field("Refinement key", keyCtrl));
-
-    const ess = collapsibleSection(card.body, "studio_ess", "Essentials", true);
-    STUDIO_REFINER_ESSENTIALS.forEach((f) => renderStudioRefinerBool(ess, rf, f));
-
-    const refSec = collapsibleSection(card.body, "studio_ref", "Refinement", false);
-    STUDIO_REFINER_ADVANCED.forEach((f) => renderStudioRefinerField(refSec, rf, f));
-
-    renderStudioAdjustments(card.body);
-
-    const sampSec = collapsibleSection(card.body, "studio_samp", "Sampler algorithm", false);
-    function persistSamplers(updatedSamplers, quiet) {
-      const { cur } = parseStudioSettings(S.get().project);
-      const next = JSON.stringify({ ...cur, samplers: updatedSamplers });
-      if (quiet) S.setStudioInput("studio_settings", next);
-      else S.setStudioInputNow("studio_settings", next);
-    }
-    try {
-      window.SamplerPanel.render(sampSec, samplers,
-        (s) => persistSamplers(s, true),
-        (s) => persistSamplers(s, false));
-    } catch (e) {
-      const err = el("div", "insp-hint"); err.style.color = "var(--err,#e55)";
-      err.textContent = "Studio sampler panel failed to render: " + e.message;
-      sampSec.append(err);
-    }
-
-    card.body.append(el("div", "insp-hint",
-      "Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
-  }
-
+  // ── Chain Sampler knobs ────────────────────────────────────────────────────
   const SAMPLER_KNOBS = [
     { name: "frame_overlap",         label: "Frame overlap",         kind: "int",   default: 16,    min: 0, max: 512, step: 8 },
     { name: "transition_duration",   label: "Transition duration",   kind: "int",   default: 16,    min: 0, max: 128, step: 2 },
@@ -272,6 +178,7 @@
     { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift" },
     { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift" },
   ];
+  const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
   const CONTINUITY_DEFAULTS = {
     auto_enabled: true,
@@ -315,133 +222,6 @@
     S.patchProject({ guide_settings: { ...(p.guide_settings || {}), ...patch } });
   }
 
-  function renderContinuitySettings(parent, st, multiScene) {
-    const cs = normContinuitySettings(st.project);
-    const gs = normGuideSettings(st.project);
-    const hint = el("div", "insp-hint");
-    hint.textContent = cs.auto_enabled
-      ? (gs.stack_enabled
-        ? "Auto continuity: mid-scene guide only — custom guide stack overrides auto guide lists."
-        : "Auto continuity builds hidden guides per run: identity pin (all modes), prior-scene guides on carry chains and solo mixed runs, mid-scene anchor on multi-scene carry. Image / empty / generated_frame solo runs use their anchor only.")
-      : "Auto continuity off — use manual Chain Sampler knobs and optional custom guide stack below.";
-    parent.append(hint);
-
-    const autoLbl = el("label", "chk");
-    const autoCb = el("input"); autoCb.type = "checkbox"; autoCb.checked = cs.auto_enabled;
-    autoCb.dataset.k = "cs-auto";
-    autoCb.onchange = () => patchContinuitySettings({ auto_enabled: autoCb.checked });
-    autoLbl.append(autoCb, el("span", null, "Auto continuity (recommended)"));
-    parent.append(autoLbl);
-
-    const pin = window.MediaPicker.create({
-      value: cs.identity_pin_ref,
-      mediaBin: st.mediaBin,
-      noneLabel: "— no identity pin —",
-      onChange: (v) => patchContinuitySettings({ identity_pin_ref: v }),
-    });
-    if (!cs.auto_enabled) pin.classList.add("disabled");
-    parent.append(field("Identity pin (all scenes)", pin));
-
-    const adv = collapsibleSection(parent, "continuity_adv", "Advanced", false);
-    const priorLbl = el("label", "chk");
-    const priorCb = el("input"); priorCb.type = "checkbox"; priorCb.checked = cs.prior_scene_guides;
-    priorCb.disabled = !cs.auto_enabled;
-    priorCb.onchange = () => patchContinuitySettings({ prior_scene_guides: priorCb.checked });
-    priorLbl.append(priorCb, el("span", null, "Borrow prior-scene guides"));
-    adv.append(priorLbl);
-    const soloLbl = el("label", "chk");
-    const soloCb = el("input"); soloCb.type = "checkbox"; soloCb.checked = cs.solo_scene_guides;
-    soloCb.disabled = !cs.auto_enabled;
-    soloCb.onchange = () => patchContinuitySettings({ solo_scene_guides: soloCb.checked });
-    soloLbl.title = "Mixed mode only — image/empty/generated_frame solo runs use their anchor only";
-    soloLbl.append(soloCb, el("span", null, "Prior guides on solo mixed runs"));
-    adv.append(soloLbl);
-    const midLbl = el("label", "chk");
-    const midCb = el("input"); midCb.type = "checkbox"; midCb.checked = cs.mid_scene_guide;
-    midCb.disabled = !cs.auto_enabled || !multiScene;
-    midCb.title = multiScene ? "" : "Only applies to multi-scene carry chains";
-    midCb.onchange = () => patchContinuitySettings({ mid_scene_guide: midCb.checked });
-    midLbl.append(midCb, el("span", null, "Mid-scene layout guide (carry chains)"));
-    adv.append(midLbl);
-
-    const num = (label, val, key, min, max, step) => {
-      const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
-      i.value = val; i.disabled = !cs.auto_enabled;
-      i.oninput = () => patchContinuitySettings({ [key]: parseFloat(i.value || "0") });
-      adv.append(field(label, i));
-    };
-    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.25, 0.5, 0.05);
-    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.25, 0.5, 0.05);
-    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.25, 0.5, 0.05);
-    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05);
-  }
-
-  function renderGuideStackSettings(parent, st, multiScene) {
-    const gs = normGuideSettings(st.project);
-    const cs = normContinuitySettings(st.project);
-    const hint = el("div", "insp-hint");
-    hint.textContent = gs.stack_enabled
-      ? "Custom guide stack — per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
-      : (cs.auto_enabled
-        ? "Auto continuity supplies guides at generation time (see Auto continuity above)."
-        : "Studio default: one i2v guide from scene 1's template on multi-scene carry runs.");
-    parent.append(hint);
-    const stackLbl = el("label", "chk");
-    const stackCb = el("input"); stackCb.type = "checkbox"; stackCb.checked = gs.stack_enabled;
-    stackCb.dataset.k = "gs-stack";
-    stackCb.onchange = () => patchGuideSettings({ stack_enabled: stackCb.checked });
-    stackLbl.append(stackCb, el("span", null, "Custom guide stack"));
-    parent.append(stackLbl);
-    if (gs.stack_enabled) {
-      const accLbl = el("label", "chk");
-      const accCb = el("input"); accCb.type = "checkbox"; accCb.checked = gs.accumulate_prior;
-      accCb.dataset.k = "gs-accum";
-      accCb.onchange = () => patchGuideSettings({ accumulate_prior: accCb.checked });
-      accLbl.append(accCb, el("span", null, "Stack guides from all prior scenes"));
-      parent.append(accLbl);
-      parent.append(el("div", "insp-hint", "Negative frame_idx / apply_at count from the end (e.g. −1 = last frame)."));
-    } else if (multiScene) {
-      parent.append(el("div", "insp-hint", "Carry i2v guides is auto-enabled for multi-scene runs."));
-    }
-  }
-
-  const CHAIN_SECTIONS = [
-    { id: "chain_auto", title: "Auto continuity", defaultOpen: true, knobs: [] },
-    { id: "chain_timing", title: "Timing", defaultOpen: false, knobs: ["frame_overlap", "transition_duration", "use_same_seed"] },
-    { id: "chain_cont", title: "Manual continuity", defaultOpen: false, knobs: ["carry_i2v_guides"] },
-    { id: "chain_guid", title: "Guidance", defaultOpen: false, knobs: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"] },
-    { id: "chain_dec", title: "Decode", defaultOpen: false, knobs: ["decode_noise_scale", "decode_timestep", "decode_tile_size"] },
-    { id: "chain_exp", title: "Experimental", defaultOpen: false, knobs: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "bounded_attention_enabled"] },
-  ];
-  const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
-
-  function countChainChanges(p) {
-    const si = p.sampler_inputs || {};
-    let n = 0;
-    if (si.seed != null) n++;
-    SAMPLER_KNOBS.forEach((k) => {
-      if (si[k.name] != null && si[k.name] !== k.default) n++;
-    });
-    return n;
-  }
-
-  function renderSeedKnob(parent, si) {
-    const ctrl = el("input");
-    ctrl.type = "number";
-    ctrl.min = "0";
-    ctrl.placeholder = "Random each run";
-    ctrl.value = si.seed != null ? String(si.seed) : "";
-    ctrl.dataset.k = "si-seed";
-    ctrl.oninput = () => {
-      const raw = ctrl.value.trim();
-      if (raw === "") S.unsetSamplerInput("seed");
-      else S.setSamplerInput("seed", parseInt(raw, 10));
-    };
-    parent.append(field("Seed (optional)", ctrl));
-    parent.append(el("div", "insp-hint",
-      "Leave empty to randomize on every Generate. Set a fixed value here for reproducible runs (pair with Same seed per scene for multi-scene chains)."));
-  }
-
   function knobVisible(k, si) {
     if (k.dependsOn) {
       const depVal = si[k.dependsOn] != null ? si[k.dependsOn] : SAMPLER_KNOB_MAP[k.dependsOn]?.default;
@@ -450,7 +230,7 @@
     return true;
   }
 
-  function renderSamplerKnob(parent, st, k, si, multiScene) {
+  function renderSamplerKnob(parentGroup, st, k, si, multiScene) {
     if (!knobVisible(k, si)) return;
     const val = si[k.name] != null ? si[k.name] : k.default;
     const gs = normGuideSettings(st.project);
@@ -483,108 +263,350 @@
         S.setSamplerInput(k.name, v);
       };
     }
-    parent.append(field(k.label + (forced ? " (auto)" : ""), ctrl));
+    parentGroup.append(field(k.label + (forced ? " (auto)" : ""), ctrl));
   }
 
-  function renderChainCard(parent, st) {
-    const p = st.project;
-    const si = p.sampler_inputs || {};
-    const multiScene = activeSceneCount(p) > 1;
-    const card = engineCard(parent, "chain_card", "Chain Sampler", true);
-    card.setBadge(countChainChanges(p));
-
-    CHAIN_SECTIONS.forEach((sec) => {
-      const inner = collapsibleSection(card.body, sec.id, sec.title, sec.defaultOpen);
-      sec.knobs.forEach((name) => {
-        const k = SAMPLER_KNOB_MAP[name];
-        if (k) renderSamplerKnob(inner, st, k, si, multiScene);
-      });
-      if (sec.id === "chain_auto") renderContinuitySettings(inner, st, multiScene);
-      if (sec.id === "chain_cont") renderGuideStackSettings(inner, st, multiScene);
-      if (sec.id === "chain_timing") {
-        renderSeedKnob(inner, si);
-        inner.append(el("div", "insp-hint",
-          "Transition duration controls in-decode boundary fades (from transition library). Post-render crossfades are per-clip in the scene inspector."));
-      }
+  function renderKnobList(parentGroup, st, names) {
+    const si = st.project.sampler_inputs || {};
+    const multiScene = activeSceneCount(st.project) > 1;
+    names.forEach((name) => {
+      const k = SAMPLER_KNOB_MAP[name];
+      if (k) renderSamplerKnob(parentGroup, st, k, si, multiScene);
     });
   }
 
-  function renderContent(container, st) {
-    if (!st.project) {
-      container.append(el("div", "pj-meta", "No project open."));
-      return;
-    }
+  // ── views (inner-sidebar categories) ───────────────────────────────────────
+  const CHAIN_VIEW_KNOBS = {
+    chain_continuity: ["carry_i2v_guides"],
+    chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
+    chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
+    chain_experimental: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "bounded_attention_enabled"],
+  };
+
+  function countChainView(p, id) {
+    const si = p.sampler_inputs || {};
+    let n = 0;
+    (CHAIN_VIEW_KNOBS[id] || []).forEach((name) => {
+      const k = SAMPLER_KNOB_MAP[name];
+      if (k && si[name] != null && si[name] !== k.default) n++;
+    });
+    if (id === "chain_timing" && si.seed != null) n++;
+    return n;
+  }
+
+  function viewList(st) {
+    const p = st.project;
     const PC = window.PipelineCaps;
     const studioOn = PC?.usesFunpackStudio(st);
     const chainOn = PC?.usesChainSampler(st);
-    if (st.models?.disable_core) {
-      container.append(el("div", "insp-hint",
-        "Built-in FunPack pipeline is disabled — Studio and Chain Sampler settings are unavailable. Tune your workflow in Models."));
-      const foot = el("div", "insp-hint");
-      foot.append(el("span", null, "Workflow nodes: "));
-      const modelsLink = el("button", "btn ghost tiny", "Models & Pipeline…");
-      modelsLink.type = "button";
-      modelsLink.onclick = () => window.ModelsModal.open();
-      foot.append(modelsLink);
-      container.append(foot);
-      return;
+    const out = [{ id: "overview", group: "", title: "Overview", icon: "◎" }];
+    if (studioOn) {
+      out.push(
+        { id: "studio_refine", group: "FunPack Studio", title: "Refinement", icon: "✦", badge: countStudioRefine(p) || null },
+        { id: "studio_adjust", group: "FunPack Studio", title: "Adjustments", icon: "±", badge: parseAdjustments(p).filter(adjIsActive).length || null },
+        { id: "studio_sampler", group: "FunPack Studio", title: "Sampler algorithm", icon: "∿" },
+      );
     }
-    if (!studioOn && !chainOn) {
-      container.append(el("div", "insp-hint",
-        "Neither FunPack Studio nor Chain Sampler is active — pick them under Pipeline nodes or use Models to wire custom nodes."));
+    if (chainOn) {
+      out.push(
+        { id: "chain_continuity", group: "Chain Sampler", title: "Continuity", icon: "∞", badge: countChainView(p, "chain_continuity") || null },
+        { id: "chain_timing", group: "Chain Sampler", title: "Timing & Seed", icon: "⏱", badge: countChainView(p, "chain_timing") || null },
+        { id: "chain_guidance", group: "Chain Sampler", title: "Guidance", icon: "◇", badge: countChainView(p, "chain_guidance") || null },
+        { id: "chain_decode", group: "Chain Sampler", title: "Decode", icon: "▣", badge: countChainView(p, "chain_decode") || null },
+        { id: "chain_experimental", group: "Chain Sampler", title: "Experimental", icon: "⚗", badge: countChainView(p, "chain_experimental") || null },
+      );
     }
+    return out;
+  }
+
+  function renderOverview(pane, st) {
+    const p = st.project;
+    const PC = window.PipelineCaps;
+    const studioOn = PC?.usesFunpackStudio(st);
+    const chainOn = PC?.usesChainSampler(st);
+    const slots = (st.models?.slots || []);
+
     if (studioOn || chainOn) {
       const presetBar = el("div", "engine-preset-bar");
       presetBar.append(el("span", "engine-preset-label", "Preset"));
-      Object.entries(S.ENGINE_PRESETS || {}).forEach(([key, p]) => {
-        const b = el("button", "btn ghost tiny", p.label || key);
+      Object.entries(S.ENGINE_PRESETS || {}).forEach(([key, pr]) => {
+        const b = el("button", "btn ghost tiny", pr.label || key);
         b.onclick = () => S.applyEnginePreset(key);
         presetBar.append(b);
       });
-      container.append(presetBar);
+      pane.append(presetBar);
     }
-    const p = st.project;
-    const slots = (st.models?.slots || []);
 
     const summary = el("div", "engine-modal-summary");
     const parts = [];
     parts.push(studioOn ? "FunPack Studio" : (slotLabelFor(st, p.conditioning_slot) || p.conditioning_slot));
     parts.push(chainOn ? "Chain Sampler" : (slotLabelFor(st, p.sampler_slot) || p.sampler_slot));
     summary.textContent = "Generating with " + parts.join(" + ");
-    container.append(summary);
+    pane.append(summary);
 
-    const engTag = el("div", "insp-tag"); engTag.textContent = "Pipeline nodes"; container.append(engTag);
-    const engRow = el("div", "fields-row insp-engine-pickers");
+    if (!studioOn && !chainOn) {
+      pane.append(hintEl("Neither FunPack Studio nor Chain Sampler is active — pick them below or wire custom nodes in Models & Pipeline."));
+    }
+
+    const g = group(pane, "Pipeline nodes");
     const condSel = el("select"); condSel.dataset.k = "pj-cond";
     [["funpack", "FunPack Studio"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.conditioning_slot || "funpack") === v) o.selected = true; condSel.append(o); });
     condSel.onchange = () => S.setConditioningSlot(condSel.value);
-    engRow.append(field("Conditioning", condSel));
+    g.append(field("Conditioning", condSel));
     const sampSel = el("select"); sampSel.dataset.k = "pj-samp";
     [["funpack", "FunPack Chain Sampler"], ...slots.map((s) => [s.id, s.label || s.node_class || s.id])]
       .forEach(([v, lbl]) => { const o = new Option(lbl, v); if ((p.sampler_slot || "funpack") === v) o.selected = true; sampSel.append(o); });
     sampSel.onchange = () => S.setSamplerSlot(sampSel.value);
-    engRow.append(field("Sampler", sampSel));
-    container.append(engRow);
+    g.append(field("Sampler", sampSel));
 
-    if (!studioOn) {
-      container.append(el("div", "insp-hint", "Custom conditioning node — wire and tune it in Models. FunPack Studio settings are hidden."));
-    } else {
-      renderStudioCard(container, st);
-    }
-    if (!chainOn) {
-      container.append(el("div", "insp-hint", "Custom sampler node — wire and tune it in Models. Chain Sampler settings are hidden."));
-    } else {
-      renderChainCard(container, st);
-    }
+    if (!studioOn) pane.append(hintEl("Custom conditioning node — wire and tune it in Models & Pipeline. FunPack Studio categories are hidden."));
+    if (!chainOn) pane.append(hintEl("Custom sampler node — wire and tune it in Models & Pipeline. Chain Sampler categories are hidden."));
 
-    const foot = el("div", "insp-hint");
+    const foot = el("div", "sw-hint eng-foot");
     foot.append(el("span", null, "Unet / VAE / linked inputs: "));
     const modelsLink = el("button", "btn ghost tiny", "Models & Pipeline…");
     modelsLink.type = "button";
     modelsLink.onclick = () => window.ModelsModal.open();
     foot.append(modelsLink);
-    container.append(foot);
+    pane.append(foot);
+  }
+
+  function renderStudioRefine(pane, st) {
+    const p = st.project;
+    const { rf } = parseStudioSettings(p);
+
+    // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
+    // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
+    // bound to a non-default key layer per-scene training on top of this.
+    const gKey = group(pane, "Session");
+    const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
+    keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
+    keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
+    gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+
+    const gEss = group(pane, "Essentials");
+    STUDIO_REFINER_ESSENTIALS.forEach((f) => renderStudioRefinerBool(gEss, rf, f));
+
+    const gAdv = group(pane, "Refinement");
+    STUDIO_REFINER_ADVANCED.forEach((f) => renderStudioRefinerField(gAdv, rf, f));
+
+    pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
+  }
+
+  function renderStudioAdjust(pane, st) {
+    pane.append(hintEl(
+      "Universal per-phrase steering: each phrase is encoded by CLIP and shifts conditioning "
+      + "toward (+) or away (−) from it on every generation, regardless of the prompt. "
+      + "Typical range −0.3 to +0.3."));
+    const items = parseAdjustments(st.project);
+    const g = group(pane, "Phrases");
+    if (!items.length) g.append(el("div", "sw-row eng-empty-row", "No adjustments. Add a phrase below."));
+    items.forEach((item, idx) => {
+      const row = el("div", "sw-row studio-adjust-row");
+      const phrase = el("input"); phrase.type = "text"; phrase.placeholder = "phrase or word";
+      phrase.value = item.phrase; phrase.dataset.k = "adj-phrase-" + idx; phrase.style.flex = "1";
+      phrase.oninput = () => { items[idx].phrase = phrase.value; persistAdjustments(items, false); };
+      const strength = el("input"); strength.type = "number";
+      strength.step = "0.05"; strength.min = "-1"; strength.max = "1";
+      strength.value = item.strength; strength.dataset.k = "adj-str-" + idx; strength.style.width = "72px";
+      strength.title = "Positive steers toward the phrase, negative away.";
+      strength.oninput = () => { items[idx].strength = parseFloat(strength.value || "0"); persistAdjustments(items, false); };
+      const del = el("button", "btn ghost tiny", "✕"); del.type = "button"; del.title = "Remove";
+      del.onclick = () => { items.splice(idx, 1); persistAdjustments(items, true); };
+      row.append(phrase, strength, del);
+      g.append(row);
+    });
+    const add = el("button", "btn ghost tiny eng-add", "+ Add phrase"); add.type = "button";
+    add.onclick = () => {
+      items.push({ phrase: "", strength: 0.1 });
+      persistAdjustments(items, true);
+      setTimeout(() => {
+        const inputs = document.querySelectorAll('[data-k^="adj-phrase-"]');
+        inputs[inputs.length - 1]?.focus();
+      }, 0);
+    };
+    pane.append(add);
+  }
+
+  function renderStudioSampler(pane, st) {
+    const { cur: curSettings } = parseStudioSettings(st.project);
+    const samplers = curSettings.samplers || null;
+    const box = el("div", "eng-sampler-panel");
+    pane.append(box);
+    function persistSamplers(updatedSamplers, quiet) {
+      const { cur } = parseStudioSettings(S.get().project);
+      const next = JSON.stringify({ ...cur, samplers: updatedSamplers });
+      if (quiet) S.setStudioInput("studio_settings", next);
+      else S.setStudioInputNow("studio_settings", next);
+    }
+    try {
+      window.SamplerPanel.render(box, samplers,
+        (s) => persistSamplers(s, true),
+        (s) => persistSamplers(s, false));
+    } catch (e) {
+      const err = hintEl("Studio sampler panel failed to render: " + e.message);
+      err.style.color = "var(--danger)";
+      box.append(err);
+    }
+  }
+
+  function renderChainContinuity(pane, st) {
+    const p = st.project;
+    const multiScene = activeSceneCount(p) > 1;
+    const cs = normContinuitySettings(p);
+    const gs = normGuideSettings(p);
+
+    pane.append(hintEl(cs.auto_enabled
+      ? (gs.stack_enabled
+        ? "Auto continuity: mid-scene guide only — custom guide stack overrides auto guide lists."
+        : "Auto continuity builds hidden guides per run: identity pin (all modes), prior-scene guides on carry chains and solo mixed runs, mid-scene anchor on multi-scene carry. Image / empty / generated_frame solo runs use their anchor only.")
+      : "Auto continuity off — use manual Chain Sampler knobs and optional custom guide stack below."));
+
+    const g = group(pane, "Auto continuity");
+    const autoCb = el("input"); autoCb.type = "checkbox"; autoCb.checked = cs.auto_enabled;
+    autoCb.dataset.k = "cs-auto";
+    autoCb.onchange = () => patchContinuitySettings({ auto_enabled: autoCb.checked });
+    g.append(toggleField("Auto continuity (recommended)", autoCb));
+
+    const pinRow = el("div", "sw-row eng-field eng-stack");
+    const pinMain = el("div", "sw-row-main");
+    pinMain.append(el("div", "sw-row-title", "Identity pin (all scenes)"));
+    pinRow.append(pinMain);
+    const pin = window.MediaPicker.create({
+      value: cs.identity_pin_ref,
+      mediaBin: st.mediaBin,
+      noneLabel: "— no identity pin —",
+      onChange: (v) => patchContinuitySettings({ identity_pin_ref: v }),
+    });
+    if (!cs.auto_enabled) pin.classList.add("disabled");
+    pinRow.append(pin);
+    g.append(pinRow);
+
+    const gAdv = group(pane, "Advanced");
+    const mk = (label, checked, key, opts = {}) => {
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = checked;
+      cb.disabled = !cs.auto_enabled || !!opts.disabled;
+      if (opts.title) cb.title = opts.title;
+      cb.onchange = () => patchContinuitySettings({ [key]: cb.checked });
+      gAdv.append(toggleField(label, cb, opts.hint));
+    };
+    mk("Borrow prior-scene guides", cs.prior_scene_guides, "prior_scene_guides");
+    mk("Prior guides on solo mixed runs", cs.solo_scene_guides, "solo_scene_guides",
+      { hint: "Mixed mode only — image/empty/generated_frame solo runs use their anchor only" });
+    mk("Mid-scene layout guide (carry chains)", cs.mid_scene_guide, "mid_scene_guide",
+      { disabled: !multiScene, title: multiScene ? "" : "Only applies to multi-scene carry chains" });
+    const num = (label, val, key, min, max, step) => {
+      const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
+      i.value = val; i.disabled = !cs.auto_enabled; i.dataset.k = "cs-" + key;
+      i.oninput = () => patchContinuitySettings({ [key]: parseFloat(i.value || "0") });
+      gAdv.append(field(label, i));
+    };
+    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.25, 0.5, 0.05);
+    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.25, 0.5, 0.05);
+    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.25, 0.5, 0.05);
+    num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05);
+
+    const gMan = group(pane, "Manual");
+    renderKnobList(gMan, st, CHAIN_VIEW_KNOBS.chain_continuity);
+    const stackCb = el("input"); stackCb.type = "checkbox"; stackCb.checked = gs.stack_enabled;
+    stackCb.dataset.k = "gs-stack";
+    stackCb.onchange = () => patchGuideSettings({ stack_enabled: stackCb.checked });
+    gMan.append(toggleField("Custom guide stack", stackCb,
+      gs.stack_enabled
+        ? "Per-scene lists in the Scene inspector. Scenes without entries use the Studio default (scene 1 template · frame 0 · apply 0)."
+        : (cs.auto_enabled
+          ? "Auto continuity supplies guides at generation time."
+          : "Studio default: one i2v guide from scene 1's template on multi-scene carry runs.")));
+    if (gs.stack_enabled) {
+      const accCb = el("input"); accCb.type = "checkbox"; accCb.checked = gs.accumulate_prior;
+      accCb.dataset.k = "gs-accum";
+      accCb.onchange = () => patchGuideSettings({ accumulate_prior: accCb.checked });
+      gMan.append(toggleField("Stack guides from all prior scenes", accCb,
+        "Negative frame_idx / apply_at count from the end (e.g. −1 = last frame)."));
+    } else if (multiScene) {
+      pane.append(hintEl("Carry i2v guides is auto-enabled for multi-scene runs."));
+    }
+  }
+
+  function renderChainTiming(pane, st) {
+    const si = st.project.sampler_inputs || {};
+    const g = group(pane, "Timing");
+    renderKnobList(g, st, CHAIN_VIEW_KNOBS.chain_timing);
+    const gSeed = group(pane, "Seed");
+    const ctrl = el("input");
+    ctrl.type = "number"; ctrl.min = "0";
+    ctrl.placeholder = "Random each run";
+    ctrl.value = si.seed != null ? String(si.seed) : "";
+    ctrl.dataset.k = "si-seed";
+    ctrl.oninput = () => {
+      const raw = ctrl.value.trim();
+      if (raw === "") S.unsetSamplerInput("seed");
+      else S.setSamplerInput("seed", parseInt(raw, 10));
+    };
+    gSeed.append(field("Seed (optional)", ctrl,
+      "Empty = randomize every Generate. Fixed value = reproducible runs (pair with Same seed per scene)."));
+    pane.append(hintEl(
+      "Transition duration controls in-decode boundary fades (from transition library). Post-render crossfades are per-clip in the scene inspector."));
+  }
+
+  function renderChainKnobsView(pane, st, id, label, hint) {
+    if (hint) pane.append(hintEl(hint));
+    const g = group(pane, label);
+    renderKnobList(g, st, CHAIN_VIEW_KNOBS[id]);
+  }
+
+  function renderPane(pane, st) {
+    const p = st.project;
+    if (!p) { pane.append(el("div", "pj-meta", "No project open.")); return; }
+    if (st.models?.disable_core) {
+      pane.append(hintEl("Built-in FunPack pipeline is disabled — Studio and Chain Sampler settings are unavailable. Tune your workflow in Models & Pipeline."));
+      const link = el("button", "btn ghost tiny", "Models & Pipeline…");
+      link.type = "button";
+      link.onclick = () => window.ModelsModal.open();
+      pane.append(link);
+      return;
+    }
+    switch (view) {
+      case "studio_refine": return renderStudioRefine(pane, st);
+      case "studio_adjust": return renderStudioAdjust(pane, st);
+      case "studio_sampler": return renderStudioSampler(pane, st);
+      case "chain_continuity": return renderChainContinuity(pane, st);
+      case "chain_timing": return renderChainTiming(pane, st);
+      case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance");
+      case "chain_decode": return renderChainKnobsView(pane, st, "chain_decode", "Decode");
+      case "chain_experimental": return renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
+        "Research techniques — off by default; expect quality/overhead trade-offs.");
+      default: return renderOverview(pane, st);
+    }
+  }
+
+  function renderContent(container, st) {
+    // No project / built-in pipeline off: single message pane, no category sidebar.
+    if (!st.project || st.models?.disable_core) {
+      const solo = el("div", "models-pane");
+      renderPane(solo, st);
+      container.append(solo);
+      return;
+    }
+    const views = viewList(st);
+    if (!views.some((v) => v.id === view)) view = "overview";
+    const cols = el("div", "models-cols");
+    const side = el("div", "models-side");
+    let lastGroup = null;
+    views.forEach((v) => {
+      if (v.group && v.group !== lastGroup) side.append(el("div", "mn-group", v.group));
+      lastGroup = v.group || lastGroup;
+      side.append(window.SettingsWindow.navItem({
+        icon: v.icon, label: v.title, badge: v.badge,
+        active: view === v.id, onClick: () => setView(v.id),
+      }));
+    });
+    const pane = el("div", "models-pane eng-pane");
+    renderPane(pane, st);
+    cols.append(side, pane);
+    container.append(cols);
   }
 
   // Protect a text/number/range field being typed into from autosave rebuilds, but let
@@ -600,21 +622,24 @@
 
   function render() {
     if (!_mounted) return;
-    const { scroller, content } = _mounted;
+    const { content } = _mounted;
     if (_editing) {
       if (shouldProtect(document.activeElement, content)) return;
       _editing = false;
     }
-    const scrollTop = scroller.scrollTop;
+    const prevPane = content.querySelector(".models-pane");
+    const scrollTop = prevPane ? prevPane.scrollTop : 0;
     clear(content);
     renderContent(content, S.get());
-    scroller.scrollTop = scrollTop;
+    const pane = content.querySelector(".models-pane");
+    if (pane) pane.scrollTop = scrollTop;
   }
 
   function mount(body) {
-    const content = el("div", "engine-modal-content");
+    const content = el("div", "models-mount eng-mount");
     body.append(content);
-    _mounted = { scroller: body, content };
+    _mounted = { content };
+    view = "overview";
 
     content.addEventListener("focusin", (e) => {
       const t = e.target;
@@ -637,7 +662,7 @@
   }
 
   window.SettingsWindow.register({
-    id: "engine", group: "Generation", order: 1, title: "Engine",
+    id: "engine", group: "Generation", order: 1, title: "Engine", flush: true,
     subtitle: "FunPack Studio, Chain Sampler, and continuity for the open project.",
     keywords: "studio chain sampler refinement key seed cfg guidance continuity guides presets "
       + "embed dynashift joyai decode transition overlap steer adjustments temporal",

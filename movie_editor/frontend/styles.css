@@ -1601,8 +1601,10 @@ body.tour-mode { overflow: hidden; }
   transition: width .16s ease, box-shadow .16s ease; }
 .sw-side:hover, .sw-side:focus-within { width: 218px; box-shadow: 18px 0 40px -18px rgba(0,0,0,.7); }
 .sw-search { width: 100%; min-width: 0; padding: 6px 9px; height: 30px; flex: 0 0 auto;
+  -webkit-appearance: none; appearance: none;
   font: 12.5px var(--font-ui); color: var(--text);
   background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px; outline: none; }
+.sw-search::-webkit-search-cancel-button { -webkit-appearance: none; }
 .sw-search::placeholder { opacity: 0; transition: opacity .16s ease; }
 .sw-side:hover .sw-search::placeholder, .sw-side:focus-within .sw-search::placeholder { opacity: 1; }
 .sw-search:focus { border-color: var(--amber); }
@@ -1741,3 +1743,22 @@ body.tour-mode { overflow: hidden; }
 
 /* node page header sits flush at the pane top */
 .node-page { margin-top: 0; }
+
+/* ── Engine section: category sidebar + macOS row fields ── */
+.mn-group { margin: 10px 6px 3px; font-size: 10px; font-weight: 700; letter-spacing: .8px;
+  text-transform: uppercase; color: var(--faint); white-space: nowrap; flex: 0 0 auto; }
+.eng-pane .sw-rows { margin-bottom: 4px; }
+.eng-field > input, .eng-field > select { width: auto; min-width: 0; flex: 0 0 auto; }
+.eng-field > input[type="number"] { width: 92px; font-family: var(--font-mono); }
+.eng-field > input[type="text"] { width: min(46%, 240px); }
+.eng-field > select { max-width: 52%; }
+.eng-field > input[type="checkbox"] { width: auto; accent-color: var(--amber); transform: scale(1.15); }
+.eng-field.eng-stack { flex-direction: column; align-items: stretch; gap: 8px; }
+.eng-field.eng-stack > .sw-row-main { width: 100%; }
+.eng-empty-row { font-size: 12px; color: var(--faint); }
+.eng-add { align-self: flex-start; margin-top: 2px; }
+.eng-pane .studio-adjust-row { gap: 8px; }
+.eng-pane .studio-adjust-row input[type="text"] { min-width: 0; }
+.eng-foot { margin-top: 14px; display: flex; align-items: center; gap: 8px; }
+.eng-pane .engine-preset-bar { margin-bottom: 10px; }
+.eng-sampler-panel { margin-top: 4px; }

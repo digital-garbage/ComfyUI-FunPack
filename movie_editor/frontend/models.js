@@ -1172,18 +1172,7 @@
   let view = "pipeline"; // "pipeline" | "links" | "node:<slotId>"
   function setView(v) { view = v; render(); }
 
-  function mnItem(opts) {
-    const it = el("div", "mn-item" + (opts.active ? " active" : ""));
-    if (opts.dot) it.append(el("span", "mn-dot " + opts.dot));
-    else if (opts.icon) it.append(el("span", "mn-ico", opts.icon));
-    const lab = el("span", "mn-label");
-    lab.append(el("span", "mn-name", opts.label));
-    if (opts.sub) lab.append(el("span", "mn-sub", opts.sub));
-    it.append(lab);
-    if (opts.badge != null) it.append(el("span", "mn-badge", String(opts.badge)));
-    it.onclick = opts.onClick;
-    return it;
-  }
+  const mnItem = (opts) => window.SettingsWindow.navItem(opts);
 
   function sideBar(v) {
     const side = el("div", "models-side");
