@@ -1,6 +1,7 @@
 """Git pull / branch switch for the FunPack repo (ComfyUI custom node root)."""
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +27,16 @@ def _run_git(*args: str, timeout: int = 120) -> subprocess.CompletedProcess[str]
         timeout=timeout,
     )
     return proc
+
+
+def funpack_version() -> str:
+    """Custom-node version from pyproject.toml (shown in Settings ▸ About)."""
+    try:
+        text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    return m.group(1) if m else ""
 
 
 def _current_branch() -> str:
@@ -92,6 +103,7 @@ def status() -> dict:
         ahead, behind = _ahead_behind(branch) if fetch_ok else (0, 0)
         return {
             "ok": True,
+            "version": funpack_version(),
             "branch": branch,
             "commit": commit,
             "dirty": dirty,
@@ -102,7 +114,7 @@ def status() -> dict:
             "repo": str(REPO_ROOT),
         }
     except GitUpdateError as e:
-        return {"ok": False, "detail": str(e)}
+        return {"ok": False, "version": funpack_version(), "detail": str(e)}
 
 
 def pull(branch: str | None = None) -> dict:

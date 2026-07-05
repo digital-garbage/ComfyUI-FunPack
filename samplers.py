@@ -2,6 +2,7 @@ import copy
 import hashlib
 import math
 import os
+import time as _time
 
 import torch
 
@@ -801,6 +802,65 @@ def _video_only(x_new, x_old, mask):
         return x_old + (x_new - x_old) * mask
     except Exception:
         return x_new
+
+
+def _video_span(model, x):
+    """(offset, size, stream_shape) of the video stream inside a packed AV latent
+    [B,1,N], or None when the layout can't be verified (same guards and stream
+    heuristic as _packed_video_mask — mismatch means don't risk slicing).
+    stream_shape is the per-stream latent shape comfy packed from (e.g.
+    (B, C, T, H, W)), so callers can recover frame geometry from the flat span."""
+    try:
+        shapes = _get_latent_shapes(model)
+        if not shapes or len(shapes) <= 1:
+            return None
+        if not hasattr(x, "shape") or x.dim() < 1:
+            return None
+        n = int(x.shape[-1])
+        sizes = [int(math.prod(tuple(s)[1:])) for s in shapes]
+        if sum(sizes) != n:
+            return None
+        video_idx = max(range(len(shapes)), key=lambda i: (len(tuple(shapes[i])), sizes[i]))
+        return sum(sizes[:video_idx]), sizes[video_idx], tuple(shapes[video_idx])
+    except Exception:
+        return None
+
+
+# Per-scene model_function_wrappers (embed guidance / score slider / output guidance /
+# temporal styles) live on the SHARED ModelPatcher. If a run dies between install and
+# restore (interrupt, OOM), the wrapper survives in-process and silently steers every
+# later run, stacking one deeper each time — the exact progressive-corruption failure
+# mode strip_funpack_block_hooks exists for, so we reuse its tag+strip pattern.
+_FUNPACK_SCENE_WRAPPER_TAG = "_funpack_scene_wrapper"
+
+
+def _tag_scene_wrapper(wrapper, prev):
+    """Mark a per-scene wrapper (and remember what it wrapped) so a later run can
+    identify and unwind leaked ones."""
+    setattr(wrapper, _FUNPACK_SCENE_WRAPPER_TAG, True)
+    setattr(wrapper, "_funpack_prev_wrapper", prev)
+    return wrapper
+
+
+def _strip_funpack_scene_wrappers(model):
+    """Unwind FunPack per-scene wrappers leaked by a previous interrupted/failed run.
+    Walks the recorded prev-wrapper chain back to the first non-FunPack wrapper (or
+    none). Idempotent; never raises."""
+    try:
+        w = model.model_options.get("model_function_wrapper")
+        stripped = 0
+        while w is not None and getattr(w, _FUNPACK_SCENE_WRAPPER_TAG, False):
+            w = getattr(w, "_funpack_prev_wrapper", None)
+            stripped += 1
+        if stripped:
+            if w is not None:
+                model.model_options["model_function_wrapper"] = w
+            else:
+                model.model_options.pop("model_function_wrapper", None)
+            print(f"[FunPackSceneChain] Stripped {stripped} leaked scene wrapper(s) from a previous run")
+        return stripped
+    except Exception:
+        return 0
 
 
 def _alg_blur_frames(model, latent_image, kappa, frame_indices=(), tail_count=0):
@@ -1695,7 +1755,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    rescue_prompt_sig=None,
                                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
                                    alg_guide_tail_frames=0,
-                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
+                                   mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
+                                   quality_sharpness=0.0):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1729,6 +1790,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       the complementary window to ALG's blur, which only acts above its threshold. The EMA
       itself accumulates every step (free) so it has real history by the time it starts
       being applied; only the application is gated. Audio is never touched (video-only).
+    - Optional quality_sharpness: temporal-average unsharp on the x0 prediction, applied only
+      during the final Heun-correction steps (same mechanism as the Hybrid Euler 2S sampler's
+      quality-phase sharpening, ported here). Free (no extra model eval), video-only.
     """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
@@ -1836,6 +1900,11 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                     velocity_target, rescue_threshold, rescue_strength, prompt_sig=rescue_prompt_sig,
                     source=velocity_bias_source,
                 ), denoised, video_mask)
+
+            # Restore high-frequency detail during the final Heun-correction steps (free,
+            # video-only) — same unsharp mechanism as the Hybrid Euler 2S sampler.
+            if i >= correction_start_idx:
+                denoised = _video_only(_apply_quality_sharpness(denoised, prev_denoised, quality_sharpness), denoised, video_mask)
 
             # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
             denoised = _normalize_video_denoised(
@@ -2013,6 +2082,11 @@ class FunPackDistilledFlowSampler:
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
                     "tooltip": "Momentum guidance applies while sigma is BELOW this value (the opposite window from alg_sigma_threshold) — defaults to the same boundary as ALG for a clean handoff. Only used when mg_enabled.",
                 }),
+                # Appended last on purpose, same rule as ab2_ramp above.
+                "quality_sharpness": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Restores fine detail via temporal-average unsharp on the x0 prediction, applied only during the final Heun-correction steps (final_correction_steps > 0 required to have any effect). 0 disables. 0.2-0.4 typical. Free (no extra model eval), video-only.",
+                }),
             }
         }
 
@@ -2036,7 +2110,8 @@ class FunPackDistilledFlowSampler:
                     rescue_prompt_sig=None, sigmas=None, ab2_ramp=False,
                     normalize_strength=0.0, normalize_start_sigma=0.9,
                     alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
-                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975):
+                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
+                    quality_sharpness=0.0):
         prepared_sigmas = sigmas.detach().clone() if isinstance(sigmas, torch.Tensor) else sigmas
         sampler = comfy.samplers.KSAMPLER(
             sample_funpack_distilled_flow,
@@ -2062,6 +2137,7 @@ class FunPackDistilledFlowSampler:
                 "mg_strength": mg_strength,
                 "mg_decay": mg_decay,
                 "mg_sigma_threshold": mg_sigma_threshold,
+                "quality_sharpness": quality_sharpness,
             }
         )
         return (sampler, prepared_sigmas)
@@ -2253,6 +2329,28 @@ class FunPackLTXAVSceneChainSampler:
                 "bounded_attention_enabled": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL: Bounded Attention (arXiv:2403.16990) + Structured Diffusion Guidance (arXiv:2212.05032)-style exact split. Studio splits multi-sentence scene prompts by sentence count and encodes each half SEPARATELY (no shared tokenization, exact boundary), then this masks text cross-attention so the left half of the frame can only attend to subject-1's tokens and the right half only to subject-2's — aims to stop attribute/anatomy bleed between two figures in one frame. No-op on single-sentence prompts or single-subject scenes. Works on any sampler (model-level hook, not sampler-specific).",
+                }),
+                # NOTE: append-only — keep new sampler widgets at the END of this block so the
+                # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
+                "output_guidance": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: sibling of embed_guidance, but the learned quality direction is trained on and applied to the model's own predicted OUTPUT (x0_hat) instead of the input conditioning — a separate value function (needs its own 10+ rated generations to activate; see refinement key's *.x0_snapshot.pt / *.value_fn_x0.pt). Same near-zero mechanism as embed_guidance (one backward pass through a small MLP, no extra model forward pass), applied post-prediction rather than pre-input. Requires refinement_key_input. Cost unmeasured yet — treat as embed_guidance-shaped until benchmarked, not assumed cheaper.",
+                }),
+                "output_guidance_strength": ("FLOAT", {
+                    "default": 0.02, "min": 0.005, "max": 0.1, "step": 0.005,
+                    "tooltip": "Per-step correction strength applied to the model's predicted output. Same scale/units as embed_guidance_strength — start there and adjust.",
+                }),
+                "dynashift": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL DynaShift: a negative prompt at CFG=1, driven by YOUR bad ratings instead of text. Bad-outcome ratings ('Awful', 'Wrong appearance', and the quality-missing family: 'Missing quality' / '+details' / '+action' combos) store that run's video latent in a per-key negative bank; near-miss ratings with positive reward ('Missing details', 'Missing action') deliberately do NOT. During sampling, frames that start to look like a banked bad generation are steered away (projection removal) until the match drops below the threshold. Alignment-free in time (chain position / guide tails don't matter); negatives from a different resolution are skipped; each negative is weighted by prompt similarity so unrelated bad gens steer less. Requires refinement_key_input; silent until the bank has at least one entry. No extra model pass — near-zero overhead. Audio untouched.",
+                }),
+                "dynashift_strength": ("FLOAT", {
+                    "default": 0.3, "min": 0.05, "max": 1.0, "step": 0.05,
+                    "tooltip": "Fraction of the matched negative component removed per fully-gated late step (accumulates over ~4 quality-phase steps). 0.3 is a gentle nudge; 1.0 removes the matched component outright each step.",
+                }),
+                "dynashift_threshold": ("FLOAT", {
+                    "default": 0.6, "min": 0.3, "max": 0.95, "step": 0.05,
+                    "tooltip": "Frame-similarity gate: a current frame must match a banked negative frame above this cosine similarity before any steering applies. Steering strength ramps from 0 at the threshold to full at similarity 1.0, so it self-releases once the unwanted feature is gone. Lower = more aggressive (risks steering away from legitimately similar content).",
                 }),
             },
             "hidden": {
@@ -3017,6 +3115,244 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return None
 
+    def _load_output_value_function(self, refinement_key):
+        """Load the output-space (x0_hat) value function if trained and ready. Sibling of
+        _load_value_function, trained on the sampler's own predicted output instead of the
+        input conditioning — see value_function.LatentValueFunction."""
+        try:
+            try:
+                from .value_function import LatentValueFunction
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import LatentValueFunction
+                from conditioning import refinement_state_path
+            import os as _os
+            path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
+            if not _os.path.exists(path):
+                return None
+            with torch.inference_mode(False):
+                vf = LatentValueFunction.load(path)
+            return vf if vf.is_ready() else None
+        except Exception:
+            return None
+
+    def _save_output_value_snapshot(self, refinement_key, denoised, video_mask):
+        """End-of-run: pool the final x0_hat (video-only, audio excluded — same convention as
+        embed_guidance/velocity-bias) down to a small vector and persist it so the NEXT rating
+        cycle can pair it with a reward and train the output-space value function. The raw
+        latent is never persisted (too large; N varies per run) — only this compressed vector,
+        mirroring how the Refiner already persists conditioning into last_run for the
+        equivalent conditioning-space training path."""
+        try:
+            try:
+                from .value_function import LatentValueFunction, compress_packed_latent
+                from .conditioning import refinement_state_path
+            except ImportError:
+                from value_function import LatentValueFunction, compress_packed_latent
+                from conditioning import refinement_state_path
+            import os as _os
+            target = denoised if video_mask is None else denoised * video_mask
+            with torch.inference_mode(False), torch.no_grad():
+                compressed = compress_packed_latent(
+                    target.detach().float(), LatentValueFunction.DEFAULT_HIDDEN_DIM
+                ).cpu()
+            path = refinement_state_path(refinement_key, "x0_snapshot", prefix="refine_v2", extension="pt")
+            _os.makedirs(_os.path.dirname(path), exist_ok=True)
+            tmp = path + ".tmp"
+            torch.save(compressed, tmp)
+            _os.replace(tmp, path)  # atomic — a rating read never sees a partial write
+        except Exception as e:
+            print(f"[FunPackSceneChain] output value snapshot save failed: {e}")
+
+    def _build_output_guidance_wrapper(self, model, value_fn, strength):
+        """Sibling of _build_embed_guidance_wrapper, but corrects the model's OUTPUT
+        (x0_hat) instead of nudging the INPUT conditioning. value_fn.gradient() backprops
+        through its own compress() step, so feeding it the denoised prediction returns a
+        same-shape gradient — a direct, single-pass correction (no extra forward pass
+        through the base model; the only added cost is one backward pass through the value
+        function's few-hundred-parameter MLP). Borrows NoiseTilt's core idea (train the
+        reward signal on the model's own prediction, not the input) without its SDE
+        noise-term mechanism, which has no analogue in this deterministic-ODE sampler —
+        see [[research_2026_training_free_candidates]].
+
+        Two invariants the correction depends on:
+        - VIDEO SLICE, not post-hoc mask: the gradient is computed on the packed latent's
+          video span only, because that is the domain the value function was trained on
+          (_save_output_value_snapshot pools the video stream alone). Feeding the full
+          packed AV tensor would shift every adaptive-pooling bucket and let audio
+          contaminate the score.
+        - NORM-CALIBRATED step: the raw MLP gradient reaches each latent element through
+          an adaptive-pool window of ~N/512 elements, so its per-element magnitude is
+          O(1/window) — numerically inert if applied raw. The delta is rescaled so
+          strength means "fraction of the video stream's norm per fully-ramped step"
+          (0.02 = 2%), the same relative-calibration convention as the slider's 0.15 and
+          the Refiner's NORM_SCALE."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _output_wrapper(apply_fn, args, _vf=value_fn, _s=strength):
+            denoised = _call(apply_fn, args)
+            ts = args.get("timestep")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                sigma = 1.0
+            scale = max(0.0, 1.0 - sigma * 2.0)  # same late-step ramp as embed_guidance
+            if scale <= 0:
+                return denoised
+            try:
+                span = _video_span(model, denoised)
+                if span is not None:
+                    off, sz, _shape = span
+                    target = denoised[..., off:off + sz]
+                else:
+                    target = denoised  # single-stream: full tensor IS the training domain
+                grad = _vf.gradient(target)
+                gn = float(grad.float().norm())
+                if gn <= 0.0:
+                    return denoised
+                k = (_s * scale) * float(target.float().norm()) / gn
+                corrected = target + grad * k
+                if span is None:
+                    return corrected
+                return torch.cat(
+                    [denoised[..., :off], corrected, denoised[..., off + sz:]], dim=-1
+                )
+            except Exception as e:
+                print(f"[FunPackSceneChain] output_guidance: gradient failed ({e}), passing through")
+                return denoised
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_output_wrapper, old_wrapper)
+        return old_wrapper
+
+    def _build_dynashift_wrapper(self, model, negatives, strength, threshold):
+        """DynaShift: steer the predicted x0 AWAY from the key's negative latent memory.
+
+        A negative prompt at CFG=1: the repulsor is not a second text pass but the
+        stored video latents of generations the user rated as containing something
+        unwanted (see negative_memory.py — awful / wrong-appearance ratings feed the
+        bank). Per late step:
+          1. each current video frame is pooled to a fixed descriptor and compared
+             (cosine) against every stored negative frame — alignment-free in time,
+             so scene position, chain length and guide tails don't matter; only the
+             spatial latent geometry (C, H, W) must match (others are skipped);
+          2. each negative is weighted by prompt similarity (stored cond vs current
+             c_crossattn mean), so bad gens from unrelated prompts steer less;
+          3. frames matching above `threshold` get the matched negative frame's
+             component subtracted (positive projection removal, coefficient clamped
+             at 0 so anti-aligned frames are never pushed TOWARD the negative),
+             scaled by how far above threshold the match is — steering fades to a
+             no-op as soon as the unwanted feature is gone ("until it's gone").
+
+        Cost: one pooled similarity matrix + one masked subtraction per step; no
+        extra model forward pass, no uncond pass. Audio byte-identical by
+        construction (video span only, cat back). Frame-level (not sub-frame) v1:
+        the "mask" is temporal + magnitude gating; unmatched frames are untouched."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+        _desc_dim = 512
+        _prep = {}  # device -> (desc [Tall,512] fp32, units [Tall,D] fp16, owner [Tall], conds)
+        _warned = [False]
+
+        def _call(apply_fn, a):
+            if old_wrapper is not None:
+                return old_wrapper(apply_fn, a)
+            return apply_fn(a["input"], a["timestep"], **a.get("c", {}))
+
+        def _frame_desc(frames_f32):
+            d = torch.nn.functional.adaptive_avg_pool1d(frames_f32.unsqueeze(1), _desc_dim).squeeze(1)
+            return torch.nn.functional.normalize(d, dim=-1)
+
+        def _prepare(device, c, h, w):
+            key = (str(device), c, h, w)
+            if key in _prep:
+                return _prep[key]
+            descs, units, owners, conds = [], [], [], []
+            skipped = 0
+            for i, entry in enumerate(negatives):
+                lat = entry.get("latent")
+                if not isinstance(lat, torch.Tensor) or lat.dim() != 4 or \
+                        lat.shape[0] != c or lat.shape[2] != h or lat.shape[3] != w:
+                    skipped += 1
+                    continue
+                frames = lat.permute(1, 0, 2, 3).reshape(lat.shape[1], -1).to(device)
+                f32 = frames.float()
+                descs.append(_frame_desc(f32))
+                units.append(torch.nn.functional.normalize(f32, dim=-1).to(torch.float16))
+                owners.extend([len(conds)] * frames.shape[0])
+                conds.append(entry.get("cond"))
+            if skipped and not _warned[0]:
+                _warned[0] = True
+                print(f"[FunPackSceneChain] dynashift: {skipped} negative(s) skipped "
+                      "(different latent resolution than this run)")
+            prepared = None
+            if descs:
+                prepared = (torch.cat(descs, dim=0), torch.cat(units, dim=0),
+                            torch.tensor(owners, device=device), conds)
+            _prep[key] = prepared
+            return prepared
+
+        def _cond_weights(conds, c_dict, device):
+            cur = (c_dict or {}).get("c_crossattn")
+            if cur is None or not any(isinstance(cv, torch.Tensor) for cv in conds):
+                return torch.ones(len(conds), device=device)
+            cm = cur.detach().float()
+            cm = cm.mean(dim=tuple(range(cm.dim() - 1)))  # -> [D]
+            weights = []
+            for cv in conds:
+                if isinstance(cv, torch.Tensor) and cv.numel() == cm.numel():
+                    sim = torch.nn.functional.cosine_similarity(
+                        cm, cv.to(device).float(), dim=0)
+                    weights.append(sim.clamp(0.0, 1.0))
+                else:
+                    weights.append(torch.ones((), device=device))
+            return torch.stack(weights)
+
+        def _dynashift_wrapper(apply_fn, args, _s=float(strength), _thr=float(threshold)):
+            denoised = _call(apply_fn, args)
+            ts = args.get("timestep")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 1.0
+            except Exception:
+                sigma = 1.0
+            ramp = max(0.0, 1.0 - sigma * 2.0)  # same late-step ramp as the other wrappers
+            if ramp <= 0.0 or _s <= 0.0:
+                return denoised
+            try:
+                span = _video_span(model, denoised)
+                if span is None:
+                    return denoised
+                off, sz, shape = span
+                c, t, h, w = int(shape[-4]), int(shape[-3]), int(shape[-2]), int(shape[-1])
+                prepared = _prepare(denoised.device, c, h, w)
+                if prepared is None:
+                    return denoised
+                desc, units, owner, conds = prepared
+                cur = denoised[..., off:off + sz].reshape(c, t, h, w)
+                cur_f = cur.permute(1, 0, 2, 3).reshape(t, -1).float()
+                sims = _frame_desc(cur_f) @ desc.T                     # [T, Tall]
+                sims = sims * _cond_weights(conds, args.get("c"), denoised.device)[owner]
+                best, idx = sims.max(dim=1)                            # per current frame
+                gate = ((best - _thr) / max(1e-6, 1.0 - _thr)).clamp(0.0, 1.0) * (_s * ramp)
+                if float(gate.max()) <= 0.0:
+                    return denoised
+                matched = units[idx].float()                           # [T, D] unit rows
+                coef = (cur_f * matched).sum(dim=-1).clamp(min=0.0)    # aligned component only
+                new_f = cur_f - (gate * coef).unsqueeze(1) * matched
+                new_span = new_f.reshape(t, c, h, w).permute(1, 0, 2, 3).reshape(1, 1, sz)
+                return torch.cat([denoised[..., :off],
+                                  new_span.to(denoised.dtype),
+                                  denoised[..., off + sz:]], dim=-1)
+            except Exception as e:
+                print(f"[FunPackSceneChain] dynashift failed ({e}), passing through")
+                return denoised
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_dynashift_wrapper, old_wrapper)
+        return old_wrapper
+
     def _load_taste_direction(self, refinement_key, slot="liked_dir"):
         """Read a learned conditioning direction from the Refiner's global taste store.
         `slot` is "liked_dir" (accumulated from liked gens) or "bad_dir" (accumulated
@@ -3082,7 +3418,7 @@ class FunPackLTXAVSceneChainSampler:
                 return _ew(apply_fn, args)
             return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
-        model.model_options["model_function_wrapper"] = _embed_wrapper
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_embed_wrapper, old_wrapper)
         return old_wrapper
 
     def _build_score_slider_wrapper(self, model, liked_dir, eta, bad_dir=None):
@@ -3163,7 +3499,7 @@ class FunPackLTXAVSceneChainSampler:
                 print(f"[FunPackSceneChain] score_slider failed ({_e}), using base prediction")
                 return _call(apply_fn, args)
 
-        model.model_options["model_function_wrapper"] = _slider_wrapper
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_slider_wrapper, old_wrapper)
         return old_wrapper
 
     def _resolve_frame_index(self, total, frame_idx):
@@ -3805,6 +4141,8 @@ class FunPackLTXAVSceneChainSampler:
                funpack_scene_media_refs="",
                alg_blur_guides=False,
                bounded_attention_enabled=False,
+               output_guidance=False, output_guidance_strength=0.02,
+               dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -3823,6 +4161,10 @@ class FunPackLTXAVSceneChainSampler:
             strip_funpack_block_hooks(model)
         except Exception as _e:
             print(f"[FunPackLTXAVSceneChainSampler] hook strip failed: {_e}")
+        # Same defense for per-scene model_function_wrappers: normally unwound in the
+        # per-scene finally, but a hard kill between install and restore (or a crash in a
+        # third-party wrapper we chained onto) could still leave one behind in-process.
+        _strip_funpack_scene_wrappers(model)
 
         # Blackwell (sm_120) GPUs can't run xformers attention with a tensor mask; the LTX
         # guide path uses one, so anchor scenes generate but guide scenes crash. Route masked
@@ -3853,6 +4195,9 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 alg_blur_guides=alg_blur_guides,
                 bounded_attention_enabled=bounded_attention_enabled,
+                output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
+                dynashift=dynashift, dynashift_strength=dynashift_strength,
+                dynashift_threshold=dynashift_threshold,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -3895,6 +4240,63 @@ class FunPackLTXAVSceneChainSampler:
                     _bad_dir = self._load_taste_direction(_eg_key, "bad_dir")
                     pole = "contrastive (liked-vs-bad)" if _bad_dir is not None else "symmetric (+/-liked)"
                     print(f"[FunPackSceneChain] score_slider ({_eg_source}): active (score-space), eta={score_slider_strength}, pole={pole}")
+
+        # DynaShift negative latent memory — loaded once per run. Empty bank = feature
+        # stays silent (nothing rated bad yet for this key); it fills as awful /
+        # wrong-appearance ratings land.
+        _dynashift_negatives = None
+        if dynashift and refinement_key_input:
+            try:
+                try:
+                    from .negative_memory import load_negatives as _load_negs
+                except ImportError:
+                    from negative_memory import load_negatives as _load_negs
+                _dynashift_negatives = _load_negs(refinement_key_input) or None
+            except Exception as _e:
+                print(f"[FunPackSceneChain] dynashift: bank load failed ({_e})")
+            if _dynashift_negatives is None:
+                print("[FunPackSceneChain] dynashift: negative bank empty — rate a bad "
+                      "generation (Awful / Wrong appearance) to populate it")
+            else:
+                print(f"[FunPackSceneChain] dynashift: active with {len(_dynashift_negatives)} "
+                      f"negative(s), strength={dynashift_strength}, threshold={dynashift_threshold}")
+        elif dynashift:
+            print("[FunPackSceneChain] dynashift: requires refinement_key_input — disabled")
+
+        # Output-space value function for output_guidance — sibling of the block above, but
+        # keyed on refinement_key_input directly (relative-only for now, no absolute mode yet)
+        # since it's trained on the sampler's own predicted output, not on prompt conditioning.
+        _output_value_fn = None
+        if output_guidance and refinement_key_input:
+            _output_value_fn = self._load_output_value_function(refinement_key_input)
+            if _output_value_fn is None:
+                print("[FunPackSceneChain] output_guidance: value function not ready yet "
+                      "(needs 10+ rated generations to reach MIN_SAMPLES)")
+            else:
+                print(f"[FunPackSceneChain] output_guidance: active ({_output_value_fn.n_trained} samples), "
+                      f"strength={output_guidance_strength}")
+
+        # Phase timing + quantized-path census: "the matmuls got faster" and "the video
+        # arrives sooner" are different claims — the report separates sampling, decode,
+        # and everything else so an optimization's real ceiling is visible. The census
+        # calls out quantized layers that weight patches (LoRA / refiner attn deltas) or
+        # emulation force OFF the fast path — those dequantize on every call.
+        _t_run0 = _time.perf_counter()
+        _phase_sampling = 0.0
+        _phase_decode = 0.0
+        try:
+            _q_total = _q_off = 0
+            for _qm in model.model.diffusion_model.modules():
+                if getattr(_qm, "quant_format", None):
+                    _q_total += 1
+                    if len(getattr(_qm, "weight_function", []) or []) > 0 or getattr(_qm, "_full_precision_mm", False):
+                        _q_off += 1
+            if _q_total:
+                print(f"[FunPackSceneChain] quantized layers: {_q_total} total, {_q_off} forced OFF "
+                      "the quantized matmul path (weight patches / emulation)"
+                      + (" — those dequantize every call, slower than bf16" if _q_off else ""))
+        except Exception:
+            pass
 
         first_scene_seed = self._scene_seed(scene_conditionings[0])
         if first_scene_seed is None:
@@ -4010,80 +4412,81 @@ class FunPackLTXAVSceneChainSampler:
                 elif not custom_guides:
                     guide_tail = 0
 
-            if embed_guidance and _value_fn is not None and _value_fn.is_ready():
-                run_mechanisms.append("embed_guidance_vf_ascend")
-                orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
-                ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
-                scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
-            if embed_guidance and _liked_dir is not None:
-                run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
-                _eg_old_wrapper = self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
-            _slider_old_wrapper = None
-            if score_slider and _liked_dir is not None:
-                _pole = "contrastive" if _bad_dir is not None else "symmetric"
-                run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
-                _slider_old_wrapper = self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
-            # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top of
-            # whatever is installed (e.g. embed guidance). Restored right after sampling,
-            # before the embed-guidance restore, so the wrappers unwind in install order.
-            _temporal_applied = False
-            _temporal_prev_wrapper = None
-            _scene_mode = self._scene_temporal_mode(scene_cond)
-            _scene_mult = self._scene_temporal_mult(scene_cond)
-            _cur_wrapper = model.model_options.get("model_function_wrapper")
-            if _scene_mode == "pulse":
-                try:
-                    from .ltx_enhancements import make_pulse_temporal_wrapper
-                except ImportError:
-                    from ltx_enhancements import make_pulse_temporal_wrapper
-                _tw = make_pulse_temporal_wrapper(_cur_wrapper)
-                if _tw is not None:
-                    _temporal_prev_wrapper = _cur_wrapper
-                    model.model_options["model_function_wrapper"] = _tw
-                    _temporal_applied = True
-            elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
-                try:
-                    from .ltx_enhancements import make_temporal_wrapper
-                except ImportError:
-                    from ltx_enhancements import make_temporal_wrapper
-                _tw = make_temporal_wrapper(_cur_wrapper, _scene_mult)
-                if _tw is not None:
-                    _temporal_prev_wrapper = _cur_wrapper
-                    model.model_options["model_function_wrapper"] = _tw
-                    _temporal_applied = True
-            # JoyAI v2a coupling: amplify (or mute) the trained video->audio cross-attention for this
-            # scene's denoise. Only when audio memory is on and the scale differs from native (1.0);
-            # hooks are removed immediately after so nothing leaks into later scenes / other nodes.
+            # Everything from here through sampling installs per-scene state on the SHARED
+            # model (function wrappers, forward hooks). One snapshot + one finally guarantees
+            # the model leaves this scene exactly as it entered it — even on interrupt/OOM
+            # mid-sampling, where the old per-feature unwind blocks were never reached and
+            # the wrappers leaked in-process, double-steering every later run (same failure
+            # mode as the block-hook leak; see _strip_funpack_scene_wrappers).
+            _scene_base_wrapper = model.model_options.get("model_function_wrapper")
             _v2a_handles = []
-            if joyai_audio_memory and audio_tail > 0:
-                _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
-                if _v2a_handles:
-                    run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
             try:
+                if embed_guidance and _value_fn is not None and _value_fn.is_ready():
+                    run_mechanisms.append("embed_guidance_vf_ascend")
+                    orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
+                    ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
+                    scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
+                if embed_guidance and _liked_dir is not None:
+                    run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
+                    self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
+                if score_slider and _liked_dir is not None:
+                    _pole = "contrastive" if _bad_dir is not None else "symmetric"
+                    run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
+                    self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
+                if dynashift and _dynashift_negatives:
+                    run_mechanisms.append(
+                        f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")
+                    self._build_dynashift_wrapper(
+                        model, _dynashift_negatives, dynashift_strength, dynashift_threshold)
+                if output_guidance and _output_value_fn is not None:
+                    # Installed outermost (after embed_guidance/score_slider/dynashift) so it
+                    # corrects whatever prediction those already produced, not the raw base one.
+                    run_mechanisms.append(f"output_guidance({output_guidance_strength})")
+                    self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
+                # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top
+                # of whatever is installed (e.g. embed guidance).
+                _scene_mode = self._scene_temporal_mode(scene_cond)
+                _scene_mult = self._scene_temporal_mult(scene_cond)
+                _cur_wrapper = model.model_options.get("model_function_wrapper")
+                if _scene_mode == "pulse":
+                    try:
+                        from .ltx_enhancements import make_pulse_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_pulse_temporal_wrapper
+                    _tw = make_pulse_temporal_wrapper(_cur_wrapper)
+                    if _tw is not None:
+                        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
+                elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
+                    try:
+                        from .ltx_enhancements import make_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_temporal_wrapper
+                    _tw = make_temporal_wrapper(_cur_wrapper, _scene_mult)
+                    if _tw is not None:
+                        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
+                # JoyAI v2a coupling: amplify (or mute) the trained video->audio cross-attention
+                # for this scene's denoise. Only when audio memory is on and the scale differs
+                # from native (1.0).
+                if joyai_audio_memory and audio_tail > 0:
+                    _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
+                    if _v2a_handles:
+                        run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
+                _t_sample0 = _time.perf_counter()
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
+                _scene_sample_s = _time.perf_counter() - _t_sample0
+                _phase_sampling += _scene_sample_s
             finally:
                 self._remove_v2a_scale(_v2a_handles)
-            if _temporal_applied:
-                if _temporal_prev_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _temporal_prev_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
-            # Unwind in reverse install order: slider was installed on top of embed.
-            if score_slider and _liked_dir is not None:
-                if _slider_old_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _slider_old_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
-            if embed_guidance and _liked_dir is not None:
-                if _eg_old_wrapper is not None:
-                    model.model_options["model_function_wrapper"] = _eg_old_wrapper
-                elif "model_function_wrapper" in model.model_options:
-                    del model.model_options["model_function_wrapper"]
+                if model.model_options.get("model_function_wrapper") is not _scene_base_wrapper:
+                    if _scene_base_wrapper is not None:
+                        model.model_options["model_function_wrapper"] = _scene_base_wrapper
+                    else:
+                        model.model_options.pop("model_function_wrapper", None)
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
@@ -4107,8 +4510,20 @@ class FunPackLTXAVSceneChainSampler:
                 "seed_used": scene_seed,
                 "mechanisms": run_mechanisms,
             })
+            # Per-scene sampling time + appended-token context: guide/carry scenes sample a
+            # LONGER sequence (carried head + guide/audio tails) and take the masked-attention
+            # path when guide strengths != 1.0 — this line makes any per-scene overhead
+            # attributable at a glance instead of hiding inside the run total.
+            _scene_extras = (
+                (f", carried={carried + soft_carried}f" if (carried + soft_carried) > 0 else "")
+                + (f", guide_tail={guide_tail}f" if guide_tail > 0 else "")
+                + (f", audio_tail={audio_tail}f" if audio_tail > 0 else "")
+                + (f" [{', '.join(run_mechanisms)}]" if run_mechanisms else "")
+            )
+            print(f"[FunPackSceneChain] Scene {scene_index + 1}: sampling {_scene_sample_s:.1f}s{_scene_extras}")
             report_lines.append(
-                f"Scene {scene_index + 1}: seed={scene_seed}, text={scene_meta['text']}"
+                f"Scene {scene_index + 1}: seed={scene_seed}, sampling {_scene_sample_s:.1f}s{_scene_extras}, "
+                f"text={scene_meta['text']}"
                 + (f" | encode≠text" if scene_meta["encode_text"] != scene_meta["text"] else "")
             )
 
@@ -4121,6 +4536,7 @@ class FunPackLTXAVSceneChainSampler:
 
         images = None
         if want_image:
+            _t_dec0 = _time.perf_counter()
             video_tensor = self._latent_tensors(output)[0]
             if decode_tile_size > 0:
                 try:
@@ -4133,9 +4549,19 @@ class FunPackLTXAVSceneChainSampler:
                 b, t, h, w, c = decoded.shape
                 decoded = decoded.reshape(b * t, h, w, c)
             images = self._apply_transitions_pixel(decoded, boundary_entries, transition_duration)
+            _phase_decode = _time.perf_counter() - _t_dec0
 
         if images is None:
             images = torch.zeros(1, 8, 8, 3)
+
+        _t_total = _time.perf_counter() - _t_run0
+        _phase_other = max(0.0, _t_total - _phase_sampling - _phase_decode)
+        _timing = (f"Timing: total {_t_total:.1f}s = sampling {_phase_sampling:.1f}s "
+                   f"({100.0 * _phase_sampling / max(_t_total, 1e-9):.0f}%) + VAE decode "
+                   f"{_phase_decode:.1f}s ({100.0 * _phase_decode / max(_t_total, 1e-9):.0f}%) + "
+                   f"other {_phase_other:.1f}s")
+        report_lines.append(_timing)
+        print(f"[FunPackSceneChain] {_timing}")
 
         import json as _json
         final_frames = self._tensor_frames(self._latent_tensors(output)[0])
@@ -4203,6 +4629,39 @@ class FunPackLTXAVSceneChainSampler:
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
+
+        # Snapshot the final output for output_guidance's NEXT training cycle (the rating that
+        # scores THIS run pairs with this snapshot, not with denoised — see
+        # _save_output_value_snapshot). Independent of the output_guidance toggle itself: a
+        # snapshot from an unguided run is still valid training data. video_mask=None because
+        # `output["samples"]` is the final unpacked latent (standard per-node layout), not the
+        # sampler-internal packed AV tensor _packed_video_mask expects.
+        # On LTX-AV the output is a NESTED tensor (video+audio) — the old plain-Tensor gate
+        # silently skipped it, so the output value function NEVER received a sample on AV
+        # ("not ready yet (needs 10+)" forever). Snapshot the video stream (largest tensor),
+        # matching the video-only convention of the in-flight guidance path.
+        if refinement_key_input and isinstance(output, dict):
+            _snap = output.get("samples")
+            if self._is_nested(_snap):
+                _parts = [t for t in _snap.unbind() if isinstance(t, torch.Tensor) and t.numel() > 0]
+                _snap = max(_parts, key=lambda t: t.numel()) if _parts else None
+            if isinstance(_snap, torch.Tensor):
+                self._save_output_value_snapshot(refinement_key_input, _snap, None)
+                # DynaShift pending candidate: same run/rating pairing as the snapshot, but
+                # the RAW video latent (fp16) — the rating decides whether it becomes a
+                # negative-bank entry or is discarded (negative_memory.consume_pending).
+                # Saved regardless of the dynashift toggle, same rationale as the snapshot:
+                # a bad rating on an unguided run is still valid negative memory.
+                try:
+                    try:
+                        from .negative_memory import save_pending as _save_neg_pending
+                    except ImportError:
+                        from negative_memory import save_pending as _save_neg_pending
+                    _cond0 = positive[0][0] if isinstance(positive[0], (list, tuple)) else None
+                    _save_neg_pending(refinement_key_input, _snap,
+                                      _cond0 if isinstance(_cond0, torch.Tensor) else None)
+                except Exception as _e:
+                    print(f"[FunPackSceneChain] dynashift pending save failed: {_e}")
 
         return (output, images, status, scene_count, "\n".join(report_lines), _json.dumps(boundaries_out))
 
@@ -4294,7 +4753,9 @@ class FunPackLTXAVSceneChainSampler:
                             joyai_memory=False, joyai_memory_size=7, joyai_fix_frames=3,
                             joyai_frame_select="center", joyai_memory_strength=0.3,
                             joyai_audio_memory=False, v2a_grad_scale=1.0,
-                            alg_blur_guides=False, bounded_attention_enabled=False):
+                            alg_blur_guides=False, bounded_attention_enabled=False,
+                            output_guidance=False, output_guidance_strength=0.02,
+                            dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -4342,6 +4803,9 @@ class FunPackLTXAVSceneChainSampler:
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 alg_blur_guides=alg_blur_guides,
                 bounded_attention_enabled=bounded_attention_enabled,
+                output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
+                dynashift=dynashift, dynashift_strength=dynashift_strength,
+                dynashift_threshold=dynashift_threshold,
                 unique_id=None, prompt=None,
             )
             last = out

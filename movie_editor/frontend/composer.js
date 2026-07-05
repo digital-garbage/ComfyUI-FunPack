@@ -171,9 +171,11 @@
     const s = (query || "").trim().toLowerCase();
     return s ? arr.filter((x) => textOf(x).toLowerCase().includes(s)) : arr;
   }
-  function searchRow(key, placeholder) {
+  // Typing must never trigger a full render() — that replaces this very input and drops
+  // focus after each character. onChange rebuilds only the filtered list instead.
+  function searchRow(key, placeholder, onChange) {
     const inp = el("input", "lib-search"); inp.type = "text"; inp.placeholder = placeholder; inp.value = q[key] || "";
-    inp.oninput = () => { q[key] = inp.value; render(); };
+    inp.oninput = () => { q[key] = inp.value; (onChange || render)(); };
     return inp;
   }
 
@@ -183,7 +185,9 @@
   function composeTab(st) {
     const wrap = el("div", "bin compose-bin");
     const pv = st.preview;
-    const live = st.project.global_prompt
+    // No project open (welcome screen): the library tabs still work, but there is no
+    // global prompt to edit — dereferencing st.project here crashed the whole editor.
+    const live = (st.project && st.project.global_prompt)
       || (pv && (pv.display_prompt != null ? pv.display_prompt : pv.combined_prompt)) || "";
     const val = gpDraft != null ? gpDraft : live;
 
@@ -199,7 +203,10 @@
     wrap.append(titleRow);
 
     const ta = el("textarea", "lib-in compose-ta"); ta.rows = 14; ta.value = val;
-    ta.placeholder = "Anchor, scene texts, and split markers — one combined montage prompt for generation.";
+    ta.placeholder = st.project
+      ? "Anchor, scene texts, and split markers — one combined montage prompt for generation."
+      : "Open a project to edit its global prompt.";
+    ta.disabled = !st.project;
     ta.oninput = () => { gpDraft = ta.value; S.scheduleGlobalPromptApply(ta.value); updateVarHint(); };
     wrap.append(ta);
     wrap.append(el("div", "insp-hint",
@@ -233,7 +240,7 @@
     save.onclick = () => {
       const name = (window.prompt("Template name:") || "").trim();
       if (!name) return;
-      const txt = composeTextarea ? composeTextarea.value : (S.get().project.global_prompt || "");
+      const txt = composeTextarea ? composeTextarea.value : (S.get().project?.global_prompt || "");
       S.savePromptTemplate(name, txt);
       render();
     };
@@ -541,7 +548,7 @@
 
   function shortcutsTab(st) {
     const wrap = el("div", "bin");
-    wrap.append(searchRow("Shortcuts", "Filter shortcuts…"));
+    wrap.append(searchRow("Shortcuts", "Filter shortcuts…", () => fillShortcutList()));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = addDropdown([
       ["Shortcut", () => openShortcutEditor({})],
@@ -570,29 +577,37 @@
     toolbar.append(addBtn, expBtn, impBtn, delAll, impFile); wrap.append(toolbar);
 
     const list = el("div", "lib-list");
-    const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${s.category || ""} ${s.sub_category || ""} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
-    items.forEach((s) => {
-      const trig = (s.triggers || [])[0] || s.name;
-      const row = el("div", "lib-row");
-      const main = el("div", "lib-main");
-      const nameLine = el("div", "lib-name", s.name + (s.enabled === false ? " (off)" : ""));
-      const catLabel = [s.category, s.sub_category].filter(Boolean).join(" · ");
-      if (catLabel) nameLine.append(el("span", "lib-cat-tag", catLabel));
-      main.append(nameLine);
-      const rep = (s.replacements || []).join(" / ");
-      if (rep) main.append(el("div", "lib-sub", "→ " + rep));
-      row.append(main);
-      const ins = el("button", "btn ghost tiny", "insert"); ins.title = "Append to selected scene's prompt";
-      ins.onclick = () => { if (!S.insertShortcutIntoSelection(trig)) alert("Select a scene first."); };
-      const edit = el("button", "ic-btn", "✎"); edit.title = "Edit shortcut"; edit.onclick = () => openShortcutEditor(s);
-      const del = el("button", "ic-btn danger", "✕"); del.title = "Delete shortcut";
-      del.onclick = () => { if (confirm(`Delete shortcut "${s.name}"?`)) S.deleteShortcut(s.name); };
-      row.append(ins, edit, del); list.append(row);
-    });
-    if (!items.length) list.append(el("div", "pj-meta", (st.shortcuts || []).length ? "No match." : "No shortcuts yet."));
+    fillShortcutList = () => {
+      clear(list);
+      const items = filtered(st.shortcuts || [], q.Shortcuts, (s) => `${s.name} ${s.category || ""} ${s.sub_category || ""} ${(s.triggers || []).join(" ")} ${(s.replacements || []).join(" ")}`);
+      items.forEach((s) => {
+        const trig = (s.triggers || [])[0] || s.name;
+        const row = el("div", "lib-row");
+        const main = el("div", "lib-main");
+        const nameLine = el("div", "lib-name", s.name + (s.enabled === false ? " (off)" : ""));
+        const catLabel = [s.category, s.sub_category].filter(Boolean).join(" · ");
+        if (catLabel) nameLine.append(el("span", "lib-cat-tag", catLabel));
+        main.append(nameLine);
+        const rep = (s.replacements || []).join(" / ");
+        if (rep) main.append(el("div", "lib-sub", "→ " + rep));
+        row.append(main);
+        const ins = el("button", "btn ghost tiny", "insert"); ins.title = "Append to selected scene's prompt";
+        ins.onclick = () => { if (!S.insertShortcutIntoSelection(trig)) alert("Select a scene first."); };
+        const edit = el("button", "ic-btn", "✎"); edit.title = "Edit shortcut"; edit.onclick = () => openShortcutEditor(s);
+        const del = el("button", "ic-btn danger", "✕"); del.title = "Delete shortcut";
+        del.onclick = () => { if (confirm(`Delete shortcut "${s.name}"?`)) S.deleteShortcut(s.name); };
+        row.append(ins, edit, del); list.append(row);
+      });
+      if (!items.length) list.append(el("div", "pj-meta", (st.shortcuts || []).length ? "No match." : "No shortcuts yet."));
+    };
+    fillShortcutList();
     wrap.append(list);
     return wrap;
   }
+  // Rebuilds just the Shortcuts/Splits list rows for the current filter text — assigned by
+  // the tab builders so searchRow can refresh results without a focus-dropping full render.
+  let fillShortcutList = () => {};
+  let fillSplitList = () => {};
 
   // ── split markers (generation prompt splits) ────────────────────────────────────
   const PLACEMENTS = ["global", "start", "end", "silent"];
@@ -626,7 +641,7 @@
 
   function splitMarkersTab(st) {
     const wrap = el("div", "bin");
-    wrap.append(searchRow("Splits", "Filter split markers…"));
+    wrap.append(searchRow("Splits", "Filter split markers…", () => fillSplitList()));
     const toolbar = el("div", "bin-toolbar");
     const addBtn = el("button", "btn ghost tiny", "＋ Add"); addBtn.onclick = () => openSplitMarkerEditor({});
     const expBtn = el("a", "btn ghost tiny", "↑ Export");
@@ -651,24 +666,28 @@
     toolbar.append(addBtn, expBtn, impBtn, delAll, impFile); wrap.append(toolbar);
 
     const list = el("div", "lib-list");
-    const items = filtered(st.transitions || [], q.Splits, (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
-    items.forEach((t) => {
-      const trig = t.trigger || t.name || t.key;
-      const row = el("div", "lib-row");
-      const main = el("div", "lib-main");
-      main.append(el("div", "lib-name", (t.name || trig) + (t.enabled === false ? " (off)" : "")));
-      const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "",
-                   t.placement && t.placement !== "global" ? t.placement : ""].filter(Boolean).join(" · ");
-      if (sub) main.append(el("div", "lib-sub", sub));
-      row.append(main);
-      const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as split marker before the selected scene (generation prompt)";
-      apply.onclick = () => { if (!S.applySplitMarkerToSelection(trig)) alert("Select a scene first."); };
-      const edit = el("button", "ic-btn", "✎"); edit.title = "Edit split marker"; edit.onclick = () => openSplitMarkerEditor(t);
-      const del = el("button", "ic-btn danger", "✕"); del.title = "Delete split marker";
-      del.onclick = () => { if (confirm(`Delete split marker "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
-      row.append(apply, edit, del); list.append(row);
-    });
-    if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No split markers yet."));
+    fillSplitList = () => {
+      clear(list);
+      const items = filtered(st.transitions || [], q.Splits, (t) => `${t.name || ""} ${t.trigger || ""} ${t.placement || ""}`);
+      items.forEach((t) => {
+        const trig = t.trigger || t.name || t.key;
+        const row = el("div", "lib-row");
+        const main = el("div", "lib-main");
+        main.append(el("div", "lib-name", (t.name || trig) + (t.enabled === false ? " (off)" : "")));
+        const sub = [t.trigger && t.trigger !== (t.name || "") ? `"${t.trigger}"` : "",
+                     t.placement && t.placement !== "global" ? t.placement : ""].filter(Boolean).join(" · ");
+        if (sub) main.append(el("div", "lib-sub", sub));
+        row.append(main);
+        const apply = el("button", "btn ghost tiny", "apply"); apply.title = "Set as split marker before the selected scene (generation prompt)";
+        apply.onclick = () => { if (!S.applySplitMarkerToSelection(trig)) alert("Select a scene first."); };
+        const edit = el("button", "ic-btn", "✎"); edit.title = "Edit split marker"; edit.onclick = () => openSplitMarkerEditor(t);
+        const del = el("button", "ic-btn danger", "✕"); del.title = "Delete split marker";
+        del.onclick = () => { if (confirm(`Delete split marker "${t.name || trig}"?`)) S.deleteTransition(t.name || trig); };
+        row.append(apply, edit, del); list.append(row);
+      });
+      if (!items.length) list.append(el("div", "pj-meta", (st.transitions || []).length ? "No match." : "No split markers yet."));
+    };
+    fillSplitList();
     wrap.append(list);
     return wrap;
   }
@@ -825,6 +844,9 @@
   window.addEventListener("funpack-global-prompt-updated", (e) => {
     if (tab !== "Compose" || !composeTextarea) return;
     if (document.activeElement === composeTextarea) return;
+    // Never rewind the draft while the user's newest text is still debouncing/mid-parse —
+    // the event would carry the previous apply's text and eat their last keystrokes.
+    if (S.globalPromptApplyPending && S.globalPromptApplyPending()) return;
     gpDraft = null;
     composeTextarea.value = (e.detail && e.detail.text) || "";
   });

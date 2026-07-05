@@ -547,11 +547,23 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         report["unsatisfied"].append(msg)
 
     # With the built-in pipeline disabled, the result must come from the global outputs (or a
-    # save node the user wired). Warn (non-blocking) if nothing will surface to the editor.
+    # save node the user wired). If NO output node exists at all this is BLOCKING: ComfyUI
+    # would reject the queue with a raw "Prompt has no outputs" — surface the real cause and
+    # the fix instead. If some output-capable node exists, keep it a non-blocking warning
+    # (the editor may still not see the result, but the run itself is valid).
     if disable_core and "global_out" not in graph:
-        report["unsatisfied"].append(
-            "Built-in pipeline is disabled and nothing is wired to the Global video output — "
-            "the editor may not show a result. Wire a final IMAGE output to 🌐 Global video output.")
+        has_output_node = any(
+            (object_info.get(n.get("class_type")) or {}).get("output_node")
+            for n in graph.values()
+        )
+        msg = (
+            "Built-in pipeline is disabled for this project and nothing is wired to the "
+            "🌐 Global video output. Wire a final IMAGE output to it, or re-enable the "
+            "built-in pipeline (Models → Enable built-in pipeline)."
+        )
+        if not has_output_node:
+            report["blocking"].append(msg)
+        report["unsatisfied"].append(msg)
 
     return graph, report
 

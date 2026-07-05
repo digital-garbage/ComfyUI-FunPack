@@ -6947,7 +6947,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 self._v2_learn_scene_into_state(
                     key_global, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
                 )
-                if not profile.get("skip_learning") and not profile.get("skip_value_function"):
+                if not profile.get("skip_learning") and self._v2_reward_admissible(profile):
                     self._v2_train_value_function(
                         refinement_state_path(key, "value_fn", prefix="refine_v2", extension="pt"),
                         scene_run.get("conditioning"),
@@ -7027,7 +7027,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seed_memory_status = self._v2_learn_scene_into_state(
                 global_state, scene_run, profile, iter_num, axis_feedback, seed_output_connected,
             )
-            if refinement_key and not profile.get("skip_value_function"):
+            if refinement_key and self._v2_reward_admissible(profile):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     scene_run.get("conditioning"),
@@ -11896,7 +11896,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             # value_guidance only controls APPLICATION (ascent below) - a user who runs with it
             # off still builds the VF, so enabling guidance later works immediately.
             if (has_previous_run and refinement_key and not learning_profile.get("skip_learning")
-                    and not learning_profile.get("skip_value_function")):
+                    and self._v2_reward_admissible(learning_profile)):
                 n = self._v2_train_value_function(
                     refinement_state_path(refinement_key, "value_fn", prefix="refine_v2", extension="pt"),
                     (previous_run or {}).get("conditioning"),
@@ -11904,6 +11904,35 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 )
                 if n is not None:
                     print(f"[FunPackRefiner] Value function updated — {n} samples")
+                # output_guidance's value function, trained on the sampler's x0_snapshot from the
+                # run this rating scores (whole-run granularity — see _v2_train_output_value_function
+                # for why this sits at the single overall-reward call site, not the per-scene ones).
+                n_out = self._v2_train_output_value_function(refinement_key, float(learning_profile.get("reward", 0.0)))
+                if n_out is not None:
+                    print(f"[FunPackRefiner] Output value function updated — {n_out} samples")
+            # DynaShift negative memory: pair the sampler's pending raw latent with this
+            # rating — promote into the per-key negative bank when the rating marks the run
+            # a bad outcome (intrusions: awful / wrong_appearance; or the quality-missing
+            # family via reward <= threshold — see negative_memory.is_negative_profile),
+            # discard otherwise. Separate from the value-function block above because
+            # wrong_appearance is deliberately NOT reward-admissible there (repair
+            # semantics), yet it is the canonical intrusion signal here.
+            if has_previous_run and refinement_key and not learning_profile.get("skip_learning"):
+                try:
+                    try:
+                        from .negative_memory import consume_pending, is_negative_profile
+                    except ImportError:
+                        from negative_memory import consume_pending, is_negative_profile
+                    n_neg = consume_pending(
+                        refinement_key,
+                        is_negative_profile(learning_profile),
+                        rating_key=learning_profile.get("key"),
+                    )
+                    if n_neg is not None:
+                        print(f"[FunPackRefiner] DynaShift negative bank updated — {n_neg} entr"
+                              f"{'y' if n_neg == 1 else 'ies'}")
+                except Exception as _e:
+                    print(f"[FunPackRefiner] DynaShift negative intake failed: {_e}")
             # Absolute store: the same rating also feeds the keyless, prompt-agnostic taste prior.
             # Runs even with no refinement_key (Absolute is global), so standalone runs still build it.
             # Skipped for Wrong-* repair ratings (skip_value_function): Absolute reads reward as pure
@@ -13051,6 +13080,17 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except OSError as e:
             print(f"[FunPackRefiner] Absolute store save failed: {e}")
 
+    def _v2_reward_admissible(self, profile):
+        """Should this rating's reward reach the value function(s)? Wrong-* labels are
+        skip_value_function=True by default (a "good gen, wrong axis" mismatch carries no
+        quality signal on its own — see the comment on V2_RATING_PROFILES). But the loved
+        modifier ("Wrong action|loved" etc.) is the user explicitly overriding that: they're
+        saying the QUALITY was still great despite the mismatch, which is a genuine positive
+        quality signal, not noise. normalize_refiner_v2_rating already reflects this in the
+        reward NUMBER (max(reward, 0.85) when loved_modifier is set) — this just controls
+        whether that (now-correct) number is allowed to reach training at all."""
+        return not profile.get("skip_value_function") or bool(profile.get("loved_modifier"))
+
     def _v2_train_value_function(self, vf_path, payload, reward):
         """Add one (conditioning, reward) sample to the value function at vf_path. Shared by
         the per-key (relative) and keyless (absolute) reward assets. Returns n_trained or None."""
@@ -13073,6 +13113,36 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             print(f"[FunPackRefiner] Value function training failed: {e}")
         return None
 
+    def _v2_train_output_value_function(self, refinement_key, reward):
+        """Sibling of _v2_train_value_function for output_guidance: pairs the same reward with
+        the x0_hat snapshot the Chain Sampler wrote at the END of the run this rating scores
+        (refinement_key.x0_snapshot.pt — see FunPackLTXAVSceneChainSampler._save_output_value_snapshot),
+        not with any conditioning payload. No-op if the sampler never wrote a snapshot (e.g. no
+        refinement_key_input was wired on the sampler, or no generation has completed yet)."""
+        if not refinement_key:
+            return None
+        try:
+            import os as _os
+            import torch as _torch
+            try:
+                from .value_function import LatentValueFunction
+            except ImportError:
+                from value_function import LatentValueFunction
+            snap_path = refinement_state_path(refinement_key, "x0_snapshot", prefix="refine_v2", extension="pt")
+            if not _os.path.exists(snap_path):
+                return None
+            vf_path = refinement_state_path(refinement_key, "value_fn_x0", prefix="refine_v2", extension="pt")
+            with _torch.inference_mode(False), _torch.enable_grad():
+                snapshot = _torch.load(snap_path, map_location="cpu", weights_only=False)
+                vf = LatentValueFunction.load_or_create(vf_path, hidden_dim=LatentValueFunction.DEFAULT_HIDDEN_DIM)
+                if vf is not None:
+                    vf.train_on(snapshot, float(reward))
+                    vf.save(vf_path)
+                    return vf.n_trained
+        except Exception as e:
+            print(f"[FunPackRefiner] Output value function training failed: {e}")
+        return None
+
     def _v2_learn_absolute(self, previous_run, learning_profile):
         """Fold the just-rated generation into the prompt-agnostic Absolute store.
 
@@ -13090,8 +13160,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # Wrong-* repair ratings carry no quality signal — Absolute is purely reward-driven
         # ("do I like this in general"), so feeding a repair reward here would store a good gen as
         # global bad-taste and train the keyless VF on a mislabel. Repair belongs to the relative
-        # per-key direction/category memory, not the global taste prior.
-        if learning_profile.get("skip_value_function"):
+        # per-key direction/category memory, not the global taste prior. Exception: loved_modifier
+        # ("Wrong action|loved") is the user overriding that assumption — see _v2_reward_admissible.
+        if not self._v2_reward_admissible(learning_profile):
             return
         payload = previous_run.get("conditioning")
         if not isinstance(payload, dict):
@@ -14626,6 +14697,7 @@ class FunPackStudio:
                     mg_strength=float(dc.get("mg_strength", 0.5)),
                     mg_decay=float(dc.get("mg_decay", 0.5)),
                     mg_sigma_threshold=float(dc.get("mg_sigma_threshold", 0.975)),
+                    quality_sharpness=float(dc.get("quality_sharpness", 0.0)),
                     sigmas=sigmas_raw,
                 )
             elif sampler_type == "KSampler":

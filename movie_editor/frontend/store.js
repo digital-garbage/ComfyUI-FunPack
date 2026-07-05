@@ -212,7 +212,9 @@
       display_prompt: pin,
       combined_prompt: pin,
     };
-    _dispatchGlobalPromptUpdated(pin);
+    // The pin is the last COMPLETED apply — while newer typed text is still debouncing or
+    // mid-parse, broadcasting it would rewind the Compose textarea to older text.
+    if (!globalPromptApplyPending()) _dispatchGlobalPromptUpdated(pin);
   }
 
   function syncGlobalPromptFromTimeline() {
@@ -237,6 +239,16 @@
 
   let _globalApplyTimer = null;
   let _pendingGlobalPromptText = null;   // latest typed global prompt awaiting distribution
+  let _applySeq = 0;                     // ordering token — an older apply must never clobber a newer one
+  let _applyInFlight = 0;
+
+  // True while typed global-prompt text is still debouncing or mid-parse. During that window
+  // any funpack-global-prompt-updated dispatch would carry STALE text (the last completed
+  // apply), so consumers (Composer textarea) must not overwrite the user's draft with it.
+  function globalPromptApplyPending() {
+    return _pendingGlobalPromptText != null || !!_globalApplyTimer || _applyInFlight > 0;
+  }
+
   function scheduleGlobalPromptApply(text) {
     _pendingGlobalPromptText = text;
     clearTimeout(_globalApplyTimer);
@@ -537,20 +549,30 @@
     const trimmed = String(text || "").trim();
     if (!trimmed) return false;
     if (trimmed === buildGlobalPromptFromTimeline(state.project) && !_pinnedGlobalPrompt) return true;
-    _historyRecord();
-    let res;
-    try { res = await API.parsePrompt(state.project.id, trimmed); }
-    catch (e) {
-      console.warn("Global prompt parse failed:", e);
-      return false;
+    const seq = ++_applySeq;
+    _applyInFlight++;
+    try {
+      _historyRecord();
+      let res;
+      try { res = await API.parsePrompt(state.project.id, trimmed); }
+      catch (e) {
+        console.warn("Global prompt parse failed:", e);
+        return false;
+      }
+      // The user typed more while this parse was in flight: a newer apply is scheduled (or
+      // already running). Distributing this OLDER text now would re-split the timeline to a
+      // stale prompt and dispatch a stale updated event — drop it and let the newer one win.
+      if (seq !== _applySeq || _pendingGlobalPromptText != null) return false;
+      if (!await _distributeGlobalPrompt(trimmed, res)) return false;
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      _localDirty = true;
+      scheduleSaveSilent();
+      refreshPreview(true);
+      return true;
+    } finally {
+      _applyInFlight--;
     }
-    if (!await _distributeGlobalPrompt(trimmed, res)) return false;
-    clearTimeout(saveTimer);
-    saveTimer = null;
-    _localDirty = true;
-    scheduleSaveSilent();
-    refreshPreview(true);
-    return true;
   }
 
   function _syncPromptPreview() {
@@ -639,21 +661,21 @@
       }
       try {
         const res = await fetch(API.resultUrl(state.project.id, r.media), { method: "HEAD" });
-        if (!res.ok) {
+        // Drop a render ONLY on a definitive "file is gone" (404). A busy server, a dropped
+        // tunnel, or any 5xx is transient — deleting here (and autosaving the deletion!)
+        // permanently lost clips when the UI reloaded while another run was still saving.
+        if (res.status === 404) {
           if (token !== _validateRendersToken) return;
           const cur = state.sceneRenders[id];
           if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
           missing++;
-        } else if (token === _validateRendersToken) {
+        } else if (res.ok && token === _validateRendersToken) {
           // File is on disk: reconcile a stale plan-estimate length with the real encoded
           // duration for standalone renders (retroactively fixes pre-existing clips on load).
           _probeRenderDuration(id);
         }
       } catch (_) {
-        if (token !== _validateRendersToken) return;
-        const cur = state.sceneRenders[id];
-        if (cur && cur.media?.filename === r.media.filename) delete state.sceneRenders[id];
-        missing++;
+        // Network-level failure — can't tell missing from unreachable; keep the render.
       }
     }));
     if (token !== _validateRendersToken) return;
@@ -1350,11 +1372,17 @@
     const v = document.createElement("video");
     v.preload = "metadata";
     v.src = API.mediaUrl(mediaId);
+    // Always release the probe's media connection — detached <video>s hold their socket
+    // until GC and count against Chrome's per-origin connection cap.
+    const release = () => { try { v.removeAttribute("src"); v.load(); } catch (_) {} };
+    v.onerror = release;
     v.onloadedmetadata = () => {
-      if (!v.duration || !isFinite(v.duration)) return;
+      const dur = v.duration;
+      release();
+      if (!dur || !isFinite(dur)) return;
       const asset = (state.mediaBin || []).find((m) => m.id === mediaId);
-      if (asset && !asset.duration_sec) asset.duration_sec = v.duration;
-      _applyVideoClipDuration(sceneId, v.duration);
+      if (asset && !asset.duration_sec) asset.duration_sec = dur;
+      _applyVideoClipDuration(sceneId, dur);
     };
   }
 
@@ -1390,8 +1418,10 @@
     const v = document.createElement("video");
     v.preload = "metadata";
     v.muted = true;
+    const release = () => { try { v.removeAttribute("src"); v.load(); } catch (_) {} };
     v.onloadedmetadata = () => {
       const dur = v.duration;
+      release(); // metadata read — free the connection before touching state
       if (!dur || !isFinite(dur)) return;
       const cur = state.sceneRenders[sceneId];
       if (!cur || cur.media?.filename !== fname) return;        // scene moved on; don't clobber
@@ -1412,7 +1442,7 @@
       notify();
       scheduleSaveSilent();
     };
-    v.onerror = () => {};
+    v.onerror = release;
     v.src = API.resultUrl(state.project.id, r.media);
   }
 
@@ -1839,6 +1869,12 @@
     // and its frame count — so the seam doesn't show/render a phantom (the deep clone already
     // carried these onto the second half, which correctly keeps them).
     s.frames = cut; s.transition_to_next = ""; s.transition_frames = null; s.video_transition = "";
+    // "project" frames_mode IGNORES the per-scene `frames` value (sceneEffFrames / backend
+    // eff_frames both fall back to the project default), so a split of a default-mode scene
+    // would leave the first half at full project length and render the second half as a whole
+    // extra scene. Pin both halves to their cut frame counts — same flip resizeScene does.
+    if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
+    if ((second.frames_mode || "project") === "project") second.frames_mode = "timeline";
     if (playsFromSourceMedia(s)) {
       const srcIn = s.source_in || 0;
       const totalDur = s.source_dur != null ? s.source_dur : (frames / effFps);
@@ -1848,6 +1884,12 @@
       second.source_dur = Math.max(0.1, Math.min(secondDur, totalDur - cutSec));
     }
     arr.splice(i + 1, 0, second);
+    // With a pinned custom cut order, _ensureTimelineOrder appends unknown ids at the END of
+    // the timeline — keep the second half glued to its first half in the cut as well.
+    if (state.project.timeline_manually_ordered && Array.isArray(state.project.timeline_order)) {
+      const oi = state.project.timeline_order.indexOf(s.id);
+      if (oi >= 0) state.project.timeline_order.splice(oi + 1, 0, second.id);
+    }
     // Keep the render across the cut: the second half plays the SAME source video starting
     // at the first half's out-point (its in-point + first-half duration).
     const r = state.sceneRenders[id];
@@ -2728,6 +2770,8 @@
     [/\.clip.*no source/i,       "Missing text encoder — add a CLIP loader in Models."],
     [/not installed/i,           "A configured node class is not installed in ComfyUI — check Models for details."],
     [/Node registry unavailable/i, "ComfyUI is offline or still starting up — wait a moment and try again."],
+    [/prompt_no_outputs|Prompt has no outputs/i,
+      "The graph reached ComfyUI without any output node. Usually the built-in pipeline is disabled for this project (Models → Enable built-in pipeline), or your custom pipeline needs a final IMAGE wired to the 🌐 Global video output."],
     [/HTTP 53[0-9]|HTTP 52[24]|HTTP 502|Failed to fetch|NetworkError|Load failed/i,
       "Cloudflare tunnel lost contact with the vast.ai instance. GPU work may still be running — wait, refresh, and check ComfyUI output. If it keeps failing, use vast.ai direct port access or restart the tunnel."],
   ];
@@ -4138,7 +4182,7 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,

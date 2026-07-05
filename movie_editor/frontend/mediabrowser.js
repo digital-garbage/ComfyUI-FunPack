@@ -93,16 +93,30 @@
     if (m.kind === "video") {
       const ph = el("span", "media-icon media-vid-ph", "▶");
       thumb.append(ph);
+      // Snapshot the first frame to a canvas and release the <video> immediately. A live
+      // <video> per bin item held its network connection open (Chrome stalls media fetches
+      // but keeps the socket) — with ~6 videos in the bin the per-origin connection pool
+      // was exhausted and every editor API call queued behind the thumbnails.
       const vid = document.createElement("video");
-      vid.className = "media-vid-thumb";
       vid.muted = true;
       vid.preload = "metadata";
       vid.playsInline = true;
       vid.src = url;
+      const release = () => { try { vid.removeAttribute("src"); vid.load(); } catch (_) {} };
+      vid.onerror = release;
       vid.onloadeddata = () => {
-        if (!thumb.isConnected) return;
-        ph.remove();
-        if (!thumb.querySelector("video")) thumb.append(vid);
+        if (thumb.isConnected && !thumb.querySelector("canvas")) {
+          const canvas = document.createElement("canvas");
+          canvas.className = "media-vid-thumb";
+          canvas.width = vid.videoWidth || 320;
+          canvas.height = vid.videoHeight || 180;
+          try {
+            canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
+            ph.remove();
+            thumb.append(canvas);
+          } catch (_) {}
+        }
+        release();
       };
       return;
     }

@@ -128,11 +128,6 @@
     }
   }
 
-  async function refreshGitStatus() {
-    await window.FunPackGit.refresh();
-    if (openName === "FunPack") render();
-  }
-
   function _restartOverlay(message) {
     return window.FunPackRestart?.showOverlay?.(message);
   }
@@ -163,19 +158,9 @@
 
   function menuSpec() {
     const st = S.get();
-    const PC = window.PipelineCaps;
-    const studioOn = PC?.usesFunpackStudio(st);
-    const chainOn = PC?.usesChainSampler(st);
-    const customPipe = !!(st.models?.disable_core);
     const recent = (st.projects || []).slice(0, 8).map((p) => ({
       label: p.name, hint: `${p.scene_count}▦`, action: () => S.loadProject(p.id),
     }));
-    const git = window.FunPackGit.get();
-    const gitOk = !!git?.ok;
-    const gitBranchLine = gitOk
-      ? `Branch: ${git.branch}${git.commit ? " @ " + git.commit : ""}${git.dirty ? " (local changes)" : ""}`
-      : (git?.detail ? `Git: ${git.detail}` : "Git: unavailable");
-    const updateHint = gitOk && git.behind > 0 ? `${git.behind}↓` : "⬇⟳";
     return {
       File: [
         { label: "New Project", hint: "⌘N", action: promptNewProject },
@@ -218,77 +203,12 @@
           window.location.href = u;
         } },
       ],
-      Settings: [
-        { label: "Editor settings…", action: () => window.EditorSettingsModal.open() },
-        { label: "Engine settings…", disabled: !hasProject() || (!studioOn && !chainOn),
-          action: () => window.EngineSettingsModal.open() },
-        { label: "Temp files…", action: () => window.TempBrowserModal.open() },
-        { sep: true },
-        { label: "Models…", action: () => window.ModelsModal.open() },
-        { label: "Import ComfyUI Workflow…", disabled: !hasProject(),
-          action: () => window.WorkflowImportWizard?.open() },
-        { label: "Refresh model list", hint: "R", action: async () => { try { await (window.ModelsModal?.refresh ? window.ModelsModal.refresh() : window.MovieEditorAPI.refreshModels()); } catch (_) {} } },
-        { sep: true },
-        { label: `Conditioning: ${_roleLabel(st.project?.conditioning_slot, "FunPack Studio")}`,
-          disabled: !hasProject() || customPipe,
-          action: () => _pickRole("conditioning_slot", "Conditioning node", st) },
-        { label: `Sampler: ${_roleLabel(st.project?.sampler_slot, "FunPack Chain Sampler")}`,
-          disabled: !hasProject() || customPipe,
-          action: () => _pickRole("sampler_slot", "Sampler node", st) },
-      ],
-      FunPack: [
-        { label: st.resetSessionArmed ? "Reset Studio session ✓ armed — click to cancel" : "Reset Studio session",
-          disabled: !hasProject() || !studioOn, action: () => S.resetStudioSession() },
-        { sep: true },
-        { menulabel: "Refinement key" },
-        { label: "Export refinement key…", hint: "⬇", action: exportRefinementKey },
-        { label: "Import refinement key…", action: () => refinementKeyImportInput.click() },
-        { label: "Delete refinement key…", danger: true, action: deleteRefinementKey },
-        { label: "Clear global taste store…", danger: true, action: clearGlobalTaste },
-        { sep: true },
-        { menulabel: "Code updates" },
-        { label: gitBranchLine, disabled: true },
-        { label: "Switch branch…", disabled: !gitOk || git?.dirty, action: () => window.FunPackGit.switchBranch() },
-        { label: gitOk && git.behind > 0 ? `Update FunPack and reload (${git.behind} new)` : "Update FunPack and reload",
-          hint: updateHint, disabled: !gitOk || git?.dirty, action: () => window.FunPackGit.update() },
-        { sep: true },
-        { menulabel: "Libraries (in ComfyUI Studio)" },
-        { label: "Open ComfyUI", hint: "↗", action: () => window.open("/", "_blank") },
-        { label: "Restart ComfyUI", hint: "⟳", danger: true, action: restartComfy },
-        { sep: true },
-        { label: st.health?.reference_loaded ? "Workflow template: loaded" : "Workflow template: missing", disabled: true },
-        { label: `Configured nodes: ${st.health?.configured_slots ?? 0}`, disabled: true },
-        { label: st.health?.ok ? `Connected · ${window.location.host}` : "ComfyUI not reachable", disabled: true },
-      ],
     };
-  }
-
-  function _roleLabel(slotId, defaultLabel) {
-    if (!slotId || slotId === "funpack") return defaultLabel;
-    const slot = (S.get().models?.slots || []).find((s) => s.id === slotId);
-    return slot ? (slot.label || slot.node_class || slotId) : slotId;
-  }
-
-  function _pickRole(field, title, st) {
-    closeAll();
-    const slots = (st.models?.slots || []);
-    const cur = st.project?.[field] || "funpack";
-    const opts = [{ id: "funpack", label: field === "conditioning_slot" ? "FunPack Studio (built-in)" : "FunPack Chain Sampler (built-in)" },
-      ...slots.map((s) => ({ id: s.id, label: s.label || s.node_class || s.id }))];
-    if (!window.SlotPicker) return;
-    window.SlotPicker.open({
-      title,
-      options: opts.map((o) => ({ value: o.id, label: o.label, hint: o.id === cur ? "current" : "" })),
-      onPick: (id) => {
-        if (field === "conditioning_slot") S.setConditioningSlot(id);
-        else S.setSamplerSlot(id);
-      },
-    });
   }
 
   function closeAll() { openName = null; veil.hidden = true; render(); }
 
-  function openMenu(name) { openName = name; veil.hidden = false; if (name === "FunPack") refreshGitStatus(); render(); }
+  function openMenu(name) { openName = name; veil.hidden = false; render(); }
 
   function render() {
     const spec = menuSpec();
@@ -315,6 +235,16 @@
       }
       menusEl.append(wrap);
     });
+    // Single door to ALL settings — a plain button, not a menu (no duplicated entries).
+    // Keeps .menu-btn[data-menu="Settings"] so the tour can still point at it.
+    const sw = el("div", "menu");
+    const sbtn = el("button", "menu-btn", "Settings");
+    sbtn.dataset.menu = "Settings";
+    sbtn.title = "All settings (⌘,)";
+    sbtn.onclick = (e) => { e.stopPropagation(); closeAll(); window.SettingsWindow.open(); };
+    sbtn.onmouseenter = () => { if (openName) closeAll(); };
+    sw.append(sbtn);
+    menusEl.append(sw);
   }
 
   function renderSaveChip(st, detail) {
@@ -360,4 +290,14 @@
   });
   S.subscribe((st) => { render(); renderChips(st); });
   render();
+
+  // Single implementations for maintenance actions, shared with the Settings window
+  // (Refinement & Taste + Updates & ComfyUI sections) — menus stay as shortcuts.
+  window.FunPackMaintenance = {
+    exportRefinementKey,
+    importRefinementKeyFile: () => refinementKeyImportInput.click(),
+    deleteRefinementKey,
+    clearGlobalTaste,
+    restartComfy,
+  };
 })();

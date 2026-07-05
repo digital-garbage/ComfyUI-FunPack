@@ -1,14 +1,24 @@
 // Temp files browser: a lightweight media-bin view over ComfyUI's temp directory
-// (scene previews & other transient outputs that are wiped on restart). Opened from the
-// Settings menu. Each item can be opened in a new tab or saved to disk — no in-app player.
+// (scene previews & other transient outputs that are wiped on restart). A section of
+// the unified Settings window. Each item can be opened in a new tab or saved to disk
+// — no in-app player.
 (function () {
   const { el, clear } = window.dom;
   const API = window.MovieEditorAPI;
 
-  let overlay = null;
   let files = [];
+  // Probe <video> elements still holding a network connection. Chrome keeps stalled media
+  // connections open and allows only ~6 per origin — a grid of live <video> thumbnails
+  // starved the pool so /view tabs wouldn't load and even generate/API calls hung until a
+  // ComfyUI reboot. Thumbnails are snapshotted to a canvas and the probe released at once.
+  const _probes = new Set();
 
-  function close() { if (overlay) { overlay.remove(); overlay = null; } }
+  function _releaseProbe(vid) {
+    _probes.delete(vid);
+    try { vid.removeAttribute("src"); vid.load(); } catch (_) {}
+  }
+
+  function _releaseAllProbes() { [..._probes].forEach(_releaseProbe); }
 
   function _fmtSize(n) {
     if (!n && n !== 0) return "";
@@ -29,13 +39,23 @@
       const ph = el("span", "media-icon media-vid-ph", "▶");
       thumb.append(ph);
       const vid = document.createElement("video");
-      vid.className = "media-vid-thumb";
       vid.muted = true; vid.preload = "metadata"; vid.playsInline = true;
       vid.src = url;
+      _probes.add(vid);
+      vid.onerror = () => _releaseProbe(vid);
       vid.onloadeddata = () => {
-        if (!thumb.isConnected) return;
-        ph.remove();
-        if (!thumb.querySelector("video")) thumb.append(vid);
+        if (thumb.isConnected && !thumb.querySelector("canvas")) {
+          const canvas = document.createElement("canvas");
+          canvas.className = "media-vid-thumb";
+          canvas.width = vid.videoWidth || 320;
+          canvas.height = vid.videoHeight || 180;
+          try {
+            canvas.getContext("2d").drawImage(vid, 0, 0, canvas.width, canvas.height);
+            ph.remove();
+            thumb.append(canvas);
+          } catch (_) {}
+        }
+        _releaseProbe(vid); // frame captured — free the media connection immediately
       };
       return;
     }
@@ -89,6 +109,7 @@
   }
 
   async function refresh(body, countEl) {
+    _releaseAllProbes(); // drop probes from the previous grid before rebuilding
     body.append(el("div", "pj-meta", "Loading…"));
     try {
       files = (await API.listTemp()).files || [];
@@ -102,32 +123,32 @@
     renderBody(body);
   }
 
-  function open() {
-    close();
-    overlay = el("div", "modal-overlay");
-    const box = el("div", "modal");
-    const head = el("div", "modal-head");
-    head.append(el("div", "modal-title", "Temp files"));
-    const hr = el("div", "modal-head-right");
-    const countEl = el("span", "pj-meta tmp-count");
-    const refreshBtn = el("button", "btn ghost tiny", "⟳ Refresh");
-    const x = el("button", "btn ghost tiny", "✕"); x.onclick = close;
-    hr.append(countEl, refreshBtn, x);
-    head.append(hr); box.append(head);
-
-    const content = el("div", "modal-content");
-    content.append(el("div", "es-hint",
+  function mount(container, ctx) {
+    container.append(el("div", "es-hint",
       "Transient ComfyUI outputs — scene previews and the like. These are wiped when ComfyUI restarts, so save anything worth keeping."));
     const body = el("div", "tmp-body");
-    content.append(body);
-    box.append(content);
-    overlay.append(box);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    document.body.append(overlay);
+    container.append(body);
 
+    const countEl = el("span", "pj-meta tmp-count");
+    const refreshBtn = el("button", "btn ghost tiny", "⟳ Refresh");
     refreshBtn.onclick = () => refresh(body, countEl);
+    ctx.setActions([countEl, refreshBtn]);
+
     refresh(body, countEl);
+    return () => _releaseAllProbes();
   }
 
-  window.TempBrowserModal = { open, close };
+  window.SettingsWindow.register({
+    id: "tempfiles", group: "System", order: 2, title: "Temp Files",
+    subtitle: "Transient ComfyUI outputs — wiped when the server restarts.",
+    keywords: "temp files previews transient media save download browser",
+    iconBg: "linear-gradient(180deg,#62d6cd,#2c9e95)",
+    icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.5 1.8h5.7c.7 0 1.2.5 1.2 1.2v6c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2V4.2z" fill="#fff"/></svg>',
+    mount,
+  });
+
+  window.TempBrowserModal = {
+    open: () => window.SettingsWindow.open("tempfiles"),
+    close: () => window.SettingsWindow.close(),
+  };
 })();
