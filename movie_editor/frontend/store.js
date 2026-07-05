@@ -1869,6 +1869,12 @@
     // and its frame count — so the seam doesn't show/render a phantom (the deep clone already
     // carried these onto the second half, which correctly keeps them).
     s.frames = cut; s.transition_to_next = ""; s.transition_frames = null; s.video_transition = "";
+    // "project" frames_mode IGNORES the per-scene `frames` value (sceneEffFrames / backend
+    // eff_frames both fall back to the project default), so a split of a default-mode scene
+    // would leave the first half at full project length and render the second half as a whole
+    // extra scene. Pin both halves to their cut frame counts — same flip resizeScene does.
+    if ((s.frames_mode || "project") === "project") s.frames_mode = "timeline";
+    if ((second.frames_mode || "project") === "project") second.frames_mode = "timeline";
     if (playsFromSourceMedia(s)) {
       const srcIn = s.source_in || 0;
       const totalDur = s.source_dur != null ? s.source_dur : (frames / effFps);
@@ -1878,6 +1884,12 @@
       second.source_dur = Math.max(0.1, Math.min(secondDur, totalDur - cutSec));
     }
     arr.splice(i + 1, 0, second);
+    // With a pinned custom cut order, _ensureTimelineOrder appends unknown ids at the END of
+    // the timeline — keep the second half glued to its first half in the cut as well.
+    if (state.project.timeline_manually_ordered && Array.isArray(state.project.timeline_order)) {
+      const oi = state.project.timeline_order.indexOf(s.id);
+      if (oi >= 0) state.project.timeline_order.splice(oi + 1, 0, second.id);
+    }
     // Keep the render across the cut: the second half plays the SAME source video starting
     // at the first half's out-point (its in-point + first-half duration).
     const r = state.sceneRenders[id];
