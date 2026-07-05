@@ -1238,13 +1238,28 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .slot-badge.bad  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--line)); }
 .slot-badge.exposed { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); }
 .slot-head .btn { margin-left: auto; }
+/* single-column settings everywhere in the Settings window: side-by-side fields
+   (e.g. Engine's Conditioning/Sampler pickers) stack so tiny screens still fit */
+.sw-body .insp-engine-pickers { flex-direction: column; gap: 8px; }
+
+/* node page header: long labels/badges wrap instead of pushing bypass/remove out of reach;
+   actions live in one right-aligned cluster that wraps as a unit */
+.node-page .slot-head { flex-wrap: wrap; cursor: default; row-gap: 6px; }
+.node-page .slot-head .slot-role { overflow-wrap: anywhere; }
+.node-page .slot-head .slot-node { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-page .slot-head .slot-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.node-page .slot-head .slot-actions .btn { margin-left: 0; }
 
 .issue-box { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
 .issue { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; }
 .issue-dot { font-family: var(--font-mono); flex: 0 0 auto; }
 .issue-error .issue-dot, .issue-error .issue-msg { color: var(--danger); }
 .issue-warn .issue-dot, .issue-warn .issue-msg { color: var(--amber); }
-.slot-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+.slot-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px 14px; }
+/* selects shrink with their track instead of forcing the row wider than the pane
+   (a select's intrinsic min width is its longest option — e.g. wire labels) */
+.slot-fields > label.field { min-width: 0; }
+.slot-fields > label.field input, .slot-fields > label.field select { min-width: 0; max-width: 100%; }
 .slot-fields label.field, .composer-preview label.field { margin-bottom: 0; }
 
 /* eye toggle: expose a node input to the main editor window */
@@ -1279,15 +1294,15 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 
 .wire-box { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .wire-title { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--teal); margin-bottom: 8px; }
-.wire-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.wire-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; min-width: 0; }
 .wire-out { font-family: var(--font-mono); font-size: 11px; color: var(--muted); flex: 0 0 auto; min-width: 130px; }
 .wire-arrow { color: var(--teal); }
-.wire-dest { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.wire-dest { font-family: var(--font-mono); font-size: 11px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
 .wire-dest.wire-muted { color: var(--faint); opacity: .7; }
-.wire-select { flex: 1; }
-.wire-multi { display: flex; flex-direction: column; gap: 4px; flex: 1; }
-.wire-multi-row { display: flex; gap: 5px; align-items: center; }
-.wire-multi-row .wire-select { flex: 1; }
+.wire-select { flex: 1; min-width: 0; }
+.wire-multi { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.wire-multi-row { display: flex; gap: 5px; align-items: center; min-width: 0; }
+.wire-multi-row .wire-select { flex: 1; min-width: 0; }
 .wire-rm { padding: 1px 5px; color: var(--red, #e06c75); }
 .wire-add { align-self: flex-start; }
 /* Input-source arrow points left (← instead of →) */
@@ -1574,30 +1589,42 @@ body.tour-mode { overflow: hidden; }
 
 /* ── unified Settings window (macOS System Settings style) ─────────────── */
 .sw-overlay { align-items: center; padding: 4vh 16px; }
-.settings-win { width: min(960px, 96vw); height: min(660px, 90vh); display: flex;
+.settings-win { width: min(960px, 96vw); height: min(660px, 90vh); display: flex; position: relative;
   background: #16140f; border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 24px 64px rgba(0,0,0,.55); overflow: hidden; animation: pop .16s ease; }
 
-.sw-side { width: 218px; flex: 0 0 auto; display: flex; flex-direction: column; gap: 10px;
-  padding: 12px 10px; background: #121009; border-right: 1px solid var(--line); }
-.sw-search { width: 100%; padding: 6px 9px; font: 12.5px var(--font-ui); color: var(--text);
+/* Icon rail that expands on hover/focus — overlays the content instead of reflowing it,
+   so the window works on tiny screens without spending width on labels. */
+.sw-side { position: absolute; top: 0; bottom: 0; left: 0; width: 52px; z-index: 5;
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 9px;
+  background: #121009; border-right: 1px solid var(--line); overflow: hidden;
+  transition: width .16s ease, box-shadow .16s ease; }
+.sw-side:hover, .sw-side:focus-within { width: 218px; box-shadow: 18px 0 40px -18px rgba(0,0,0,.7); }
+.sw-search { width: 100%; min-width: 0; padding: 6px 9px; height: 30px; flex: 0 0 auto;
+  font: 12.5px var(--font-ui); color: var(--text);
   background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px; outline: none; }
+.sw-search::placeholder { opacity: 0; transition: opacity .16s ease; }
+.sw-side:hover .sw-search::placeholder, .sw-side:focus-within .sw-search::placeholder { opacity: 1; }
 .sw-search:focus { border-color: var(--amber); }
-.sw-nav { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.sw-nav { flex: 1; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 2px; }
 .sw-group-title { margin: 10px 6px 3px; font-size: 10px; font-weight: 700; letter-spacing: .8px;
-  text-transform: uppercase; color: var(--faint); }
-.sw-nav-empty { padding: 12px 8px; font-size: 12px; color: var(--faint); }
-.sw-item { display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 7px;
-  cursor: pointer; font-size: 13px; color: var(--text); user-select: none; }
+  text-transform: uppercase; color: var(--faint); white-space: nowrap;
+  opacity: 0; transition: opacity .16s ease; }
+.sw-side:hover .sw-group-title, .sw-side:focus-within .sw-group-title { opacity: 1; }
+.sw-nav-empty { padding: 12px 8px; font-size: 12px; color: var(--faint); white-space: nowrap; }
+.sw-item { display: flex; align-items: center; gap: 9px; padding: 5px 6px; border-radius: 7px;
+  cursor: pointer; font-size: 13px; color: var(--text); user-select: none; flex: 0 0 auto; }
 .sw-item:hover { background: var(--ink-3); }
 .sw-item.active { background: linear-gradient(180deg, var(--amber-2), var(--amber)); color: #241503; font-weight: 600; }
 .sw-icon { width: 23px; height: 23px; flex: 0 0 auto; border-radius: 6px; display: grid; place-items: center;
   background: linear-gradient(180deg,#8a8f98,#5b6068);
   box-shadow: inset 0 0 0 .5px rgba(255,255,255,.22), 0 1px 2px rgba(0,0,0,.4); }
 .sw-icon svg { display: block; }
-.sw-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sw-item-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  opacity: 0; transition: opacity .16s ease; }
+.sw-side:hover .sw-item-label, .sw-side:focus-within .sw-item-label { opacity: 1; }
 
-.sw-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.sw-main { flex: 1; min-width: 0; display: flex; flex-direction: column; margin-left: 52px; }
 .sw-head { display: flex; align-items: center; gap: 12px; padding: 13px 18px 11px;
   border-bottom: 1px solid var(--line); background: linear-gradient(#1b1813, #161410); }
 .sw-head-text { flex: 1; min-width: 0; }

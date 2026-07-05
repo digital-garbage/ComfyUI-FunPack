@@ -434,11 +434,12 @@
     if (errs) head.append(el("span", "slot-badge bad", `${errs} error${errs > 1 ? "s" : ""}`));
     else if (warns) head.append(el("span", "slot-badge warn", `${warns} warning${warns > 1 ? "s" : ""}`));
     else head.append(el("span", "slot-badge ok", "ready"));
+    const acts = el("span", "slot-actions");
     const byp = el("button", "btn ghost tiny" + (slot.bypassed ? " on" : ""), slot.bypassed ? "bypassed" : "bypass");
     byp.title = "Skip this node's effect (pass its inputs straight through) without losing its configuration.";
     byp.onclick = async (e) => { e.stopPropagation(); slot.bypassed = !slot.bypassed; await persist(); render(); };
-    head.append(byp);
-    head.append(bypassEyeButton(slot));
+    acts.append(byp);
+    acts.append(bypassEyeButton(slot));
     const rm = el("button", "btn ghost tiny danger", "remove");
     rm.onclick = async (e) => {
       e.stopPropagation();
@@ -446,7 +447,8 @@
       config.slots = config.slots.filter((s) => s.id !== slot.id);
       await persist(); setView("pipeline");
     };
-    head.append(rm);
+    acts.append(rm);
+    head.append(acts);
     card.append(head);
 
     const ib = issuesBox(issues);
