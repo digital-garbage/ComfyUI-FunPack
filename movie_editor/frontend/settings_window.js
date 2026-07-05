@@ -72,6 +72,8 @@
     subEl.hidden = !spec.subtitle;
     clear(actionsEl);
     clear(bodyEl);
+    // flush sections manage their own inner layout/scrolling (e.g. Models' sidebar)
+    bodyEl.classList.toggle("sw-flush", !!spec.flush);
     bodyEl.scrollTop = 0;
     const ctx = {
       setActions: (nodes) => { clear(actionsEl); (nodes || []).forEach((n) => actionsEl.append(n)); },
@@ -162,6 +164,48 @@
     row.append(val);
     return row;
   }
+
+  // ── built-in section: About FunPack ────────────────────────────────────
+  register({
+    id: "about", group: "", order: 0, title: "About FunPack",
+    subtitle: "",
+    keywords: "about version commit branch copyright info funpack cutting room",
+    iconBg: "linear-gradient(180deg,#ffc36b,#e0891f)",
+    icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5"><circle cx="8" cy="8" r="6.2"/><circle cx="8" cy="8" r="2.4" fill="#fff" stroke="none"/></svg>',
+    mount(body, ctx) {
+      const G = window.FunPackGit;
+      const wrap = el("div", "sw-about");
+      body.append(wrap);
+
+      function render() {
+        clear(wrap);
+        const git = G ? G.get() : null;
+        wrap.append(el("div", "sw-about-mark", "◉"));
+        wrap.append(el("div", "sw-about-name", "FunPack"));
+        wrap.append(el("div", "sw-about-sub", "Cutting Room"));
+
+        const facts = el("div", "sw-about-facts");
+        const fact = (k, v) => {
+          const r = el("div", "sw-about-fact");
+          r.append(el("span", "sw-about-k", k), el("span", "sw-about-v", v || "—"));
+          facts.append(r);
+        };
+        fact("Version", git?.version);
+        fact("Commit", git?.ok ? git.commit + (git.dirty ? " (local changes)" : "") : null);
+        fact("Branch", git?.ok ? git.branch : null);
+        wrap.append(facts);
+
+        const upd = el("button", "btn ghost tiny", "Software Update…");
+        upd.onclick = () => ctx.openSection("system");
+        wrap.append(upd);
+
+        wrap.append(el("div", "sw-about-copy", "© 2025–2026 DigitalGarbage"));
+      }
+
+      render();
+      if (G?.refresh) G.refresh().then(() => { if (wrap.isConnected) render(); }).catch(() => {});
+    },
+  });
 
   // ── built-in section: Refinement & Taste (Learning) ────────────────────
   // Buttons reuse the single implementations exported by menubar.js

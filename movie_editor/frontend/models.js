@@ -17,7 +17,6 @@
   let requirements = [];           // [{id,type,label,required,role_hint,hint}]
   let wiringRules = {};            // guided wiring rules from /pipeline-ports
   let container = null;           // mounted content root inside the Settings window
-  const expanded = new Set();     // slot ids currently expanded (collapsed by default)
   let linkMode = false;           // selecting inputs to bind into one shared control
   let linkSel = [];               // [{slotId, input, kind, choices, label}]
 
@@ -401,31 +400,34 @@
     return box;
   }
 
-  // ── slot row (configured) ────────────────────────────────────────────────────
-  function slotRow(slot, issues) {
+  // ── rename (pencil): role label shown in pickers, headers, and the sidebar ────
+  async function renameSlot(slot) {
     const role = roles.find((r) => r.key === slot.role);
-    const isExp = expanded.has(slot.id);
-    const card = el("div", "slot-card" + (isExp ? " open" : ""));
+    const cur = slot.role_label || (role ? role.label : slot.role) || "";
+    const n = prompt("Node label (shown in pickers, headers, and the sidebar):", cur);
+    if (n != null) { slot.role_label = n.trim() || undefined; await persist(); render(); }
+  }
+
+  function slotDisplayLabel(slot) {
+    const role = roles.find((r) => r.key === slot.role);
+    return slot.role_label || (role ? role.label : slot.role) || slotName(slot) || "?";
+  }
+
+  // ── node page (one configured slot: values, wiring, sources) ──────────────────
+  function nodePage(slot, issues) {
     const errs = (issues || []).filter((i) => i.level === "error").length;
     const warns = (issues || []).filter((i) => i.level === "warn").length;
+    const card = el("div", "slot-card open node-page");
     if (errs) card.classList.add("slot-bad");
     else if (warns) card.classList.add("slot-warn");
 
-    const head = el("div", "slot-head");
-    head.append(el("span", "slot-chev", isExp ? "▾" : "▸"));
-    const roleText = slot.role_label || (role ? role.label : slot.role) || "?";
-    const roleSpan = el("span", "slot-role", roleText);
-    roleSpan.title = "Click ✎ to rename this label";
+    const head = el("div", "slot-head node-page-head");
+    const roleSpan = el("span", "slot-role", slotDisplayLabel(slot));
     head.append(roleSpan);
-    head.append(el("span", "slot-node", slotName(slot)));
-    const ren = el("button", "ic-btn", "✎"); ren.title = "Rename role label";
-    ren.onclick = async (e) => {
-      e.stopPropagation();
-      const cur = slot.role_label || (role ? role.label : slot.role) || "";
-      const n = prompt("Role label (shown in pickers and headers):", cur);
-      if (n != null) { slot.role_label = n.trim() || undefined; await persist(); render(); }
-    };
+    const ren = el("button", "ic-btn", "✎"); ren.title = "Rename node label";
+    ren.onclick = (e) => { e.stopPropagation(); renameSlot(slot); };
     head.append(ren);
+    head.append(el("span", "slot-node", slotName(slot)));
     const nExp = (slot.exposed || []).length;
     if (nExp) head.append(el("span", "slot-badge exposed", `◉ ${nExp}`));
     if (slot.bypassed) head.append(el("span", "slot-badge warn", "bypassed"));
@@ -438,12 +440,14 @@
     head.append(byp);
     head.append(bypassEyeButton(slot));
     const rm = el("button", "btn ghost tiny danger", "remove");
-    rm.onclick = async (e) => { e.stopPropagation(); config.slots = config.slots.filter((s) => s.id !== slot.id); expanded.delete(slot.id); await persist(); render(); };
+    rm.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Remove "${slotDisplayLabel(slot)}" (${slotName(slot)}) from the pipeline?`)) return;
+      config.slots = config.slots.filter((s) => s.id !== slot.id);
+      await persist(); setView("pipeline");
+    };
     head.append(rm);
-    head.onclick = () => { isExp ? expanded.delete(slot.id) : expanded.add(slot.id); render(); };
     card.append(head);
-
-    if (!isExp) return card;  // collapsed: header only
 
     const ib = issuesBox(issues);
     if (ib) card.append(ib);
@@ -650,93 +654,179 @@
     return wrap;
   }
 
-  // ── add-model composer ───────────────────────────────────────────────────────
-  function composer() {
-    const box = el("div", "composer");
-    box.append(el("div", "composer-title", "Add Model / Node"));
-
-    const row = el("div", "composer-row");
-    const typeSel = el("select");
-    typeSel.append(new Option("Model Type…", ""));
+  // ── "+ New node": role dropdown → "Setup node" modal (search → values + wiring) ──
+  function openRoleMenu(anchor) {
+    document.querySelectorAll(".mn-role-pop").forEach((n) => n.remove());
+    const pop = el("div", "mn-role-pop");
     const cats = {};
     roles.forEach((r) => { (cats[r.category] = cats[r.category] || []).push(r); });
     Object.keys(cats).forEach((cat) => {
-      const og = document.createElement("optgroup"); og.label = cat;
-      cats[cat].forEach((r) => { og.append(new Option(r.label, r.key)); });
-      typeSel.append(og);
+      pop.append(el("div", "mn-role-cat", cat));
+      cats[cat].forEach((r) => {
+        const it = el("div", "mn-role-item", r.label);
+        it.onclick = () => { pop.remove(); openNodeSetup(r.key); };
+        pop.append(it);
+      });
     });
-    const ogAny = document.createElement("optgroup"); ogAny.label = "Advanced";
-    ogAny.append(new Option("Any node…", "__any__")); typeSel.append(ogAny);
+    pop.append(el("div", "mn-role-cat", "Advanced"));
+    const any = el("div", "mn-role-item", "Any node…");
+    any.onclick = () => { pop.remove(); openNodeSetup("__any__"); };
+    pop.append(any);
 
-    const search = el("input", "composer-search"); search.type = "text"; search.placeholder = "Filter nodes…"; search.style.display = "none";
-    const nodeSel = el("select"); nodeSel.disabled = true; nodeSel.append(new Option("Node…", ""));
-    const addBtn = el("button", "btn primary", "Add"); addBtn.disabled = true;
-    const preview = el("div", "composer-preview");
+    const r = anchor.getBoundingClientRect();
+    pop.style.left = r.left + "px";
+    pop.style.top = (r.bottom + 4) + "px";
+    document.body.append(pop);
+    const away = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", away, true); } };
+    document.addEventListener("mousedown", away, true);
+  }
 
-    let curRole = "", curCand = null, curList = [];
+  // Setup-node modal: pick the node by search, then set widget values AND wire its
+  // outputs / input sources before it lands in the pipeline. On Add the new node's
+  // page opens (multi-wire, expose, bypass live there).
+  function openNodeSetup(roleKey) {
+    document.querySelectorAll(".ns-overlay").forEach((n) => n.remove());
+    const role = roleKey === "__any__" ? null : roles.find((r) => r.key === roleKey);
+    const roleFinal = roleKey === "__any__" ? "custom" : roleKey;
 
-    function showPreview() {
-      clear(preview);
-      if (!curCand) return;
-      const d = defaultsFor(curCand);
-      (curCand.inputs || []).forEach((spec) => preview.append(widgetField(spec, d[spec.name], (v) => { d[spec.name] = v; })));
-      preview._draft = d;
-    }
+    const overlay2 = el("div", "modal-overlay ns-overlay");
+    const modal = el("div", "modal ns-modal");
+    const head = el("div", "modal-head");
+    head.append(el("div", "modal-title", "Setup node — " + (role ? role.label : "Any node")));
+    const hr = el("div", "modal-head-right");
+    const closeBtn = el("button", "btn ghost tiny", "✕");
+    const closeSetup = () => overlay2.remove();
+    closeBtn.onclick = closeSetup;
+    hr.append(closeBtn); head.append(hr);
+    modal.append(head);
+    const content = el("div", "modal-content ns-content");
+    modal.append(content);
+    overlay2.append(modal);
+    overlay2.addEventListener("click", (e) => { if (e.target === overlay2) closeSetup(); });
+    document.body.append(overlay2);
 
-    function fill(list, placeholder) {
-      nodeSel.innerHTML = ""; nodeSel.append(new Option(placeholder, ""));
-      list.forEach((c) => nodeSel.append(new Option(`${c.display_name}  ·  ${c.class}`, c.class)));
-      nodeSel.disabled = !list.length;
-    }
+    const search = el("input", "ns-search");
+    search.type = "search"; search.placeholder = "Search nodes…"; search.autocomplete = "off";
+    const listBox = el("div", "ns-list");
+    const detail = el("div", "ns-detail");
+    content.append(search, listBox, detail);
+    setTimeout(() => search.focus(), 0);
 
-    function applyFilter() {
+    let curList = [], curCand = null, draft = null;
+
+    function renderList() {
+      clear(listBox);
       const q = search.value.trim().toLowerCase();
       const f = q ? curList.filter((c) => (c.display_name + " " + c.class + " " + (c.category || "")).toLowerCase().includes(q)) : curList;
-      const shown = f.slice(0, 300);
-      fill(shown, f.length ? `${f.length} node${f.length > 1 ? "s" : ""} — pick one…${f.length > 300 ? " (showing first 300)" : ""}` : (curList.length ? "No match" : "No matching nodes"));
-    }
-    search.oninput = applyFilter;
-
-    typeSel.onchange = async () => {
-      curRole = typeSel.value; curCand = null; curList = []; addBtn.disabled = true; clear(preview);
-      search.value = ""; search.style.display = curRole ? "" : "none";
-      nodeSel.innerHTML = ""; nodeSel.append(new Option("Loading…", "")); nodeSel.disabled = true;
-      if (!curRole) { nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); return; }
-      try {
-        // Search/filter applies to every mode now — role candidates and "Any node" alike.
-        curList = curRole === "__any__" ? await ensureAllNodes() : await candidates(curRole);
-        applyFilter();
-      } catch (e) {
-        nodeSel.innerHTML = ""; nodeSel.append(new Option("Error: " + (e && e.message ? e.message : "node list unavailable"), ""));
-        console.error("[Models] node list failed:", e);
-      }
-    };
-    nodeSel.onchange = async () => {
-      addBtn.disabled = true; curCand = null; clear(preview);
-      if (!nodeSel.value) return;
-      curCand = specByClass[nodeSel.value];
-      if (!curCand) { try { curCand = await loadSpec(nodeSel.value); } catch (e) { return; } }
-      addBtn.disabled = !curCand; showPreview();
-    };
-    addBtn.onclick = async () => {
-      if (!curCand) return;
-      const role = curRole === "__any__" ? "custom" : curRole;
-      const extras = defaultExtrasForRole(role, curCand);
-      config.slots.push({
-        id: uid(), role, node_class: curCand.class,
-        inputs: preview._draft || defaultsFor(curCand),
-        wires: extras.wires || {},
-        input_sources: extras.input_sources || {},
+      if (!f.length) { listBox.append(el("div", "ns-empty", curList.length ? "No match." : "No matching nodes.")); return; }
+      f.slice(0, 200).forEach((c) => {
+        const row = el("div", "ns-row" + (curCand && curCand.class === c.class ? " active" : ""));
+        row.append(el("span", "ns-row-name", c.display_name));
+        row.append(el("span", "ns-row-class", c.class));
+        row.onclick = () => pick(c.class);
+        listBox.append(row);
       });
-      await persist();
-      typeSel.value = ""; nodeSel.innerHTML = ""; nodeSel.append(new Option("Node…", "")); nodeSel.disabled = true;
-      search.style.display = "none"; search.value = "";
-      addBtn.disabled = true; curCand = null; curList = []; clear(preview); render();
-    };
+      if (f.length > 200) listBox.append(el("div", "ns-empty", `…${f.length - 200} more — refine the search.`));
+    }
+    search.oninput = renderList;
 
-    row.append(typeSel); row.append(search); row.append(nodeSel); row.append(addBtn);
-    box.append(row); box.append(preview);
-    return box;
+    async function pick(cls) {
+      curCand = specByClass[cls];
+      if (!curCand) { try { curCand = await loadSpec(cls); } catch (_) { return; } }
+      const extras = defaultExtrasForRole(roleFinal, curCand);
+      draft = {
+        inputs: defaultsFor(curCand),
+        wires: { ...(extras.wires || {}) },              // outName -> single target
+        input_sources: { ...(extras.input_sources || {}) },
+      };
+      renderList(); renderDetail();
+    }
+
+    function renderDetail() {
+      clear(detail);
+      if (!curCand) return;
+      const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: {} };
+
+      if ((curCand.inputs || []).length) {
+        detail.append(el("div", "wire-title", "Values"));
+        const grid = el("div", "slot-fields");
+        curCand.inputs.forEach((spec) =>
+          grid.append(widgetField(spec, draft.inputs[spec.name], (v) => { draft.inputs[spec.name] = v; })));
+        detail.append(grid);
+      }
+
+      if ((curCand.outputs || []).length) {
+        const wbox = el("div", "wire-box");
+        wbox.append(el("div", "wire-title", "Wire outputs to"));
+        curCand.outputs.forEach((out) => {
+          const row = el("div", "wire-row");
+          row.append(el("span", "wire-out", `${out.name} (${out.type})`));
+          row.append(el("span", "wire-arrow", "→"));
+          const sel = el("select", "wire-select");
+          const cur = draft.wires[out.name] || "";
+          allowedDestinations(draftSlot, out).forEach((d) => {
+            const o = el("option", null, d.label); o.value = d.value; if (d.value === cur) o.selected = true; sel.append(o);
+          });
+          sel.onchange = () => { if (sel.value) draft.wires[out.name] = sel.value; else delete draft.wires[out.name]; };
+          row.append(sel);
+          wbox.append(row);
+        });
+        wbox.append(el("div", "links-hint", "One wire per output here — add more on the node's page after adding."));
+        detail.append(wbox);
+      }
+
+      if ((curCand.connection_inputs || []).length) {
+        const sbox = el("div", "wire-box");
+        sbox.append(el("div", "wire-title", "Input sources"));
+        curCand.connection_inputs.forEach((ci) => {
+          const row = el("div", "wire-row");
+          row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
+          row.append(el("span", "wire-arrow", "←"));
+          const sel = el("select", "wire-select");
+          const cur = draft.input_sources[ci.name] || "";
+          allowedSources(draftSlot, ci).forEach((s) => {
+            const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o);
+          });
+          sel.onchange = () => { if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name]; };
+          row.append(sel);
+          sbox.append(row);
+        });
+        detail.append(sbox);
+      }
+
+      const foot = el("div", "ns-foot");
+      const add = el("button", "btn primary", "Add node");
+      add.onclick = async () => {
+        const slot = {
+          id: uid(), role: roleFinal, node_class: curCand.class,
+          inputs: draft.inputs,
+          wires: {}, input_sources: {},
+        };
+        config.slots.push(slot);
+        Object.entries(draft.wires).forEach(([o, t]) => {
+          if (!t) return;
+          _addWire(slot.id, o, t);
+          _setWireTarget(slot, o, "", t); // mirror node: targets onto the destination's input source
+        });
+        Object.entries(draft.input_sources).forEach(([inp, v]) => { if (v) _setInputSource(slot, inp, v); });
+        reconcileOpenPortWiring();
+        await persist();
+        closeSetup();
+        setView("node:" + slot.id);
+      };
+      const cancel = el("button", "btn ghost", "Cancel");
+      cancel.onclick = closeSetup;
+      foot.append(cancel, add);
+      detail.append(foot);
+    }
+
+    listBox.append(el("div", "ns-empty", "Loading nodes…"));
+    (roleKey === "__any__" ? ensureAllNodes() : candidates(roleKey))
+      .then((list) => { curList = list || []; renderList(); })
+      .catch((e) => {
+        clear(listBox);
+        listBox.append(el("div", "ns-empty", "Node list unavailable: " + (e && e.message ? e.message : e)));
+      });
   }
 
   // Does any configured slot produce the given type (optionally filtered by role)?
@@ -793,20 +883,7 @@
         row.append(hint);
         if (req.role_hint) {
           const addBtn = el("button", "btn ghost tiny req-add", "+ Add");
-          addBtn.onclick = () => {
-            // Pre-select the composer's Model Type to this role. On a fresh/empty
-            // project the composer sits below the (all-missing) requirements list and
-            // scrolls out of the modal's visible area, so the selection alone was
-            // invisible — scroll it into view and flash it so the click is felt.
-            const composerEl = document.querySelector(".composer");
-            const typeSelEl = composerEl && composerEl.querySelector("select");
-            if (typeSelEl) {
-              typeSelEl.value = req.role_hint;
-              typeSelEl.dispatchEvent(new Event("change"));
-              composerEl.scrollIntoView({ behavior: "smooth", block: "center" });
-              composerEl.classList.remove("flash"); void composerEl.offsetWidth; composerEl.classList.add("flash");
-            }
-          };
+          addBtn.onclick = () => openNodeSetup(req.role_hint);
           row.append(addBtn);
         }
       }
@@ -908,45 +985,58 @@
     return card;
   }
 
-  function linksSection() {
+  async function saveLinkSelection() {
+    if (linkSel.length < 1) return;
+    const def = "size " + ((config.links || []).length + 1);
+    const nm = prompt("Link name:", def); if (nm == null) return;
+    const first = linkSel[0]; const s0 = slotById(first.slotId);
+    const val = s0 ? (s0.inputs || {})[first.input] : undefined;
+    const link = { id: uid(), name: nm.trim() || def, kind: first.kind,
+      choices: first.kind === "combo" ? (first.choices || []) : undefined, value: val,
+      members: linkSel.map((s) => ({ slotId: s.slotId, input: s.input })), exposed: false };
+    if (first.kind === "int" || first.kind === "float") {
+      const w = s0 && inputSpecFor(s0, first.input);
+      if (w) Object.assign(link, numMeta(w));
+    }
+    ensureLinks().push(link);
+    applyLinkValue(link, val);
+    linkMode = false; linkSel = []; await persist(); setView("links");
+  }
+
+  // Persistent bar while picking link members — stays visible as the user moves
+  // between node pages, replacing the old everything-expanded scrollable list.
+  function linkModeBar() {
+    const bar = el("div", "models-linkbar");
+    bar.append(el("span", "models-linkbar-txt",
+      linkSel.length
+        ? `Linking ${linkSel.length} input${linkSel.length > 1 ? "s" : ""}: ${linkSel.map((s) => s.label).join(", ")}`
+        : "Pick inputs to link: open a node in the sidebar and click ＋ next to its inputs."));
+    const save = el("button", "btn primary tiny", `Save link (${linkSel.length})`);
+    save.disabled = linkSel.length < 1;
+    save.onclick = saveLinkSelection;
+    const cancel = el("button", "btn ghost tiny", "Cancel");
+    cancel.onclick = () => { linkMode = false; linkSel = []; render(); };
+    bar.append(save, cancel);
+    return bar;
+  }
+
+  function linksView() {
     const sec = el("div", "links-section");
     const head = el("div", "links-head");
     head.append(el("div", "composer-title", "Linked inputs"));
     const right = el("div", "links-head-right");
     if (!linkMode) {
-      const b = el("button", "btn ghost tiny", "🔗 Link inputs");
-      b.onclick = () => { linkMode = true; linkSel = []; config.slots.forEach((s) => expanded.add(s.id)); render(); };
+      const b = el("button", "btn ghost tiny", "＋ New link");
+      b.onclick = () => { linkMode = true; linkSel = []; render(); };
       right.append(b);
-    } else {
-      const save = el("button", "btn primary tiny", `Save link (${linkSel.length})`);
-      save.disabled = linkSel.length < 1;
-      save.onclick = async () => {
-        if (linkSel.length < 1) return;
-        const def = "size " + ((config.links || []).length + 1);
-        const nm = prompt("Link name:", def); if (nm == null) return;
-        const first = linkSel[0]; const s0 = slotById(first.slotId);
-        const val = s0 ? (s0.inputs || {})[first.input] : undefined;
-        const link = { id: uid(), name: nm.trim() || def, kind: first.kind,
-          choices: first.kind === "combo" ? (first.choices || []) : undefined, value: val,
-          members: linkSel.map((s) => ({ slotId: s.slotId, input: s.input })), exposed: false };
-        if (first.kind === "int" || first.kind === "float") {
-          const w = s0 && inputSpecFor(s0, first.input);
-          if (w) Object.assign(link, numMeta(w));
-        }
-        ensureLinks().push(link);
-        applyLinkValue(link, val);
-        linkMode = false; linkSel = []; await persist(); render();
-      };
-      const cancel = el("button", "btn ghost tiny", "Cancel");
-      cancel.onclick = () => { linkMode = false; linkSel = []; render(); };
-      right.append(save); right.append(cancel);
     }
     head.append(right);
     sec.append(head);
-    if (linkMode) sec.append(el("div", "links-hint", "Click ＋ next to any input below to add it to the link, then Save. Pick a single input to tie it to a project value (e.g. FPS), or several to drive them together."));
+    sec.append(el("div", "links-hint",
+      "A link drives several node inputs from one control, or ties an input to a project value (e.g. a loader's FPS to Project · FPS)."));
     (config.links || []).forEach((l) => sec.append(linkCard(l)));
     if (!linkMode && !(config.links || []).length)
-      sec.append(el("div", "links-empty", "No links yet. Use 'Link inputs' to bind a node input to a project value (e.g. tie a loader's FPS to Project · FPS), or to drive several inputs from one control."));
+      sec.append(el("div", "links-empty", "No links yet. Click ＋ New link, then pick inputs on the node pages."));
     return sec;
   }
 
@@ -1076,29 +1166,101 @@
     return sec;
   }
 
-  function body() {
-    const b = el("div", "models-body");
+  // ── shell: inner sidebar (Links · Pipeline · + New node · nodes) + content pane ──
+  let view = "pipeline"; // "pipeline" | "links" | "node:<slotId>"
+  function setView(v) { view = v; render(); }
+
+  function mnItem(opts) {
+    const it = el("div", "mn-item" + (opts.active ? " active" : ""));
+    if (opts.dot) it.append(el("span", "mn-dot " + opts.dot));
+    else if (opts.icon) it.append(el("span", "mn-ico", opts.icon));
+    const lab = el("span", "mn-label");
+    lab.append(el("span", "mn-name", opts.label));
+    if (opts.sub) lab.append(el("span", "mn-sub", opts.sub));
+    it.append(lab);
+    if (opts.badge != null) it.append(el("span", "mn-badge", String(opts.badge)));
+    it.onclick = opts.onClick;
+    return it;
+  }
+
+  function sideBar(v) {
+    const side = el("div", "models-side");
+
+    side.append(mnItem({
+      icon: "🔗", label: "Linked inputs",
+      badge: (config.links || []).length || null,
+      active: view === "links", onClick: () => setView("links"),
+    }));
+    const pipeBad = !config.disable_core && missingEssentials().length > 0;
+    side.append(mnItem({
+      icon: "▦", label: "Pipeline",
+      sub: config.disable_core ? "built-in off" : (pipeBad ? "missing loaders" : null),
+      active: view === "pipeline", onClick: () => setView("pipeline"),
+    }));
+
+    side.append(el("div", "mn-sep"));
+
+    const add = el("button", "mn-new", "＋ New node");
+    add.onclick = (e) => openRoleMenu(e.currentTarget);
+    side.append(add);
+
+    config.slots.forEach((slot) => {
+      const issues = v.perSlot[slot.id] || [];
+      const errs = issues.some((i) => i.level === "error");
+      const warns = issues.some((i) => i.level === "warn");
+      const it = mnItem({
+        dot: errs ? "bad" : (warns || slot.bypassed ? "warn" : "ok"),
+        label: slotDisplayLabel(slot), sub: slotName(slot),
+        active: view === "node:" + slot.id, onClick: () => setView("node:" + slot.id),
+      });
+      const pen = el("button", "mn-pencil", "✎"); pen.title = "Rename";
+      pen.onclick = (e) => { e.stopPropagation(); renameSlot(slot); };
+      it.append(pen);
+      side.append(it);
+    });
+    if (!config.slots.length) side.append(el("div", "mn-empty", "No nodes yet."));
+    return side;
+  }
+
+  function paneContent(v) {
+    const pane = el("div", "models-pane");
+    if (view.startsWith("node:")) {
+      const slot = slotById(view.slice(5));
+      if (slot) { pane.append(nodePage(slot, v.perSlot[slot.id])); return pane; }
+      view = "pipeline"; // node was removed — fall back
+    }
+    if (view === "links") { pane.append(linksView()); return pane; }
     if (config.workflow_import?.name) {
       const banner = el("div", "wf-import-banner");
       banner.textContent = `Imported workflow: ${config.workflow_import.name} (${config.workflow_import.node_count || config.slots.length} nodes) · built-in pipeline disabled`;
-      b.append(banner);
+      pane.append(banner);
     }
-    b.append(requirementsPanel());
-    b.append(coreSection());
-    b.append(composer());
-    b.append(linksSection());
+    pane.append(requirementsPanel());
+    pane.append(coreSection());
+    if (!config.slots.length)
+      pane.append(el("div", "empty-stage", "No models configured yet — use ＋ New node in the sidebar to add loaders."));
+    return pane;
+  }
+
+  function body() {
+    const b = el("div", "models-shell");
+    if (linkMode) b.append(linkModeBar());
     const v = validation();
-    const list = el("div", "slot-list");
-    if (!config.slots.length) list.append(el("div", "empty-stage", "No models configured yet — use the form above to add loaders."));
-    else config.slots.forEach((s) => list.append(slotRow(s, v.perSlot[s.id])));
-    b.append(list);
+    const cols = el("div", "models-cols");
+    cols.append(sideBar(v), paneContent(v));
+    b.append(cols);
     return b;
   }
 
   function render() {
     if (!container) return;
+    // Preserve the content pane's scroll across the full re-render every edit triggers.
+    const prevPane = container.querySelector(".models-pane");
+    const scrollTop = prevPane ? prevPane.scrollTop : 0;
     clear(container);
     container.append(body());
+    const pane = container.querySelector(".models-pane");
+    if (pane) pane.scrollTop = scrollTop;
   }
 
   async function prewarmSpecs() {
@@ -1132,8 +1294,10 @@
 
   function mount(body, ctx) {
     container = el("div", "models-mount");
-    container.append(el("div", "pj-meta", "Loading models & pipeline…"));
+    container.append(el("div", "pj-meta models-loading", "Loading models & pipeline…"));
     body.append(container);
+    view = "pipeline";
+    linkMode = false; linkSel = [];
     const refresh = el("button", "btn ghost tiny", "↻ Refresh model list");
     refresh.onclick = refreshList;
     ctx.setActions([refresh]);
@@ -1142,14 +1306,17 @@
       .catch(() => {
         if (container && container.isConnected) {
           clear(container);
-          container.append(el("div", "pj-meta", "Could not load models & pipeline."));
+          container.append(el("div", "pj-meta models-loading", "Could not load models & pipeline."));
         }
       });
-    return () => { container = null; };
+    return () => {
+      container = null;
+      document.querySelectorAll(".mn-role-pop, .ns-overlay").forEach((n) => n.remove());
+    };
   }
 
   window.SettingsWindow.register({
-    id: "models", group: "Generation", order: 2, title: "Models & Pipeline",
+    id: "models", group: "Generation", order: 2, title: "Models & Pipeline", flush: true,
     subtitle: "Loaders and custom nodes wired into the fixed FunPack pipeline.",
     keywords: "models loaders unet vae clip lora nodes pipeline wiring workflow import "
       + "bypass disable core full control links",

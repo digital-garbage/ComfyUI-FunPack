@@ -1626,3 +1626,91 @@ body.tour-mode { overflow: hidden; }
 .sw-led { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
 .sw-led.ok { background: var(--good); box-shadow: 0 0 6px var(--good); }
 .sw-led.bad { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+
+/* About FunPack ("About This Mac" style) */
+.sw-about { display: flex; flex-direction: column; align-items: center; text-align: center;
+  padding: 34px 20px 10px; gap: 2px; }
+.sw-about-mark { font-size: 56px; line-height: 1; color: var(--amber);
+  text-shadow: 0 0 24px rgba(243,169,60,.45); margin-bottom: 10px; }
+.sw-about-name { font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: -.02em; }
+.sw-about-sub { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+.sw-about-facts { display: flex; flex-direction: column; gap: 4px; margin-bottom: 18px; }
+.sw-about-fact { display: flex; gap: 14px; justify-content: center; font-size: 12.5px; }
+.sw-about-k { color: var(--faint); min-width: 70px; text-align: right; }
+.sw-about-v { color: var(--text); font-family: var(--font-mono); text-align: left; min-width: 70px; }
+.sw-about-copy { margin-top: 22px; font-size: 11px; color: var(--faint); }
+
+/* ── Models & Pipeline: inner sidebar layout inside the Settings window ── */
+.sw-body.sw-flush { padding: 0; overflow: hidden; display: flex; }
+.models-mount { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.models-loading { padding: 16px 18px; }
+.models-shell { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.models-cols { flex: 1; min-height: 0; display: flex; }
+.models-side { width: 216px; flex: 0 0 auto; overflow: auto; padding: 10px 8px;
+  border-right: 1px solid var(--line); background: #14120d;
+  display: flex; flex-direction: column; gap: 2px; }
+.models-pane { flex: 1; min-width: 0; overflow: auto; padding: 14px 16px 24px; }
+
+.mn-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px;
+  cursor: pointer; user-select: none; min-height: 30px; }
+.mn-item:hover { background: var(--ink-3); }
+.mn-item.active { background: var(--amber-soft); box-shadow: inset 0 0 0 1px rgba(243,169,60,.35); }
+.mn-ico { flex: 0 0 18px; text-align: center; font-size: 12px; }
+.mn-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; margin: 0 5px; }
+.mn-dot.ok { background: var(--good); }
+.mn-dot.warn { background: var(--amber); }
+.mn-dot.bad { background: var(--danger); box-shadow: 0 0 5px var(--danger); }
+.mn-label { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mn-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mn-sub { font-size: 10px; color: var(--faint); font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mn-badge { flex: 0 0 auto; font-size: 10px; color: var(--muted); background: var(--ink-3);
+  border-radius: 8px; padding: 1px 6px; }
+.mn-pencil { flex: 0 0 auto; border: none; background: transparent; color: var(--faint);
+  font-size: 11px; cursor: pointer; padding: 2px 4px; border-radius: 5px; visibility: hidden; }
+.mn-item:hover .mn-pencil { visibility: visible; }
+.mn-pencil:hover { background: var(--ink-3); color: var(--amber-2); }
+.mn-sep { height: 1px; background: var(--line); margin: 8px 4px; flex: 0 0 auto; }
+.mn-new { display: block; width: 100%; text-align: left; padding: 6px 8px; margin-bottom: 4px;
+  border: 1px dashed var(--line); border-radius: 7px; background: transparent;
+  color: var(--muted); font: 12.5px var(--font-ui); cursor: pointer; }
+.mn-new:hover { border-color: var(--amber); color: var(--amber-2); }
+.mn-empty { padding: 8px; font-size: 11.5px; color: var(--faint); }
+
+/* role dropdown under "+ New node" */
+.mn-role-pop { position: fixed; z-index: 700; min-width: 220px; max-height: 60vh; overflow: auto;
+  background: #1d1a14; border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: 0 14px 40px rgba(0,0,0,.6); padding: 6px; animation: pop .12s ease; }
+.mn-role-cat { padding: 6px 8px 2px; font-size: 10px; font-weight: 700; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--faint); }
+.mn-role-item { padding: 5px 8px; border-radius: 6px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.mn-role-item:hover { background: var(--amber-soft); }
+
+/* link-mode bar (persistent while picking inputs across node pages) */
+.models-linkbar { flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--amber-soft); }
+.models-linkbar-txt { flex: 1; min-width: 0; font-size: 12px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Setup-node modal */
+.ns-modal { width: min(640px, 94vw); }
+.ns-content { display: flex; flex-direction: column; gap: 10px; }
+.ns-search { width: 100%; padding: 7px 10px; font: 13px var(--font-ui); color: var(--text);
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px; outline: none; }
+.ns-search:focus { border-color: var(--amber); }
+.ns-list { max-height: 200px; overflow: auto; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--ink-1); flex: 0 0 auto; }
+.ns-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; cursor: pointer;
+  border-top: 1px solid var(--line-2); }
+.ns-row:first-child { border-top: none; }
+.ns-row:hover { background: var(--ink-3); }
+.ns-row.active { background: var(--amber-soft); }
+.ns-row-name { font-size: 12.5px; color: var(--text); }
+.ns-row-class { font-size: 10.5px; color: var(--faint); font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ns-empty { padding: 10px 12px; font-size: 12px; color: var(--faint); }
+.ns-detail { display: flex; flex-direction: column; gap: 10px; }
+.ns-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+
+/* node page header sits flush at the pane top */
+.node-page { margin-top: 0; }
