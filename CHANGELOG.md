@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-05
+
+### Added
+- **Unified macOS-style Settings window** (⌘, or the Settings button) — one door to every
+  setting. Icon-rail sidebar that expands on hover, with grouped sections: About FunPack,
+  Editor, Engine, Models & Pipeline, Refinement & Taste, Updates & ComfyUI, Temp Files. The
+  FunPack menu and the old Settings dropdown are gone — no duplicated entries anywhere; the
+  top bar is File / Edit / View / Help / Settings.
+- **About FunPack** — version (now served via `/api/git/status` from pyproject), commit,
+  branch, and a Software Update deep link.
+- **Models & Pipeline redesigned** around its own sidebar: Linked inputs and Pipeline at the
+  top, "＋ New node", and every configured node with a status dot and hover rename. Adding a
+  node opens a Setup dialog with search where widget values AND output wires / input sources
+  are set before it lands in the pipeline. Link mode is a persistent bar that follows you
+  across node pages. Import ComfyUI Workflow lives here as a header action.
+- **Engine settings redesigned** the same way: always-visible categories (Overview · Studio:
+  Refinement / Adjustments / Sampler algorithm · Chain Sampler: Continuity / Timing & Seed /
+  Guidance / Decode / Experimental) with macOS-style rows and live changed-count badges — no
+  more scrolling a wall of collapsible cards.
+- **DynaShift** (experimental) on the Scene Chain Sampler — negative latent memory: Awful and
+  wrong-appearance ratings bank the run's video latent, and later runs steer x0 away from
+  matched banked frames per late step ("a negative prompt at CFG=1").
+- **output_guidance** on the Scene Chain Sampler — a value function trained on the model's own
+  prediction, nudging sampling toward liked outputs; exposed in Engine ▸ Guidance.
+- **Value function training**: pairwise ranking loss + ensemble disagreement gate.
+- **Distilled Flow**: `quality_sharpness` unsharp-mask port from Hybrid Euler 2S.
+
+### Changed
+- **Split at playhead actually cuts the clip in place** (both halves keep playing their own
+  portion) instead of only adding a marker.
+- Settings fields render single-column and shrink correctly, so the window works on small
+  screens; no control can push the layout out of reach anymore.
+- Removed block steering and the NVFP4 loader after failed live validation.
+
+### Fixed
+- **Preview player: rapid play/pause could restart the video from the beginning.** An aborted
+  stream fetch (or the retry path's cache-busted reload) reset the `<video>` element to 0 and
+  the playhead followed. The player now stashes the position when the element resets, restores
+  it as soon as metadata is back, and resumes playback if it was playing.
+- Sampler: exception-safe per-scene wrapper lifecycle on interrupt + output_guidance gradient
+  calibration.
+- Editor: typing no longer interrupted by autosave re-renders; renders no longer become
+  unviewable after transient errors; media thumbnails release their network connections
+  (Chrome's 6-per-origin pool starvation).
+- Models "+ Add" requirement buttons doing nothing on an empty project; the
+  disabled-built-in-pipeline state is surfaced instead of hidden.
+
 ## [3.1.3] - 2026-06-29
 
 ### Added
