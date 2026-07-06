@@ -1755,6 +1755,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    rescue_prompt_sig=None,
                                    alg_enabled=False, alg_strength=2.0, alg_sigma_threshold=0.975,
                                    alg_guide_tail_frames=0,
+                                   alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
                                    quality_sharpness=0.0):
     """
@@ -1784,8 +1785,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
       attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide /
       configured guides / JoyAI memory), set by the Scene Chain Sampler's alg_blur_guides
       toggle right before this chunk's sample call. 0 = untouched (default). Standalone:
-      works with alg_enabled off (anchor stays sharp, only the guide tail is blurred),
-      reusing the same alg_strength / alg_sigma_threshold parameters.
+      works with alg_enabled off (anchor stays sharp, only the guide tail is blurred), with
+      its own independent controls — alg_guide_blur_strength / alg_guide_blur_sigma_threshold
+      (also set per-chunk by the Scene Chain Sampler), separate from the anchor's
+      alg_strength / alg_sigma_threshold.
     - EXPERIMENTAL mg_enabled: Momentum Guidance (arXiv:2602.20360). Keeps a running EMA
       (decay=mg_decay) of the per-step ODE direction and blends the current step's
       direction toward it (weight=mg_strength) while sigma is BELOW mg_sigma_threshold —
@@ -1837,20 +1840,43 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     # denoise_mask) or if the packed-latent layout can't be read (helper returns None).
     # alg_guide_tail_frames (>0) extends the same idea, beyond the paper, to the trailing
     # guide-attention frames this scene appended (alg_blur_guides on the Scene Chain Sampler).
-    # The two are independent: guide-tail blur runs standalone with alg_enabled off (anchor
-    # stays sharp), sharing the same alg_strength / alg_sigma_threshold blur parameters.
+    # Anchor and guide-tail blur are fully independent: each has its own strength and sigma
+    # window (alg_strength/alg_sigma_threshold vs alg_guide_blur_*), so one precomputed
+    # latent per (anchor blurred?, tail blurred?) combination that can occur — the frame
+    # sets are disjoint, so the both-blurred variant just composes the two.
     alg_guide_tail_frames = max(0, int(alg_guide_tail_frames))
-    alg_wanted = bool(alg_enabled) or alg_guide_tail_frames > 0
-    alg_sharp_latent_image = getattr(model, "latent_image", None) if alg_wanted else None
-    alg_active = alg_wanted and extra_args.get("denoise_mask") is not None and alg_sharp_latent_image is not None
-    alg_blurred_latent_image = _alg_blur_frames(
-        model, alg_sharp_latent_image, max(1.0, float(alg_strength)),
-        frame_indices=(0,) if alg_enabled else (), tail_count=alg_guide_tail_frames,
-    ) if alg_active else None
-    alg_active = alg_active and alg_blurred_latent_image is not None
+    alg_anchor_on = bool(alg_enabled)
+    alg_tail_on = alg_guide_tail_frames > 0
+    alg_sharp_latent_image = getattr(model, "latent_image", None) if (alg_anchor_on or alg_tail_on) else None
+    alg_active = ((alg_anchor_on or alg_tail_on) and extra_args.get("denoise_mask") is not None
+                  and alg_sharp_latent_image is not None)
+    alg_latents = {}
     if alg_active:
-        print(f"[FunPack AV] ALG on (anchor={'on' if alg_enabled else 'off'}, strength={alg_strength}, "
-              f"sigma_threshold={alg_sigma_threshold}, guide_tail_frames={alg_guide_tail_frames}) "
+        anchor_blurred = _alg_blur_frames(
+            model, alg_sharp_latent_image, max(1.0, float(alg_strength)), frame_indices=(0,),
+        ) if alg_anchor_on else None
+        tail_kappa = max(1.0, float(alg_guide_blur_strength))
+        tail_blurred = _alg_blur_frames(
+            model, alg_sharp_latent_image, tail_kappa, tail_count=alg_guide_tail_frames,
+        ) if alg_tail_on else None
+        both_blurred = _alg_blur_frames(
+            model, anchor_blurred, tail_kappa, tail_count=alg_guide_tail_frames,
+        ) if (anchor_blurred is not None and tail_blurred is not None) else None
+        alg_anchor_on = alg_anchor_on and anchor_blurred is not None
+        alg_tail_on = alg_tail_on and tail_blurred is not None
+        alg_latents = {
+            (False, False): alg_sharp_latent_image,
+            (True, False): anchor_blurred,
+            (False, True): tail_blurred,
+            (True, True): both_blurred if both_blurred is not None else (anchor_blurred or tail_blurred),
+        }
+        alg_active = alg_anchor_on or alg_tail_on
+    if alg_active:
+        anchor_desc = (f"strength={alg_strength}, sigma_threshold={alg_sigma_threshold}"
+                       if alg_anchor_on else "off")
+        tail_desc = (f"{alg_guide_tail_frames} frame(s), strength={alg_guide_blur_strength}, "
+                     f"sigma_threshold={alg_guide_blur_sigma_threshold}" if alg_tail_on else "off")
+        print(f"[FunPack AV] ALG on (anchor: {anchor_desc}; guide tail: {tail_desc}) "
               f"— blurred while sigma > threshold")
 
     # EXPERIMENTAL Momentum Guidance (arXiv:2602.20360): EMA of the per-step ODE direction,
@@ -1886,7 +1912,10 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             velocity_target = _velocity_bias_target(sigmas, sigma)
 
             if alg_active:
-                model.latent_image = alg_blurred_latent_image if float(sigma) > float(alg_sigma_threshold) else alg_sharp_latent_image
+                model.latent_image = alg_latents[(
+                    alg_anchor_on and float(sigma) > float(alg_sigma_threshold),
+                    alg_tail_on and float(sigma) > float(alg_guide_blur_sigma_threshold),
+                )]
 
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
                 x_pre = x
@@ -2066,11 +2095,11 @@ class FunPackDistilledFlowSampler:
                 }),
                 "alg_strength": ("FLOAT", {
                     "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
-                    "tooltip": "Downsample factor for the anchor blur (paper default 2.5, but 2.0 held character/i2v consistency noticeably better in testing here). Higher = blurrier anchor during the affected steps. Used when alg_enabled, and also by the Scene Chain Sampler's alg_blur_guides (which works without alg_enabled).",
+                    "tooltip": "Downsample factor for the anchor blur (paper default 2.5, but 2.0 held character/i2v consistency noticeably better in testing here). Higher = blurrier anchor during the affected steps. Only used when alg_enabled; guide-frame blur has its own controls on the Scene Chain Sampler (alg_blur_guides + alg_guide_blur_*).",
                 }),
                 "alg_sigma_threshold": ("FLOAT", {
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
-                    "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Used when alg_enabled, and also by the Scene Chain Sampler's alg_blur_guides (which works without alg_enabled).",
+                    "tooltip": "Anchor stays blurred while sigma is above this value (the near-pure-noise steps), then swaps to sharp. Higher = narrower blurred window. Only used when alg_enabled; guide-frame blur has its own controls on the Scene Chain Sampler (alg_blur_guides + alg_guide_blur_*).",
                 }),
                 "mg_enabled": ("BOOLEAN", {
                     "default": False,
@@ -2330,7 +2359,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "alg_blur_guides": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the sampler's alg_enabled off (anchor stays sharp), reusing its alg_strength / alg_sigma_threshold. Requires the FunPack Distilled Flow sampler; no effect if no guide frames were appended this scene.",
+                    "tooltip": "EXPERIMENTAL: extends ALG (see the sampler's alg_enabled) from just the i2v anchor to also blur newly-appended guide-attention frames this scene (mid_scene_guide / carry_i2v_guides-as-guide / configured per-scene guides / JoyAI memory), for the same early steps. Standalone: works even with the sampler's alg_enabled off (anchor stays sharp), with its own alg_guide_blur_strength / alg_guide_blur_sigma_threshold controls below. Requires the FunPack Distilled Flow sampler; no effect if no guide frames were appended this scene.",
                 }),
                 "bounded_attention_enabled": ("BOOLEAN", {
                     "default": False,
@@ -2357,6 +2386,14 @@ class FunPackLTXAVSceneChainSampler:
                 "dynashift_threshold": ("FLOAT", {
                     "default": 0.6, "min": 0.3, "max": 0.95, "step": 0.05,
                     "tooltip": "Frame-similarity gate: a current frame must match a banked negative frame above this cosine similarity before any steering applies. Steering strength ramps from 0 at the threshold to full at similarity 1.0, so it self-releases once the unwanted feature is gone. Lower = more aggressive (risks steering away from legitimately similar content).",
+                }),
+                "alg_guide_blur_strength": ("FLOAT", {
+                    "default": 2.0, "min": 1.0, "max": 4.0, "step": 0.1,
+                    "tooltip": "Downsample factor for the guide-frame blur (alg_blur_guides). Higher = blurrier guide/JoyAI frames during the affected steps. Independent of the sampler's anchor alg_strength.",
+                }),
+                "alg_guide_blur_sigma_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Guide frames stay blurred while sigma is above this value (the near-pure-noise steps), then swap to sharp. Higher = narrower blurred window. Independent of the sampler's anchor alg_sigma_threshold.",
                 }),
             },
             "hidden": {
@@ -2743,6 +2780,7 @@ class FunPackLTXAVSceneChainSampler:
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
+                      alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                       bounded_attention_enabled=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
@@ -2765,6 +2803,8 @@ class FunPackLTXAVSceneChainSampler:
         extra_options = getattr(sampler, "extra_options", None)
         if isinstance(extra_options, dict) and sampler.sampler_function is sample_funpack_distilled_flow:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
+            extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
+            extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
 
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
@@ -4149,6 +4189,7 @@ class FunPackLTXAVSceneChainSampler:
                bounded_attention_enabled=False,
                output_guidance=False, output_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
+               alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4200,6 +4241,8 @@ class FunPackLTXAVSceneChainSampler:
                 joyai_memory_strength=joyai_memory_strength,
                 joyai_audio_memory=joyai_audio_memory, v2a_grad_scale=v2a_grad_scale,
                 alg_blur_guides=alg_blur_guides,
+                alg_guide_blur_strength=alg_guide_blur_strength,
+                alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
@@ -4482,6 +4525,8 @@ class FunPackLTXAVSceneChainSampler:
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
+                    alg_guide_blur_strength=alg_guide_blur_strength,
+                    alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
                 _scene_sample_s = _time.perf_counter() - _t_sample0
@@ -4761,7 +4806,8 @@ class FunPackLTXAVSceneChainSampler:
                             joyai_audio_memory=False, v2a_grad_scale=1.0,
                             alg_blur_guides=False, bounded_attention_enabled=False,
                             output_guidance=False, output_guidance_strength=0.02,
-                            dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6):
+                            dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
+                            alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -4808,6 +4854,8 @@ class FunPackLTXAVSceneChainSampler:
                 transition_duration=transition_duration,
                 decode_tile_size=decode_tile_size, refinement_key_input=key,
                 alg_blur_guides=alg_blur_guides,
+                alg_guide_blur_strength=alg_guide_blur_strength,
+                alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                 bounded_attention_enabled=bounded_attention_enabled,
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
