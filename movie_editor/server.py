@@ -1338,6 +1338,20 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
+    @routes.get(UI_PREFIX + "/api/library/revolver")
+    async def _revolver_get(_req):
+        try:
+            return web.json_response(bridge.revolver_settings())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"enabled": False, "random": False, "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/library/revolver")
+    async def _revolver_set(req):
+        try:
+            return web.json_response(bridge.set_revolver_settings(await req.json()))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
     @routes.post(UI_PREFIX + "/api/library/categories")
     async def _category_save(req):
         try:

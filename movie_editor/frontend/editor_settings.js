@@ -141,6 +141,55 @@
     return wrap;
   }
 
+  // Shortcut revolver: server-side library setting (not per-browser) — the no-repeat cycle
+  // is shared by previews and generation, so the toggle lives with the shortcut DB.
+  function revolverSection() {
+    const wrap = el("div", "es-section");
+    wrap.append(el("div", "es-section-title", "Shortcut revolver"));
+    wrap.append(el("div", "es-hint",
+      "For shortcuts with several replacements: remember which replacement fired and don’t reuse it "
+      + "until the WHOLE set has fired. Off = seeded random pick (may repeat). Saved with your shortcut "
+      + "library — applies to every browser and to generation."));
+
+    const main = el("label", "chk es-toggle");
+    const mainCb = el("input"); mainCb.type = "checkbox"; mainCb.disabled = true;
+    main.append(mainCb, el("span", null, "Shortcut revolver"));
+    wrap.append(main);
+
+    const sub = el("div", "es-subfields");
+    const rand = el("label", "chk es-toggle");
+    const randCb = el("input"); randCb.type = "checkbox"; randCb.disabled = true;
+    rand.append(randCb, el("span", null, "Random"));
+    sub.append(rand);
+    sub.append(el("div", "es-hint",
+      "Unchecked: replacements fire in order — first, second, … last, then the cycle restarts. "
+      + "Checked: any order, but still no repeats until the set is exhausted. Changing either "
+      + "option restarts all cycles."));
+    wrap.append(sub);
+
+    const apply = (s) => {
+      mainCb.checked = !!(s && s.enabled);
+      randCb.checked = !!(s && s.random);
+      mainCb.disabled = false;
+      randCb.disabled = !mainCb.checked;
+      sub.style.display = mainCb.checked ? "" : "none";
+    };
+    const save = () => {
+      mainCb.disabled = randCb.disabled = true;
+      API.setRevolverSettings({ enabled: mainCb.checked, random: randCb.checked })
+        .then(apply)
+        .catch(() => { API.revolverSettings().then(apply).catch(() => {}); });
+    };
+    mainCb.onchange = save;
+    randCb.onchange = save;
+
+    sub.style.display = "none";
+    API.revolverSettings().then(apply).catch(() => {
+      wrap.append(el("div", "es-hint", "Could not load revolver settings."));
+    });
+    return wrap;
+  }
+
   function toggleRow(label, hint, key) {
     const row = el("div", "es-row");
     const lbl = el("label", "chk es-toggle");
@@ -166,6 +215,7 @@
       "Use anchor",
       "Text before the first split trigger is a shared anchor prepended to every scene. Turn off to make that leading text Scene 1 instead.",
       "anchorEnabled"));
+    content.append(revolverSection());
     content.append(anchorGuideSection());
     body.append(content);
   }
@@ -173,7 +223,7 @@
   window.SettingsWindow.register({
     id: "editor", group: "", title: "Editor",
     subtitle: "Per-browser preferences — they apply to this browser, not the project.",
-    keywords: "autocomplete anchor prompt shortcuts ideas suggestions i2v bypass guide preferences",
+    keywords: "autocomplete anchor prompt shortcuts ideas suggestions i2v bypass guide preferences revolver random replacements cycle",
     iconBg: "linear-gradient(180deg,#6aa9ff,#3b6fd9)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.7" fill="#fff" stroke="none"/><circle cx="11" cy="8" r="1.7" fill="#fff" stroke="none"/><circle cx="5" cy="11.5" r="1.7" fill="#fff" stroke="none"/></svg>',
     mount,

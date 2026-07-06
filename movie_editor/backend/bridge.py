@@ -285,6 +285,20 @@ def delete_shortcut(name: str) -> dict:
     return {"shortcuts": si(), "categories": _shortcut_categories()}
 
 
+def revolver_settings() -> dict:
+    """Shortcut-revolver settings (enabled + random order). State lives server-side next to
+    the shortcut DB so previews and generation share one cycle."""
+    return _funpack_attr("templates", "revolver_settings")()
+
+
+def set_revolver_settings(payload: dict) -> dict:
+    fn = _funpack_attr("templates", "set_revolver_settings")
+    return fn(
+        enabled=payload.get("enabled"),
+        random_order=payload.get("random"),
+    )
+
+
 def save_category(payload: dict) -> dict:
     """Add a category (and optionally a sub-category under it) to the managed list."""
     add = _funpack_attr("templates", "add_shortcut_category")

@@ -663,11 +663,13 @@ def _expand_with_map(text):
     try:
         from .templates import (load_shortcut_db, shortcut_list, shortcut_key,
                                  _shortcut_replacements, _shortcut_trigger_pattern,
-                                 normalize_refinement_key)
+                                 normalize_refinement_key, load_revolver,
+                                 revolver_next_replacement)
     except ImportError:
         from templates import (load_shortcut_db, shortcut_list, shortcut_key,
                                _shortcut_replacements, _shortcut_trigger_pattern,
-                               normalize_refinement_key)
+                               normalize_refinement_key, load_revolver,
+                               revolver_next_replacement)
     import random
     from hashlib import md5
 
@@ -678,7 +680,7 @@ def _expand_with_map(text):
     except Exception:
         return text, whole
     candidates = []
-    for shortcut in (data.get("shortcuts", {}) or {}).values():
+    for db_key, shortcut in (data.get("shortcuts", {}) or {}).items():
         if not isinstance(shortcut, dict) or not bool(shortcut.get("enabled", True)):
             continue
         reps = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
@@ -689,14 +691,23 @@ def _expand_with_map(text):
         for trig in shortcut_list(shortcut.get("triggers", [])):
             pat = _shortcut_trigger_pattern(trig)
             if pat:
-                candidates.append((trig, pat, reps, sc_key, sc_name))
+                candidates.append((trig, pat, reps, sc_key, sc_name, str(db_key)))
     if not candidates:
         return text, whole
     candidates.sort(key=lambda it: len(shortcut_key(it[0])), reverse=True)
-    combined = "|".join(f"(?P<t{i}>{pat})" for i, (_, pat, _, _, _) in enumerate(candidates))
+    combined = "|".join(f"(?P<t{i}>{pat})" for i, (_, pat, _, _, _, _) in enumerate(candidates))
     if not combined:
         return text, whole
     rng = random.Random(int(md5(text.encode("utf-8")).hexdigest()[:12], 16))
+    # Shortcut revolver: peek the same stored cycle generation will draw from (never saved
+    # here) so split boundaries are found in the text generation will actually see.
+    try:
+        _revolver = load_revolver()
+    except Exception:
+        _revolver = {"enabled": False, "random": False, "state": {}}
+    _rev_on = bool(_revolver.get("enabled"))
+    _rev_state = _revolver.get("state") if isinstance(_revolver.get("state"), dict) else {}
+    _rev_random = bool(_revolver.get("random"))
     try:
         pattern = re.compile(combined, re.IGNORECASE | re.UNICODE)
     except re.error:
@@ -711,9 +722,13 @@ def _expand_with_map(text):
             parts.append(lit); exp_pos += len(lit)
         rep = None
         pc_key, pc_name = "", ""
-        for i, (_, _, reps, sc_key, sc_name) in enumerate(candidates):
+        for i, (_, _, reps, sc_key, sc_name, db_key) in enumerate(candidates):
             if m.group(f"t{i}") is not None:
-                rep = rng.choice(reps); pc_key, pc_name = sc_key, sc_name; break
+                if _rev_on and len(reps) > 1:
+                    rep = revolver_next_replacement(_rev_state, db_key, reps, _rev_random)
+                else:
+                    rep = rng.choice(reps)
+                pc_key, pc_name = sc_key, sc_name; break
         if rep is None:
             rep = m.group(0)
         pieces.append({"exp_start": exp_pos, "exp_end": exp_pos + len(rep),
@@ -6661,13 +6676,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_prompt_key(self, prompt):
         return re.sub(r"\s+", " ", str(prompt or "").strip())
 
-    def _v2_apply_global_shortcuts(self, text, seed=0):
+    def _v2_apply_global_shortcuts(self, text, seed=0, revolver_commit=False):
         try:
             try:
                 from .templates import apply_prompt_shortcuts
             except ImportError:
                 from templates import apply_prompt_shortcuts
-            expanded, applied = apply_prompt_shortcuts(text, seed=seed)
+            expanded, applied = apply_prompt_shortcuts(text, seed=seed, revolver_commit=revolver_commit)
         except Exception as error:
             return str(text or ""), f"Shortcuts: unavailable ({error}).", []
         if not applied:
@@ -11729,8 +11744,13 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # seeds to build N variant conditionings (Studio owns conditioning production).
         _raw_positive_prompt = str(positive_prompt or "")
         _raw_intent_prompt = str(user_intent_prompt or "")
-        positive_prompt, shortcut_status, shortcut_applied = self._v2_apply_global_shortcuts(positive_prompt, seed=seed)
+        # revolver_commit only on the real positive prompt: the one draw per run that advances
+        # the shortcut revolver's cycle. The intent prompt peeks, and does so FIRST — if it
+        # echoes the positive prompt's triggers, both then resolve to the same chamber (the
+        # same alignment the shared seed used to give them).
         user_intent_prompt, intent_shortcut_status, intent_shortcut_applied = self._v2_apply_global_shortcuts(user_intent_prompt, seed=seed)
+        positive_prompt, shortcut_status, shortcut_applied = self._v2_apply_global_shortcuts(
+            positive_prompt, seed=seed, revolver_commit=True)
         if intent_shortcut_applied:
             shortcut_status = (
                 f"{shortcut_status}\nIntent {intent_shortcut_status}"
@@ -12864,14 +12884,31 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return (cond_i, m)
 
         try:
-            base_expansion = self._v2_apply_global_shortcuts(str(raw_prompt or ""), seed=seed)[0]
+            try:
+                from .templates import revolver_enabled as _revolver_enabled
+            except ImportError:
+                from templates import revolver_enabled as _revolver_enabled
+            revolver_on = bool(_revolver_enabled())
         except Exception:
-            base_expansion = str(raw_prompt or "")
+            revolver_on = False
         out = [tagged(base_entry, 0, base_prompt)]
-        cache = {base_expansion: base_entry}
+        if revolver_on:
+            # Shortcut revolver: each variant draw below COMMITS and advances the shared
+            # cycle, so N variants sweep N consecutive chambers (no repeats until the pool
+            # exhausts). Re-expanding the base here would both burn a chamber and collide
+            # with variant 1's draw — skip seeding the dedupe cache with it.
+            base_expansion = str(raw_prompt or "")
+            cache = {}
+        else:
+            try:
+                base_expansion = self._v2_apply_global_shortcuts(str(raw_prompt or ""), seed=seed)[0]
+            except Exception:
+                base_expansion = str(raw_prompt or "")
+            cache = {base_expansion: base_entry}
         for i in range(1, n):
             try:
-                exp_i = self._v2_apply_global_shortcuts(str(raw_prompt or ""), seed=seed + i)[0]
+                exp_i = self._v2_apply_global_shortcuts(str(raw_prompt or ""), seed=seed + i,
+                                                        revolver_commit=True)[0]
             except Exception:
                 exp_i = base_expansion
             entry = cache.get(exp_i)
@@ -14386,6 +14423,23 @@ class FunPackStudio:
                 "unique_id": "UNIQUE_ID",
             },
         }
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Shortcut revolver advances persistent per-shortcut state on every run, so a
+        # fixed-seed re-run must not be served from ComfyUI's cache while it's enabled —
+        # the next Generate is supposed to draw the next replacement. Normal input-hash
+        # caching applies when the revolver is off.
+        try:
+            try:
+                from .templates import revolver_enabled
+            except ImportError:
+                from templates import revolver_enabled
+            if revolver_enabled():
+                return float("nan")
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _is_output_connected(prompt, unique_id, output_index):

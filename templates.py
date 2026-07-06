@@ -548,6 +548,101 @@ def save_shortcut_db(data):
         json.dump(data, file, indent=2, sort_keys=True)
 
 
+REVOLVER_STORE_FILENAME = "shortcut_revolver.json"
+
+
+def revolver_store_path():
+    return os.path.join(template_store_dir(), REVOLVER_STORE_FILENAME)
+
+
+def load_revolver():
+    """Shortcut-revolver settings + per-shortcut cycle state. Sidecar of the shortcut DB —
+    deliberately NOT part of the shortcuts export/import payload. ``state[<shortcut key>]`` =
+    {"fp": <fingerprint of the replacement list>, "queue": [remaining replacement indices,
+    next one first]}."""
+    data = {}
+    path = revolver_store_path()
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                data = json.load(file)
+        except (json.JSONDecodeError, OSError, ValueError):
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    state = data.get("state")
+    return {
+        "enabled": bool(data.get("enabled", False)),
+        "random": bool(data.get("random", False)),
+        "state": state if isinstance(state, dict) else {},
+    }
+
+
+def save_revolver(data):
+    os.makedirs(template_store_dir(), exist_ok=True)
+    with open(revolver_store_path(), "w", encoding="utf-8") as file:
+        json.dump({
+            "enabled": bool(data.get("enabled", False)),
+            "random": bool(data.get("random", False)),
+            "state": data.get("state") if isinstance(data.get("state"), dict) else {},
+        }, file, indent=2)
+
+
+def revolver_enabled():
+    try:
+        return bool(load_revolver()["enabled"])
+    except Exception:
+        return False
+
+
+def revolver_settings():
+    data = load_revolver()
+    return {"enabled": data["enabled"], "random": data["random"]}
+
+
+def set_revolver_settings(enabled=None, random_order=None):
+    """Update revolver settings. Any actual change resets the cycle state — the old queues'
+    ordering semantics no longer apply once the mode flips."""
+    data = load_revolver()
+    changed = False
+    if enabled is not None and bool(enabled) != data["enabled"]:
+        data["enabled"] = bool(enabled)
+        changed = True
+    if random_order is not None and bool(random_order) != data["random"]:
+        data["random"] = bool(random_order)
+        changed = True
+    if changed:
+        data["state"] = {}
+        save_revolver(data)
+    return {"enabled": data["enabled"], "random": data["random"]}
+
+
+def _revolver_fingerprint(replacements):
+    payload = json.dumps(list(replacements), ensure_ascii=False)
+    return md5(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def revolver_next_replacement(state, key, replacements, random_order):
+    """Draw the next replacement for shortcut ``key`` from its revolver queue, mutating
+    ``state`` in place. The queue is rebuilt — a fresh full cycle over every replacement —
+    when it's empty or the replacement set changed (fingerprint mismatch): sequential
+    (first, second, … last) by default, shuffled once per cycle when ``random_order``.
+    Either way nothing repeats until the whole set has fired."""
+    n = len(replacements)
+    fp = _revolver_fingerprint(replacements)
+    entry = state.get(key)
+    queue = None
+    if isinstance(entry, dict) and entry.get("fp") == fp and isinstance(entry.get("queue"), list):
+        queue = [int(i) for i in entry["queue"] if isinstance(i, int) and 0 <= int(i) < n]
+    if not queue:
+        queue = list(range(n))
+        if random_order:
+            random.shuffle(queue)
+    index = queue.pop(0)
+    state[key] = {"fp": fp, "queue": queue}
+    return replacements[index]
+
+
 def shortcut_items(data=None):
     data = load_shortcut_db() if data is None else normalize_shortcut_db(data)
     items = []
@@ -827,13 +922,18 @@ def resolve_variables(text, variables):
     return _expand(str(text or ""), frozenset(), 0), sorted(undefined)
 
 
-def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
+def apply_prompt_shortcuts(text, seed=0, shortcut_db=None, revolver_commit=False):
+    """Expand shortcut triggers. Multi-replacement picks are seeded-random unless the
+    shortcut revolver is enabled (see load_revolver): then each firing draws the next
+    replacement from the shortcut's no-repeat cycle. ``revolver_commit`` persists the
+    advanced cycle state — True only for real generation; previews peek without saving,
+    so they show exactly what the next generation will draw."""
     original = str(text or "")
     if not original:
         return original, []
     data = load_shortcut_db() if shortcut_db is None else normalize_shortcut_db(shortcut_db)
     candidates = []
-    for shortcut in data.get("shortcuts", {}).values():
+    for db_key, shortcut in data.get("shortcuts", {}).items():
         if not isinstance(shortcut, dict) or not bool(shortcut.get("enabled", True)):
             continue
         replacements = _shortcut_replacements(shortcut.get("replacements", shortcut.get("replacement", [])))
@@ -843,12 +943,13 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
         for trigger in shortcut_list(shortcut.get("triggers", [])):
             pattern = _shortcut_trigger_pattern(trigger)
             if pattern:
-                candidates.append((trigger, pattern, replacements, shortcut.get("name", trigger), sc_key))
+                candidates.append((trigger, pattern, replacements, shortcut.get("name", trigger),
+                                   sc_key, str(db_key)))
     if not candidates:
         return original, []
 
     candidates.sort(key=lambda item: len(shortcut_key(item[0])), reverse=True)
-    combined = "|".join(f"(?P<t{index}>{pattern})" for index, (_, pattern, _, _, _) in enumerate(candidates))
+    combined = "|".join(f"(?P<t{index}>{pattern})" for index, (_, pattern, _, _, _, _) in enumerate(candidates))
     if not combined:
         return original, []
     try:
@@ -858,15 +959,24 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
     if rng_seed == 0:
         rng_seed = int(md5(original.encode("utf-8")).hexdigest()[:12], 16)
     rng = random.Random(rng_seed)
+    revolver = load_revolver()
+    revolver_on = bool(revolver.get("enabled"))
+    revolver_state = revolver.get("state")
+    revolver_random = bool(revolver.get("random"))
+    revolver_dirty = False
     applied = []
     removals_happened = False
 
     def replace(match):
-        nonlocal removals_happened
-        for index, (trigger, _, replacements, name, sc_key) in enumerate(candidates):
+        nonlocal removals_happened, revolver_dirty
+        for index, (trigger, _, replacements, name, sc_key, db_key) in enumerate(candidates):
             if match.group(f"t{index}") is None:
                 continue
-            replacement = rng.choice(replacements)
+            if revolver_on and len(replacements) > 1:
+                replacement = revolver_next_replacement(revolver_state, db_key, replacements, revolver_random)
+                revolver_dirty = True
+            else:
+                replacement = rng.choice(replacements)
             applied.append({"name": str(name), "trigger": trigger,
                             "replacement": replacement, "refinement_key": sc_key})
             if not replacement:
@@ -877,6 +987,11 @@ def apply_prompt_shortcuts(text, seed=0, shortcut_db=None):
     expanded = re.sub(combined, replace, original, flags=re.IGNORECASE | re.UNICODE)
     if removals_happened:
         expanded = _cleanup_removed_phrases(expanded)
+    if revolver_dirty and revolver_commit:
+        try:
+            save_revolver(revolver)
+        except OSError:
+            pass
     return expanded, applied
 
 

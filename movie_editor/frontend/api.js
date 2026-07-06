@@ -89,6 +89,8 @@
     exportShortcutsUrl: () => API("/library/shortcuts/export"),
     importShortcuts: (data, mode) => j("POST", API(`/library/shortcuts/import?mode=${mode || "merge"}`), data),
     clearShortcuts: () => j("POST", API("/library/shortcuts/clear"), {}),
+    revolverSettings: () => j("GET", API("/library/revolver")),
+    setRevolverSettings: (payload) => j("POST", API("/library/revolver"), payload),
 
     // FunPack file manager (Composer ▸ Files)
     listFiles: () => j("GET", API("/files")),
