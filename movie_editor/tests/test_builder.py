@@ -353,3 +353,90 @@ def test_bypass_on_node_with_no_matching_input_leaves_it_active_and_reports():
     graph, report = builder.build(OI, models, PARAMS)
     assert "slot_v" in graph
     assert any("bypass needs exactly one input" in u for u in report["unsatisfied"])
+
+
+# ── Best-FaceID identity transfer (ComfyUI-BFSNodes LTX Identity Transfer) ────────────────
+
+IDENTITY_OI = {
+    **OI,
+    "LTXIdentityTransfer": {
+        "input": {"required": {
+            "model": ["MODEL"], "positive": ["CONDITIONING"], "negative": ["CONDITIONING"],
+            "vae": ["VAE"], "latent": ["LATENT"], "reference_face": ["IMAGE"],
+            "identity_projector": [["None", "faceid.safetensors"], {"default": "None"}],
+            "source_id": ["FLOAT", {"default": 2.0}],
+            "phase_scale": ["FLOAT", {"default": 1.0}],
+            "id_strength": ["FLOAT", {"default": 1.0}],
+            "arcface_mode": [["auto_adjust", "as_is", "disable"], {"default": "auto_adjust"}],
+            "debug_log": ["BOOLEAN", {"default": False}],
+        }},
+        "output": ["MODEL", "CONDITIONING", "CONDITIONING", "LATENT", "STRING"],
+        "output_name": ["model", "positive", "negative", "latent", "debug"],
+    },
+    "LoraLoaderModelOnly": {
+        "input": {"required": {"model": ["MODEL"], "lora_name": [["faceid.safetensors"]],
+                                "strength_model": ["FLOAT", {"default": 1.0}]}},
+        "output": ["MODEL"], "output_name": ["MODEL"],
+    },
+}
+
+IDENTITY_MODELS = {"full_control": True, "slots": [
+    {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"},
+     "wires": {"MODEL": "port:FunPackStudio.model"}},
+    {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
+    {"id": "v", "node_class": "VaeLoader", "inputs": {}, "wires": {}},
+]}
+
+
+def test_identity_transfer_splices_between_studio_and_sampler():
+    params = {**PARAMS, "identity_transfer": {
+        "enabled": True, "lora_name": "faceid.safetensors", "reference_filename": "ref.png"}}
+    graph, report = builder.build(IDENTITY_OI, IDENTITY_MODELS, params)
+    assert graph["id_ref_load"]["inputs"]["image"] == "ref.png"
+    assert graph["id_lora"]["inputs"]["model"] == ["slot_u", 0]
+    assert graph["id_lora"]["inputs"]["lora_name"] == "faceid.safetensors"
+    assert graph["studio"]["inputs"]["model"] == ["id_lora", 0]
+    assert graph["idxfer"]["inputs"]["model"] == ["studio", 0]
+    assert graph["idxfer"]["inputs"]["positive"] == ["cond", 0]
+    assert graph["idxfer"]["inputs"]["negative"] == ["cond", 1]
+    assert graph["idxfer"]["inputs"]["latent"] == ["studio", 12]
+    assert graph["idxfer"]["inputs"]["reference_face"] == ["id_ref_load", 0]
+    assert graph["idxfer"]["inputs"]["vae"] == ["slot_v", 0]
+    assert graph["sampler"]["inputs"]["model"] == ["idxfer", 0]
+    assert graph["sampler"]["inputs"]["positive"] == ["idxfer", 1]
+    assert graph["sampler"]["inputs"]["negative"] == ["idxfer", 2]
+    assert graph["concat"]["inputs"]["video_latent"] == ["idxfer", 3]
+    assert not any("Identity Transfer" in b for b in report["blocking"])
+
+
+def test_identity_transfer_without_lora_name_skips_lora_insertion():
+    # The LoRA is a separate convenience — Identity Transfer itself still works if the user
+    # already loaded the LoRA another way (or is testing without it).
+    params = {**PARAMS, "identity_transfer": {"enabled": True, "reference_filename": "ref.png"}}
+    graph, report = builder.build(IDENTITY_OI, IDENTITY_MODELS, params)
+    assert "id_lora" not in graph
+    assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]  # untouched
+    assert graph["idxfer"]["inputs"]["model"] == ["studio", 0]
+    assert not any("Identity Transfer" in b for b in report["blocking"])
+
+
+def test_identity_transfer_missing_node_class_blocks():
+    params = {**PARAMS, "identity_transfer": {
+        "enabled": True, "lora_name": "faceid.safetensors", "reference_filename": "ref.png"}}
+    graph, report = builder.build(OI, IDENTITY_MODELS, params)  # OI has no identity node installed
+    assert "idxfer" not in graph
+    assert any("LTX Identity Transfer" in b for b in report["blocking"])
+
+
+def test_identity_transfer_missing_reference_blocks():
+    params = {**PARAMS, "identity_transfer": {"enabled": True, "lora_name": "faceid.safetensors"}}
+    graph, report = builder.build(IDENTITY_OI, IDENTITY_MODELS, params)
+    assert "idxfer" not in graph
+    assert any("reference face" in b for b in report["blocking"])
+
+
+def test_identity_transfer_disabled_by_default():
+    graph, report = builder.build(IDENTITY_OI, IDENTITY_MODELS, PARAMS)
+    assert "idxfer" not in graph
+    assert "id_lora" not in graph
+    assert not any("Identity Transfer" in b for b in report["blocking"])

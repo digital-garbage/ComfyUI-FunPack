@@ -93,6 +93,20 @@ CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
     ("f2i", 0, "INT"),
 ]
 
+# Best-FaceID identity transfer (ComfyUI-BFSNodes): a single project-wide splice, not a
+# generic Models-menu slot — it needs simultaneous model+positive+negative+vae+latent+
+# reference_face, a shape no ROLE covers. Detected by class presence so the feature
+# disappears cleanly when the custom node package isn't installed. Both names alias the
+# same node class (the package kept the old key as a back-compat alias).
+IDENTITY_TRANSFER_CLASSES: tuple[str, ...] = ("LTXIdentityTransfer", "LTXIdentityOverlapConditioning")
+
+
+def identity_transfer_class(object_info: dict) -> Optional[str]:
+    for cls in IDENTITY_TRANSFER_CLASSES:
+        if cls in (object_info or {}):
+            return cls
+    return None
+
 CONTROL_VALUES = {"fixed", "randomize", "increment", "decrement"}
 # Type-appropriate empty values for widgets that declare no default.
 _WIDGET_EMPTY = {"STRING": "", "INT": 0, "FLOAT": 0.0, "BOOLEAN": False}
@@ -542,6 +556,21 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # dropped here; an all-explicit loop is reported precisely. Never hand ComfyUI a cyclic graph.
     _break_cycles(graph, report, protected_edges, _node_labels(slots, slot_node_id, object_info))
 
+    # 6. Best-FaceID identity transfer: a fixed-core splice (not a slot), applied last so it
+    # can tap the already-resolved Studio · model and sampler · vae sources.
+    it_cfg = params.get("identity_transfer") or {}
+    if not disable_core and it_cfg.get("enabled"):
+        it_cls = identity_transfer_class(object_info)
+        if not it_cls:
+            msg = ("Identity Transfer (Best-FaceID) is enabled but no LTX Identity Transfer "
+                   "node is installed — install ComfyUI-BFSNodes.")
+            report["unsatisfied"].append(msg); report["blocking"].append(msg)
+        elif not it_cfg.get("reference_filename"):
+            msg = "Identity Transfer (Best-FaceID) is enabled but no reference face image is set."
+            report["unsatisfied"].append(msg); report["blocking"].append(msg)
+        else:
+            _splice_identity_transfer(graph, object_info, it_cfg, it_cls, report)
+
     for msg in pipeline_wiring.validate_models_wiring(models_config):
         report["blocking"].append(msg)
         report["unsatisfied"].append(msg)
@@ -906,3 +935,57 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
                         del ndata["inputs"][inp_name]
         del graph[sid]
         report["wired"].append(f"{s.get('node_class')} bypassed (pass-through)")
+
+
+def _splice_identity_transfer(
+    graph: dict, object_info: dict, cfg: dict, cls: str, report: dict[str, list],
+) -> None:
+    """Insert the Best-FaceID LoRA + LTX Identity Transfer node between the fixed core's
+    loader->Studio edge and Studio/cond->sampler/concat edges.
+
+    Runs after every other wiring step, so it taps the already-resolved Studio · model and
+    sampler · vae sources and always wins over whatever fed sampler.model/positive/negative
+    and concat.video_latent — Identity Transfer isn't meant to be combined with manually
+    rewiring those exact ports in Full control.
+    """
+    lora_name = cfg.get("lora_name")
+    model_src = graph["studio"]["inputs"].get("model")
+    if lora_name:
+        lora_cls = "LoraLoaderModelOnly"
+        if lora_cls not in object_info:
+            msg = (f"Identity Transfer needs '{lora_cls}' (built into ComfyUI) but it's "
+                   "missing from the node registry.")
+            report["unsatisfied"].append(msg); report["blocking"].append(msg)
+        else:
+            lora_inputs = _widget_defaults(object_info.get(lora_cls))
+            lora_inputs["model"] = model_src
+            lora_inputs["lora_name"] = lora_name
+            lora_inputs["strength_model"] = float(cfg.get("lora_strength", 1.0))
+            graph["id_lora"] = {"class_type": lora_cls, "inputs": lora_inputs}
+            graph["studio"]["inputs"]["model"] = ["id_lora", 0]
+            report["wired"].append(f"Best-FaceID LoRA ({lora_name}) -> Studio · model")
+
+    graph["id_ref_load"] = {
+        "class_type": "LoadImage",
+        "inputs": {"image": cfg["reference_filename"]},
+    }
+
+    inputs = _widget_defaults(object_info.get(cls))
+    inputs.update({
+        "model": ["studio", 0],
+        "positive": ["cond", 0],
+        "negative": ["cond", 1],
+        "vae": graph["sampler"]["inputs"].get("vae"),
+        "latent": ["studio", 12],
+        "reference_face": ["id_ref_load", 0],
+    })
+    for k in ("identity_projector", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"):
+        if cfg.get(k) is not None:
+            inputs[k] = cfg[k]
+    graph["idxfer"] = {"class_type": cls, "inputs": inputs}
+
+    graph["sampler"]["inputs"]["model"] = ["idxfer", 0]
+    graph["sampler"]["inputs"]["positive"] = ["idxfer", 1]
+    graph["sampler"]["inputs"]["negative"] = ["idxfer", 2]
+    graph["concat"]["inputs"]["video_latent"] = ["idxfer", 3]
+    report["wired"].append("LTX Identity Transfer spliced between Studio and the sampler")

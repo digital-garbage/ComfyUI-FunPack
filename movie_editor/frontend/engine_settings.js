@@ -5,6 +5,7 @@
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
+  const API = window.MovieEditorAPI;
 
   let _mounted = null; // { scroller (pane, set per render), content (shell root) }
   let unsub = null;
@@ -214,6 +215,155 @@
     S.patchProject({ continuity_settings: { ...(p.continuity_settings || {}), ...patch } });
   }
 
+  // ── Best-FaceID identity transfer (ComfyUI-BFSNodes LTX Identity Transfer) ────────────
+  const IDENTITY_TRANSFER_CLASSES = ["LTXIdentityTransfer", "LTXIdentityOverlapConditioning"];
+  let idNodesInfo = null; // { available, loraChoices } — fetched lazily, cached for the session
+
+  async function ensureIdentityInfo(force) {
+    if (idNodesInfo && !force) return idNodesInfo;
+    const info = { available: false, loraChoices: [] };
+    try {
+      const nodes = (await API.allNodes()).nodes || [];
+      info.available = nodes.some((n) => IDENTITY_TRANSFER_CLASSES.includes(n.class));
+      if (info.available) {
+        const lora = await API.nodeSpec("LoraLoaderModelOnly");
+        const w = (lora?.inputs || []).find((i) => i.name === "lora_name");
+        info.loraChoices = (w && w.choices) || [];
+      }
+    } catch (_) { /* leave unavailable */ }
+    idNodesInfo = info;
+    render();
+    return info;
+  }
+
+  function normIdentityTransfer(p) {
+    const it = (p && p.identity_transfer) || {};
+    return {
+      enabled: !!it.enabled,
+      reference_media_ref: it.reference_media_ref || null,
+      lora_name: it.lora_name || "",
+      lora_strength: it.lora_strength != null ? +it.lora_strength : 1.0,
+      identity_projector: it.identity_projector || "None",
+      source_id: it.source_id != null ? +it.source_id : 2.0,
+      phase_scale: it.phase_scale != null ? +it.phase_scale : 1.0,
+      id_strength: it.id_strength != null ? +it.id_strength : 1.0,
+      arcface_mode: it.arcface_mode || "auto_adjust",
+      debug_log: !!it.debug_log,
+    };
+  }
+
+  function patchIdentityTransfer(patch) {
+    const p = S.get().project;
+    S.patchProject({ identity_transfer: { ...(p.identity_transfer || {}), ...patch } });
+  }
+
+  function renderChainIdentity(pane, st) {
+    const p = st.project;
+    const it = normIdentityTransfer(p);
+    const info = idNodesInfo;
+    if (!info) {
+      pane.append(hintEl("Checking for ComfyUI-BFSNodes…"));
+      return;
+    }
+    if (!info.available) {
+      pane.append(hintEl(
+        "Best-FaceID identity transfer needs the LTX Identity Transfer node from "
+        + "ComfyUI-BFSNodes (github.com/alisson-anjos/ComfyUI-BFSNodes) — install it in "
+        + "custom_nodes and restart ComfyUI."));
+      const retry = el("button", "btn ghost tiny", "Check again");
+      retry.type = "button";
+      retry.onclick = () => ensureIdentityInfo(true);
+      pane.append(retry);
+      return;
+    }
+    pane.append(hintEl(
+      "One reference face for the whole project. Loads the Best-FaceID LoRA on the model "
+      + "path and feeds the reference image into LTX Identity Transfer, spliced between "
+      + "Studio and the Chain Sampler. Tip: prefix your prompt with “ref_t2v:” for "
+      + "best results."));
+
+    const g = group(pane, "Best-FaceID");
+    const enCb = el("input"); enCb.type = "checkbox"; enCb.checked = it.enabled;
+    enCb.style.width = "auto";
+    enCb.dataset.k = "it-enabled";
+    enCb.onchange = () => patchIdentityTransfer({ enabled: enCb.checked });
+    g.append(toggleField("Enable identity transfer", enCb));
+
+    const refRow = el("div", "sw-row eng-field eng-stack");
+    const refMain = el("div", "sw-row-main");
+    refMain.append(el("div", "sw-row-title", "Reference face"));
+    refRow.append(refMain);
+    const refPicker = window.MediaPicker.create({
+      value: it.reference_media_ref,
+      mediaBin: st.mediaBin,
+      noneLabel: "— pick a reference face —",
+      onChange: (v) => patchIdentityTransfer({ reference_media_ref: v }),
+    });
+    if (!it.enabled) refPicker.classList.add("disabled");
+    refRow.append(refPicker);
+    g.append(refRow);
+
+    const loraChoices = info.loraChoices || [];
+    const loraSel = el("select"); loraSel.dataset.k = "it-lora";
+    loraSel.disabled = !it.enabled;
+    const noneOpt = el("option", null, "— select LoRA —"); noneOpt.value = "";
+    loraSel.append(noneOpt);
+    loraChoices.forEach((c) => {
+      const o = el("option", null, c); o.value = c;
+      if (c === it.lora_name) o.selected = true;
+      loraSel.append(o);
+    });
+    loraSel.onchange = () => patchIdentityTransfer({ lora_name: loraSel.value });
+    g.append(field("Best-FaceID LoRA", loraSel));
+
+    const strIn = el("input"); strIn.type = "number";
+    strIn.min = "-100"; strIn.max = "100"; strIn.step = "0.01";
+    strIn.value = it.lora_strength; strIn.disabled = !it.enabled; strIn.dataset.k = "it-lora-strength";
+    strIn.oninput = () => patchIdentityTransfer({ lora_strength: parseFloat(strIn.value || "0") });
+    g.append(field("LoRA strength", strIn));
+
+    const gAdv = group(pane, "Advanced");
+    const projSel = el("select"); projSel.dataset.k = "it-projector";
+    projSel.disabled = !it.enabled;
+    const projNone = el("option", null, "None"); projNone.value = "None";
+    if (it.identity_projector === "None") projNone.selected = true;
+    projSel.append(projNone);
+    loraChoices.forEach((c) => {
+      const o = el("option", null, c); o.value = c;
+      if (c === it.identity_projector) o.selected = true;
+      projSel.append(o);
+    });
+    projSel.onchange = () => patchIdentityTransfer({ identity_projector: projSel.value });
+    gAdv.append(field("ArcFace projector", projSel,
+      "Optional secondary identity channel — weak, push id_strength high (5-20) to test."));
+
+    const arcSel = el("select"); arcSel.dataset.k = "it-arcface-mode";
+    arcSel.disabled = !it.enabled;
+    ["auto_adjust", "as_is", "disable"].forEach((c) => {
+      const o = el("option", null, c); o.value = c;
+      if (c === it.arcface_mode) o.selected = true;
+      arcSel.append(o);
+    });
+    arcSel.onchange = () => patchIdentityTransfer({ arcface_mode: arcSel.value });
+    gAdv.append(field("ArcFace detection mode", arcSel));
+
+    const num = (label, val, key, min, max, step) => {
+      const i = el("input"); i.type = "number"; i.min = String(min); i.max = String(max); i.step = String(step);
+      i.value = val; i.disabled = !it.enabled; i.dataset.k = "it-" + key;
+      i.oninput = () => patchIdentityTransfer({ [key]: parseFloat(i.value || "0") });
+      gAdv.append(field(label, i));
+    };
+    num("Source phase id", it.source_id, "source_id", 0, 8, 1);
+    num("Phase scale", it.phase_scale, "phase_scale", 0, 4, 0.1);
+    num("ArcFace token strength", it.id_strength, "id_strength", 0, 50, 0.5);
+
+    const dbgCb = el("input"); dbgCb.type = "checkbox"; dbgCb.checked = it.debug_log;
+    dbgCb.style.width = "auto";
+    dbgCb.disabled = !it.enabled; dbgCb.dataset.k = "it-debug";
+    dbgCb.onchange = () => patchIdentityTransfer({ debug_log: dbgCb.checked });
+    gAdv.append(toggleField("Debug log", dbgCb, "Print per-step [LTXIdOverlap] shape logs to the ComfyUI console."));
+  }
+
   function normGuideSettings(p) {
     const gs = (p && p.guide_settings) || {};
     return { stack_enabled: !!gs.stack_enabled, accumulate_prior: !!gs.accumulate_prior };
@@ -316,6 +466,7 @@
         { id: "chain_timing", group: "Chain Sampler", title: "Timing & Seed", icon: "⏱", badge: countChainView(p, "chain_timing") || null },
         { id: "chain_guidance", group: "Chain Sampler", title: "Guidance", icon: "◇", badge: countChainView(p, "chain_guidance") || null },
         { id: "chain_decode", group: "Chain Sampler", title: "Decode", icon: "▣", badge: countChainView(p, "chain_decode") || null },
+        { id: "chain_identity", group: "Chain Sampler", title: "Identity (Best-FaceID)", icon: "⊙", badge: normIdentityTransfer(p).enabled ? 1 : null },
         { id: "chain_experimental", group: "Chain Sampler", title: "Experimental", icon: "⚗", badge: countChainView(p, "chain_experimental") || null },
       );
     }
@@ -578,6 +729,7 @@
       case "chain_timing": return renderChainTiming(pane, st);
       case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance");
       case "chain_decode": return renderChainKnobsView(pane, st, "chain_decode", "Decode");
+      case "chain_identity": return renderChainIdentity(pane, st);
       case "chain_experimental": return renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
         "Research techniques — off by default; expect quality/overhead trade-offs.");
       default: return renderOverview(pane, st);
@@ -642,6 +794,7 @@
     body.append(content);
     _mounted = { content };
     view = "overview";
+    ensureIdentityInfo();
 
     content.addEventListener("focusin", (e) => {
       const t = e.target;

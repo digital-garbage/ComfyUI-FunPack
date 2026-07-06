@@ -378,6 +378,37 @@ def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_av
     return {"primary": primary, "by_scene": by_scene}
 
 
+def _identity_transfer_params(p: Project) -> Optional[dict]:
+    """Resolve the project's Best-FaceID config into builder.build() params, copying the
+    reference face image into ComfyUI's input dir (same mechanism as scene anchors)."""
+    it = getattr(p, "identity_transfer", None) or {}
+    if not it.get("enabled"):
+        return None
+    ref = it.get("reference_media_ref")
+    if not ref:
+        return None
+    try:
+        import folder_paths
+        indir = folder_paths.get_input_directory()
+    except Exception:
+        return None
+    fn = _copy_scene_media(ref, indir)
+    if not fn:
+        return None
+    return {**it, "reference_filename": fn}
+
+
+def _missing_identity_reference_media(p: Project) -> Optional[str]:
+    """The Best-FaceID reference face asset id, if enabled but missing from the media bin."""
+    it = getattr(p, "identity_transfer", None) or {}
+    if not it.get("enabled"):
+        return None
+    ref = it.get("reference_media_ref")
+    if not ref or not media.path_for(ref):
+        return ref or "(none selected)"
+    return None
+
+
 def _project_or_404(pid: str) -> Project:
     try:
         p = projects.get(pid)
@@ -1589,6 +1620,14 @@ if web is not None and PromptServer is not None:
                 {"detail": f"Missing i2v anchor image in Media bin ({ids}). Re-save the frame or pick another anchor."},
                 status=400,
             )
+        missing_ref = _missing_identity_reference_media(p)
+        if missing_ref:
+            return web.json_response(
+                {"detail": f"Best-FaceID identity transfer is enabled but its reference face "
+                           f"image is missing ({missing_ref}). Pick or re-upload it in "
+                           f"Models → Identity Transfer."},
+                status=400,
+            )
         # V1 uniform chain: if trimmed scenes all agree on a frame count, use it.
         # This makes the timeline trim handle actually affect generation length,
         # provided the user has linked EmptyLTXVLatent.num_frames → Project Frames
@@ -1629,6 +1668,7 @@ if web is not None and PromptServer is not None:
                 "variables": list(target.variables or []),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
+                "identity_transfer": _identity_transfer_params(p),
             }, media=(media_pack or {}).get("primary") if media_pack else None)
         except Exception as e:  # noqa: BLE001
             return web.json_response({"detail": f"Workflow build failed: {e}"}, status=502)

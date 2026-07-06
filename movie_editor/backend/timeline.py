@@ -595,6 +595,12 @@ class Project:
     # (same shape as the global models.json). Empty {"slots": []} falls back to the
     # global default at build/read time; the editor seeds new projects from it.
     models: dict = field(default_factory=lambda: {"slots": []})
+    # Best-FaceID identity transfer (ComfyUI-BFSNodes' LTX Identity Transfer node), a single
+    # project-wide splice: {enabled, reference_media_ref, lora_name, lora_strength,
+    # identity_projector, source_id, phase_scale, id_strength, arcface_mode, debug_log}.
+    # One reference face for the whole project — the chain sampler runs multi-scene prompts
+    # through one graph per run, so there's no per-scene seam to hang a second identity on.
+    identity_transfer: dict = field(default_factory=dict)
     # Guide stack toggles — empty / stack_enabled=false keeps Studio carry behaviour.
     guide_settings: dict = field(default_factory=dict)
     continuity_settings: dict = field(default_factory=dict)
@@ -644,6 +650,7 @@ class Project:
             overlay_lanes=list(d.get("overlay_lanes") or []),
             overlay_tracks=list(d.get("overlay_tracks") or []),
             models=dict(d.get("models") or {"slots": []}),
+            identity_transfer=dict(d.get("identity_transfer") or {}),
             guide_settings=dict(d.get("guide_settings") or {}),
             continuity_settings=dict(d.get("continuity_settings") or {}),
             generation_meta=dict(d.get("generation_meta") or {}),
