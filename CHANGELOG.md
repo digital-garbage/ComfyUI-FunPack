@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Changed
+- **Best-FaceID identity transfer** (experimental, Engine ▸ Experimental) is now a full native
+  port of ComfyUI-BFSNodes' LTX Identity Transfer overlap+source_phase+ArcFace conditioning,
+  replacing 3.2.1's source-phase-only approximation. The reference face is now injected as
+  separate, non-rendered overlap tokens (never blended into a real frame) instead of tagging
+  Continuity's Identity pin keyframe, plus an optional ArcFace projector channel (`identity_projector`,
+  `id_strength`, `arcface_mode`) for a second identity signal. Still keyed off Continuity's
+  existing Identity pin image — no new picker. Requires the `insightface` package (added to
+  requirements.txt; downloads the buffalo_l model on first use) only when an ArcFace projector
+  is selected — the overlap tokens alone work without it.
+
 ## [3.2.1] - 2026-07-06
 
 ### Added

@@ -3,3 +3,5 @@ huggingface_hub
 safetensors
 numpy
 Pillow
+insightface
+opencv-python-headless
