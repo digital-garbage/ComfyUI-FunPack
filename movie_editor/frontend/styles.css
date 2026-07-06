@@ -321,6 +321,11 @@ input[type=number] { font-family: var(--font-mono); }
 }
 .media-act:hover { color: var(--amber-2); background: var(--ink-3); }
 .media-act.media-del:hover { color: var(--danger); }
+.media-act.media-pin { filter: grayscale(1); }
+.media-act.media-pin:hover { filter: none; }
+.media-act.media-pin.active { filter: none; background: var(--amber-soft); }
+.media-pin-badge { position: absolute; top: 3px; left: 3px; font-size: 10px; line-height: 1;
+  padding: 2px 3px; border-radius: 4px; background: rgba(0, 0, 0, .55); pointer-events: none; }
 .media-name-edit {
   flex: 1; min-width: 0; box-sizing: border-box; margin: 0; padding: 2px 4px; font-size: 10px;
   background: var(--ink-0); border: 1px solid var(--amber); border-radius: 4px; color: var(--text);
