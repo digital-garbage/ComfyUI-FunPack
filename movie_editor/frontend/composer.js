@@ -213,6 +213,7 @@
       "Edits apply automatically and stay in sync with the timeline's per-scene prompts. Shortcuts expand at generation time."));
     composeTextarea = ta;
     if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
+    if (st.project && window.ShortcutSuggest) titleRow.append(window.ShortcutSuggest.bulb(ta));
 
     // Variables ($name) — collapsible, same toggle pattern as Settings ▸ Built-in pipeline.
     wrap.append(composeVariables());

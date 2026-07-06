@@ -288,7 +288,29 @@
 
     const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
-    body.append(field("Prompt", ta));
+    // Ideas bulb floats OUTSIDE the label — a button inside a <label> becomes its
+    // implicit control (double-fired clicks, stolen focus target).
+    const promptWrap = el("div", "sugg-fieldwrap");
+    promptWrap.append(field("Prompt", ta));
+    // prevText: the previous shot's prompt in TIMELINE order (skipping this scene's own
+    // editorial cuts and excluded scenes) — feeds the "usual next shot" suggestions.
+    const prevText = () => {
+      const p = S.get().project;
+      if (!p) return "";
+      const order = (Array.isArray(p.timeline_order) && p.timeline_order.length)
+        ? p.timeline_order : (p.scenes || []).map((s) => s.id);
+      const byId = new Map((p.scenes || []).map((s) => [s.id, s]));
+      const uid = S.genUnitId(scene);
+      for (let i = order.indexOf(scene.id) - 1; i >= 0; i--) {
+        const sc = byId.get(order[i]);
+        if (!sc || sc.excluded || S.genUnitId(sc) === uid) continue;
+        const prevRoot = S.genUnitRoot(S.genUnitId(sc)) || sc;
+        if ((prevRoot.text || "").trim()) return prevRoot.text;
+      }
+      return "";
+    };
+    if (window.ShortcutSuggest) promptWrap.append(window.ShortcutSuggest.bulb(ta, { prevText }));
+    body.append(promptWrap);
     if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
     renderSourceField(st, root, scene);
     if (PC()?.usesChainSampler(st)) {

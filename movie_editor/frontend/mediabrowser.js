@@ -306,6 +306,32 @@
       if (cur) _beginMediaRename(m, cur);
     };
     actions.append(ren);
+    // Continuity pin, right on the gallery card — same setting as Engine settings ▸
+    // Continuity ▸ Identity pin, just quicker to reach. Images only, chain-sampler
+    // pipelines only (custom pipelines have no auto-continuity machinery).
+    if (m.kind === "image" && st.project && window.PipelineCaps?.usesChainSampler(st)) {
+      const cs = st.project.continuity_settings || {};
+      const isPin = cs.identity_pin_ref === m.id;
+      const pinBtn = el("button", "media-act media-pin" + (isPin ? " active" : ""), "📌");
+      pinBtn.title = isPin
+        ? "Continuity pin — click to unpin"
+        : "Pin as identity guide for every scene (continuity pin)"
+          + (cs.auto_enabled === false ? " — also turns Auto continuity back on" : "");
+      pinBtn.onclick = (e) => {
+        e.stopPropagation();
+        const patch = { ...cs, identity_pin_ref: isPin ? null : m.id };
+        // A pin with auto continuity off does nothing — pinning means "use it", so
+        // re-enable (auto_enabled is on by default; only flip an explicit false).
+        if (!isPin && patch.auto_enabled === false) patch.auto_enabled = true;
+        S.patchProject({ continuity_settings: patch });
+      };
+      actions.append(pinBtn);
+      if (isPin) {
+        const badge = el("span", "media-pin-badge", "📌");
+        badge.title = "Continuity pin — identity guide for every scene";
+        thumb.append(badge);
+      }
+    }
     if (m.kind === "image" || m.kind === "video") {
       const exp = el("button", "media-act media-exp", "⤓");
       exp.title = "Export to disk";

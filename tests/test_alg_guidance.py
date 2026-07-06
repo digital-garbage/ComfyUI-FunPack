@@ -137,6 +137,39 @@ def test_alg_blur_reduces_high_frequency_variance():
     assert float(frame0_out.var()) < float(frame0_in.var())
 
 
+def test_alg_blur_composes_with_independent_strengths():
+    """Anchor and guide-tail blur are separate passes with their own kappa: composing the
+    tail pass onto the anchor-blurred latent must leave the anchor frame untouched, and a
+    stronger tail kappa must blur the tail harder than the anchor kappa would."""
+    model = _fake_model()
+    latent_image = _packed_latent_image()
+    anchor_only = samplers._alg_blur_frames(model, latent_image, 2.0, frame_indices=(0,))
+    both = samplers._alg_blur_frames(model, anchor_only, 4.0, tail_count=1)
+    v_anchor_only = _video_frames(anchor_only)
+    v_both = _video_frames(both)
+
+    assert torch.equal(v_both[:, :, 0], v_anchor_only[:, :, 0])   # anchor pass preserved
+    assert torch.equal(v_both[:, :, 1:3], v_anchor_only[:, :, 1:3])  # middle untouched
+
+    # Strength independence needs content that survives downsampling distinctly (the 4x4
+    # checkerboard averages to uniform 0.5 at ANY factor) — use a seeded random 8x8 frame.
+    # Different kappa must yield a different blurred tail: proof the per-region strength
+    # actually reaches the filter (variance ordering is NOT guaranteed without antialias).
+    h8 = 8
+    model8 = _fake_model(shapes=((B, C, T, h8, h8), AUDIO_SHAPE))
+    video8 = torch.rand(B, C, T, h8, h8, generator=torch.Generator().manual_seed(7))
+    packed8 = torch.cat([video8.reshape(B, 1, C * T * h8 * h8),
+                         torch.full((B, 1, AUDIO_SIZE), 5.0)], dim=-1)
+    weak = samplers._alg_blur_frames(model8, packed8, 2.0, tail_count=1)
+    strong = samplers._alg_blur_frames(model8, packed8, 4.0, tail_count=1)
+    v_sz = C * T * h8 * h8
+    tail_weak = weak[..., :v_sz].reshape(B, C, T, h8, h8)[:, :, 3]
+    tail_strong = strong[..., :v_sz].reshape(B, C, T, h8, h8)[:, :, 3]
+    tail_orig = video8[:, :, 3]
+    assert not torch.allclose(tail_weak, tail_strong)  # kappa reaches the filter
+    assert not torch.allclose(tail_weak, tail_orig) and not torch.allclose(tail_strong, tail_orig)
+
+
 def test_alg_blur_is_deterministic():
     model = _fake_model()
     latent_image = _packed_latent_image()

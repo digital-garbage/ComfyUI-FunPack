@@ -173,10 +173,16 @@
     { name: "joyai_audio_memory",    label: "Paired audio memory",   kind: "bool",  default: false, dependsOn: "joyai_memory" },
     { name: "v2a_grad_scale",        label: "Video→audio coupling", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.25, dependsOn: "joyai_audio_memory" },
     { name: "alg_blur_guides",       label: "Blur i2v guides and JoyAI memory", kind: "bool", default: false },
+    { name: "alg_guide_blur_strength", label: "Guide blur strength", kind: "float", default: 2.0, min: 1.0, max: 4.0, step: 0.1, dependsOn: "alg_blur_guides" },
+    { name: "alg_guide_blur_sigma_threshold", label: "Guide blur sigma threshold", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "alg_blur_guides" },
     { name: "bounded_attention_enabled", label: "Bounded attention (multi-subject)", kind: "bool", default: false },
     { name: "dynashift",             label: "DynaShift (steer off bad gens)", kind: "bool", default: false },
     { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift" },
     { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift" },
+    { name: "identity_transfer_enabled", label: "Best-FaceID compatibility", kind: "bool", default: false,
+      hint: "Tags Continuity's Identity pin guide (Engine → Continuity) with the source-phase RoPE rotation Best-FaceID-style identity LoRAs were trained on. Load the LoRA itself the normal way — Models → add a LoRA loader onto the model path. No effect without an Identity pin image set." },
+    { name: "identity_transfer_phase", label: "Source-phase id", kind: "float", default: 2.0, min: 0.0, max: 8.0, step: 0.5, dependsOn: "identity_transfer_enabled",
+      hint: "Matches the LoRA's training convention (ltx-trainer used 2)." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -263,7 +269,7 @@
         S.setSamplerInput(k.name, v);
       };
     }
-    parentGroup.append(field(k.label + (forced ? " (auto)" : ""), ctrl));
+    parentGroup.append(field(k.label + (forced ? " (auto)" : ""), ctrl, k.hint));
   }
 
   function renderKnobList(parentGroup, st, names) {
@@ -281,7 +287,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "bounded_attention_enabled"],
+    chain_experimental: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "identity_transfer_phase"],
   };
 
   function countChainView(p, id) {

@@ -184,7 +184,7 @@ def _clip_needs_trim(clip: dict) -> bool:
     return inn > 0.001 or dur is not None
 
 
-def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur) -> None:
+def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False) -> None:
     import shutil
     import subprocess
     ff = shutil.which("ffmpeg")
@@ -195,9 +195,12 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur) -> None:
         cmd += ["-ss", f"{float(inn):.3f}"]
     if dur is not None:
         cmd += ["-t", f"{float(dur):.3f}"]
+    cmd += ["-i", src_path, "-c:v", "libx264", "-pix_fmt", "yuv420p"]
+    if fast:
+        # Preview segments: latency matters far more than a few % of bitrate — the player
+        # is waiting on this encode to unfreeze a scrub across a chain boundary.
+        cmd += ["-preset", "veryfast"]
     cmd += [
-        "-i", src_path,
-        "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart", out_path,
     ]
@@ -218,6 +221,28 @@ def _playback_render_from_query(query) -> Optional[dict]:
             "subfolder": query.get("subfolder") or "",
             "type": query.get("type") or "output",
         },
+    }
+
+
+def _ghost_playback_clip_spec(query) -> Optional[dict]:
+    """Preview-segment clip spec for a GHOST (removed scene whose render is still shown):
+    the scene no longer exists on the project, so the trim window comes entirely from the
+    query — in-point (render_in, absolute in the source file) and duration (dur)."""
+    filename = query.get("filename") if query else None
+    dur = query.get("dur") if query else None
+    if not filename or dur is None:
+        return None
+    try:
+        inn = float(query.get("render_in") or 0)
+        dur = float(dur)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "filename": filename,
+        "subfolder": query.get("subfolder") or "",
+        "type": query.get("type") or "output",
+        "in": inn,
+        "dur": dur,
     }
 
 
@@ -254,6 +279,7 @@ def _scene_playback_clip_spec(
 
 
 _preview_segment_cache: dict[str, str] = {}
+_preview_segment_locks: dict = {}  # cache key -> asyncio.Lock (dedupe concurrent encodes)
 
 
 def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
@@ -1315,6 +1341,15 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             return web.json_response({"shortcuts": [], "error": str(e)})
 
+    @routes.get(UI_PREFIX + "/api/library/suggestion_stats")
+    async def _suggestion_stats(_req):
+        """Shortcut usage mined from all saved projects (pairs / follows / counts) —
+        feeds the prompt Ideas popover. Empty stats on any error, never a 500."""
+        try:
+            return web.json_response(bridge.suggestion_stats())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"scenes": 0, "counts": {}, "pairs": [], "follows": [], "error": str(e)})
+
     @routes.post(UI_PREFIX + "/api/library/shortcuts")
     async def _shortcut_save(req):
         try:
@@ -1326,6 +1361,20 @@ if web is not None and PromptServer is not None:
     async def _shortcut_delete(req):
         try:
             return web.json_response(bridge.delete_shortcut(req.match_info["name"]))
+        except Exception as e:  # noqa: BLE001
+            raise web.HTTPBadRequest(reason=str(e))
+
+    @routes.get(UI_PREFIX + "/api/library/revolver")
+    async def _revolver_get(_req):
+        try:
+            return web.json_response(bridge.revolver_settings())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"enabled": False, "random": False, "error": str(e)})
+
+    @routes.post(UI_PREFIX + "/api/library/revolver")
+    async def _revolver_set(req):
+        try:
+            return web.json_response(bridge.set_revolver_settings(await req.json()))
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadRequest(reason=str(e))
 
@@ -1777,29 +1826,44 @@ if web is not None and PromptServer is not None:
         try:
             clip = _scene_playback_clip_spec(proj, scene_id, render_override=render_override)
         except KeyError as e:
-            return web.json_response({"detail": str(e)}, status=404)
+            # Ghosts: the scene was removed from the project but its render still previews;
+            # the trim window (in/dur) comes from the query instead of the scene.
+            clip = _ghost_playback_clip_spec(req.query)
+            if clip is None:
+                return web.json_response({"detail": str(e)}, status=404)
         key = _preview_segment_cache_key(pid, scene_id, clip)
-        cached = _preview_segment_cache.get(key)
-        if cached and os.path.isfile(cached):
-            return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=3600"})
-        try:
-            import folder_paths
-            tempdir = folder_paths.get_temp_directory()
-        except Exception as e:  # noqa: BLE001
-            return web.json_response({"detail": f"Temp directory unavailable: {e}"}, status=500)
-        import time as _time
-        out_path = os.path.join(
-            tempdir,
-            f"funpack_preview_{pid[:8]}_{scene_id}_{int(_time.time() * 1000)}.mp4",
-        )
-        try:
-            src_path = _resolve_clip_src_path(clip)
-            _ffmpeg_trim_clip(src_path, out_path, clip.get("in"), clip.get("dur"))
-        except FileNotFoundError as e:
-            return web.json_response({"detail": str(e)}, status=400)
-        except RuntimeError as e:
-            return web.json_response({"detail": str(e)}, status=503)
-        _preview_segment_cache[key] = out_path
+        # Serialize per segment: the pool preloads every clip at once after a run, and a
+        # scrub can re-request the same URL — without this lock each request would start
+        # its own duplicate encode of the same segment.
+        lock = _preview_segment_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            cached = _preview_segment_cache.get(key)
+            if cached and os.path.isfile(cached):
+                return web.FileResponse(cached, headers={"Cache-Control": "private, max-age=3600"})
+            try:
+                import folder_paths
+                tempdir = folder_paths.get_temp_directory()
+            except Exception as e:  # noqa: BLE001
+                return web.json_response({"detail": f"Temp directory unavailable: {e}"}, status=500)
+            import time as _time
+            out_path = os.path.join(
+                tempdir,
+                f"funpack_preview_{pid[:8]}_{scene_id}_{int(_time.time() * 1000)}.mp4",
+            )
+            try:
+                src_path = _resolve_clip_src_path(clip)
+                # to_thread: this encode takes seconds — run inline it would freeze the ONE
+                # aiohttp event loop ComfyUI has, stalling every playing /result stream and
+                # the whole editor API for its duration (stale/black previews on scrub).
+                await asyncio.to_thread(
+                    _ffmpeg_trim_clip, src_path, out_path, clip.get("in"), clip.get("dur"),
+                    fast=True,
+                )
+            except FileNotFoundError as e:
+                return web.json_response({"detail": str(e)}, status=400)
+            except RuntimeError as e:
+                return web.json_response({"detail": str(e)}, status=503)
+            _preview_segment_cache[key] = out_path
         return web.FileResponse(out_path, headers={"Cache-Control": "private, max-age=3600"})
 
     # --- API: export one clip (ffmpeg trim from a chain output using in/dur) ---
@@ -1822,7 +1886,9 @@ if web is not None and PromptServer is not None:
         out_path = os.path.join(tempdir, out_name)
         try:
             src_path = _resolve_clip_src_path(clip)
-            _ffmpeg_trim_clip(src_path, out_path, clip.get("in"), clip.get("dur"))
+            # to_thread: same event-loop-freeze hazard as preview segments — an export
+            # during playback would stall every streaming /result response.
+            await asyncio.to_thread(_ffmpeg_trim_clip, src_path, out_path, clip.get("in"), clip.get("dur"))
         except FileNotFoundError as e:
             return web.json_response({"detail": str(e)}, status=400)
         except RuntimeError as e:

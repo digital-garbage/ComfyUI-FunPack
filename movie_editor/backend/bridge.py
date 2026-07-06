@@ -285,6 +285,20 @@ def delete_shortcut(name: str) -> dict:
     return {"shortcuts": si(), "categories": _shortcut_categories()}
 
 
+def revolver_settings() -> dict:
+    """Shortcut-revolver settings (enabled + random order). State lives server-side next to
+    the shortcut DB so previews and generation share one cycle."""
+    return _funpack_attr("templates", "revolver_settings")()
+
+
+def set_revolver_settings(payload: dict) -> dict:
+    fn = _funpack_attr("templates", "set_revolver_settings")
+    return fn(
+        enabled=payload.get("enabled"),
+        random_order=payload.get("random"),
+    )
+
+
 def save_category(payload: dict) -> dict:
     """Add a category (and optionally a sub-category under it) to the managed list."""
     add = _funpack_attr("templates", "add_shortcut_category")
@@ -303,6 +317,70 @@ def delete_transition(name: str) -> dict:
     _si, _ss, _ds, ti, _sv, delete, *_ = _library_fns()
     delete(name)
     return {"transitions": ti()}
+
+
+def suggestion_stats() -> dict:
+    """Mine the user's OWN prompting habits from all saved projects: which shortcuts
+    land in the same scene (pairs) and which shot follows which (follows, in timeline
+    order). Scene texts keep triggers verbatim (editor prompt model), so this is a
+    plain text scan. Derived on demand from project files — no learned state stored.
+    Stats are keyed by shortcut `key` (the library's stable id)."""
+    import re
+
+    from . import projects as _projects
+
+    si, *_ = _library_fns()
+    pats: list[tuple[str, Any]] = []
+    for item in si():
+        if item.get("enabled") is False:
+            continue
+        key = str(item.get("key") or item.get("name") or "")
+        if not key:
+            continue
+        for trig in item.get("triggers") or []:
+            t = str(trig or "").strip().lower()
+            if t:
+                pats.append((key, re.compile(r"(?<![a-z0-9_])" + re.escape(t) + r"(?![a-z0-9_])")))
+    counts: dict[str, int] = {}
+    pairs: dict[tuple, int] = {}
+    follows: dict[tuple, int] = {}
+    scenes_scanned = 0
+    for meta in _projects.list_projects():
+        proj = _projects.get(meta.get("id", ""))
+        if proj is None:
+            continue
+        by_id = {s.id: s for s in proj.scenes}
+        order = [sid for sid in (proj.timeline_order or []) if sid in by_id]
+        if not order:
+            order = [s.id for s in proj.scenes]
+        prev: set[str] | None = None
+        for sid in order:
+            sc = by_id[sid]
+            # Editorial cuts share the root's text — only the root owns the prompt.
+            if sc.excluded or (sc.gen_unit_id and sc.cut_offset_frames):
+                continue
+            text = (sc.text or "").strip().lower()
+            if not text:
+                continue
+            present = {k for k, pat in pats if pat.search(text)}
+            scenes_scanned += 1
+            for k in present:
+                counts[k] = counts.get(k, 0) + 1
+            for a in present:
+                for b in present:
+                    if a < b:
+                        pairs[(a, b)] = pairs.get((a, b), 0) + 1
+            if prev:
+                for a in prev:
+                    for b in present:
+                        follows[(a, b)] = follows.get((a, b), 0) + 1
+            prev = present
+    return {
+        "scenes": scenes_scanned,
+        "counts": counts,
+        "pairs": [[a, b, n] for (a, b), n in pairs.items()],
+        "follows": [[a, b, n] for (a, b), n in follows.items()],
+    }
 
 
 def export_shortcuts() -> dict:

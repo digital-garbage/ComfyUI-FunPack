@@ -144,24 +144,38 @@
 
   // Multi-scene chain outputs share one ComfyUI file; deep seeks fail in the browser
   // unless the MP4 is faststart-trimmed like export. Serve per-scene segments instead.
+  // Ghosts (removed scenes still previewing their render) and lone clips with a deep
+  // in-point take the same path — they'd otherwise deep-seek the moov-at-end source
+  // directly, which stalls/blacks the monitor when scrubbing across them.
   function _assignChainPreviewSegments(st, clips) {
     const pid = st.project?.id;
     if (!pid || !API.previewSegmentUrl) return;
     const groups = new Map();
     for (const c of clips) {
-      if (c.pending || c.ghost || c.binUrl || !c.sceneId || !c.media) continue;
+      if (c.pending || c.binUrl || !c.media) continue;
+      if (!c.sceneId && !c.ghostId) continue;
       const k = _mediaChainKey(c);
       if (!k) continue;
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(c);
     }
     for (const list of groups.values()) {
-      if (list.length < 2) continue;
+      const shared = list.length >= 2;
       for (const c of list) {
+        if (!shared && (c.inSec || 0) <= 0.5) continue;  // shallow single clip: direct URL is fine
+        if (c.ghost) {
+          // No scene server-side — the trim window travels entirely in the query.
+          c.streamUrl = API.previewSegmentUrl(pid, c.ghostId, {
+            media: c.media, renderIn: c.inSec || 0, dur: c.durationSec,
+          });
+          continue;
+        }
         const sc = S.scene(c.sceneId);
         const sourceIn = sc?.source_in || 0;
         const renderIn = Math.max(0, (c.inSec || 0) - sourceIn);
-        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, { media: c.media, renderIn });
+        c.streamUrl = API.previewSegmentUrl(pid, c.sceneId, {
+          media: c.media, renderIn, dur: c.durationSec,
+        });
       }
     }
   }
@@ -474,7 +488,11 @@
     const zoom = document.createElement("div");
     zoom.className = "pm-fx-zoom";
     v = document.createElement("video");
-    v.className = "pm-video"; v.preload = "auto"; v.playsInline = true; v.src = url;
+    // preload starts as metadata: with preload=auto EVERY pooled clip downloaded at full
+    // tilt simultaneously — on a tunneled rental instance that starves the browser's
+    // per-origin connection pool and aborts the stream actually being watched.
+    // _updatePreloadHints() promotes the current clip and its neighbours to auto.
+    v.className = "pm-video"; v.preload = "metadata"; v.playsInline = true; v.src = url;
     v._pmFx = { viewport, zoom };
     zoom.append(v);
     viewport.append(zoom);
@@ -655,6 +673,29 @@
     else if (_badgeEl) _badgeEl.classList.remove("mixed-mode");
   }
 
+  // Promote the clip under the playhead and its neighbours to preload=auto (cut boundaries
+  // stay instant); everything else idles at metadata so the pool doesn't saturate the
+  // browser's per-origin connections. A hint change never interrupts an in-flight load.
+  function _updatePreloadHints() {
+    if (!pool.size) return;
+    const hot = new Set();
+    const add = (c) => {
+      if (!c || c.pending || c.blank) return;
+      const u = _clipUrl(c);
+      if (u) hot.add(u);
+    };
+    const idx = _currentClip ? _clips.indexOf(_currentClip) : -1;
+    if (idx >= 0) {
+      add(_clips[idx - 1]); add(_clips[idx]); add(_clips[idx + 1]);
+    } else {
+      add(_clips.find(_hasPlayableClipMedia));
+    }
+    for (const [u, v] of pool) {
+      const want = hot.has(u) ? "auto" : "metadata";
+      if (v.preload !== want) v.preload = want;
+    }
+  }
+
   function _sameVideoUrl(a, b) {
     if (!a || !b) return false;
     const ua = _clipUrl(a), ub = _clipUrl(b);
@@ -699,6 +740,7 @@
       else _clipBoundaryToken = 0;
     }
     _applyFx(clip, Math.max(0, offset));
+    _updatePreloadHints();
   }
 
   // Advance to the next clip at a clip's out-point (or stop). Same-source contiguous
@@ -728,6 +770,7 @@
         try { _applyFx(next, within); } catch (_) {}
       }
       if (_playing) _startTick();
+      _updatePreloadHints();
     }
     _notifyPh();
   }
@@ -820,6 +863,7 @@
       else _goto(clip, offset, false);
     }
     _syncInsAudio();
+    _updatePreloadHints();
     _notifyPh();
   }
 
@@ -1103,6 +1147,7 @@
         else if (_isBlankProgram()) _goto(_blankClip(), _phSec, _playing);
       }
     }
+    _updatePreloadHints();
 
     const p = st.project;
     const gen = st.gen || { state: "idle", media: [] };

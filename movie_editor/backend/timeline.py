@@ -101,8 +101,8 @@ def _anchor_media_ref(scene: Scene) -> Optional[str]:
     return None
 
 
-def _identity_pin_guide(media_ref: str, strength: float) -> dict:
-    return {
+def _identity_pin_guide(media_ref: str, strength: float, *, is_pin: bool = True) -> dict:
+    entry = {
         "enabled": True,
         "source": "image",
         "media_ref": media_ref,
@@ -110,12 +110,19 @@ def _identity_pin_guide(media_ref: str, strength: float) -> dict:
         "apply_at": 0,
         "strength": max(0.25, min(0.5, float(strength))),
     }
+    if is_pin:
+        # Marks this entry (not prior-scene/mid-scene/template guides) as the one eligible
+        # for the sampler's identity_transfer source-phase RoPE tag — see samplers.py.
+        entry["identity_pin"] = True
+    return entry
 
 
 def _prior_scene_guide(prior: Scene, strength: float) -> Optional[dict]:
     ref = _anchor_media_ref(prior)
     if ref:
-        return _identity_pin_guide(ref, strength)
+        # Reuses the same image-guide shape as the project identity pin, but this is the
+        # PRIOR SCENE's own anchor (motion/layout continuity) — never the identity_pin tag.
+        return _identity_pin_guide(ref, strength, is_pin=False)
     return {
         "enabled": True,
         "source": "template",

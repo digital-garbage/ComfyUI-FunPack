@@ -715,9 +715,23 @@
     setTimeout(() => search.focus(), 0);
 
     let curList = [], curCand = null, draft = null;
+    // Collapsed once a node is picked — the full list is clutter once Values/Wiring are
+    // showing below it. Re-expands on "Change" or as soon as the user edits the search again.
+    let listOpen = true;
 
     function renderList() {
       clear(listBox);
+      if (curCand && !listOpen) {
+        const row = el("div", "ns-row ns-row-selected active");
+        row.append(el("span", "ns-row-name", curCand.display_name));
+        row.append(el("span", "ns-row-class", curCand.class));
+        const change = el("button", "btn ghost tiny ns-change", "Change");
+        change.type = "button";
+        change.onclick = (e) => { e.stopPropagation(); listOpen = true; renderList(); search.focus(); };
+        row.append(change);
+        listBox.append(row);
+        return;
+      }
       const q = search.value.trim().toLowerCase();
       const f = q ? curList.filter((c) => (c.display_name + " " + c.class + " " + (c.category || "")).toLowerCase().includes(q)) : curList;
       if (!f.length) { listBox.append(el("div", "ns-empty", curList.length ? "No match." : "No matching nodes.")); return; }
@@ -730,7 +744,7 @@
       });
       if (f.length > 200) listBox.append(el("div", "ns-empty", `…${f.length - 200} more — refine the search.`));
     }
-    search.oninput = renderList;
+    search.oninput = () => { listOpen = true; renderList(); };
 
     async function pick(cls) {
       curCand = specByClass[cls];
@@ -741,6 +755,7 @@
         wires: { ...(extras.wires || {}) },              // outName -> single target
         input_sources: { ...(extras.input_sources || {}) },
       };
+      listOpen = false;
       renderList(); renderDetail();
     }
 

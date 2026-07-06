@@ -129,6 +129,8 @@
       projects: st.projects?.length,
       media: st.mediaBin?.length,
       mediaPreview: st.mediaPreviewId,
+      // Continuity pin renders on gallery cards (📌 button state + thumb badge).
+      pin: st.project?.continuity_settings?.identity_pin_ref,
       shortcuts: st.shortcuts?.length,
       transitions: st.transitions?.length,
       nleEffects: st.nleEffects?.length,

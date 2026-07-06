@@ -421,6 +421,25 @@ def test_scene_playback_clip_spec_live_render_query():
     assert _playback_render_from_query({}) is None
 
 
+def test_ghost_playback_clip_spec_from_query():
+    """Ghost segments: the scene is gone from the project, so the trim window (in/dur)
+    must come entirely from the query — and malformed/incomplete queries return None
+    (the handler then 404s instead of encoding garbage)."""
+    from movie_editor.server import _ghost_playback_clip_spec
+    c = _ghost_playback_clip_spec({
+        "filename": "chain.mp4", "subfolder": "out", "type": "output",
+        "render_in": "7.4", "dur": "2.5",
+    })
+    assert c == {"filename": "chain.mp4", "subfolder": "out", "type": "output",
+                 "in": 7.4, "dur": 2.5}
+    assert _ghost_playback_clip_spec({"filename": "chain.mp4"}) is None          # no dur
+    assert _ghost_playback_clip_spec({"dur": "2.5"}) is None                      # no filename
+    assert _ghost_playback_clip_spec({"filename": "c.mp4", "dur": "oops"}) is None  # bad float
+    # render_in defaults to 0 (ghost of the chain's first scene).
+    c0 = _ghost_playback_clip_spec({"filename": "c.mp4", "dur": "4.0"})
+    assert c0["in"] == 0 and c0["type"] == "output"
+
+
 def test_project_models_keeps_empty_slots(monkeypatch):
     from movie_editor.backend import nodes
 

@@ -82,12 +82,15 @@
     importTransitions: (data, mode) => j("POST", API(`/library/transitions/import?mode=${mode || "merge"}`), data),
     clearTransitions: () => j("POST", API("/library/transitions/clear"), {}),
     shortcuts: () => j("GET", API("/library/shortcuts")),
+    suggestionStats: () => j("GET", API("/library/suggestion_stats")),
     saveCategory: (payload) => j("POST", API("/library/categories"), payload),
     saveShortcut: (item) => j("POST", API("/library/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),
     exportShortcutsUrl: () => API("/library/shortcuts/export"),
     importShortcuts: (data, mode) => j("POST", API(`/library/shortcuts/import?mode=${mode || "merge"}`), data),
     clearShortcuts: () => j("POST", API("/library/shortcuts/clear"), {}),
+    revolverSettings: () => j("GET", API("/library/revolver")),
+    setRevolverSettings: (payload) => j("POST", API("/library/revolver"), payload),
 
     // FunPack file manager (Composer ▸ Files)
     listFiles: () => j("GET", API("/files")),
@@ -182,6 +185,10 @@
           type: m.type || "output",
           render_in: String(spec.renderIn != null ? spec.renderIn : 0),
         });
+        // dur is in the URL for two reasons: ghosts have no scene server-side (the trim
+        // window must travel in the query), and it versions the browser cache — segments
+        // are cached for an hour, so a timeline trim must produce a different URL.
+        if (spec.dur != null) q.set("dur", String(spec.dur));
         u += "?" + q.toString();
       }
       return u;
