@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-07-06
+
+### Added
+- **Shortcut Ideas bulb** (💡 next to prompt fields) is now a habit-aware co-pilot: alongside
+  the existing missing-category browser, it surfaces shortcuts you've historically paired with
+  what's already in the prompt, and what usually follows the previous scene in your own
+  projects — mined on demand from saved project text, no new persistent state.
+- **Media gallery: one-click continuity pin** — a 📌 hover action on image cards sets/unsets
+  the project's Continuity identity pin directly from the Assets gallery, without a trip to
+  Engine settings.
+- **Shortcut revolver** — an opt-in no-repeat cycling mode for multi-replacement shortcuts
+  (sequential or shuffled). A shortcut with several replacements now draws through all of them
+  before repeating, instead of a seeded random pick that could repeat early.
+- **Guide blur** (`alg_blur_guides`) now stands alone from the sampler's anchor ALG: it works
+  with `alg_enabled` off, and has its own strength / sigma-threshold controls independent of
+  the anchor's.
+- **Best-FaceID identity transfer** (experimental, Engine ▸ Experimental) — tags the existing
+  Continuity "Identity pin" guide with the source-phase RoPE rotation Best-FaceID-style
+  identity LoRAs were trained on. A native port on the Scene Chain Sampler, no external
+  custom-node dependency; the LoRA itself loads the normal way via Models.
+
+### Changed
+- Models & Pipeline "+ New node" search collapses to a compact summary once a node is picked,
+  instead of leaving the full results list open above the Values/Wiring panel.
+- Prompt autocomplete no longer caps suggestions at 8 — a prefix shared by many shortcuts now
+  shows every match (the menu already scrolls).
+
+### Fixed
+- **Preview stability**: the preview-segment ffmpeg re-encode ran synchronously inside the
+  request handler, freezing ComfyUI's event loop and stalling every other streaming response —
+  now backgrounded with per-key locking. Ghost clips (and deep-trimmed lone clips) get proper
+  segments instead of deep-seeking the raw chain file. Segment URLs encode the clip duration so
+  re-trimming a clip can't serve an hour-old cached segment. Pooled preview videos default to
+  `preload=metadata` (only the current clip and its neighbours preload fully), so a full
+  timeline no longer starves the browser's connection pool mid-playback.
+
 ## [3.2.0] - 2026-07-05
 
 ### Added
