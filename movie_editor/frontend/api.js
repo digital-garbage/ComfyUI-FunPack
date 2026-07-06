@@ -82,6 +82,7 @@
     importTransitions: (data, mode) => j("POST", API(`/library/transitions/import?mode=${mode || "merge"}`), data),
     clearTransitions: () => j("POST", API("/library/transitions/clear"), {}),
     shortcuts: () => j("GET", API("/library/shortcuts")),
+    suggestionStats: () => j("GET", API("/library/suggestion_stats")),
     saveCategory: (payload) => j("POST", API("/library/categories"), payload),
     saveShortcut: (item) => j("POST", API("/library/shortcuts"), item),
     deleteShortcut: (name) => j("DELETE", API(`/library/shortcuts/${encodeURIComponent(name)}`)),

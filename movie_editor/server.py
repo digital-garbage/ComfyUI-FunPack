@@ -1315,6 +1315,15 @@ if web is not None and PromptServer is not None:
         except Exception as e:  # noqa: BLE001
             return web.json_response({"shortcuts": [], "error": str(e)})
 
+    @routes.get(UI_PREFIX + "/api/library/suggestion_stats")
+    async def _suggestion_stats(_req):
+        """Shortcut usage mined from all saved projects (pairs / follows / counts) —
+        feeds the prompt Ideas popover. Empty stats on any error, never a 500."""
+        try:
+            return web.json_response(bridge.suggestion_stats())
+        except Exception as e:  # noqa: BLE001
+            return web.json_response({"scenes": 0, "counts": {}, "pairs": [], "follows": [], "error": str(e)})
+
     @routes.post(UI_PREFIX + "/api/library/shortcuts")
     async def _shortcut_save(req):
         try:
