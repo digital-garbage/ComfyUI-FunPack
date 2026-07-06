@@ -210,7 +210,16 @@
     const strip = el("div", "clip-filmstrip");
     clip.append(strip);
     const n = Math.min(10, Math.max(3, Math.floor(widthPx / 28)));
-    const url = window.MovieEditorAPI.resultUrl(st.project.id, r.media);
+    const API = window.MovieEditorAPI;
+    const durSec = sDur(scene, st.project);
+    // Route through the same trimmed, faststart preview segment the player uses instead of
+    // the raw chain output: that file is moov-at-end (deep seeks stall/black in the browser)
+    // and shared across every scene in the run, so a filmstrip per clip meant N full-file
+    // downloads with preload=auto fighting the player pool over Chrome's 6-per-origin cap.
+    const segUrl = API.previewSegmentUrl && st.project.id
+      ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, dur: durSec })
+      : null;
+    const url = segUrl || API.resultUrl(st.project.id, r.media);
     const vid = document.createElement("video");
     vid.muted = true; vid.preload = "auto"; vid.src = url;
     const captureAt = (time) => new Promise((resolve) => {
@@ -229,7 +238,7 @@
         resolve();
       };
       vid.onseeked = done;
-      const dur = vid.duration || sDur(scene, st.project);
+      const dur = vid.duration || durSec;
       vid.currentTime = Math.max(0, Math.min(time, dur - 0.01));
     });
     // Free the media connection once the strip is captured (or abandoned) — a detached
@@ -238,8 +247,10 @@
     vid.onerror = release;
     vid.onloadeddata = async () => {
       if (!strip.isConnected) { release(); return; }
-      const dur = vid.duration || sDur(scene, st.project);
-      const inSec = (r.inSec || 0) + (scene.source_in || 0);
+      const dur = vid.duration || durSec;
+      // A segment starts at 0 (it's already trimmed to this scene); the raw-file fallback
+      // still needs the absolute in-point.
+      const inSec = segUrl ? 0 : (r.inSec || 0) + (scene.source_in || 0);
       try {
         for (let i = 0; i < n; i++) {
           if (!strip.isConnected) return;
@@ -1259,7 +1270,18 @@
     const binRef = scene.source?.media_ref;
     const binAsset = binRef ? (st.mediaBin || []).find((m) => m.id === binRef) : null;
     if (r?.media && st.project?.id) {
-      _attachWaveform(canvas, `scene-aud:${scene.id}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`, window.MovieEditorAPI.resultUrl(st.project.id, r.media), {
+      // Same reasoning as appendFilmstrip: the raw render is the shared, moov-at-end chain
+      // output. A plain resultUrl fetch here downloaded and decoded the WHOLE multi-scene
+      // file once per scene that shares it (fighting the player pool for connections); the
+      // trimmed segment is this scene's span only, so no inSec slice is needed to paint it.
+      const API = window.MovieEditorAPI;
+      const segUrl = API.previewSegmentUrl
+        ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, dur: durSec })
+        : null;
+      _attachWaveform(canvas, `scene-aud:${scene.id}:${inSec.toFixed(3)}:${durSec.toFixed(3)}`, segUrl || API.resultUrl(st.project.id, r.media), segUrl ? {
+        width: w,
+        color: "rgba(45, 212, 191, 0.5)",
+      } : {
         width: w,
         inSec,
         durationSec: durSec,
