@@ -185,6 +185,10 @@
           type: m.type || "output",
           render_in: String(spec.renderIn != null ? spec.renderIn : 0),
         });
+        // dur is in the URL for two reasons: ghosts have no scene server-side (the trim
+        // window must travel in the query), and it versions the browser cache — segments
+        // are cached for an hour, so a timeline trim must produce a different URL.
+        if (spec.dur != null) q.set("dur", String(spec.dur));
         u += "?" + q.toString();
       }
       return u;
