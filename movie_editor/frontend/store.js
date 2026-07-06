@@ -39,7 +39,7 @@
   // prompt is parsed/edited, not what is generated from already-distributed scenes.
   const EDITOR_SETTINGS_KEY = "funpack_editor_settings";
   const EDITOR_SETTINGS_DEFAULTS = {
-    autocomplete: true, anchorEnabled: true,
+    autocomplete: true, suggestions: true, anchorEnabled: true,
     // "Anchor as guide" i2v bypass: declare a custom i2v node so it can be forced
     // to a state (value-only) on anchor_guide runs. anchorGuideBypass = {node, input, value}.
     anchorGuideHasI2v: false, anchorGuideBypass: null,

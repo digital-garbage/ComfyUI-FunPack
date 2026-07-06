@@ -159,6 +159,10 @@
       "Suggest matching shortcuts while you type in the global prompt and scene prompts. Shows the trigger, its prompt, and category.",
       "autocomplete"));
     content.append(toggleRow(
+      "Shortcut ideas",
+      "A 💡 next to prompt fields lights up when shortcut categories in your library (camera moves, sub-actions…) aren't used in the prompt. Click it for insertable ideas — it never pops up on its own.",
+      "suggestions"));
+    content.append(toggleRow(
       "Use anchor",
       "Text before the first split trigger is a shared anchor prepended to every scene. Turn off to make that leading text Scene 1 instead.",
       "anchorEnabled"));
@@ -169,7 +173,7 @@
   window.SettingsWindow.register({
     id: "editor", group: "", title: "Editor",
     subtitle: "Per-browser preferences — they apply to this browser, not the project.",
-    keywords: "autocomplete anchor prompt shortcuts i2v bypass guide preferences",
+    keywords: "autocomplete anchor prompt shortcuts ideas suggestions i2v bypass guide preferences",
     iconBg: "linear-gradient(180deg,#6aa9ff,#3b6fd9)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.7" fill="#fff" stroke="none"/><circle cx="11" cy="8" r="1.7" fill="#fff" stroke="none"/><circle cx="5" cy="11.5" r="1.7" fill="#fff" stroke="none"/></svg>',
     mount,

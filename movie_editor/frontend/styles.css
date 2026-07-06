@@ -1561,6 +1561,25 @@ body.tour-mode { overflow: hidden; }
 .ac-prompt { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 .ac-cat { color: var(--teal); font-family: var(--font-mono); font-size: 9.5px; letter-spacing: .5px; text-transform: uppercase; flex-shrink: 0; }
 
+/* Shortcut ideas bulb + popover (quiet nudge — lights up when categories go unused) */
+.sugg-bulb { padding: 0 4px; font-size: 12px; line-height: 1; opacity: .35; filter: grayscale(1); transition: opacity .3s, filter .3s; }
+.sugg-bulb.on { opacity: 1; filter: none; text-shadow: 0 0 7px rgba(255, 196, 87, .55); }
+.sugg-fieldwrap { position: relative; }
+.sugg-fieldwrap .sugg-bulb { position: absolute; top: -3px; right: 0; }
+.sugg-pop { position: fixed; z-index: 99999; width: 330px; max-height: 280px; overflow-y: auto;
+  background: #16140f; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); padding: 6px; }
+.sugg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 6px; }
+.sugg-title { color: var(--muted); font-size: 10.5px; letter-spacing: .5px; text-transform: uppercase; }
+.sugg-list { display: flex; flex-direction: column; }
+.sugg-item { display: flex; align-items: baseline; gap: 8px; padding: 6px 9px; border-radius: 5px; cursor: pointer; }
+.sugg-item:hover { background: var(--amber-soft); }
+.sugg-empty { color: var(--muted); font-size: 11.5px; padding: 6px 9px; }
+.sugg-cat-head { display: flex; align-items: center; gap: 7px; padding: 7px 4px 2px; }
+.sugg-cat-head:first-child { padding-top: 2px; }
+.sugg-cat-name { color: var(--teal); font-family: var(--font-mono); font-size: 10px; letter-spacing: .6px; text-transform: uppercase; }
+.sugg-cat-count { color: var(--muted); font-size: 9.5px; font-family: var(--font-mono); background: var(--ink-3); border-radius: 8px; padding: 0 6px; }
+.sugg-more { margin-left: auto; font-size: 10px; padding: 0 4px; color: var(--muted); }
+
 /* Editor settings modal */
 .es-content { display: flex; flex-direction: column; gap: 18px; }
 .es-row { display: flex; flex-direction: column; gap: 5px; }

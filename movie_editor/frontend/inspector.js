@@ -288,7 +288,12 @@
 
     const ta = el("textarea"); ta.rows = 4; ta.value = root.text || ""; ta.placeholder = "Describe this scene…"; ta.dataset.k = "sc-text";
     ta.oninput = () => S.patchSceneQuiet(scene.id, { text: ta.value });
-    body.append(field("Prompt", ta));
+    // Ideas bulb floats OUTSIDE the label — a button inside a <label> becomes its
+    // implicit control (double-fired clicks, stolen focus target).
+    const promptWrap = el("div", "sugg-fieldwrap");
+    promptWrap.append(field("Prompt", ta));
+    if (window.ShortcutSuggest) promptWrap.append(window.ShortcutSuggest.bulb(ta));
+    body.append(promptWrap);
     if (window.ShortcutAutocomplete) window.ShortcutAutocomplete.attach(ta);
     renderSourceField(st, root, scene);
     if (PC()?.usesChainSampler(st)) {
