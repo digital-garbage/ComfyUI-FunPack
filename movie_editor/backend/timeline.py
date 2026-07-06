@@ -101,8 +101,8 @@ def _anchor_media_ref(scene: Scene) -> Optional[str]:
     return None
 
 
-def _identity_pin_guide(media_ref: str, strength: float) -> dict:
-    return {
+def _identity_pin_guide(media_ref: str, strength: float, *, is_pin: bool = True) -> dict:
+    entry = {
         "enabled": True,
         "source": "image",
         "media_ref": media_ref,
@@ -110,12 +110,19 @@ def _identity_pin_guide(media_ref: str, strength: float) -> dict:
         "apply_at": 0,
         "strength": max(0.25, min(0.5, float(strength))),
     }
+    if is_pin:
+        # Marks this entry (not prior-scene/mid-scene/template guides) as the one eligible
+        # for the sampler's identity_transfer source-phase RoPE tag — see samplers.py.
+        entry["identity_pin"] = True
+    return entry
 
 
 def _prior_scene_guide(prior: Scene, strength: float) -> Optional[dict]:
     ref = _anchor_media_ref(prior)
     if ref:
-        return _identity_pin_guide(ref, strength)
+        # Reuses the same image-guide shape as the project identity pin, but this is the
+        # PRIOR SCENE's own anchor (motion/layout continuity) — never the identity_pin tag.
+        return _identity_pin_guide(ref, strength, is_pin=False)
     return {
         "enabled": True,
         "source": "template",
@@ -595,12 +602,6 @@ class Project:
     # (same shape as the global models.json). Empty {"slots": []} falls back to the
     # global default at build/read time; the editor seeds new projects from it.
     models: dict = field(default_factory=lambda: {"slots": []})
-    # Best-FaceID identity transfer (ComfyUI-BFSNodes' LTX Identity Transfer node), a single
-    # project-wide splice: {enabled, reference_media_ref, lora_name, lora_strength,
-    # identity_projector, source_id, phase_scale, id_strength, arcface_mode, debug_log}.
-    # One reference face for the whole project — the chain sampler runs multi-scene prompts
-    # through one graph per run, so there's no per-scene seam to hang a second identity on.
-    identity_transfer: dict = field(default_factory=dict)
     # Guide stack toggles — empty / stack_enabled=false keeps Studio carry behaviour.
     guide_settings: dict = field(default_factory=dict)
     continuity_settings: dict = field(default_factory=dict)
@@ -650,7 +651,6 @@ class Project:
             overlay_lanes=list(d.get("overlay_lanes") or []),
             overlay_tracks=list(d.get("overlay_tracks") or []),
             models=dict(d.get("models") or {"slots": []}),
-            identity_transfer=dict(d.get("identity_transfer") or {}),
             guide_settings=dict(d.get("guide_settings") or {}),
             continuity_settings=dict(d.get("continuity_settings") or {}),
             generation_meta=dict(d.get("generation_meta") or {}),

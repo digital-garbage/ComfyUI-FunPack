@@ -3,6 +3,7 @@ import hashlib
 import math
 import os
 import time as _time
+import types
 
 import torch
 
@@ -2395,6 +2396,14 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
                     "tooltip": "Guide frames stay blurred while sigma is above this value (the near-pure-noise steps), then swap to sharp. Higher = narrower blurred window. Independent of the sampler's anchor alg_sigma_threshold.",
                 }),
+                "identity_transfer_enabled": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL Best-FaceID compatibility: tags Continuity's 'Identity pin' guide (Engine settings) with an extra source-phase RoPE rotation, matching the exact overlap+source_phase conditioning Best-FaceID-style identity LoRAs were trained on. No-op without an identity pin image set. Load the LoRA itself the normal way (Models -> add a LoRA loader onto the model path).",
+                }),
+                "identity_transfer_phase": ("FLOAT", {
+                    "default": 2.0, "min": 0.0, "max": 8.0, "step": 0.5,
+                    "tooltip": "Source-phase segment id for the identity-pin guide tokens (ltx-trainer's overlap+source_phase convention used 2). 0 disables the rotation while leaving the guide itself active.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3567,8 +3576,34 @@ class FunPackLTXAVSceneChainSampler:
             return 0, True
         return 1 + (at - 1) * time_scale, False
 
-    def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae):
-        """Append one guide latent frame with LTX guide attention at apply_at."""
+    def _tag_last_guide_entry(self, cond, key, value):
+        """Best-effort: stamp `key=value` onto the guide_attention_entry _append_guide_attention_entry
+        just added (the last one), without touching any earlier entry. Used to mark which guide
+        (e.g. the Best-FaceID identity pin) is eligible for the source-phase RoPE patch — see
+        _install_identity_phase. No-op (returns cond unchanged) if node_helpers isn't importable
+        or no entries are present; never blocks generation."""
+        try:
+            import node_helpers
+        except ImportError:
+            return cond
+        try:
+            for t in cond:
+                entries = t[1].get("guide_attention_entries")
+                if entries:
+                    tagged = [*entries[:-1], {**entries[-1], key: value}]
+                    return node_helpers.conditioning_set_values(cond, {"guide_attention_entries": tagged})
+        except Exception:
+            pass
+        return cond
+
+    def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae,
+                              phase_tag=0.0):
+        """Append one guide latent frame with LTX guide attention at apply_at.
+
+        `phase_tag`: when non-zero, marks this guide's entry with `funpack_identity_phase` so
+        _install_identity_phase can find its exact token range and apply the source-phase RoPE
+        rotation the Best-FaceID LoRA was trained against — see [[project_identity_transfer_native]].
+        """
         try:
             from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
         except ImportError:
@@ -3594,6 +3629,9 @@ class FunPackLTXAVSceneChainSampler:
         positive, negative = _append_guide_attention_entry(
             positive, negative, pre_filter_count, guide_latent_shape, strength=float(strength)
         )
+        if phase_tag:
+            positive = self._tag_last_guide_entry(positive, "funpack_identity_phase", float(phase_tag))
+            negative = self._tag_last_guide_entry(negative, "funpack_identity_phase", float(phase_tag))
 
         result = self._clone_latent(chunk)
         tensors = self._latent_tensors(result)
@@ -3807,7 +3845,7 @@ class FunPackLTXAVSceneChainSampler:
             return None
 
     def _append_media_guide_at(self, chunk, filename, frame_idx, apply_at, strength,
-                               positive, negative, vae):
+                               positive, negative, vae, phase_tag=0.0):
         chunk_tensors = self._latent_tensors(chunk)
         if not chunk_tensors:
             return chunk, positive, negative, 0, 0
@@ -3818,13 +3856,15 @@ class FunPackLTXAVSceneChainSampler:
         at = self._resolve_frame_index(total, frame_idx)
         guide_slice = self._time_slice(guide_frame, at, at + 1)
         return self._append_guide_latent(
-            chunk, guide_slice, apply_at, strength, positive, negative, vae,
+            chunk, guide_slice, apply_at, strength, positive, negative, vae, phase_tag=phase_tag,
         ) + (0,)
 
     def _apply_configured_guides(self, chunk, scene_index, guide_list, latent_template,
-                                 scene_outputs, scene_media_by_ref, positive, negative, vae):
+                                 scene_outputs, scene_media_by_ref, positive, negative, vae,
+                                 identity_transfer_enabled=False, identity_transfer_phase=2.0):
         head_crop = 0
         tail_crop = 0
+        identity_phase_applied = False
         for g in guide_list or []:
             if not g or not g.get("enabled", True):
                 continue
@@ -3854,14 +3894,20 @@ class FunPackLTXAVSceneChainSampler:
                 fn = (scene_media_by_ref or {}).get(ref) if ref else None
                 if not fn:
                     continue
+                # The project's Best-FaceID reference face (Continuity's "Identity pin") is the
+                # ONLY guide eligible for the source-phase RoPE tag — never prior-scene/mid-scene
+                # guides, which serve motion continuity rather than a trained-LoRA identity lock.
+                phase_tag = identity_transfer_phase if (identity_transfer_enabled and g.get("identity_pin")) else 0.0
                 chunk, positive, negative, head, tail = self._append_media_guide_at(
-                    chunk, fn, frame_idx, apply_at, strength, positive, negative, vae,
+                    chunk, fn, frame_idx, apply_at, strength, positive, negative, vae, phase_tag=phase_tag,
                 )
+                if phase_tag:
+                    identity_phase_applied = True
             else:
                 continue
             head_crop += head
             tail_crop += tail
-        return chunk, positive, negative, head_crop, tail_crop
+        return chunk, positive, negative, head_crop, tail_crop, identity_phase_applied
 
     def _append_mid_scene_guide(self, chunk, previous_output, positive, negative, vae, strength):
         """Append the middle frame of the previous scene as a guide for the current chunk
@@ -4064,6 +4110,129 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    # ---------------------------------------------------------------------------
+    # identity_transfer: source-phase RoPE tag for the Best-FaceID-style identity pin.
+    #
+    # FunPack's guide-attention path (LTXVAddGuide.add_keyframe_index + causal_fix, see
+    # _append_guide_latent) already places a reference image on the frame-0 grid with a
+    # tunable attention strength — structurally the same "overlap" placement an identity
+    # LoRA like Best-FaceID expects. The one piece that path doesn't do is the LoRA's
+    # trained-time "source_phase" tag: an extra per-token RoPE rotation that marks those
+    # tokens as coming from a reference image, not the real timeline. This patches that in,
+    # scoped ONLY to the specific guide entry marked funpack_identity_phase (see
+    # _tag_last_guide_entry) — never to co-active guides (mid_scene_guide, carry, prior-
+    # scene continuity) that happen to share the same keyframe_idxs tensor.
+    #
+    # Two bound methods are wrapped on model.model.diffusion_model:
+    #   _prepare_timestep            (receives resolved_guide_entries / num_guide_tokens via
+    #                                 kwargs already computed by the model's own guide-token
+    #                                 accounting) -> locates the tagged entry's exact token
+    #                                 range and stashes it on self for the very next call.
+    #   _prepare_positional_embeddings (runs right after, same forward pass, no kwargs) ->
+    #                                 rotates just that token range's RoPE freqs.
+    # Idempotent + tag/strip per scene (same discipline as _install_v2a_scale /
+    # _strip_funpack_scene_wrappers) so an interrupt mid-scene can never leave a stale patch
+    # steering a later, unrelated run — see [[project_hook_leak_bug]].
+    # ---------------------------------------------------------------------------
+    _IDENTITY_PHASE_TAG = "_funpack_identity_phase_patched"
+
+    def _install_identity_phase(self, model):
+        try:
+            ltxv = model.model.diffusion_model
+        except Exception:
+            return None
+        if getattr(ltxv, self._IDENTITY_PHASE_TAG, False):
+            return None  # already installed (idempotent across scenes/runs)
+
+        orig_prepare_timestep = ltxv._prepare_timestep
+        orig_prepare_pe = ltxv._prepare_positional_embeddings
+
+        def prepare_timestep(self_ltxv, timestep, batch_size, hidden_dtype, **kwargs):
+            self_ltxv._funpack_identity_range = None
+            self_ltxv._funpack_identity_phase_value = 0.0
+            try:
+                entries = kwargs.get("resolved_guide_entries")
+                num_guide_tokens = kwargs.get("num_guide_tokens", 0)
+                if entries and num_guide_tokens:
+                    offset = 0
+                    for entry in entries:
+                        phase = entry.get("funpack_identity_phase")
+                        surviving = int(entry.get("surviving_count", 0))
+                        if phase:
+                            self_ltxv._funpack_identity_range = (offset, surviving, int(num_guide_tokens))
+                            self_ltxv._funpack_identity_phase_value = float(phase)
+                            break
+                        offset += surviving
+            except Exception:
+                self_ltxv._funpack_identity_range = None
+            return orig_prepare_timestep(timestep, batch_size, hidden_dtype, **kwargs)
+
+        def prepare_pe(self_ltxv, pixel_coords, frame_rate, x_dtype):
+            pe = orig_prepare_pe(pixel_coords, frame_rate, x_dtype)
+            rng = getattr(self_ltxv, "_funpack_identity_range", None)
+            phase = getattr(self_ltxv, "_funpack_identity_phase_value", 0.0)
+            if not rng or not phase:
+                return pe
+            try:
+                offset, length, num_guide_tokens = rng
+                # AV models return [(v_pe, av_cross_video), (a_pe, av_cross_audio)]; plain
+                # video models return v_pe directly. Only the video PE carries guide tokens.
+                if isinstance(pe, list) and len(pe) and isinstance(pe[0], (list, tuple)) and isinstance(pe[0][0], (list, tuple)):
+                    v_pe, cross_v = pe[0][0], pe[0][1]
+                    v_pe = self._rotate_identity_phase(v_pe, offset, length, num_guide_tokens, phase)
+                    return [(v_pe, cross_v), pe[1]]
+                return self._rotate_identity_phase(pe, offset, length, num_guide_tokens, phase)
+            except Exception:
+                return pe
+
+        ltxv._prepare_timestep = types.MethodType(prepare_timestep, ltxv)
+        ltxv._prepare_positional_embeddings = types.MethodType(prepare_pe, ltxv)
+        setattr(ltxv, self._IDENTITY_PHASE_TAG, True)
+        return (ltxv, orig_prepare_timestep, orig_prepare_pe)
+
+    def _strip_identity_phase(self, handle):
+        if not handle:
+            return
+        ltxv, orig_prepare_timestep, orig_prepare_pe = handle
+        try:
+            ltxv._prepare_timestep = orig_prepare_timestep
+            ltxv._prepare_positional_embeddings = orig_prepare_pe
+            setattr(ltxv, self._IDENTITY_PHASE_TAG, False)
+            for attr in ("_funpack_identity_range", "_funpack_identity_phase_value"):
+                if hasattr(ltxv, attr):
+                    delattr(ltxv, attr)
+        except Exception:
+            pass
+
+    def _rotate_identity_phase(self, pe, offset, length, num_guide_tokens, phase, theta=10000.0):
+        """Givens-rotate the RoPE freqs of exactly [guide_start+offset, guide_start+offset+length)
+        (a single guide entry's tokens, identified upstream — never the whole guide-token tail)
+        by a phase derived from `phase` — the same source_phase tag the LoRA saw at train time.
+        pe = (cos, sin, split_mode) with cos/sin shaped [..., T, L]. Returns a new pe tuple."""
+        if length <= 0 or not phase:
+            return pe
+        cos, sin = pe[0], pe[1]
+        rest = tuple(pe[2:])
+        T = cos.shape[-2]
+        guide_start = T - int(num_guide_tokens)
+        start = guide_start + int(offset)
+        end = start + int(length)
+        if start < 0 or end > T or start >= end:
+            return pe
+        L = cos.shape[-1]
+        d = torch.arange(L, device=cos.device, dtype=torch.float32)
+        rate = theta ** (-d / float(L))
+        rot = (float(phase) * rate)
+        pc = rot.cos().to(cos.dtype); ps = rot.sin().to(sin.dtype)
+        idx = [slice(None)] * cos.dim()
+        idx[-2] = slice(start, end)
+        idx = tuple(idx)
+        c0, s0 = cos[idx], sin[idx]
+        cos = cos.clone(); sin = sin.clone()
+        cos[idx] = c0 * pc - s0 * ps
+        sin[idx] = s0 * pc + c0 * ps
+        return (cos, sin, *rest)
+
     def _bounded_attention_region_mask(self, t, h, w, device):
         """[T*H*W] region id per video token: 0 = left half (by width), 1 = right half.
         Assumes (t, h, w) row-major flattening — matches the packed-latent layout
@@ -4190,6 +4359,7 @@ class FunPackLTXAVSceneChainSampler:
                output_guidance=False, output_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+               identity_transfer_enabled=False, identity_transfer_phase=2.0,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4381,6 +4551,7 @@ class FunPackLTXAVSceneChainSampler:
             soft_carried = 0
             guide_tail = 0
             audio_tail = 0
+            identity_phase_applied = False
             run_mechanisms: list = []
             anchor_meta = (scene_anchors or {}).get(str(scene_index))
             if output is None:
@@ -4390,9 +4561,11 @@ class FunPackLTXAVSceneChainSampler:
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
                     run_mechanisms.append("custom_guide_stack")
-                    chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
+                    chunk, scene_positive, scene_negative, carried, guide_tail, identity_phase_applied = self._apply_configured_guides(
                         chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
                         scene_positive, scene_negative, vae,
+                        identity_transfer_enabled=identity_transfer_enabled,
+                        identity_transfer_phase=identity_transfer_phase,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
             elif anchor_meta:
@@ -4432,9 +4605,11 @@ class FunPackLTXAVSceneChainSampler:
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
                     run_mechanisms.append("custom_guide_stack")
-                    chunk, scene_positive, scene_negative, carried, guide_tail = self._apply_configured_guides(
+                    chunk, scene_positive, scene_negative, carried, guide_tail, identity_phase_applied = self._apply_configured_guides(
                         chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
                         scene_positive, scene_negative, vae,
+                        identity_transfer_enabled=identity_transfer_enabled,
+                        identity_transfer_phase=identity_transfer_phase,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
                 elif carry_i2v_guides:
@@ -4469,6 +4644,7 @@ class FunPackLTXAVSceneChainSampler:
             # mode as the block-hook leak; see _strip_funpack_scene_wrappers).
             _scene_base_wrapper = model.model_options.get("model_function_wrapper")
             _v2a_handles = []
+            _identity_phase_handle = None
             try:
                 if embed_guidance and _value_fn is not None and _value_fn.is_ready():
                     run_mechanisms.append("embed_guidance_vf_ascend")
@@ -4520,6 +4696,10 @@ class FunPackLTXAVSceneChainSampler:
                     _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
                     if _v2a_handles:
                         run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
+                if identity_transfer_enabled and identity_phase_applied:
+                    _identity_phase_handle = self._install_identity_phase(model)
+                    if _identity_phase_handle:
+                        run_mechanisms.append(f"identity_transfer_phase({identity_transfer_phase})")
                 _t_sample0 = _time.perf_counter()
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
@@ -4533,6 +4713,7 @@ class FunPackLTXAVSceneChainSampler:
                 _phase_sampling += _scene_sample_s
             finally:
                 self._remove_v2a_scale(_v2a_handles)
+                self._strip_identity_phase(_identity_phase_handle)
                 if model.model_options.get("model_function_wrapper") is not _scene_base_wrapper:
                     if _scene_base_wrapper is not None:
                         model.model_options["model_function_wrapper"] = _scene_base_wrapper
