@@ -7,7 +7,6 @@
 
   const DELIMS = /[,\n;]/;          // token boundaries — a trigger lives between delimiters
   const MIN_QUERY = 2;
-  const MAX_ITEMS = 8;
 
   function enabled() { return !!S.getEditorSetting("autocomplete"); }
 
@@ -25,7 +24,9 @@
   }
 
   // Triggers whose text contains `query` (substring, so "@golden" matches "golden"),
-  // prefix matches ranked first, identical triggers de-duped.
+  // prefix matches ranked first, identical triggers de-duped. Unbounded — the menu itself
+  // scrolls (max-height in CSS), so a prefix shared by many shortcuts (e.g. 15 "lazy_*"
+  // triggers) shows every one of them instead of silently hiding the tail.
   function matchTriggers(query) {
     const q = query.toLowerCase();
     const scored = [];
@@ -42,7 +43,6 @@
       const k = e.trigger.toLowerCase();
       if (seen.has(k)) continue;
       seen.add(k); uniq.push(e);
-      if (uniq.length >= MAX_ITEMS) break;
     }
     return uniq;
   }
