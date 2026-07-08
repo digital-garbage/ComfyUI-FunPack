@@ -117,6 +117,10 @@ from samplers import FunPackLTXAVSceneChainSampler
 class FakeVAE:
     downscale_index_formula = (1, 1, 1)
 
+    def decode(self, samples):
+        b, _c, t, _h, _w = samples.shape
+        return torch.zeros(b, t, 8, 8, 3)
+
 
 class FakeModel:
     """Minimal stand-in with the one attribute the per-scene wrapper snapshot/restore
@@ -142,8 +146,8 @@ def test_scene_chain_detects_scene_count_and_increments_seed():
     positive = [scene_cond(0), scene_cond(1), scene_cond(2)]
     negative = [(torch.zeros(1, 2, 3), {})]
 
-    latent, status, scene_count, report = node.sample(
-        model=object(),
+    latent, _images, status, scene_count, report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=negative,
@@ -175,8 +179,8 @@ def test_scene_chain_accepts_manual_combined_conditioning_without_metadata():
         (torch.ones(1, 2, 3) * 3.0, {}),
     ]
 
-    _, status, scene_count, report = node.sample(
-        model=object(),
+    _, _images, status, scene_count, report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -194,8 +198,9 @@ def test_scene_chain_accepts_manual_combined_conditioning_without_metadata():
     assert [call["seed"] for call in sample_calls] == [70, 71, 72]
     assert [call["positive"][0][0].mean().item() for call in sample_calls] == [1.0, 2.0, 3.0]
     assert "3 scene(s)" in status
-    assert "Scene 1: seed=70, text=Scene 1" in report
-    assert "Scene 3: seed=72, text=Scene 3" in report
+    # Per-scene report lines now include a "sampling {s}s" timing segment between seed and text.
+    assert "Scene 1: seed=70," in report and "text=Scene 1" in report
+    assert "Scene 3: seed=72," in report and "text=Scene 3" in report
 
 
 def test_scene_chain_uses_scene_seed_metadata():
@@ -208,8 +213,8 @@ def test_scene_chain_uses_scene_seed_metadata():
         (torch.ones(1, 2, 3), {"funpack_scene_text": "scene c", "funpack_scene_seed": 303}),
     ]
 
-    _, _, scene_count, report = node.sample(
-        model=object(),
+    _, _images, _status, scene_count, report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -238,8 +243,8 @@ def test_scene_chain_use_same_seed_forces_first_seed():
         (torch.ones(1, 2, 3), {"funpack_scene_text": "scene c"}),
     ]
 
-    _, _, scene_count, _ = node.sample(
-        model=object(),
+    _, _images, _status, scene_count, _report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -266,8 +271,8 @@ def test_scene_chain_preserves_nested_av_structure_and_audio_length():
     latent_template = {"samples": FakeNestedTensor([video, audio])}
     positive = [scene_cond(0), scene_cond(1)]
 
-    latent, _, scene_count, _ = node.sample(
-        model=object(),
+    latent, _images, _status, scene_count, _report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -297,8 +302,8 @@ def test_scene_chain_default_max_is_eight_but_allows_more():
     latent_template = {"samples": torch.zeros(1, 2, 3, 2, 2)}
     positive = [scene_cond(index) for index in range(10)]
 
-    latent, status, scene_count, report = node.sample(
-        model=object(),
+    latent, _images, status, scene_count, report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -330,8 +335,8 @@ def test_scene_chain_can_append_i2v_template_as_hidden_guide():
     latent_template = {"samples": samples, "noise_mask": mask}
     positive = [scene_cond(0), scene_cond(1)]
 
-    latent, status, scene_count, _ = node.sample(
-        model=object(),
+    latent, _images, status, scene_count, _report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -346,16 +351,17 @@ def test_scene_chain_can_append_i2v_template_as_hidden_guide():
         carry_i2v_guides=True,
     )
 
+    # _append_i2v_guides prepends the guide frame (temporal pos 0) so it never collides with
+    # the overlap frames that follow: [guide, overlap0, overlap1, mid, mid, mid].
     second_call = sample_calls[1]
     assert scene_count == 2
     assert second_call["latent_image"].shape[2] == 6
-    assert torch.all(second_call["latent_image"][:, :, 2:5] == 0.0)
-    assert torch.all(second_call["latent_image"][:, :, 5] == 7.0)
-    assert torch.all(second_call["noise_mask"][:, :, :2] == 0.0)
-    assert torch.all(second_call["noise_mask"][:, :, 2:5] == 1.0)
-    assert torch.all(second_call["noise_mask"][:, :, 5] == 0.0)
-    assert "keyframe_idxs" in second_call["positive"][0][1]
-    assert second_call["positive"][0][1]["guide_attention_entries"][0]["pre_filter_count"] == 1
+    assert torch.all(second_call["latent_image"][:, :, 0] == 7.0)
+    assert torch.all(second_call["latent_image"][:, :, 3:6] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, :3] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, 3:6] == 1.0)
+    # _append_i2v_guides is a plain protected-frame append (tensor + mask only) — unlike
+    # mid_scene_guide/joyai memory it does not add keyframe_idxs/guide_attention_entries.
     assert latent["samples"].shape[2] == 8
     assert "i2v guide tokens=1 latent frame(s)" in status
 
@@ -370,8 +376,8 @@ def test_scene_chain_expands_compact_i2v_guide_mask_to_spatial_chunk_mask():
     latent_template = {"samples": samples, "noise_mask": mask}
     positive = [scene_cond(0), scene_cond(1)]
 
-    _, status, scene_count, _ = node.sample(
-        model=object(),
+    _, _images, status, scene_count, _report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -386,10 +392,11 @@ def test_scene_chain_expands_compact_i2v_guide_mask_to_spatial_chunk_mask():
         carry_i2v_guides=True,
     )
 
+    # Guide frame is prepended (temporal pos 0) — see test_scene_chain_can_append_i2v_template_as_hidden_guide.
     second_call = sample_calls[1]
     assert scene_count == 2
     assert second_call["noise_mask"].shape == second_call["latent_image"].shape
-    assert torch.all(second_call["noise_mask"][:, :, 5] == 0.0)
+    assert torch.all(second_call["noise_mask"][:, :, 0] == 0.0)
     assert "i2v guide tokens=1 latent frame(s)" in status
 
 
@@ -406,8 +413,8 @@ def test_scene_chain_does_not_carry_i2v_guides_by_default():
     latent_template = {"samples": samples, "noise_mask": mask}
     positive = [scene_cond(0), scene_cond(1)]
 
-    _, status, scene_count, _ = node.sample(
-        model=object(),
+    _, _images, status, scene_count, _report, _boundaries = node.sample(
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -469,7 +476,7 @@ def test_overlap_diagnostics_report_latent_blend_zone():
     positive = [scene_cond(0), scene_cond(1)]
     latent_template = {"samples": torch.zeros(1, 2, 5, 1, 1)}
     _, _, status, _, _, boundaries_json = node.sample(
-        model=object(),
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -506,7 +513,7 @@ def test_mixed_solo_applies_guides_on_first_chunk():
     positive = [scene_cond(0)]
 
     latent, _images, status, scene_count, _report, boundaries_json = node.sample(
-        model=object(),
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
@@ -544,7 +551,7 @@ def test_mixed_anchor_skips_frame_overlap():
     anchors = json.dumps({"1": {"filename": "anchor.png", "strength": 1.0}})
 
     latent, _images, status, scene_count, _report, boundaries_json = node.sample(
-        model=object(),
+        model=FakeModel(),
         vae=FakeVAE(),
         positive=positive,
         negative=[],
