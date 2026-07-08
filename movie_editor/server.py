@@ -209,6 +209,56 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False
         raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
 
 
+def _is_faststart(path: str) -> bool:
+    """True if the MP4's moov atom comes before mdat (so browsers can start decoding from a
+    progressive/Range fetch without seeking to the tail first). ComfyUI's own VHS_VideoCombine
+    output has no +faststart, so its moov sits at the end — deep-seeking that raw file is what
+    the preview-segment path already routes around; this lets /result fix it for everyone else
+    (scrubbing a "shallow" clip, or just opening one) without needing a segment at all."""
+    import os
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            offset = 0
+            while offset + 8 <= size:
+                f.seek(offset)
+                header = f.read(8)
+                if len(header) < 8:
+                    break
+                box_size = int.from_bytes(header[:4], "big")
+                box_type = header[4:8]
+                if box_type == b"moov":
+                    return True
+                if box_type == b"mdat":
+                    return False
+                if box_size == 1:
+                    ext = f.read(8)
+                    if len(ext) < 8:
+                        break
+                    box_size = int.from_bytes(ext, "big")
+                elif box_size == 0:
+                    return False  # box runs to EOF (typically mdat) without a moov seen yet
+                if box_size < 8:
+                    break
+                offset += box_size
+    except OSError:
+        return False
+    return False
+
+
+def _remux_faststart(src_path: str, out_path: str) -> None:
+    """Stream-copy remux (no re-encode) that just relocates moov to the front."""
+    import shutil
+    import subprocess
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        raise RuntimeError("ffmpeg not found on PATH.")
+    cmd = [ff, "-y", "-i", src_path, "-c", "copy", "-movflags", "+faststart", out_path]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
+
+
 def _playback_render_from_query(query) -> Optional[dict]:
     """Optional live render override from preview-segment query params."""
     filename = query.get("filename") if query else None
@@ -280,6 +330,9 @@ def _scene_playback_clip_spec(
 
 _preview_segment_cache: dict[str, str] = {}
 _preview_segment_locks: dict = {}  # cache key -> asyncio.Lock (dedupe concurrent encodes)
+
+_faststart_cache: dict[str, str] = {}  # source path -> remuxed (faststart) path
+_faststart_locks: dict = {}  # source path -> asyncio.Lock (dedupe concurrent remuxes)
 
 
 def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
@@ -1749,6 +1802,47 @@ if web is not None and PromptServer is not None:
     async def _temp_list(_req):
         return web.json_response({"files": _list_temp_media()})
 
+    async def _faststart_path(src_path: str) -> str:
+        """Serve a stream-copy-remuxed (moov-at-front) copy in place of a raw ComfyUI render.
+        VHS_VideoCombine writes moov at the end; deep-seeking that directly in the browser is
+        exactly what preview-segment already routes chain clips around, but a "shallow" single
+        clip (or just opening one) hits /result directly and gets the same undecodable-on-seek
+        file. Cached + lock-deduped like the segment cache below; skipped entirely (no-op) for
+        anything that already has moov up front, e.g. FunPack's own segment/export/final-render
+        output, which already sets +faststart itself. MP4/MOV only (moov/mdat is an ISO-BMFF
+        concept — a non-.mp4 container falling through the caller's extension gate would just
+        get echoed back as-is here, not silently mis-remuxed into a mismatched container)."""
+        import asyncio
+        import os
+        if os.path.splitext(src_path)[1].lower() != ".mp4":
+            return src_path
+        cached = _faststart_cache.get(src_path)
+        if cached and os.path.isfile(cached):
+            return cached
+        if _is_faststart(src_path):
+            return src_path
+        lock = _faststart_locks.setdefault(src_path, asyncio.Lock())
+        async with lock:
+            cached = _faststart_cache.get(src_path)
+            if cached and os.path.isfile(cached):
+                return cached
+            try:
+                import folder_paths
+                tempdir = folder_paths.get_temp_directory()
+            except Exception:
+                return src_path
+            base = os.path.splitext(os.path.basename(src_path))[0]
+            out_path = os.path.join(tempdir, f"funpack_faststart_{base}.mp4")
+            try:
+                # to_thread: same event-loop-freeze hazard as preview-segment encodes below —
+                # this is a stream copy (no re-encode) so it's fast, but still blocking I/O.
+                await asyncio.to_thread(_remux_faststart, src_path, out_path)
+            except Exception as e:  # noqa: BLE001
+                print(f"[FunPack] faststart remux failed for {src_path}: {e}")
+                return src_path
+            _faststart_cache[src_path] = out_path
+        return out_path
+
     @routes.get(UI_PREFIX + "/api/projects/{pid}/result")
     async def _result(req):
         import os
@@ -1769,6 +1863,8 @@ if web is not None and PromptServer is not None:
         if path and os.path.isfile(path):
             import mimetypes as _mt
             ctype = _mt.guess_type(path)[0] or "application/octet-stream"
+            if ctype.startswith("video/"):
+                path = await _faststart_path(path)
             return web.FileResponse(path, headers={"Content-Type": ctype})
         # Fallback (custom output dirs the resolver doesn't know): loopback /view fetch.
         try:
