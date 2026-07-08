@@ -136,6 +136,27 @@ def test_identity_pin_appends_normally_when_disabled(monkeypatch):
     assert identity_ref_filename is None
 
 
+# ── _identity_pin_filename (standalone lookup for the mixed i2v anchor branch,
+#    which skips _apply_configured_guides entirely) ─────────────────────────────
+
+def test_identity_pin_filename_finds_first_pin_entry():
+    s = _sampler()
+    guide_list = [
+        {"enabled": True, "source": "image", "media_ref": "prior", "strength": 0.35},
+        {"enabled": True, "source": "image", "media_ref": "pin", "identity_pin": True, "strength": 0.35},
+    ]
+    scene_media_by_ref = {"pin": "pin.png", "prior": "prior.png"}
+    assert s._identity_pin_filename(guide_list, scene_media_by_ref, True) == "pin.png"
+
+
+def test_identity_pin_filename_none_when_disabled_or_missing():
+    s = _sampler()
+    guide_list = [{"enabled": True, "source": "image", "media_ref": "pin", "identity_pin": True}]
+    assert s._identity_pin_filename(guide_list, {"pin": "pin.png"}, False) is None
+    assert s._identity_pin_filename(guide_list, {}, True) is None
+    assert s._identity_pin_filename(None, {"pin": "pin.png"}, True) is None
+
+
 # ── _install_identity_overlap / _strip_identity_overlap ────────────────────────
 
 class _FakePatchifier:

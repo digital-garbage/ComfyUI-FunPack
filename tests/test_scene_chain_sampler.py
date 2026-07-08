@@ -118,6 +118,16 @@ class FakeVAE:
     downscale_index_formula = (1, 1, 1)
 
 
+class FakeModel:
+    """Minimal stand-in with the one attribute the per-scene wrapper snapshot/restore
+    (samplers.py, around _scene_base_wrapper) needs. Plain object() lacks model_options
+    entirely, which pre-dates this feature (every sample()-calling test in this file
+    currently fails on that AttributeError — a known stale-mock gap, not something this
+    change introduces or fixes file-wide)."""
+    def __init__(self):
+        self.model_options = {}
+
+
 def scene_cond(index):
     return (
         torch.ones(1, 2, 3) * float(index + 1),
@@ -557,3 +567,110 @@ def test_mixed_anchor_skips_frame_overlap():
     mechs = parsed["scenes"][1]["mechanisms"]
     assert "mixed_i2v_anchor" in mechs
     assert not any("latent_overlap" in m for m in mechs)
+
+
+def test_mixed_anchor_carries_overlap_when_enabled():
+    """carry_overlap_through_anchor=True: the chunk fed to scene 1's sampler call is seeded
+    with scene 0's tail (frame_overlap latent frames) instead of a bare template, even though
+    scene 1 has its own i2v anchor. The mocked _apply_img2video_to_video_latent is an identity
+    passthrough here, so whatever _build_mixed_anchor_chunk hands it is exactly what gets
+    sampled — letting us assert on the carried values and protected mask directly."""
+    import json
+
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    node._load_image_tensor = lambda _fn: torch.ones(1, 8, 8, 3)
+    node._apply_img2video_to_video_latent = lambda _vae, _img, chunk, _strength: node._clone_latent(chunk)
+
+    positive = [scene_cond(0), scene_cond(1)]
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    anchors = json.dumps({"1": {"filename": "anchor.png", "strength": 1.0}})
+
+    latent, _images, status, scene_count, _report, boundaries_json = node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=80,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+        funpack_scene_anchors=anchors,
+        carry_overlap_through_anchor=True,
+        prompt={"n1": {"inputs": {}}},
+        unique_id="test-node",
+    )
+
+    assert scene_count == 2
+    assert latent["samples"].shape[2] == 10
+    parsed = json.loads(boundaries_json)
+    mechs = parsed["scenes"][1]["mechanisms"]
+    assert "mixed_i2v_anchor" in mechs
+    assert "latent_overlap_through_anchor(2px)" in mechs
+
+    # Scene 0 (no anchor) samples with mask=None, so _sample_like adds its seed (80) uniformly:
+    # scene 0's full output is all 80s. Scene 1's chunk should carry the last 2 frames of that
+    # (80, 80) into its own leading frames, protected (mask=0), template's remaining 3 frames
+    # untouched (0) and free to denoise (mask=1).
+    scene1_chunk = sample_calls[1]["latent_image"]
+    scene1_mask = sample_calls[1]["noise_mask"]
+    samples = scene1_chunk["samples"] if isinstance(scene1_chunk, dict) else scene1_chunk
+    mask = scene1_mask["samples"] if isinstance(scene1_mask, dict) else scene1_mask
+    assert torch.allclose(samples[:, :, :2], torch.full_like(samples[:, :, :2], 80.0))
+    assert torch.allclose(samples[:, :, 2:], torch.zeros_like(samples[:, :, 2:]))
+    assert torch.allclose(mask[:, :, :2], torch.zeros_like(mask[:, :, :2]))
+    assert torch.allclose(mask[:, :, 2:], torch.ones_like(mask[:, :, 2:]))
+
+
+def test_mixed_anchor_resolves_identity_pin_when_configured():
+    """The mixed_i2v_anchor branch skips _apply_configured_guides entirely, so without the
+    explicit lookup an identity_pin guide configured for the anchor scene would never resolve
+    and Best-FaceID identity_transfer could never fire on an anchor-swap scene."""
+    import json
+
+    sample_calls.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    node._load_image_tensor = lambda _fn: torch.ones(1, 8, 8, 3)
+    node._apply_img2video_to_video_latent = lambda _vae, _img, chunk, _strength: node._clone_latent(chunk)
+
+    positive = [scene_cond(0), scene_cond(1)]
+    latent_template = {"samples": torch.zeros(1, 2, 5, 3, 3)}
+    anchors = json.dumps({"1": {"filename": "anchor.png", "strength": 1.0}})
+    guides = json.dumps({
+        "stack_enabled": True,
+        "scenes": [
+            [],
+            [{"enabled": True, "source": "image", "media_ref": "pin", "identity_pin": True, "strength": 0.35}],
+        ],
+    })
+    media_refs = json.dumps({"pin": "pin.png"})
+
+    _latent, _images, _status, scene_count, _report, boundaries_json = node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=positive,
+        negative=[],
+        sampler=object(),
+        sigmas=torch.tensor([1.0, 0.0]),
+        seed=80,
+        latent_template=latent_template,
+        num_frames_per_scene=5,
+        frame_overlap=2,
+        cfg=1.0,
+        max_scenes=2,
+        funpack_scene_anchors=anchors,
+        funpack_scene_guides=guides,
+        funpack_scene_media_refs=media_refs,
+        identity_transfer_enabled=True,
+        prompt={"n1": {"inputs": {}}},
+        unique_id="test-node",
+    )
+
+    assert scene_count == 2
+    parsed = json.loads(boundaries_json)
+    mechs = parsed["scenes"][1]["mechanisms"]
+    assert "identity_pin_on_anchor_scene" in mechs

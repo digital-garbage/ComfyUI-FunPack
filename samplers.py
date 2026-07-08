@@ -2424,6 +2424,12 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "Print per-scene identity-transfer shape/status logs to the console.",
                 }),
+                # NOTE: append-only — keep new sampler widgets at the END of this block so the
+                # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
+                "carry_overlap_through_anchor": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "When a scene switches to its own i2v anchor (funpack_scene_anchors — a different reference image/character than the previous scene), still carry frame_overlap latent frames from the previous scene's tail into the frames right after the anchor image, instead of the default hard cut with no carried context. Preserves background/environment continuity through an anchor change (e.g. a Best-FaceID identity_transfer scene swapping the reference face mid-chain). The anchor image's own leading frame is never touched by the carried tail. No effect on scenes without a per-scene anchor.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3794,17 +3800,43 @@ class FunPackLTXAVSceneChainSampler:
         out = self._invoke_img2video_inplace(vae, image, chunk, strength)
         return out if out is not None else chunk
 
-    def _build_mixed_anchor_chunk(self, vae, anchor_meta, latent_template, previous, video_overlap):
-        """Mixed source: Img2Video anchor latent only — prior scene overlap is not used."""
+    def _build_mixed_anchor_chunk(self, vae, anchor_meta, latent_template, previous, video_overlap,
+                                  carry_overlap=False):
+        """Mixed source: Img2Video anchor latent. By default prior scene overlap is not used
+        (hard cut). When carry_overlap is set and a previous scene exists, the chunk is first
+        seeded as a normal continuation (previous scene's tail copied into the leading
+        video_overlap frames, protected) and the anchor image is then written on top — since
+        LTXVImgToVideoInplace only overwrites the single encoded image frame's worth of samples
+        and preserves the rest of the incoming noise_mask, the anchor's own leading frame stays a
+        hard cut while the remaining carried frames keep the old scene's background/environment."""
         filename = (anchor_meta or {}).get("filename")
         strength = float((anchor_meta or {}).get("strength", 1.0))
         image = self._load_image_tensor(filename) if filename else None
         if image is None:
             if previous is None:
                 return self._clone_latent(latent_template)
-            return self._build_continuation_chunk(latent_template, previous, video_overlap)
-        base = self._clone_latent(latent_template)
+            return self._build_continuation_chunk(latent_template, previous, 0)
+        if carry_overlap and previous is not None and video_overlap > 0:
+            base = self._build_continuation_chunk(latent_template, previous, video_overlap)
+        else:
+            base = self._clone_latent(latent_template)
         return self._apply_img2video_to_video_latent(vae, image, base, strength)
+
+    def _identity_pin_filename(self, guide_list, scene_media_by_ref, identity_transfer_enabled):
+        """First identity_pin-tagged image guide's filename, or None. Mirrors the matching
+        inside _apply_configured_guides, but callable standalone for branches (like the mixed
+        i2v anchor path) that don't run the rest of the guide stack against their chunk."""
+        if not identity_transfer_enabled:
+            return None
+        for g in guide_list or []:
+            if not g or not g.get("enabled", True):
+                continue
+            if str(g.get("source", "template")) == "image" and g.get("identity_pin"):
+                ref = g.get("media_ref")
+                fn = (scene_media_by_ref or {}).get(ref) if ref else None
+                if fn:
+                    return fn
+        return None
 
     def _encode_image_guide_frame(self, filename, vae, ref_tensor):
         import os
@@ -4454,6 +4486,7 @@ class FunPackLTXAVSceneChainSampler:
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
                phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
+               carry_overlap_through_anchor=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4674,8 +4707,20 @@ class FunPackLTXAVSceneChainSampler:
                     "effect": effect if effect and transition_duration > 0 else None,
                 })
                 chunk = self._build_mixed_anchor_chunk(
-                    vae, anchor_meta, latent_template, output, 0,
+                    vae, anchor_meta, latent_template, output, video_overlap,
+                    carry_overlap=carry_overlap_through_anchor,
                 )
+                if carry_overlap_through_anchor and video_overlap > 0:
+                    run_mechanisms.append(f"latent_overlap_through_anchor({frame_overlap}px)")
+                # The anchor branch skips _apply_configured_guides entirely, so an identity_pin
+                # guide configured for this scene would otherwise never resolve — Best-FaceID
+                # identity_transfer needs this to fire on the exact scenes that swap anchors.
+                if per_scene_guides and scene_index < len(per_scene_guides):
+                    identity_ref_filename = self._identity_pin_filename(
+                        per_scene_guides[scene_index], scene_media_by_ref, identity_transfer_enabled,
+                    )
+                    if identity_ref_filename:
+                        run_mechanisms.append("identity_pin_on_anchor_scene")
             else:
                 # Record boundary before blending
                 effect = self._scene_transition_effect(scene_cond)
@@ -4836,6 +4881,11 @@ class FunPackLTXAVSceneChainSampler:
                 a_frame = self._harvest_joyai_audio(sampled, joyai_frame_select) if joyai_audio_memory else None
                 joyai_bank.add(v_frame, a_frame)
             scene_outputs.append(self._clone_latent(sampled))
+            # Stays 0 for anchor scenes even with carry_overlap_through_anchor on: the post-sample
+            # slerp blend would reach into the anchor image's own leading frame (position 0 of
+            # `sampled`) and fade it against the previous scene's tail, undermining the hard cut.
+            # The carried frames beyond it are already seeded pre-sample (see
+            # _build_mixed_anchor_chunk), so no post-hoc smoothing is needed there.
             blend_overlap = 0 if anchor_meta else video_overlap
             output = sampled if output is None else self._blend_latents(output, sampled, blend_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
@@ -4961,6 +5011,7 @@ class FunPackLTXAVSceneChainSampler:
                     "transitions_enabled": scene_count > 1,
                     "joyai_memory": bool(joyai_memory),
                     "joyai_audio_memory": bool(joyai_audio_memory),
+                    "carry_overlap_through_anchor": bool(carry_overlap_through_anchor),
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
