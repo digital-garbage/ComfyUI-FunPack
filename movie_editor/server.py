@@ -209,17 +209,19 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False
         raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
 
 
-def _is_faststart(path: str) -> bool:
-    """True if the MP4's moov atom comes before mdat (so browsers can start decoding from a
-    progressive/Range fetch without seeking to the tail first). ComfyUI's own VHS_VideoCombine
-    output has no +faststart, so its moov sits at the end — deep-seeking that raw file is what
-    the preview-segment path already routes around; this lets /result fix it for everyone else
-    (scrubbing a "shallow" clip, or just opening one) without needing a segment at all."""
+def _moov_position(path: str) -> str:
+    """Where the MP4's moov atom sits: "front" (before mdat — browsers can decode from a
+    progressive/Range fetch), "end" (after mdat — ComfyUI's own VHS_VideoCombine output; a
+    complete file, but deep-seeking it raw is undecodable in the browser), or "none" (no moov
+    anywhere — the file is still being written, or a save was aborted; ffmpeg can't read it
+    either, so it must never be served as video). Distinguishing "end" from "none" is what
+    lets /result tell "remux me" apart from "come back later"."""
     import os
     try:
         with open(path, "rb") as f:
             size = os.fstat(f.fileno()).st_size
             offset = 0
+            seen_mdat = False
             while offset + 8 <= size:
                 f.seek(offset)
                 header = f.read(8)
@@ -228,22 +230,31 @@ def _is_faststart(path: str) -> bool:
                 box_size = int.from_bytes(header[:4], "big")
                 box_type = header[4:8]
                 if box_type == b"moov":
-                    return True
+                    return "end" if seen_mdat else "front"
                 if box_type == b"mdat":
-                    return False
+                    seen_mdat = True
                 if box_size == 1:
                     ext = f.read(8)
                     if len(ext) < 8:
                         break
                     box_size = int.from_bytes(ext, "big")
                 elif box_size == 0:
-                    return False  # box runs to EOF (typically mdat) without a moov seen yet
+                    # Box runs to EOF without a size (mdat still being streamed to disk —
+                    # ffmpeg backfills the size on finalize): nothing after it, no moov.
+                    return "none"
                 if box_size < 8:
                     break
                 offset += box_size
     except OSError:
-        return False
-    return False
+        pass
+    return "none"
+
+
+def _file_sig(path: str) -> tuple:
+    """Change detector for cache keys: same (mtime_ns, size) ⇒ same bytes for our purposes."""
+    import os
+    st = os.stat(path)
+    return (st.st_mtime_ns, st.st_size)
 
 
 def _remux_faststart(src_path: str, out_path: str) -> None:
@@ -331,7 +342,8 @@ def _scene_playback_clip_spec(
 _preview_segment_cache: dict[str, str] = {}
 _preview_segment_locks: dict = {}  # cache key -> asyncio.Lock (dedupe concurrent encodes)
 
-_faststart_cache: dict[str, str] = {}  # source path -> remuxed (faststart) path
+_faststart_cache: dict[str, tuple] = {}  # source path -> (source sig, remuxed faststart path)
+_faststart_raw_ok: dict[str, tuple] = {}  # source path -> sig a stable file failed to remux at (serve raw, don't re-run ffmpeg per request)
 _faststart_locks: dict = {}  # source path -> asyncio.Lock (dedupe concurrent remuxes)
 
 
@@ -1811,37 +1823,80 @@ if web is not None and PromptServer is not None:
         anything that already has moov up front, e.g. FunPack's own segment/export/final-render
         output, which already sets +faststart itself. MP4/MOV only (moov/mdat is an ISO-BMFF
         concept — a non-.mp4 container falling through the caller's extension gate would just
-        get echoed back as-is here, not silently mis-remuxed into a mismatched container)."""
+        get echoed back as-is here, not silently mis-remuxed into a mismatched container).
+
+        A file with NO moov (still being written, or an aborted save) raises 503 instead of
+        being served: raw moov-less bytes are undecodable, and once the write finishes the
+        same URL would start serving different bytes — a browser mid-Range-stream then mixes
+        offsets (PIPELINE decode errors) or fails If-Range and restarts the clip from 0.
+        Caches are keyed on the source's (mtime, size) signature and the remux output name is
+        derived from path+signature, so a rewritten source can't serve a stale copy and two
+        sources sharing a basename can't overwrite each other's remux mid-stream."""
         import asyncio
+        import hashlib
         import os
         if os.path.splitext(src_path)[1].lower() != ".mp4":
             return src_path
+        try:
+            sig = _file_sig(src_path)
+        except OSError:
+            return src_path  # caller re-checks existence / falls through to 404
         cached = _faststart_cache.get(src_path)
-        if cached and os.path.isfile(cached):
-            return cached
-        if _is_faststart(src_path):
-            return src_path
+        if cached and cached[0] == sig and os.path.isfile(cached[1]):
+            return cached[1]
         lock = _faststart_locks.setdefault(src_path, asyncio.Lock())
         async with lock:
+            try:
+                sig = _file_sig(src_path)
+            except OSError:
+                return src_path
             cached = _faststart_cache.get(src_path)
-            if cached and os.path.isfile(cached):
-                return cached
+            if cached and cached[0] == sig and os.path.isfile(cached[1]):
+                return cached[1]
+            pos = _moov_position(src_path)
+            if pos == "front":
+                return src_path
+            if pos == "none":
+                # Mid-write (or truncated junk): never serve — undecodable, and the bytes
+                # will change under this URL. 503 lets the player's retry loop try again.
+                raise web.HTTPServiceUnavailable(
+                    reason="Video file is still being written.", headers={"Retry-After": "2"})
+            if _faststart_raw_ok.get(src_path) == sig:
+                return src_path
             try:
                 import folder_paths
                 tempdir = folder_paths.get_temp_directory()
             except Exception:
                 return src_path
-            base = os.path.splitext(os.path.basename(src_path))[0]
-            out_path = os.path.join(tempdir, f"funpack_faststart_{base}.mp4")
+            digest = hashlib.md5(f"{src_path}|{sig[0]}|{sig[1]}".encode()).hexdigest()[:16]
+            out_path = os.path.join(tempdir, f"funpack_faststart_{digest}.mp4")
+            err = None
             try:
                 # to_thread: same event-loop-freeze hazard as preview-segment encodes below —
                 # this is a stream copy (no re-encode) so it's fast, but still blocking I/O.
                 await asyncio.to_thread(_remux_faststart, src_path, out_path)
+                ok = os.path.getsize(out_path) > 0 and _moov_position(out_path) == "front"
             except Exception as e:  # noqa: BLE001
-                print(f"[FunPack] faststart remux failed for {src_path}: {e}")
-                return src_path
-            _faststart_cache[src_path] = out_path
-        return out_path
+                ok = False
+                err = e
+            try:
+                sig_now = _file_sig(src_path)
+            except OSError:
+                sig_now = None  # deleted under us — retry will 404 definitively
+            if ok and sig_now == sig:
+                _faststart_cache[src_path] = (sig, out_path)
+                return out_path
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+            if sig_now != sig:
+                # Source changed under the remux — it's being (re)written right now.
+                raise web.HTTPServiceUnavailable(
+                    reason="Video file is still being written.", headers={"Retry-After": "2"})
+            print(f"[FunPack] faststart remux failed for {src_path}: {err}")
+            _faststart_raw_ok[src_path] = sig  # stable but un-remuxable: serve raw, once
+            return src_path
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/result")
     async def _result(req):
@@ -1927,7 +1982,22 @@ if web is not None and PromptServer is not None:
             clip = _ghost_playback_clip_spec(req.query)
             if clip is None:
                 return web.json_response({"detail": str(e)}, status=404)
-        key = _preview_segment_cache_key(pid, scene_id, clip)
+        try:
+            src_path = _resolve_clip_src_path(clip)
+            src_sig = _file_sig(src_path)
+        except FileNotFoundError as e:
+            return web.json_response({"detail": str(e)}, status=400)
+        except OSError as e:
+            return web.json_response({"detail": str(e)}, status=503)
+        if os.path.splitext(src_path)[1].lower() == ".mp4" and _moov_position(src_path) == "none":
+            # No moov ⇒ still being written (VHS finalizes it last) or an aborted save:
+            # ffmpeg can't trim it and the segment would come out truncated/undecodable.
+            return web.json_response(
+                {"detail": "Source video is still being written."},
+                status=503, headers={"Retry-After": "2"})
+        # Source signature in the key: a re-rendered source at the SAME path must not keep
+        # serving the segment encoded from the old bytes (stale previews).
+        key = _preview_segment_cache_key(pid, scene_id, clip) + f":{src_sig[0]}:{src_sig[1]}"
         # Serialize per segment: the pool preloads every clip at once after a run, and a
         # scrub can re-request the same URL — without this lock each request would start
         # its own duplicate encode of the same segment.
@@ -1947,7 +2017,6 @@ if web is not None and PromptServer is not None:
                 f"funpack_preview_{pid[:8]}_{scene_id}_{int(_time.time() * 1000)}.mp4",
             )
             try:
-                src_path = _resolve_clip_src_path(clip)
                 # to_thread: this encode takes seconds — run inline it would freeze the ONE
                 # aiohttp event loop ComfyUI has, stalling every playing /result stream and
                 # the whole editor API for its duration (stale/black previews on scrub).
