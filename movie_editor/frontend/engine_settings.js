@@ -190,6 +190,10 @@
     { name: "arcface_mode", label: "ArcFace detection mode", kind: "combo", choices: ["auto_adjust", "as_is", "disable"], default: "auto_adjust", dependsOn: "identity_transfer_enabled" },
     { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
       hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
+    { name: "plateau_cache", label: "Plateau step-cache (speed)", kind: "bool", default: false,
+      hint: "EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
+    { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
+      hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -294,7 +298,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
