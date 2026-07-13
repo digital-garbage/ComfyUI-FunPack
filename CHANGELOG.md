@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+- **Per-prompt taste direction** (`taste_nearest_prompt`, experimental, Engine ▸ Guidance) —
+  a retrieval layer over the learned taste steering. Instead of pushing Embed guidance /
+  Score slider along the single global liked-direction average, each liked rating now also
+  records a `(prompt fingerprint → that run's liked direction)` entry, and with this on each
+  scene retrieves the similarity-weighted direction of its nearest rated prompts (a forest
+  prompt pulls what worked on forests, not the mean across every prompt). Non-parametric
+  (a plain ring buffer keyed on pooled conditioning) — no extra model forward, just a cosine
+  lookup + vector mean, and no small value function to collapse into a spurious attractor.
+  Falls back to the global liked direction when nothing rated is close enough. Rides the same
+  refine_v2 clip-state file as `liked_dir`, so it's removed atomically with the key.
+
 ### Changed
 - **Best-FaceID identity transfer** (experimental, Engine ▸ Experimental) is now a full native
   port of ComfyUI-BFSNodes' LTX Identity Transfer overlap+source_phase+ArcFace conditioning,

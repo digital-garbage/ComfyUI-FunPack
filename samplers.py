@@ -2438,6 +2438,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
                     "tooltip": "Steps whose sigma is at or above this value count as the reusable plateau (matches the alg_guide_blur_sigma_threshold convention). Higher = fewer steps cached (safer, less speedup); lower = more steps cached (faster, more approximation). 0.975 catches the documented near-pure-noise plateau (schedule steps 1-5) while leaving structure formation (sigma 0.909 onward) fully computed. Only used when plateau_cache is on.",
                 }),
+                "taste_nearest_prompt": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: source embed_guidance / score_slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of the single global liked-direction average. On every liked rating the Refiner records (prompt fingerprint -> that run's liked direction); with this on, each scene retrieves the similarity-weighted direction of its closest matches (a forest prompt pulls what worked on forests, not the mean across all prompts). Non-parametric retrieval — no extra model forward, just a cosine lookup + vector mean, and it can't collapse into a spurious attractor the way a value function can. Falls back to the global liked direction when no rated prompt is close enough (or the index is empty). Only affects embed_guidance / score_slider; needs refinement_key_input (or embed_guidance_source=absolute). UNVALIDATED LIVE.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -3478,6 +3482,75 @@ class FunPackLTXAVSceneChainSampler:
     def _load_liked_direction(self, refinement_key):
         """Read the liked conditioning direction from the Refiner's state file."""
         return self._load_taste_direction(refinement_key, "liked_dir")
+
+    def _load_prompt_dir_index(self, refinement_key):
+        """Read the (prompt fingerprint -> liked direction) retrieval index from the taste
+        store — the per-prompt sibling of the single global liked_dir. Returns a list of
+        (prompt [dim] fp32, direction [dim] fp32, magnitude) tuples, or [] when the key has
+        no index yet. Written by conditioning._v2_store_prompt_keyed_direction on every
+        liked rating; lives in the same refine_v2 clip-state file as liked_dir."""
+        try:
+            try:
+                from .conditioning import refinement_state_path, serializable_to_tensor
+            except ImportError:
+                from conditioning import refinement_state_path, serializable_to_tensor
+            import json as _json
+            path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
+            with open(path, "r", encoding="utf-8") as f:
+                state = _json.load(f)
+            global_state = state.get("global", state)
+            raw = global_state.get("prompt_dir_index", [])
+            entries = []
+            for e in raw if isinstance(raw, list) else []:
+                if not isinstance(e, dict) or e.get("prompt") is None or e.get("direction") is None:
+                    continue
+                try:
+                    entries.append((serializable_to_tensor(e["prompt"]).float(),
+                                    serializable_to_tensor(e["direction"]).float(),
+                                    float(e.get("direction_magnitude", 0.0))))
+                except Exception:
+                    continue
+            return entries
+        except Exception:
+            return []
+
+    def _resolve_prompt_keyed_direction(self, index, cond, k=3, min_sim=0.5):
+        """Retrieve the liked direction learned on the prompts NEAREST this scene's prompt.
+
+        `cond` is the scene's c_crossattn ([.., seq, D]); it is mean-pooled to [D] and
+        cosine-matched against every indexed prompt fingerprint. Returns a unit [D]
+        direction = the similarity-weighted mean of the top-k neighbours scoring above
+        min_sim, or None when nothing is close enough (the caller then falls back to the
+        global liked_dir). This is the whole point of the feature: a prompt about a forest
+        pulls the direction that worked on forests, not the average across every prompt
+        ever rated. No extra model forward — one pooled cosine sweep + a vector mean."""
+        if not index or not isinstance(cond, torch.Tensor):
+            return None
+        try:
+            pooled = cond.detach().float()
+            while pooled.dim() > 1:
+                pooled = pooled.mean(dim=0)  # [D], same pooling as _v2_pool_conditioning
+            pooled_u = torch.nn.functional.normalize(pooled, dim=0)
+            scored = []
+            for prompt, direction, _mag in index:
+                if list(prompt.shape) != list(pooled.shape) or list(direction.shape) != list(pooled.shape):
+                    continue
+                sim = float(torch.nn.functional.cosine_similarity(
+                    pooled_u, torch.nn.functional.normalize(prompt.to(pooled.device), dim=0), dim=0))
+                if sim >= min_sim:
+                    scored.append((sim, direction.to(pooled.device)))
+            if not scored:
+                return None
+            scored.sort(key=lambda s: s[0], reverse=True)
+            acc = None
+            for sim, direction in scored[:max(1, int(k))]:
+                term = torch.nn.functional.normalize(direction, dim=0) * sim
+                acc = term if acc is None else acc + term
+            if acc is None or float(acc.norm()) <= 0.0:
+                return None
+            return torch.nn.functional.normalize(acc, dim=0)
+        except Exception:
+            return None
 
     def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None):
         """Register a model_function_wrapper that nudges conditioning toward the
@@ -4544,6 +4617,7 @@ class FunPackLTXAVSceneChainSampler:
                phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
                carry_overlap_through_anchor=False,
                plateau_cache=False, plateau_cache_threshold=0.975,
+               taste_nearest_prompt=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4623,6 +4697,7 @@ class FunPackLTXAVSceneChainSampler:
         _liked_dir = None
         _bad_dir = None
         _value_fn = None
+        _prompt_dir_index = None  # per-prompt taste retrieval index (taste_nearest_prompt)
         _eg_source = str(embed_guidance_source or "relative").lower()
         _eg_key = self._absolute_key() if _eg_source == "absolute" else refinement_key_input
         if (embed_guidance or score_slider) and _eg_key:
@@ -4630,6 +4705,14 @@ class FunPackLTXAVSceneChainSampler:
             if _liked_dir is None:
                 print(f"[FunPackSceneChain] taste steering ({_eg_source}): no liked direction found (need 3+ liked generations)")
             else:
+                if taste_nearest_prompt:
+                    _prompt_dir_index = self._load_prompt_dir_index(_eg_key) or None
+                    if _prompt_dir_index:
+                        print(f"[FunPackSceneChain] taste_nearest_prompt: on — retrieving per-scene "
+                              f"direction from {len(_prompt_dir_index)} rated prompt(s), global liked_dir as fallback")
+                    else:
+                        print("[FunPackSceneChain] taste_nearest_prompt: on but index empty — "
+                              "using global liked_dir (rate a few liked gens to build the index)")
                 _value_fn = self._load_value_function(_eg_key)
                 if embed_guidance:
                     if _value_fn:
@@ -4848,18 +4931,28 @@ class FunPackLTXAVSceneChainSampler:
                 # layer around it and still post-process each step's (cached-or-fresh) prediction.
                 if plateau_cache:
                     _plateau_stats = self._build_plateau_cache_wrapper(model, plateau_cache_threshold)
+                # taste_nearest_prompt: swap the single global liked direction for the one
+                # learned on this scene's closest rated prompts (resolved from the ORIGINAL
+                # scene conditioning, before any value-fn ascent mutates it). Falls back to
+                # the global _liked_dir when nothing rated is close enough.
+                _scene_liked_dir = _liked_dir
+                if _prompt_dir_index and _liked_dir is not None and scene_positive:
+                    _retrieved = self._resolve_prompt_keyed_direction(_prompt_dir_index, scene_positive[0][0])
+                    if _retrieved is not None:
+                        _scene_liked_dir = _retrieved
+                        run_mechanisms.append("taste_nearest_prompt")
                 if embed_guidance and _value_fn is not None and _value_fn.is_ready():
                     run_mechanisms.append("embed_guidance_vf_ascend")
                     orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
                     ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
                     scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
-                if embed_guidance and _liked_dir is not None:
+                if embed_guidance and _scene_liked_dir is not None:
                     run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
-                    self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
-                if score_slider and _liked_dir is not None:
+                    self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength, value_fn=_value_fn)
+                if score_slider and _scene_liked_dir is not None:
                     _pole = "contrastive" if _bad_dir is not None else "symmetric"
                     run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
-                    self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
+                    self._build_score_slider_wrapper(model, _scene_liked_dir, score_slider_strength, bad_dir=_bad_dir)
                 if dynashift and _dynashift_negatives:
                     run_mechanisms.append(
                         f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")

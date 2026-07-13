@@ -9839,6 +9839,45 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             pass
 
+    def _v2_store_prompt_keyed_direction(self, global_state, payload, session_mean_payload,
+                                         max_entries=32):
+        """Append a (prompt fingerprint -> liked direction) entry to a retrieval index.
+
+        Stores the SAME unit-delta direction that feeds the global liked_dir slot
+        (pool(payload) minus the session source mean), paired with this run's pooled
+        conditioning as the prompt fingerprint, so the sampler can later retrieve the
+        direction learned on the NEAREST prompts instead of the one global average (see
+        samplers._resolve_prompt_keyed_direction). The fingerprint is pool(payload) — the
+        processed conditioning, which is exactly what the Chain Sampler pools from its
+        scene input at retrieval time, so cosine matching lines up on the same domain.
+        Non-parametric memory: a plain ring buffer, no model to train, so it can't collapse
+        into a spurious attractor the way a small value function can. Oldest rolls off;
+        rides the same clip-state file as liked_dir, so delete_refinement_key removes it
+        with the key. Silent no-op on any shape/None issue."""
+        pooled = self._v2_pool_conditioning(payload)
+        session_mean = self._v2_pool_conditioning(session_mean_payload)
+        if pooled is None or session_mean is None:
+            return
+        try:
+            if list(session_mean.shape) != list(pooled.shape):
+                return
+            delta = pooled - session_mean.to(pooled.device)
+            magnitude = float(delta.norm().item())
+            if magnitude < 1e-6:
+                return
+            unit = delta / magnitude
+            index = global_state.get("prompt_dir_index")
+            if not isinstance(index, list):
+                index = []
+            index.append({
+                "prompt": tensor_to_serializable(pooled.cpu()),
+                "direction": tensor_to_serializable(unit.cpu()),
+                "direction_magnitude": magnitude,
+            })
+            global_state["prompt_dir_index"] = index[-int(max_entries):]
+        except Exception:
+            pass
+
     def _v2_apply_direction(self, mixed, slot, strength, negate=False):
         """Apply stored unit direction to active tokens using NORM_SCALE calibration.
         Requires direction_count >= 3. Falls back silently if not ready."""
@@ -9936,6 +9975,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if key in {"like", "loved_it", "nailed_it"}:
             liked_dir_slot = global_state.setdefault("liked_dir", {})
             self._v2_store_direction(liked_dir_slot, payload, session_mean)
+            self._v2_store_prompt_keyed_direction(global_state, payload, session_mean)
             count = int(global_state.get("liked_conditioning_count", 0))
             if count <= 0 or not isinstance(global_state.get("liked_conditioning"), dict):
                 global_state["liked_conditioning"] = payload
