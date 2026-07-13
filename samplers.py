@@ -1869,7 +1869,15 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             (False, False): alg_sharp_latent_image,
             (True, False): anchor_blurred,
             (False, True): tail_blurred,
-            (True, True): both_blurred if both_blurred is not None else (anchor_blurred or tail_blurred),
+            # both → anchor → tail → None. Explicit None checks, NOT `anchor_blurred or
+            # tail_blurred`: `or` calls bool() on the first operand, which is a multi-element
+            # tensor when anchor blur is on but tail blur is off (both_blurred is then None) —
+            # "Boolean value of Tensor is ambiguous". This value is only a defensive fallback:
+            # when (True, True) is actually indexed, alg_anchor_on and alg_tail_on are both
+            # True, so both_blurred is non-None and the chain never reaches the singles.
+            (True, True): (both_blurred if both_blurred is not None
+                           else anchor_blurred if anchor_blurred is not None
+                           else tail_blurred),
         }
         alg_active = alg_anchor_on or alg_tail_on
     if alg_active:
