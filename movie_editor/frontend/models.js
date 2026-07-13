@@ -459,13 +459,24 @@
       const grid = el("div", "slot-fields");
       cand.inputs.forEach((spec) => {
         const lk = linkOf(slot.id, spec.name);
+        const iw = incomingWidgetWire(slot, spec.name);
         const f = widgetField(spec, slot.inputs[spec.name], async (v) => {
           slot.inputs[spec.name] = v;
           const l2 = linkOf(slot.id, spec.name); if (l2) applyLinkValue(l2, v);  // keep group in sync
           await persist();
         });
         f.classList.add("with-eye");
-        if (lk) {
+        if (iw) {
+          // Wired from another node's output: the widget value is replaced by the
+          // connection at generation — lock the field and say where it comes from
+          // (same treatment as a linked control; the eye button is skipped because an
+          // exposed control would edit a value generation ignores).
+          f.classList.add("linked");
+          const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
+          const tag = el("span", "link-tag", `⇐ ${slotName(iw.slot)} · ${iw.out}`);
+          tag.title = `This value comes from ${slotFullLabel(iw.slot)}'s "${iw.out}" output at generation — the local field is ignored while wired.`;
+          f.append(tag);
+        } else if (lk) {
           f.classList.add("linked");
           const ctrl = f.querySelector("input,select"); if (ctrl) ctrl.disabled = true;
           f.append(el("span", "link-tag", "🔗 " + lk.name));
@@ -569,6 +580,21 @@
   function wireTargets(raw) {
     if (!raw) return [];
     return Array.isArray(raw) ? raw : [raw];
+  }
+
+  // The wire (if any) feeding a WIDGET input of `slot` from another slot's output —
+  // e.g. ImageTransform.width → EmptyLatent.width. The builder replaces the widget's
+  // value with that connection at generation, so the local field is dead while wired
+  // and must render locked (same treatment as a linked control).
+  function incomingWidgetWire(slot, inputName) {
+    const target = `node:${slot.id}:${inputName}`;
+    for (const s2 of config.slots) {
+      if (s2.id === slot.id) continue;
+      for (const [outName, raw] of Object.entries(s2.wires || {})) {
+        if (wireTargets(raw).includes(target)) return { slot: s2, out: outName };
+      }
+    }
+    return null;
   }
 
   // ── edge mirroring ────────────────────────────────────────────────────────────

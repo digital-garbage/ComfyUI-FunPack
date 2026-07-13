@@ -685,7 +685,29 @@
         wrap.append(field(`🔗 ${l.name} (${(l.members || []).length})`, ctrl));
       }
     });
+    // A widget input wired from another node's output is replaced by that connection at
+    // generation — an exposed control for it would edit a value generation ignores, so
+    // show the wire source instead (mirrors the locked field on the node's own page).
+    const wireInto = (slot, name) => {
+      const target = `node:${slot.id}:${name}`;
+      for (const s2 of (m.slots || [])) {
+        if (s2.id === slot.id) continue;
+        for (const [outName, raw] of Object.entries(s2.wires || {})) {
+          const arr = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+          if (arr.includes(target)) return { slot: s2, out: outName };
+        }
+      }
+      return null;
+    };
     slotItems.forEach(([slot, d]) => {
+      const iw = d.isBypass ? null : wireInto(slot, d.name);
+      if (iw) {
+        const note = el("div", "lib-sub");
+        note.textContent = `⇐ ${slotLabel(iw.slot)} · ${iw.out}`;
+        note.title = `This value comes from ${slotLabel(iw.slot)}'s "${iw.out}" output at generation.`;
+        wrap.append(field(`${slotLabel(slot)} · ${d.label || d.name}`, note));
+        return;
+      }
       // Bypass is a slot-level flag (slot.bypassed), not a real node input — route it
       // separately so it never gets sent to ComfyUI as a fake widget value.
       const ctrl = d.isBypass
