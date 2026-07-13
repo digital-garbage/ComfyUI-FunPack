@@ -463,7 +463,7 @@
   // when previewing run 1's video while ComfyUI was GIL-bound saving run 2). Bounded
   // backoff, cache-busted so a poisoned browser cache entry can't be replayed.
   const MAX_VIDEO_RETRIES = 4;
-  function _scheduleVideoRetry(url, v) {
+  function _scheduleVideoRetry(url, v, delayMs) {
     const n = (v._pmRetries || 0) + 1;
     if (n > MAX_VIDEO_RETRIES) return;
     v._pmRetries = n;
@@ -474,7 +474,37 @@
       const sep = url.includes("?") ? "&" : "?";
       v.src = url + sep + "r=" + Date.now();
       v.load();
-    }, 1500 * n);
+    }, delayMs != null ? delayMs : 1500 * n);
+  }
+
+  // If the active clip's element changed readiness, repaint the slate/badge over it.
+  function _refreshClipStatusUi(url) {
+    if (_currentClip && !_currentClip.pending && _clipUrl(_currentClip) === url) {
+      _applyClipUi(_currentClip);
+    }
+  }
+
+  // Failed element → ask the server WHY (HEAD /result now answers 503 while the render is
+  // still being written to disk) so the slate can say "processing" vs "loading", and so a
+  // long GIL-bound save can't exhaust the retry budget: server-confirmed "processing"
+  // retries on a steady cadence with the budget refunded, everything else backs off.
+  function _classifyVideoError(url, v) {
+    const probe = url.split("&r=")[0].split("?r=")[0];
+    fetch(probe, { method: "HEAD", cache: "no-store" })
+      .then((r) => (r.status === 503 ? "processing" : "loading"))
+      .catch(() => "loading")
+      .then((status) => {
+        if (pool.get(url) !== v || !_urlClips.has(url)) return;
+        v._pmStatus = status;
+        if (status === "processing") {
+          v._pmRetries = 0;
+          _scheduleVideoRetry(url, v, 3000);
+        } else {
+          if ((v._pmRetries || 0) >= MAX_VIDEO_RETRIES) v._pmStatus = "failed";
+          _scheduleVideoRetry(url, v);
+        }
+        _refreshClipStatusUi(url);
+      });
   }
 
   function _ensureVideo(url, clip) {
@@ -494,10 +524,13 @@
     // _updatePreloadHints() promotes the current clip and its neighbours to auto.
     v.className = "pm-video"; v.preload = "metadata"; v.playsInline = true; v.src = url;
     v._pmFx = { viewport, zoom };
+    v._pmStatus = "loading"; // → "ready" on loadedmetadata; "processing"/"failed" from _classifyVideoError
     zoom.append(v);
     viewport.append(zoom);
     v.addEventListener("loadedmetadata", () => {
       v._pmRetries = 0; // healthy again — restore the full retry budget
+      v._pmStatus = "ready";
+      _refreshClipStatusUi(url);
       const pending = v._pmSeekPending != null ? v._pmSeekPending : (v === _active ? _seekPending : null);
       if (pending != null) {
         _applyVideoTime(v, pending, !_playing);
@@ -516,6 +549,9 @@
     // to 0 and would restart the clip from its beginning. Stash the playhead position so
     // loadedmetadata seeks back instead; _onVideoSeeked then resumes playback if playing.
     v.addEventListener("emptied", () => {
+      // A media reset means the bytes are gone — downgrade so the slate covers the element
+      // instead of it blinking black while the retry reloads.
+      if (v._pmStatus === "ready") { v._pmStatus = "loading"; _refreshClipStatusUi(url); }
       if (v !== _active || !_currentClip || _currentClip.pending) return;
       if (_clipUrl(_currentClip) !== url) return;
       if (v._pmSeekPending == null) {
@@ -526,8 +562,13 @@
       const clips = _urlClips.get(url);
       if (clips) [...clips].forEach((c) => _fallbackSegmentClip(c));
       // Segment clips fell back to their base URL above (and unregistered); anything still
-      // registered here has no alternative URL — retry this one instead of staying dead.
-      if (_urlClips.has(url)) _scheduleVideoRetry(url, v);
+      // registered here has no alternative URL — classify the failure (processing vs dead)
+      // and retry this one instead of staying dead.
+      if (_urlClips.has(url)) {
+        v._pmStatus = "loading";
+        _refreshClipStatusUi(url);
+        _classifyVideoError(url, v);
+      }
     });
     v.addEventListener("ended", () => {
       if (v !== _active || _isSeeking() || _clipBoundaryToken) return;
@@ -663,6 +704,23 @@
     if (!clip || clip.pending) {
       _showBadge("");
       _showSlate(clip?.slate || "Not generated yet", clip?.slateSub);
+      return;
+    }
+    // A clip whose element hasn't decoded yet must say so instead of showing a black or
+    // half-loaded <video>: "processing" = the server answered 503 (render still being
+    // written to disk), "loading" = bytes on the way / retrying, "failed" = retry budget
+    // exhausted (re-armed on the next clip rebuild). Playback through _playPending already
+    // waits for loadedmetadata, so the preview only becomes live once the video really is.
+    const v = clip.blank ? null : pool.get(_clipUrl(clip));
+    if (v && v._pmStatus !== "ready") {
+      _showBadge("");
+      if (v._pmStatus === "processing") {
+        _showSlate("Video is processing…", "Preview isn't available yet");
+      } else if (v._pmStatus === "failed") {
+        _showSlate("Preview unavailable", "The video failed to load — it will retry when the timeline updates");
+      } else {
+        _showSlate("Video is loading…", "Preview isn't available yet");
+      }
       return;
     }
     _showSlate("");

@@ -1910,6 +1910,12 @@ if web is not None and PromptServer is not None:
             _project_or_404(req.match_info["pid"])
             if not path or not os.path.isfile(path):
                 raise web.HTTPNotFound()
+            # Mirror the GET path's mid-write gate: a moov-less mp4 would 503 on GET, so a
+            # HEAD claiming 200 would lie — the player probes HEAD after a media error to
+            # tell "render still being written" (show "processing") apart from a dead file.
+            if os.path.splitext(path)[1].lower() == ".mp4" and _moov_position(path) == "none":
+                raise web.HTTPServiceUnavailable(
+                    reason="Video file is still being written.", headers={"Retry-After": "2"})
             return web.Response()
         # Serve straight from disk: FileResponse streams with Range support, so the player
         # can seek and a busy ComfyUI can't stall the transfer. The old path buffered the
