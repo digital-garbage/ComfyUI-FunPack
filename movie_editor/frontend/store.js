@@ -841,10 +841,12 @@
     if (_commitPromise) { _commitQueued = true; return _commitPromise; }
     const skipPreviewRefresh = !!opts.skipPreviewRefresh;
     _commitPromise = (async () => {
-      const snapshot = JSON.parse(JSON.stringify(state.project));
+      // Sync BEFORE snapshotting: the snapshot is what gets uploaded, and a snapshot taken
+      // first carries the models config (and renders/ghosts) from the PREVIOUS sync — every
+      // autosave then silently reverted exposed-control edits (bypass/input/link changes
+      // saved via /models) by overwriting p.models on the server with the stale copy.
       _syncEditorStateToProject();
-      snapshot.scene_renders = state.project.scene_renders;
-      snapshot.scene_ghosts = state.project.scene_ghosts;
+      const snapshot = JSON.parse(JSON.stringify(state.project));
       const previewKeyBefore = _promptPreviewKey(snapshot);
       const selBefore = JSON.stringify(state.selectedSceneIds || []);
       const metaBefore = { name: snapshot.name, scene_count: (snapshot.scenes || []).length };

@@ -1869,7 +1869,15 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             (False, False): alg_sharp_latent_image,
             (True, False): anchor_blurred,
             (False, True): tail_blurred,
-            (True, True): both_blurred if both_blurred is not None else (anchor_blurred or tail_blurred),
+            # both → anchor → tail → None. Explicit None checks, NOT `anchor_blurred or
+            # tail_blurred`: `or` calls bool() on the first operand, which is a multi-element
+            # tensor when anchor blur is on but tail blur is off (both_blurred is then None) —
+            # "Boolean value of Tensor is ambiguous". This value is only a defensive fallback:
+            # when (True, True) is actually indexed, alg_anchor_on and alg_tail_on are both
+            # True, so both_blurred is non-None and the chain never reaches the singles.
+            (True, True): (both_blurred if both_blurred is not None
+                           else anchor_blurred if anchor_blurred is not None
+                           else tail_blurred),
         }
         alg_active = alg_anchor_on or alg_tail_on
     if alg_active:
@@ -2398,11 +2406,49 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "identity_transfer_enabled": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL Best-FaceID compatibility: tags Continuity's 'Identity pin' guide (Engine settings) with an extra source-phase RoPE rotation, matching the exact overlap+source_phase conditioning Best-FaceID-style identity LoRAs were trained on. No-op without an identity pin image set. Load the LoRA itself the normal way (Models -> add a LoRA loader onto the model path).",
+                    "tooltip": "EXPERIMENTAL Best-FaceID compatibility: full native port of the overlap+source_phase+ArcFace conditioning Best-FaceID-style identity LoRAs were trained on. Replaces Continuity's 'Identity pin' guide (Engine settings) with separate, non-rendered reference tokens (never blended into frame 0) plus optional ArcFace projector tokens on the text context. No-op without an identity pin image set. Load the LoRA itself the normal way (Models -> add a LoRA loader onto the model path).",
                 }),
-                "identity_transfer_phase": ("FLOAT", {
-                    "default": 2.0, "min": 0.0, "max": 8.0, "step": 0.5,
-                    "tooltip": "Source-phase segment id for the identity-pin guide tokens (ltx-trainer's overlap+source_phase convention used 2). 0 disables the rotation while leaving the guide itself active.",
+                "identity_projector": (cls._identity_projector_choices(), {
+                    "default": "None",
+                    "tooltip": "ArcFace projector .safetensors (from models/loras). 'None' = overlap only (the projector is a weak secondary channel; the overlap latent carries the bulk of identity).",
+                }),
+                "source_id": ("FLOAT", {
+                    "default": 2.0, "min": 0.0, "max": 8.0, "step": 1.0,
+                    "tooltip": "source_phase segment id for the overlap reference tokens (ltx-trainer's overlap+source_phase convention used 2). 0 disables the RoPE rotation while leaving the overlap tokens active.",
+                }),
+                "phase_scale": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.1,
+                    "tooltip": "Multiplier on source_id before the RoPE rotation.",
+                }),
+                "id_strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 50.0, "step": 0.5,
+                    "tooltip": "Multiplies the ArcFace projector tokens (only when identity_projector is set). Weak channel; push high (5-20) to test, very high may add artifacts.",
+                }),
+                "arcface_mode": (["auto_adjust", "as_is", "disable"], {
+                    "default": "auto_adjust",
+                    "tooltip": "auto_adjust: retry face detection with zoom-out/upscale, skip projector tokens if none found. as_is: detect on the image only. disable: skip ArcFace, use only the overlap latent.",
+                }),
+                "debug_log": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Print per-scene identity-transfer shape/status logs to the console.",
+                }),
+                # NOTE: append-only — keep new sampler widgets at the END of this block so the
+                # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
+                "carry_overlap_through_anchor": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "When a scene switches to its own i2v anchor (funpack_scene_anchors — a different reference image/character than the previous scene), still carry frame_overlap latent frames from the previous scene's tail into the frames right after the anchor image, instead of the default hard cut with no carried context. Preserves background/environment continuity through an anchor change (e.g. a Best-FaceID identity_transfer scene swapping the reference face mid-chain). The anchor image's own leading frame is never touched by the carried tail. No effect on scenes without a per-scene anchor.",
+                }),
+                "plateau_cache": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL speed (MixCache/Chorus-family step-caching, adapted to LTX2.3's distilled schedule): the near-pure-noise plateau steps (sigma above plateau_cache_threshold) carry almost no signal, so the model's output barely changes across them. This computes the full transformer forward once at the top of the plateau, then REUSES that output for the remaining plateau steps instead of recomputing — skipping those transformer passes entirely. On the default 8-step schedule (sigmas 1.0→0.975 are the plateau) that's ~3-4 of 8 forwards skipped. DETERMINISTIC given seed (no diversity/rating impact, safe in Batch Training) but an APPROXIMATION — validate A/B before trusting on final renders. Note: much of wall-clock time is outside the sampler (encode/decode), so sampler speedup ≠ total speedup. Off by default. UNVALIDATED LIVE.",
+                }),
+                "plateau_cache_threshold": ("FLOAT", {
+                    "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
+                    "tooltip": "Steps whose sigma is at or above this value count as the reusable plateau (matches the alg_guide_blur_sigma_threshold convention). Higher = fewer steps cached (safer, less speedup); lower = more steps cached (faster, more approximation). 0.975 catches the documented near-pure-noise plateau (schedule steps 1-5) while leaving structure formation (sigma 0.909 onward) fully computed. Only used when plateau_cache is on.",
+                }),
+                "taste_nearest_prompt": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: source embed_guidance / score_slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of the single global liked-direction average. On every liked rating the Refiner records (prompt fingerprint -> that run's liked direction); with this on, each scene retrieves the similarity-weighted direction of its closest matches (a forest prompt pulls what worked on forests, not the mean across all prompts). Non-parametric retrieval — no extra model forward, just a cosine lookup + vector mean, and it can't collapse into a spurious attractor the way a value function can. Falls back to the global liked direction when no rated prompt is close enough (or the index is empty). Only affects embed_guidance / score_slider; needs refinement_key_input (or embed_guidance_source=absolute). UNVALIDATED LIVE.",
                 }),
             },
             "hidden": {
@@ -2419,6 +2465,14 @@ class FunPackLTXAVSceneChainSampler:
         "Samples multi-entry scene conditioning as a smooth LTXV/LTXAV continuation chain. "
         "Use with FunPack Studio split-by-transitions output."
     )
+
+    @classmethod
+    def _identity_projector_choices(cls):
+        try:
+            import folder_paths
+            return ["None"] + folder_paths.get_filename_list("loras")
+        except Exception:
+            return ["None"]
 
     def _is_nested(self, samples):
         return bool(getattr(samples, "is_nested", False))
@@ -3100,6 +3154,17 @@ class FunPackLTXAVSceneChainSampler:
                 return None
         return None
 
+    def _scene_temporal_loop(self, scene_conditioning):
+        """Per-scene loop intent baked in by Studio's "auto" temporal director
+        (funpack_temporal_loop). True → install the Mobius latent-roll wrapper."""
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            return bool(scene_conditioning[1].get("funpack_temporal_loop"))
+        return False
+
     def _scene_temporal_mode(self, scene_conditioning):
         """Per-scene temporal mode tag (e.g. pulse). None when unset."""
         if (
@@ -3437,6 +3502,75 @@ class FunPackLTXAVSceneChainSampler:
         """Read the liked conditioning direction from the Refiner's state file."""
         return self._load_taste_direction(refinement_key, "liked_dir")
 
+    def _load_prompt_dir_index(self, refinement_key):
+        """Read the (prompt fingerprint -> liked direction) retrieval index from the taste
+        store — the per-prompt sibling of the single global liked_dir. Returns a list of
+        (prompt [dim] fp32, direction [dim] fp32, magnitude) tuples, or [] when the key has
+        no index yet. Written by conditioning._v2_store_prompt_keyed_direction on every
+        liked rating; lives in the same refine_v2 clip-state file as liked_dir."""
+        try:
+            try:
+                from .conditioning import refinement_state_path, serializable_to_tensor
+            except ImportError:
+                from conditioning import refinement_state_path, serializable_to_tensor
+            import json as _json
+            path = refinement_state_path(refinement_key, "clip", prefix="refine_v2")
+            with open(path, "r", encoding="utf-8") as f:
+                state = _json.load(f)
+            global_state = state.get("global", state)
+            raw = global_state.get("prompt_dir_index", [])
+            entries = []
+            for e in raw if isinstance(raw, list) else []:
+                if not isinstance(e, dict) or e.get("prompt") is None or e.get("direction") is None:
+                    continue
+                try:
+                    entries.append((serializable_to_tensor(e["prompt"]).float(),
+                                    serializable_to_tensor(e["direction"]).float(),
+                                    float(e.get("direction_magnitude", 0.0))))
+                except Exception:
+                    continue
+            return entries
+        except Exception:
+            return []
+
+    def _resolve_prompt_keyed_direction(self, index, cond, k=3, min_sim=0.5):
+        """Retrieve the liked direction learned on the prompts NEAREST this scene's prompt.
+
+        `cond` is the scene's c_crossattn ([.., seq, D]); it is mean-pooled to [D] and
+        cosine-matched against every indexed prompt fingerprint. Returns a unit [D]
+        direction = the similarity-weighted mean of the top-k neighbours scoring above
+        min_sim, or None when nothing is close enough (the caller then falls back to the
+        global liked_dir). This is the whole point of the feature: a prompt about a forest
+        pulls the direction that worked on forests, not the average across every prompt
+        ever rated. No extra model forward — one pooled cosine sweep + a vector mean."""
+        if not index or not isinstance(cond, torch.Tensor):
+            return None
+        try:
+            pooled = cond.detach().float()
+            while pooled.dim() > 1:
+                pooled = pooled.mean(dim=0)  # [D], same pooling as _v2_pool_conditioning
+            pooled_u = torch.nn.functional.normalize(pooled, dim=0)
+            scored = []
+            for prompt, direction, _mag in index:
+                if list(prompt.shape) != list(pooled.shape) or list(direction.shape) != list(pooled.shape):
+                    continue
+                sim = float(torch.nn.functional.cosine_similarity(
+                    pooled_u, torch.nn.functional.normalize(prompt.to(pooled.device), dim=0), dim=0))
+                if sim >= min_sim:
+                    scored.append((sim, direction.to(pooled.device)))
+            if not scored:
+                return None
+            scored.sort(key=lambda s: s[0], reverse=True)
+            acc = None
+            for sim, direction in scored[:max(1, int(k))]:
+                term = torch.nn.functional.normalize(direction, dim=0) * sim
+                acc = term if acc is None else acc + term
+            if acc is None or float(acc.norm()) <= 0.0:
+                return None
+            return torch.nn.functional.normalize(acc, dim=0)
+        except Exception:
+            return None
+
     def _build_embed_guidance_wrapper(self, model, liked_dir, strength, value_fn=None):
         """Register a model_function_wrapper that nudges conditioning toward the
         liked quality direction at each denoising step. Uses value function gradient
@@ -3576,34 +3710,8 @@ class FunPackLTXAVSceneChainSampler:
             return 0, True
         return 1 + (at - 1) * time_scale, False
 
-    def _tag_last_guide_entry(self, cond, key, value):
-        """Best-effort: stamp `key=value` onto the guide_attention_entry _append_guide_attention_entry
-        just added (the last one), without touching any earlier entry. Used to mark which guide
-        (e.g. the Best-FaceID identity pin) is eligible for the source-phase RoPE patch — see
-        _install_identity_phase. No-op (returns cond unchanged) if node_helpers isn't importable
-        or no entries are present; never blocks generation."""
-        try:
-            import node_helpers
-        except ImportError:
-            return cond
-        try:
-            for t in cond:
-                entries = t[1].get("guide_attention_entries")
-                if entries:
-                    tagged = [*entries[:-1], {**entries[-1], key: value}]
-                    return node_helpers.conditioning_set_values(cond, {"guide_attention_entries": tagged})
-        except Exception:
-            pass
-        return cond
-
-    def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae,
-                              phase_tag=0.0):
-        """Append one guide latent frame with LTX guide attention at apply_at.
-
-        `phase_tag`: when non-zero, marks this guide's entry with `funpack_identity_phase` so
-        _install_identity_phase can find its exact token range and apply the source-phase RoPE
-        rotation the Best-FaceID LoRA was trained against — see [[project_identity_transfer_native]].
-        """
+    def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae):
+        """Append one guide latent frame with LTX guide attention at apply_at."""
         try:
             from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
         except ImportError:
@@ -3629,9 +3737,6 @@ class FunPackLTXAVSceneChainSampler:
         positive, negative = _append_guide_attention_entry(
             positive, negative, pre_filter_count, guide_latent_shape, strength=float(strength)
         )
-        if phase_tag:
-            positive = self._tag_last_guide_entry(positive, "funpack_identity_phase", float(phase_tag))
-            negative = self._tag_last_guide_entry(negative, "funpack_identity_phase", float(phase_tag))
 
         result = self._clone_latent(chunk)
         tensors = self._latent_tensors(result)
@@ -3795,17 +3900,43 @@ class FunPackLTXAVSceneChainSampler:
         out = self._invoke_img2video_inplace(vae, image, chunk, strength)
         return out if out is not None else chunk
 
-    def _build_mixed_anchor_chunk(self, vae, anchor_meta, latent_template, previous, video_overlap):
-        """Mixed source: Img2Video anchor latent only — prior scene overlap is not used."""
+    def _build_mixed_anchor_chunk(self, vae, anchor_meta, latent_template, previous, video_overlap,
+                                  carry_overlap=False):
+        """Mixed source: Img2Video anchor latent. By default prior scene overlap is not used
+        (hard cut). When carry_overlap is set and a previous scene exists, the chunk is first
+        seeded as a normal continuation (previous scene's tail copied into the leading
+        video_overlap frames, protected) and the anchor image is then written on top — since
+        LTXVImgToVideoInplace only overwrites the single encoded image frame's worth of samples
+        and preserves the rest of the incoming noise_mask, the anchor's own leading frame stays a
+        hard cut while the remaining carried frames keep the old scene's background/environment."""
         filename = (anchor_meta or {}).get("filename")
         strength = float((anchor_meta or {}).get("strength", 1.0))
         image = self._load_image_tensor(filename) if filename else None
         if image is None:
             if previous is None:
                 return self._clone_latent(latent_template)
-            return self._build_continuation_chunk(latent_template, previous, video_overlap)
-        base = self._clone_latent(latent_template)
+            return self._build_continuation_chunk(latent_template, previous, 0)
+        if carry_overlap and previous is not None and video_overlap > 0:
+            base = self._build_continuation_chunk(latent_template, previous, video_overlap)
+        else:
+            base = self._clone_latent(latent_template)
         return self._apply_img2video_to_video_latent(vae, image, base, strength)
+
+    def _identity_pin_filename(self, guide_list, scene_media_by_ref, identity_transfer_enabled):
+        """First identity_pin-tagged image guide's filename, or None. Mirrors the matching
+        inside _apply_configured_guides, but callable standalone for branches (like the mixed
+        i2v anchor path) that don't run the rest of the guide stack against their chunk."""
+        if not identity_transfer_enabled:
+            return None
+        for g in guide_list or []:
+            if not g or not g.get("enabled", True):
+                continue
+            if str(g.get("source", "template")) == "image" and g.get("identity_pin"):
+                ref = g.get("media_ref")
+                fn = (scene_media_by_ref or {}).get(ref) if ref else None
+                if fn:
+                    return fn
+        return None
 
     def _encode_image_guide_frame(self, filename, vae, ref_tensor):
         import os
@@ -3845,7 +3976,7 @@ class FunPackLTXAVSceneChainSampler:
             return None
 
     def _append_media_guide_at(self, chunk, filename, frame_idx, apply_at, strength,
-                               positive, negative, vae, phase_tag=0.0):
+                               positive, negative, vae):
         chunk_tensors = self._latent_tensors(chunk)
         if not chunk_tensors:
             return chunk, positive, negative, 0, 0
@@ -3856,15 +3987,15 @@ class FunPackLTXAVSceneChainSampler:
         at = self._resolve_frame_index(total, frame_idx)
         guide_slice = self._time_slice(guide_frame, at, at + 1)
         return self._append_guide_latent(
-            chunk, guide_slice, apply_at, strength, positive, negative, vae, phase_tag=phase_tag,
+            chunk, guide_slice, apply_at, strength, positive, negative, vae,
         ) + (0,)
 
     def _apply_configured_guides(self, chunk, scene_index, guide_list, latent_template,
                                  scene_outputs, scene_media_by_ref, positive, negative, vae,
-                                 identity_transfer_enabled=False, identity_transfer_phase=2.0):
+                                 identity_transfer_enabled=False):
         head_crop = 0
         tail_crop = 0
-        identity_phase_applied = False
+        identity_ref_filename = None
         for g in guide_list or []:
             if not g or not g.get("enabled", True):
                 continue
@@ -3894,20 +4025,21 @@ class FunPackLTXAVSceneChainSampler:
                 fn = (scene_media_by_ref or {}).get(ref) if ref else None
                 if not fn:
                     continue
-                # The project's Best-FaceID reference face (Continuity's "Identity pin") is the
-                # ONLY guide eligible for the source-phase RoPE tag — never prior-scene/mid-scene
-                # guides, which serve motion continuity rather than a trained-LoRA identity lock.
-                phase_tag = identity_transfer_phase if (identity_transfer_enabled and g.get("identity_pin")) else 0.0
+                if identity_transfer_enabled and g.get("identity_pin"):
+                    # Best-FaceID full port takes this entry over entirely: the LoRA was
+                    # trained on separate overlap tokens + ArcFace projector tokens, not a
+                    # blended frame-0 keyframe, so skip the plain guide-attention append and
+                    # hand the reference filename back for _install_identity_overlap.
+                    identity_ref_filename = fn
+                    continue
                 chunk, positive, negative, head, tail = self._append_media_guide_at(
-                    chunk, fn, frame_idx, apply_at, strength, positive, negative, vae, phase_tag=phase_tag,
+                    chunk, fn, frame_idx, apply_at, strength, positive, negative, vae,
                 )
-                if phase_tag:
-                    identity_phase_applied = True
             else:
                 continue
             head_crop += head
             tail_crop += tail
-        return chunk, positive, negative, head_crop, tail_crop, identity_phase_applied
+        return chunk, positive, negative, head_crop, tail_crop, identity_ref_filename
 
     def _append_mid_scene_guide(self, chunk, previous_output, positive, negative, vae, strength):
         """Append the middle frame of the previous scene as a guide for the current chunk
@@ -4110,128 +4242,269 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    def _build_plateau_cache_wrapper(self, model, threshold):
+        """Plateau step-cache (MixCache/Chorus-family, adapted to LTX2.3's distilled schedule).
+
+        Installed INNERMOST so it caches the raw base-model forward; every other per-scene
+        wrapper (embed/score/dynashift/output guidance, temporal) still layers around it and
+        post-processes the (cached-or-fresh) prediction. On the near-pure-noise plateau
+        (sigma >= threshold) the transformer output barely changes step-to-step, so we compute
+        it once per distinct batch signature and reuse it for the remaining plateau steps,
+        skipping those full 48-block forwards. Below the threshold every step is computed for
+        real, and the cache is dropped (frees the held tensors) so structure formation is never
+        approximated. Deterministic given seed — no effect on batch-variant diversity.
+
+        Cache is keyed by (input.shape, cond_or_uncond) so a CFG>1 split cond/uncond pair each
+        gets its own slot instead of thrashing a single slot. Returns a stats dict the caller
+        reads after the scene for the run report (never used for control flow)."""
+        old_wrapper = model.model_options.get("model_function_wrapper")
+        thr = float(threshold)
+        stats = {"cache": {}, "reused": 0, "computed": 0}
+
+        def _plateau_wrapper(apply_fn, args, _ew=old_wrapper, _st=stats, _thr=thr):
+            def _run():
+                if _ew is not None:
+                    return _ew(apply_fn, args)
+                return apply_fn(args["input"], args["timestep"], **(args.get("c") or {}))
+
+            ts = args.get("timestep")
+            x = args.get("input")
+            try:
+                sigma = float(ts.max().item()) if ts is not None else 0.0
+                key = (tuple(x.shape), tuple(args.get("cond_or_uncond") or ()))
+            except Exception:
+                return _run()  # can't reason about it safely -> always compute
+
+            if sigma < _thr:
+                _st["cache"].clear()  # past the plateau: compute every step, release cached tensors
+                return _run()
+            cached = _st["cache"].get(key)
+            if cached is not None:
+                _st["reused"] += 1
+                return cached
+            out = _run()
+            _st["cache"][key] = out
+            _st["computed"] += 1
+            return out
+
+        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_plateau_wrapper, old_wrapper)
+        return stats
+
     # ---------------------------------------------------------------------------
-    # identity_transfer: source-phase RoPE tag for the Best-FaceID-style identity pin.
+    # identity_transfer: native port of ComfyUI-BFSNodes' LTX Identity Transfer
+    # (LTXIdentityOverlapConditioning) — see identity_transfer.py for the ArcFace/projector/
+    # RoPE-rotation pieces. The reference face is injected as SEPARATE tokens appended after
+    # the target's video tokens (an "overlap" placement, sharing the frame-0 pixel-coord grid),
+    # given a clean (timestep 0) denoise state, tagged with a source-phase RoPE rotation, and
+    # trimmed back off before unpatchify — never blended into a real rendered frame, unlike
+    # FunPack's guide-attention path. Optional ArcFace IdentityProjector tokens are appended to
+    # the text context on top.
     #
-    # FunPack's guide-attention path (LTXVAddGuide.add_keyframe_index + causal_fix, see
-    # _append_guide_latent) already places a reference image on the frame-0 grid with a
-    # tunable attention strength — structurally the same "overlap" placement an identity
-    # LoRA like Best-FaceID expects. The one piece that path doesn't do is the LoRA's
-    # trained-time "source_phase" tag: an extra per-token RoPE rotation that marks those
-    # tokens as coming from a reference image, not the real timeline. This patches that in,
-    # scoped ONLY to the specific guide entry marked funpack_identity_phase (see
-    # _tag_last_guide_entry) — never to co-active guides (mid_scene_guide, carry, prior-
-    # scene continuity) that happen to share the same keyframe_idxs tensor.
-    #
-    # Two bound methods are wrapped on model.model.diffusion_model:
-    #   _prepare_timestep            (receives resolved_guide_entries / num_guide_tokens via
-    #                                 kwargs already computed by the model's own guide-token
-    #                                 accounting) -> locates the tagged entry's exact token
-    #                                 range and stashes it on self for the very next call.
-    #   _prepare_positional_embeddings (runs right after, same forward pass, no kwargs) ->
-    #                                 rotates just that token range's RoPE freqs.
+    # Four bound methods are wrapped on model.model.diffusion_model, matching LTXBaseModel's own
+    # _forward pipeline: _process_input (append ref tokens) -> _prepare_timestep (clean timestep
+    # for ref tokens) -> _prepare_positional_embeddings (source-phase RoPE rotation) ->
+    # _process_output (trim ref tokens before unpatchify).
     # Idempotent + tag/strip per scene (same discipline as _install_v2a_scale /
     # _strip_funpack_scene_wrappers) so an interrupt mid-scene can never leave a stale patch
     # steering a later, unrelated run — see [[project_hook_leak_bug]].
     # ---------------------------------------------------------------------------
-    _IDENTITY_PHASE_TAG = "_funpack_identity_phase_patched"
+    _IDENTITY_OVERLAP_TAG = "_funpack_identity_overlap_patched"
 
-    def _install_identity_phase(self, model):
+    def _install_identity_overlap(self, model, ref_latent, seg_value):
+        try:
+            from .identity_transfer import rotate_overlap_freqs as _rotate_overlap_freqs
+        except ImportError:
+            from identity_transfer import rotate_overlap_freqs as _rotate_overlap_freqs
         try:
             ltxv = model.model.diffusion_model
         except Exception:
             return None
-        if getattr(ltxv, self._IDENTITY_PHASE_TAG, False):
+        if getattr(ltxv, self._IDENTITY_OVERLAP_TAG, False):
             return None  # already installed (idempotent across scenes/runs)
 
+        orig_process_input = ltxv._process_input
         orig_prepare_timestep = ltxv._prepare_timestep
         orig_prepare_pe = ltxv._prepare_positional_embeddings
+        orig_process_output = ltxv._process_output
+
+        def process_input(self_ltxv, x, keyframe_idxs, denoise_mask, **kw):
+            out = orig_process_input(x, keyframe_idxs, denoise_mask, **kw)
+            self_ltxv._funpack_id_ref_len = 0
+            try:
+                from comfy.ldm.lightricks.model import latent_to_pixel_coords
+                xx, pix, add = out
+                is_av = isinstance(xx, (list, tuple))
+                vx = xx[0] if is_av else xx
+                vco = pix[0] if is_av else pix
+                rt, rlc = self_ltxv.patchifier.patchify(ref_latent.to(dtype=vx.dtype, device=vx.device))
+                rpc = latent_to_pixel_coords(latent_coords=rlc, scale_factors=self_ltxv.vae_scale_factors,
+                                             causal_fix=self_ltxv.causal_temporal_positioning)
+                rt = self_ltxv.patchify_proj(rt)
+                if rt.shape[0] != vx.shape[0]:
+                    rt = rt.expand(vx.shape[0], -1, -1)
+                if rpc.shape[0] != vco.shape[0]:
+                    rpc = rpc.expand(vco.shape[0], *([-1] * (rpc.dim() - 1)))
+                ref_len = rt.shape[1]
+                self_ltxv._funpack_id_target_len = vx.shape[1]
+                vx = torch.cat([vx, rt], dim=1)
+                vco = torch.cat([vco, rpc.to(vco)], dim=2)
+                self_ltxv._funpack_id_ref_len = ref_len
+                if is_av:
+                    xx = [vx, xx[1]]; pix = [vco, pix[1]]
+                else:
+                    xx, pix = vx, vco
+                return xx, pix, add
+            except Exception:
+                self_ltxv._funpack_id_ref_len = 0
+                return out
 
         def prepare_timestep(self_ltxv, timestep, batch_size, hidden_dtype, **kwargs):
-            self_ltxv._funpack_identity_range = None
-            self_ltxv._funpack_identity_phase_value = 0.0
-            try:
-                entries = kwargs.get("resolved_guide_entries")
-                num_guide_tokens = kwargs.get("num_guide_tokens", 0)
-                if entries and num_guide_tokens:
-                    offset = 0
-                    for entry in entries:
-                        phase = entry.get("funpack_identity_phase")
-                        surviving = int(entry.get("surviving_count", 0))
-                        if phase:
-                            self_ltxv._funpack_identity_range = (offset, surviving, int(num_guide_tokens))
-                            self_ltxv._funpack_identity_phase_value = float(phase)
-                            break
-                        offset += surviving
-            except Exception:
-                self_ltxv._funpack_identity_range = None
+            ref_len = getattr(self_ltxv, "_funpack_id_ref_len", 0)
+            if ref_len:
+                target_len = getattr(self_ltxv, "_funpack_id_target_len", None)
+                if timestep.dim() <= 1 and target_len is not None:
+                    timestep = timestep.view(-1, 1).expand(batch_size, target_len).contiguous()
+                if timestep.dim() >= 2:
+                    ref_ts = torch.zeros(batch_size, ref_len, *timestep.shape[2:],
+                                         device=timestep.device, dtype=timestep.dtype)
+                    timestep = torch.cat([timestep, ref_ts], dim=1)
             return orig_prepare_timestep(timestep, batch_size, hidden_dtype, **kwargs)
 
         def prepare_pe(self_ltxv, pixel_coords, frame_rate, x_dtype):
             pe = orig_prepare_pe(pixel_coords, frame_rate, x_dtype)
-            rng = getattr(self_ltxv, "_funpack_identity_range", None)
-            phase = getattr(self_ltxv, "_funpack_identity_phase_value", 0.0)
-            if not rng or not phase:
+            ref_len = getattr(self_ltxv, "_funpack_id_ref_len", 0)
+            if not ref_len or not seg_value:
                 return pe
             try:
-                offset, length, num_guide_tokens = rng
                 # AV models return [(v_pe, av_cross_video), (a_pe, av_cross_audio)]; plain
-                # video models return v_pe directly. Only the video PE carries guide tokens.
+                # video models return v_pe directly. Only the video PE carries the ref tokens.
                 if isinstance(pe, list) and len(pe) and isinstance(pe[0], (list, tuple)) and isinstance(pe[0][0], (list, tuple)):
                     v_pe, cross_v = pe[0][0], pe[0][1]
-                    v_pe = self._rotate_identity_phase(v_pe, offset, length, num_guide_tokens, phase)
+                    v_pe = _rotate_overlap_freqs(v_pe, ref_len, seg_value)
                     return [(v_pe, cross_v), pe[1]]
-                return self._rotate_identity_phase(pe, offset, length, num_guide_tokens, phase)
+                return _rotate_overlap_freqs(pe, ref_len, seg_value)
             except Exception:
                 return pe
 
+        def process_output(self_ltxv, x, embedded_timestep, keyframe_idxs, **kw):
+            ref_len = getattr(self_ltxv, "_funpack_id_ref_len", 0)
+            if ref_len:
+                try:
+                    from comfy.ldm.lightricks.av_model import CompressedTimestep
+                    import copy
+                    if isinstance(x, (list, tuple)):
+                        x = [x[0][:, :x[0].shape[1] - ref_len], *x[1:]]
+                        et_list = list(embedded_timestep) if isinstance(embedded_timestep, (list, tuple)) else [embedded_timestep]
+                        v_et = et_list[0]
+                        if isinstance(v_et, CompressedTimestep):
+                            ppf = max(1, getattr(v_et, "patches_per_frame", 1) or 1)
+                            n_ref_frames = max(1, ref_len // ppf)
+                            v_et2 = copy.copy(v_et)
+                            v_et2.data = v_et.data[:, : v_et.num_frames - n_ref_frames].contiguous()
+                            v_et2.num_frames = v_et.num_frames - n_ref_frames
+                            et_list[0] = v_et2
+                        elif hasattr(v_et, "shape") and v_et.dim() >= 2 and v_et.shape[1] > 1:
+                            et_list[0] = v_et[:, : v_et.shape[1] - ref_len]
+                        embedded_timestep = et_list
+                    else:
+                        x = x[:, :x.shape[1] - ref_len]
+                        if hasattr(embedded_timestep, "shape") and embedded_timestep.dim() >= 2 and embedded_timestep.shape[1] > 1:
+                            embedded_timestep = embedded_timestep[:, : embedded_timestep.shape[1] - ref_len]
+                except Exception:
+                    pass
+            return orig_process_output(x, embedded_timestep, keyframe_idxs, **kw)
+
+        ltxv._process_input = types.MethodType(process_input, ltxv)
         ltxv._prepare_timestep = types.MethodType(prepare_timestep, ltxv)
         ltxv._prepare_positional_embeddings = types.MethodType(prepare_pe, ltxv)
-        setattr(ltxv, self._IDENTITY_PHASE_TAG, True)
-        return (ltxv, orig_prepare_timestep, orig_prepare_pe)
+        ltxv._process_output = types.MethodType(process_output, ltxv)
+        setattr(ltxv, self._IDENTITY_OVERLAP_TAG, True)
+        return (ltxv, orig_process_input, orig_prepare_timestep, orig_prepare_pe, orig_process_output)
 
-    def _strip_identity_phase(self, handle):
+    def _strip_identity_overlap(self, handle):
         if not handle:
             return
-        ltxv, orig_prepare_timestep, orig_prepare_pe = handle
+        ltxv, orig_process_input, orig_prepare_timestep, orig_prepare_pe, orig_process_output = handle
         try:
+            ltxv._process_input = orig_process_input
             ltxv._prepare_timestep = orig_prepare_timestep
             ltxv._prepare_positional_embeddings = orig_prepare_pe
-            setattr(ltxv, self._IDENTITY_PHASE_TAG, False)
-            for attr in ("_funpack_identity_range", "_funpack_identity_phase_value"):
+            ltxv._process_output = orig_process_output
+            setattr(ltxv, self._IDENTITY_OVERLAP_TAG, False)
+            for attr in ("_funpack_id_ref_len", "_funpack_id_target_len"):
                 if hasattr(ltxv, attr):
                     delattr(ltxv, attr)
         except Exception:
             pass
 
-    def _rotate_identity_phase(self, pe, offset, length, num_guide_tokens, phase, theta=10000.0):
-        """Givens-rotate the RoPE freqs of exactly [guide_start+offset, guide_start+offset+length)
-        (a single guide entry's tokens, identified upstream — never the whole guide-token tail)
-        by a phase derived from `phase` — the same source_phase tag the LoRA saw at train time.
-        pe = (cos, sin, split_mode) with cos/sin shaped [..., T, L]. Returns a new pe tuple."""
-        if length <= 0 or not phase:
-            return pe
-        cos, sin = pe[0], pe[1]
-        rest = tuple(pe[2:])
-        T = cos.shape[-2]
-        guide_start = T - int(num_guide_tokens)
-        start = guide_start + int(offset)
-        end = start + int(length)
-        if start < 0 or end > T or start >= end:
-            return pe
-        L = cos.shape[-1]
-        d = torch.arange(L, device=cos.device, dtype=torch.float32)
-        rate = theta ** (-d / float(L))
-        rot = (float(phase) * rate)
-        pc = rot.cos().to(cos.dtype); ps = rot.sin().to(sin.dtype)
-        idx = [slice(None)] * cos.dim()
-        idx[-2] = slice(start, end)
-        idx = tuple(idx)
-        c0, s0 = cos[idx], sin[idx]
-        cos = cos.clone(); sin = sin.clone()
-        cos[idx] = c0 * pc - s0 * ps
-        sin[idx] = s0 * pc + c0 * ps
-        return (cos, sin, *rest)
+    def _resolve_identity_overlap(self, state, filename, vae, chunk, identity_projector, source_id,
+                                   phase_scale, id_strength, arcface_mode, debug_log):
+        """Lazily encode the reference face + (optional) ArcFace projector tokens once per
+        run() call and cache them in `state` (a dict owned by the caller). Cheap on every
+        later scene — just returns the cached tuple. Returns
+        (ref_latent_or_None, seg_value, pos_tokens_or_None, neg_tokens_or_None)."""
+        if state.get("ready"):
+            return state["ref_latent"], state["seg_value"], state["pos_tokens"], state["neg_tokens"]
+        state.update(ready=True, ref_latent=None, seg_value=float(source_id) * float(phase_scale),
+                     pos_tokens=None, neg_tokens=None)
+        image = self._load_image_tensor(filename)
+        if image is None:
+            print(f"[FunPackSceneChain] identity_transfer: couldn't load reference image '{filename}' — skipped.")
+            return None, 0.0, None, None
+        chunk_tensors = self._latent_tensors(chunk)
+        if not chunk_tensors:
+            return None, 0.0, None, None
+        try:
+            import comfy.utils
+            scale_factors = getattr(vae, "downscale_index_formula", [8, 8, 8])
+            _, w_sf, h_sf = scale_factors
+            _, _, _, lat_h, lat_w = chunk_tensors[0].shape
+            ref_px = comfy.utils.common_upscale(
+                image.movedim(-1, 1), lat_w * w_sf, lat_h * h_sf, "bilinear", "center",
+            ).movedim(1, -1)[:1, :, :, :3]
+            state["ref_latent"] = vae.encode(ref_px)
+            if debug_log:
+                print(f"[FunPackSceneChain] identity_transfer: overlap ref latent "
+                      f"{list(state['ref_latent'].shape)}, seg={state['seg_value']}")
+        except Exception as e:
+            print(f"[FunPackSceneChain] identity_transfer: overlap ref-latent encode failed ({e}) — skipped.")
+            return None, 0.0, None, None
+
+        if identity_projector in (None, "", "None"):
+            return state["ref_latent"], state["seg_value"], None, None
+        try:
+            try:
+                from .identity_transfer import arcface_embed, load_identity_projector
+            except ImportError:
+                from identity_transfer import arcface_embed, load_identity_projector
+            emb = arcface_embed(image, mode=arcface_mode)
+            if emb is None:
+                print(f"[FunPackSceneChain] identity_transfer: ArcFace mode={arcface_mode} found no "
+                      "face — projector tokens skipped (overlap only).")
+                return state["ref_latent"], state["seg_value"], None, None
+            import folder_paths
+            path = folder_paths.get_full_path("loras", identity_projector) or identity_projector
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            projector = load_identity_projector(path, device)
+            emb = emb.to(device=device, dtype=torch.float32).unsqueeze(0)
+            with torch.no_grad():
+                state["pos_tokens"] = projector(emb) * float(id_strength)
+                state["neg_tokens"] = projector(torch.zeros(1, projector.in_dim, device=device))
+            if debug_log:
+                print(f"[FunPackSceneChain] identity_transfer: ArcFace projector '{identity_projector}' "
+                      f"OK, id_strength={id_strength}")
+        except Exception as e:
+            print(f"[FunPackSceneChain] identity_transfer: ArcFace/projector failed ({e}) — overlap tokens only "
+                  "(insightface installed? `pip install insightface`).")
+            return state["ref_latent"], state["seg_value"], None, None
+        return state["ref_latent"], state["seg_value"], state["pos_tokens"], state["neg_tokens"]
+
+    def _append_identity_context_tokens(self, positive, negative, pos_tokens, neg_tokens):
+        try:
+            from .identity_transfer import append_context_tokens
+        except ImportError:
+            from identity_transfer import append_context_tokens
+        return append_context_tokens(positive, pos_tokens), append_context_tokens(negative, neg_tokens)
 
     def _bounded_attention_region_mask(self, t, h, w, device):
         """[T*H*W] region id per video token: 0 = left half (by width), 1 = right half.
@@ -4359,7 +4632,11 @@ class FunPackLTXAVSceneChainSampler:
                output_guidance=False, output_guidance_strength=0.02,
                dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-               identity_transfer_enabled=False, identity_transfer_phase=2.0,
+               identity_transfer_enabled=False, identity_projector="None", source_id=2.0,
+               phase_scale=1.0, id_strength=1.0, arcface_mode="auto_adjust", debug_log=False,
+               carry_overlap_through_anchor=False,
+               plateau_cache=False, plateau_cache_threshold=0.975,
+               taste_nearest_prompt=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4417,6 +4694,7 @@ class FunPackLTXAVSceneChainSampler:
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
+                plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -4438,6 +4716,7 @@ class FunPackLTXAVSceneChainSampler:
         _liked_dir = None
         _bad_dir = None
         _value_fn = None
+        _prompt_dir_index = None  # per-prompt taste retrieval index (taste_nearest_prompt)
         _eg_source = str(embed_guidance_source or "relative").lower()
         _eg_key = self._absolute_key() if _eg_source == "absolute" else refinement_key_input
         if (embed_guidance or score_slider) and _eg_key:
@@ -4445,6 +4724,14 @@ class FunPackLTXAVSceneChainSampler:
             if _liked_dir is None:
                 print(f"[FunPackSceneChain] taste steering ({_eg_source}): no liked direction found (need 3+ liked generations)")
             else:
+                if taste_nearest_prompt:
+                    _prompt_dir_index = self._load_prompt_dir_index(_eg_key) or None
+                    if _prompt_dir_index:
+                        print(f"[FunPackSceneChain] taste_nearest_prompt: on — retrieving per-scene "
+                              f"direction from {len(_prompt_dir_index)} rated prompt(s), global liked_dir as fallback")
+                    else:
+                        print("[FunPackSceneChain] taste_nearest_prompt: on but index empty — "
+                              "using global liked_dir (rate a few liked gens to build the index)")
                 _value_fn = self._load_value_function(_eg_key)
                 if embed_guidance:
                     if _value_fn:
@@ -4537,6 +4824,7 @@ class FunPackLTXAVSceneChainSampler:
         scene_media_by_ref = self._parse_scene_anchors(funpack_scene_media_refs)
         scene_runs: list = []
         joyai_bank = _JoyAIMemoryBank(joyai_memory_size, joyai_fix_frames) if joyai_memory else None
+        _identity_overlap_state: dict = {}
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -4551,7 +4839,7 @@ class FunPackLTXAVSceneChainSampler:
             soft_carried = 0
             guide_tail = 0
             audio_tail = 0
-            identity_phase_applied = False
+            identity_ref_filename = None
             run_mechanisms: list = []
             anchor_meta = (scene_anchors or {}).get(str(scene_index))
             if output is None:
@@ -4561,11 +4849,10 @@ class FunPackLTXAVSceneChainSampler:
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
                     run_mechanisms.append("custom_guide_stack")
-                    chunk, scene_positive, scene_negative, carried, guide_tail, identity_phase_applied = self._apply_configured_guides(
+                    chunk, scene_positive, scene_negative, carried, guide_tail, identity_ref_filename = self._apply_configured_guides(
                         chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
                         scene_positive, scene_negative, vae,
                         identity_transfer_enabled=identity_transfer_enabled,
-                        identity_transfer_phase=identity_transfer_phase,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
             elif anchor_meta:
@@ -4580,8 +4867,20 @@ class FunPackLTXAVSceneChainSampler:
                     "effect": effect if effect and transition_duration > 0 else None,
                 })
                 chunk = self._build_mixed_anchor_chunk(
-                    vae, anchor_meta, latent_template, output, 0,
+                    vae, anchor_meta, latent_template, output, video_overlap,
+                    carry_overlap=carry_overlap_through_anchor,
                 )
+                if carry_overlap_through_anchor and video_overlap > 0:
+                    run_mechanisms.append(f"latent_overlap_through_anchor({frame_overlap}px)")
+                # The anchor branch skips _apply_configured_guides entirely, so an identity_pin
+                # guide configured for this scene would otherwise never resolve — Best-FaceID
+                # identity_transfer needs this to fire on the exact scenes that swap anchors.
+                if per_scene_guides and scene_index < len(per_scene_guides):
+                    identity_ref_filename = self._identity_pin_filename(
+                        per_scene_guides[scene_index], scene_media_by_ref, identity_transfer_enabled,
+                    )
+                    if identity_ref_filename:
+                        run_mechanisms.append("identity_pin_on_anchor_scene")
             else:
                 # Record boundary before blending
                 effect = self._scene_transition_effect(scene_cond)
@@ -4605,11 +4904,10 @@ class FunPackLTXAVSceneChainSampler:
                     custom_guides = per_scene_guides[scene_index]
                 if custom_guides:
                     run_mechanisms.append("custom_guide_stack")
-                    chunk, scene_positive, scene_negative, carried, guide_tail, identity_phase_applied = self._apply_configured_guides(
+                    chunk, scene_positive, scene_negative, carried, guide_tail, identity_ref_filename = self._apply_configured_guides(
                         chunk, scene_index, custom_guides, latent_template, scene_outputs, scene_media_by_ref,
                         scene_positive, scene_negative, vae,
                         identity_transfer_enabled=identity_transfer_enabled,
-                        identity_transfer_phase=identity_transfer_phase,
                     )
                     carried_guide_frames = max(carried_guide_frames, carried)
                 elif carry_i2v_guides:
@@ -4644,20 +4942,55 @@ class FunPackLTXAVSceneChainSampler:
             # mode as the block-hook leak; see _strip_funpack_scene_wrappers).
             _scene_base_wrapper = model.model_options.get("model_function_wrapper")
             _v2a_handles = []
-            _identity_phase_handle = None
+            _identity_overlap_handle = None
+            _plateau_stats = None
             try:
+                # Innermost wrapper (installed first): caches the raw base-model forward on the
+                # near-noise plateau so later plateau steps reuse it. All guidance wrappers below
+                # layer around it and still post-process each step's (cached-or-fresh) prediction.
+                if plateau_cache:
+                    _plateau_stats = self._build_plateau_cache_wrapper(model, plateau_cache_threshold)
+                # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
+                # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
+                # dynashift / output guidance) so they see canonical-orientation inputs and
+                # predictions — the roll exists only around the base forward. Calls that
+                # carry guides (keyframe_idxs pins appended frames to absolute positions)
+                # are left canonical by the wrapper itself, so on guide-carrying scenes the
+                # roll is inert rather than corrupting.
+                if self._scene_temporal_loop(scene_cond):
+                    try:
+                        from .ltx_enhancements import make_loop_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_loop_temporal_wrapper
+                    _loop_base = model.model_options.get("model_function_wrapper")
+                    model.model_options["model_function_wrapper"] = _tag_scene_wrapper(
+                        make_loop_temporal_wrapper(_loop_base), _loop_base)
+                    _loop_pinned = guide_tail > 0 or carried > 0 or carried_guide_frames > 0
+                    run_mechanisms.append(
+                        "temporal_loop_roll(inert: guides pin frames)" if _loop_pinned
+                        else "temporal_loop_roll")
+                # taste_nearest_prompt: swap the single global liked direction for the one
+                # learned on this scene's closest rated prompts (resolved from the ORIGINAL
+                # scene conditioning, before any value-fn ascent mutates it). Falls back to
+                # the global _liked_dir when nothing rated is close enough.
+                _scene_liked_dir = _liked_dir
+                if _prompt_dir_index and _liked_dir is not None and scene_positive:
+                    _retrieved = self._resolve_prompt_keyed_direction(_prompt_dir_index, scene_positive[0][0])
+                    if _retrieved is not None:
+                        _scene_liked_dir = _retrieved
+                        run_mechanisms.append("taste_nearest_prompt")
                 if embed_guidance and _value_fn is not None and _value_fn.is_ready():
                     run_mechanisms.append("embed_guidance_vf_ascend")
                     orig_cond, orig_extra = scene_positive[0][0], scene_positive[0][1]
                     ascended = self._protect_audio(_value_fn.ascend(orig_cond), orig_cond)
                     scene_positive = [[ascended, orig_extra]] + list(scene_positive[1:])
-                if embed_guidance and _liked_dir is not None:
+                if embed_guidance and _scene_liked_dir is not None:
                     run_mechanisms.append(f"embed_guidance({_eg_source},{embed_guidance_strength})")
-                    self._build_embed_guidance_wrapper(model, _liked_dir, embed_guidance_strength, value_fn=_value_fn)
-                if score_slider and _liked_dir is not None:
+                    self._build_embed_guidance_wrapper(model, _scene_liked_dir, embed_guidance_strength, value_fn=_value_fn)
+                if score_slider and _scene_liked_dir is not None:
                     _pole = "contrastive" if _bad_dir is not None else "symmetric"
                     run_mechanisms.append(f"score_slider({_eg_source},{score_slider_strength},{_pole})")
-                    self._build_score_slider_wrapper(model, _liked_dir, score_slider_strength, bad_dir=_bad_dir)
+                    self._build_score_slider_wrapper(model, _scene_liked_dir, score_slider_strength, bad_dir=_bad_dir)
                 if dynashift and _dynashift_negatives:
                     run_mechanisms.append(
                         f"dynashift({len(_dynashift_negatives)}neg,{dynashift_strength},thr={dynashift_threshold})")
@@ -4696,10 +5029,20 @@ class FunPackLTXAVSceneChainSampler:
                     _v2a_handles = self._install_v2a_scale(model, v2a_grad_scale)
                     if _v2a_handles:
                         run_mechanisms.append(f"v2a_grad_scale({v2a_grad_scale})")
-                if identity_transfer_enabled and identity_phase_applied:
-                    _identity_phase_handle = self._install_identity_phase(model)
-                    if _identity_phase_handle:
-                        run_mechanisms.append(f"identity_transfer_phase({identity_transfer_phase})")
+                if identity_transfer_enabled and identity_ref_filename:
+                    _id_ref_latent, _id_seg_value, _id_pos_tokens, _id_neg_tokens = self._resolve_identity_overlap(
+                        _identity_overlap_state, identity_ref_filename, vae, chunk,
+                        identity_projector, source_id, phase_scale, id_strength, arcface_mode, debug_log,
+                    )
+                    if _id_ref_latent is not None:
+                        _identity_overlap_handle = self._install_identity_overlap(model, _id_ref_latent, _id_seg_value)
+                        if _identity_overlap_handle:
+                            run_mechanisms.append(f"identity_transfer_overlap(seg={_id_seg_value})")
+                        if _id_pos_tokens is not None:
+                            scene_positive, scene_negative = self._append_identity_context_tokens(
+                                scene_positive, scene_negative, _id_pos_tokens, _id_neg_tokens,
+                            )
+                            run_mechanisms.append(f"identity_transfer_arcface(id_strength={id_strength})")
                 _t_sample0 = _time.perf_counter()
                 sampled = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
@@ -4711,9 +5054,15 @@ class FunPackLTXAVSceneChainSampler:
                 )
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
+                if _plateau_stats is not None:
+                    _reused, _computed = _plateau_stats["reused"], _plateau_stats["computed"]
+                    _total = _reused + _computed
+                    if _total > 0:
+                        run_mechanisms.append(
+                            f"plateau_cache(skipped {_reused}/{_total} plateau fwd, thr={plateau_cache_threshold})")
             finally:
                 self._remove_v2a_scale(_v2a_handles)
-                self._strip_identity_phase(_identity_phase_handle)
+                self._strip_identity_overlap(_identity_overlap_handle)
                 if model.model_options.get("model_function_wrapper") is not _scene_base_wrapper:
                     if _scene_base_wrapper is not None:
                         model.model_options["model_function_wrapper"] = _scene_base_wrapper
@@ -4733,6 +5082,11 @@ class FunPackLTXAVSceneChainSampler:
                 a_frame = self._harvest_joyai_audio(sampled, joyai_frame_select) if joyai_audio_memory else None
                 joyai_bank.add(v_frame, a_frame)
             scene_outputs.append(self._clone_latent(sampled))
+            # Stays 0 for anchor scenes even with carry_overlap_through_anchor on: the post-sample
+            # slerp blend would reach into the anchor image's own leading frame (position 0 of
+            # `sampled`) and fade it against the previous scene's tail, undermining the hard cut.
+            # The carried frames beyond it are already seeded pre-sample (see
+            # _build_mixed_anchor_chunk), so no post-hoc smoothing is needed there.
             blend_overlap = 0 if anchor_meta else video_overlap
             output = sampled if output is None else self._blend_latents(output, sampled, blend_overlap)
             cumulative_latent_frames = self._tensor_frames(self._latent_tensors(output)[0])
@@ -4858,6 +5212,7 @@ class FunPackLTXAVSceneChainSampler:
                     "transitions_enabled": scene_count > 1,
                     "joyai_memory": bool(joyai_memory),
                     "joyai_audio_memory": bool(joyai_audio_memory),
+                    "carry_overlap_through_anchor": bool(carry_overlap_through_anchor),
                 })
             except Exception as e:
                 print(f"[FunPackLTXAVSceneChainSampler] Failed to write sampler context: {e}")
@@ -4988,7 +5343,8 @@ class FunPackLTXAVSceneChainSampler:
                             alg_blur_guides=False, bounded_attention_enabled=False,
                             output_guidance=False, output_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
-                            alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975):
+                            alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
+                            plateau_cache=False, plateau_cache_threshold=0.975):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -5041,6 +5397,7 @@ class FunPackLTXAVSceneChainSampler:
                 output_guidance=output_guidance, output_guidance_strength=output_guidance_strength,
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
+                plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
                 unique_id=None, prompt=None,
             )
             last = out

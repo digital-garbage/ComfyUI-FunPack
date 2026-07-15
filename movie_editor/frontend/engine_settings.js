@@ -5,6 +5,7 @@
 (function () {
   const { el, clear } = window.dom;
   const S = window.Store;
+  const API = window.MovieEditorAPI;
 
   let _mounted = null; // { scroller (pane, set per render), content (shell root) }
   let unsub = null;
@@ -158,6 +159,8 @@
     { name: "embed_guidance_strength", label: "Embed strength",      kind: "float", default: 0.02,  min: 0.005, max: 0.1, step: 0.005, dependsOn: "embed_guidance" },
     { name: "score_slider",          label: "Score slider",          kind: "bool",  default: false },
     { name: "score_slider_strength", label: "Slider strength (eta)", kind: "float", default: 1.0,   min: 0, max: 3, step: 0.25, dependsOn: "score_slider" },
+    { name: "taste_nearest_prompt",  label: "Per-prompt taste direction", kind: "bool", default: false,
+      hint: "EXPERIMENTAL: source Embed guidance / Score slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of one global liked-direction average. Each liked rating records (prompt → its liked direction); this retrieves the closest matches per scene (a forest prompt pulls what worked on forests). No extra model pass — a cosine lookup + vector mean. Falls back to the global direction when nothing rated is close. Needs Embed guidance or Score slider on. UNVALIDATED LIVE." },
     { name: "output_guidance",       label: "Output guidance",       kind: "bool",  default: false },
     { name: "output_guidance_strength", label: "Output guidance strength", kind: "float", default: 0.02, min: 0.005, max: 0.1, step: 0.005, dependsOn: "output_guidance" },
     { name: "decode_noise_scale",    label: "Decode noise scale",    kind: "float", default: 0.0,   min: 0, max: 1,   step: 0.01 },
@@ -180,9 +183,19 @@
     { name: "dynashift_strength",    label: "DynaShift strength",    kind: "float", default: 0.3, min: 0.05, max: 1.0, step: 0.05, dependsOn: "dynashift" },
     { name: "dynashift_threshold",   label: "DynaShift match threshold", kind: "float", default: 0.6, min: 0.3, max: 0.95, step: 0.05, dependsOn: "dynashift" },
     { name: "identity_transfer_enabled", label: "Best-FaceID compatibility", kind: "bool", default: false,
-      hint: "Tags Continuity's Identity pin guide (Engine → Continuity) with the source-phase RoPE rotation Best-FaceID-style identity LoRAs were trained on. Load the LoRA itself the normal way — Models → add a LoRA loader onto the model path. No effect without an Identity pin image set." },
-    { name: "identity_transfer_phase", label: "Source-phase id", kind: "float", default: 2.0, min: 0.0, max: 8.0, step: 0.5, dependsOn: "identity_transfer_enabled",
-      hint: "Matches the LoRA's training convention (ltx-trainer used 2)." },
+      hint: "Full native port of the overlap+source_phase+ArcFace conditioning Best-FaceID-style identity LoRAs were trained on. Replaces Continuity's Identity pin guide (Engine → Continuity) with separate, non-rendered reference tokens plus an optional ArcFace projector below. Load the LoRA itself the normal way — Models → add a LoRA loader onto the model path. No effect without an Identity pin image set." },
+    { name: "source_id", label: "Source-phase id", kind: "float", default: 2.0, min: 0.0, max: 8.0, step: 1.0, dependsOn: "identity_transfer_enabled",
+      hint: "Matches the LoRA's training convention (ltx-trainer used 2). 0 disables the RoPE rotation." },
+    { name: "phase_scale", label: "Phase scale", kind: "float", default: 1.0, min: 0.0, max: 4.0, step: 0.1, dependsOn: "identity_transfer_enabled" },
+    { name: "id_strength", label: "ArcFace token strength", kind: "float", default: 1.0, min: 0.0, max: 50.0, step: 0.5, dependsOn: "identity_transfer_enabled",
+      hint: "Only applies when an ArcFace projector is selected below — weak channel, push high (5-20) to test." },
+    { name: "arcface_mode", label: "ArcFace detection mode", kind: "combo", choices: ["auto_adjust", "as_is", "disable"], default: "auto_adjust", dependsOn: "identity_transfer_enabled" },
+    { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
+      hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
+    { name: "plateau_cache", label: "Plateau step-cache (speed)", kind: "bool", default: false,
+      hint: "EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
+    { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
+      hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -285,9 +298,9 @@
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides"],
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
-    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
+    chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "identity_transfer_phase"],
+    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
@@ -563,6 +576,49 @@
     renderKnobList(g, st, CHAIN_VIEW_KNOBS[id]);
   }
 
+  // ── Best-FaceID ArcFace projector: the one identity-transfer field that needs a
+  // live (server-fetched) choice list, so it can't live in the static SAMPLER_KNOBS combo
+  // shape. Reuses the same loras folder listing LoraLoaderModelOnly exposes.
+  let _loraChoices = null;
+
+  async function ensureLoraChoices() {
+    if (_loraChoices) return _loraChoices;
+    try {
+      const spec = await API.nodeSpec("LoraLoaderModelOnly");
+      const w = (spec?.inputs || []).find((i) => i.name === "lora_name");
+      _loraChoices = (w && w.choices) || [];
+    } catch (_) {
+      _loraChoices = [];
+    }
+    render();
+    return _loraChoices;
+  }
+
+  function renderChainExperimental(pane, st) {
+    renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
+      "Research techniques — off by default; expect quality/overhead trade-offs.");
+    const si = st.project.sampler_inputs || {};
+    if (!si.identity_transfer_enabled) return;
+    const g = group(pane, "Best-FaceID: ArcFace projector");
+    if (!_loraChoices) {
+      g.append(hintEl("Loading projector list…"));
+      ensureLoraChoices();
+      return;
+    }
+    const sel = el("select"); sel.dataset.k = "si-identity_projector";
+    const noneOpt = el("option", null, "None"); noneOpt.value = "None";
+    if (!si.identity_projector || si.identity_projector === "None") noneOpt.selected = true;
+    sel.append(noneOpt);
+    _loraChoices.forEach((c) => {
+      const o = el("option", null, c); o.value = c;
+      if (c === si.identity_projector) o.selected = true;
+      sel.append(o);
+    });
+    sel.onchange = () => S.setSamplerInputNow("identity_projector", sel.value);
+    g.append(field("ArcFace projector", sel,
+      "Optional secondary identity channel — the overlap reference tokens above carry the bulk of identity even with this set to None."));
+  }
+
   function renderPane(pane, st) {
     const p = st.project;
     if (!p) { pane.append(el("div", "pj-meta", "No project open.")); return; }
@@ -582,8 +638,7 @@
       case "chain_timing": return renderChainTiming(pane, st);
       case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance");
       case "chain_decode": return renderChainKnobsView(pane, st, "chain_decode", "Decode");
-      case "chain_experimental": return renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
-        "Research techniques — off by default; expect quality/overhead trade-offs.");
+      case "chain_experimental": return renderChainExperimental(pane, st);
       default: return renderOverview(pane, st);
     }
   }
