@@ -5001,8 +5001,9 @@ class FunPackLTXAVSceneChainSampler:
                     # corrects whatever prediction those already produced, not the raw base one.
                     run_mechanisms.append(f"output_guidance({output_guidance_strength})")
                     self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
-                # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top
-                # of whatever is installed (e.g. embed guidance).
+                # Per-scene temporal style (auto / pulse / rapid_start / rapid_end /
+                # rapid_start_end): layer a frame_rate wrapper on top of whatever is
+                # installed (e.g. embed guidance).
                 _scene_mode = self._scene_temporal_mode(scene_cond)
                 _scene_mult = self._scene_temporal_mult(scene_cond)
                 _cur_wrapper = model.model_options.get("model_function_wrapper")
@@ -5012,6 +5013,14 @@ class FunPackLTXAVSceneChainSampler:
                     except ImportError:
                         from ltx_enhancements import make_pulse_temporal_wrapper
                     _tw = make_pulse_temporal_wrapper(_cur_wrapper)
+                    if _tw is not None:
+                        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
+                elif _scene_mode in ("rapid_start", "rapid_end", "rapid_start_end"):
+                    try:
+                        from .ltx_enhancements import make_rapid_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_rapid_temporal_wrapper
+                    _tw = make_rapid_temporal_wrapper(_cur_wrapper, _scene_mode)
                     if _tw is not None:
                         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
                 elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:

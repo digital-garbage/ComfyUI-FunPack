@@ -6,7 +6,8 @@ Technique 2: Per-block attention temperature
 
 Technique 3: Temporal RoPE style
   Manipulate frame_rate in the model's positional embedding to change motion character.
-  Styles: natural / accelerate / decelerate / loop / freeze / pulse
+  Styles: natural / accelerate / decelerate / loop / freeze / pulse /
+          rapid_start / rapid_end / rapid_start_end
 
 Technique 4: Denoise creativity mask
   Spatial noise weighting derived from latent variance: high-variance regions get more freedom.
@@ -25,7 +26,10 @@ from hashlib import md5
 
 import torch
 
-TEMPORAL_STYLES = ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"]
+TEMPORAL_STYLES = [
+    "natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse",
+    "rapid_start", "rapid_end", "rapid_start_end",
+]
 
 # frame_rate multiplier fed to the LTX RoPE per style. >1 => model assumes more
 # frames cover the same wall-clock time => smaller inter-frame deltas => smoother /
@@ -44,6 +48,12 @@ TEMPORAL_STYLE_MULT = {
 PULSE_SEGMENT_COUNT = 3
 PULSE_PEAK_MULT = 0.88
 PULSE_FLOOR_MULT = 1.65
+
+# Rapid start/end: punchy (low) frame_rate mult held over the first/last slice of the
+# scene's denoise progress, easing to natural (1.0) elsewhere. Same progress-from-sigma
+# mechanism as pulse, just shaped as a single ramp instead of repeated segments.
+RAPID_MULT = 0.65
+RAPID_FRACTION = 0.35  # portion of denoise progress the rapid ramp covers at each edge
 
 
 # Keyword -> motion-energy intent for the "auto" director. The classifier scans a
@@ -118,6 +128,22 @@ def pulse_mult_for_progress(progress, segment_count=None, peak_mult=None, floor_
     return peak + (floor - peak) * _ease_down(local_t)
 
 
+def rapid_mult_for_progress(progress, mode, fraction=None, mult=None):
+    """Map denoise progress [0,1] to a frame_rate multiplier for the rapid_start /
+    rapid_end / rapid_start_end styles: `mult` (punchy) held over the first and/or
+    last `fraction` of progress, easing to natural (1.0) toward the middle."""
+    frac = RAPID_FRACTION if fraction is None else max(1e-3, min(0.5, float(fraction)))
+    rapid = RAPID_MULT if mult is None else float(mult)
+    progress = max(0.0, min(1.0, float(progress)))
+    start = mode in ("rapid_start", "rapid_start_end")
+    end = mode in ("rapid_end", "rapid_start_end")
+    if start and progress < frac:
+        return rapid + (1.0 - rapid) * _ease_down(progress / frac)
+    if end and progress > 1.0 - frac:
+        return rapid + (1.0 - rapid) * _ease_down((1.0 - progress) / frac)
+    return 1.0
+
+
 def _scale_frame_rate_in_args(args, mult):
     """Return a shallow-copied args dict with frame_rate scaled by mult (no-op on failure)."""
     c = args.get("c")
@@ -187,6 +213,33 @@ def make_pulse_temporal_wrapper(old_wrapper, segment_count=None, peak_mult=None,
         return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
 
     return _pulse_wrapper
+
+
+def make_rapid_temporal_wrapper(old_wrapper, mode, fraction=None, mult=None):
+    """Build a model_function_wrapper for rapid_start / rapid_end / rapid_start_end:
+    punchy frame_rate mult over the first/last slice of denoise progress (derived from
+    sigma, same as pulse), natural (1.0, i.e. no-op) elsewhere. A fresh wrapper should
+    be installed per scene so sigma bounds reset between scenes."""
+    frac = RAPID_FRACTION if fraction is None else fraction
+    rapid = RAPID_MULT if mult is None else mult
+    sigma_start = [None]
+
+    def _rapid_wrapper(apply_fn, args, _old=old_wrapper, _mode=mode, _frac=frac, _rapid=rapid):
+        ts = args.get("timestep")
+        try:
+            sigma = float(ts.max().item()) if ts is not None else 1.0
+        except Exception:
+            sigma = 1.0
+        if sigma_start[0] is None:
+            sigma_start[0] = max(sigma, 1e-6)
+        progress = max(0.0, min(1.0, 1.0 - sigma / sigma_start[0]))
+        mult_here = rapid_mult_for_progress(progress, _mode, _frac, _rapid)
+        args = _scale_frame_rate_in_args(args, mult_here)
+        if _old is not None:
+            return _old(apply_fn, args)
+        return apply_fn(args["input"], args["timestep"], **args.get("c", {}))
+
+    return _rapid_wrapper
 
 # --- Loop temporal style: Mobius-style latent roll (arXiv:2502.20307) ---------------
 # Seamless looping without training or extra forward passes: on eligible denoise steps
@@ -1437,6 +1490,9 @@ def build_enhancements(model, rating_profile, temporal_style, refinement_key, re
     elif temporal_style == "loop":
         model.model_options["model_function_wrapper"] = make_loop_temporal_wrapper(
             model.model_options.get("model_function_wrapper"))
+    elif temporal_style in ("rapid_start", "rapid_end", "rapid_start_end"):
+        model.model_options["model_function_wrapper"] = make_rapid_temporal_wrapper(
+            model.model_options.get("model_function_wrapper"), temporal_style)
     elif temporal_style not in ("natural", "auto"):
         mult = TEMPORAL_STYLE_MULT.get(temporal_style, 1.0)
         wrapper = make_temporal_wrapper(model.model_options.get("model_function_wrapper"), mult)
