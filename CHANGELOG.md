@@ -1,8 +1,26 @@
 # Changelog
 
-## [Unreleased]
+## [3.3.0] - 2026-07-15
 
 ### Added
+- **Loop temporal style** - the "loop" option in Temporal style (inert since it was added)
+  now produces seamlessly looping clips, the LTX2.3 equivalent of WanVideoWrapper's Loop
+  Args: on eligible denoise steps the latent is cyclically rolled along time before the
+  model forward and the prediction unrolled after, so the model repeatedly smooths the
+  video's seam (last frame | first frame) as if it were an ordinary interior cut. Video and
+  audio roll by their own frame counts and stay time-aligned; i2v anchor masks roll in step.
+  Near-zero overhead (no extra forward passes). Also honored by the "auto" director when a
+  scene's prompt asks for a loop ("seamless loop", "cycling", "repeating"). On scenes that
+  carry guides (mid-scene guide, carry-i2v-guides, JoyAI memory, custom guide stacks) the
+  roll stays off - guide frames are pinned to absolute positions - and the run log shows
+  `temporal_loop_roll(inert: guides pin frames)`.
+- **Plateau step-cache** (experimental, Engine ▸ Experimental) - reuses the base model's
+  forward across the near-noise plateau steps of the LTX 8-step schedule (sigma >= threshold,
+  default 0.975), skipping 3-4 of 8 forwards per scene for a negative-overhead speedup.
+  Guidance wrappers still post-process every step's prediction.
+- **Wired widget locks** - node widget fields fed by an incoming wire are now locked in the
+  Models & Pipeline editor and show which node feeds them, instead of silently accepting
+  edits that the wire would overwrite on the next run.
 - **Per-prompt taste direction** (`taste_nearest_prompt`, experimental, Engine ▸ Guidance) —
   a retrieval layer over the learned taste steering. Instead of pushing Embed guidance /
   Score slider along the single global liked-direction average, each liked rating now also
@@ -24,6 +42,32 @@
   existing Identity pin image — no new picker. Requires the `insightface` package (added to
   requirements.txt; downloads the buffalo_l model on first use) only when an ArcFace projector
   is selected — the overlap tokens alone work without it.
+- Frame overlap now carries through anchor changes (hard scene cuts with a new anchor image
+  used to drop the latent overlap; `carry_overlap_through_anchor`), and an Identity pin
+  configured on an anchor-swap scene resolves again instead of being skipped.
+
+### Fixed
+- **Preview stability (rounds 3-5)** - the remaining causes of stale / black / undecodable
+  scene previews, especially "the second half stops loading":
+  - `/result` faststart-remuxes raw ComfyUI renders (VHS writes the MP4 index at the end of
+    the file; browsers cannot seek that) and never serves a video mid-write - a file whose
+    index isn't on disk yet answers 503 until the save finishes, instead of undecodable bytes.
+  - A failed remux answers 502 with rate-limited re-attempts instead of permanently falling
+    back to the raw file; temp-dir failures and the loopback fallback path can no longer
+    serve raw index-at-end video either (the fallback also gains Range/seek support).
+  - The player materializes video elements only in a window around the playhead instead of
+    one per timeline clip - a montage-scale timeline (100+ clips) used to create 100+
+    elements and fire ~180 preview-segment encodes at once, starving the browser's
+    per-origin connections (and hitting Chrome's hard 75-media-players-per-page cap), which
+    left the back half of the timeline permanently "loading". Timeline filmstrips load
+    through a small shared queue for the same reason.
+  - The monitor shows honest readiness slates ("Video is processing…" / "Video is loading…" /
+    "Preview unavailable") instead of a black or blinking frame, and a long GIL-bound save
+    can no longer exhaust the retry budget.
+- Exposed controls silently reverting: the autosave snapshot was taken before edited model
+  values synced back to the project, so an exposed-widget edit could be undone by its own
+  autosave.
+- ALG crash on multi-scene runs (tensor truthiness in the `alg_latents` fallback).
 
 ## [3.2.1] - 2026-07-06
 
