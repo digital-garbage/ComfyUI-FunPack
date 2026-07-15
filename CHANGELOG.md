@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Loop temporal style now works alongside guides.** Scenes carrying appended guide frames
+  (carry-i2v-guides, mid-scene guide, JoyAI memory, custom guide stacks) no longer disable
+  the loop roll: only the content region rolls while the pinned guide tail (and the audio
+  memory tail) stays canonical, so guides keep informing every position of the cycle without
+  ever being rendered into it. The i2v anchor was always supported - it rides the denoise
+  mask, which rolls in step with the latent.
+
 ## [3.3.0] - 2026-07-15
 
 ### Added

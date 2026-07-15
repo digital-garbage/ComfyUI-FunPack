@@ -4953,10 +4953,10 @@ class FunPackLTXAVSceneChainSampler:
                 # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
                 # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
                 # dynashift / output guidance) so they see canonical-orientation inputs and
-                # predictions — the roll exists only around the base forward. Calls that
-                # carry guides (keyframe_idxs pins appended frames to absolute positions)
-                # are left canonical by the wrapper itself, so on guide-carrying scenes the
-                # roll is inert rather than corrupting.
+                # predictions — the roll exists only around the base forward. Appended guide
+                # frames stay pinned: the wrapper rolls only the content region in front of
+                # the guide tail (counted from keyframe_idxs / the audio mask), so guides
+                # keep informing the whole cycle without ever being dragged into it.
                 if self._scene_temporal_loop(scene_cond):
                     try:
                         from .ltx_enhancements import make_loop_temporal_wrapper
@@ -4967,7 +4967,7 @@ class FunPackLTXAVSceneChainSampler:
                         make_loop_temporal_wrapper(_loop_base), _loop_base)
                     _loop_pinned = guide_tail > 0 or carried > 0 or carried_guide_frames > 0
                     run_mechanisms.append(
-                        "temporal_loop_roll(inert: guides pin frames)" if _loop_pinned
+                        "temporal_loop_roll(content-only: guide tail pinned)" if _loop_pinned
                         else "temporal_loop_roll")
                 # taste_nearest_prompt: swap the single global liked direction for the one
                 # learned on this scene's closest rated prompts (resolved from the ORIGINAL
