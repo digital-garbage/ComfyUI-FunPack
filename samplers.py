@@ -3154,6 +3154,17 @@ class FunPackLTXAVSceneChainSampler:
                 return None
         return None
 
+    def _scene_temporal_loop(self, scene_conditioning):
+        """Per-scene loop intent baked in by Studio's "auto" temporal director
+        (funpack_temporal_loop). True → install the Mobius latent-roll wrapper."""
+        if (
+            isinstance(scene_conditioning, (list, tuple))
+            and len(scene_conditioning) >= 2
+            and isinstance(scene_conditioning[1], dict)
+        ):
+            return bool(scene_conditioning[1].get("funpack_temporal_loop"))
+        return False
+
     def _scene_temporal_mode(self, scene_conditioning):
         """Per-scene temporal mode tag (e.g. pulse). None when unset."""
         if (
@@ -4939,6 +4950,25 @@ class FunPackLTXAVSceneChainSampler:
                 # layer around it and still post-process each step's (cached-or-fresh) prediction.
                 if plateau_cache:
                     _plateau_stats = self._build_plateau_cache_wrapper(model, plateau_cache_threshold)
+                # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
+                # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
+                # dynashift / output guidance) so they see canonical-orientation inputs and
+                # predictions — the roll exists only around the base forward. Calls that
+                # carry guides (keyframe_idxs pins appended frames to absolute positions)
+                # are left canonical by the wrapper itself, so on guide-carrying scenes the
+                # roll is inert rather than corrupting.
+                if self._scene_temporal_loop(scene_cond):
+                    try:
+                        from .ltx_enhancements import make_loop_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_loop_temporal_wrapper
+                    _loop_base = model.model_options.get("model_function_wrapper")
+                    model.model_options["model_function_wrapper"] = _tag_scene_wrapper(
+                        make_loop_temporal_wrapper(_loop_base), _loop_base)
+                    _loop_pinned = guide_tail > 0 or carried > 0 or carried_guide_frames > 0
+                    run_mechanisms.append(
+                        "temporal_loop_roll(inert: guides pin frames)" if _loop_pinned
+                        else "temporal_loop_roll")
                 # taste_nearest_prompt: swap the single global liked direction for the one
                 # learned on this scene's closest rated prompts (resolved from the ORIGINAL
                 # scene conditioning, before any value-fn ascent mutates it). Falls back to
