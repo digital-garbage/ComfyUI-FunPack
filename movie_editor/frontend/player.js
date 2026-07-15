@@ -579,33 +579,87 @@
     return v;
   }
 
+  // Materializing a <video> per clip URL for the WHOLE timeline breaks big (montage)
+  // timelines: Chrome refuses new media players past ~75 per page, and every element's
+  // preload=metadata fetch of a per-clip preview segment (each a server-side ffmpeg
+  // encode) fights over the browser's ~6 per-origin connections on a tunneled instance —
+  // so clips in the back half of the timeline sit "loading" forever while the front half
+  // plays. Only clips in a window around the playhead get elements; the window keeps cut
+  // boundaries instant (upcoming clips are materialized ahead) while the element count
+  // stays flat no matter how long the timeline is.
+  const POOL_BEHIND = 2, POOL_AHEAD = 8, POOL_MAX = 16;
+
+  function _windowUrls() {
+    const urls = new Set();
+    let idx = _currentClip ? _clips.indexOf(_currentClip) : -1;
+    if (idx < 0) {
+      const at = _clipAt(_phSec);
+      idx = at ? _clips.indexOf(at) : -1;
+    }
+    if (idx < 0) idx = _clips.findIndex(_hasPlayableClipMedia);
+    if (idx >= 0) {
+      for (let i = Math.max(0, idx - POOL_BEHIND); i < _clips.length && i <= idx + POOL_AHEAD; i++) {
+        const c = _clips[i];
+        if (!c || c.pending || c.blank) continue;
+        const u = _clipUrl(c);
+        if (u) urls.add(u);
+      }
+    }
+    return urls;
+  }
+
+  function _releasePooledVideo(u, v) {
+    pool.delete(u);
+    if (_active === v) _active = null;
+    v.pause();
+    clearTimeout(v._pmRetryTimer);
+    // Release the socket BEFORE detaching: a detached media element that still has a
+    // src holds its per-origin connection until GC (media-connection-pool class).
+    try { v.removeAttribute("src"); v.load(); } catch (_) {}
+    v._pmFx?.viewport.remove();
+  }
+
+  // Materialize window members that are missing; evict far elements once the pool
+  // outgrows POOL_MAX (the slack keeps recently-visited clips warm for back-and-forth
+  // scrubbing instead of re-fetching on every jump). Runs at every playhead-affecting
+  // step via _updatePreloadHints, and is idempotent/cheap when nothing changed.
+  function _syncPoolWindow() {
+    const want = _windowUrls();
+    for (const u of want) {
+      if (pool.has(u)) continue;
+      const clip = _clips.find((c) => _clipUrl(c) === u);
+      if (clip) _ensureVideo(u, clip);
+    }
+    if (pool.size <= POOL_MAX) return;
+    for (const [u, v] of [...pool]) {  // Map order = insertion order ⇒ oldest first
+      if (pool.size <= POOL_MAX) break;
+      if (want.has(u) || v === _active) continue;
+      _releasePooledVideo(u, v);
+    }
+  }
+
   function _syncPool() {
     _urlClips.clear();
-    const urls = new Set(_clips.filter((c) => c.media || c.binUrl || c.streamUrl).map((c) => _clipUrl(c)));
-    urls.forEach((u) => {
+    // Timeline rebuild: drop elements whose URL no longer exists on any clip at all
+    // (deleted/regenerated clips) regardless of the window.
+    const live = new Set(_clips.filter((c) => c.media || c.binUrl || c.streamUrl).map((c) => _clipUrl(c)));
+    for (const [u, v] of [...pool]) {
+      if (live.has(u)) continue;
+      _releasePooledVideo(u, v);
+    }
+    _syncPoolWindow();
+    for (const [u, v] of pool) {
       const clip = _clips.find((c) => _clipUrl(c) === u);
-      const v = _ensureVideo(u, clip);
+      if (clip) _registerUrlClip(u, clip);
       // Clip rebuild (e.g. a run just completed): give exhausted-but-errored elements a
       // fresh recovery attempt — the failure was likely the server being busy back then.
       if (v.error && !v._pmRetryTimer) { v._pmRetries = 0; _scheduleVideoRetry(u, v); }
-    });
-    for (const [u, v] of [...pool]) {
-      if (urls.has(u)) continue;
-      v.pause();
-      clearTimeout(v._pmRetryTimer);
-      v._pmFx?.viewport.remove();
-      pool.delete(u);
-      if (_active === v) { _active = null; }
     }
   }
 
   function _resetPool() {
     _stopTick();
-    for (const [, v] of pool) {
-      v.pause();
-      clearTimeout(v._pmRetryTimer);
-      v._pmFx?.viewport.remove();
-    }
+    for (const [u, v] of [...pool]) _releasePooledVideo(u, v);
     pool.clear(); _active = null; _currentClip = null; _seekPending = null; _playPending = false;
     _urlClips.clear();
     _clipBoundaryToken = 0;
@@ -735,6 +789,7 @@
   // stay instant); everything else idles at metadata so the pool doesn't saturate the
   // browser's per-origin connections. A hint change never interrupts an in-flight load.
   function _updatePreloadHints() {
+    _syncPoolWindow();  // playhead moved — materialize upcoming clips, evict far ones
     if (!pool.size) return;
     const hot = new Set();
     const add = (c) => {

@@ -209,6 +209,14 @@ def _ffmpeg_trim_clip(src_path: str, out_path: str, inn, dur, fast: bool = False
         raise RuntimeError((proc.stderr or "ffmpeg failed")[-1000:])
 
 
+_ISOBMFF_EXTS = (".mp4", ".m4v", ".mov")  # containers where moov/mdat atom order applies
+
+
+def _is_isobmff(path: str) -> bool:
+    import os
+    return os.path.splitext(path)[1].lower() in _ISOBMFF_EXTS
+
+
 def _moov_position(path: str) -> str:
     """Where the MP4's moov atom sits: "front" (before mdat — browsers can decode from a
     progressive/Range fetch), "end" (after mdat — ComfyUI's own VHS_VideoCombine output; a
@@ -343,8 +351,9 @@ _preview_segment_cache: dict[str, str] = {}
 _preview_segment_locks: dict = {}  # cache key -> asyncio.Lock (dedupe concurrent encodes)
 
 _faststart_cache: dict[str, tuple] = {}  # source path -> (source sig, remuxed faststart path)
-_faststart_raw_ok: dict[str, tuple] = {}  # source path -> sig a stable file failed to remux at (serve raw, don't re-run ffmpeg per request)
+_faststart_failed: dict[str, tuple] = {}  # source path -> (sig, monotonic ts of last failed remux attempt)
 _faststart_locks: dict = {}  # source path -> asyncio.Lock (dedupe concurrent remuxes)
+_FASTSTART_RETRY_SEC = 30.0  # min gap between remux re-attempts on a file that failed to remux
 
 
 def _preview_segment_cache_key(pid: str, scene_id: str, clip: dict) -> str:
@@ -1831,11 +1840,18 @@ if web is not None and PromptServer is not None:
         offsets (PIPELINE decode errors) or fails If-Range and restarts the clip from 0.
         Caches are keyed on the source's (mtime, size) signature and the remux output name is
         derived from path+signature, so a rewritten source can't serve a stale copy and two
-        sources sharing a basename can't overwrite each other's remux mid-stream."""
+        sources sharing a basename can't overwrite each other's remux mid-stream.
+
+        A moov-at-end file must NEVER be served raw, whatever goes wrong here: deep seeks
+        into it are undecodable in the browser (Firefox: NS_ERROR_DOM_MEDIA_DECODE_ERR /
+        AppleVTDecoder reference-missing), and the element's cache-busted retries then fail
+        identically forever. A remux failure answers 502 (rate-limited re-attempts) instead
+        of falling back to raw bytes — an honest "Preview unavailable" beats undecodable video."""
         import asyncio
         import hashlib
         import os
-        if os.path.splitext(src_path)[1].lower() != ".mp4":
+        import time
+        if not _is_isobmff(src_path):
             return src_path
         try:
             sig = _file_sig(src_path)
@@ -1861,15 +1877,21 @@ if web is not None and PromptServer is not None:
                 # will change under this URL. 503 lets the player's retry loop try again.
                 raise web.HTTPServiceUnavailable(
                     reason="Video file is still being written.", headers={"Retry-After": "2"})
-            if _faststart_raw_ok.get(src_path) == sig:
-                return src_path
+            failed = _faststart_failed.get(src_path)
+            if failed and failed[0] == sig and time.monotonic() - failed[1] < _FASTSTART_RETRY_SEC:
+                raise web.HTTPBadGateway(
+                    reason="Video could not be prepared for playback (remux failed).")
             try:
                 import folder_paths
                 tempdir = folder_paths.get_temp_directory()
             except Exception:
-                return src_path
+                # No temp dir means no seek-safe copy can be made; raw moov-at-end bytes
+                # would be undecodable, so tell the player to retry rather than serve them.
+                raise web.HTTPServiceUnavailable(
+                    reason="Temp directory unavailable.", headers={"Retry-After": "5"})
             digest = hashlib.md5(f"{src_path}|{sig[0]}|{sig[1]}".encode()).hexdigest()[:16]
-            out_path = os.path.join(tempdir, f"funpack_faststart_{digest}.mp4")
+            ext = os.path.splitext(src_path)[1].lower()
+            out_path = os.path.join(tempdir, f"funpack_faststart_{digest}{ext}")
             err = None
             try:
                 # to_thread: same event-loop-freeze hazard as preview-segment encodes below —
@@ -1885,6 +1907,7 @@ if web is not None and PromptServer is not None:
                 sig_now = None  # deleted under us — retry will 404 definitively
             if ok and sig_now == sig:
                 _faststart_cache[src_path] = (sig, out_path)
+                _faststart_failed.pop(src_path, None)
                 return out_path
             try:
                 os.remove(out_path)
@@ -1895,8 +1918,9 @@ if web is not None and PromptServer is not None:
                 raise web.HTTPServiceUnavailable(
                     reason="Video file is still being written.", headers={"Retry-After": "2"})
             print(f"[FunPack] faststart remux failed for {src_path}: {err}")
-            _faststart_raw_ok[src_path] = sig  # stable but un-remuxable: serve raw, once
-            return src_path
+            _faststart_failed[src_path] = (sig, time.monotonic())
+            raise web.HTTPBadGateway(
+                reason="Video could not be prepared for playback (remux failed).")
 
     @routes.get(UI_PREFIX + "/api/projects/{pid}/result")
     async def _result(req):
@@ -1913,7 +1937,7 @@ if web is not None and PromptServer is not None:
             # Mirror the GET path's mid-write gate: a moov-less mp4 would 503 on GET, so a
             # HEAD claiming 200 would lie — the player probes HEAD after a media error to
             # tell "render still being written" (show "processing") apart from a dead file.
-            if os.path.splitext(path)[1].lower() == ".mp4" and _moov_position(path) == "none":
+            if _is_isobmff(path) and _moov_position(path) == "none":
                 raise web.HTTPServiceUnavailable(
                     reason="Video file is still being written.", headers={"Retry-After": "2"})
             return web.Response()
@@ -1936,6 +1960,31 @@ if web is not None and PromptServer is not None:
             )
         except Exception as e:  # noqa: BLE001
             raise web.HTTPBadGateway(reason=f"could not fetch result: {e}")
+        fname = req.query.get("filename", "")
+        if _is_isobmff(fname):
+            # A buffered full-body mp4/mov response has no Range support and, for a raw
+            # ComfyUI render, moov at the end — both make seeking undecodable in the
+            # browser. Spool the fetched bytes to temp and serve through the same
+            # remux-and-FileResponse path as resolver hits.
+            import hashlib
+            try:
+                import folder_paths
+                tempdir = folder_paths.get_temp_directory()
+            except Exception:
+                raise web.HTTPServiceUnavailable(
+                    reason="Temp directory unavailable.", headers={"Retry-After": "5"})
+            ext = os.path.splitext(fname)[1].lower()
+            digest = hashlib.md5(
+                f"{fname}|{req.query.get('subfolder', '')}|"
+                f"{req.query.get('type', 'output')}|{len(data)}".encode()).hexdigest()[:16]
+            spool = os.path.join(tempdir, f"funpack_viewspool_{digest}{ext}")
+            if not os.path.isfile(spool) or os.path.getsize(spool) != len(data):
+                tmp = spool + ".part"
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, spool)  # atomic: no reader ever sees a partial spool
+            path = await _faststart_path(spool)
+            return web.FileResponse(path, headers={"Content-Type": ctype.split(";")[0]})
         return web.Response(body=data, content_type=ctype.split(";")[0])
 
     # --- API: final render (async job — ffmpeg can exceed Cloudflare tunnel timeouts) ---
@@ -1995,7 +2044,7 @@ if web is not None and PromptServer is not None:
             return web.json_response({"detail": str(e)}, status=400)
         except OSError as e:
             return web.json_response({"detail": str(e)}, status=503)
-        if os.path.splitext(src_path)[1].lower() == ".mp4" and _moov_position(src_path) == "none":
+        if _is_isobmff(src_path) and _moov_position(src_path) == "none":
             # No moov ⇒ still being written (VHS finalizes it last) or an aborted save:
             # ffmpeg can't trim it and the segment would come out truncated/undecodable.
             return web.json_response(

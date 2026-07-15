@@ -201,6 +201,23 @@
     });
   }
 
+  // Filmstrip probes run through a small shared queue: painting a big (montage) timeline
+  // used to start one preload=auto <video> per clip AT ONCE — each of them a server-side
+  // ffmpeg segment encode — saturating both the browser's ~6 per-origin connections and
+  // the server, and starving the player pool (clips stuck "loading" on tunneled
+  // instances). Two at a time keeps thumbnails flowing without wedging playback.
+  const _fsQueue = [];
+  let _fsActive = 0;
+  const FS_CONCURRENCY = 2;
+  function _fsPump() {
+    while (_fsActive < FS_CONCURRENCY && _fsQueue.length) {
+      const job = _fsQueue.shift();
+      _fsActive++;
+      job().catch(() => {}).then(() => { _fsActive--; _fsPump(); });
+    }
+  }
+  function _fsEnqueue(job) { _fsQueue.push(job); _fsPump(); }
+
   function appendFilmstrip(clip, st, scene, widthPx) {
     if (S.isVideoClip && S.isVideoClip(scene)) return;
     if (!hasRender(st, scene.id)) return;
@@ -220,47 +237,60 @@
       ? API.previewSegmentUrl(st.project.id, scene.id, { media: r.media, renderIn: r.inSec || 0, dur: durSec })
       : null;
     const url = segUrl || API.resultUrl(st.project.id, r.media);
-    const vid = document.createElement("video");
-    vid.muted = true; vid.preload = "auto"; vid.src = url;
-    const captureAt = (time) => new Promise((resolve) => {
-      if (!strip.isConnected) { resolve(); return; }
-      const cell = el("div", "clip-fs-cell");
-      const c = document.createElement("canvas");
-      c.width = 48; c.height = 27;
-      const ctx = c.getContext("2d");
-      const thumb = el("img", "clip-fs-thumb");
-      thumb.alt = "";
-      const done = () => {
-        if (!strip.isConnected) { resolve(); return; }
-        try { ctx.drawImage(vid, 0, 0, 48, 27); thumb.src = c.toDataURL("image/jpeg", 0.55); } catch (_) {}
-        cell.append(thumb);
-        strip.append(cell);
-        resolve();
+    _fsEnqueue(() => new Promise((finish) => {
+      if (!strip.isConnected) { finish(); return; }  // re-rendered before its turn came up
+      const vid = document.createElement("video");
+      vid.muted = true; vid.preload = "auto"; vid.src = url;
+      // Free the media connection once the strip is captured (or abandoned) — a detached
+      // <video> keeps its socket until GC, and those add up against Chrome's 6-per-origin
+      // cap. Also settles the queue job; the guard timer keeps a wedged load (server busy,
+      // dead tunnel) from clogging a queue slot forever.
+      let settled = false;
+      const release = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(guard);
+        try { vid.removeAttribute("src"); vid.load(); } catch (_) {}
+        finish();
       };
-      vid.onseeked = done;
-      const dur = vid.duration || durSec;
-      vid.currentTime = Math.max(0, Math.min(time, dur - 0.01));
-    });
-    // Free the media connection once the strip is captured (or abandoned) — a detached
-    // <video> keeps its socket until GC, and those add up against Chrome's 6-per-origin cap.
-    const release = () => { try { vid.removeAttribute("src"); vid.load(); } catch (_) {} };
-    vid.onerror = release;
-    vid.onloadeddata = async () => {
-      if (!strip.isConnected) { release(); return; }
-      const dur = vid.duration || durSec;
-      // A segment starts at 0 (it's already trimmed to this scene); the raw-file fallback
-      // still needs the absolute in-point.
-      const inSec = segUrl ? 0 : (r.inSec || 0) + (scene.source_in || 0);
-      try {
-        for (let i = 0; i < n; i++) {
-          if (!strip.isConnected) return;
-          const t = inSec + (dur * (i + 0.5) / n);
-          await captureAt(t);
+      const guard = setTimeout(release, 20000);
+      const captureAt = (time) => new Promise((resolve) => {
+        if (!strip.isConnected) { resolve(); return; }
+        const cell = el("div", "clip-fs-cell");
+        const c = document.createElement("canvas");
+        c.width = 48; c.height = 27;
+        const ctx = c.getContext("2d");
+        const thumb = el("img", "clip-fs-thumb");
+        thumb.alt = "";
+        const done = () => {
+          if (!strip.isConnected) { resolve(); return; }
+          try { ctx.drawImage(vid, 0, 0, 48, 27); thumb.src = c.toDataURL("image/jpeg", 0.55); } catch (_) {}
+          cell.append(thumb);
+          strip.append(cell);
+          resolve();
+        };
+        vid.onseeked = done;
+        const dur = vid.duration || durSec;
+        vid.currentTime = Math.max(0, Math.min(time, dur - 0.01));
+      });
+      vid.onerror = release;
+      vid.onloadeddata = async () => {
+        if (!strip.isConnected) { release(); return; }
+        const dur = vid.duration || durSec;
+        // A segment starts at 0 (it's already trimmed to this scene); the raw-file fallback
+        // still needs the absolute in-point.
+        const inSec = segUrl ? 0 : (r.inSec || 0) + (scene.source_in || 0);
+        try {
+          for (let i = 0; i < n; i++) {
+            if (!strip.isConnected) return;
+            const t = inSec + (dur * (i + 0.5) / n);
+            await captureAt(t);
+          }
+        } finally {
+          release();
         }
-      } finally {
-        release();
-      }
-    };
+      };
+    }));
   }
 
   const hasRender = (st, sceneId) => !!(st.sceneRenders && st.sceneRenders[sceneId] && st.sceneRenders[sceneId].media);
