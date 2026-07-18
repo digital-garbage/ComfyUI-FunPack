@@ -241,22 +241,33 @@ def _clipseg_heat(frames, prompts, debug=False):
 
 
 def find_tube(heat, latent_h, latent_w, threshold=DEFAULT_THRESHOLD,
-              area_cap=MAX_TUBE_AREA, debug=False):
+              area_cap=MAX_TUBE_AREA, debug=False, diag=None):
     """Threshold pixel-space heat into a latent-space tube box + soft paste mask.
 
     Returns (y0, y1, x0, x1, mask) in latent coords - mask is [1, 1, 1, th, tw]
     matching the tube, feathered from the CLIPSeg heat itself so the paste
     follows the actual silhouette instead of the rectangle. None when nothing
     crossed the threshold or the tube breached the area cap.
+
+    `diag`, when given a dict, is filled with why a None came back (max_heat
+    always; reason + area on a miss) so a caller can report something more
+    useful than "nothing found" - CLIPSeg's raw sigmoid score for a real,
+    correctly-named region is often well under a naive 0.5, so a silent miss
+    is indistinguishable from "the threshold is simply too high" without it.
     """
     if heat is None:
         return None
     # Heat -> latent grid first; box math happens where the crop happens.
     lat_heat = F.interpolate(heat[None, None], size=(latent_h, latent_w),
                              mode="bilinear", align_corners=False)[0, 0]
+    max_heat = float(lat_heat.max())
+    if diag is not None:
+        diag["max_heat"] = max_heat
     hot = lat_heat >= threshold
     if not bool(hot.any()):
-        _log(debug, f"no region above threshold {threshold}")
+        _log(debug, f"no region above threshold {threshold} (max heat seen: {max_heat:.3f})")
+        if diag is not None:
+            diag["reason"] = "below_threshold"
         return None
     ys, xs = torch.where(hot)
     y0 = max(0, int(ys.min()) - TUBE_PAD)
@@ -272,6 +283,9 @@ def find_tube(heat, latent_h, latent_w, threshold=DEFAULT_THRESHOLD,
     if area > area_cap:
         _log(debug, f"tube area {area:.0%} exceeds cap {area_cap:.0%}; refusing "
                     "(a region that large is a re-render, not a detail pass)")
+        if diag is not None:
+            diag["reason"] = "area_cap"
+            diag["area"] = area
         return None
     # Soft mask: the heat inside the tube, floored at 0 outside the threshold and
     # lightly blurred so the seam never lands on a hard edge.
@@ -346,8 +360,14 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
                         threshold=DEFAULT_THRESHOLD, strength=1.0, debug=False):
     """Run the segmented-detail pass on one finished scene latent.
 
-    Returns (latent, note): the refined latent dict plus a run_mechanisms note,
-    or (latent, None) untouched - same object - when disabled or nothing found.
+    Returns (latent, note): the refined latent dict plus a run_mechanisms note.
+    Two different "nothing happened" shapes, both same-object no-ops:
+      - (latent, None): the pass is effectively OFF (no targets, no upsampler,
+        strength 0) - not worth a note on every scene.
+      - (latent, "segmented_detail(no match: ...)"): the pass RAN and found
+        nothing - always reported, with the max CLIPSeg score seen, because a
+        miss is otherwise indistinguishable from "nothing to detail here" when
+        it's actually just the threshold being wrong for this content.
     `chain` is the FunPackLTXAVSceneChainSampler instance (reuses _latent_tensors
     and _sample_chunk so the refine denoise goes through the exact same path as
     the scene it is polishing).
@@ -362,13 +382,25 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
         _log(debug, f"unexpected video latent rank {video.dim()}; skipping")
         return latent, None
     b, c, f, lat_h, lat_w = video.shape
+    target_str = ", ".join(targets)
 
     # 1) Detect on a few decoded keyframes.
     frames = _decode_detection_frames(vae, video, DETECTION_FRAMES, debug=debug)
     heat = _clipseg_heat(frames, targets, debug=debug)
-    tube = find_tube(heat, lat_h, lat_w, threshold=threshold, debug=debug)
+    if heat is None:
+        return latent, f"segmented_detail(no match: '{target_str}' - no keyframe decoded)"
+    diag = {}
+    tube = find_tube(heat, lat_h, lat_w, threshold=threshold, debug=debug, diag=diag)
     if tube is None:
-        return latent, None
+        if diag.get("reason") == "area_cap":
+            note = (f"segmented_detail(no match: '{target_str}' region covers "
+                    f"{diag['area']:.0%} of frame > {MAX_TUBE_AREA:.0%} cap - refused, "
+                    "not a detail pass at that size)")
+        else:
+            note = (f"segmented_detail(no match: '{target_str}', max CLIPSeg score "
+                    f"{diag.get('max_heat', 0.0):.2f} < threshold {threshold:.2f} - "
+                    "try a lower detail_threshold or a different target word)")
+        return latent, note
     y0, y1, x0, x1, mask = tube
     _log(debug, f"tube y[{y0}:{y1}] x[{x0}:{x1}] of {lat_h}x{lat_w} for {targets}")
 

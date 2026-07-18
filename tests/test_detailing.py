@@ -90,6 +90,19 @@ def test_find_tube_refuses_oversized_region():
     heat = torch.full((64, 64), 0.9)  # whole frame hot -> a re-render, not a detail pass
     assert detailing.find_tube(heat, 64, 64, threshold=0.35) is None
 
+def test_find_tube_diag_reports_max_heat_and_reason():
+    diag = {}
+    heat = torch.full((64, 64), 0.1)
+    assert detailing.find_tube(heat, 64, 64, threshold=0.35, diag=diag) is None
+    assert diag["reason"] == "below_threshold"
+    assert abs(diag["max_heat"] - 0.1) < 1e-6
+
+    diag2 = {}
+    heat2 = torch.full((64, 64), 0.9)  # whole frame -> area cap, not threshold
+    assert detailing.find_tube(heat2, 64, 64, threshold=0.35, diag=diag2) is None
+    assert diag2["reason"] == "area_cap"
+    assert diag2["area"] > detailing.MAX_TUBE_AREA
+
 def test_find_tube_enforces_minimum_edge():
     heat = _heat_with_hot_square(y=(31, 32), x=(31, 32))  # single hot cell
     tube = detailing.find_tube(heat, 64, 64, threshold=0.35)
@@ -245,14 +258,45 @@ def test_refine_noop_without_targets_or_upsampler():
     assert out is latent and note is None
     assert chain.chunk_calls == []
 
-def test_refine_noop_when_nothing_detected(monkeypatch):
+def test_refine_noop_when_nothing_decodable(monkeypatch):
+    """No keyframe could be decoded: same-object no-op, but WITH a diagnostic note —
+    a miss must never look identical to "the feature is off" once it actually ran."""
     chain = _FakeChain()
     latent, _ = _scene_latent()
     monkeypatch.setattr(detailing, "_decode_detection_frames", lambda *a, **k: [])
     monkeypatch.setattr(detailing, "_clipseg_heat", lambda *a, **k: None)
     out, note = detailing.detail_refine_scene(
         chain, None, None, None, [], [], latent, "hands", object(), 0, 1.0)
-    assert out is latent and note is None
+    assert out is latent
+    assert note is not None and "no match" in note
+    assert chain.chunk_calls == []
+
+def test_refine_reports_max_heat_when_below_threshold(monkeypatch):
+    """Regression: a real live run hit CLIPSeg-found-nothing with zero visibility into
+    WHY (was it a bad prompt, or just a threshold too strict for CLIPSeg's raw score?).
+    The note must carry the actual max score so the fix (lower detail_threshold) is
+    obvious without re-running with debug_log."""
+    chain = _FakeChain()
+    latent, _ = _scene_latent()
+    monkeypatch.setattr(detailing, "_decode_detection_frames",
+                        lambda *a, **k: [(0, torch.zeros(16, 16, 3))])
+    monkeypatch.setattr(detailing, "_clipseg_heat", lambda *a, **k: torch.full((16, 16), 0.18))
+    out, note = detailing.detail_refine_scene(
+        chain, None, None, None, [], [], latent, "hands", object(), 0, 1.0, threshold=0.35)
+    assert out is latent
+    assert "0.18" in note and "0.35" in note
+    assert chain.chunk_calls == []
+
+def test_refine_reports_area_cap_reason(monkeypatch):
+    chain = _FakeChain()
+    latent, _ = _scene_latent()
+    monkeypatch.setattr(detailing, "_decode_detection_frames",
+                        lambda *a, **k: [(0, torch.zeros(160, 240, 3))])
+    monkeypatch.setattr(detailing, "_clipseg_heat", lambda *a, **k: torch.full((160, 240), 0.9))
+    out, note = detailing.detail_refine_scene(
+        chain, None, None, None, [], [], latent, "hands", object(), 0, 1.0)
+    assert out is latent
+    assert "cap" in note.lower()
     assert chain.chunk_calls == []
 
 def _patch_detection_and_upsampler(monkeypatch):
