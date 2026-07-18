@@ -100,6 +100,41 @@ def test_find_tube_enforces_minimum_edge():
 
 
 # ---------------------------------------------------------------------------
+# _clipseg_heat
+# ---------------------------------------------------------------------------
+
+def test_clipseg_heat_passes_padding_and_truncation(monkeypatch):
+    """Regression: a multi-prompt call without padding=True crashes CLIPSeg's
+    tokenizer ("excessive nesting... type list where int is expected") the moment
+    detail_targets has more than one entry — caught live on a real rental run.
+    truncation=True is the same call, cheap to require alongside it."""
+    calls = []
+
+    class _FakeInputs(dict):
+        def to(self, *a, **k):
+            return self
+
+    class _FakeProcessor:
+        def __call__(self, text, images, return_tensors, **kwargs):
+            calls.append(kwargs)
+            return _FakeInputs()
+
+    class _FakeModel:
+        def __call__(self, **inputs):
+            n = 2
+            return types.SimpleNamespace(logits=torch.zeros(n, 8, 8))
+
+        def eval(self):
+            return self
+
+    monkeypatch.setattr(detailing, "_get_clipseg", lambda: (_FakeProcessor(), _FakeModel()))
+    frames = [(0, torch.zeros(16, 16, 3))]
+    detailing._clipseg_heat(frames, ["hands", "feet"])
+    assert calls and calls[0].get("padding") is True
+    assert calls[0].get("truncation") is True
+
+
+# ---------------------------------------------------------------------------
 # resolve_upsampler_name
 # ---------------------------------------------------------------------------
 

@@ -224,8 +224,13 @@ def _clipseg_heat(frames, prompts, debug=False):
     with torch.no_grad():
         for _, img in frames:
             pil = Image.fromarray((img.numpy() * 255.0).astype(np.uint8))
+            # padding=True is mandatory once len(prompts) > 1: CLIPSeg's tokenizer
+            # otherwise returns one variable-length id list per prompt and torch can't
+            # stack them into a batch ("excessive nesting... type list where int is
+            # expected"). truncation=True guards the rare very-long user-typed target.
             inputs = processor(
-                text=list(prompts), images=[pil] * len(prompts), return_tensors="pt")
+                text=list(prompts), images=[pil] * len(prompts), return_tensors="pt",
+                padding=True, truncation=True)
             logits = model(**inputs).logits  # [P, 352, 352] (or [352, 352] for one prompt)
             if logits.dim() == 2:
                 logits = logits[None]
