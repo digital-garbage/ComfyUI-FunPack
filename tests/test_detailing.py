@@ -368,6 +368,30 @@ def test_refine_passes_renoise_sigma_to_the_tail_schedule(monkeypatch):
     assert abs(float(sigmas[0]) - 0.95) < 1e-6
     assert torch.allclose(sigmas, torch.tensor(detailing.stage2_sigmas(0.95)))
 
+def test_refine_sharpen_mode_skips_the_diffusion_tail_entirely(monkeypatch):
+    """The whole point of sharpen mode: zero video-model forwards. It must use the
+    upsampler's own output directly, not merely a fast-looking diffusion call."""
+    chain = _FakeChain()
+    latent, video = _scene_latent()
+    _patch_detection_and_upsampler(monkeypatch)
+    out, note = detailing.detail_refine_scene(
+        chain, "model", "vae", "sampler", [], [], latent, "hands", object(),
+        seed=0, cfg=1.0, mode="sharpen")
+    assert note is not None and "sharpen" in note
+    assert chain.chunk_calls == []  # no _sample_chunk call at all
+    assert out["samples"].shape == video.shape
+    diff = (out["samples"] - video).abs().amax(dim=(0, 1, 2))
+    assert not diff[:2].any() and not diff[:, :2].any()  # far corners still untouched
+
+def test_refine_repair_mode_is_still_the_default(monkeypatch):
+    chain = _FakeChain()
+    latent, _ = _scene_latent()
+    _patch_detection_and_upsampler(monkeypatch)
+    _, note = detailing.detail_refine_scene(
+        chain, "model", "vae", "sampler", [], [], latent, "hands", object(), 0, 1.0)
+    assert "repair" in note
+    assert len(chain.chunk_calls) == 1
+
 def test_refine_round_trip_touches_only_the_tube(monkeypatch):
     chain = _FakeChain()
     latent, video = _scene_latent()

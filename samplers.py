@@ -2452,7 +2452,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "segmented_detailing": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), re-noised to the official stage-2 sigma (0.85) and re-denoised for the 3-step tail schedule, then downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette. Final resolution never changes — the upsample only lets the model resolve structure (fingers, small faces) at a higher working resolution. Cost ~= 4 x tube area fraction x 3 steps (hands ~+15%); tubes over 35% of the frame are refused (that's a re-render, not a detail pass). Audio untouched by construction. detail_upsampler 'auto' finds or downloads the official Lightricks upsampler (~1 GB, once); skips are reported loudly in console + scene report. UNVALIDATED LIVE.",
+                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), then either used directly (detail_mode='sharpen', near-free) or re-noised + re-denoised for a 3-step tail (detail_mode='repair', default — costs ~4x tube area fraction x 3 steps, hands ~+15%). Downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette either way. Final resolution never changes. Tubes over detail_max_area (default 35%) are refused as a cost guard, not a content judgment. Audio untouched by construction. detail_upsampler 'auto' finds or downloads the official Lightricks upsampler (~1 GB, once); skips are reported loudly in console + scene report. UNVALIDATED LIVE.",
                 }),
                 "detail_targets": ("STRING", {
                     "default": "hands",
@@ -2476,7 +2476,11 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "detail_denoise": ("FLOAT", {
                     "default": 0.85, "min": 0.3, "max": 0.99, "step": 0.05,
-                    "tooltip": "How much noise the crop is re-noised to before the 3-step refine tail (the official LTX 2.3 two-stage recipe's own value, 0.85, is the default). Higher = more freedom for the model to genuinely reconstruct the region (fix bad anatomy) at the cost of possibly drifting from the surrounding frame; lower = closer to a plain upscale (looks 'detailed' as interpolation, but doesn't actually repair the region — if that's what you're seeing, raise this).",
+                    "tooltip": "Only used in 'repair' mode. How much noise the crop is re-noised to before the 3-step refine tail (the official LTX 2.3 two-stage recipe's own value, 0.85, is the default). Higher = more freedom for the model to genuinely reconstruct the region (fix bad anatomy) at the cost of possibly drifting from the surrounding frame; lower = closer to a plain upscale (looks 'detailed' as interpolation, but doesn't actually repair the region — if that's what you're seeing, raise this).",
+                }),
+                "detail_mode": (["repair", "sharpen"], {
+                    "default": "repair",
+                    "tooltip": "'repair' (default): upsample the crop, then re-denoise it through the video model for 3 extra steps — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4x region area x 3 steps). 'sharpen': stop after the upsampler's own forward pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper), since a super-resolution net only adds detail consistent with what's already there.",
                 }),
             },
             "hidden": {
@@ -4678,7 +4682,7 @@ class FunPackLTXAVSceneChainSampler:
                taste_nearest_prompt=False,
                segmented_detailing=False, detail_targets="hands",
                detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
-               detail_max_area=0.35, detail_denoise=0.85,
+               detail_max_area=0.35, detail_denoise=0.85, detail_mode="repair",
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5148,7 +5152,7 @@ class FunPackLTXAVSceneChainSampler:
                         detail_targets, _detail_upsampler_model, scene_seed, cfg,
                         threshold=detail_threshold, strength=detail_strength,
                         area_cap=detail_max_area, renoise_sigma=detail_denoise,
-                        debug=debug_log)
+                        mode=detail_mode, debug=debug_log)
                     # detail_refine_scene always returns a diagnostic note when it actually
                     # ran detection (miss or hit) — None only means it never attempted
                     # detection at all (which can't happen on this branch).

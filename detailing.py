@@ -384,8 +384,21 @@ def _downscale_to(video, h, w):
 def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
                         detail_targets, upsampler, seed, cfg,
                         threshold=DEFAULT_THRESHOLD, strength=1.0, area_cap=MAX_TUBE_AREA,
-                        renoise_sigma=DEFAULT_RENOISE_SIGMA, debug=False):
+                        renoise_sigma=DEFAULT_RENOISE_SIGMA, mode="repair", debug=False):
     """Run the segmented-detail pass on one finished scene latent.
+
+    `mode`:
+      - "sharpen": crop -> upsampler forward -> downscale -> paste. NO video-model
+        calls at all - the trained upsampler net (small ResBlock/PixelShuffle CNN,
+        not naive interpolation) is itself doing the work, so this is close to
+        free next to a diffusion step. It can genuinely sharpen a region that's
+        blurry/under-resolved but already correctly shaped. It CANNOT fix wrong
+        structure (an extra finger stays an extra finger) - a super-res net adds
+        detail consistent with its input, it doesn't invent new correct content.
+      - "repair" (default): the above PLUS a `renoise_sigma`-entry, 3-step
+        re-denoise through the actual video model - genuinely expensive (3 extra
+        forwards on the crop) because only the generative model itself can decide
+        the region should look structurally different, not just sharper.
 
     Returns (latent, note): the refined latent dict plus a run_mechanisms note.
     Two different "nothing happened" shapes, both same-object no-ops:
@@ -414,6 +427,7 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
         return latent, None
     b, c, f, lat_h, lat_w = video.shape
     target_str = ", ".join(targets)
+    import comfy.nested_tensor
 
     # 1) Detect on a few decoded keyframes.
     frames = _decode_detection_frames(vae, video, DETECTION_FRAMES, debug=debug)
@@ -440,26 +454,39 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
     crop = video[:, :, :, y0:y1, x0:x1]
     crop_up = _run_upsampler(upsampler, crop, vae, debug=debug)
 
-    # 3) Re-denoise the crop over a stage-2 tail shaped like the official two-stage
-    # workflow's, but re-entering at `renoise_sigma` (default 0.85, their exact
-    # value) rather than a hardcoded one: how much genuine freedom the model needs
-    # to fix this crop depends on how wrong it already is, which only the person
-    # looking at the result can judge. CONST noise_scaling (sigma*noise +
-    # (1-sigma)*x) re-noises the clean crop to that sigma automatically. The
-    # scene's audio stream rides along so joint attention sees a legal AV latent,
-    # but its refined output is discarded below - audio is protected by
-    # construction, not by masking.
-    import comfy.nested_tensor
-
-    crop_latent = {"samples": crop_up}
-    if len(tensors) > 1:
-        crop_latent["samples"] = comfy.nested_tensor.NestedTensor(
-            [crop_up] + [t.detach().clone() for t in tensors[1:]])
-    tail_sigmas = torch.tensor(stage2_sigmas(renoise_sigma), dtype=torch.float32)
-    refined = chain._sample_chunk(
-        model, sampler, tail_sigmas, int(seed) + 7777, cfg,
-        _strip_layout_conds(positive), _strip_layout_conds(negative), crop_latent)
-    refined_crop = chain._latent_tensors(refined)[0]
+    if mode == "sharpen":
+        # No re-denoise, no video-model forward at all: crop_up IS the result. The
+        # trained upsampler is itself a learned super-resolution net (ResBlocks +
+        # PixelShuffle), not naive interpolation, so it genuinely hallucinates
+        # plausible fine detail consistent with the crop's EXISTING structure -
+        # that's exactly the "cheap, on-the-fly sharpen" the feature was first
+        # pitched as. What it cannot do: invent correct structure the crop never
+        # had (an extra finger stays an extra finger, just a sharper one) - that
+        # needs the model to actually reconsider the region, which is "repair".
+        refined_crop = crop_up
+        cost_note = "sharpen: upsampler-only, no diffusion"
+    else:
+        # 3) Re-denoise the crop over a stage-2 tail shaped like the official two-
+        # stage workflow's, but re-entering at `renoise_sigma` (default 0.85, their
+        # exact value) rather than a hardcoded one: how much genuine freedom the
+        # model needs to fix this crop depends on how wrong it already is, which
+        # only the person looking at the result can judge. CONST noise_scaling
+        # (sigma*noise + (1-sigma)*x) re-noises the clean crop to that sigma
+        # automatically. The scene's audio stream rides along so joint attention
+        # sees a legal AV latent, but its refined output is discarded below - audio
+        # is protected by construction, not by masking. This is the expensive path
+        # (3 extra video-model forwards on the crop): actually changing WRONG
+        # structure requires the generative model to redo the region, no shortcut.
+        crop_latent = {"samples": crop_up}
+        if len(tensors) > 1:
+            crop_latent["samples"] = comfy.nested_tensor.NestedTensor(
+                [crop_up] + [t.detach().clone() for t in tensors[1:]])
+        tail_sigmas = torch.tensor(stage2_sigmas(renoise_sigma), dtype=torch.float32)
+        refined = chain._sample_chunk(
+            model, sampler, tail_sigmas, int(seed) + 7777, cfg,
+            _strip_layout_conds(positive), _strip_layout_conds(negative), crop_latent)
+        refined_crop = chain._latent_tensors(refined)[0]
+        cost_note = f"repair: renoise={renoise_sigma:.2f}"
 
     # 4) Back to grid size, feathered paste through the CLIPSeg silhouette.
     refined_down = _downscale_to(refined_crop, y1 - y0, x1 - x0)
@@ -473,6 +500,6 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
         out["samples"] = comfy.nested_tensor.NestedTensor([out_video] + list(tensors[1:]))
     else:
         out["samples"] = out_video
-    note = (f"segmented_detail({','.join(targets)}, tube={y1 - y0}x{x1 - x0}"
+    note = (f"segmented_detail({cost_note}, '{target_str}', tube={y1 - y0}x{x1 - x0}"
             f"/{lat_h}x{lat_w}, s={strength})")
     return out, note
