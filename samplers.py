@@ -2470,6 +2470,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.35, "min": 0.05, "max": 0.9, "step": 0.05,
                     "tooltip": "CLIPSeg match confidence (post-sigmoid) required before a region counts as found. CLIPSeg's raw score for a real, correctly-named region is often well under 0.5 — if the scene report shows 'no match: max CLIPSeg score X < threshold', lower this toward X (or just below it) rather than assuming nothing is there. Lower = more permissive (more false positives on unrelated regions); higher = stricter.",
                 }),
+                "detail_max_area": ("FLOAT", {
+                    "default": 0.35, "min": 0.05, "max": 1.0, "step": 0.05,
+                    "tooltip": "Ceiling on how much of the frame the detected region may cover before the pass refuses it, as a fraction of frame area. This is a COST guardrail only (cost ~= 4x area x 3 steps, so a large region starts to rival a second full render), never a judgment about whether the region is worth detailing — if the scene report shows a region refused at some %, raise this above that % to detail it anyway (up to 1.0 = no cap, full-frame allowed).",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -4670,6 +4674,7 @@ class FunPackLTXAVSceneChainSampler:
                taste_nearest_prompt=False,
                segmented_detailing=False, detail_targets="hands",
                detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
+               detail_max_area=0.35,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5137,7 +5142,8 @@ class FunPackLTXAVSceneChainSampler:
                     sampled, _detail_note = _detailing.detail_refine_scene(
                         self, model, vae, sampler, scene_positive, scene_negative, sampled,
                         detail_targets, _detail_upsampler_model, scene_seed, cfg,
-                        threshold=detail_threshold, strength=detail_strength, debug=debug_log)
+                        threshold=detail_threshold, strength=detail_strength,
+                        area_cap=detail_max_area, debug=debug_log)
                     # detail_refine_scene always returns a diagnostic note when it actually
                     # ran detection (miss or hit) — None only means it never attempted
                     # detection at all (which can't happen on this branch).

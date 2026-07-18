@@ -299,6 +299,28 @@ def test_refine_reports_area_cap_reason(monkeypatch):
     assert "cap" in note.lower()
     assert chain.chunk_calls == []
 
+def test_refine_area_cap_is_a_cost_knob_not_a_judgment(monkeypatch):
+    """The cap must never override what the user explicitly asked to detail — it's a
+    cost guardrail the user can raise, not FunPack deciding a big region 'isn't worth
+    detailing'. Same whole-frame region: refused at the default cap, allowed once the
+    user raises detail_max_area (mirrors area_cap, threaded from the sampler node)."""
+    chain = _FakeChain()
+    latent, video = _scene_latent()
+    monkeypatch.setattr(detailing, "_decode_detection_frames",
+                        lambda *a, **k: [(0, torch.zeros(160, 240, 3))])
+    monkeypatch.setattr(detailing, "_clipseg_heat", lambda *a, **k: torch.full((160, 240), 0.9))
+    monkeypatch.setattr(
+        detailing, "_run_upsampler",
+        lambda upsampler, crop, vae, debug=False: torch.nn.functional.interpolate(
+            crop, scale_factor=(1, 2, 2), mode="nearest"))
+    out_default, note_default = detailing.detail_refine_scene(
+        chain, "m", "v", "s", [], [], latent, "hands", object(), 0, 1.0)
+    assert out_default is latent and "cap" in note_default.lower()
+    out_raised, note_raised = detailing.detail_refine_scene(
+        chain, "m", "v", "s", [], [], latent, "hands", object(), 0, 1.0, area_cap=1.0)
+    assert note_raised is not None and "segmented_detail(" in note_raised and "cap" not in note_raised.lower()
+    assert out_raised is not latent
+
 def _patch_detection_and_upsampler(monkeypatch):
     """Hot square in pixel space; upsampler = exact 2x nearest (model-free)."""
     heat = torch.zeros(160, 240)

@@ -34,9 +34,10 @@ STAGE2_SIGMAS = (0.85, 0.725, 0.421875, 0.0)
 # CLIPSeg heat above this (post-sigmoid) counts as "the named thing is here".
 DEFAULT_THRESHOLD = 0.35
 
-# Tubes larger than this fraction of the frame are refused: at that size the pass
-# stops being region detailing and becomes a second full render (cost ~= 4x area
-# fraction x tail steps), which belongs to a different feature.
+# Default ceiling on tube area, as a fraction of the frame - purely a COST guardrail
+# (cost ~= 4x area fraction x tail steps, so a big tube starts to rival a second full
+# render) exposed as detail_max_area so the user decides the cost/quality trade-off,
+# not this constant. Never silently override what the user asked to detail.
 MAX_TUBE_AREA = 0.35
 
 # Latent cells of context padding around the thresholded region, and the minimum
@@ -357,7 +358,8 @@ def _downscale_to(video, h, w):
 
 def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
                         detail_targets, upsampler, seed, cfg,
-                        threshold=DEFAULT_THRESHOLD, strength=1.0, debug=False):
+                        threshold=DEFAULT_THRESHOLD, strength=1.0, area_cap=MAX_TUBE_AREA,
+                        debug=False):
     """Run the segmented-detail pass on one finished scene latent.
 
     Returns (latent, note): the refined latent dict plus a run_mechanisms note.
@@ -368,6 +370,10 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
         nothing - always reported, with the max CLIPSeg score seen, because a
         miss is otherwise indistinguishable from "nothing to detail here" when
         it's actually just the threshold being wrong for this content.
+    `area_cap` is a COST guardrail, not a content judgment: the user named the
+    target, so a region crossing it is reported as a skip with the actual size
+    (never silently reinterpreted as "not found") and area_cap itself is a
+    user-facing knob (detail_max_area) - raise it, don't route around it here.
     `chain` is the FunPackLTXAVSceneChainSampler instance (reuses _latent_tensors
     and _sample_chunk so the refine denoise goes through the exact same path as
     the scene it is polishing).
@@ -390,12 +396,13 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
     if heat is None:
         return latent, f"segmented_detail(no match: '{target_str}' - no keyframe decoded)"
     diag = {}
-    tube = find_tube(heat, lat_h, lat_w, threshold=threshold, debug=debug, diag=diag)
+    tube = find_tube(heat, lat_h, lat_w, threshold=threshold, area_cap=area_cap,
+                     debug=debug, diag=diag)
     if tube is None:
         if diag.get("reason") == "area_cap":
             note = (f"segmented_detail(no match: '{target_str}' region covers "
-                    f"{diag['area']:.0%} of frame > {MAX_TUBE_AREA:.0%} cap - refused, "
-                    "not a detail pass at that size)")
+                    f"{diag['area']:.0%} of frame > {area_cap:.0%} cap - raise "
+                    "detail_max_area if you want it detailed at this size anyway)")
         else:
             note = (f"segmented_detail(no match: '{target_str}', max CLIPSeg score "
                     f"{diag.get('max_heat', 0.0):.2f} < threshold {threshold:.2f} - "
