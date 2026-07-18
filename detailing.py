@@ -25,11 +25,36 @@ import torch
 import torch.nn.functional as F
 
 # Official LTX-2.3 two-stage distilled workflow, stage-2 ManualSigmas: re-noise the
-# upsampled latent to 0.85 and run the tail of the 8-step distilled schedule. Using
-# Lightricks' published re-entry point instead of inventing one: too much noise and
-# the region redraws (drifts from the surrounding frame), too little and no detail
-# is gained.
-STAGE2_SIGMAS = (0.85, 0.725, 0.421875, 0.0)
+# upsampled latent to 0.85 and run the tail of the 8-step distilled schedule.
+# Lightricks designed this re-entry point to SHARPEN already-correct structure at
+# higher resolution, not to REPAIR a malformed region — our use case (a mangled
+# hand) needs more genuine freedom to redraw than their use case (a clean shot
+# that just needs finer detail). 0.85 is the built-in default (matches the
+# official recipe / prior behavior exactly), but it is a real knob
+# (detail_denoise on the sampler) precisely because the right value depends on
+# how wrong the source region already is: too high and the region drifts from
+# its surroundings; too low and the tail just smooths the upsampled
+# interpolation back down without adding anything (upscaled-looking, not
+# detailed - the failure mode this constant existed to describe from day one).
+DEFAULT_RENOISE_SIGMA = 0.85
+# Shape of the tail preserved as ratios of the entry sigma, not fixed values, so
+# raising/lowering the entry point scales the whole tail schedule consistently
+# instead of only moving its first step.
+_STAGE2_RATIOS = (1.0, 0.725 / 0.85, 0.421875 / 0.85, 0.0)
+
+
+def stage2_sigmas(renoise_sigma=DEFAULT_RENOISE_SIGMA):
+    """The re-denoise tail schedule for a given re-entry sigma.
+
+    stage2_sigmas(0.85) reproduces the exact official STAGE2_SIGMAS values.
+    """
+    r = max(0.0, min(1.0, float(renoise_sigma)))
+    return tuple(r * ratio for ratio in _STAGE2_RATIOS)
+
+
+# Kept for anyone importing the old name directly (tests, prior callers) - identical
+# to stage2_sigmas() at the default re-entry point.
+STAGE2_SIGMAS = stage2_sigmas(DEFAULT_RENOISE_SIGMA)
 
 # CLIPSeg heat above this (post-sigmoid) counts as "the named thing is here".
 DEFAULT_THRESHOLD = 0.35
@@ -359,7 +384,7 @@ def _downscale_to(video, h, w):
 def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
                         detail_targets, upsampler, seed, cfg,
                         threshold=DEFAULT_THRESHOLD, strength=1.0, area_cap=MAX_TUBE_AREA,
-                        debug=False):
+                        renoise_sigma=DEFAULT_RENOISE_SIGMA, debug=False):
     """Run the segmented-detail pass on one finished scene latent.
 
     Returns (latent, note): the refined latent dict plus a run_mechanisms note.
@@ -415,11 +440,14 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
     crop = video[:, :, :, y0:y1, x0:x1]
     crop_up = _run_upsampler(upsampler, crop, vae, debug=debug)
 
-    # 3) Re-denoise the crop over the official stage-2 tail. The clean crop goes
-    # in as the latent; CONST noise_scaling (sigma*noise + (1-sigma)*x) re-noises
-    # it to sigma=0.85 exactly like the official two-stage workflow's stage 2.
-    # The scene's audio stream rides along so joint attention sees a legal AV
-    # latent, but its refined output is discarded below - audio is protected by
+    # 3) Re-denoise the crop over a stage-2 tail shaped like the official two-stage
+    # workflow's, but re-entering at `renoise_sigma` (default 0.85, their exact
+    # value) rather than a hardcoded one: how much genuine freedom the model needs
+    # to fix this crop depends on how wrong it already is, which only the person
+    # looking at the result can judge. CONST noise_scaling (sigma*noise +
+    # (1-sigma)*x) re-noises the clean crop to that sigma automatically. The
+    # scene's audio stream rides along so joint attention sees a legal AV latent,
+    # but its refined output is discarded below - audio is protected by
     # construction, not by masking.
     import comfy.nested_tensor
 
@@ -427,7 +455,7 @@ def detail_refine_scene(chain, model, vae, sampler, positive, negative, latent,
     if len(tensors) > 1:
         crop_latent["samples"] = comfy.nested_tensor.NestedTensor(
             [crop_up] + [t.detach().clone() for t in tensors[1:]])
-    tail_sigmas = torch.tensor(STAGE2_SIGMAS, dtype=torch.float32)
+    tail_sigmas = torch.tensor(stage2_sigmas(renoise_sigma), dtype=torch.float32)
     refined = chain._sample_chunk(
         model, sampler, tail_sigmas, int(seed) + 7777, cfg,
         _strip_layout_conds(positive), _strip_layout_conds(negative), crop_latent)

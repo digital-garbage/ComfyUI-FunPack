@@ -59,6 +59,29 @@ def test_parse_targets_splits_and_strips():
 
 
 # ---------------------------------------------------------------------------
+# stage2_sigmas
+# ---------------------------------------------------------------------------
+
+def test_stage2_sigmas_default_matches_official_recipe():
+    # Must reproduce the exact official two-stage workflow values unless the
+    # user raises/lowers detail_denoise — no behavior change for existing runs.
+    assert torch.allclose(torch.tensor(detailing.stage2_sigmas(0.85)),
+                          torch.tensor(detailing.STAGE2_SIGMAS))
+    assert detailing.stage2_sigmas(0.85)[-1] == 0.0
+
+def test_stage2_sigmas_scales_with_renoise_sigma():
+    # Raising the re-entry point should raise every step in the tail proportionally
+    # (more genuine freedom to reconstruct, not just a bigger first jump).
+    low = detailing.stage2_sigmas(0.5)
+    high = detailing.stage2_sigmas(0.95)
+    assert high[0] > low[0] > 0
+    assert high[1] > low[1]
+    assert low[-1] == high[-1] == 0.0
+    # Shape (ratios between steps) preserved regardless of entry point.
+    assert abs(low[1] / low[0] - high[1] / high[0]) < 1e-9
+
+
+# ---------------------------------------------------------------------------
 # find_tube
 # ---------------------------------------------------------------------------
 
@@ -333,6 +356,17 @@ def _patch_detection_and_upsampler(monkeypatch):
         lambda upsampler, crop, vae, debug=False: torch.nn.functional.interpolate(
             crop, scale_factor=(1, 2, 2), mode="nearest"))
     return heat
+
+def test_refine_passes_renoise_sigma_to_the_tail_schedule(monkeypatch):
+    chain = _FakeChain()
+    latent, _ = _scene_latent()
+    _patch_detection_and_upsampler(monkeypatch)
+    detailing.detail_refine_scene(
+        chain, "model", "vae", "sampler", [], [], latent, "hands", object(),
+        seed=0, cfg=1.0, renoise_sigma=0.95)
+    sigmas = chain.chunk_calls[0]["sigmas"]
+    assert abs(float(sigmas[0]) - 0.95) < 1e-6
+    assert torch.allclose(sigmas, torch.tensor(detailing.stage2_sigmas(0.95)))
 
 def test_refine_round_trip_touches_only_the_tube(monkeypatch):
     chain = _FakeChain()
