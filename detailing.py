@@ -66,6 +66,63 @@ def _log(debug, msg):
 # Models
 # ---------------------------------------------------------------------------
 
+# Official Lightricks stage-2 spatial upscaler — the exact file the two-stage
+# distilled workflows use. ~1 GB, fetched once into models/latent_upscale_models
+# when nothing suitable is installed.
+DEFAULT_UPSAMPLER_REPO = "Lightricks/LTX-2.3"
+DEFAULT_UPSAMPLER_FILE = "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+
+
+def resolve_upsampler_name(model_name=None):
+    """Turn the node's detail_upsampler widget value into a loadable filename.
+
+    Explicit filename -> returned as-is. "auto" (and the legacy "None" default)
+    -> prefer an installed spatial upscaler (highest version wins), else any
+    installed latent upscale model, else download the official file from HF.
+    Raises with a user-actionable message when nothing can be obtained — callers
+    surface it, they must NOT silently skip.
+    """
+    import os
+
+    import folder_paths
+
+    name = str(model_name or "").strip()
+    if name and name not in ("None", "auto"):
+        return name
+    files = folder_paths.get_filename_list("latent_upscale_models")
+    if DEFAULT_UPSAMPLER_FILE in files:
+        return DEFAULT_UPSAMPLER_FILE
+    spatial = [f for f in files if "spatial" in f.lower() and "upscal" in f.lower()]
+    if spatial:
+        # Highest embedded version wins (…-1.1 over …-1.0); plain lexicographic would
+        # rank "ltx2_3_…" above "ltx-2.3-…-1.1" ('2' sorts after '-').
+        import re
+        return max(spatial, key=lambda f: ([int(n) for n in re.findall(r"\d+", f)], f))
+    if files:
+        return files[0]
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "no model in models/latent_upscale_models and huggingface_hub is not "
+            f"installed — pip install huggingface_hub, or download {DEFAULT_UPSAMPLER_FILE} "
+            f"from {DEFAULT_UPSAMPLER_REPO} into that folder manually") from exc
+    dest_dir = folder_paths.get_folder_paths("latent_upscale_models")[0]
+    os.makedirs(dest_dir, exist_ok=True)
+    print(f"[FunPackDetail] no latent upscale model installed — downloading "
+          f"{DEFAULT_UPSAMPLER_FILE} (~1 GB) from {DEFAULT_UPSAMPLER_REPO} into {dest_dir} …")
+    try:
+        hf_hub_download(repo_id=DEFAULT_UPSAMPLER_REPO, filename=DEFAULT_UPSAMPLER_FILE,
+                        local_dir=dest_dir)
+    except Exception as exc:
+        raise RuntimeError(
+            f"auto-download of {DEFAULT_UPSAMPLER_FILE} failed ({exc}) — if the repo is "
+            "gated, accept the license on huggingface.co and set HF_TOKEN, or place the "
+            f"file in {dest_dir} manually") from exc
+    print(f"[FunPackDetail] download complete: {DEFAULT_UPSAMPLER_FILE}")
+    return DEFAULT_UPSAMPLER_FILE
+
+
 def load_latent_upsampler(model_name):
     """Load Lightricks' LatentUpsampler from models/latent_upscale_models.
 

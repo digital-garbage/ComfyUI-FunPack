@@ -100,6 +100,55 @@ def test_find_tube_enforces_minimum_edge():
 
 
 # ---------------------------------------------------------------------------
+# resolve_upsampler_name
+# ---------------------------------------------------------------------------
+
+def _patch_folder_paths(monkeypatch, files, folder="/models/latent_upscale_models"):
+    fp = sys.modules["folder_paths"]
+    monkeypatch.setattr(fp, "get_filename_list", lambda kind: list(files), raising=False)
+    monkeypatch.setattr(fp, "get_folder_paths", lambda kind: [folder], raising=False)
+
+def test_resolve_explicit_name_passes_through(monkeypatch):
+    _patch_folder_paths(monkeypatch, [])
+    assert detailing.resolve_upsampler_name("my_upscaler.safetensors") == "my_upscaler.safetensors"
+
+def test_resolve_auto_prefers_newest_spatial_upscaler(monkeypatch):
+    _patch_folder_paths(monkeypatch, [
+        "other_model.safetensors",
+        "ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
+        "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+    ])
+    for alias in ("auto", "None", "", None):
+        assert detailing.resolve_upsampler_name(alias) == "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+
+def test_resolve_auto_falls_back_to_any_installed(monkeypatch):
+    _patch_folder_paths(monkeypatch, ["something_else.safetensors"])
+    assert detailing.resolve_upsampler_name("auto") == "something_else.safetensors"
+
+def test_resolve_auto_downloads_when_folder_empty(monkeypatch, tmp_path):
+    _patch_folder_paths(monkeypatch, [], folder=str(tmp_path / "lup"))
+    calls = {}
+    hub = types.ModuleType("huggingface_hub")
+    hub.hf_hub_download = lambda repo_id, filename, local_dir: calls.update(
+        repo=repo_id, file=filename, dest=local_dir)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    name = detailing.resolve_upsampler_name("auto")
+    assert name == detailing.DEFAULT_UPSAMPLER_FILE
+    assert calls["repo"] == detailing.DEFAULT_UPSAMPLER_REPO
+    assert calls["file"] == detailing.DEFAULT_UPSAMPLER_FILE
+
+def test_resolve_download_failure_raises_actionable_error(monkeypatch, tmp_path):
+    _patch_folder_paths(monkeypatch, [], folder=str(tmp_path / "lup"))
+    hub = types.ModuleType("huggingface_hub")
+    def _boom(**kw):
+        raise OSError("401 gated")
+    hub.hf_hub_download = _boom
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+    with pytest.raises(RuntimeError, match="manually"):
+        detailing.resolve_upsampler_name("auto")
+
+
+# ---------------------------------------------------------------------------
 # _strip_layout_conds / _downscale_to
 # ---------------------------------------------------------------------------
 

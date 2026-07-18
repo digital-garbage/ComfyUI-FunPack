@@ -2452,15 +2452,15 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "segmented_detailing": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), re-noised to the official stage-2 sigma (0.85) and re-denoised for the 3-step tail schedule, then downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette. Final resolution never changes — the upsample only lets the model resolve structure (fingers, small faces) at a higher working resolution. Cost ~= 4 x tube area fraction x 3 steps (hands ~+15%); tubes over 35% of the frame are refused (that's a re-render, not a detail pass). Audio untouched by construction. Requires detail_upsampler; silent no-op when nothing matches. UNVALIDATED LIVE.",
+                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), re-noised to the official stage-2 sigma (0.85) and re-denoised for the 3-step tail schedule, then downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette. Final resolution never changes — the upsample only lets the model resolve structure (fingers, small faces) at a higher working resolution. Cost ~= 4 x tube area fraction x 3 steps (hands ~+15%); tubes over 35% of the frame are refused (that's a re-render, not a detail pass). Audio untouched by construction. detail_upsampler 'auto' finds or downloads the official Lightricks upsampler (~1 GB, once); skips are reported loudly in console + scene report. UNVALIDATED LIVE.",
                 }),
                 "detail_targets": ("STRING", {
                     "default": "hands",
                     "tooltip": "Comma-separated regions to detail, in plain words ('hands', 'hands, feet', 'face'). Each becomes a CLIPSeg text query; matched regions merge into one tube per scene. CLIPSeg matches broad CLIP semantics, so malformed anatomy still lights up for its name.",
                 }),
                 "detail_upsampler": (cls._detail_upsampler_choices(), {
-                    "default": "None",
-                    "tooltip": "Latent upsampler checkpoint from models/latent_upscale_models (the LTX 2.3 spatial upsampler used by the official two-stage workflows). Required — segmented_detailing no-ops while this is None.",
+                    "default": "auto",
+                    "tooltip": "Latent upsampler checkpoint from models/latent_upscale_models (the LTX 2.3 spatial upsampler used by the official two-stage workflows). 'auto' picks the newest installed spatial upscaler, or downloads the official file (~1 GB, once) when the folder is empty. Pick a file explicitly to pin it.",
                 }),
                 "detail_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -2492,11 +2492,14 @@ class FunPackLTXAVSceneChainSampler:
 
     @classmethod
     def _detail_upsampler_choices(cls):
+        # "auto": prefer an installed spatial upscaler, else download the official
+        # Lightricks file on first use. ("None" from older saved workflows/projects is
+        # treated as auto too — the enable toggle is the only off switch.)
         try:
             import folder_paths
-            return ["None"] + folder_paths.get_filename_list("latent_upscale_models")
+            return ["auto"] + folder_paths.get_filename_list("latent_upscale_models")
         except Exception:
-            return ["None"]
+            return ["auto"]
 
     def _is_nested(self, samples):
         return bool(getattr(samples, "is_nested", False))
@@ -4851,7 +4854,8 @@ class FunPackLTXAVSceneChainSampler:
         scene_runs: list = []
         joyai_bank = _JoyAIMemoryBank(joyai_memory_size, joyai_fix_frames) if joyai_memory else None
         _identity_overlap_state: dict = {}
-        _detail_upsampler_model = None  # lazy: loaded at the first detailed scene
+        _detail_upsampler_model = None  # lazy: resolved+loaded at the first detailed scene
+        _detail_disabled_reason = None  # set on resolve/load failure: don't retry per scene
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -5113,15 +5117,18 @@ class FunPackLTXAVSceneChainSampler:
             # Segmented detailing runs on the clean, fully-cropped scene (guide/audio
             # tails gone, overlap still present — the tube is spatial, so carried head
             # frames detail together with the rest) and BEFORE the JoyAI harvest, so
-            # cross-shot memory banks the improved frames.
-            if segmented_detailing and detail_strength > 0 and detail_upsampler != "None":
+            # cross-shot memory banks the improved frames. Every skip is LOUD (console +
+            # scene report): with the toggle on, silence must mean "ran and found nothing".
+            if segmented_detailing and detail_strength > 0 and not _detail_disabled_reason:
                 try:
                     try:
                         from . import detailing as _detailing
                     except ImportError:
                         import detailing as _detailing
                     if _detail_upsampler_model is None:
-                        _detail_upsampler_model = _detailing.load_latent_upsampler(detail_upsampler)
+                        _resolved = _detailing.resolve_upsampler_name(detail_upsampler)
+                        _detail_upsampler_model = _detailing.load_latent_upsampler(_resolved)
+                        print(f"[FunPackSceneChain] segmented detailing upsampler: {_resolved}")
                     _t_detail0 = _time.perf_counter()
                     sampled, _detail_note = _detailing.detail_refine_scene(
                         self, model, vae, sampler, scene_positive, scene_negative, sampled,
@@ -5130,9 +5137,18 @@ class FunPackLTXAVSceneChainSampler:
                     if _detail_note:
                         run_mechanisms.append(_detail_note)
                         _phase_sampling += _time.perf_counter() - _t_detail0
+                    else:
+                        run_mechanisms.append("segmented_detail(no region matched)")
                 except Exception as _detail_exc:
-                    # A failed detail pass must never cost the scene itself.
-                    print(f"[FunPackSceneChain] segmented_detailing failed, scene kept as-is: {_detail_exc}")
+                    # A failed detail pass must never cost the scene itself — but it must
+                    # never fail silently either. Model resolution/load failures disable
+                    # the pass for the rest of the run (no per-scene download retries).
+                    if _detail_upsampler_model is None:
+                        _detail_disabled_reason = str(_detail_exc)
+                    print(f"[FunPackSceneChain] SEGMENTED DETAILING SKIPPED (scene kept as-is): {_detail_exc}")
+                    run_mechanisms.append(f"segmented_detail(SKIPPED: {_detail_exc})")
+            elif segmented_detailing and _detail_disabled_reason:
+                run_mechanisms.append("segmented_detail(SKIPPED: upsampler unavailable, see first scene)")
             if joyai_bank is not None:
                 # Harvest from the clean, fully-cropped scene so injected memory tails never re-enter
                 # the bank. Scene 0 seeds the pinned anchor (num_fix); later scenes roll in. The audio

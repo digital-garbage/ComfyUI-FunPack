@@ -197,7 +197,7 @@
     { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
       hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
     { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
-      hint: "EXPERIMENTAL ADetailer-for-video: after each scene renders, CLIPSeg finds the regions named below (hands, feet, …), cuts them out of the latent as a tube, refines them at 2× working resolution through Lightricks' latent upsampler (3 extra steps on the crop only), and pastes them back through a feathered silhouette. Final resolution never changes. Cost ≈ 4 × region area × 3 steps (hands ~+15%); regions over 35% of the frame are refused. Needs the detail upsampler model below. UNVALIDATED LIVE." },
+      hint: "EXPERIMENTAL ADetailer-for-video: after each scene renders, CLIPSeg finds the regions named below (hands, feet, …), cuts them out of the latent as a tube, refines them at 2× working resolution through Lightricks' latent upsampler (3 extra steps on the crop only), and pastes them back through a feathered silhouette. Final resolution never changes. Cost ≈ 4 × region area × 3 steps (hands ~+15%); regions over 35% of the frame are refused. The upsampler model below is found — or downloaded (~1 GB, once) — automatically; skips are reported in the scene report. UNVALIDATED LIVE." },
     { name: "detail_targets", label: "Detail targets", kind: "text", default: "hands", dependsOn: "segmented_detailing", placeholder: "hands, feet",
       hint: "Comma-separated regions to detail, in plain words. Each becomes a CLIPSeg text query — malformed anatomy still matches its name. Also editable from Composer ▸ Compose while detailing is on." },
     { name: "detail_strength", label: "Detail strength", kind: "float", default: 1.0, min: 0, max: 1, step: 0.05, dependsOn: "segmented_detailing",
@@ -617,16 +617,17 @@
       return;
     }
     const sel = el("select"); sel.dataset.k = "si-detail_upsampler";
+    const cur = si.detail_upsampler && si.detail_upsampler !== "None" ? si.detail_upsampler : "auto";
     _detailUpsamplerChoices.forEach((c) => {
       const o = el("option", null, c); o.value = c;
-      if (c === (si.detail_upsampler || "None")) o.selected = true;
+      if (c === cur) o.selected = true;
       sel.append(o);
     });
     sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
     g.append(field("Latent upsampler", sel,
-      "The LTX 2.3 spatial upsampler from models/latent_upscale_models (the official two-stage workflows use the same file). Detailing no-ops while this is None."));
-    if ((si.detail_upsampler || "None") === "None" && _detailUpsamplerChoices.length <= 1) {
-      g.append(hintEl("No models found in models/latent_upscale_models on the server — download the LTX 2.3 latent upsampler there, then reopen this pane."));
+      "The LTX 2.3 spatial upsampler from models/latent_upscale_models (the official two-stage workflows use the same file). 'auto' picks the newest installed spatial upscaler — or downloads the official one (~1 GB, once) when the folder is empty."));
+    if (_detailUpsamplerChoices.length <= 1) {
+      g.append(hintEl("Nothing installed in models/latent_upscale_models yet — the first detailed run downloads the official upsampler automatically (watch the ComfyUI console)."));
     }
   }
 
