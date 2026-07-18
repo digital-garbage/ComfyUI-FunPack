@@ -196,6 +196,12 @@
       hint: "EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
     { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
       hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
+    { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
+      hint: "EXPERIMENTAL ADetailer-for-video: after each scene renders, CLIPSeg finds the regions named below (hands, feet, …), cuts them out of the latent as a tube, refines them at 2× working resolution through Lightricks' latent upsampler (3 extra steps on the crop only), and pastes them back through a feathered silhouette. Final resolution never changes. Cost ≈ 4 × region area × 3 steps (hands ~+15%); regions over 35% of the frame are refused. Needs the detail upsampler model below. UNVALIDATED LIVE." },
+    { name: "detail_targets", label: "Detail targets", kind: "text", default: "hands", dependsOn: "segmented_detailing", placeholder: "hands, feet",
+      hint: "Comma-separated regions to detail, in plain words. Each becomes a CLIPSeg text query — malformed anatomy still matches its name. Also editable from Composer ▸ Compose while detailing is on." },
+    { name: "detail_strength", label: "Detail strength", kind: "float", default: 1.0, min: 0, max: 1, step: 0.05, dependsOn: "segmented_detailing",
+      hint: "Blend of the refined region at paste-back. 1.0 = full replacement inside the silhouette; 0 disables the pass." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -271,6 +277,14 @@
       ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
       (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
       ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
+    } else if (k.kind === "text") {
+      ctrl = el("input"); ctrl.type = "text";
+      ctrl.value = val != null ? String(val) : "";
+      if (k.placeholder) ctrl.placeholder = k.placeholder;
+      ctrl.dataset.k = "si-" + k.name;
+      // Quiet while typing (no repaint under the caret), commit on blur/Enter.
+      ctrl.oninput = () => S.setSamplerInput(k.name, ctrl.value);
+      ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
     } else {
       ctrl = el("input"); ctrl.type = "number";
       if (k.step != null) ctrl.step = String(k.step);
@@ -300,7 +314,7 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "segmented_detailing", "detail_targets", "detail_strength", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
@@ -576,6 +590,46 @@
     renderKnobList(g, st, CHAIN_VIEW_KNOBS[id]);
   }
 
+  // ── Segmented detailing: the upsampler model list is live (models/latent_upscale_models
+  // on the server), so like the ArcFace projector below it can't be a static SAMPLER_KNOBS
+  // combo. The chain sampler node's own spec already carries the choices (with "None").
+  let _detailUpsamplerChoices = null;
+
+  async function ensureDetailUpsamplerChoices() {
+    if (_detailUpsamplerChoices) return _detailUpsamplerChoices;
+    try {
+      const spec = await API.nodeSpec("FunPackLTXAVSceneChainSampler");
+      const w = (spec?.inputs || []).find((i) => i.name === "detail_upsampler");
+      _detailUpsamplerChoices = (w && w.choices) || ["None"];
+    } catch (_) {
+      _detailUpsamplerChoices = ["None"];
+    }
+    render();
+    return _detailUpsamplerChoices;
+  }
+
+  function renderDetailUpsampler(pane, si) {
+    if (!si.segmented_detailing) return;
+    const g = group(pane, "Segmented detailing: upsampler model");
+    if (!_detailUpsamplerChoices) {
+      g.append(hintEl("Loading upsampler list…"));
+      ensureDetailUpsamplerChoices();
+      return;
+    }
+    const sel = el("select"); sel.dataset.k = "si-detail_upsampler";
+    _detailUpsamplerChoices.forEach((c) => {
+      const o = el("option", null, c); o.value = c;
+      if (c === (si.detail_upsampler || "None")) o.selected = true;
+      sel.append(o);
+    });
+    sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
+    g.append(field("Latent upsampler", sel,
+      "The LTX 2.3 spatial upsampler from models/latent_upscale_models (the official two-stage workflows use the same file). Detailing no-ops while this is None."));
+    if ((si.detail_upsampler || "None") === "None" && _detailUpsamplerChoices.length <= 1) {
+      g.append(hintEl("No models found in models/latent_upscale_models on the server — download the LTX 2.3 latent upsampler there, then reopen this pane."));
+    }
+  }
+
   // ── Best-FaceID ArcFace projector: the one identity-transfer field that needs a
   // live (server-fetched) choice list, so it can't live in the static SAMPLER_KNOBS combo
   // shape. Reuses the same loras folder listing LoraLoaderModelOnly exposes.
@@ -598,6 +652,7 @@
     renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
       "Research techniques — off by default; expect quality/overhead trade-offs.");
     const si = st.project.sampler_inputs || {};
+    renderDetailUpsampler(pane, si);
     if (!si.identity_transfer_enabled) return;
     const g = group(pane, "Best-FaceID: ArcFace projector");
     if (!_loraChoices) {

@@ -217,7 +217,39 @@
 
     // Variables ($name) — collapsible, same toggle pattern as Settings ▸ Built-in pipeline.
     wrap.append(composeVariables());
+    // Segmented detailing targets — only while the Chain Sampler feature is enabled
+    // (Engine ▸ Chain Sampler ▸ Experimental), so prompt-craft and "what gets detailed"
+    // live side by side without adding a permanently-visible field.
+    const detailBlock = composeDetailTargets(st);
+    if (detailBlock) wrap.append(detailBlock);
     return wrap;
+  }
+
+  // ── segmented detailing targets (shown only when the feature is on) ─────────────
+  function composeDetailTargets(st) {
+    const p = st.project;
+    if (!p) return null;
+    const PC = window.PipelineCaps;
+    if (PC && PC.usesChainSampler && !PC.usesChainSampler(st)) return null;
+    const si = p.sampler_inputs || {};
+    if (!si.segmented_detailing) return null;
+    const box = el("div", "compose-detail");
+    const row = el("div", "compose-head");
+    row.append(el("div", "lib-form-title", "Segmented detailing"));
+    box.append(row);
+    const input = el("input", "lib-in");
+    input.type = "text";
+    input.placeholder = "hands, feet";
+    input.value = si.detail_targets != null ? String(si.detail_targets) : "hands";
+    // Quiet while typing (no repaint under the caret), commit on blur/Enter —
+    // same contract as the Engine Settings text knob, same store key, so the
+    // two fields can never disagree.
+    input.oninput = () => S.setSamplerInput("detail_targets", input.value);
+    input.onchange = () => S.setSamplerInputNow("detail_targets", input.value);
+    box.append(input);
+    box.append(el("div", "insp-hint",
+      "Comma-separated regions to detail (CLIPSeg text queries — plain words work best). Strength and the upsampler model live in Engine ▸ Chain Sampler ▸ Experimental."));
+    return box;
   }
   let composeTextarea = null;
   let varsOpen = false;          // Variables panel expanded?
@@ -834,6 +866,12 @@
     const fp = JSON.stringify({
       s: st.shortcuts?.length, t: st.transitions?.length, pid: st.project?.id,
       c: (st.shortcutCategories || []).reduce((n, x) => n + 1 + (x.sub_categories?.length || 0), 0),
+      // Segmented detailing block visibility: toggling it in Engine Settings must
+      // repaint an open Composer or the targets field appears/disappears only on the
+      // next unrelated repaint ("store right, UI stale"). The targets TEXT is not
+      // fingerprinted — typing goes through quiet patches and the field itself is
+      // the source of those edits.
+      sd: !!(st.project?.sampler_inputs?.segmented_detailing),
     });
     if (fp === lastFp) return;
     lastFp = fp;
