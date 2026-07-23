@@ -35,6 +35,20 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
 }
 .easy-preview-error { color: var(--danger); max-width: 60ch; text-align: center; white-space: pre-wrap; }
 
+.easy-preview-close {
+  position: absolute; top: 34px; right: 34px; width: 28px; height: 28px; padding: 0;
+  border-radius: 50%; background: rgba(12,11,9,.72); border: 1px solid var(--line);
+  color: var(--text); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(2px); transition: border-color .12s, color .12s;
+}
+.easy-preview-close[hidden] { display: none; } /* class display:flex above would otherwise beat [hidden] */
+.easy-preview-close:hover { border-color: var(--danger); color: var(--danger); }
+.easy-preview-badge {
+  position: absolute; top: 34px; left: 34px; padding: 4px 10px; border-radius: 999px;
+  background: rgba(12,11,9,.72); border: 1px solid var(--line); color: var(--muted);
+  font-size: 11.5px; letter-spacing: .3px; backdrop-filter: blur(2px);
+}
+
 .easy-progress {
   position: absolute; left: 24px; right: 24px; bottom: 24px;
   background: var(--ink-1); border: 1px solid var(--line); border-radius: var(--radius);

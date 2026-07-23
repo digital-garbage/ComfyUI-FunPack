@@ -81,11 +81,23 @@
     notify();
   }
 
-  async function save() {
-    if (!state.project) return;
-    const saved = await API.saveProject(state.project.id, state.project);
-    set({ project: saved });
-    return saved;
+  // Two overlapping save() calls (e.g. a debounced auto-save from an earlier
+  // edit still in flight when a later action calls save() directly) can land
+  // on the server out of order — whichever PUT is written to disk last wins,
+  // even if it was the older/now-stale one, silently reverting a newer edit.
+  // Serializing through one chain means a save only starts once the previous
+  // one has FULLY completed, and reads state.project live at that point, so
+  // it always picks up whatever changed while it waited.
+  let saveQueue = Promise.resolve();
+  function save() {
+    const run = saveQueue.then(async () => {
+      if (!state.project) return null;
+      const saved = await API.saveProject(state.project.id, state.project);
+      set({ project: saved });
+      return saved;
+    });
+    saveQueue = run.catch(() => {}); // keep the queue alive even if this save failed
+    return run;
   }
 
   function resetStudioSession() {

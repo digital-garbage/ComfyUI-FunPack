@@ -34,6 +34,12 @@
     scheduleSave();
   });
 
+  function removeUpload() {
+    S.setSceneMedia(null, null);
+    scheduleSave();
+  }
+  preview.setOnClearUpload(removeUpload);
+
   let lastProjectId = null;
   function render(st) {
     const p = st.project;
@@ -44,7 +50,11 @@
       const text = p.scenes[0]?.text || "";
       if (promptEl.value !== text) promptEl.value = text;
     }
-    uploadBtn.textContent = p && p.scenes[0]?.source?.type !== "empty" ? "⬆ Uploaded ✕" : "⬆ Upload";
+    const source = p?.scenes[0]?.source;
+    const attached = source && source.type !== "empty" && source.media_ref;
+    uploadBtn.textContent = attached ? "⬆ Uploaded ✕" : "⬆ Upload";
+    preview.setUpload(attached ? API.mediaUrl(source.media_ref) : null, source?.type === "v2v" ? "video" : "image");
+
     const pid = p ? p.id : null;
     if (pid !== lastProjectId) {
       lastProjectId = pid;
@@ -59,8 +69,7 @@
     const st = S.get();
     const attached = st.project && st.project.scenes[0]?.source?.type !== "empty";
     if (attached) {
-      S.setSceneMedia(null, null);
-      scheduleSave();
+      removeUpload();
       return;
     }
     uploadInput.click();
@@ -73,7 +82,9 @@
     uploadBtn.disabled = true;
     uploadBtn.textContent = "Uploading…";
     try {
-      const media = await API.uploadMedia(file);
+      const res = await API.uploadMedia(file);
+      const media = res.media?.[0]; // POST /media wraps the result: { media: [ {id, ...} ] }
+      if (!media) throw new Error("Upload succeeded but returned no media entry.");
       const kind = file.type.startsWith("video") ? "video" : "image";
       S.setSceneMedia(media.id, kind);
       await S.save();

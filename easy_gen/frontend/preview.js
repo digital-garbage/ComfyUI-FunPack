@@ -1,23 +1,40 @@
 // Big preview pane: plain <video>/<img>, not the Editor's timeline-oriented
 // player.js. Polls /api/progress (step count) while a run is in flight and
 // /api/projects/{id}/status/{prompt_id} for the final result.
+//
+// Display priority: generated result > uploaded source > empty message. The
+// corner ✕ closes whichever of those two media layers is currently showing —
+// closing a generated result reveals the uploaded source underneath (if any),
+// closing the uploaded source clears the upload itself (via onClearUpload).
 (function () {
   const { el, clear } = window.dom;
   const API = window.MovieEditorAPI;
 
   function create(root) {
     const inner = el("div", "easy-preview-inner");
-    const empty = el("div", "easy-preview-empty", "No generation yet");
-    inner.append(empty);
+    const closeBtn = el("button", "easy-preview-close", "✕");
+    closeBtn.type = "button";
+    closeBtn.title = "Close";
+    closeBtn.hidden = true;
+    const badge = el("div", "easy-preview-badge", "Uploaded source");
+    badge.hidden = true;
     const progressWrap = el("div", "easy-progress");
     progressWrap.hidden = true;
     const bar = el("div", "easy-progress-bar");
     const label = el("div", "easy-progress-label");
     progressWrap.append(bar, label);
-    root.append(inner, progressWrap);
+    root.append(inner, closeBtn, badge, progressWrap);
 
     let pollTimer = null;
     let progressTimer = null;
+
+    // generated/upload hold the last-drawn payload so the ✕ handler knows what
+    // layer it's dismissing; emptyMsg is what to fall back to once both are gone.
+    let generated = null;   // { media, projectId } | null
+    let upload = null;      // { url, kind } | null
+    let errorMsg = null;
+    let emptyMsg = "No generation yet";
+    let onClearUpload = null;
 
     function stopPolling() {
       if (pollTimer) clearTimeout(pollTimer);
@@ -25,35 +42,75 @@
       pollTimer = progressTimer = null;
     }
 
-    function showMedia(m, projectId) {
-      clear(inner);
-      const url = API.resultUrl(projectId, m);
-      if (m.kind === "images") {
-        const img = el("img");
-        img.src = url;
-        inner.append(img);
-      } else {
+    function mediaEl(url, kind, opts = {}) {
+      if (kind === "video") {
         const video = el("video");
         video.src = url;
         video.controls = true;
-        video.autoplay = true;
-        video.loop = true;
-        inner.append(video);
+        if (opts.autoplay) { video.autoplay = true; video.loop = true; }
+        return video;
+      }
+      const img = el("img");
+      img.src = url;
+      return img;
+    }
+
+    function draw() {
+      clear(inner);
+      badge.hidden = true;
+      if (errorMsg) {
+        closeBtn.hidden = true;
+        inner.append(el("div", "easy-preview-empty easy-preview-error", errorMsg));
+      } else if (generated) {
+        closeBtn.hidden = false;
+        const url = API.resultUrl(generated.projectId, generated.media);
+        inner.append(mediaEl(url, generated.media.kind === "images" ? "image" : "video", { autoplay: true }));
+      } else if (upload) {
+        closeBtn.hidden = false;
+        badge.hidden = false;
+        inner.append(mediaEl(upload.url, upload.kind));
+      } else {
+        closeBtn.hidden = true;
+        inner.append(el("div", "easy-preview-empty", emptyMsg));
       }
     }
 
+    closeBtn.onclick = () => {
+      if (generated) {
+        generated = null;
+        draw();
+      } else if (upload) {
+        upload = null;
+        draw();
+        if (onClearUpload) onClearUpload();
+      }
+    };
+
+    function setUpload(url, kind) {
+      upload = url ? { url, kind } : null;
+      draw();
+    }
+
+    function setGenerated(media, projectId) {
+      generated = media ? { media, projectId } : null;
+      draw();
+    }
+
     function showEmpty(msg) {
-      clear(inner);
-      inner.append(el("div", "easy-preview-empty", msg || "No generation yet"));
+      errorMsg = null;
+      generated = null;
+      emptyMsg = msg || "No generation yet";
+      draw();
     }
 
     function showError(msg) {
-      clear(inner);
-      inner.append(el("div", "easy-preview-empty easy-preview-error", msg));
+      errorMsg = msg;
+      draw();
     }
 
     async function watch(projectId, promptId, { onDone } = {}) {
       stopPolling();
+      errorMsg = null;
       progressWrap.hidden = false;
       label.textContent = "Starting…";
       bar.style.width = "0%";
@@ -84,7 +141,7 @@
           stopPolling();
           progressWrap.hidden = true;
           const media = res.media && res.media.length ? res.media[res.media.length - 1] : null;
-          if (media) showMedia(media, projectId); else showEmpty("Generation finished but produced no media.");
+          if (media) setGenerated(media, projectId); else showEmpty("Generation finished but produced no media.");
           if (onDone) onDone(true, res);
           return;
         }
@@ -100,7 +157,15 @@
       poll();
     }
 
-    return { showMedia, showEmpty, showError, watch, stopPolling };
+    return {
+      setUpload,
+      setGenerated,
+      setOnClearUpload(fn) { onClearUpload = fn; },
+      showEmpty,
+      showError,
+      watch,
+      stopPolling,
+    };
   }
 
   window.EasyPreview = { create };
