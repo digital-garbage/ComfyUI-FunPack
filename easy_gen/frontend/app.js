@@ -30,9 +30,11 @@
   promptEl.addEventListener("focus", () => { promptFocused = true; });
   promptEl.addEventListener("blur", () => { promptFocused = false; });
   promptEl.addEventListener("input", () => {
-    S.setPromptText(promptEl.value);
-    scheduleSave();
+    S.scheduleGlobalPromptApply(promptEl.value);
   });
+  // Self-contained: reads Store.getEditorSetting("autocomplete")/get().shortcuts
+  // and no-ops until a project + shortcut library are loaded.
+  window.ShortcutAutocomplete?.attach(promptEl);
 
   function removeUpload() {
     S.setSceneMedia(null, null);
@@ -47,7 +49,7 @@
     generateBtn.disabled = !p;
     uploadBtn.disabled = !p;
     if (p && !promptFocused) {
-      const text = p.scenes[0]?.text || "";
+      const text = p.global_prompt || "";
       if (promptEl.value !== text) promptEl.value = text;
     }
     const source = p?.scenes[0]?.source;
@@ -98,7 +100,7 @@
   generateBtn.onclick = async () => {
     const st = S.get();
     if (!st.project) return;
-    if (!(st.project.scenes[0]?.text || "").trim()) {
+    if (!(st.project.global_prompt || "").trim()) {
       alert("Type a prompt first.");
       return;
     }
@@ -123,6 +125,7 @@
 
   async function boot() {
     S.refreshHealth();
+    S.loadLibraries();
     setInterval(() => S.refreshHealth(), 15000);
     S.subscribe((st) => {
       healthEl.textContent = st.health?.ok ? "● online" : "● offline";
