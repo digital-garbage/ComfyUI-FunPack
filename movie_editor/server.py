@@ -2417,4 +2417,4 @@ if web is not None and PromptServer is not None:
     async def _static(req):
         return _serve_static(req.match_info["tail"])
 
-    print(f"[FunPack] Movie Editor available at {UI_PREFIX}/")
+    print(f"[FunPack] Movie Editor available at {config.comfy_display_url()}{UI_PREFIX}/")

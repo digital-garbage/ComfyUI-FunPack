@@ -1,0 +1,62 @@
+/* Easy Gen layout on top of the Editor's shared styles.css (design tokens,
+   .btn/.modal/.sw-*/.welcome-* rules) — big preview, prompt bar, nothing else. */
+
+html, body.easy-body {
+  margin: 0; height: 100%; background: var(--ink-0); color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.easy-app {
+  height: 100vh; display: flex; flex-direction: column;
+}
+
+.easy-top {
+  height: var(--menubar-h); flex: none; display: flex; align-items: center; gap: 14px;
+  padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--ink-1);
+}
+.easy-project-name { color: var(--muted); font-size: 13px; }
+.easy-top .easy-health-chip { margin-left: auto; }
+a.brand { text-decoration: none; color: inherit; }
+a.brand:hover .brand-sub { color: var(--amber-2); }
+
+.easy-preview {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--ink-0); position: relative; padding: 24px;
+}
+.easy-preview-inner {
+  width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+}
+.easy-preview-inner img, .easy-preview-inner video {
+  max-width: 100%; max-height: 100%; border-radius: var(--radius); box-shadow: var(--shadow);
+  background: #000;
+}
+.easy-preview-empty {
+  color: var(--faint); font-size: 14px; font-family: var(--font-display);
+}
+.easy-preview-error { color: var(--danger); max-width: 60ch; text-align: center; white-space: pre-wrap; }
+
+.easy-progress {
+  position: absolute; left: 24px; right: 24px; bottom: 24px;
+  background: var(--ink-1); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 14px; box-shadow: var(--shadow);
+}
+.easy-progress-bar {
+  height: 6px; border-radius: 4px; background: linear-gradient(90deg, var(--amber), var(--amber-2));
+  width: 0%; transition: width .2s ease; margin-bottom: 6px;
+}
+.easy-progress-label { font-size: 12px; color: var(--muted); font-family: var(--font-mono); }
+
+.easy-bar {
+  flex: none; display: flex; align-items: flex-end; gap: 12px;
+  padding: 14px 16px; border-top: 1px solid var(--line); background: var(--ink-1);
+}
+.easy-upload-btn { flex: none; align-self: stretch; padding: 0 16px; }
+.easy-prompt {
+  flex: 1; resize: none; background: var(--ink-2); border: 1px solid var(--line);
+  border-radius: var(--radius); color: var(--text); font: 14px/1.4 var(--font-ui);
+  padding: 10px 12px;
+}
+.easy-prompt:focus { outline: none; border-color: var(--amber); }
+.easy-actions { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.easy-generate-btn { padding: 10px 26px; font-size: 14px; }
+.easy-advanced-btn { align-self: center; }
