@@ -19,6 +19,7 @@
   const advancedBtn = document.getElementById("easy-advanced-btn");
   const projectsBtn = document.getElementById("easy-projects-btn");
   const saveBtn = document.getElementById("easy-save-btn");
+  const exportBtn = document.getElementById("easy-export-btn");
 
   const preview = window.EasyPreview.create(document.getElementById("easy-preview"));
 
@@ -52,6 +53,7 @@
     uploadBtn.disabled = !p;
     galleryBtn.disabled = !p;
     saveBtn.disabled = !p;
+    exportBtn.disabled = !p;
     if (p && !promptFocused) {
       const text = p.global_prompt || "";
       if (promptEl.value !== text) promptEl.value = text;
@@ -141,6 +143,20 @@
   advancedBtn.onclick = () => window.SettingsWindow.open("generation");
   projectsBtn.onclick = () => window.ProjectMenu.open({ dismissable: !!S.get().project });
   galleryBtn.onclick = () => window.EasyGallery.open();
+
+  // "Save" persists into FunPack's own project store on THIS machine — the same mechanism
+  // as the Editor's autosave. It doesn't help moving a project off a rental GPU box. This
+  // downloads the actual .funpack_project.json file (re-importable via "Load Project
+  // File…" on another machine), same as the Editor's File ▸ "Save Project File…".
+  exportBtn.onclick = async () => {
+    const st = S.get();
+    if (!st.project) return;
+    try { await S.save(); } catch (_) { /* export the last-saved version anyway */ }
+    const a = document.createElement("a");
+    a.href = API.downloadProjectUrl(st.project.id);
+    a.download = "";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
 
   let saveResetTimer = null;
   saveBtn.onclick = async () => {
