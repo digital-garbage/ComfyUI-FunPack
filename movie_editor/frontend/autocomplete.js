@@ -142,8 +142,24 @@
       if (!menu) return;
       if (!ta.isConnected) { close(); return; }
       const r = ta.getBoundingClientRect();
+      // Flip above the field when there isn't room below (e.g. Easy Gen's prompt box
+      // sits in a footer bar at the bottom of the viewport) — otherwise the menu opens
+      // off-screen under the field with no way to see or click any suggestion.
+      const GAP = 2;
+      const menuH = menu.offsetHeight || 240;
+      const spaceBelow = window.innerHeight - r.bottom;
+      const spaceAbove = r.top;
+      const openAbove = spaceBelow < menuH + GAP && spaceAbove > spaceBelow;
       menu.style.left = r.left + "px";
-      menu.style.top = (r.bottom + 2) + "px";
+      if (openAbove) {
+        menu.style.top = "";
+        menu.style.bottom = (window.innerHeight - r.top + GAP) + "px";
+        menu.style.maxHeight = Math.max(120, Math.min(240, spaceAbove - GAP * 2)) + "px";
+      } else {
+        menu.style.bottom = "";
+        menu.style.top = (r.bottom + GAP) + "px";
+        menu.style.maxHeight = Math.max(120, Math.min(240, spaceBelow - GAP * 2)) + "px";
+      }
       menu.style.minWidth = Math.min(r.width, 420) + "px";
       menu.style.maxWidth = Math.max(r.width, 320) + "px";
     }
