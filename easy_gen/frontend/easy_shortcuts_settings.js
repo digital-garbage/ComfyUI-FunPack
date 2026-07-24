@@ -72,6 +72,63 @@
     return wrap;
   }
 
+  // Import/export the shortcut and transition ("prompt split") JSON libraries — one
+  // shared FunPack library, same files the ComfyUI node graph and the Movie Editor
+  // read/write. Easy Gen had no UI for this at all, so a fresh install or a browser
+  // with an empty library had no way to load a shortcuts/transitions file.
+  function ioRow(label, hint, onImport, exportUrl) {
+    const row = el("div", "es-row");
+    row.append(el("div", "es-toggle", label));
+    if (hint) row.append(el("div", "es-hint", hint));
+
+    const modeSel = el("select", "es-io-mode");
+    const optMerge = el("option", null, "Merge"); optMerge.value = "merge";
+    const optReplace = el("option", null, "Replace all"); optReplace.value = "replace";
+    modeSel.append(optMerge, optReplace);
+
+    const fileInput = el("input");
+    fileInput.type = "file"; fileInput.accept = ".json,application/json"; fileInput.style.display = "none";
+    fileInput.onchange = async () => {
+      const file = fileInput.files?.[0];
+      fileInput.value = "";
+      if (!file) return;
+      const mode = modeSel.value;
+      if (mode === "replace"
+        && !confirm(`This replaces the ENTIRE ${label.toLowerCase()} library with the imported file. Continue?`)) return;
+      try {
+        const n = await onImport(file, mode);
+        alert(`Imported ${n} ${label.toLowerCase()}.`);
+      } catch (e) { alert("Import failed: " + (e.message || e)); }
+    };
+
+    const importBtn = el("button", "btn ghost tiny", "Import…");
+    importBtn.type = "button";
+    importBtn.onclick = () => fileInput.click();
+
+    const exportBtn = el("button", "btn ghost tiny", "Export");
+    exportBtn.type = "button";
+    exportBtn.onclick = () => window.open(exportUrl(), "_blank");
+
+    const controls = el("div", "es-io-controls");
+    controls.append(modeSel, importBtn, exportBtn, fileInput);
+    row.append(controls);
+    return row;
+  }
+
+  function librarySection() {
+    const wrap = el("div", "es-section");
+    wrap.append(el("div", "es-section-title", "Shortcut & transition libraries"));
+    wrap.append(el("div", "es-hint",
+      "Load a shortcuts/transitions JSON file exported from the ComfyUI node graph or the Movie "
+      + "Editor, or export what's currently loaded. Merge overlays onto the existing library "
+      + "(same trigger name overwrites); Replace all wipes it first."));
+    wrap.append(ioRow("Shortcuts", "Prompt-expansion triggers.",
+      (file, mode) => S.importShortcuts(file, mode), () => API.exportShortcutsUrl()));
+    wrap.append(ioRow("Transitions", "Split/cut trigger words used to break the global prompt into scenes.",
+      (file, mode) => S.importTransitions(file, mode), () => API.exportTransitionsUrl()));
+    return wrap;
+  }
+
   function mount(body) {
     const content = el("div", "es-content");
     content.append(toggleRow(
@@ -84,13 +141,14 @@
       + "scene. Turn off to make that leading text the first scene instead.",
       "anchorEnabled"));
     content.append(revolverSection());
+    content.append(librarySection());
     body.append(content);
   }
 
   window.SettingsWindow.register({
     id: "shortcuts", group: "Generation", order: 2, title: "Shortcuts",
-    subtitle: "Autocomplete, anchor text, and the shortcut revolver — shared with the Editor.",
-    keywords: "autocomplete anchor shortcuts split cut revolver random replacements cycle",
+    subtitle: "Autocomplete, anchor text, the shortcut revolver, and library import/export — shared with the Editor.",
+    keywords: "autocomplete anchor shortcuts split cut revolver random replacements cycle import export json library transitions",
     iconBg: "linear-gradient(180deg,#6aa9ff,#3b6fd9)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/><circle cx="6" cy="4.5" r="1.7" fill="#fff" stroke="none"/><circle cx="11" cy="8" r="1.7" fill="#fff" stroke="none"/><circle cx="5" cy="11.5" r="1.7" fill="#fff" stroke="none"/></svg>',
     mount,

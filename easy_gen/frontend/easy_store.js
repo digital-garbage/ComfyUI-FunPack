@@ -21,6 +21,7 @@
     resetSessionArmed: false,
     shortcuts: [],     // prompt shortcut library (for autocomplete)
     transitions: [],   // transition trigger library (for split-marker inference)
+    mediaBin: [],      // uploaded assets [{id,name,kind,...}] — feeds engine_settings.js's MediaPicker
   };
   const listeners = new Set();
 
@@ -70,6 +71,26 @@
   async function loadLibraries() {
     try { const r = await API.shortcuts(); set({ shortcuts: r.shortcuts || [] }); } catch (_) {}
     try { const r = await API.transitions(); set({ transitions: r.transitions || r || [] }); } catch (_) {}
+  }
+
+  async function loadMedia() {
+    try { set({ mediaBin: (await API.listMedia()).media || [] }); } catch (_) { set({ mediaBin: [] }); }
+  }
+
+  // Import/export the same shortcut/transition JSON libraries the ComfyUI node graph
+  // and the Movie Editor read and write (one shared FunPack library, no Easy Gen copy).
+  // mode: "merge" (overlay onto the existing library) | "replace" (wipe first).
+  async function importShortcuts(file, mode) {
+    const data = JSON.parse(await file.text());
+    const r = await API.importShortcuts(data, mode);
+    set({ shortcuts: r.shortcuts || state.shortcuts });
+    return r.imported;
+  }
+  async function importTransitions(file, mode) {
+    const data = JSON.parse(await file.text());
+    const r = await API.importTransitions(data, mode);
+    set({ transitions: r.transitions || state.transitions });
+    return r.imported;
   }
 
   function emptyScene() {
@@ -239,6 +260,77 @@
     return run;
   }
 
+  // ── Engine settings (Studio / Chain Sampler / continuity) ──────────────────
+  // Minimal re-implementation of movie_editor/frontend/store.js's project-patch
+  // helpers, just enough for the shared engine_settings.js (loaded via the same
+  // frontend-fallback mechanism as autocomplete.js/suggestions.js) to run
+  // unmodified against Easy Gen's project. No undo/history, no global-prompt
+  // resync — Easy Gen's scenes come from the split parser, not manual editing.
+  let _engineSaveTimer = null;
+  function _scheduleEngineSave(ms) {
+    if (_engineSaveTimer) clearTimeout(_engineSaveTimer);
+    _engineSaveTimer = setTimeout(() => { _engineSaveTimer = null; save().catch(() => {}); }, ms);
+  }
+
+  function patchProject(patch) {
+    if (!state.project) return;
+    Object.assign(state.project, patch);
+    notify();
+    save().catch(() => {});
+  }
+  function patchProjectQuiet(patch) {
+    if (!state.project) return;
+    Object.assign(state.project, patch);
+    notify();
+    _scheduleEngineSave(600);
+  }
+
+  function setConditioningSlot(slotId) { patchProject({ conditioning_slot: slotId || "funpack" }); }
+  function setSamplerSlot(slotId) { patchProject({ sampler_slot: slotId || "funpack" }); }
+  function setSamplerInput(name, value) {
+    if (!state.project) return;
+    patchProjectQuiet({ sampler_inputs: { ...(state.project.sampler_inputs || {}), [name]: value } });
+  }
+  function setSamplerInputNow(name, value) {
+    if (!state.project) return;
+    patchProject({ sampler_inputs: { ...(state.project.sampler_inputs || {}), [name]: value } });
+  }
+  function unsetSamplerInput(name) {
+    if (!state.project) return;
+    const prev = { ...(state.project.sampler_inputs || {}) };
+    delete prev[name];
+    patchProjectQuiet({ sampler_inputs: prev });
+  }
+  function setStudioInput(name, value) {
+    if (!state.project) return;
+    patchProjectQuiet({ studio_inputs: { ...(state.project.studio_inputs || {}), [name]: value } });
+  }
+  function setStudioInputNow(name, value) {
+    if (!state.project) return;
+    patchProject({ studio_inputs: { ...(state.project.studio_inputs || {}), [name]: value } });
+  }
+
+  const ENGINE_PRESETS = {
+    draft: { label: "Fast draft", studio_inputs: { "refiner.split_by_transitions": false }, sampler_inputs: { steps: 20 } },
+    quality: { label: "Quality", studio_inputs: { "refiner.split_by_transitions": true }, sampler_inputs: { steps: 40 } },
+    continuity: {
+      label: "Continuity-heavy",
+      guide_settings: { stack_enabled: true, auto_guides: true, identity_pins: true },
+      continuity_settings: { enabled: true },
+      sampler_inputs: { steps: 36 },
+    },
+  };
+  function applyEnginePreset(key) {
+    const preset = ENGINE_PRESETS[key];
+    if (!preset || !state.project) return;
+    const patch = {};
+    if (preset.studio_inputs) patch.studio_inputs = { ...(state.project.studio_inputs || {}), ...preset.studio_inputs };
+    if (preset.sampler_inputs) patch.sampler_inputs = { ...(state.project.sampler_inputs || {}), ...preset.sampler_inputs };
+    if (preset.guide_settings) patch.guide_settings = { ...(state.project.guide_settings || {}), ...preset.guide_settings };
+    if (preset.continuity_settings) patch.continuity_settings = { ...(state.project.continuity_settings || {}), ...preset.continuity_settings };
+    patchProject(patch);
+  }
+
   function resetStudioSession() {
     set({ resetSessionArmed: !state.resetSessionArmed });
   }
@@ -254,10 +346,16 @@
     get, subscribe, set,
     refreshHealth,
     getEditorSetting, setEditorSetting,
-    loadLibraries,
+    loadLibraries, importShortcuts, importTransitions,
+    loadMedia,
     listProjects, createProject, loadProject, deleteProject,
     applyGlobalPrompt, scheduleGlobalPromptApply,
     setSceneMedia, save,
+    patchProject, patchProjectQuiet,
+    setConditioningSlot, setSamplerSlot,
+    setSamplerInput, setSamplerInputNow, unsetSamplerInput,
+    setStudioInput, setStudioInputNow,
+    ENGINE_PRESETS, applyEnginePreset,
     resetStudioSession, takeResetSessionFlag,
   };
 })();

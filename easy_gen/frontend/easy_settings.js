@@ -67,14 +67,13 @@
         "Passed to the negative conditioning for every run."));
       wrap.append(pr);
 
-      wrap.append(el("div", "sw-rows-label", "Seed & learning"));
+      wrap.append(el("div", "sw-rows-label", "Seed"));
       const sd = el("div", "sw-rows");
       sd.append(field("Seed", numberInput(p.seed, (v) => commit((proj) => proj.seed = v), { min: 0 }),
         "Fixed seed for this project's runs."));
-      sd.append(field("Refinement key", textInput(p.refinement_key, (v) => commit((proj) => proj.refinement_key = v || "default")),
-        "Named session FunPack learns from your ratings under. \"default\" = the keyless store. "
-        + "Manage keys under Refinement & Taste."));
       wrap.append(sd);
+      wrap.append(el("div", "sw-hint",
+        "Refinement key, and the full Studio/Chain Sampler/continuity controls, live under Engine."));
     }
 
     const unsub = S.subscribe(render);

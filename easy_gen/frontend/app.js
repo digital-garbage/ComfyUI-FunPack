@@ -14,9 +14,11 @@
   const promptEl = document.getElementById("easy-prompt");
   const uploadBtn = document.getElementById("easy-upload-btn");
   const uploadInput = document.getElementById("easy-upload-input");
+  const galleryBtn = document.getElementById("easy-gallery-btn");
   const generateBtn = document.getElementById("easy-generate-btn");
   const advancedBtn = document.getElementById("easy-advanced-btn");
   const projectsBtn = document.getElementById("easy-projects-btn");
+  const saveBtn = document.getElementById("easy-save-btn");
 
   const preview = window.EasyPreview.create(document.getElementById("easy-preview"));
 
@@ -48,6 +50,8 @@
     nameEl.textContent = p ? p.name : "No project";
     generateBtn.disabled = !p;
     uploadBtn.disabled = !p;
+    galleryBtn.disabled = !p;
+    saveBtn.disabled = !p;
     if (p && !promptFocused) {
       const text = p.global_prompt || "";
       if (promptEl.value !== text) promptEl.value = text;
@@ -90,6 +94,7 @@
       const kind = file.type.startsWith("video") ? "video" : "image";
       S.setSceneMedia(media.id, kind);
       await S.save();
+      S.loadMedia();
     } catch (e) {
       alert("Upload failed: " + (e.message || e));
     } finally {
@@ -122,10 +127,31 @@
 
   advancedBtn.onclick = () => window.SettingsWindow.open("generation");
   projectsBtn.onclick = () => window.ProjectMenu.open({ dismissable: !!S.get().project });
+  galleryBtn.onclick = () => window.EasyGallery.open();
+
+  let saveResetTimer = null;
+  saveBtn.onclick = async () => {
+    if (saveResetTimer) clearTimeout(saveResetTimer);
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+    try {
+      await S.save();
+      saveBtn.textContent = "Saved ✓";
+    } catch (e) {
+      saveBtn.textContent = "Save failed";
+      alert("Save failed: " + (e.message || e));
+    } finally {
+      saveResetTimer = setTimeout(() => {
+        saveBtn.textContent = "Save";
+        saveBtn.disabled = !S.get().project;
+      }, 1200);
+    }
+  };
 
   async function boot() {
     S.refreshHealth();
     S.loadLibraries();
+    S.loadMedia();
     setInterval(() => S.refreshHealth(), 15000);
     S.subscribe((st) => {
       healthEl.textContent = st.health?.ok ? "● online" : "● offline";
