@@ -4,6 +4,10 @@
 (function () {
   const { el, clear } = window.dom;
   const API = window.MovieEditorAPI;
+  // Easy Gen has no per-scene inspector / main editor window for an exposed widget or
+  // bypass toggle to actually surface in — the eye buttons below would just be inert
+  // clutter (or worse, look actionable and do nothing visible), so they're hidden there.
+  const EASY = !!window.FunPackAppName;
 
   let roles = [];                 // [{key,label,category}]
   let ports = [];                 // pipeline connection points [{id,type,label}]
@@ -439,7 +443,7 @@
     byp.title = "Skip this node's effect (pass its inputs straight through) without losing its configuration.";
     byp.onclick = async (e) => { e.stopPropagation(); slot.bypassed = !slot.bypassed; await persist(); render(); };
     acts.append(byp);
-    acts.append(bypassEyeButton(slot));
+    if (!EASY) acts.append(bypassEyeButton(slot));
     const rm = el("button", "btn ghost tiny danger", "remove");
     rm.onclick = async (e) => {
       e.stopPropagation();
@@ -465,7 +469,7 @@
           const l2 = linkOf(slot.id, spec.name); if (l2) applyLinkValue(l2, v);  // keep group in sync
           await persist();
         });
-        f.classList.add("with-eye");
+        if (!EASY || iw || lk || linkMode) f.classList.add("with-eye");
         if (iw) {
           // Wired from another node's output: the widget value is replaced by the
           // connection at generation — lock the field and say where it comes from
@@ -490,7 +494,7 @@
             render();
           };
           f.append(chk);
-        } else {
+        } else if (!EASY) {
           f.append(eyeButton(slot, spec));
         }
         grid.append(f);

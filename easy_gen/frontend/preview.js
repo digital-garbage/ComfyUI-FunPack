@@ -55,7 +55,22 @@
       return img;
     }
 
+    // The store notifies on every health poll / prompt keystroke, and each of those calls
+    // setUpload()/render() again — without this, draw() rebuilt the <video> from scratch
+    // every time (new element = autoplay/loop reapplied), silently resuming anything the
+    // user had paused. Skip the rebuild when the content actually shown hasn't changed.
+    let _lastSig = null;
+    function _sig() {
+      if (errorMsg) return "error:" + errorMsg;
+      if (generated) return "generated:" + generated.projectId + ":" + generated.media.filename;
+      if (upload) return "upload:" + upload.url + ":" + upload.kind;
+      return "empty:" + emptyMsg;
+    }
+
     function draw() {
+      const sig = _sig();
+      if (sig === _lastSig) return;
+      _lastSig = sig;
       clear(inner);
       badge.hidden = true;
       if (errorMsg) {
