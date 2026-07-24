@@ -102,6 +102,19 @@
     }
   };
 
+  // Easy Gen has no rating UI, so Studio must never apply learned/rated steering here —
+  // forced at the graph level (not just hidden in Engine settings) so a project edited in
+  // the Cutting Room with these on still generates plainly when run from Easy Gen.
+  // "studio"/"sampler" are the built-in pipeline's fixed graph keys (see backend/builder.py).
+  const EASY_MODE_OVERRIDES = [
+    { node: "studio", input: "mode", value: "Prompt only" },
+    { node: "sampler", input: "embed_guidance", value: false },
+    { node: "sampler", input: "score_slider", value: false },
+    { node: "sampler", input: "output_guidance", value: false },
+    { node: "sampler", input: "dynashift", value: false },
+    { node: "sampler", input: "taste_nearest_prompt", value: false },
+  ];
+
   generateBtn.onclick = async () => {
     const st = S.get();
     if (!st.project) return;
@@ -114,7 +127,7 @@
     try {
       await S.save();
       const resetSession = S.takeResetSessionFlag();
-      const res = await API.generate(st.project.id, null, null, resetSession, null);
+      const res = await API.generate(st.project.id, null, null, resetSession, EASY_MODE_OVERRIDES);
       preview.watch(st.project.id, res.prompt_id, {
         onDone: () => { generateBtn.disabled = false; generateBtn.textContent = "Generate"; },
       });

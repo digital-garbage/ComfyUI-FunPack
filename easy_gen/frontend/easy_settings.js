@@ -73,7 +73,9 @@
         "Fixed seed for this project's runs."));
       wrap.append(sd);
       wrap.append(el("div", "sw-hint",
-        "Refinement key, and the full Studio/Chain Sampler/continuity controls, live under Engine."));
+        "Studio/Chain Sampler/continuity controls live under Engine. Studio always runs in "
+        + "Prompt-only mode here — no refinement key, since Easy Gen has no rating UI to train "
+        + "one. For the full learned refiner, use the Cutting Room or the ComfyUI node graph."));
     }
 
     const unsub = S.subscribe(render);

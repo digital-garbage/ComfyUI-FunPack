@@ -7,6 +7,20 @@
   const S = window.Store;
   const API = window.MovieEditorAPI;
 
+  // Easy Gen has no rating UI at all (by design — see easy_gen/frontend/), so every
+  // setting that is a no-op without a trained refinement key / rated history is hidden
+  // there, not just made harder to find. window.FunPackAppName is the same discriminator
+  // settings_window.js already uses to relabel the About section for a different frontend
+  // sharing this file; Editor leaves it unset.
+  const EASY = !!window.FunPackAppName;
+  const RATING_GATED_KNOBS = new Set([
+    "embed_guidance", "embed_guidance_source", "embed_guidance_strength",
+    "score_slider", "score_slider_strength", "taste_nearest_prompt",
+    "output_guidance", "output_guidance_strength",
+    "dynashift", "dynashift_strength", "dynashift_threshold",
+  ]);
+  const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
+
   let _mounted = null; // { scroller (pane, set per render), content (shell root) }
   let unsub = null;
   let _editing = false;
@@ -75,10 +89,11 @@
     const { rf } = parseStudioSettings(p);
     let n = 0;
     [...STUDIO_REFINER_ESSENTIALS, ...STUDIO_REFINER_ADVANCED].forEach((f) => {
+      if (EASY && RATING_GATED_STUDIO.has(f.name)) return;
       const cur = rf[f.name] != null ? rf[f.name] : f.default;
       if (cur !== f.default) n++;
     });
-    if ((p.refinement_key || "default") !== "default") n++;
+    if (!EASY && (p.refinement_key || "default") !== "default") n++;
     return n;
   }
 
@@ -262,6 +277,7 @@
   }
 
   function knobVisible(k, si) {
+    if (EASY && RATING_GATED_KNOBS.has(k.name)) return false;
     // dependsOn/dependsValue: single condition (dependsValue absent = plain truthy
     // gate, as every existing boolean dependsOn already relies on).
     if (k.dependsOn && !_depSatisfied(k.dependsOn, k.dependsValue, si)) return false;
@@ -342,6 +358,7 @@
     const si = p.sampler_inputs || {};
     let n = 0;
     (CHAIN_VIEW_KNOBS[id] || []).forEach((name) => {
+      if (EASY && RATING_GATED_KNOBS.has(name)) return;
       const k = SAMPLER_KNOB_MAP[name];
       if (k && si[name] != null && si[name] !== k.default) n++;
     });
@@ -431,22 +448,35 @@
     const p = st.project;
     const { rf } = parseStudioSettings(p);
 
-    // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
-    // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
-    // bound to a non-default key layer per-scene training on top of this.
-    const gKey = group(pane, "Session");
-    const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
-    keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
-    keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
-    gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+    if (!EASY) {
+      // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
+      // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
+      // bound to a non-default key layer per-scene training on top of this.
+      const gKey = group(pane, "Session");
+      const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
+      keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
+      keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
+      gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+    }
 
     const gEss = group(pane, "Essentials");
-    STUDIO_REFINER_ESSENTIALS.forEach((f) => renderStudioRefinerBool(gEss, rf, f));
+    STUDIO_REFINER_ESSENTIALS.filter((f) => !EASY || !RATING_GATED_STUDIO.has(f.name))
+      .forEach((f) => renderStudioRefinerBool(gEss, rf, f));
 
-    const gAdv = group(pane, "Refinement");
-    STUDIO_REFINER_ADVANCED.forEach((f) => renderStudioRefinerField(gAdv, rf, f));
+    const gAdv = group(pane, EASY ? "Prompt shaping" : "Refinement");
+    STUDIO_REFINER_ADVANCED.filter((f) => !EASY || !RATING_GATED_STUDIO.has(f.name))
+      .forEach((f) => renderStudioRefinerField(gAdv, rf, f));
 
-    pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
+    if (EASY) {
+      pane.append(hintEl(
+        "Studio runs in Prompt-only mode from Easy Gen — it shapes and splits the prompt "
+        + "and passes conditioning through unchanged. Rating-dependent controls (refinement "
+        + "key, value guidance, steer mode, reference injection) aren't shown here since "
+        + "there's no rating UI in Easy Gen to feed them. For the full learned refiner, use "
+        + "the Cutting Room (Movie Editor) or the ComfyUI node graph directly."));
+    } else {
+      pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
+    }
   }
 
   function renderStudioAdjust(pane, st) {
@@ -713,7 +743,9 @@
       case "studio_sampler": return renderStudioSampler(pane, st);
       case "chain_continuity": return renderChainContinuity(pane, st);
       case "chain_timing": return renderChainTiming(pane, st);
-      case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance");
+      case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance",
+        EASY ? "Rating-dependent guidance (embed guidance, score slider, output guidance, taste retrieval, "
+          + "DynaShift) is hidden here — use the Cutting Room or ComfyUI graph for those." : null);
       case "chain_decode": return renderChainKnobsView(pane, st, "chain_decode", "Decode");
       case "chain_experimental": return renderChainExperimental(pane, st);
       default: return renderOverview(pane, st);

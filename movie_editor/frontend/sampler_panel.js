@@ -6,6 +6,10 @@
 (function () {
   const { el } = window.dom;
 
+  // Easy Gen has no rating UI — velocity bias / rescue are no-ops without a rated
+  // velocity bank, so they're hidden there (see engine_settings.js for the same gate).
+  const EASY = !!window.FunPackAppName;
+
   const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
   const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
   const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
@@ -125,6 +129,11 @@
   // ── velocity-bias / rescue block (shared by Hybrid and Distilled) ──
 
   function renderVelocityBlock(c, dk, sub, save, saveNow) {
+    if (EASY) {
+      hint(c, "Velocity bias / rescue mode hidden — both are no-ops without a rated velocity bank, "
+        + "which Easy Gen has no UI for. Use the Cutting Room or ComfyUI graph instead.");
+      return;
+    }
     const vbm = selCtrl(VELOCITY_BIAS_MODES, sub.velocity_bias_mode || "off", dk + "-vbm",
       (v) => { sub.velocity_bias_mode = v; saveNow(); });
     row(c, "velocity bias mode", vbm);
