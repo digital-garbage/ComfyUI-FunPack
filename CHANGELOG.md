@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-07-24
+
+### Added
+- **Easy Gen** (the simplified single-scene UI) reaches near feature-parity with the Cutting
+  Room for the workflows it's meant for:
+  - Shortcut/transition JSON library **import & export** in Settings ▸ Shortcuts (merge or
+    replace) — Easy Gen previously had no way to load a shortcut/transition library at all.
+  - The full **Engine settings** panel (Studio refinement/adjustments/sampler algorithm,
+    Chain Sampler continuity/timing/guidance/decode/experimental, Best-FaceID identity
+    transfer) — restored via the same shared frontend module the Cutting Room uses.
+  - A **Log** button (ComfyUI backend log, same as the Cutting Room's).
+  - An explicit **Save** button, and a **Gallery** picker to reuse already-uploaded media as
+    the i2v anchor without re-uploading — with a one-click **continuity identity pin**
+    button right on each thumbnail, mirroring the Cutting Room's Media Bin.
+  - An **Export…** button to download the project as a `.funpack_project.json` file (e.g. to
+    move a project off a rental GPU box) — the backend route already existed but had no UI.
+
 ### Changed
 - **Loop temporal style now works alongside guides.** Scenes carrying appended guide frames
   (carry-i2v-guides, mid-scene guide, JoyAI memory, custom guide stacks) no longer disable
@@ -9,6 +26,43 @@
   memory tail) stays canonical, so guides keep informing every position of the cycle without
   ever being rendered into it. The i2v anchor was always supported - it rides the denoise
   mask, which rolls in step with the latent.
+- **Easy Gen's Studio always runs in Prompt-only mode.** Easy Gen has no rating UI, so every
+  Engine setting that's a no-op without a trained refinement key/rated history (refinement
+  key, value guidance, steer mode, reference injection, embed/score/output guidance, taste
+  retrieval, DynaShift, sampler-panel velocity bias/rescue) is hidden there and enforced at
+  the pipeline level, not just the UI — every Easy Gen generate call forces Studio's `mode`
+  to "Prompt only" and the rating-gated Chain Sampler knobs off via node overrides, so a
+  project configured with these on in the Cutting Room still generates plainly from Easy
+  Gen. A note points to the Cutting Room or the ComfyUI graph for the full learned refiner.
+- The "expose to editor" eye buttons in Models & Pipeline are hidden under Easy Gen — there's
+  no per-scene inspector for an exposed control to ever surface in, so they were inert
+  clutter that could look actionable and silently do nothing.
+
+### Fixed
+- The shortcut autocomplete menu could open off-screen below the prompt field (Easy Gen's
+  prompt box sits in a footer bar at the bottom of the viewport) with no way to see or click
+  a suggestion. Now flips above the field when there isn't room below.
+- A node's **bypass** toggle could silently do nothing: when the pass-through mapping was
+  ambiguous, or the bypassed node's own matching input wasn't wired to anything, the failure
+  was only ever recorded in a report field no frontend code read or displayed — the node
+  stayed fully active with no visible error. Generation now blocks with a clear reason
+  instead of a silent no-op.
+- Easy Gen could silently revert Models & Pipeline edits (bypass, exposed widgets, LoRA
+  settings): any later project save sent a stale in-memory copy of the models config back to
+  the server, clobbering whatever was just changed there independently.
+- Easy Gen's preview restarted playback (ignoring a pause) on every background health poll
+  or prompt keystroke, since each one rebuilt the video element from scratch.
+- A "fetching process...aborted by the user agent" unhandled-rejection error banner could
+  appear when switching between Gallery/generated media in Easy Gen.
+- Downloaded generation results always suggested "result.mp4" as the filename regardless of
+  the actual render (no `Content-Disposition` on the `/result` route) — the underlying file
+  was already uniquely named per run and already lived in ComfyUI's temp dir, just wasn't
+  surfaced to the browser's save dialog.
+- Easy Gen's Generation settings showed a "Seed" field always reading "1" and looking fixed.
+  It was bound to the Project's legacy `seed` field, which nothing in generation has ever
+  read (the real seed resolution only reads `sampler_inputs.seed`, already correctly random
+  when unset) — removed the dead field in favor of the working one under Engine ▸ Timing &
+  Seed, which already says so.
 
 ## [3.3.0] - 2026-07-15
 

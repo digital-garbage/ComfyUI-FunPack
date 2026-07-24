@@ -67,15 +67,11 @@
         "Passed to the negative conditioning for every run."));
       wrap.append(pr);
 
-      wrap.append(el("div", "sw-rows-label", "Seed"));
-      const sd = el("div", "sw-rows");
-      sd.append(field("Seed", numberInput(p.seed, (v) => commit((proj) => proj.seed = v), { min: 0 }),
-        "Fixed seed for this project's runs."));
-      wrap.append(sd);
       wrap.append(el("div", "sw-hint",
-        "Studio/Chain Sampler/continuity controls live under Engine. Studio always runs in "
-        + "Prompt-only mode here — no refinement key, since Easy Gen has no rating UI to train "
-        + "one. For the full learned refiner, use the Cutting Room or the ComfyUI node graph."));
+        "Studio/Chain Sampler/continuity controls, including Seed, live under Engine ▸ Timing "
+        + "& Seed (empty = a new random seed every Generate). Studio always runs in Prompt-only "
+        + "mode here — no refinement key, since Easy Gen has no rating UI to train one. For the "
+        + "full learned refiner, use the Cutting Room or the ComfyUI node graph."));
     }
 
     const unsub = S.subscribe(render);
@@ -85,8 +81,8 @@
 
   window.SettingsWindow.register({
     id: "generation", group: "Generation", order: 1, title: "Generation",
-    subtitle: "Output size, length, seed, and refinement key for this project.",
-    keywords: "width height frames frame rate seed negative prompt refinement key generation",
+    subtitle: "Output size, length, and negative prompt for this project.",
+    keywords: "width height frames frame rate negative prompt generation seed engine",
     iconBg: "linear-gradient(180deg,#ffb64d,#e07f1f)",
     icon: '<svg viewBox="0 0 16 16" width="13" height="13"><path d="M9.2 1.3 3 9h4.1l-1 5.7L12.9 7H8.5l.7-5.7z" fill="#fff"/></svg>',
     mount,
