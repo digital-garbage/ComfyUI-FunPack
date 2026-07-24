@@ -2450,6 +2450,38 @@ class FunPackLTXAVSceneChainSampler:
                     "default": False,
                     "tooltip": "EXPERIMENTAL: source embed_guidance / score_slider from the taste direction learned on the prompts NEAREST this scene's prompt, instead of the single global liked-direction average. On every liked rating the Refiner records (prompt fingerprint -> that run's liked direction); with this on, each scene retrieves the similarity-weighted direction of its closest matches (a forest prompt pulls what worked on forests, not the mean across all prompts). Non-parametric retrieval — no extra model forward, just a cosine lookup + vector mean, and it can't collapse into a spurious attractor the way a value function can. Falls back to the global liked direction when no rated prompt is close enough (or the index is empty). Only affects embed_guidance / score_slider; needs refinement_key_input (or embed_guidance_source=absolute). UNVALIDATED LIVE.",
                 }),
+                "segmented_detailing": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL ADetailer-for-video: after each scene finishes denoising, CLIPSeg (text-prompted segmentation) locates the regions named in detail_targets on a few decoded keyframes; the matched region is cut out of the video latent as a spatiotemporal tube, pushed through Lightricks' trained latent upsampler (2x spatial — the official two-stage pipeline's stage-2 model), then either used directly (detail_mode='sharpen', near-free) or re-noised + re-denoised for a 3-step tail (detail_mode='repair', default — costs ~4x tube area fraction x 3 steps, hands ~+15%). Downscaled back to its ORIGINAL latent size and pasted through the feathered CLIPSeg silhouette either way. Final resolution never changes. Tubes over detail_max_area (default 35%) are refused as a cost guard, not a content judgment. Audio untouched by construction. detail_upsampler 'auto' finds or downloads the official Lightricks upsampler (~1 GB, once); skips are reported loudly in console + scene report. UNVALIDATED LIVE.",
+                }),
+                "detail_targets": ("STRING", {
+                    "default": "hands",
+                    "tooltip": "Comma-separated regions to detail, in plain words ('hands', 'hands, feet', 'face'). Each becomes a CLIPSeg text query; matched regions merge into one tube per scene. CLIPSeg matches broad CLIP semantics, so malformed anatomy still lights up for its name.",
+                }),
+                "detail_upsampler": (cls._detail_upsampler_choices(), {
+                    "default": "auto",
+                    "tooltip": "Latent upsampler checkpoint from models/latent_upscale_models (the LTX 2.3 spatial upsampler used by the official two-stage workflows). 'auto' picks the newest installed spatial upscaler, or downloads the official file (~1 GB, once) when the folder is empty. Pick a file explicitly to pin it.",
+                }),
+                "detail_strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Blend of the refined region into the frame at paste-back (through the feathered CLIPSeg mask). 1.0 = full replacement inside the silhouette; 0 disables the pass entirely.",
+                }),
+                "detail_threshold": ("FLOAT", {
+                    "default": 0.35, "min": 0.05, "max": 0.9, "step": 0.05,
+                    "tooltip": "CLIPSeg match confidence (post-sigmoid) required before a region counts as found. CLIPSeg's raw score for a real, correctly-named region is often well under 0.5 — if the scene report shows 'no match: max CLIPSeg score X < threshold', lower this toward X (or just below it) rather than assuming nothing is there. Lower = more permissive (more false positives on unrelated regions); higher = stricter.",
+                }),
+                "detail_max_area": ("FLOAT", {
+                    "default": 0.35, "min": 0.05, "max": 1.0, "step": 0.05,
+                    "tooltip": "Ceiling on how much of the frame the detected region may cover before the pass refuses it, as a fraction of frame area. This is a COST guardrail only (cost ~= 4x area x 3 steps, so a large region starts to rival a second full render), never a judgment about whether the region is worth detailing — if the scene report shows a region refused at some %, raise this above that % to detail it anyway (up to 1.0 = no cap, full-frame allowed).",
+                }),
+                "detail_denoise": ("FLOAT", {
+                    "default": 0.85, "min": 0.3, "max": 0.99, "step": 0.05,
+                    "tooltip": "Only used in 'repair' mode. How much noise the crop is re-noised to before the 3-step refine tail (the official LTX 2.3 two-stage recipe's own value, 0.85, is the default). Higher = more freedom for the model to genuinely reconstruct the region (fix bad anatomy) at the cost of possibly drifting from the surrounding frame; lower = closer to a plain upscale (looks 'detailed' as interpolation, but doesn't actually repair the region — if that's what you're seeing, raise this).",
+                }),
+                "detail_mode": (["repair", "sharpen"], {
+                    "default": "repair",
+                    "tooltip": "'repair' (default): upsample the crop, then re-denoise it through the video model for 3 extra steps — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4x region area x 3 steps). 'sharpen': stop after the upsampler's own forward pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper), since a super-resolution net only adds detail consistent with what's already there.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2473,6 +2505,17 @@ class FunPackLTXAVSceneChainSampler:
             return ["None"] + folder_paths.get_filename_list("loras")
         except Exception:
             return ["None"]
+
+    @classmethod
+    def _detail_upsampler_choices(cls):
+        # "auto": prefer an installed spatial upscaler, else download the official
+        # Lightricks file on first use. ("None" from older saved workflows/projects is
+        # treated as auto too — the enable toggle is the only off switch.)
+        try:
+            import folder_paths
+            return ["auto"] + folder_paths.get_filename_list("latent_upscale_models")
+        except Exception:
+            return ["auto"]
 
     def _is_nested(self, samples):
         return bool(getattr(samples, "is_nested", False))
@@ -4637,6 +4680,9 @@ class FunPackLTXAVSceneChainSampler:
                carry_overlap_through_anchor=False,
                plateau_cache=False, plateau_cache_threshold=0.975,
                taste_nearest_prompt=False,
+               segmented_detailing=False, detail_targets="hands",
+               detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
+               detail_max_area=0.35, detail_denoise=0.85, detail_mode="repair",
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4825,6 +4871,8 @@ class FunPackLTXAVSceneChainSampler:
         scene_runs: list = []
         joyai_bank = _JoyAIMemoryBank(joyai_memory_size, joyai_fix_frames) if joyai_memory else None
         _identity_overlap_state: dict = {}
+        _detail_upsampler_model = None  # lazy: resolved+loaded at the first detailed scene
+        _detail_disabled_reason = None  # set on resolve/load failure: don't retry per scene
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -4953,10 +5001,10 @@ class FunPackLTXAVSceneChainSampler:
                 # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
                 # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
                 # dynashift / output guidance) so they see canonical-orientation inputs and
-                # predictions — the roll exists only around the base forward. Calls that
-                # carry guides (keyframe_idxs pins appended frames to absolute positions)
-                # are left canonical by the wrapper itself, so on guide-carrying scenes the
-                # roll is inert rather than corrupting.
+                # predictions — the roll exists only around the base forward. Appended guide
+                # frames stay pinned: the wrapper rolls only the content region in front of
+                # the guide tail (counted from keyframe_idxs / the audio mask), so guides
+                # keep informing the whole cycle without ever being dragged into it.
                 if self._scene_temporal_loop(scene_cond):
                     try:
                         from .ltx_enhancements import make_loop_temporal_wrapper
@@ -4967,7 +5015,7 @@ class FunPackLTXAVSceneChainSampler:
                         make_loop_temporal_wrapper(_loop_base), _loop_base)
                     _loop_pinned = guide_tail > 0 or carried > 0 or carried_guide_frames > 0
                     run_mechanisms.append(
-                        "temporal_loop_roll(inert: guides pin frames)" if _loop_pinned
+                        "temporal_loop_roll(content-only: guide tail pinned)" if _loop_pinned
                         else "temporal_loop_roll")
                 # taste_nearest_prompt: swap the single global liked direction for the one
                 # learned on this scene's closest rated prompts (resolved from the ORIGINAL
@@ -5001,8 +5049,9 @@ class FunPackLTXAVSceneChainSampler:
                     # corrects whatever prediction those already produced, not the raw base one.
                     run_mechanisms.append(f"output_guidance({output_guidance_strength})")
                     self._build_output_guidance_wrapper(model, _output_value_fn, output_guidance_strength)
-                # Per-scene temporal style (auto / pulse): layer a frame_rate wrapper on top
-                # of whatever is installed (e.g. embed guidance).
+                # Per-scene temporal style (auto / pulse / rapid_start / rapid_end /
+                # rapid_start_end): layer a frame_rate wrapper on top of whatever is
+                # installed (e.g. embed guidance).
                 _scene_mode = self._scene_temporal_mode(scene_cond)
                 _scene_mult = self._scene_temporal_mult(scene_cond)
                 _cur_wrapper = model.model_options.get("model_function_wrapper")
@@ -5012,6 +5061,14 @@ class FunPackLTXAVSceneChainSampler:
                     except ImportError:
                         from ltx_enhancements import make_pulse_temporal_wrapper
                     _tw = make_pulse_temporal_wrapper(_cur_wrapper)
+                    if _tw is not None:
+                        model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
+                elif _scene_mode in ("rapid_start", "rapid_end", "rapid_start_end"):
+                    try:
+                        from .ltx_enhancements import make_rapid_temporal_wrapper
+                    except ImportError:
+                        from ltx_enhancements import make_rapid_temporal_wrapper
+                    _tw = make_rapid_temporal_wrapper(_cur_wrapper, _scene_mode)
                     if _tw is not None:
                         model.model_options["model_function_wrapper"] = _tag_scene_wrapper(_tw, _cur_wrapper)
                 elif _scene_mult is not None and abs(_scene_mult - 1.0) >= 1e-3:
@@ -5074,6 +5131,44 @@ class FunPackLTXAVSceneChainSampler:
                 sampled = self._crop_video_tail(sampled, guide_tail)
             if audio_tail > 0:
                 sampled = self._crop_audio_tail(sampled, audio_tail)
+            # Segmented detailing runs on the clean, fully-cropped scene (guide/audio
+            # tails gone, overlap still present — the tube is spatial, so carried head
+            # frames detail together with the rest) and BEFORE the JoyAI harvest, so
+            # cross-shot memory banks the improved frames. Every skip is LOUD (console +
+            # scene report): with the toggle on, silence must mean "ran and found nothing".
+            if segmented_detailing and detail_strength > 0 and not _detail_disabled_reason:
+                try:
+                    try:
+                        from . import detailing as _detailing
+                    except ImportError:
+                        import detailing as _detailing
+                    if _detail_upsampler_model is None:
+                        _resolved = _detailing.resolve_upsampler_name(detail_upsampler)
+                        _detail_upsampler_model = _detailing.load_latent_upsampler(_resolved)
+                        print(f"[FunPackSceneChain] segmented detailing upsampler: {_resolved}")
+                    _t_detail0 = _time.perf_counter()
+                    sampled, _detail_note = _detailing.detail_refine_scene(
+                        self, model, vae, sampler, scene_positive, scene_negative, sampled,
+                        detail_targets, _detail_upsampler_model, scene_seed, cfg,
+                        threshold=detail_threshold, strength=detail_strength,
+                        area_cap=detail_max_area, renoise_sigma=detail_denoise,
+                        mode=detail_mode, debug=debug_log)
+                    # detail_refine_scene always returns a diagnostic note when it actually
+                    # ran detection (miss or hit) — None only means it never attempted
+                    # detection at all (which can't happen on this branch).
+                    if _detail_note:
+                        run_mechanisms.append(_detail_note)
+                        _phase_sampling += _time.perf_counter() - _t_detail0
+                except Exception as _detail_exc:
+                    # A failed detail pass must never cost the scene itself — but it must
+                    # never fail silently either. Model resolution/load failures disable
+                    # the pass for the rest of the run (no per-scene download retries).
+                    if _detail_upsampler_model is None:
+                        _detail_disabled_reason = str(_detail_exc)
+                    print(f"[FunPackSceneChain] SEGMENTED DETAILING SKIPPED (scene kept as-is): {_detail_exc}")
+                    run_mechanisms.append(f"segmented_detail(SKIPPED: {_detail_exc})")
+            elif segmented_detailing and _detail_disabled_reason:
+                run_mechanisms.append("segmented_detail(SKIPPED: upsampler unavailable, see first scene)")
             if joyai_bank is not None:
                 # Harvest from the clean, fully-cropped scene so injected memory tails never re-enter
                 # the bank. Scene 0 seeds the pinned anchor (num_fix); later scenes roll in. The audio

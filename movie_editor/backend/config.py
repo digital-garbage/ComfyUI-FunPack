@@ -53,6 +53,30 @@ def comfy_base_url() -> str:
     return f"http://127.0.0.1:{port}"  # always loopback for self-calls
 
 
+def comfy_display_url() -> str:
+    """Best-effort http://host:port for STARTUP LOG PRINTS (full clickable UI
+    URLs) — not for internal calls, see comfy_base_url() above. Routes are
+    registered while custom nodes load, before PromptServer binds a socket, so
+    the port/host here come from comfy.cli_args (already parsed at process
+    start), not the live server instance.
+    """
+    override = os.environ.get("FUNPACK_COMFY_URL")
+    if override:
+        return override.rstrip("/")
+    host, port = None, None
+    try:
+        from comfy.cli_args import args
+        host = getattr(args, "listen", None)
+        port = getattr(args, "port", None)
+    except Exception:
+        pass
+    host = (host or "127.0.0.1").split(",")[0].strip()
+    if host in ("0.0.0.0", "::", ""):
+        host = "127.0.0.1"  # not directly browsable; show the loopback equivalent
+    port = int(port or 8188)
+    return f"http://{host}:{port}"
+
+
 def ensure_dirs() -> None:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     MEDIA_DIR.mkdir(parents=True, exist_ok=True)

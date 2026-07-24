@@ -7,6 +7,20 @@
   const S = window.Store;
   const API = window.MovieEditorAPI;
 
+  // Easy Gen has no rating UI at all (by design — see easy_gen/frontend/), so every
+  // setting that is a no-op without a trained refinement key / rated history is hidden
+  // there, not just made harder to find. window.FunPackAppName is the same discriminator
+  // settings_window.js already uses to relabel the About section for a different frontend
+  // sharing this file; Editor leaves it unset.
+  const EASY = !!window.FunPackAppName;
+  const RATING_GATED_KNOBS = new Set([
+    "embed_guidance", "embed_guidance_source", "embed_guidance_strength",
+    "score_slider", "score_slider_strength", "taste_nearest_prompt",
+    "output_guidance", "output_guidance_strength",
+    "dynashift", "dynashift_strength", "dynashift_threshold",
+  ]);
+  const RATING_GATED_STUDIO = new Set(["reference_injection", "value_guidance", "steer_mode", "absolute_strength"]);
+
   let _mounted = null; // { scroller (pane, set per render), content (shell root) }
   let unsub = null;
   let _editing = false;
@@ -58,7 +72,7 @@
     { name: "absolute_strength", label: "Absolute strength", kind: "float", default: 0.6, min: 0, max: 1, step: 0.05,
       dependsOn: "steer_mode", dependsVals: ["absolute", "both"] },
     { name: "temporal_style", label: "Temporal style", kind: "combo",
-      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse"], default: "natural" },
+      choices: ["natural", "auto", "accelerate", "decelerate", "loop", "freeze", "pulse", "rapid_start", "rapid_end", "rapid_start_end"], default: "natural" },
     { name: "split_transition_placement", label: "Transition placement", kind: "combo",
       choices: ["start", "end", "silent"], default: "start" },
   ];
@@ -75,10 +89,11 @@
     const { rf } = parseStudioSettings(p);
     let n = 0;
     [...STUDIO_REFINER_ESSENTIALS, ...STUDIO_REFINER_ADVANCED].forEach((f) => {
+      if (EASY && RATING_GATED_STUDIO.has(f.name)) return;
       const cur = rf[f.name] != null ? rf[f.name] : f.default;
       if (cur !== f.default) n++;
     });
-    if ((p.refinement_key || "default") !== "default") n++;
+    if (!EASY && (p.refinement_key || "default") !== "default") n++;
     return n;
   }
 
@@ -196,6 +211,21 @@
       hint: "EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
     { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
       hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
+    { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
+      hint: "EXPERIMENTAL ADetailer-for-video: after each scene renders, CLIPSeg finds the regions named below (hands, feet, …), cuts them out of the latent as a tube, refines them at 2× working resolution through Lightricks' latent upsampler (3 extra steps on the crop only), and pastes them back through a feathered silhouette. Final resolution never changes. Cost ≈ 4 × region area × 3 steps (hands ~+15%); regions over 35% of the frame are refused. The upsampler model below is found — or downloaded (~1 GB, once) — automatically; skips are reported in the scene report. UNVALIDATED LIVE." },
+    { name: "detail_targets", label: "Detail targets", kind: "text", default: "hands", dependsOn: "segmented_detailing", placeholder: "hands, feet",
+      hint: "Comma-separated regions to detail, in plain words. Each becomes a CLIPSeg text query — malformed anatomy still matches its name. Also editable from Composer ▸ Compose while detailing is on." },
+    { name: "detail_strength", label: "Detail strength", kind: "float", default: 1.0, min: 0, max: 1, step: 0.05, dependsOn: "segmented_detailing",
+      hint: "Blend of the refined region at paste-back. 1.0 = full replacement inside the silhouette; 0 disables the pass." },
+    { name: "detail_threshold", label: "Detail match threshold", kind: "float", default: 0.35, min: 0.05, max: 0.9, step: 0.05, dependsOn: "segmented_detailing",
+      hint: "CLIPSeg match confidence required before a region counts as found. Its raw score for a real region is often well under 0.5 — if the scene report shows 'no match: max CLIPSeg score X < threshold', lower this toward X rather than assuming nothing is there." },
+    { name: "detail_max_area", label: "Detail max area", kind: "float", default: 0.35, min: 0.05, max: 1.0, step: 0.05, dependsOn: "segmented_detailing",
+      hint: "Ceiling on how much of the frame the region may cover before it's refused, as a fraction of the frame. Cost-only guardrail (a bigger region costs more, roughly 4× its area × 3 steps) — never a judgment call about whether it's worth detailing. If the scene report shows a region refused at some %, raise this above that % to detail it anyway. 1.0 = no cap." },
+    { name: "detail_mode", label: "Detail mode", kind: "combo", choices: ["repair", "sharpen"], default: "repair", dependsOn: "segmented_detailing",
+      hint: "'repair' (default): upsamples the crop, then re-denoises it through the video model — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4× region area × 3 steps). 'sharpen': stops after the upsampler's own pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it cannot fix wrong structure (an extra finger stays an extra finger, just sharper)." },
+    { name: "detail_denoise", label: "Detail re-noise strength", kind: "float", default: 0.85, min: 0.3, max: 0.99, step: 0.05,
+      deps: [{ name: "segmented_detailing" }, { name: "detail_mode", value: "repair" }],
+      hint: "How much noise the crop gets re-noised to before its 3-step refine (0.85 is the official LTX 2.3 recipe's own value). Higher = more freedom to genuinely reconstruct the region (fix bad anatomy), risking drift from the surrounding frame; lower = closer to a plain upscale — looks 'detailed' as interpolation but doesn't actually repair it. If the result looks upscaled but not corrected, raise this. Only used in 'repair' mode." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -241,10 +271,23 @@
     S.patchProject({ guide_settings: { ...(p.guide_settings || {}), ...patch } });
   }
 
+  function _depSatisfied(name, value, si) {
+    const depVal = si[name] != null ? si[name] : SAMPLER_KNOB_MAP[name]?.default;
+    return value !== undefined ? depVal === value : !!depVal;
+  }
+
   function knobVisible(k, si) {
-    if (k.dependsOn) {
-      const depVal = si[k.dependsOn] != null ? si[k.dependsOn] : SAMPLER_KNOB_MAP[k.dependsOn]?.default;
-      if (!depVal) return false;
+    if (EASY && RATING_GATED_KNOBS.has(k.name)) return false;
+    // dependsOn/dependsValue: single condition (dependsValue absent = plain truthy
+    // gate, as every existing boolean dependsOn already relies on).
+    if (k.dependsOn && !_depSatisfied(k.dependsOn, k.dependsValue, si)) return false;
+    // deps: an AND'd list, for knobs gated by more than one condition (e.g. the
+    // feature toggle AND a mode combo equaling a specific option) — dependsOn
+    // alone can't express two conditions without one silently overriding the other.
+    if (Array.isArray(k.deps)) {
+      for (const d of k.deps) {
+        if (!_depSatisfied(d.name, d.value, si)) return false;
+      }
     }
     return true;
   }
@@ -270,6 +313,14 @@
     } else if (k.kind === "combo") {
       ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
       (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
+      ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
+    } else if (k.kind === "text") {
+      ctrl = el("input"); ctrl.type = "text";
+      ctrl.value = val != null ? String(val) : "";
+      if (k.placeholder) ctrl.placeholder = k.placeholder;
+      ctrl.dataset.k = "si-" + k.name;
+      // Quiet while typing (no repaint under the caret), commit on blur/Enter.
+      ctrl.oninput = () => S.setSamplerInput(k.name, ctrl.value);
       ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
     } else {
       ctrl = el("input"); ctrl.type = "number";
@@ -300,13 +351,14 @@
     chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
     const si = p.sampler_inputs || {};
     let n = 0;
     (CHAIN_VIEW_KNOBS[id] || []).forEach((name) => {
+      if (EASY && RATING_GATED_KNOBS.has(name)) return;
       const k = SAMPLER_KNOB_MAP[name];
       if (k && si[name] != null && si[name] !== k.default) n++;
     });
@@ -396,22 +448,35 @@
     const p = st.project;
     const { rf } = parseStudioSettings(p);
 
-    // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
-    // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
-    // bound to a non-default key layer per-scene training on top of this.
-    const gKey = group(pane, "Session");
-    const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
-    keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
-    keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
-    gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+    if (!EASY) {
+      // Refinement key — project-level (feeds Studio / Chain Sampler / SaveRefinementLatent).
+      // "default" uses the keyless store; a custom name trains/loads its own key. Shortcuts
+      // bound to a non-default key layer per-scene training on top of this.
+      const gKey = group(pane, "Session");
+      const keyCtrl = el("input"); keyCtrl.type = "text"; keyCtrl.dataset.k = "refinement_key";
+      keyCtrl.placeholder = "default"; keyCtrl.value = p.refinement_key || "default";
+      keyCtrl.onchange = () => S.patchProject({ refinement_key: (keyCtrl.value || "").trim() || "default" });
+      gKey.append(field("Refinement key", keyCtrl, "Named learning session — \"default\" is the keyless store."));
+    }
 
     const gEss = group(pane, "Essentials");
-    STUDIO_REFINER_ESSENTIALS.forEach((f) => renderStudioRefinerBool(gEss, rf, f));
+    STUDIO_REFINER_ESSENTIALS.filter((f) => !EASY || !RATING_GATED_STUDIO.has(f.name))
+      .forEach((f) => renderStudioRefinerBool(gEss, rf, f));
 
-    const gAdv = group(pane, "Refinement");
-    STUDIO_REFINER_ADVANCED.forEach((f) => renderStudioRefinerField(gAdv, rf, f));
+    const gAdv = group(pane, EASY ? "Prompt shaping" : "Refinement");
+    STUDIO_REFINER_ADVANCED.filter((f) => !EASY || !RATING_GATED_STUDIO.has(f.name))
+      .forEach((f) => renderStudioRefinerField(gAdv, rf, f));
 
-    pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
+    if (EASY) {
+      pane.append(hintEl(
+        "Studio runs in Prompt-only mode from Easy Gen — it shapes and splits the prompt "
+        + "and passes conditioning through unchanged. Rating-dependent controls (refinement "
+        + "key, value guidance, steer mode, reference injection) aren't shown here since "
+        + "there's no rating UI in Easy Gen to feed them. For the full learned refiner, use "
+        + "the Cutting Room (Movie Editor) or the ComfyUI node graph directly."));
+    } else {
+      pane.append(hintEl("Scene text and transitions come from the timeline. Advisor, LoRA, and batch training remain in the ComfyUI Studio popup on the graph."));
+    }
   }
 
   function renderStudioAdjust(pane, st) {
@@ -576,6 +641,47 @@
     renderKnobList(g, st, CHAIN_VIEW_KNOBS[id]);
   }
 
+  // ── Segmented detailing: the upsampler model list is live (models/latent_upscale_models
+  // on the server), so like the ArcFace projector below it can't be a static SAMPLER_KNOBS
+  // combo. The chain sampler node's own spec already carries the choices (with "None").
+  let _detailUpsamplerChoices = null;
+
+  async function ensureDetailUpsamplerChoices() {
+    if (_detailUpsamplerChoices) return _detailUpsamplerChoices;
+    try {
+      const spec = await API.nodeSpec("FunPackLTXAVSceneChainSampler");
+      const w = (spec?.inputs || []).find((i) => i.name === "detail_upsampler");
+      _detailUpsamplerChoices = (w && w.choices) || ["None"];
+    } catch (_) {
+      _detailUpsamplerChoices = ["None"];
+    }
+    render();
+    return _detailUpsamplerChoices;
+  }
+
+  function renderDetailUpsampler(pane, si) {
+    if (!si.segmented_detailing) return;
+    const g = group(pane, "Segmented detailing: upsampler model");
+    if (!_detailUpsamplerChoices) {
+      g.append(hintEl("Loading upsampler list…"));
+      ensureDetailUpsamplerChoices();
+      return;
+    }
+    const sel = el("select"); sel.dataset.k = "si-detail_upsampler";
+    const cur = si.detail_upsampler && si.detail_upsampler !== "None" ? si.detail_upsampler : "auto";
+    _detailUpsamplerChoices.forEach((c) => {
+      const o = el("option", null, c); o.value = c;
+      if (c === cur) o.selected = true;
+      sel.append(o);
+    });
+    sel.onchange = () => S.setSamplerInputNow("detail_upsampler", sel.value);
+    g.append(field("Latent upsampler", sel,
+      "The LTX 2.3 spatial upsampler from models/latent_upscale_models (the official two-stage workflows use the same file). 'auto' picks the newest installed spatial upscaler — or downloads the official one (~1 GB, once) when the folder is empty."));
+    if (_detailUpsamplerChoices.length <= 1) {
+      g.append(hintEl("Nothing installed in models/latent_upscale_models yet — the first detailed run downloads the official upsampler automatically (watch the ComfyUI console)."));
+    }
+  }
+
   // ── Best-FaceID ArcFace projector: the one identity-transfer field that needs a
   // live (server-fetched) choice list, so it can't live in the static SAMPLER_KNOBS combo
   // shape. Reuses the same loras folder listing LoraLoaderModelOnly exposes.
@@ -598,6 +704,7 @@
     renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
       "Research techniques — off by default; expect quality/overhead trade-offs.");
     const si = st.project.sampler_inputs || {};
+    renderDetailUpsampler(pane, si);
     if (!si.identity_transfer_enabled) return;
     const g = group(pane, "Best-FaceID: ArcFace projector");
     if (!_loraChoices) {
@@ -636,7 +743,9 @@
       case "studio_sampler": return renderStudioSampler(pane, st);
       case "chain_continuity": return renderChainContinuity(pane, st);
       case "chain_timing": return renderChainTiming(pane, st);
-      case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance");
+      case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance",
+        EASY ? "Rating-dependent guidance (embed guidance, score slider, output guidance, taste retrieval, "
+          + "DynaShift) is hidden here — use the Cutting Room or ComfyUI graph for those." : null);
       case "chain_decode": return renderChainKnobsView(pane, st, "chain_decode", "Decode");
       case "chain_experimental": return renderChainExperimental(pane, st);
       default: return renderOverview(pane, st);

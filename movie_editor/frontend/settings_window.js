@@ -197,7 +197,10 @@
         const git = G ? G.get() : null;
         wrap.append(el("div", "sw-about-mark", "◉"));
         wrap.append(el("div", "sw-about-name", "FunPack"));
-        wrap.append(el("div", "sw-about-sub", "Cutting Room"));
+        // window.FunPackAppName lets a different frontend sharing this file (e.g. Easy
+        // Gen) relabel the app name without forking the whole section; Editor leaves it
+        // unset and keeps "Cutting Room".
+        wrap.append(el("div", "sw-about-sub", window.FunPackAppName || "Cutting Room"));
 
         const facts = el("div", "sw-about-facts");
         const fact = (k, v) => {

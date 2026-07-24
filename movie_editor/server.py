@@ -1948,9 +1948,19 @@ if web is not None and PromptServer is not None:
         if path and os.path.isfile(path):
             import mimetypes as _mt
             ctype = _mt.guess_type(path)[0] or "application/octet-stream"
+            # The render's own filename is already unique per run (builder.py's per-run
+            # uuid filename_prefix) — but with no Content-Disposition, "Save Video As" falls
+            # back to whatever the browser derives from the URL path, which has no filename
+            # here (it's in the query string) and defaults to a generic name like "result.mp4"
+            # every time. Surface the real name so downloads don't collide/need renaming
+            # (Easy Gen has no export button, so this native browser save is the only path out).
+            dl_name = req.query.get("filename", "") or os.path.basename(path)
             if ctype.startswith("video/"):
                 path = await _faststart_path(path)
-            return web.FileResponse(path, headers={"Content-Type": ctype})
+            return web.FileResponse(path, headers={
+                "Content-Type": ctype,
+                "Content-Disposition": f'inline; filename="{dl_name}"',
+            })
         # Fallback (custom output dirs the resolver doesn't know): loopback /view fetch.
         try:
             data, ctype = await bridge.fetch_view(
@@ -1984,8 +1994,14 @@ if web is not None and PromptServer is not None:
                     f.write(data)
                 os.replace(tmp, spool)  # atomic: no reader ever sees a partial spool
             path = await _faststart_path(spool)
-            return web.FileResponse(path, headers={"Content-Type": ctype.split(";")[0]})
-        return web.Response(body=data, content_type=ctype.split(";")[0])
+            return web.FileResponse(path, headers={
+                "Content-Type": ctype.split(";")[0],
+                "Content-Disposition": f'inline; filename="{fname}"',
+            })
+        return web.Response(
+            body=data, content_type=ctype.split(";")[0],
+            headers={"Content-Disposition": f'inline; filename="{fname}"'},
+        )
 
     # --- API: final render (async job — ffmpeg can exceed Cloudflare tunnel timeouts) ---
     import asyncio
@@ -2417,4 +2433,4 @@ if web is not None and PromptServer is not None:
     async def _static(req):
         return _serve_static(req.match_info["tail"])
 
-    print(f"[FunPack] Movie Editor available at {UI_PREFIX}/")
+    print(f"[FunPack] Movie Editor available at {config.comfy_display_url()}{UI_PREFIX}/")

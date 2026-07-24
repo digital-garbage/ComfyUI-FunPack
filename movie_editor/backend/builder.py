@@ -866,8 +866,10 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
 def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
     """Drop each bypassed slot's node, rewiring its consumers to whatever already feeds its
     matching-type input (same idea as ComfyUI's node bypass) — only when that mapping is
-    unambiguous (exactly one connection_input per output type). Otherwise leaves the node
-    wired normally and reports why, rather than guessing. Runs after auto-wire so the
+    unambiguous (exactly one connection_input per output type) AND that input actually has
+    something wired to pass through. Otherwise blocks generation with a clear reason rather
+    than silently leaving the node active or dropping a consumer's input — a bypass a user
+    explicitly asked for must never be silently ignored. Runs after auto-wire so the
     passthrough source is already resolved to a concrete value/link.
     """
     for s in slots:
@@ -890,9 +892,16 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
                 break
             passthrough[i] = graph[sid]["inputs"].get(names[0])
         if not ok:
-            report["unsatisfied"].append(
+            # Silently leaving the node active would mean a user who explicitly bypassed it
+            # (e.g. to skip an i2v preprocessing node) gets generation output as if they
+            # hadn't — with no visible sign why. Block instead: bypass either does what was
+            # asked or the run stops with a clear reason, never a silent no-op.
+            msg = (
                 f"{s.get('node_class')}: bypass needs exactly one input matching each output's "
-                f"type to pass through — this node doesn't have one, so it stays active.")
+                f"type to pass through — this node doesn't have one, so it can't be safely "
+                f"bypassed. Remove it or rewire it with a single matching input per output type.")
+            report["unsatisfied"].append(msg)
+            report["blocking"].append(msg)
             continue
         for nid, ndata in graph.items():
             if nid == sid:
@@ -903,6 +912,14 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
                     if replacement is not None:
                         ndata["inputs"][inp_name] = replacement
                     else:
+                        # The bypassed node's own matching input was never wired — passing
+                        # nothing through would silently drop {nid}.{inp_name} instead of
+                        # restoring the original source. Block rather than guess.
+                        msg = (
+                            f"{s.get('node_class')}: bypass can't pass a value through to "
+                            f"{nid}.{inp_name} — its own matching input isn't wired to anything.")
+                        report["unsatisfied"].append(msg)
+                        report["blocking"].append(msg)
                         del ndata["inputs"][inp_name]
         del graph[sid]
         report["wired"].append(f"{s.get('node_class')} bypassed (pass-through)")
