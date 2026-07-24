@@ -15,9 +15,20 @@
 
 ## What it looks like
 
-FunPack 3.x ships the **Cutting Room** - a full non-linear video editor living in your browser, inside ComfyUI. A real timeline with per-scene prompts, ratings and audio lanes, a program monitor, a media bin, and one-click generation driving FunPack Studio + the Scene Chain Sampler - no graph wiring required.
+Opening `/funpack/` inside ComfyUI lands you on the **Hub** - a small picker between FunPack's two browser UIs, plus at-a-glance version/update status.
 
-![FunPack Cutting Room - timeline, preview monitor, media bin, and scene inspector](docs/images/cutting-room.png)
+![FunPack Hub - pick a UI, see version and update status](docs/images/hub.png)
+
+### Two UIs, one engine
+
+Both UIs drive the exact same generation engine (FunPack Studio + the LTXAV Scene Chain Sampler) and the exact same project files - a project opened in one opens unchanged in the other. Pick based on how much control you want in front of you:
+
+- **Cutting Room** - the full multi-scene non-linear editor: a real timeline with per-scene prompts, ratings and audio lanes, a program monitor, a media bin, and every Engine/Studio knob a click away. This is where rating-driven learning (refinement keys, value guidance, taste steering) lives.
+- **Easy Gen** - one prompt, one Generate button, one big preview. Built for quick single-scene (or simple multi-scene via prompt splits) generations without the full NLE around it - advanced settings are still there, just tucked behind an "Advanced settings" link, and rating-dependent controls are hidden entirely since there's no rating UI to feed them (Studio always runs in a plain Prompt-only mode there).
+
+| Cutting Room - timeline, preview monitor, media bin, and scene inspector | Easy Gen - one prompt, one Generate button, one big preview |
+| --- | --- |
+| ![FunPack Cutting Room - timeline, preview monitor, media bin, and scene inspector](docs/images/cutting-room.png) | ![FunPack Easy Gen - single prompt box, Generate button, and preview pane](docs/images/easy-gen.png) |
 
 | The Composer - global prompt, shortcuts, split markers, `$variables` | Engine Settings - Studio + Chain Sampler knobs without touching a graph |
 | --- | --- |
@@ -55,6 +66,13 @@ Momentum Guidance on Distilled Flow, Bounded Attention for multi-subject scenes)
 Montage** trailer builder, a **Temp files** browser, **reconnect-after-reload** for in-flight
 generations, and a Blackwell (sm_120) guide-scene crash fix — see the [CHANGELOG](CHANGELOG.md)
 for the full list.
+
+**3.4.0** brings **Easy Gen** to near feature-parity with the Cutting Room for the workflows
+it targets: shortcut/transition library import/export, the full Engine settings panel
+(including Best-FaceID), a Gallery picker with a one-click continuity pin, Save/Export buttons,
+and several bugfixes (a bypass toggle that could silently do nothing, a state-sync bug that
+could revert Models & Pipeline edits, and more) — see the [CHANGELOG](CHANGELOG.md) for the
+full list.
 
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 
