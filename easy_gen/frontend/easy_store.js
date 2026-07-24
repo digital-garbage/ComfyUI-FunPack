@@ -252,6 +252,13 @@
   function save() {
     const run = saveQueue.then(async () => {
       if (!state.project) return null;
+      // Models & Pipeline (models.js) saves bypass/expose/widget edits straight to the
+      // server via its own PUT /projects/{id}/models call — it never touches state.project
+      // here. Without refetching first, this save would send project.models as it was when
+      // the project was last loaded, silently reverting whatever was just changed there
+      // (same class of bug the Editor's store.js fixed by syncing state.models into
+      // state.project.models before every autosave commit).
+      try { state.project.models = await API.getModels(state.project.id); } catch (_) {}
       const saved = await API.saveProject(state.project.id, state.project);
       set({ project: saved });
       return saved;

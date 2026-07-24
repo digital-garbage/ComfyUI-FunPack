@@ -47,7 +47,16 @@
         const video = el("video");
         video.src = url;
         video.controls = true;
-        if (opts.autoplay) { video.autoplay = true; video.loop = true; }
+        // Not the `autoplay` attribute: that makes the browser call .play() internally, and
+        // if this element gets replaced/removed before the fetch starts playing (e.g. the
+        // user immediately picks a different Gallery item), that internal promise rejects
+        // with "fetching process...aborted by the user agent" — surfacing as an unhandled
+        // rejection banner, since we never had a handle on it to catch. Call .play()
+        // ourselves so we own the promise.
+        if (opts.autoplay) {
+          video.loop = true;
+          video.play().catch(() => {});
+        }
         return video;
       }
       const img = el("img");
