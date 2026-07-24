@@ -344,12 +344,14 @@ def test_non_bypassed_lora_stays_in_graph():
     assert graph["studio"]["inputs"]["clip"] == ["slot_lora", 1]
 
 
-def test_bypass_on_node_with_no_matching_input_leaves_it_active_and_reports():
-    # VaeLoader has no connection_input at all, so there's nothing to pass an output through —
-    # bypass must be a documented no-op here, not a crash or a silently dropped node.
+def test_bypass_on_node_with_no_matching_input_blocks_generation():
+    # VaeLoader has no connection_input at all, so there's nothing to pass an output through.
+    # A bypass a user explicitly asked for must never be silently ignored — generation blocks
+    # with a clear reason instead of quietly leaving the node active.
     models = {"full_control": True, "slots": [
         {"id": "v", "node_class": "VaeLoader", "bypassed": True, "inputs": {}, "wires": {}},
     ]}
     graph, report = builder.build(OI, models, PARAMS)
     assert "slot_v" in graph
     assert any("bypass needs exactly one input" in u for u in report["unsatisfied"])
+    assert any("bypass needs exactly one input" in b for b in report["blocking"])
