@@ -11,6 +11,33 @@
     if (overlay) { overlay.remove(); overlay = null; }
   }
 
+  // Continuity pin, right on the gallery card — same setting as Engine settings ▸
+  // Continuity ▸ Identity pin, just quicker to reach (mirrors mediabrowser.js's card
+  // pin button in the Editor). Images only, chain-sampler pipelines only.
+  const pinEls = []; // { id, btn, badge } for every image cell in the currently-open grid
+
+  function refreshPins() {
+    const cs = (S.get().project || {}).continuity_settings || {};
+    pinEls.forEach(({ id, btn, badge }) => {
+      const isPin = cs.identity_pin_ref === id;
+      btn.classList.toggle("active", isPin);
+      btn.title = isPin
+        ? "Continuity pin — click to unpin"
+        : "Pin as identity guide for every scene (continuity pin)"
+          + (cs.auto_enabled === false ? " — also turns Auto continuity back on" : "");
+      badge.hidden = !isPin;
+    });
+  }
+
+  function togglePin(m) {
+    const cs = (S.get().project || {}).continuity_settings || {};
+    const isPin = cs.identity_pin_ref === m.id;
+    const patch = { ...cs, identity_pin_ref: isPin ? null : m.id };
+    if (!isPin && patch.auto_enabled === false) patch.auto_enabled = true;
+    S.patchProject({ continuity_settings: patch });
+    refreshPins();
+  }
+
   function cellFor(m) {
     const cell = el("div", "gal-cell");
     cell.title = m.name || m.id;
@@ -25,6 +52,16 @@
       img.src = url; img.loading = "lazy";
       thumb.append(img);
     }
+    if (m.kind === "image" && window.PipelineCaps?.usesChainSampler(S.get())) {
+      const btn = el("button", "gal-pin-btn", "📌");
+      btn.type = "button";
+      btn.onclick = (e) => { e.stopPropagation(); togglePin(m); };
+      thumb.append(btn);
+      const badge = el("span", "gal-pin-badge", "📌");
+      badge.hidden = true;
+      thumb.append(badge);
+      pinEls.push({ id: m.id, btn, badge });
+    }
     cell.append(thumb);
     cell.append(el("div", "gal-name", m.name || m.id));
     cell.onclick = async () => {
@@ -38,6 +75,7 @@
   async function open() {
     if (!S.get().project) return;
     close();
+    pinEls.length = 0;
     overlay = el("div", "modal-overlay");
     const box = el("div", "modal modal-wide");
     const head = el("div", "modal-head");
@@ -67,6 +105,7 @@
         return;
       }
       items.forEach((m) => content.append(cellFor(m)));
+      refreshPins();
     } catch (e) {
       clear(content);
       content.append(el("div", "sw-hint", "Could not load media: " + (e.message || e)));

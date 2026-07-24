@@ -83,7 +83,16 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
 .gal-cell { cursor: pointer; border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
   background: var(--ink-2); transition: border-color .15s; }
 .gal-cell:hover { border-color: var(--amber); }
-.gal-thumb { aspect-ratio: 1 / 1; background: var(--ink-0); display: flex; align-items: center; justify-content: center; }
+.gal-thumb { position: relative; aspect-ratio: 1 / 1; background: var(--ink-0); display: flex; align-items: center; justify-content: center; }
 .gal-thumb img, .gal-thumb video { width: 100%; height: 100%; object-fit: cover; }
 .gal-name { padding: 6px 8px; font-size: 11.5px; color: var(--muted); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
+
+.gal-pin-btn { position: absolute; top: 4px; right: 4px; z-index: 2; width: 22px; height: 22px;
+  border-radius: 6px; background: rgba(10, 9, 7, .72); border: 1px solid var(--line);
+  filter: grayscale(1); font-size: 12px; cursor: pointer; display: flex; align-items: center;
+  justify-content: center; padding: 0; }
+.gal-pin-btn:hover { filter: none; }
+.gal-pin-btn.active { filter: none; background: var(--amber-soft); border-color: var(--amber); }
+.gal-pin-badge { position: absolute; top: 4px; left: 4px; z-index: 2; font-size: 10.5px;
+  background: rgba(10, 9, 7, .72); border-radius: 4px; padding: 1px 4px; line-height: 1.4; }
