@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added
+- **Prompt `$name` variables in Easy Gen** — the shorthand-for-a-full-phrase layer the
+  Cutting Room's Composer already had (`$vid = "High quality, high fidelity realistic video,
+  motion blur, cinematic fog"`). A **$ Variables** button in the prompt bar opens its own
+  window with editable name/value rows, a count badge, and a live warning for names used but
+  never declared or for a variable that references itself. Same `project.variables` field as
+  the Cutting Room, so a project carries its variables between the two UIs; substitution
+  still happens inside Studio dead-last — after shortcut expansion and after the scene split
+  — which is what makes a `$var` work *inside* a shortcut's replacement while a value
+  containing a comma or a trigger word can never move a scene cut.
+
+### Changed
+- **Variable values are now auto-growing text boxes** (both UIs) instead of one-line inputs —
+  a long phrase was effectively uneditable in a single-line field.
+
 ## [3.4.0] - 2026-07-24
 
 ### Added

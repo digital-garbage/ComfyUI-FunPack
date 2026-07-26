@@ -284,6 +284,24 @@
   // ── variables panel (below the global prompt) ───────────────────────────────────
   // The list IS the editor: editable name/value rows + Add/Remove. Resolution happens at
   // generation, after shortcuts + split (Studio), so nothing here touches the timeline.
+
+  // Grow a value textarea to fit its text (measured after a reset to "auto", or it can only
+  // ever get taller). Deferred once on mount because scrollHeight reads 0 before layout.
+  function autoGrowVar(ta) {
+    const fit = () => {
+      ta.style.height = "auto";
+      // scrollHeight covers content + padding; under border-box the borders must be added
+      // back or every line is clipped by ~2px and the textarea scrolls anyway.
+      const cs = getComputedStyle(ta);
+      const border = cs.boxSizing === "border-box"
+        ? parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
+        : -(parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom));
+      ta.style.height = (ta.scrollHeight + (border || 0)) + "px";
+    };
+    fit();
+    if (!ta.dataset.grown) { ta.dataset.grown = "1"; setTimeout(fit, 0); }
+  }
+
   function composeVariables() {
     const box = el("div", "compose-vars");
     const toggle = el("button", "btn ghost tiny composer-var-toggle",
@@ -310,10 +328,15 @@
         nm.oninput = () => { v.name = nm.value.replace(/^\$+/, ""); commit(); updateVarHint(); };
         row.append(nm);
         row.append(el("span", "compose-var-eq", "="));
-        const vv = el("input", "lib-in compose-var-val");
+        // Values are usually long phrases, so this grows with its content — a one-line input
+        // makes editing "High quality, high fidelity realistic video, …" a horizontal-
+        // scrolling guessing game.
+        const vv = el("textarea", "lib-in compose-var-val");
+        vv.rows = 1;
         vv.value = v.value; vv.placeholder = "value (may reference $other)";
-        vv.oninput = () => { v.value = vv.value; commit(); updateVarHint(); };
+        vv.oninput = () => { v.value = vv.value; autoGrowVar(vv); commit(); updateVarHint(); };
         row.append(vv);
+        autoGrowVar(vv);
         const rm = el("button", "btn ghost tiny", "✕");
         rm.title = "Remove variable";
         rm.onclick = () => { vars.splice(i, 1); commit(); render(); };

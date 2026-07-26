@@ -299,11 +299,13 @@
   function projectVariables() { return (state.project && state.project.variables) || []; }
   function setProjectVariables(list) {
     if (!state.project) return;
-    // A leading $ is stripped so "$vid" and "vid" declare the same variable.
+    // A leading $ is stripped so "$vid" and "vid" declare the same variable. Fully-empty
+    // rows are dropped on persist (the UI keeps showing them while they're being filled in),
+    // so an accidental "Add variable" click never sticks to the project.
     patchProjectQuiet({ variables: (Array.isArray(list) ? list : []).map((v) => ({
       name: String((v && v.name) || "").replace(/^\$+/, "").trim(),
       value: String((v && v.value != null) ? v.value : ""),
-    })) });
+    })).filter((v) => v.name || v.value) });
   }
 
   function setConditioningSlot(slotId) { patchProject({ conditioning_slot: slotId || "funpack" }); }

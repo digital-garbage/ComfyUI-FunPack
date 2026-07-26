@@ -64,7 +64,7 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
   flex: none; display: flex; align-items: flex-end; gap: 12px;
   padding: 14px 16px; border-top: 1px solid var(--line); background: var(--ink-1);
 }
-.easy-upload-btn, .easy-gallery-btn { flex: none; align-self: stretch; padding: 0 16px; }
+.easy-upload-btn, .easy-gallery-btn, .easy-vars-btn { flex: none; align-self: stretch; padding: 0 16px; }
 .easy-prompt {
   flex: 1; resize: none; background: var(--ink-2); border: 1px solid var(--line);
   border-radius: var(--radius); color: var(--text); font: 14px/1.4 var(--font-ui);
@@ -75,17 +75,13 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
 .easy-generate-btn { padding: 10px 26px; font-size: 14px; }
 .easy-advanced-btn { align-self: center; }
 
-/* Prompt $name variables — collapsible strip docked above the prompt bar. */
-.easy-vars {
-  flex: none; max-height: 38vh; overflow: auto;
-  padding: 12px 16px; border-top: 1px solid var(--line); background: var(--ink-1);
-}
-.easy-vars[hidden] { display: none; }
+/* Prompt $name variables — own modal window, opened from the header button. */
 .easy-vars-hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 8px; }
 .easy-vars-hint.easy-var-warn { color: var(--amber); }
 .easy-vars-empty { color: var(--faint); font-size: 12px; }
 .easy-var-list { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.easy-var-row { display: flex; gap: 6px; align-items: center; width: 100%; }
+.easy-var-row { display: flex; gap: 6px; align-items: flex-start; width: 100%; }
+.easy-var-row > .easy-var-dollar, .easy-var-row > .easy-var-eq, .easy-var-row > .btn { margin-top: 6px; }
 .easy-var-dollar { color: var(--amber); font-family: var(--font-mono); opacity: .8; }
 .easy-var-eq { color: var(--muted); }
 .easy-var-in {
@@ -94,7 +90,8 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
 }
 .easy-var-in:focus { outline: none; border-color: var(--amber); }
 .easy-var-name { flex: 0 0 22%; font-family: var(--font-mono); }
-.easy-var-val { flex: 1; }
+/* Value is an auto-growing textarea (JS sets the height) — no manual resize handle, no scrollbar. */
+.easy-var-val { flex: 1; resize: none; overflow: hidden; }
 .easy-var-row .btn { flex: 0 0 auto; }
 #easy-vars-btn.easy-vars-warn { color: var(--amber); border-color: var(--amber); }
 

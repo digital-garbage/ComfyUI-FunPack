@@ -55,8 +55,6 @@
       <div class="easy-project-name" id="easy-project-name">No project</div>
       <span class="health-chip" id="easy-health-chip"></span>
       <div class="menubar-right">
-        <button class="btn ghost tiny" id="easy-vars-btn" type="button"
-          title="Prompt $name variables — shorthand for full phrases, substituted at generation">▸ $ Variables</button>
         <button class="btn ghost tiny" id="easy-save-btn" type="button">Save</button>
         <button class="btn ghost tiny" id="easy-export-btn" type="button"
           title="Download this project as a .funpack_project.json file — e.g. to move it off a rental machine">Export…</button>
@@ -66,13 +64,13 @@
 
     <main class="easy-preview" id="easy-preview"></main>
 
-    <section class="easy-vars" id="easy-vars" hidden></section>
-
     <footer class="easy-bar">
       <button class="btn ghost easy-upload-btn" id="easy-upload-btn" type="button"
         title="Upload an image or video to guide generation">⬆ Upload</button>
       <button class="btn ghost easy-gallery-btn" id="easy-gallery-btn" type="button"
         title="Choose from previously uploaded media">🖼 Gallery</button>
+      <button class="btn ghost easy-vars-btn" id="easy-vars-btn" type="button"
+        title="Prompt $name variables — shorthand for full phrases, substituted at generation">$ Variables</button>
       <textarea class="easy-prompt" id="easy-prompt" rows="2"
         placeholder="Describe what you want to generate…"></textarea>
       <div class="easy-actions">

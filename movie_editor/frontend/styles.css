@@ -1194,11 +1194,14 @@ body.tl-spacing { cursor: grabbing; user-select: none; }
 .compose-var-hint { margin-top: 4px; }
 .compose-var-hint.compose-var-warn { color: var(--amber); }
 .compose-var-list { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
-.compose-var-row { display: flex; gap: 6px; align-items: center; }
+.compose-var-row { display: flex; gap: 6px; align-items: flex-start; }
+.compose-var-row > .compose-var-dollar, .compose-var-row > .compose-var-eq,
+.compose-var-row > .btn { margin-top: 5px; }
 .compose-var-dollar { color: var(--amber); font-family: var(--font-mono); opacity: 0.8; }
 .compose-var-eq { color: var(--muted); }
 .compose-var-row .compose-var-name { flex: 0 0 30%; min-width: 0; }
-.compose-var-row .compose-var-val { flex: 1; min-width: 0; }
+/* Value is an auto-growing textarea (JS sets the height) — no resize handle, no scrollbar. */
+.compose-var-row .compose-var-val { flex: 1; min-width: 0; resize: none; overflow: hidden; }
 .compose-var-row .btn { flex: 0 0 auto; }
 
 /* config validation banner */
