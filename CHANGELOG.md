@@ -12,6 +12,12 @@
   still happens inside Studio dead-last — after shortcut expansion and after the scene split
   — which is what makes a `$var` work *inside* a shortcut's replacement while a value
   containing a comma or a trigger word can never move a scene cut.
+- **An Interrupt button in Easy Gen.** The progress panel now carries the same
+  **■ Interrupt** control the Cutting Room's player has — Easy Gen previously had no way to
+  stop a run short of the ComfyUI queue. A stopped run reports "Generation stopped." instead
+  of a failure (an interrupted job is recorded as an error with no media, which is
+  indistinguishable from a real crash at the API level), and any partial media it did write
+  is still shown.
 
 ### Changed
 - **Variable values are now auto-growing text boxes** (both UIs) instead of one-line inputs —

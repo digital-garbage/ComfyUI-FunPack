@@ -58,7 +58,10 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
   height: 6px; border-radius: 4px; background: linear-gradient(90deg, var(--amber), var(--amber-2));
   width: 0%; transition: width .2s ease; margin-bottom: 6px;
 }
-.easy-progress-label { font-size: 12px; color: var(--muted); font-family: var(--font-mono); }
+.easy-progress-row { display: flex; align-items: center; gap: 10px; }
+.easy-progress-label { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.easy-progress-stop:disabled { opacity: .6; cursor: default; }
 
 .easy-bar {
   flex: none; display: flex; align-items: flex-end; gap: 12px;

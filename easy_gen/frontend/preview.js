@@ -22,7 +22,14 @@
     progressWrap.hidden = true;
     const bar = el("div", "easy-progress-bar");
     const label = el("div", "easy-progress-label");
-    progressWrap.append(bar, label);
+    // Same "■ Interrupt" affordance as the Cutting Room's player readout, and it lives in the
+    // progress panel so it only exists while there's something to stop.
+    const stopBtn = el("button", "gen-interrupt easy-progress-stop", "■ Interrupt");
+    stopBtn.type = "button";
+    stopBtn.title = "Stop the current generation";
+    const progressRow = el("div", "easy-progress-row");
+    progressRow.append(label, stopBtn);
+    progressWrap.append(bar, progressRow);
     root.append(inner, closeBtn, badge, progressWrap);
 
     let pollTimer = null;
@@ -138,8 +145,29 @@
       progressWrap.hidden = false;
       label.textContent = "Starting…";
       bar.style.width = "0%";
+      // An interrupted job lands in ComfyUI's history as status_str "error" with no media —
+      // indistinguishable from a real failure at the API level. Remember that the user asked
+      // for it so the poll below reports "stopped", not "Generation failed".
+      let interrupted = false;
+      stopBtn.disabled = false;
+      stopBtn.textContent = "■ Interrupt";
+      stopBtn.onclick = async () => {
+        interrupted = true;
+        stopBtn.disabled = true;
+        stopBtn.textContent = "Interrupting…";
+        label.textContent = "Interrupting…";
+        try { await API.interrupt(); }
+        catch (e) {
+          // The run may well still be going — say so instead of leaving a dead button.
+          interrupted = false;
+          stopBtn.disabled = false;
+          stopBtn.textContent = "■ Interrupt";
+          label.textContent = "Could not interrupt: " + (e.message || e);
+        }
+      };
 
       progressTimer = setInterval(async () => {
+        if (interrupted) return; // don't paint "Sampling…" over "Interrupting…"
         try {
           const pr = await API.progress();
           if (pr.max > 0) {
@@ -165,14 +193,19 @@
           stopPolling();
           progressWrap.hidden = true;
           const media = res.media && res.media.length ? res.media[res.media.length - 1] : null;
-          if (media) setGenerated(media, projectId); else showEmpty("Generation finished but produced no media.");
-          if (onDone) onDone(true, res);
+          // A run stopped mid-sampling can still have written partial media — show it if so,
+          // it's the whole point of interrupting a long run you can already tell is wrong.
+          if (media) setGenerated(media, projectId);
+          else if (interrupted) showEmpty("Generation stopped.");
+          else showEmpty("Generation finished but produced no media.");
+          if (onDone) onDone(!interrupted, res);
           return;
         }
         if (res.state === "error") {
           stopPolling();
           progressWrap.hidden = true;
-          showError(res.error || "Generation failed.");
+          if (interrupted) showEmpty("Generation stopped.");
+          else showError(res.error || "Generation failed.");
           if (onDone) onDone(false, res);
           return;
         }
