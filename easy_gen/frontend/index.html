@@ -55,6 +55,8 @@
       <div class="easy-project-name" id="easy-project-name">No project</div>
       <span class="health-chip" id="easy-health-chip"></span>
       <div class="menubar-right">
+        <button class="btn ghost tiny" id="easy-vars-btn" type="button"
+          title="Prompt $name variables — shorthand for full phrases, substituted at generation">▸ $ Variables</button>
         <button class="btn ghost tiny" id="easy-save-btn" type="button">Save</button>
         <button class="btn ghost tiny" id="easy-export-btn" type="button"
           title="Download this project as a .funpack_project.json file — e.g. to move it off a rental machine">Export…</button>
@@ -63,6 +65,8 @@
     </header>
 
     <main class="easy-preview" id="easy-preview"></main>
+
+    <section class="easy-vars" id="easy-vars" hidden></section>
 
     <footer class="easy-bar">
       <button class="btn ghost easy-upload-btn" id="easy-upload-btn" type="button"
@@ -98,6 +102,7 @@
   <script src="autocomplete.js"></script>
   <script src="project_menu.js"></script>
   <script src="easy_gallery.js"></script>
+  <script src="easy_variables.js"></script>
   <script src="log.js"></script>
   <script src="preview.js"></script>
   <script src="app.js"></script>

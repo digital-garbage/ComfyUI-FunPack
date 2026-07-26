@@ -75,6 +75,29 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
 .easy-generate-btn { padding: 10px 26px; font-size: 14px; }
 .easy-advanced-btn { align-self: center; }
 
+/* Prompt $name variables — collapsible strip docked above the prompt bar. */
+.easy-vars {
+  flex: none; max-height: 38vh; overflow: auto;
+  padding: 12px 16px; border-top: 1px solid var(--line); background: var(--ink-1);
+}
+.easy-vars[hidden] { display: none; }
+.easy-vars-hint { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 8px; }
+.easy-vars-hint.easy-var-warn { color: var(--amber); }
+.easy-vars-empty { color: var(--faint); font-size: 12px; }
+.easy-var-list { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.easy-var-row { display: flex; gap: 6px; align-items: center; width: 100%; }
+.easy-var-dollar { color: var(--amber); font-family: var(--font-mono); opacity: .8; }
+.easy-var-eq { color: var(--muted); }
+.easy-var-in {
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: var(--radius);
+  color: var(--text); font: 13px/1.4 var(--font-ui); padding: 6px 9px; min-width: 0;
+}
+.easy-var-in:focus { outline: none; border-color: var(--amber); }
+.easy-var-name { flex: 0 0 22%; font-family: var(--font-mono); }
+.easy-var-val { flex: 1; }
+.easy-var-row .btn { flex: 0 0 auto; }
+#easy-vars-btn.easy-vars-warn { color: var(--amber); border-color: var(--amber); }
+
 .es-io-controls { display: flex; align-items: center; gap: 8px; }
 .es-io-mode { background: var(--ink-2); border: 1px solid var(--line); color: var(--text);
   border-radius: 6px; font-size: 12px; padding: 4px 6px; }
