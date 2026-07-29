@@ -2482,6 +2482,34 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "repair",
                     "tooltip": "'repair' (default): upsample the crop, then re-denoise it through the video model for 3 extra steps — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4x region area x 3 steps). 'sharpen': stop after the upsampler's own forward pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper), since a super-resolution net only adds detail consistent with what's already there.",
                 }),
+                "context_windows": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: denoise a scene LONGER than the model's native window as overlapping context windows instead of one giant pass (ComfyUI core's own comfy.context_windows, LTX2 branch — nothing ported). Each step splits the scene into windows of context_window_length frames, denoises each, and fuses the overlaps back together. Core's LTXAV path is genuinely audio-aware: it unpacks the packed AV latent, maps each video window onto its proportional AUDIO window, and re-slices denoise masks, keyframe_idxs and guide_attention_entries per window — so i2v anchors, mid-scene guides and JoyAI memory keep working inside a window. Cost is NOT a flat multiple: total tokens stay roughly the same and windowed attention is cheaper than full-length attention, but the overlap is recomputed (overlap/length extra work, ~28% at the defaults). Engages ONLY when the scene is longer than context_window_length — shorter scenes are untouched and pay nothing. Off by default. UNVALIDATED LIVE.",
+                }),
+                "context_window_length": ("INT", {
+                    "default": 145, "min": 9, "max": 2049, "step": 8,
+                    "tooltip": "Window size in REAL frames (must be 8n+1; core rounds down to latent frames). A scene at or below this length skips windowing entirely, so this doubles as the engage threshold. Keep it at or under the length the model actually generates well in one pass — the whole point is to stay inside that range while the scene as a whole goes past it.",
+                }),
+                "context_window_overlap": ("INT", {
+                    "default": 40, "min": 0, "max": 512, "step": 8,
+                    "tooltip": "How many real frames consecutive windows share. This is the ONLY thing carrying motion/appearance continuity across a window boundary, and it is also the only extra compute this feature costs (overlap/length = the redundant fraction). Too low and boundaries show as a seam or a motion hitch; too high and you pay for frames you already have.",
+                }),
+                "context_window_schedule": (["uniform_standard", "static_standard", "uniform_looped", "batched"], {
+                    "default": "uniform_standard",
+                    "tooltip": "How the windows are laid out across the scene, per step. 'uniform_standard' (default, core's own LTXV default) shifts the window grid between steps so boundaries land in different places each step and never bake in — the safest general choice. 'static_standard' keeps the same fixed cut points every step (cheapest, but a bad boundary stays bad). 'uniform_looped' wraps the last window into the first, for seamless looping content. 'batched' denoises disjoint chunks with no overlap logic (fastest, weakest continuity).",
+                }),
+                "context_window_fuse": (["pyramid", "relative", "flat", "overlap-linear"], {
+                    "default": "pyramid",
+                    "tooltip": "Weighting used to blend overlapping windows back together. 'pyramid' (default) fades each window toward its edges, so the middle of a window dominates and seams get soft. 'flat' averages equally (can smear). 'relative' and 'overlap-linear' weight by position within the overlap. Change this if boundaries look soft/ghosted rather than merely misaligned.",
+                }),
+                "context_window_freenoise": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Shuffle (rather than redraw) the initial noise between windows so overlapping regions start from correlated noise. Costs nothing — it is a one-time permutation of the starting noise — and is core's default for LTXV because it measurably improves how well windows blend. Turn it off only to A/B whether it is helping.",
+                }),
+                "context_window_retain_first": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Pin latent frame 0 (the i2v anchor) into EVERY window, in both the conditioning and the noise latent, instead of only the first window. Helps when later windows drift away from the reference image. Off by default because on a CONTINUATION scene frame 0 is the carried tail of the previous scene, not the anchor — pinning it there re-shows the same content in every window and can read as the scene going static. Turn it on if later windows lose the reference; turn it off if the scene stops moving.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID",
@@ -2536,6 +2564,18 @@ class FunPackLTXAVSceneChainSampler:
         if not isinstance(tensor, torch.Tensor) or tensor.dim() < 3:
             raise ValueError("Scene chain latents must have a time dimension at index 2.")
         return int(tensor.shape[2])
+
+    def _context_scene_latent_frames(self, chunk):
+        """Video latent frames in this scene's chunk, or None if it can't be read.
+
+        Reported only — core decides for itself whether a scene is long enough to window.
+        Read off the VIDEO tensor (index 0 of the nested AV latent), while the chunk is
+        still unpacked 5D; after comfy packs it the time axis is gone.
+        """
+        try:
+            return self._tensor_frames(self._latent_tensors(chunk)[0])
+        except Exception:
+            return None
 
     def _latent_tensors(self, latent):
         samples = latent.get("samples")
@@ -4285,6 +4325,79 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    # Wrapper keys used by context windows; core registers them under these names.
+    _CTX_WRAPPER_KEYS = ("ContextWindows_prepare_sampling", "ContextWindows_sampler_sample")
+
+    def _install_context_windows(self, model, length, overlap, schedule, fuse,
+                                 freenoise, retain_first):
+        """Hand this scene's denoise to ComfyUI core's context-window sampler.
+
+        Nothing is ported: core owns the whole mechanism (comfy.context_windows), we only
+        build its handler and hang it on this scene's model_options, the same way the stock
+        LTXVContextWindows node does. Core picks it up inside comfy.samplers.calc_cond_batch,
+        which every FunPack sampler already goes through (they all call model(x, sigma, ...)
+        on the CFGGuider rather than apply_model directly), so no sampler change is needed.
+
+        Returns (remove_fn, latent_len) or None when the running ComfyUI core predates LTXAV
+        window support. That capability gate is the important part: the handler class itself
+        has existed for a long time for unpacked video, but the packed AV latent needs
+        BaseModel.map_context_window_to_modalities (+ resize_cond_for_context_window) to
+        unpack the AV stream, map each video window onto its audio window and re-slice
+        keyframe_idxs / guide_attention_entries. Without those, enabling this on LTXAV would
+        window the packed tensor blindly and quietly wreck audio and guides — the same class
+        of packed-vs-unpacked mistake that killed DynamicConditioning. Refuse instead.
+        """
+        try:
+            import comfy.context_windows as _cw
+            import comfy.patcher_extension as _pe
+        except ImportError:
+            return None
+        base = getattr(model, "model", None)
+        if not hasattr(base, "map_context_window_to_modalities"):
+            return None
+        # Real frames -> latent frames, exactly as core's LTXVContextWindows node does it.
+        latent_len = max(((int(length) - 1) // 8) + 1, 1)
+        latent_overlap = max(int(overlap) // 8, 0)
+        retain = "0" if retain_first else ""
+        try:
+            handler = _cw.IndexListContextHandler(
+                context_schedule=_cw.get_matching_context_schedule(schedule),
+                fuse_method=_cw.get_matching_fuse_method(fuse),
+                context_length=latent_len,
+                context_overlap=latent_overlap,
+                context_stride=1,
+                closed_loop=False,
+                dim=2,
+                freenoise=bool(freenoise),
+                cond_retain_index_list=retain,
+                latent_retain_index_list=retain,
+                split_conds_to_windows=False,
+            )
+        except TypeError:
+            return None  # signature drifted from the one this was written against
+        prev = model.model_options.get("context_handler")
+        had_prev = "context_handler" in model.model_options
+        model.model_options["context_handler"] = handler
+        _cw.create_prepare_sampling_wrapper(model)
+        if freenoise:
+            _cw.create_sampler_sample_wrapper(model)
+
+        def _remove():
+            if had_prev:
+                model.model_options["context_handler"] = prev
+            else:
+                model.model_options.pop("context_handler", None)
+            for wrapper_type, key in (
+                (_pe.WrappersMP.PREPARE_SAMPLING, self._CTX_WRAPPER_KEYS[0]),
+                (_pe.WrappersMP.SAMPLER_SAMPLE, self._CTX_WRAPPER_KEYS[1]),
+            ):
+                try:
+                    model.remove_wrappers_with_key(wrapper_type, key)
+                except Exception:
+                    pass
+
+        return _remove, latent_len
+
     def _build_plateau_cache_wrapper(self, model, threshold):
         """Plateau step-cache (MixCache/Chorus-family, adapted to LTX2.3's distilled schedule).
 
@@ -4700,6 +4813,9 @@ class FunPackLTXAVSceneChainSampler:
                segmented_detailing=False, detail_targets="hands",
                detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
                detail_max_area=0.35, detail_denoise=0.85, detail_mode="repair",
+               context_windows=False, context_window_length=145, context_window_overlap=40,
+               context_window_schedule="uniform_standard", context_window_fuse="pyramid",
+               context_window_freenoise=True, context_window_retain_first=False,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4758,6 +4874,12 @@ class FunPackLTXAVSceneChainSampler:
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
                 plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
+                context_windows=context_windows, context_window_length=context_window_length,
+                context_window_overlap=context_window_overlap,
+                context_window_schedule=context_window_schedule,
+                context_window_fuse=context_window_fuse,
+                context_window_freenoise=context_window_freenoise,
+                context_window_retain_first=context_window_retain_first,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -4890,6 +5012,7 @@ class FunPackLTXAVSceneChainSampler:
         _identity_overlap_state: dict = {}
         _detail_upsampler_model = None  # lazy: resolved+loaded at the first detailed scene
         _detail_disabled_reason = None  # set on resolve/load failure: don't retry per scene
+        _ctx_unsupported_reported = False  # print the "core too old" line once, not per scene
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -5009,7 +5132,39 @@ class FunPackLTXAVSceneChainSampler:
             _v2a_handles = []
             _identity_overlap_handle = None
             _plateau_stats = None
+            _ctx_remove = None
             try:
+                # Context windows: core-owned, installed first so every FunPack wrapper below
+                # sits inside the per-window forward rather than around the whole clip.
+                if context_windows:
+                    _ctx = self._install_context_windows(
+                        model, context_window_length, context_window_overlap,
+                        context_window_schedule, context_window_fuse,
+                        context_window_freenoise, context_window_retain_first)
+                    if _ctx is None:
+                        if not _ctx_unsupported_reported:
+                            print("[FunPackSceneChain] context_windows requested but this ComfyUI "
+                                  "build has no LTXAV context-window support (needs the CORE-3 "
+                                  "context-windows change, ComfyUI >= v0.29.0) — skipped.")
+                            _ctx_unsupported_reported = True
+                        run_mechanisms.append("context_windows(SKIPPED: ComfyUI core too old)")
+                    else:
+                        _ctx_remove, _ctx_latent_len = _ctx
+                        # Core engages windowing only when the scene is longer than the window,
+                        # and logs that decision itself; say so here too so a scene that silently
+                        # sampled whole doesn't read as the feature being broken.
+                        _scene_latent_len = self._context_scene_latent_frames(chunk)
+                        if _scene_latent_len is not None and _scene_latent_len <= _ctx_latent_len:
+                            run_mechanisms.append(
+                                f"context_windows(inactive: scene {_scene_latent_len} <= window "
+                                f"{_ctx_latent_len} latent frames — raise num_frames_per_scene or "
+                                f"lower context_window_length)")
+                        else:
+                            run_mechanisms.append(
+                                f"context_windows({context_window_schedule},{context_window_fuse},"
+                                f"len={_ctx_latent_len},ovl={max(int(context_window_overlap) // 8, 0)}"
+                                f"{',freenoise' if context_window_freenoise else ''}"
+                                f"{',retain_first' if context_window_retain_first else ''})")
                 # Innermost wrapper (installed first): caches the raw base-model forward on the
                 # near-noise plateau so later plateau steps reuse it. All guidance wrappers below
                 # layer around it and still post-process each step's (cached-or-fresh) prediction.
@@ -5135,6 +5290,8 @@ class FunPackLTXAVSceneChainSampler:
                         run_mechanisms.append(
                             f"plateau_cache(skipped {_reused}/{_total} plateau fwd, thr={plateau_cache_threshold})")
             finally:
+                if _ctx_remove is not None:
+                    _ctx_remove()
                 self._remove_v2a_scale(_v2a_handles)
                 self._strip_identity_overlap(_identity_overlap_handle)
                 if model.model_options.get("model_function_wrapper") is not _scene_base_wrapper:
@@ -5456,7 +5613,11 @@ class FunPackLTXAVSceneChainSampler:
                             output_guidance=False, output_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                            plateau_cache=False, plateau_cache_threshold=0.975):
+                            plateau_cache=False, plateau_cache_threshold=0.975,
+                            context_windows=False, context_window_length=145,
+                            context_window_overlap=40, context_window_schedule="uniform_standard",
+                            context_window_fuse="pyramid", context_window_freenoise=True,
+                            context_window_retain_first=False):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -5510,6 +5671,12 @@ class FunPackLTXAVSceneChainSampler:
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
                 plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
+                context_windows=context_windows, context_window_length=context_window_length,
+                context_window_overlap=context_window_overlap,
+                context_window_schedule=context_window_schedule,
+                context_window_fuse=context_window_fuse,
+                context_window_freenoise=context_window_freenoise,
+                context_window_retain_first=context_window_retain_first,
                 unique_id=None, prompt=None,
             )
             last = out

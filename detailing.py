@@ -169,7 +169,16 @@ def load_latent_upsampler(model_name):
         raise ValueError(
             f"{model_name} is not an LTX latent upsampler (expected post_upsample_res_blocks keys).")
     config = json.loads(metadata["config"])
-    model = LatentUpsampler.from_config(config).to(
+    # ComfyUI v0.29.0 (upstream f8a3fd9d) moved the upsampler onto DynamicVram and made
+    # `operations` a required argument of from_config; older cores build nn.Modules
+    # directly and reject the kwarg. Rentals run whatever they pulled, so accept both.
+    try:
+        import comfy.ops
+
+        model = LatentUpsampler.from_config(config, operations=comfy.ops.disable_weight_init)
+    except TypeError:
+        model = LatentUpsampler.from_config(config)
+    model = model.to(
         dtype=comfy.model_management.vae_dtype(allowed_dtypes=[torch.bfloat16, torch.float32]))
     model.load_state_dict(sd)
     model.eval()
