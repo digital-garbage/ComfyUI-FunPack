@@ -2482,6 +2482,30 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "repair",
                     "tooltip": "'repair' (default): upsample the crop, then re-denoise it through the video model for 3 extra steps — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4x region area x 3 steps). 'sharpen': stop after the upsampler's own forward pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper), since a super-resolution net only adds detail consistent with what's already there.",
                 }),
+                "anchor_shift": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: let the i2v anchor condition the scene, then delete it from the clip. The anchor is a pinned latent frame at position 0 — it holds identity/style/composition all the way down the schedule, and it is also literally the first frame you see, so every i2v scene opens on the exact reference still. This splits the schedule: pass 1 runs down to anchor_shift_sigma with the anchor pinned as usual, then the first anchor_shift_frames frames are DROPPED and everything slides left (clip length unchanged — no extra frames are generated), then pass 2 finishes the schedule on the shifted latent with the pin gone. Pass 2 re-enters through comfy's CONST noise scaling, which puts the shifted latent back on the rectified-flow manifold — the reason this is two passes rather than a roll between steps. The whole experiment is WHERE to cut: above ~0.909 nothing has formed yet, so the anchor gets discarded before it has transferred anything; too low and pass 2 has no steps left to heal the seam. Off by default. UNVALIDATED LIVE.",
+                }),
+                "anchor_shift_sigma": ("FLOAT", {
+                    "default": 0.909, "min": 0.05, "max": 0.999, "step": 0.001,
+                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune. Pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
+                }),
+                "anchor_shift_frames": ("INT", {
+                    "default": 8, "min": 8, "max": 512, "step": 8,
+                    "tooltip": "How many frames to drop off the front at the shift, in real frames (converted to latent frames with the VAE's own time scale). One latent frame — 8 real frames at the standard scale — removes just the anchor itself. More also removes the settling-in region right after it, where the clip is still visibly 'leaving' the reference image; raise this if the opening still looks like it is departing from a still rather than already in motion. The clip does not get shorter: whatever is dropped here is regrown at the end by pass 2.",
+                }),
+                "anchor_shift_restart_sigma": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
+                    "tooltip": "Where pass 2 re-enters the schedule. 0 (default) means 'continue from where pass 1 stopped' — the cheapest option, total cost stays one full schedule. Setting it HIGHER than anchor_shift_sigma rewinds: pass 2 re-noises the shifted latent back up to that sigma and re-denoises from there, giving the model more freedom to rebuild the regrown tail and blend the seam, at the cost of repeating those steps (and of partly overwriting what pass 1 established). Try this if the joint is visible or the regrown tail looks thin at the default.",
+                }),
+                "anchor_shift_tail": (["extend_last", "wrap", "empty"], {
+                    "default": "extend_last",
+                    "tooltip": "What the freed tail starts from after the slide. 'extend_last' (default) repeats the final frame, so pass 2 grows the new ending out of content that is already continuous with it. 'wrap' puts the dropped head back at the end (Mobius) — cheap and continuous, but it re-shows the reference image at the END of the clip, which is usually not what you want. 'empty' zeros the region and lets pass 2's noise scaling generate it from scratch — most freedom, most likely to drift from the rest of the shot.",
+                }),
+                "anchor_shift_fresh_audio": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Reset the audio stream to an empty latent before pass 2, so audio is generated fresh against the shifted picture. On by default because pass 1's audio was formed against frames that no longer sit at those positions — carrying it over means audio scored to a picture that moved. Turn off only to A/B whether the carried audio actually sounds better.",
+                }),
                 "context_windows": ("BOOLEAN", {
                     "default": False,
                     "tooltip": "EXPERIMENTAL: denoise a scene LONGER than the model's native window as overlapping context windows instead of one giant pass (ComfyUI core's own comfy.context_windows, LTX2 branch — nothing ported). Each step splits the scene into windows of context_window_length frames, denoises each, and fuses the overlaps back together. Core's LTXAV path is genuinely audio-aware: it unpacks the packed AV latent, maps each video window onto its proportional AUDIO window, and re-slices denoise masks, keyframe_idxs and guide_attention_entries per window — so i2v anchors, mid-scene guides and JoyAI memory keep working inside a window. Cost at the defaults (145/40): about 1.45x the per-frame work, because each window re-does its 40-frame overlap, offset against attention getting CHEAPER the longer the scene is (attention is quadratic in one pass, near-flat when windowed) - roughly break-even around 200 frames, a net win past ~300. Engages ONLY when the scene is longer than context_window_length — shorter scenes are untouched and pay nothing. Off by default. UNVALIDATED LIVE.",
@@ -2968,6 +2992,104 @@ class FunPackLTXAVSceneChainSampler:
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
         return latent
+
+    # ---------------------------------------------------------------------------
+    # anchor_shift — let the i2v anchor do its work, then delete it from the clip.
+    #
+    # The anchor is a real, PINNED latent frame at temporal position 0: it constrains
+    # identity/style/composition all the way down the schedule, and it is also literally
+    # the first frame you see. This runs the schedule in two passes so it can be the
+    # former without being the latter:
+    #
+    #   pass 1: sigma[0] .. shift_sigma, anchor pinned as usual -> a partly-formed clip
+    #           that has already absorbed the reference
+    #   shift : drop the first N latent frames (the anchor and its settling-in region),
+    #           slide everything left, refill the freed tail, drop the pin
+    #   pass 2: restart_sigma .. 0 on the shifted latent
+    #
+    # Why two passes rather than mutating x between steps inside the sampler: pass 2 goes
+    # back through comfy's CONST noise scaling (x = s*noise + (1-s)*latent), which puts the
+    # shifted latent back ON the rectified-flow manifold at the restart sigma. A raw
+    # in-flight roll skips that, and [[project_sigmas]] records that this model cannot
+    # recover from off-manifold latent states (the churn dead end). Same on-manifold
+    # re-entry recipe that segmented detailing's stage-2 tail already uses in production.
+    #
+    # Everything about WHEN and HOW MUCH is a knob: shift sigma, frames dropped, restart
+    # sigma, tail refill, audio. The sigma in particular is the whole experiment - too high
+    # and the anchor is discarded before it has transferred anything (nothing has formed
+    # above ~0.909), too low and pass 2 has too few steps left to heal the seam.
+    # ---------------------------------------------------------------------------
+
+    def _anchor_shift_split_sigmas(self, sigmas, shift_sigma, restart_sigma):
+        """Cut the schedule into (pass 1, pass 2), or return None if it cannot be cut.
+
+        pass 1 runs from the top down to the first sigma at or below shift_sigma; pass 2
+        starts at the first sigma at or below restart_sigma (restart_sigma <= 0 means
+        "continue from where pass 1 stopped") and runs to the end. Both need at least one
+        real step, so a threshold outside the schedule's range is refused rather than
+        silently producing a zero-step pass.
+        """
+        if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 3:
+            return None
+        vals = [float(v) for v in sigmas.tolist()]
+        # SIGMAS are float32; a threshold typed as 0.725 is a float64 that sits just BELOW the
+        # float32 0.725 in the schedule, so a bare `v <= s` silently cuts one step later than
+        # the number the user entered. Match core's own tolerance convention (isclose rtol=1e-4).
+        eps = 1e-4
+
+        def _first_at_or_below(s):
+            return next((i for i, v in enumerate(vals) if v <= s + eps), None)
+
+        cut = _first_at_or_below(float(shift_sigma))
+        if cut is None or cut < 1:
+            return None  # threshold above the first sigma, or not reached at all
+        restart = float(restart_sigma)
+        if restart <= 0:
+            start = cut
+        else:
+            start = _first_at_or_below(restart)
+            if start is None:
+                return None
+        first = sigmas[:cut + 1]
+        second = sigmas[start:]
+        if first.numel() < 2 or second.numel() < 2:
+            return None
+        return first, second, vals[cut], vals[start]
+
+    def _anchor_shift_latent(self, latent, drop, tail_mode, fresh_audio):
+        """Slide the video stream left by `drop` latent frames and refill the freed tail.
+
+        The head frames (anchor + settling-in region) are dropped, not cropped: the clip
+        keeps its full length, so no extra frames are ever generated to pay for this. The
+        freed tail is what pass 2 will grow into; `tail_mode` picks what it starts from.
+        Audio is optionally reset to an empty latent so pass 2 writes it fresh against the
+        shifted picture instead of inheriting pass 1's audio, which was scored against
+        frames that no longer exist at those positions.
+        """
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        video = tensors[0]
+        frames = self._tensor_frames(video)
+        drop = max(0, min(int(drop), frames - 1))
+        if drop <= 0:
+            return result, 0
+        head, body = video[:, :, :drop], video[:, :, drop:]
+        if tail_mode == "wrap":
+            tail = head  # Mobius: the dropped head reappears at the end
+        elif tail_mode == "extend_last":
+            tail = body[:, :, -1:].repeat(1, 1, drop, 1, 1)
+        else:  # "empty": zeros, so pass 2's noise scaling starts that region from noise
+            tail = torch.zeros_like(head)
+        tensors[0] = torch.cat([body, tail], dim=2)
+        if fresh_audio and len(tensors) > 1 and tensors[1] is not None:
+            tensors[1] = torch.zeros_like(tensors[1])
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        # The pin belongs to a frame that no longer exists; pass 2 must run unpinned.
+        result.pop("noise_mask", None)
+        return result, drop
 
     def _output_connected(self, prompt, unique_id, output_index):
         """Return True if the given output slot index is wired to any downstream node."""
@@ -4816,6 +4938,9 @@ class FunPackLTXAVSceneChainSampler:
                context_windows=False, context_window_length=145, context_window_overlap=40,
                context_window_schedule="uniform_standard", context_window_fuse="pyramid",
                context_window_freenoise=True, context_window_retain_first=False,
+               anchor_shift=False, anchor_shift_sigma=0.909, anchor_shift_frames=8,
+               anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
+               anchor_shift_fresh_audio=True,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4880,6 +5005,11 @@ class FunPackLTXAVSceneChainSampler:
                 context_window_fuse=context_window_fuse,
                 context_window_freenoise=context_window_freenoise,
                 context_window_retain_first=context_window_retain_first,
+                anchor_shift=anchor_shift, anchor_shift_sigma=anchor_shift_sigma,
+                anchor_shift_frames=anchor_shift_frames,
+                anchor_shift_restart_sigma=anchor_shift_restart_sigma,
+                anchor_shift_tail=anchor_shift_tail,
+                anchor_shift_fresh_audio=anchor_shift_fresh_audio,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -5284,14 +5414,60 @@ class FunPackLTXAVSceneChainSampler:
                             )
                             run_mechanisms.append(f"identity_transfer_arcface(id_strength={id_strength})")
                 _t_sample0 = _time.perf_counter()
-                sampled = self._sample_chunk(
-                    model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
+                _sample_kwargs = dict(
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     alg_guide_blur_strength=alg_guide_blur_strength,
                     alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
+                # anchor_shift: "fake t2v" — run with the real, untouched i2v anchor, then
+                # delete it from the clip instead of weakening it (ALG blurs the anchor and
+                # loses character detail; overlap tokens approximate it and lose some too).
+                _shift_split = None
+                if anchor_shift:
+                    _shift_drop = self._expected_latent_frames(
+                        int(anchor_shift_frames) + 1, time_scale) - 1
+                    if carried + soft_carried > 0:
+                        _reason = ("continuation scene — the head is carried frames from the "
+                                   "previous scene, not an anchor")
+                    elif guide_tail > 0:
+                        _reason = ("scene has appended guide frames at the tail (mid_scene_guide "
+                                   "/ carried i2v guides) — the slide would overwrite them")
+                    elif audio_tail > 0:
+                        _reason = ("scene has appended JoyAI audio memory — resetting the audio "
+                                   "stream would destroy the injected tail")
+                    elif self._context_scene_latent_frames(chunk) is None:
+                        _reason = "scene latent could not be read"
+                    elif _shift_drop <= 0:
+                        _reason = f"anchor_shift_frames={anchor_shift_frames} is under one latent frame"
+                    else:
+                        _shift_split = self._anchor_shift_split_sigmas(
+                            sigmas, anchor_shift_sigma, anchor_shift_restart_sigma)
+                        _reason = (f"schedule never reaches anchor_shift_sigma="
+                                   f"{anchor_shift_sigma} with a step left on both sides")
+                    if _shift_split is None:
+                        run_mechanisms.append(f"anchor_shift(SKIPPED: {_reason})")
+                if _shift_split is not None:
+                    _sig_a, _sig_b, _cut_at, _restart_at = _shift_split
+                    _pass1 = self._sample_chunk(
+                        model, sampler, _sig_a, scene_seed, cfg, scene_positive, scene_negative,
+                        chunk, **_sample_kwargs)
+                    _shifted, _dropped = self._anchor_shift_latent(
+                        _pass1, _shift_drop, anchor_shift_tail, anchor_shift_fresh_audio)
+                    # Fresh noise for pass 2: reusing scene_seed's field would re-apply the
+                    # exact noise pass 1 just resolved, against content that has moved.
+                    sampled = self._sample_chunk(
+                        model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
+                        scene_negative, _shifted, **_sample_kwargs)
+                    run_mechanisms.append(
+                        f"anchor_shift(cut@{_cut_at:g} restart@{_restart_at:g}, "
+                        f"dropped {_dropped} latent frames, tail={anchor_shift_tail}"
+                        f"{', fresh audio' if anchor_shift_fresh_audio else ''})")
+                else:
+                    sampled = self._sample_chunk(
+                        model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative,
+                        chunk, **_sample_kwargs)
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
                 if _plateau_stats is not None:
@@ -5628,7 +5804,10 @@ class FunPackLTXAVSceneChainSampler:
                             context_windows=False, context_window_length=145,
                             context_window_overlap=40, context_window_schedule="uniform_standard",
                             context_window_fuse="pyramid", context_window_freenoise=True,
-                            context_window_retain_first=False):
+                            context_window_retain_first=False,
+                            anchor_shift=False, anchor_shift_sigma=0.909, anchor_shift_frames=8,
+                            anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
+                            anchor_shift_fresh_audio=True):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -5688,6 +5867,11 @@ class FunPackLTXAVSceneChainSampler:
                 context_window_fuse=context_window_fuse,
                 context_window_freenoise=context_window_freenoise,
                 context_window_retain_first=context_window_retain_first,
+                anchor_shift=anchor_shift, anchor_shift_sigma=anchor_shift_sigma,
+                anchor_shift_frames=anchor_shift_frames,
+                anchor_shift_restart_sigma=anchor_shift_restart_sigma,
+                anchor_shift_tail=anchor_shift_tail,
+                anchor_shift_fresh_audio=anchor_shift_fresh_audio,
                 unique_id=None, prompt=None,
             )
             last = out
