@@ -4369,6 +4369,19 @@ class FunPackLTXAVSceneChainSampler:
         orig_prepare_timestep = ltxv._prepare_timestep
         orig_prepare_pe = ltxv._prepare_positional_embeddings
         orig_process_output = ltxv._process_output
+        # These wrappers reach into LTXBaseModel internals, so a ComfyUI refactor can break
+        # one of them. Falling back silently is how a broken source-phase tag once passed as
+        # "Best-FaceID makes the clip open on the reference image" — report each failure once
+        # per install (not per step) so the cause is visible in the console immediately.
+        _warned: set = set()
+
+        def _warn_once(what, exc):
+            if what in _warned:
+                return
+            _warned.add(what)
+            print(f"[FunPackSceneChain] identity_transfer: {what} failed ({type(exc).__name__}: {exc}) "
+                  f"— identity conditioning is NOT being applied correctly this run. "
+                  f"This usually means a ComfyUI update changed the LTX model internals.")
 
         def process_input(self_ltxv, x, keyframe_idxs, denoise_mask, **kw):
             out = orig_process_input(x, keyframe_idxs, denoise_mask, **kw)
@@ -4397,7 +4410,8 @@ class FunPackLTXAVSceneChainSampler:
                 else:
                     xx, pix = vx, vco
                 return xx, pix, add
-            except Exception:
+            except Exception as e:
+                _warn_once("reference-token append (_process_input)", e)
                 self_ltxv._funpack_id_ref_len = 0
                 return out
 
@@ -4426,7 +4440,10 @@ class FunPackLTXAVSceneChainSampler:
                     v_pe = _rotate_overlap_freqs(v_pe, ref_len, seg_value)
                     return [(v_pe, cross_v), pe[1]]
                 return _rotate_overlap_freqs(pe, ref_len, seg_value)
-            except Exception:
+            except Exception as e:
+                # Untagged reference tokens share the target's frame-0 grid, so the model
+                # renders them AS frame 0 — the clip opens on the reference image.
+                _warn_once("source-phase RoPE tag (_prepare_positional_embeddings)", e)
                 return pe
 
         def process_output(self_ltxv, x, embedded_timestep, keyframe_idxs, **kw):
@@ -4453,8 +4470,8 @@ class FunPackLTXAVSceneChainSampler:
                         x = x[:, :x.shape[1] - ref_len]
                         if hasattr(embedded_timestep, "shape") and embedded_timestep.dim() >= 2 and embedded_timestep.shape[1] > 1:
                             embedded_timestep = embedded_timestep[:, : embedded_timestep.shape[1] - ref_len]
-                except Exception:
-                    pass
+                except Exception as e:
+                    _warn_once("reference-token trim (_process_output)", e)
             return orig_process_output(x, embedded_timestep, keyframe_idxs, **kw)
 
         ltxv._process_input = types.MethodType(process_input, ltxv)

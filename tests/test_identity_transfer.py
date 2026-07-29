@@ -76,6 +76,64 @@ def test_rotate_overlap_freqs_rotates_only_last_ref_len_tokens():
     assert split is False
 
 
+def _rope_matrix(angles, heads):
+    """Build ComfyUI's post-7c59a07 layout from per-(B,T,H,D) angles: (B,T,H,D,2,2)
+    holding [[cos, -sin], [sin, cos]] — mirrors freqs_cis_matrix's own stack/reshape."""
+    c, s = angles.cos(), angles.sin()
+    return torch.stack((c, -s, s, c), dim=-1).reshape(*angles.shape, 2, 2)
+
+
+def test_rotate_overlap_freqs_matrix_layout_rotates_only_last_ref_len_tokens():
+    """ComfyUI 7c59a07 ("Use comfy kitchen rope functions in ltx models") replaced the
+    (cos, sin, split_mode) payload with (rotation_matrix, split_mode). The old code read
+    pe[1] as the sin tensor — it's a bool now — so the source-phase tag was silently
+    skipped and the reference tokens read as literal frame 0."""
+    B, T, H, D = 2, 10, 3, 4
+    ref_len = 3
+    angles = torch.linspace(0.0, 3.0, B * T * H * D).reshape(B, T, H, D)
+    mat = _rope_matrix(angles, H)
+    out_mat, split = idt.rotate_overlap_freqs((mat, True), ref_len, 2.0)
+    assert split is True
+    assert out_mat.shape == mat.shape
+    # Tokens before the reference block are untouched...
+    assert torch.equal(out_mat[:, : T - ref_len], mat[:, : T - ref_len])
+    # ...and the reference block actually moved.
+    assert not torch.equal(out_mat[:, T - ref_len :], mat[:, T - ref_len :])
+    # The 2x2 structure survives: still [[c, -s], [s, c]] with unit determinant.
+    c, s = out_mat[..., 0, 0], out_mat[..., 1, 0]
+    assert torch.allclose(out_mat[..., 0, 1], -s, atol=1e-6)
+    assert torch.allclose(out_mat[..., 1, 1], c, atol=1e-6)
+    assert torch.allclose(c**2 + s**2, torch.ones_like(c), atol=1e-5)
+
+
+def test_rotate_overlap_freqs_matrix_matches_legacy_cos_sin_rotation():
+    """Both layouts must apply the SAME phase, so upgrading ComfyUI doesn't change what
+    Best-FaceID conditioning the model sees."""
+    B, T, H, D = 1, 6, 2, 4
+    ref_len, seg = 2, 2.0
+    angles = torch.linspace(0.0, 2.0, B * T * H * D).reshape(B, T, H, D)
+    # Legacy split layout is (B, H, T, D): tokens on axis -2, frequencies on -1.
+    legacy = angles.transpose(1, 2)
+    l_cos, l_sin, _ = idt.rotate_overlap_freqs((legacy.cos(), legacy.sin(), True), ref_len, seg)
+    m_out, _ = idt.rotate_overlap_freqs((_rope_matrix(angles, H), True), ref_len, seg)
+    m_cos = m_out[..., 0, 0].transpose(1, 2)
+    m_sin = m_out[..., 1, 0].transpose(1, 2)
+    assert torch.allclose(m_cos, l_cos, atol=1e-6)
+    assert torch.allclose(m_sin, l_sin, atol=1e-6)
+
+
+def test_rotate_overlap_freqs_raises_on_unknown_payload():
+    """A future layout change must fail loudly, not skip the tag and quietly turn the
+    reference tokens into frame 0."""
+    import pytest
+    with pytest.raises(TypeError):
+        idt.rotate_overlap_freqs(("not-a-tensor", True), 2, 2.0)
+    with pytest.raises(TypeError):
+        idt.rotate_overlap_freqs((torch.zeros(2, 3, 4), True), 2, 2.0)  # no trailing (2, 2)
+    with pytest.raises(ValueError):
+        idt.rotate_overlap_freqs((_rope_matrix(torch.zeros(1, 2, 1, 4), 1), True), 5, 2.0)
+
+
 # ── identity_transfer.append_context_tokens ────────────────────────────────────
 
 def test_append_context_tokens_pads_and_extends_mask():
@@ -266,6 +324,25 @@ def test_prepare_pe_rotates_only_the_ref_token_tail():
     changed = any(not torch.equal(cos[i], baseline_cos[i]) for i in rotated)
     assert changed
     assert split_mode is False
+    s._strip_identity_overlap(handle)
+
+
+def test_prepare_pe_rotates_matrix_layout_end_to_end():
+    """Regression guard for ComfyUI 7c59a07: with the rotation-matrix payload the wrapper
+    must still tag the ref tokens. It used to raise inside rotate_overlap_freqs and get
+    swallowed by prepare_pe's except, leaving the reference readable as frame 0."""
+    s = _sampler()
+    ltxv = _FakeLTXV()
+    B, T, H, D = 1, 10, 2, 4
+    angles = torch.linspace(0.0, 3.0, B * T * H * D).reshape(B, T, H, D)
+    matrix = _rope_matrix(angles, H)
+    ltxv._prepare_positional_embeddings = lambda pixel_coords, frame_rate, x_dtype: (matrix, True)
+    handle = s._install_identity_overlap(_fake_model(ltxv), _ref_latent(), 2.0)
+    ltxv._process_input(torch.zeros(1, 5, 8), None, None)  # ref_len=2
+    out_mat, split_mode = ltxv._prepare_positional_embeddings(None, 25, torch.float32)
+    assert split_mode is True
+    assert torch.equal(out_mat[:, : T - 2], matrix[:, : T - 2])   # target tokens untouched
+    assert not torch.equal(out_mat[:, T - 2 :], matrix[:, T - 2 :])  # ref tokens tagged
     s._strip_identity_overlap(handle)
 
 
