@@ -2496,7 +2496,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "anchor_shift_restart_sigma": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
-                    "tooltip": "Where pass 2 re-enters the schedule. 0 (default) means 'continue from where pass 1 stopped' — the cheapest option, total cost stays one full schedule. Setting it HIGHER than anchor_shift_sigma rewinds: pass 2 re-noises the shifted latent back up to that sigma and re-denoises from there, giving the model more freedom to rebuild the regrown tail and blend the seam, at the cost of repeating those steps (and of partly overwriting what pass 1 established). Try this if the joint is visible or the regrown tail looks thin at the default.",
+                    "tooltip": "Picks between the two modes. 0 (default) = CONTINUE: pass 1 stops at the shift sigma and pass 2 resumes from exactly that state, no re-noising. Total cost stays one full schedule. Any value above 0 = REWIND: pass 1 instead runs the WHOLE schedule to a finished clip, the shift is applied to that, and pass 2 re-noises it up to this sigma and re-denoises down — the standard img2img recipe, which is only valid on a finished latent, which is why pass 1 has to complete first. Rewind gives the model far more freedom to rebuild the regrown tail and blend the joint, and costs a full schedule PLUS the tail. Try rewind (around 0.9) if continue leaves a visible seam or a thin ending.",
                 }),
                 "anchor_shift_tail": (["extend_last", "wrap", "empty"], {
                     "default": "extend_last",
@@ -2951,14 +2951,21 @@ class FunPackLTXAVSceneChainSampler:
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                      bounded_attention_enabled=False):
+                      bounded_attention_enabled=False, continue_from_state=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
             raise ValueError("sigmas input must be a SIGMAS tensor.")
         latent = self._clone_latent(latent)
         samples = latent["samples"]
-        noise = comfy.sample.prepare_noise(samples, int(seed))
+        # continue_from_state: `samples` is ALREADY the noisy x at sigmas[0] (a run resumed
+        # mid-trajectory), not a clean image. comfy's CONST scaling is
+        # x = s*noise + (1-s)*latent_image, which treats latent_image as CLEAN and re-noises
+        # it — on a mid-trajectory latent that scales the picture down by (1-s) and buries it
+        # under a fresh s of noise. Passing the state as BOTH terms makes the expression
+        # collapse to an identity (s*x + (1-s)*x == x), so sampling resumes from exactly the
+        # state we hand it. Only correct when the caller really is mid-trajectory.
+        noise = samples if continue_from_state else comfy.sample.prepare_noise(samples, int(seed))
 
         def _progress_cb(step, _denoised, _x, _total_steps):
             if pbar is not None:
@@ -3062,16 +3069,21 @@ class FunPackLTXAVSceneChainSampler:
             return None  # threshold above the first sigma, or not reached at all
         restart = float(restart_sigma)
         if restart <= 0:
+            # CONTINUE: pass 1 stops at the cut and pass 2 resumes from that exact state.
+            # Pass 2 must NOT re-noise (see _sample_chunk's continue_from_state).
+            first, second, resume = sigmas[:cut + 1], sigmas[cut:], True
             start = cut
         else:
+            # REWIND: pass 2 re-noises to a HIGHER sigma, which is only meaningful on a CLEAN
+            # latent — so pass 1 runs the whole schedule first and hands over a finished clip.
+            # Same shape as segmented detailing's stage-2 tail. Costs a full schedule + tail.
             start = _first_at_or_below(restart)
             if start is None:
                 return None
-        first = sigmas[:cut + 1]
-        second = sigmas[start:]
+            first, second, resume = sigmas, sigmas[start:], False
         if first.numel() < 2 or second.numel() < 2:
             return None
-        return first, second, vals[cut], vals[start]
+        return first, second, vals[cut], vals[start], resume
 
     def _anchor_shift_latent(self, latent, drop, tail_mode, fresh_audio):
         """Slide the video stream left by `drop` latent frames and refill the freed tail.
@@ -5472,20 +5484,26 @@ class FunPackLTXAVSceneChainSampler:
                     if _shift_split is None:
                         run_mechanisms.append(f"anchor_shift(SKIPPED: {_reason})")
                 if _shift_split is not None:
-                    _sig_a, _sig_b, _cut_at, _restart_at = _shift_split
+                    _sig_a, _sig_b, _cut_at, _restart_at, _resume = _shift_split
                     _pass1 = self._sample_chunk(
                         model, sampler, _sig_a, scene_seed, cfg, scene_positive, scene_negative,
                         chunk, **_sample_kwargs)
                     _shifted, _dropped = self._anchor_shift_latent(
                         _pass1, _shift_drop, anchor_shift_tail, anchor_shift_fresh_audio)
-                    # Fresh noise for pass 2: reusing scene_seed's field would re-apply the
-                    # exact noise pass 1 just resolved, against content that has moved.
+                    # Continue mode resumes from the handed-over state (no re-noise, so the
+                    # seed is irrelevant); rewind mode re-noises a finished clip, where fresh
+                    # noise is wanted — reusing scene_seed there would re-apply the exact field
+                    # pass 1 just resolved, against content that has since moved.
+                    _kw2 = dict(_sample_kwargs)
+                    _kw2["step_offset"] = _sample_kwargs["step_offset"] + (_sig_a.numel() - 1)
+                    _kw2["continue_from_state"] = _resume
                     sampled = self._sample_chunk(
                         model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
-                        scene_negative, _shifted, **_sample_kwargs)
+                        scene_negative, _shifted, **_kw2)
                     _pinned_n = self._anchor_pinned_frames(chunk)
                     run_mechanisms.append(
-                        f"anchor_shift(cut@{_cut_at:g} restart@{_restart_at:g}, "
+                        f"anchor_shift({'continue' if _resume else 'rewind'} "
+                        f"cut@{_cut_at:g} restart@{_restart_at:g}, "
                         f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
                         f"tail={anchor_shift_tail}"
                         f"{', fresh audio' if anchor_shift_fresh_audio else ''})")

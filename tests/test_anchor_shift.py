@@ -14,6 +14,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -47,19 +48,30 @@ def _latent(frames=10, audio=True):
 
 # ── schedule splitting ──────────────────────────────────────────────────────
 
-def test_split_cuts_at_the_requested_sigma_and_continues_by_default():
-    first, second, cut_at, restart_at = _node()._anchor_shift_split_sigmas(SCHEDULE, 0.909, 0.0)
+def test_continue_mode_stops_at_the_cut_and_resumes_from_that_state():
+    first, second, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
+        SCHEDULE, 0.909, 0.0)
     # float32: the schedule stores 0.909 as 0.90899997, so compare loosely.
     assert abs(cut_at - 0.909) < 1e-5 and abs(restart_at - 0.909) < 1e-5
     # pass 1 ends ON the cut sigma; pass 2 resumes from it, so no step is run twice.
     assert [round(v, 3) for v in first.tolist()] == [1.0, 0.975, 0.909]
     assert [round(v, 3) for v in second.tolist()] == [0.909, 0.725, 0.422, 0.0]
+    # resume=True is load-bearing: pass 2 receives a MID-TRAJECTORY latent, and comfy's
+    # CONST scaling (x = s*noise + (1-s)*latent) would otherwise treat it as a clean image
+    # and re-noise it — scaling the picture to (1-s) under a fresh s of noise. That is the
+    # bug that made the first live run come out under-denoised.
+    assert resume is True
 
 
-def test_restart_sigma_above_the_cut_rewinds_pass_two():
-    first, second, cut_at, restart_at = _node()._anchor_shift_split_sigmas(SCHEDULE, 0.725, 0.975)
+def test_rewind_mode_runs_pass_one_to_completion_first():
+    """A re-noise to a HIGHER sigma is only meaningful on a clean latent, so rewind mode
+    must hand pass 2 a finished clip — not a mid-trajectory one."""
+    first, second, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
+        SCHEDULE, 0.725, 0.975)
     assert abs(cut_at - 0.725) < 1e-5 and abs(restart_at - 0.975) < 1e-5
+    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.975, 0.909, 0.725, 0.422, 0.0]
     assert [round(v, 3) for v in second.tolist()] == [0.975, 0.909, 0.725, 0.422, 0.0]
+    assert resume is False  # clean input -> re-noising is correct here
 
 
 def test_split_refuses_when_a_pass_would_have_no_steps():
@@ -154,3 +166,71 @@ def test_pinned_frames_is_zero_for_a_real_t2v_scene():
     assert n._anchor_pinned_frames({"samples": video, "noise_mask": torch.ones(1, 4, 6, 2, 2)}) == 0
     assert n._anchor_pinned_frames({"samples": video}) == 0  # no mask at all
     assert n._anchor_pinned_frames({"samples": None}) == 0   # unreadable -> refuse, don't raise
+
+
+# ── the re-noise bug this feature shipped with, locked down ─────────────────
+
+@pytest.fixture
+def capture_sample_custom():
+    """Stub comfy.sample so we can see exactly what noise/latent the sampler receives.
+
+    Snapshot/restore, because these comfy stubs are SHARED module objects across every test
+    module — leaving mutations behind changes other files' results depending on collection
+    order (the same trap test_detailing.py hit with comfy.nested_tensor).
+    """
+    mod = sys.modules["comfy.sample"]
+    comfy_mod = sys.modules["comfy"]
+    saved = (getattr(mod, "prepare_noise", None), getattr(mod, "sample_custom", None),
+             getattr(comfy_mod, "sample", None))
+    seen = {}
+
+    def prepare_noise(samples, seed, *a, **k):
+        return torch.full_like(samples, 7.0)  # unmistakably "fresh noise"
+
+    def sample_custom(model, noise, cfg, sampler, sigmas, pos, neg, latent_image, **kw):
+        seen["noise"] = noise
+        seen["latent_image"] = latent_image
+        return latent_image
+
+    mod.prepare_noise = prepare_noise
+    mod.sample_custom = sample_custom
+    sys.modules["comfy"].sample = mod  # attribute access, not just sys.modules
+    yield seen
+    for name, val in (("prepare_noise", saved[0]), ("sample_custom", saved[1])):
+        if val is None:
+            delattr(mod, name)
+        else:
+            setattr(mod, name, val)
+    if saved[2] is None:
+        delattr(comfy_mod, "sample")
+    else:
+        comfy_mod.sample = saved[2]
+
+
+def _const_noise_scaling(sigma, noise, latent_image):
+    """comfy's CONST rule, verbatim: x = s*noise + (1-s)*latent_image."""
+    return sigma * noise + (1.0 - sigma) * latent_image
+
+
+def test_continue_from_state_makes_const_scaling_an_identity(capture_sample_custom):
+    """The real fix. Pass 2 gets a MID-TRAJECTORY latent; handing it as both terms makes
+    comfy's scaling collapse to x, so sampling resumes exactly where pass 1 stopped."""
+    seen = capture_sample_custom
+    state = torch.randn(1, 4, 5, 2, 2)
+    _node()._sample_chunk(object(), object(), torch.tensor([0.725, 0.422, 0.0]), 1, 1.0,
+                          [], [], {"samples": state}, continue_from_state=True)
+    assert torch.equal(seen["noise"], seen["latent_image"])
+    resumed = _const_noise_scaling(0.725, seen["noise"], seen["latent_image"])
+    assert torch.allclose(resumed, state, atol=1e-6)
+
+
+def test_without_continue_from_state_the_latent_is_renoised(capture_sample_custom):
+    """The other mode, and the shape of the original bug: fresh noise is mixed in and the
+    picture is scaled to (1-sigma). Correct for a CLEAN input, wrong mid-trajectory."""
+    seen = capture_sample_custom
+    clean = torch.randn(1, 4, 5, 2, 2)
+    _node()._sample_chunk(object(), object(), torch.tensor([0.725, 0.422, 0.0]), 1, 1.0,
+                          [], [], {"samples": clean}, continue_from_state=False)
+    assert not torch.equal(seen["noise"], seen["latent_image"])
+    entered = _const_noise_scaling(0.725, seen["noise"], seen["latent_image"])
+    assert not torch.allclose(entered, clean, atol=1e-3)
