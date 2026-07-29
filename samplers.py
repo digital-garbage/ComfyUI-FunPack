@@ -2488,7 +2488,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "anchor_shift_sigma": ("FLOAT", {
                     "default": 0.909, "min": 0.05, "max": 0.999, "step": 0.001,
-                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune. Pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
+                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune. ONLY used in continue mode (anchor_shift_restart_sigma=0); rewind mode runs pass 1 over the whole schedule and ignores this, which the scene report will tell you. Pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
                 }),
                 "anchor_shift_frames": ("INT", {
                     "default": 8, "min": 8, "max": 512, "step": 8,
@@ -5507,6 +5507,15 @@ class FunPackLTXAVSceneChainSampler:
                         f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
                         f"tail={anchor_shift_tail}"
                         f"{', fresh audio' if anchor_shift_fresh_audio else ''})")
+                    if not _resume:
+                        # In rewind mode pass 1 runs the whole schedule, so anchor_shift_sigma
+                        # never gets used. A knob that silently does nothing reads as broken —
+                        # say so, and say what to set to make it matter again.
+                        run_mechanisms.append(
+                            f"anchor_shift NOTE: rewind mode ignores anchor_shift_sigma"
+                            f"={anchor_shift_sigma:g} (pass 1 runs the full schedule so the "
+                            f"re-noise has a clean latent). Set anchor_shift_restart_sigma=0 "
+                            f"for continue mode, where the shift sigma is the cut point.")
                     if _dropped < _pinned_n:
                         # Part of the anchor survives the slide and stays visible in the clip —
                         # the one outcome this feature exists to prevent, so name the fix.
