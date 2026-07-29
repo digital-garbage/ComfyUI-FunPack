@@ -134,7 +134,7 @@
   function allowedSources(slot, ci) {
     const all = sources(slot, ci.type);
     if (!pipelineLocked()) return all;
-    if (slot.role === "image_processing" && ci.name === "image" && ci.type === "IMAGE") {
+    if (slot.role === "image_processing" && ci.name === "image" && typeAccepts(ci.type, "IMAGE")) {
       return all.filter((s) => !s.value || s.value === "timeline" || s.value.startsWith("out:"));
     }
     return all.filter((s) => !s.value || s.value.startsWith("out:") || s.value === "timeline");
@@ -361,7 +361,7 @@
     // that feeds nothing must not be flagged or block generation.
     if (slotIsActive(slot)) (spec.connection_inputs || []).forEach((ci) => {
       if (!ci.required) return;
-      if (ci.type === "IMAGE") return;  // a scene/timeline image can always feed an IMAGE input
+      if (typeAccepts(ci.type, "IMAGE")) return;  // a scene/timeline image can always feed an IMAGE input
       const src = (slot.input_sources || {})[ci.name];
       if (src && src !== "auto") return;  // explicitly sourced (incl. "timeline")
       const incoming = (config.slots || []).some((s2) =>
@@ -546,16 +546,24 @@
   }
 
   const _KIND2T = { int: "INT", float: "FLOAT", string: "STRING", boolean: "BOOLEAN" };
+  // A ComfyUI type string can name several types at once — a V3 MultiType socket serializes
+  // its members comma-joined ("IMAGE,MASK"). An output feeds an input when they share one.
+  function typeAccepts(inputType, outputType) {
+    if (inputType === outputType) return true;
+    const parts = (t) => String(t || "").split(",").map((p) => p.trim()).filter(Boolean);
+    const a = parts(inputType), b = parts(outputType);
+    return a.some((x) => b.includes(x));
+  }
   function destinations(slot, type) {
     const out = [{ value: "", label: "— unwired —" }];
     // Global editor outputs: wire your final video/audio producer here and the editor shows
     // it (works with or without the built-in pipeline). IMAGE -> video, AUDIO -> audio.
-    if (type === "IMAGE") out.push({ value: "global:video", label: "🌐 Global video output (shown in editor)" });
-    if (type === "AUDIO") out.push({ value: "global:audio", label: "🌐 Global audio output (shown in editor)" });
-    ports.filter((p) => p.type === type).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
+    if (typeAccepts(type, "IMAGE")) out.push({ value: "global:video", label: "🌐 Global video output (shown in editor)" });
+    if (typeAccepts(type, "AUDIO")) out.push({ value: "global:audio", label: "🌐 Global audio output (shown in editor)" });
+    ports.filter((p) => typeAccepts(p.type, type)).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
-      (c2?.connection_inputs || []).filter((ci) => ci.type === type).forEach((ci) =>
+      (c2?.connection_inputs || []).filter((ci) => typeAccepts(ci.type, type)).forEach((ci) =>
         out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.name}` }));
       // Widget inputs can also receive a connection (ComfyUI converts a widget to an
       // input when wired) — e.g. EmptyLatentVideo.width/height. Offer them as targets.
@@ -569,12 +577,12 @@
   // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>", "timeline" (IMAGE only).
   function sources(slot, type) {
     const out = [{ value: "", label: "(auto-wire)" }];
-    if (type === "IMAGE") out.push({ value: "timeline", label: "Timeline (scene image)" });
-    coreProducers.filter((p) => p.type === type).forEach((p) =>
+    if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });
+    coreProducers.filter((p) => typeAccepts(type, p.type)).forEach((p) =>
       out.push({ value: p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
-      (c2?.outputs || []).filter((o) => o.type === type).forEach((o) =>
+      (c2?.outputs || []).filter((o) => typeAccepts(type, o.type)).forEach((o) =>
         out.push({ value: `out:${s2.id}:${o.name}`, label: `${slotFullLabel(s2)} → ${o.name}` }));
     });
     return out;

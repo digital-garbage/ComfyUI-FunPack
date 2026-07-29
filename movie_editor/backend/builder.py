@@ -25,7 +25,8 @@ from typing import Any, Optional
 
 from . import config
 from . import pipeline_wiring
-from .nodes import WIDGET_PRIMITIVES, connection_inputs, node_outputs, _combo_default, _combo_choices
+from .nodes import (WIDGET_PRIMITIVES, connection_inputs, node_outputs, type_accepts,
+                    widget_type_of, _combo_default, _combo_choices)
 
 # ── fixed core ────────────────────────────────────────────────────────────────
 # logical id -> class_type
@@ -116,7 +117,7 @@ def _ordered_widget_names(node_def: dict) -> list[str]:
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             if opts.get("forceInput"):
                 continue  # forceInput STRING is a socket, never a widget value
-            if isinstance(t, list) or t in WIDGET_PRIMITIVES:
+            if isinstance(t, list) or widget_type_of(t, opts) in WIDGET_PRIMITIVES:
                 names.append(name)
     return names
 
@@ -158,18 +159,19 @@ def _widget_defaults(node_def: Optional[dict]) -> dict:
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             if opts.get("forceInput"):
                 continue
+            wt = widget_type_of(t, opts) if isinstance(t, str) else None
             if isinstance(t, list):
                 out[name] = opts.get("default", t[0] if t else None)
-            elif isinstance(t, str) and "COMBO" in t.upper():
+            elif wt and "COMBO" in wt.upper():
                 # "COMBO" or a V3 dynamic combo (COMFY_DYNAMICCOMBO_V3): emit the selected
                 # key string (options may be {"key": ...} dicts), not the option object.
                 out[name] = _combo_default(opts)
-            elif t in WIDGET_PRIMITIVES:
+            elif wt in WIDGET_PRIMITIVES:
                 # Always emit a value for every widget — ComfyUI's frontend does, and a
                 # required widget with no declared default (e.g. ImageTransform's bboxes)
                 # otherwise goes missing and ComfyUI rejects the prompt. Fall back to a
                 # type-appropriate empty so generation isn't blocked.
-                out[name] = opts.get("default", _WIDGET_EMPTY.get(t, ""))
+                out[name] = opts.get("default", _WIDGET_EMPTY.get(wt, ""))
     return out
 
 
@@ -192,7 +194,7 @@ def _widget_choices(node_def: Optional[dict]) -> dict:
             if isinstance(t, list):
                 if t:
                     out[name] = t
-            elif isinstance(t, str) and "COMBO" in t.upper():
+            elif isinstance(t, str) and "COMBO" in (widget_type_of(t, opts) or "").upper():
                 choices = _combo_choices(opts)
                 if choices:
                     out[name] = choices
@@ -627,7 +629,7 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
 
     def _options(t, builtin_label, self_cid):
         opts = [{"value": "", "label": f"built-in: {builtin_label}"}]
-        for val, lbl in producers.get(t, []):
+        for val, lbl in _matching_producers(producers, t):
             if val.startswith(f"core:{self_cid}:"):
                 continue
             opts.append({"value": val, "label": lbl})
@@ -711,6 +713,18 @@ def _producers(graph, slots, slot_node_id, slot_def, object_info):
         nd = slot_def[s["id"]]
         for i, o in enumerate(node_outputs(nd or {})):
             out.setdefault(o["type"], []).append((slot_node_id[s["id"]], i))
+    return out
+
+
+def _matching_producers(producers: dict, t: str) -> list:
+    """Producers that can feed an input of type `t`. A union type ("IMAGE,MASK") is fed by
+    any of its members, so collect across them instead of matching the string exactly."""
+    if t in producers:
+        return producers[t]
+    out = []
+    for pt, lst in producers.items():
+        if type_accepts(t, pt):
+            out.extend(lst)
     return out
 
 
@@ -838,7 +852,7 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             continue
         if isinstance(node["inputs"].get(inp), list):
             continue  # already wired (explicit/core)
-        raw = [p for p in producers.get(t, []) if p[0] != node_id]
+        raw = [p for p in _matching_producers(producers, t) if p[0] != node_id]
         # Never auto-wire a source that already depends on this node — that closes a loop and
         # ComfyUI rejects the whole graph. Drop such candidates so auto-wire stays acyclic.
         cands = [p for p in raw if not _reaches_upstream(graph, p[0], node_id)]
@@ -880,14 +894,13 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
             continue
         nd = slot_def.get(s["id"]) or {}
         outs = node_outputs(nd)
-        by_type: dict[str, list[str]] = {}
-        for ci in connection_inputs(nd):
-            by_type.setdefault(ci["type"], []).append(ci["name"])
+        cis = connection_inputs(nd)
         passthrough = {}
         ok = True
         for i, o in enumerate(outs):
-            names = by_type.get(o["type"])
-            if not names or len(names) != 1:
+            # A union-typed input ("IMAGE,MASK") can carry any of its members through.
+            names = [ci["name"] for ci in cis if type_accepts(ci["type"], o["type"])]
+            if len(names) != 1:
                 ok = False
                 break
             passthrough[i] = graph[sid]["inputs"].get(names[0])
