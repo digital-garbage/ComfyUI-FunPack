@@ -3020,6 +3020,23 @@ class FunPackLTXAVSceneChainSampler:
     # above ~0.909), too low and pass 2 has too few steps left to heal the seam.
     # ---------------------------------------------------------------------------
 
+    def _anchor_pinned_frames(self, chunk):
+        """How many leading latent frames this chunk pins (mask < 1) — i.e. the i2v anchor.
+
+        0 means a genuine t2v scene with no anchor image: there is nothing to shift, and
+        sliding anyway would just discard real generated frames. Reading the CHUNK's own
+        mask rather than the template's is deliberate — it reflects what this scene actually
+        got, including per-scene anchors.
+        """
+        try:
+            tensors = self._latent_tensors(chunk)
+            masks = self._latent_masks(chunk, len(tensors))
+            if not masks or masks[0] is None:
+                return 0
+            return self._protected_prefix_frames(masks[0], self._tensor_frames(tensors[0]))
+        except Exception:
+            return 0
+
     def _anchor_shift_split_sigmas(self, sigmas, shift_sigma, restart_sigma):
         """Cut the schedule into (pass 1, pass 2), or return None if it cannot be cut.
 
@@ -5441,6 +5458,12 @@ class FunPackLTXAVSceneChainSampler:
                         _reason = "scene latent could not be read"
                     elif _shift_drop <= 0:
                         _reason = f"anchor_shift_frames={anchor_shift_frames} is under one latent frame"
+                    elif self._anchor_pinned_frames(chunk) <= 0:
+                        # No pinned prefix = a genuine t2v scene (no anchor image attached).
+                        # Shifting here would drop real generated frames for nothing — this is
+                        # the "fake t2v" trick, it needs a real anchor to fake it WITH.
+                        _reason = ("scene has no pinned i2v anchor (t2v scene) — nothing to shift; "
+                                   "attach an anchor image, or leave anchor_shift off")
                     else:
                         _shift_split = self._anchor_shift_split_sigmas(
                             sigmas, anchor_shift_sigma, anchor_shift_restart_sigma)
@@ -5460,10 +5483,19 @@ class FunPackLTXAVSceneChainSampler:
                     sampled = self._sample_chunk(
                         model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
                         scene_negative, _shifted, **_sample_kwargs)
+                    _pinned_n = self._anchor_pinned_frames(chunk)
                     run_mechanisms.append(
                         f"anchor_shift(cut@{_cut_at:g} restart@{_restart_at:g}, "
-                        f"dropped {_dropped} latent frames, tail={anchor_shift_tail}"
+                        f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
+                        f"tail={anchor_shift_tail}"
                         f"{', fresh audio' if anchor_shift_fresh_audio else ''})")
+                    if _dropped < _pinned_n:
+                        # Part of the anchor survives the slide and stays visible in the clip —
+                        # the one outcome this feature exists to prevent, so name the fix.
+                        run_mechanisms.append(
+                            f"anchor_shift WARNING: {_pinned_n - _dropped} anchor latent frame(s) "
+                            f"still in the clip — raise anchor_shift_frames to at least "
+                            f"{_pinned_n * max(1, int(time_scale))}")
                 else:
                     sampled = self._sample_chunk(
                         model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative,

@@ -133,3 +133,24 @@ def test_source_latent_is_never_mutated():
     before = latent["samples"].clone()
     _node()._anchor_shift_latent(latent, 3, "extend_last", True)
     assert torch.equal(latent["samples"], before)
+
+
+# ── the t2v guard ───────────────────────────────────────────────────────────
+
+def test_pinned_frames_counts_the_anchor_prefix():
+    n = _node()
+    frames = 6
+    video = torch.zeros(1, 4, frames, 2, 2)
+    mask = torch.ones(1, 4, frames, 2, 2)
+    mask[:, :, :2] = 0.0  # two pinned anchor frames
+    assert n._anchor_pinned_frames({"samples": video, "noise_mask": mask}) == 2
+
+
+def test_pinned_frames_is_zero_for_a_real_t2v_scene():
+    """No anchor image attached — Easy Gen's default. Shifting would drop real content,
+    so the caller must skip: this is the 'fake t2v' trick and it needs an anchor to fake with."""
+    n = _node()
+    video = torch.zeros(1, 4, 6, 2, 2)
+    assert n._anchor_pinned_frames({"samples": video, "noise_mask": torch.ones(1, 4, 6, 2, 2)}) == 0
+    assert n._anchor_pinned_frames({"samples": video}) == 0  # no mask at all
+    assert n._anchor_pinned_frames({"samples": None}) == 0   # unreadable -> refuse, don't raise
