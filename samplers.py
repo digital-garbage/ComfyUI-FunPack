@@ -2440,7 +2440,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "plateau_cache": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL speed (MixCache/Chorus-family step-caching, adapted to LTX2.3's distilled schedule): the near-pure-noise plateau steps (sigma above plateau_cache_threshold) carry almost no signal, so the model's output barely changes across them. This computes the full transformer forward once at the top of the plateau, then REUSES that output for the remaining plateau steps instead of recomputing — skipping those transformer passes entirely. On the default 8-step schedule (sigmas 1.0→0.975 are the plateau) that's ~3-4 of 8 forwards skipped. DETERMINISTIC given seed (no diversity/rating impact, safe in Batch Training) but an APPROXIMATION — validate A/B before trusting on final renders. Note: much of wall-clock time is outside the sampler (encode/decode), so sampler speedup ≠ total speedup. Off by default. UNVALIDATED LIVE.",
+                    "tooltip": "EXPERIMENTAL speed (MixCache/Chorus-family step-caching, adapted to LTX2.3's distilled schedule). IGNORED while context_windows is on (the cache can't tell one window from another within a step) — the scene report says so. Mechanism: the near-pure-noise plateau steps (sigma above plateau_cache_threshold) carry almost no signal, so the model's output barely changes across them. This computes the full transformer forward once at the top of the plateau, then REUSES that output for the remaining plateau steps instead of recomputing — skipping those transformer passes entirely. On the default 8-step schedule (sigmas 1.0→0.975 are the plateau) that's ~3-4 of 8 forwards skipped. DETERMINISTIC given seed (no diversity/rating impact, safe in Batch Training) but an APPROXIMATION — validate A/B before trusting on final renders. Note: much of wall-clock time is outside the sampler (encode/decode), so sampler speedup ≠ total speedup. Off by default. UNVALIDATED LIVE.",
                 }),
                 "plateau_cache_threshold": ("FLOAT", {
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
@@ -5168,7 +5168,18 @@ class FunPackLTXAVSceneChainSampler:
                 # Innermost wrapper (installed first): caches the raw base-model forward on the
                 # near-noise plateau so later plateau steps reuse it. All guidance wrappers below
                 # layer around it and still post-process each step's (cached-or-fresh) prediction.
-                if plateau_cache:
+                #
+                # MUTUALLY EXCLUSIVE with context windows: the cache is keyed by
+                # (input.shape, cond_or_uncond), and every window within one step calls the model
+                # with the SAME shape. Windows 2..N would therefore be handed window 1's cached
+                # prediction on every plateau step — one window's content bleeding across the whole
+                # clip. Context windows wins (it's a capability, the cache is a speed experiment);
+                # say so in the report rather than silently dropping one of two ticked boxes.
+                if plateau_cache and _ctx_remove is not None:
+                    run_mechanisms.append(
+                        "plateau_cache(SKIPPED: incompatible with context_windows — the per-step "
+                        "cache cannot tell two windows apart)")
+                elif plateau_cache:
                     _plateau_stats = self._build_plateau_cache_wrapper(model, plateau_cache_threshold)
                 # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
                 # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
