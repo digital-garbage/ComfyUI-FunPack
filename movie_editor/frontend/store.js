@@ -3211,17 +3211,22 @@
       _clearGenTimers();
       let pendingStreak = 0;
       let transientStreak = 0;
-      // Faster step-progress poll (sampler current/total steps).
+      // Faster step-progress poll (sampler current/total steps, plus what it says it's
+      // doing — "scene 2/3 · pass 2 of 2"). The message is rebuilt from prefix + elapsed
+      // the same way the slower poll below builds it, rather than regex-stripping the last
+      // one off the end: a suffix the strip pattern doesn't know about (the phase label)
+      // would otherwise be re-appended every tick and grow without limit.
       progressTimer = setInterval(async () => {
         if (_interrupted) return;
         try {
           const pr = await API.progress();
           if (pr && pr.max > 0) {
-            const head = (state.gen.msg || prefix).replace(/\s*·\s*sampling \d+\/\d+$/, "");
+            const phase = pr.label ? `  ·  ${pr.label}` : "";
             updateGenProgress({
               step: pr.value,
               maxStep: pr.max,
-              msg: `${head}  ·  sampling ${pr.value}/${pr.max}`,
+              phase: pr.label || "",
+              msg: `${prefix} ${_elapsed()}  ·  sampling ${pr.value}/${pr.max}${phase}`,
             });
           }
         } catch (_) {}
@@ -3257,7 +3262,8 @@
               return;
             }
             const step = (state.gen.maxStep > 0) ? `  ·  sampling ${state.gen.step}/${state.gen.maxStep}` : "";
-            updateGenProgress({ state: s.state, msg: `${prefix} ${_elapsed()}${step}` });
+            const phase = state.gen.phase ? `  ·  ${state.gen.phase}` : "";
+            updateGenProgress({ state: s.state, msg: `${prefix} ${_elapsed()}${step}${phase}` });
           }
         } catch (e) {
           if (_isTransientTunnelError(e)) {

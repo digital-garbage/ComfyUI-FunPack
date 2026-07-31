@@ -1,8 +1,7 @@
 // Easy Gen entrypoint: wires the big-preview / prompt / upload / generate bar
 // to the shared easy_store.js + preview.js, and opens the "FunPack Easy Gen"
-// project picker on boot. No re-attach-on-reload support yet (the Editor's
-// /api/active flow) — a reload while a run is in flight loses the progress
-// view, though the run itself still completes server-side.
+// project picker on boot. Reloading during a run re-attaches to it via the
+// Editor's /api/active flow — see reattachRunning() below.
 (function () {
   const S = window.Store;
   const API = window.MovieEditorAPI;
@@ -45,11 +44,21 @@
   }
   preview.setOnClearUpload(removeUpload);
 
+  // True whenever a run of ours is in flight — a fresh Generate OR one re-attached after a
+  // reload. render() runs on every store notify (health poll, keystroke), so without this
+  // it would re-enable Generate underneath a running generation.
+  let generating = false;
+  function setGenerating(on) {
+    generating = on;
+    generateBtn.disabled = on || !S.get().project;
+    generateBtn.textContent = on ? "Generating…" : "Generate";
+  }
+
   let lastProjectId = null;
   function render(st) {
     const p = st.project;
     nameEl.textContent = p ? p.name : "No project";
-    generateBtn.disabled = !p;
+    generateBtn.disabled = generating || !p;
     uploadBtn.disabled = !p;
     galleryBtn.disabled = !p;
     saveBtn.disabled = !p;
@@ -66,9 +75,13 @@
     const pid = p ? p.id : null;
     if (pid !== lastProjectId) {
       lastProjectId = pid;
-      preview.stopPolling();
-      preview.showEmpty();
-      generateBtn.textContent = "Generate";
+      // Not while a run is in flight: the generation is still going server-side, and
+      // tearing down its poll here would orphan it exactly like a reload used to.
+      if (!generating) {
+        preview.stopPolling();
+        preview.showEmpty();
+        generateBtn.textContent = "Generate";
+      }
     }
   }
   S.subscribe(render);
@@ -124,19 +137,17 @@
       alert("Type a prompt first.");
       return;
     }
-    generateBtn.disabled = true;
-    generateBtn.textContent = "Generating…";
+    setGenerating(true);
     try {
       await S.save();
       const resetSession = S.takeResetSessionFlag();
       const res = await API.generate(st.project.id, null, null, resetSession, EASY_MODE_OVERRIDES);
       preview.watch(st.project.id, res.prompt_id, {
-        onDone: () => { generateBtn.disabled = false; generateBtn.textContent = "Generate"; },
+        onDone: () => setGenerating(false),
       });
     } catch (e) {
       preview.showError("Generate failed: " + (e.message || e));
-      generateBtn.disabled = false;
-      generateBtn.textContent = "Generate";
+      setGenerating(false);
     }
   };
 
@@ -177,6 +188,42 @@
     }
   };
 
+  // Re-attach to a generation that was already running when the page (re)loaded. Easy Gen
+  // queues through the Editor's own /generate route, so its prompts are already stamped
+  // with the editor client_id + run identity and come back from /api/active — nothing was
+  // missing server-side, Easy Gen simply never asked. Same shape as the Cutting Room's
+  // store.js resumeRunningGeneration, minus the per-scene recording it has no UI for.
+  async function reattachRunning() {
+    let act = null;
+    try { act = await API.active(); } catch (_) { return; }
+    let last = null;
+    // Loop: a montage queued from the Cutting Room can have further runs behind the one
+    // that happens to be executing now, and Generate should stay blocked until they drain.
+    while (act && act.running && act.prompt_id && act.prompt_id !== last) {
+      last = act.prompt_id;
+      setGenerating(true);
+      const st = S.get();
+      const queued = act.pending > 0 ? ` · ${act.pending} more queued` : "";
+      if (st.project && act.pid && st.project.id === act.pid) {
+        // Ours, and the project it targets is loaded — full re-attach, result included.
+        await new Promise((resolve) => {
+          preview.watch(act.pid, act.prompt_id, {
+            onDone: () => resolve(),
+            note: `Reconnected after reload${queued}`,
+          });
+        });
+      } else {
+        // Started against a different project (typically from the Cutting Room). Do NOT
+        // switch projects out from under the user to claim it — just watch the queue so
+        // Generate stays blocked and Interrupt is offered while the GPU is busy.
+        await preview.monitor(
+          act.prompt_id, `A generation is running elsewhere${queued}`);
+      }
+      try { act = await API.active(); } catch (_) { act = null; }
+    }
+    setGenerating(false);
+  }
+
   async function boot() {
     S.refreshHealth();
     S.loadLibraries();
@@ -189,10 +236,15 @@
     });
 
     const lastId = localStorage.getItem(LAST_PROJECT_KEY);
+    let loaded = false;
     if (lastId) {
-      try { await S.loadProject(lastId); return; } catch (_) { /* fall through to picker */ }
+      try { await S.loadProject(lastId); loaded = true; } catch (_) { /* fall through to picker */ }
     }
-    window.ProjectMenu.open({ dismissable: false });
+    if (!loaded) window.ProjectMenu.open({ dismissable: false });
+    // After the project is in place, so a run targeting it re-attaches fully (result and
+    // all) instead of falling back to the queue-watch path. Not awaited — it runs for as
+    // long as the generation does.
+    reattachRunning();
   }
 
   boot();

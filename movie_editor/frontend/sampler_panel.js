@@ -335,9 +335,32 @@
       return () => quiet ? save(s) : saveNow(s);
     }
 
-    // Only the high-pass sampler is wired in the Movie Editor graph
-    // (studio outputs 4+5 → chain sampler; outputs 6+7 are not connected).
+    // The high-pass sampler is the one the Movie Editor graph runs (studio outputs 4+5).
     renderPass(container, "high", "Sampler", s.high, mkSave(true), mkSave(false));
+
+    // Second pass schedule. Studio's low-pass SIGMAS (output 7) is wired to the chain
+    // sampler's second_pass_sigmas, so this field alone is pass 2's schedule — deliberately
+    // NOT the whole low-pass sampler panel, because only its sigmas are connected: pass 2
+    // reuses the sampler configured above, and rendering its algorithm settings here would
+    // offer knobs that quietly do nothing.
+    sectionTag(container, "Second pass");
+    const spSig = textCtrl(s.low.sigmas, "e.g. 0.812, 0.6, 0.35, 0.15, 0.0", "sp-second-sig",
+      (v) => { s.low.sigmas = v; mkSave(true)(); });
+    row(container, "Second pass schedule", spSig);
+hint(container, "Fill this in and each scene is sampled in two passes; leave it empty and "
+                    + "it isn't. Comma-separated floats, high to low, ending at 0. Pass 1 "
+                    + "runs the main Sigmas schedule above in full, then pass 2 runs THIS "
+                    + "one in full, so the total is simply the two added up (a 9-step main "
+                    + "plus a 4-step second pass is 13). Pass 2 starts from the finished "
+                    + "clip: it is handed in as the latent and the sampler noises it to your "
+                    + "first sigma itself, exactly as any img2img does — no extra step in "
+                    + "between. That first sigma is therefore the strength dial, and it is "
+                    + "literal: at 0.8 pass 2 starts from 80% fresh noise over 20% of the "
+                    + "pass-1 picture and will rework the shot (and look soft if it has few "
+                    + "steps to resolve it); at 0.4 it is 40/60 and polishes; at 0.2 it is "
+                    + "nearly pure detail work. The rest of the list sets how many steps it "
+                    + "gets. To make pass 1 "
+                    + "shorter, shorten the schedule above; nothing here cuts it short.");
   }
 
   window.SamplerPanel = { render, defaultSamplers, defaultPass };

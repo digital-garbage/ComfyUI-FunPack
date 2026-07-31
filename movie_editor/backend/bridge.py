@@ -580,6 +580,38 @@ class ComfyError(RuntimeError):
 EDITOR_CLIENT_ID = "funpack-movie-editor"
 
 
+def _format_prompt_rejection(data: dict, status: int) -> str:
+    """Why ComfyUI refused a prompt, in words.
+
+    Its top-level `error` for a validation failure is a fixed blob ("Prompt outputs failed
+    validation", details ""), and the part that names the node, the widget and the bad value
+    lives in `node_errors` — which the old `error or node_errors` never reached, because the
+    generic blob is always truthy. So every rejected prompt reported the same nothing.
+    """
+    parts = []
+    err = data.get("error")
+    if isinstance(err, dict):
+        head = str(err.get("message") or err.get("type") or "").strip()
+        detail = str(err.get("details") or "").strip()
+        if head:
+            parts.append(f"{head} ({detail})" if detail else head)
+    elif err:
+        parts.append(str(err))
+    for node_id, entry in (data.get("node_errors") or {}).items():
+        if not isinstance(entry, dict):
+            parts.append(f"node {node_id}: {entry}")
+            continue
+        who = str(entry.get("class_type") or f"node {node_id}")
+        for item in entry.get("errors") or []:
+            if not isinstance(item, dict):
+                parts.append(f"{who}: {item}")
+                continue
+            msg = str(item.get("message") or item.get("type") or "").strip()
+            detail = str(item.get("details") or "").strip()
+            parts.append(f"{who}: {msg}{f' — {detail}' if detail else ''}".strip())
+    return "; ".join(p for p in parts if p) or f"HTTP {status}"
+
+
 async def queue_prompt(graph: dict, client_id: Optional[str] = None,
                        extra_data: Optional[dict] = None) -> dict:
     payload = {"prompt": graph, "client_id": client_id or uuid.uuid4().hex}
@@ -589,7 +621,7 @@ async def queue_prompt(graph: dict, client_id: Optional[str] = None,
         async with s.post(_url("/prompt"), json=payload) as r:
             data = await r.json()
             if r.status >= 400 or data.get("node_errors"):
-                raise ComfyError(data.get("error") or data.get("node_errors") or f"HTTP {r.status}")
+                raise ComfyError(_format_prompt_rejection(data, r.status))
             return data
 
 
@@ -658,8 +690,28 @@ def reset_progress() -> None:
 
 
 def current_progress() -> dict:
+    """Sampler step counter, plus what the Chain Sampler says it is doing right now.
+
+    ComfyUI's progress channel is numbers only, so a chain that samples several scenes —
+    some of them twice, with a second pass — is one anonymous bar. The sampler publishes a
+    short phase label ("scene 2/3 · pass 2 of 2") that rides along here. Absent (an older
+    sampler, a non-FunPack job) it is simply an empty string and the UI shows the numbers
+    alone, exactly as before.
+    """
     _install_progress_hook()
-    return {"value": _progress["value"], "max": _progress["max"]}
+    label = ""
+    try:
+        # Read run_phase's state straight off `sys` — deliberately NO import on this path.
+        # The editor polls this every 700ms DURING sampling, on ComfyUI's event loop, so it
+        # must do nothing that can block behind the worker thread. run_phase keeps its state
+        # there anyway (its writer and any reader can hold different module objects), which
+        # makes the direct read both the cheapest and the correct one.
+        _phase = getattr(sys, "_funpack_run_phase", None)
+        if isinstance(_phase, dict):
+            label = str(_phase.get("label") or "")
+    except Exception:  # noqa: BLE001 — a readout must never break the progress poll
+        pass
+    return {"value": _progress["value"], "max": _progress["max"], "label": label}
 
 
 async def is_running(prompt_id: str) -> bool:

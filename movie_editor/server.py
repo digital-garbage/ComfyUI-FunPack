@@ -2264,14 +2264,14 @@ if web is not None and PromptServer is not None:
             oi = {}
         out = []
         for p in nodes.pipeline_ports(oi):
-            if p.get("type") == "IMAGE":
+            if nodes.type_accepts(p.get("type") or "", "IMAGE"):
                 out.append({"value": "port:" + p["id"], "label": p["label"]})
         pid = req.query.get("pid")
         models_cfg = _project_models(projects.get(pid)) if pid else nodes.load_models()
         for slot in models_cfg.get("slots", []):
             nd = oi.get(slot.get("node_class")) or {}
             for ci in nodes.connection_inputs(nd):
-                if ci["type"] == "IMAGE":
+                if nodes.type_accepts(ci["type"], "IMAGE"):
                     label = (slot.get("label") or slot.get("node_class")) + " · " + ci["name"]
                     out.append({"value": f"node:{slot['id']}:{ci['name']}", "label": label})
         return web.json_response({"targets": out})

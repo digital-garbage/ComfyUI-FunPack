@@ -36,6 +36,47 @@ def _is_widget_type(t) -> bool:
     return isinstance(t, str) and (t in _WIDGET_TYPES or _is_combo_type(t))
 
 
+def type_parts(t) -> list[str]:
+    """Member types of a ComfyUI type string. A V3 MultiType input serializes its members
+    comma-joined — "FLOAT,INT" (an int widget that also accepts a float link), "IMAGE,MASK"
+    (a socket taking either) — so a single string can name several types."""
+    if not isinstance(t, str):
+        return []
+    return [p.strip() for p in t.split(",") if p.strip()]
+
+
+def widget_type_of(t, opts: dict | None = None) -> str | None:
+    """The widget type an input renders as, or None if it is a pure graph socket.
+
+    A V3 MultiType wrapped around a widget input (io.MultiType.Input(io.Int.Input(...), ...))
+    is a WIDGET in ComfyUI's frontend, not a socket: it carries "widgetType" in its options
+    and lists the widget's own type first, e.g. LTXVEmptyLatentAudio.frame_rate arriving as
+    ("FLOAT,INT", {"widgetType": "INT", "default": 25}). Treating it as a required socket
+    would demand a source for a field the user simply types into."""
+    opts = opts or {}
+    wt = opts.get("widgetType")
+    if _is_widget_type(wt):
+        return wt
+    parts = type_parts(t)
+    if parts and all(_is_widget_type(p) for p in parts):
+        return parts[0]
+    return None
+
+
+def link_types(t) -> list[str]:
+    """The graph-connection member types of a type string (widget members dropped)."""
+    return [_normalize_type(p) for p in type_parts(t) if not _is_widget_type(p)]
+
+
+def type_accepts(input_type: str, output_type: str) -> bool:
+    """Whether an output of `output_type` can feed an input of `input_type`. Either side may
+    be a union, so they match when any member type is shared."""
+    a, b = type_parts(input_type), type_parts(output_type)
+    if not a or not b:
+        return input_type == output_type
+    return bool({_normalize_type(x) for x in a} & {_normalize_type(y) for y in b})
+
+
 def _combo_choices(opts: dict) -> list:
     """Normalise combo options to plain string/int choices. V3 dynamic combos express
     options as dicts {"key": <value>, "inputs": [...]}; standard combos are list[str]."""
@@ -120,8 +161,9 @@ def _all_input_types(node_def: dict) -> list[str]:
     for group in ("required", "optional"):
         for spec in (inp.get(group) or {}).values():
             t = spec[0] if isinstance(spec, list) and spec else None
-            if isinstance(t, str) and t not in _WIDGET_TYPES:
-                types.append(_normalize_type(t))
+            opts = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if isinstance(t, str) and not widget_type_of(t, opts):
+                types.extend(link_types(t))
     return types
 
 
@@ -153,15 +195,17 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(t, str):
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
-            if _is_widget_type(t):
+            wt = widget_type_of(t, opts)
+            if wt:
                 # A widget-typed input is a SOCKET (wireable) only when forceInput is set —
                 # e.g. refinement_key_input is ("STRING", {"forceInput": True}). It always
                 # has a widget fallback, so it's NEVER auto-required (it must not block
                 # generation when left unwired). Plain widgets (incl. V3 dynamic combos
-                # like COMFY_DYNAMICCOMBO_V3) are handled by widget_inputs, not here.
+                # like COMFY_DYNAMICCOMBO_V3 and MultiType widgets like ("FLOAT,INT", ...))
+                # are handled by widget_inputs, not here.
                 if not opts.get("forceInput"):
                     continue
-                out.append({"name": name, "type": _normalize_type(t), "required": False})
+                out.append({"name": name, "type": _normalize_type(wt), "required": False})
                 continue
             # V3 nodes can mark a required-group input as optional via the flag.
             is_required = group == "required" and not opts.get("optional", False)
@@ -201,6 +245,9 @@ def widget_inputs(node_def: dict) -> list[dict]:
             if opts.get("forceInput"):
                 continue
             field = {"name": name, "required": group == "required", "options": opts}
+            # A MultiType widget ("FLOAT,INT") renders as its widget member, not the union.
+            if isinstance(t, str):
+                t = widget_type_of(t, opts) or t
             if isinstance(t, list):
                 # Old-style combo: t is the list of choices (e.g. folder_paths filenames).
                 field["kind"] = "combo"
@@ -307,7 +354,7 @@ def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
             # Expose typed sockets, plus forceInput widget sockets (e.g. the STRING
             # refinement_key_input on Studio/Sampler) so they can be wired manually.
-            if _is_widget_type(t) and not opts.get("forceInput"):
+            if widget_type_of(t, opts) and not opts.get("forceInput"):
                 continue
             ports.append({"id": f"{node_key}.{name}", "node": label, "input": name,
                           "type": t, "label": f"{label} · {name}"})

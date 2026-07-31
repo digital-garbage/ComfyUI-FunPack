@@ -292,6 +292,22 @@
     _scheduleEngineSave(600);
   }
 
+  // ── prompt variables ($name) ───────────────────────────────────────────────
+  // Project-scoped find/replace, stored in the same project.variables field the Editor
+  // uses; the generate endpoint already forwards it to the builder, and Studio resolves
+  // it dead-last (after shortcut expansion + the scene split) inside refine_v2.
+  function projectVariables() { return (state.project && state.project.variables) || []; }
+  function setProjectVariables(list) {
+    if (!state.project) return;
+    // A leading $ is stripped so "$vid" and "vid" declare the same variable. Fully-empty
+    // rows are dropped on persist (the UI keeps showing them while they're being filled in),
+    // so an accidental "Add variable" click never sticks to the project.
+    patchProjectQuiet({ variables: (Array.isArray(list) ? list : []).map((v) => ({
+      name: String((v && v.name) || "").replace(/^\$+/, "").trim(),
+      value: String((v && v.value != null) ? v.value : ""),
+    })).filter((v) => v.name || v.value) });
+  }
+
   function setConditioningSlot(slotId) { patchProject({ conditioning_slot: slotId || "funpack" }); }
   function setSamplerSlot(slotId) { patchProject({ sampler_slot: slotId || "funpack" }); }
   function setSamplerInput(name, value) {
@@ -359,6 +375,7 @@
     applyGlobalPrompt, scheduleGlobalPromptApply,
     setSceneMedia, save,
     patchProject, patchProjectQuiet,
+    projectVariables, setProjectVariables,
     setConditioningSlot, setSamplerSlot,
     setSamplerInput, setSamplerInputNow, unsetSamplerInput,
     setStudioInput, setStudioInputNow,

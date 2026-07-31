@@ -208,7 +208,7 @@
     { name: "debug_log", label: "Debug log", kind: "bool", default: false, dependsOn: "identity_transfer_enabled",
       hint: "Print per-scene identity-transfer shape/status logs to the ComfyUI console." },
     { name: "plateau_cache", label: "Plateau step-cache (speed)", kind: "bool", default: false,
-      hint: "EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
+      hint: "Ignored while Context windows is on — the cache can't tell one window from another within a step, so it's skipped with a note in the scene report. EXPERIMENTAL speed: the near-pure-noise early steps carry almost no signal, so the transformer output barely changes across them. Computes it once at the top of the plateau and reuses it for the rest, skipping ~3-4 of 8 transformer passes. Deterministic given seed (safe in Batch Training) but an approximation — A/B it before trusting on finals. Much of wall-clock time is outside the sampler, so total speedup is smaller than the forward count suggests. UNVALIDATED LIVE." },
     { name: "plateau_cache_threshold", label: "Plateau threshold (sigma)", kind: "float", default: 0.975, min: 0.5, max: 0.999, step: 0.005, dependsOn: "plateau_cache",
       hint: "Steps with sigma at or above this count as the reusable plateau. Higher = fewer steps cached (safer); lower = more cached (faster, more approximation). 0.975 catches the documented noise plateau while leaving structure formation fully computed." },
     { name: "segmented_detailing", label: "Segmented detailing (region refine)", kind: "bool", default: false,
@@ -226,6 +226,25 @@
     { name: "detail_denoise", label: "Detail re-noise strength", kind: "float", default: 0.85, min: 0.3, max: 0.99, step: 0.05,
       deps: [{ name: "segmented_detailing" }, { name: "detail_mode", value: "repair" }],
       hint: "How much noise the crop gets re-noised to before its 3-step refine (0.85 is the official LTX 2.3 recipe's own value). Higher = more freedom to genuinely reconstruct the region (fix bad anatomy), risking drift from the surrounding frame; lower = closer to a plain upscale — looks 'detailed' as interpolation but doesn't actually repair it. If the result looks upscaled but not corrected, raise this. Only used in 'repair' mode." },
+    { name: "cut_opening_frames", label: "Cut the opening (frames)", kind: "int", default: 0, min: 0, max: 512, step: 8,
+      hint: "Let the i2v anchor do its work, then cut it out of the clip. The anchor is a pinned frame at position 0, so it carries character detail, style and composition better than anything that weakens it on the way in (ALG blurs it and loses detail; Best-FaceID tokens approximate it and lose some too) — but it is also literally the first frame you see. The scene is generated exactly as normal, with the anchor pinned at full strength the whole way and no extra sampling, and this many frames are then dropped off the FRONT of the finished clip: an i2v generation that reads as t2v. 0 = off. 8 (one latent frame) removes just the anchor itself, which is usually not enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening, and on a prompt asking for immediate action that dead time is exactly what you want gone. 48 was the value that worked on a 768×768×305@30 chain with a quick-cut prompt; treat it as a starting point for this pipeline, not a universal default. NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you set, and the audio is cropped to match — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs an anchor image; skipped (with the reason in the scene report) on continuation scenes and on scenes carrying guide frames or JoyAI audio memory." },
+    { name: "second_pass_op", label: "Between-pass operation", kind: "combo", choices: ["none", "sharpen", "upscale_2x"], default: "none",
+      hint: "OPTIONAL operation applied to the latent between the two passes — 'none' by default, nothing runs unless you pick one. Both operations need the LTX 2.3 spatial upsampler in models/latent_upscale_models — the same ~1 GB file segmented detailing uses, found automatically or downloaded once on first use (watch the ComfyUI console). If it can't be obtained the second pass still runs, with the operation skipped and the reason in the scene report. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what's already there and CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper). 'upscale_2x': the same upsampler, but kept at 2x — pass 2 runs at four times the pixels and the scene decodes at double resolution. That's 3-5x the cost of the second half, and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor), so the scene can drift from the reference image; the scene report says when that happens. Both use the same upsampler file as segmented detailing. Video only — audio is never reshaped." },
+    { name: "context_windows", label: "Context windows (long scenes)", kind: "bool", default: false,
+      hint: "EXPERIMENTAL: denoise a scene that's LONGER than the model's comfortable window as overlapping windows instead of one giant pass — ComfyUI core's own mechanism, audio-aware on LTX (it maps each video window to its audio window and re-slices anchors, guides and JoyAI memory per window). Engages only on scenes longer than the window length below; shorter scenes are untouched and pay nothing. Cost at the defaults (145/40) is about 1.45× the per-frame work, since each window re-does its 40-frame overlap — offset by attention getting cheaper the longer the scene is (quadratic in one pass, near-flat when windowed). Roughly break-even around 200 frames, a net win past ~300. Needs ComfyUI v0.29.0 or newer; on older builds it's skipped with a note in the scene report. UNVALIDATED LIVE." },
+    { name: "context_window_length", label: "Window length (frames)", kind: "int", default: 145, min: 9, max: 2049, step: 8, dependsOn: "context_windows",
+      hint: "Window size in real frames. A scene at or below this length skips windowing entirely, so this doubles as the engage threshold. Keep it at or under the length the model already generates well in one pass — the point is to stay inside that range while the scene as a whole goes past it." },
+    { name: "context_window_overlap", label: "Window overlap (frames)", kind: "int", default: 40, min: 0, max: 512, step: 8, dependsOn: "context_windows",
+      hint: "How many frames consecutive windows share. This is the only thing carrying motion and appearance across a window boundary, and also the only extra compute this costs. Too low shows as a seam or a motion hitch at the boundary; too high pays for frames you already have." },
+    { name: "context_window_schedule", label: "Window schedule", kind: "combo", choices: ["standard_uniform", "standard_static", "looped_uniform", "batched"], default: "standard_uniform", dependsOn: "context_windows",
+      legacy: { uniform_standard: "standard_uniform", static_standard: "standard_static", uniform_looped: "looped_uniform" },
+      hint: "How windows are laid out each step (ComfyUI core's own schedule names). 'standard_uniform' (default) shifts the grid between steps so boundaries never bake in — safest. 'standard_static' keeps fixed cut points (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the end into the start for looping content. 'batched' uses disjoint chunks with no overlap logic (fastest, weakest continuity)." },
+    { name: "context_window_fuse", label: "Window blend", kind: "combo", choices: ["pyramid", "relative", "flat", "overlap-linear"], default: "pyramid", dependsOn: "context_windows",
+      hint: "How overlapping windows are weighted when merged. 'pyramid' (default) fades each window toward its edges so seams go soft. 'flat' averages equally (can smear). Change this if boundaries look ghosted rather than merely misaligned." },
+    { name: "context_window_freenoise", label: "FreeNoise blending", kind: "bool", default: true, dependsOn: "context_windows",
+      hint: "Shuffle rather than redraw the starting noise between windows, so overlapping regions begin from correlated noise. Free (a one-time permutation) and core's own default because it measurably improves how windows blend. Turn off only to A/B whether it's helping." },
+    { name: "context_window_retain_first", label: "Pin anchor in every window", kind: "bool", default: false, dependsOn: "context_windows",
+      hint: "Keep latent frame 0 (the i2v anchor) inside every window instead of just the first. Turn on if later windows drift away from the reference image. Off by default because on a continuation scene frame 0 is the carried tail of the previous scene, not the anchor — pinning it everywhere can make the scene read as static. Turn it off again if motion stalls." },
   ];
   const SAMPLER_KNOB_MAP = Object.fromEntries(SAMPLER_KNOBS.map((k) => [k.name, k]));
 
@@ -312,7 +331,11 @@
       }
     } else if (k.kind === "combo") {
       ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
-      (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
+      // A renamed choice: show what the stored value MEANS, and write the new name back, so
+      // the dropdown never quietly displays a different setting from the one that will run.
+      const shown = (k.legacy && k.legacy[val]) || val;
+      if (shown !== val) S.setSamplerInput(k.name, shown);
+      (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === shown) o.selected = true; ctrl.append(o); });
       ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
     } else if (k.kind === "text") {
       ctrl = el("input"); ctrl.type = "text";
@@ -348,10 +371,10 @@
   // ── views (inner-sidebar categories) ───────────────────────────────────────
   const CHAIN_VIEW_KNOBS = {
     chain_continuity: ["carry_i2v_guides"],
-    chain_timing: ["frame_overlap", "transition_duration", "use_same_seed"],
+    chain_timing: ["frame_overlap", "transition_duration", "use_same_seed", "cut_opening_frames"],
     chain_guidance: ["cfg", "embed_guidance", "embed_guidance_source", "embed_guidance_strength", "score_slider", "score_slider_strength", "taste_nearest_prompt", "output_guidance", "output_guidance_strength", "dynashift", "dynashift_strength", "dynashift_threshold"],
     chain_decode: ["decode_noise_scale", "decode_timestep", "decode_tile_size"],
-    chain_experimental: ["plateau_cache", "plateau_cache_threshold", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
+    chain_experimental: ["context_windows", "context_window_length", "context_window_overlap", "context_window_schedule", "context_window_fuse", "context_window_freenoise", "context_window_retain_first", "plateau_cache", "plateau_cache_threshold", "segmented_detailing", "detail_targets", "detail_strength", "detail_threshold", "detail_max_area", "detail_mode", "detail_denoise", "mid_scene_guide", "mid_scene_guide_strength", "joyai_memory", "joyai_memory_size", "joyai_fix_frames", "joyai_frame_select", "joyai_memory_strength", "joyai_audio_memory", "v2a_grad_scale", "alg_blur_guides", "alg_guide_blur_strength", "alg_guide_blur_sigma_threshold", "bounded_attention_enabled", "identity_transfer_enabled", "source_id", "phase_scale", "id_strength", "arcface_mode", "debug_log"],
   };
 
   function countChainView(p, id) {
@@ -524,7 +547,19 @@
       const next = JSON.stringify({ ...cur, samplers: updatedSamplers });
       if (quiet) S.setStudioInput("studio_settings", next);
       else S.setStudioInputNow("studio_settings", next);
+      syncSecondPassFromSchedule(updatedSamplers, quiet);
     }
+    // The second pass is driven by ONE thing: the schedule. Typing one turns it on; clearing
+    // it turns it off. There is no cut and no re-entry point to configure — pass 1 always runs
+    // the main schedule in full and pass 2 always runs this one in full.
+    function syncSecondPassFromSchedule(samplers, quiet) {
+      const raw = String(samplers?.low?.sigmas || "").replace(/;/g, ",");
+      const vals = raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !isNaN(v));
+      const set = quiet ? S.setSamplerInput : S.setSamplerInputNow;
+      if (vals.length >= 2) set("second_pass", true);       // one number is not a schedule
+      else S.unsetSamplerInput("second_pass");
+    }
+
     try {
       window.SamplerPanel.render(box, samplers,
         (s) => persistSamplers(s, true),
@@ -533,6 +568,20 @@
       const err = hintEl("Studio sampler panel failed to render: " + e.message);
       err.style.color = "var(--danger)";
       box.append(err);
+    }
+    // Second pass lives here rather than under Experimental: at its defaults the split is
+    // behaviour-neutral (pass 2 resumes from exactly the state pass 1 handed over), so it
+    // is a sampler setting, not a gamble. The only control is the schedule field in the
+    // panel above — enable and cut are derived from it (see syncSecondPassFromSchedule);
+    // all that is left here is the optional between-pass operation.
+    const g = group(pane, "Second pass");
+    renderKnobList(g, st, ["second_pass_op"]);
+    const si = st.project.sampler_inputs || {};
+    if (si.second_pass_op && si.second_pass_op !== "none") {
+      // Both operations are one forward of the same trained latent upsampler segmented
+      // detailing uses, so the model choice belongs here too — otherwise picking 'sharpen'
+      // silently depends on a file the user was never shown.
+      renderDetailUpsampler(pane, si, "Between-pass operation: upsampler model");
     }
   }
 
@@ -659,9 +708,12 @@
     return _detailUpsamplerChoices;
   }
 
-  function renderDetailUpsampler(pane, si) {
-    if (!si.segmented_detailing) return;
-    const g = group(pane, "Segmented detailing: upsampler model");
+  // Two features load this same file: segmented detailing and the second pass's
+  // between-pass operation (sharpen / upscale_2x). It used to render only under
+  // Experimental and only while detailing was on, so someone using 'sharpen' alone got no
+  // upsampler control and no warning that a ~1 GB download was involved.
+  function renderDetailUpsampler(pane, si, title) {
+    const g = group(pane, title || "Latent upsampler model");
     if (!_detailUpsamplerChoices) {
       g.append(hintEl("Loading upsampler list…"));
       ensureDetailUpsamplerChoices();
@@ -704,7 +756,9 @@
     renderChainKnobsView(pane, st, "chain_experimental", "Experimental",
       "Research techniques — off by default; expect quality/overhead trade-offs.");
     const si = st.project.sampler_inputs || {};
-    renderDetailUpsampler(pane, si);
+    if (si.segmented_detailing) {
+      renderDetailUpsampler(pane, si, "Segmented detailing: upsampler model");
+    }
     if (!si.identity_transfer_enabled) return;
     const g = group(pane, "Best-FaceID: ArcFace projector");
     if (!_loraChoices) {

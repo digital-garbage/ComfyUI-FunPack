@@ -74,6 +74,14 @@ and several bugfixes (a bypass toggle that could silently do nothing, a state-sy
 could revert Models & Pipeline edits, and more) — see the [CHANGELOG](CHANGELOG.md) for the
 full list.
 
+**3.4.1** adds a **second sampling pass** on the Chain Sampler — give it a schedule and every
+scene is sampled twice, with an optional latent sharpen/2× upscale between the passes — plus
+**cut the opening** for i2v scenes (keep the anchor's identity transfer at full strength, then
+cut the reference still out of the finished clip), **context windows** for scenes longer than
+the model's comfortable window, and a progress readout that says which scene and which pass is
+running. Context windows, which never actually worked before, are fixed — see the
+[CHANGELOG](CHANGELOG.md) for the full list.
+
 See [`docs/MovieEditor.md`](docs/MovieEditor.md) for complete Cutting Room documentation.
 
 ## Installation

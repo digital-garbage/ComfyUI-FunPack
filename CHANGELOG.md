@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+## [3.4.1] - 2026-07-31
+
+### Added
+- **A second sampling pass on the Chain Sampler.** Give it a schedule and every scene is
+  sampled twice: pass 1 runs the main sigmas in full, then pass 2 runs its own schedule in
+  full, starting from pass 1's finished clip. Nothing is cut short and nothing is derived —
+  total steps are simply the two added up — and pass 2 re-enters through ComfyUI's ordinary
+  img2img noise scaling, so **its first sigma is a literal strength dial** (0.8 reworks the
+  shot, 0.4 polishes, 0.2 is detail work). The i2v anchor stays pinned across the split. In
+  the Cutting Room it is one field, **Second pass schedule**, under FunPack Studio ▸ Sampler
+  algorithm: typing a schedule enables the pass, clearing it turns the pass off.
+- **An optional operation between the two passes** (`none` by default — nothing runs unless
+  you pick one). `sharpen` runs one forward of Lightricks' trained 2× latent upsampler and
+  resamples straight back to the original size: no video-model calls, a fraction of a step,
+  and pass 2 then re-denoises the result, which is what makes it stick. `upscale_2x` keeps
+  the 2×, so pass 2 runs at four times the pixels and the scene decodes at double resolution
+  (3–5× the cost of the second half, and the i2v pin is dropped — the scene report says so).
+  Both use the same upsampler file segmented detailing does, and the model picker now appears
+  alongside the operation instead of only under segmented detailing.
+- **Cut the opening off i2v scenes** (`cut_opening_frames`, Chain Sampler ▸ Timing & Seed).
+  The anchor is a pinned frame at position 0: it carries identity, style and composition
+  better than anything that weakens it on the way in — and it is also literally the first
+  frame you see, so every i2v scene opens on the exact reference still. The scene is
+  generated exactly as normal, anchor at full strength, **no extra sampling**, and the
+  opening is then cut off the finished clip: an i2v generation that reads as t2v. Nothing is
+  regrown, so the scene comes out that much shorter and the audio is cropped to match.
+- **Context windows** for scenes longer than the model's comfortable window (ComfyUI core's
+  own mechanism, audio-aware on LTX — nothing ported). Engages only past the window length,
+  so shorter scenes pay nothing.
+- **The progress readout says what is running**, not just a step count: `sampling 17/26 ·
+  scene 2/3 · pass 2 of 2`. The second pass also announces itself on the ComfyUI console the
+  moment it starts, rather than only in the run report afterwards.
+- **Prompt `$name` variables in Easy Gen** — the shorthand-for-a-full-phrase layer the
+  Cutting Room's Composer already had (`$vid = "High quality, high fidelity realistic video,
+  motion blur, cinematic fog"`). A **$ Variables** button in the prompt bar opens its own
+  window with editable name/value rows, a count badge, and a live warning for names used but
+  never declared or for a variable that references itself. Same `project.variables` field as
+  the Cutting Room, so a project carries its variables between the two UIs; substitution
+  still happens inside Studio dead-last — after shortcut expansion and after the scene split
+  — which is what makes a `$var` work *inside* a shortcut's replacement while a value
+  containing a comma or a trigger word can never move a scene cut.
+- **An Interrupt button in Easy Gen.** The progress panel now carries the same
+  **■ Interrupt** control the Cutting Room's player has — Easy Gen previously had no way to
+  stop a run short of the ComfyUI queue. A stopped run reports "Generation stopped." instead
+  of a failure (an interrupted job is recorded as an error with no media, which is
+  indistinguishable from a real crash at the API level), and any partial media it did write
+  is still shown.
+
+- **Easy Gen re-attaches to a running generation after a page reload** — the Cutting Room
+  already did.
+
+### Changed
+- **Variable values are now auto-growing text boxes** (both UIs) instead of one-line inputs —
+  a long phrase was effectively uneditable in a single-line field.
+- **Plateau step-cache and context windows are mutually exclusive** — the cache cannot tell
+  one window from another within a step, so it is skipped with a note in the scene report.
+
+### Fixed
+- **Context windows never worked.** The schedule names were ComfyUI core's spelled backwards
+  (`uniform_standard` where core says `standard_uniform`), so every choice except `batched`
+  raised a `ValueError` out of the sampler and **failed the whole render**. Core's names are
+  the choices now; the old spellings are still accepted and mapped onto them, so a saved
+  project keeps generating. An unknown name is refused with a reason naming what your
+  ComfyUI accepts, instead of escaping as an exception.
+- The same call also passed a keyword core's window handler does not always take, which was
+  reported as *"ComfyUI core too old"* — silently switching off a feature that core fully
+  supports. Unsupported keywords are dropped now, with a note naming the one setting that
+  degrades.
+- **A rejected prompt now says why.** ComfyUI's top-level error for a validation failure is a
+  fixed blob ("Prompt outputs failed validation", no details); the part naming the node, the
+  widget and the bad value is in `node_errors`, which the editor never read — so every
+  rejected prompt reported the same nothing. Both are shown.
+- **Bypass no longer refuses a node over an output nothing uses.** A node that emits an extra
+  output the graph never wires (an IC-LoRA loader's `latent_downscale_factor`, say) could not
+  be bypassed at all, because a passthrough was demanded for every output rather than for the
+  ones actually consumed.
+- **The progress bar counted only the first pass**, so a second pass overflowed it and then
+  jumped backwards at the next scene.
+- **Identity transfer** follows ComfyUI's new RoPE matrix layout.
+- **Models & Pipeline** treats ComfyUI V3 MultiType widgets as widgets rather than required
+  sockets, so a node using them no longer reads as unsatisfied.
+- The latent upsampler loads on ComfyUI v0.29.0, which moved it onto DynamicVram and made
+  `operations` a required argument.
+
 ## [3.4.0] - 2026-07-24
 
 ### Added

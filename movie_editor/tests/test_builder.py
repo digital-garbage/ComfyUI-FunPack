@@ -64,6 +64,13 @@ OI = {
                                           "strength_model": ["FLOAT", {"default": 1.0}],
                                           "strength_clip": ["FLOAT", {"default": 1.0}]}},
                   "output": ["MODEL", "CLIP"], "output_name": ["MODEL", "CLIP"]},
+    # Real shape of LTXICLoRALoaderModelOnly: a MODEL passthrough plus a FLOAT the graph
+    # never reads. strength_model is a widget, so no connection input matches that FLOAT.
+    "LTXICLoRALoaderModelOnly": {
+        "input": {"required": {"model": ["MODEL"],
+                               "lora_name": [["x.safetensors"]],
+                               "strength_model": ["FLOAT", {"default": 1.0}]}},
+        "output": ["MODEL", "FLOAT"], "output_name": ["model", "latent_downscale_factor"]},
 }
 
 PARAMS = {"prompt": "scene one", "seed": 42, "num_frames_per_scene": 121, "frame_rate": 24}
@@ -207,6 +214,36 @@ def test_ambiguous_type_is_reported_not_guessed():
     assert any("FunPackLTXAVSceneChainSampler" in a and ".vae" in a for a in report["ambiguous"])
 
 
+def test_multitype_widget_input_does_not_block_and_keeps_its_value():
+    # LTXVEmptyLatentAudio.frame_rate arrives as a V3 MultiType widget ("FLOAT,INT" with a
+    # widgetType hint). It is a field, not a socket: it must not demand a source (nothing
+    # outputs "FLOAT,INT", so the run was blocked) and its value must reach the graph.
+    oi = dict(OI)
+    oi["LTXVEmptyLatentAudio"] = {
+        "input": {"required": {
+            "frames_number": ["INT", {"default": 97}],
+            "frame_rate": ["FLOAT,INT", {"widgetType": "INT", "default": 25}],
+            "audio_vae": ["VAE"],
+        }},
+        "output": ["LATENT"], "output_name": ["Latent"]}
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c", "node_class": "ClipLoader", "inputs": {}, "wires": {"CLIP": "port:FunPackStudio.clip"}},
+        {"id": "v", "node_class": "VaeLoader", "inputs": {},
+         "wires": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"}},
+        {"id": "av", "node_class": "VaeLoader", "inputs": {},
+         "wires": {"VAE": ["node:ae:audio_vae", "port:LTXVAudioVAEDecode.audio_vae"]}},
+        {"id": "ae", "node_class": "LTXVEmptyLatentAudio", "inputs": {"frame_rate": 30},
+         "wires": {"Latent": "port:LTXVConcatAVLatent.audio_latent"}},
+    ]}
+    graph, report = builder.build(oi, models, PARAMS)
+    assert report["blocking"] == []
+    assert not any("frame_rate" in m for m in report["unsatisfied"] + report["ambiguous"])
+    assert graph["slot_ae"]["inputs"]["frame_rate"] == 30       # user value, not a link
+    assert graph["slot_ae"]["inputs"]["frames_number"] == 97     # default still emitted
+    assert graph["slot_ae"]["inputs"]["audio_vae"] == ["slot_av", 0]
+
+
 def _loaders():
     return [
         {"id": "u", "node_class": "UnetLoader", "inputs": {}, "wires": {"MODEL": "port:FunPackStudio.model"}},
@@ -342,6 +379,24 @@ def test_non_bypassed_lora_stays_in_graph():
     assert "slot_lora" in graph
     assert graph["studio"]["inputs"]["model"] == ["slot_lora", 0]
     assert graph["studio"]["inputs"]["clip"] == ["slot_lora", 1]
+
+
+def test_bypass_ignores_outputs_nothing_is_wired_to():
+    """LTXICLoRALoaderModelOnly emits a FLOAT (latent_downscale_factor) next to its MODEL,
+    and nothing in the editor's graph reads it. Demanding a matching input for an output
+    that feeds nothing refused a bypass that is unambiguous for every link that exists —
+    only CONSUMED outputs need a passthrough."""
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"}, "wires": {}},
+        {"id": "ic", "node_class": "LTXICLoRALoaderModelOnly", "bypassed": True,
+         "inputs": {"lora_name": "x.safetensors", "strength_model": 0.8, "model": ["slot_u", 0]},
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "slot_ic" not in graph
+    assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]
+    assert not any("bypass" in b for b in report["blocking"])
+    assert any("LTXICLoRALoaderModelOnly bypassed" in w for w in report["wired"])
 
 
 def test_bypass_on_node_with_no_matching_input_blocks_generation():

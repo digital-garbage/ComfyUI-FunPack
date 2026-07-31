@@ -1140,6 +1140,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
     eta_final = max(0.0, min(float(eta), float(eta_final)))
 
+    sched_steps = max(1, int(len(sigmas)) - 1)
+
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
             sigmas, high_quality_pct, motion_pulse_mode, motion_pulse_start_pct,
@@ -1150,14 +1152,13 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         for item in (motion_pulse_steps or []) if isinstance(item, dict)
     }
 
-    late_start = _get_late_start_index(total_steps, high_quality_pct)
+    late_start = _get_late_start_index(sched_steps, high_quality_pct)
     quality_sigma_start = float(sigmas[late_start].item()) if late_start < sigmas.shape[0] else None
-    num_quality_steps = total_steps - late_start
+    num_quality_steps = sched_steps - late_start
 
     s_in = x.new_ones([x.shape[0]])
     prev_denoised = None
     prev_h = None
-    quality_step_index = 0
     _kvlock_state = {}
 
     # Audio-safe sampling: on a packed LTXAV latent, keep ancestral noise + steering on the
@@ -1245,7 +1246,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             if num_quality_steps <= 1:
                 effective_blend = correction_blend
             else:
-                effective_blend = 0.0 if quality_step_index < (num_quality_steps // 2) else correction_blend
+                q_idx = max(0, i - late_start)
+                effective_blend = 0.0 if q_idx < (num_quality_steps // 2) else correction_blend
             dt = sigma_next - sigma
             d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
             if effective_blend > 0.0:
@@ -1261,7 +1263,6 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             # Heun changed x with a corrected direction; invalidate AB2 history.
             prev_denoised = None
             prev_h = None
-            quality_step_index += 1
         else:
             # Early phase: ancestral RF euler (matches sample_euler_ancestral_RF), with
             # eta decay toward the quality boundary, using the AB2 denoised estimate.
@@ -1808,10 +1809,12 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     if total_steps <= 0:
         return x
 
+    sched_steps = max(1, int(len(sigmas)) - 1)
+
     order = max(1, min(2, int(order)))
     s_noise = max(0.0, min(0.5, float(s_noise)))
-    final_correction_steps = max(0, min(total_steps // 2, int(final_correction_steps)))
-    correction_start_idx = total_steps - final_correction_steps
+    final_correction_steps = max(0, min(sched_steps // 2, int(final_correction_steps)))
+    correction_start_idx = sched_steps - final_correction_steps
 
     _RESCUE_LOG["warned_no_memory"] = False
     _RESCUE_LOG["warned_no_prompt_match"] = False
@@ -1976,8 +1979,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
             # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
             # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
-            if ab2_ramp and total_steps > 1:
-                w = i / (total_steps - 1)  # 0 at first step -> 1 at last
+            if ab2_ramp and sched_steps > 1:
+                w = i / (sched_steps - 1)  # 0 at first step -> 1 at last
                 denoised_eff = denoised + (denoised_eff - denoised) * w
 
             # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
@@ -2440,7 +2443,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "plateau_cache": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL speed (MixCache/Chorus-family step-caching, adapted to LTX2.3's distilled schedule): the near-pure-noise plateau steps (sigma above plateau_cache_threshold) carry almost no signal, so the model's output barely changes across them. This computes the full transformer forward once at the top of the plateau, then REUSES that output for the remaining plateau steps instead of recomputing — skipping those transformer passes entirely. On the default 8-step schedule (sigmas 1.0→0.975 are the plateau) that's ~3-4 of 8 forwards skipped. DETERMINISTIC given seed (no diversity/rating impact, safe in Batch Training) but an APPROXIMATION — validate A/B before trusting on final renders. Note: much of wall-clock time is outside the sampler (encode/decode), so sampler speedup ≠ total speedup. Off by default. UNVALIDATED LIVE.",
+                    "tooltip": "EXPERIMENTAL speed (MixCache/Chorus-family step-caching, adapted to LTX2.3's distilled schedule). IGNORED while context_windows is on (the cache can't tell one window from another within a step) — the scene report says so. Mechanism: the near-pure-noise plateau steps (sigma above plateau_cache_threshold) carry almost no signal, so the model's output barely changes across them. This computes the full transformer forward once at the top of the plateau, then REUSES that output for the remaining plateau steps instead of recomputing — skipping those transformer passes entirely. On the default 8-step schedule (sigmas 1.0→0.975 are the plateau) that's ~3-4 of 8 forwards skipped. DETERMINISTIC given seed (no diversity/rating impact, safe in Batch Training) but an APPROXIMATION — validate A/B before trusting on final renders. Note: much of wall-clock time is outside the sampler (encode/decode), so sampler speedup ≠ total speedup. Off by default. UNVALIDATED LIVE.",
                 }),
                 "plateau_cache_threshold": ("FLOAT", {
                     "default": 0.975, "min": 0.5, "max": 0.999, "step": 0.005,
@@ -2481,6 +2484,59 @@ class FunPackLTXAVSceneChainSampler:
                 "detail_mode": (["repair", "sharpen"], {
                     "default": "repair",
                     "tooltip": "'repair' (default): upsample the crop, then re-denoise it through the video model for 3 extra steps — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4x region area x 3 steps). 'sharpen': stop after the upsampler's own forward pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper), since a super-resolution net only adds detail consistent with what's already there.",
+                }),
+                "cut_opening_frames": ("INT", {
+                    "default": 0, "min": 0, "max": 512, "step": 8,
+                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is converted with the VAE's own time scale; one latent frame (8 real frames at the standard scale) removes just the anchor itself, which is usually NOT enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory.",
+                }),
+                "context_windows": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "EXPERIMENTAL: denoise a scene LONGER than the model's native window as overlapping context windows instead of one giant pass (ComfyUI core's own comfy.context_windows, LTX2 branch — nothing ported). Each step splits the scene into windows of context_window_length frames, denoises each, and fuses the overlaps back together. Core's LTXAV path is genuinely audio-aware: it unpacks the packed AV latent, maps each video window onto its proportional AUDIO window, and re-slices denoise masks, keyframe_idxs and guide_attention_entries per window — so i2v anchors, mid-scene guides and JoyAI memory keep working inside a window. Cost at the defaults (145/40): about 1.45x the per-frame work, because each window re-does its 40-frame overlap, offset against attention getting CHEAPER the longer the scene is (attention is quadratic in one pass, near-flat when windowed) - roughly break-even around 200 frames, a net win past ~300. Engages ONLY when the scene is longer than context_window_length — shorter scenes are untouched and pay nothing. Off by default. UNVALIDATED LIVE.",
+                }),
+                "context_window_length": ("INT", {
+                    "default": 145, "min": 9, "max": 2049, "step": 8,
+                    "tooltip": "Window size in REAL frames (must be 8n+1; core rounds down to latent frames). A scene at or below this length skips windowing entirely, so this doubles as the engage threshold. Keep it at or under the length the model actually generates well in one pass — the whole point is to stay inside that range while the scene as a whole goes past it.",
+                }),
+                "context_window_overlap": ("INT", {
+                    "default": 40, "min": 0, "max": 512, "step": 8,
+                    "tooltip": "How many real frames consecutive windows share. This is the ONLY thing carrying motion/appearance continuity across a window boundary, and it is also the only extra compute this feature costs (overlap/length = the redundant fraction). Too low and boundaries show as a seam or a motion hitch; too high and you pay for frames you already have.",
+                }),
+                # The three legacy spellings stay in the LIST, not just in the alias map:
+                # ComfyUI validates combo values at QUEUE time, before the node ever runs, so
+                # a project saved with the old name would be rejected outright and the alias
+                # would never get a chance. They resolve to core's names below.
+                "context_window_schedule": (["standard_uniform", "standard_static", "looped_uniform", "batched",
+                                             "uniform_standard", "static_standard", "uniform_looped"], {
+                    "default": "standard_uniform",
+                    "tooltip": "How the windows are laid out across the scene, per step. These are ComfyUI core's own schedule names (comfy.context_windows). 'standard_uniform' (default, core's own LTXV default) shifts the window grid between steps so boundaries land in different places each step and never bake in — the safest general choice. 'standard_static' keeps the same fixed cut points every step (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the last window into the first, for seamless looping content. 'batched' denoises disjoint chunks with no overlap logic (fastest, weakest continuity). Projects saved with the old reversed spellings (uniform_standard / static_standard / uniform_looped) are still accepted and mapped onto these.",
+                }),
+                "context_window_fuse": (["pyramid", "relative", "flat", "overlap-linear"], {
+                    "default": "pyramid",
+                    "tooltip": "Weighting used to blend overlapping windows back together. 'pyramid' (default) fades each window toward its edges, so the middle of a window dominates and seams get soft. 'flat' averages equally (can smear). 'relative' and 'overlap-linear' weight by position within the overlap. Change this if boundaries look soft/ghosted rather than merely misaligned.",
+                }),
+                "context_window_freenoise": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Shuffle (rather than redraw) the initial noise between windows so overlapping regions start from correlated noise. Costs nothing — it is a one-time permutation of the starting noise — and is core's default for LTXV because it measurably improves how well windows blend. Turn it off only to A/B whether it is helping.",
+                }),
+                "context_window_retain_first": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Pin latent frame 0 (the i2v anchor) into EVERY window, in both the conditioning and the noise latent, instead of only the first window. Helps when later windows drift away from the reference image. Off by default because on a CONTINUATION scene frame 0 is the carried tail of the previous scene, not the anchor — pinning it there re-shows the same content in every window and can read as the scene going static. Turn it on if later windows lose the reference; turn it off if the scene stops moving.",
+                }),
+                # NOTE: append-only — keep new sampler widgets at the END of this block so the
+                # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
+                "second_pass": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Sample each scene in TWO passes. Pass 1 runs the main sigmas schedule in full, exactly as written; pass 2 then runs the second_pass_sigmas schedule in full, exactly as written, starting from pass 1's finished clip. Nothing is cut short and nothing is derived — to make pass 1 shorter, shorten the main schedule. Total steps are simply the two schedules added up (a 9-step main plus a 4-step second pass is 13). Pass 1's finished latent is simply handed to pass 2 as its latent_image and the sampler noises it to the schedule's first sigma itself, exactly as any img2img does — there is no extra step in between. That first sigma is therefore the strength dial, and it is literal (CONST scaling: x = s*noise + (1-s)*picture): at 0.8 pass 2 starts from 80% fresh noise over 20% of the pass-1 picture and reworks the shot, looking soft if the schedule has few steps to resolve it; at 0.4 it is 40/60 and polishes; at 0.2 it is nearly pure detail work. Requires a second_pass_sigmas schedule; without one the pass is skipped with a note.",
+                }),
+                "second_pass_op": (["none", "sharpen", "upscale_2x"], {
+                    "default": "none",
+                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. Both use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                }),
+                # A connection socket, never a widget — safe at the end, and it must stay after
+                # every widget above (see the widgets_values note at the top of this block).
+                "second_pass_sigmas": ("SIGMAS", {
+                    "tooltip": "The schedule pass 2 runs — required for second_pass, and it is run EXACTLY as written, high to low, ending at 0. Wire any scheduler here, or type sigmas in the Editor. Pass 1 has already finished the main schedule by this point, so pass 2 starts from a clean clip and re-enters by re-noising it up to this schedule's FIRST sigma: that value is the strength dial (near 1.0 reworks the shot, low values only polish it), and the rest of the schedule sets how many steps it gets. A schedule that ascends, or that stops above 0, is refused with the reason — both would silently produce a distorted or under-denoised clip rather than fail loudly.",
+
                 }),
             },
             "hidden": {
@@ -2536,6 +2592,18 @@ class FunPackLTXAVSceneChainSampler:
         if not isinstance(tensor, torch.Tensor) or tensor.dim() < 3:
             raise ValueError("Scene chain latents must have a time dimension at index 2.")
         return int(tensor.shape[2])
+
+    def _context_scene_latent_frames(self, chunk):
+        """Video latent frames in this scene's chunk, or None if it can't be read.
+
+        Reported only — core decides for itself whether a scene is long enough to window.
+        Read off the VIDEO tensor (index 0 of the nested AV latent), while the chunk is
+        still unpacked 5D; after comfy packs it the time axis is gone.
+        """
+        try:
+            return self._tensor_frames(self._latent_tensors(chunk)[0])
+        except Exception:
+            return None
 
     def _latent_tensors(self, latent):
         samples = latent.get("samples")
@@ -2884,6 +2952,23 @@ class FunPackLTXAVSceneChainSampler:
         result.pop("noise_mask", None)
         return result
 
+    def _set_phase(self, label):
+        """Publish what is running right now for the editor's progress readout.
+
+        The ComfyUI progress channel is (value, max) only, so without this a multi-scene
+        chain — especially one sampling some scenes twice — is a single anonymous bar.
+        Best-effort in every direction: a missing module or a failed write must never
+        affect the render.
+        """
+        try:
+            try:
+                from . import run_phase as _rp
+            except ImportError:  # loaded as a top-level module (tests, direct import)
+                import run_phase as _rp
+            _rp.set_phase(label)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
@@ -2911,7 +2996,6 @@ class FunPackLTXAVSceneChainSampler:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
             extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
             extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
-
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
@@ -2928,6 +3012,209 @@ class FunPackLTXAVSceneChainSampler:
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
         return latent
+
+    # ---------------------------------------------------------------------------
+    # cut_opening_frames — let the i2v anchor do its work, then cut it out of the clip.
+    #
+    # The anchor is a real, PINNED latent frame at temporal position 0: it constrains
+    # identity/style/composition all the way down the schedule, and it is also literally
+    # the first frame you see. The scene is sampled exactly as normal — the anchor is
+    # never weakened, blurred or approximated — and the opening is then cut off the
+    # FINISHED latent, so it can be the former without being the latter. An i2v
+    # generation that reads as t2v, for no extra sampling at all.
+    #
+    # Nothing is regrown to replace what is cut: the scene simply comes out that much
+    # shorter. Regrowing it was tried (slide the frames left, refill the freed tail,
+    # finish the schedule on the result) and the invented ending consistently came out
+    # with worse or missing movement, which is not worth paying steps for.
+    # ---------------------------------------------------------------------------
+
+    def _anchor_pinned_frames(self, chunk):
+        """How many leading latent frames this chunk pins (mask < 1) — i.e. the i2v anchor.
+
+        0 means a genuine t2v scene with no anchor image: there is nothing to shift, and
+        sliding anyway would just discard real generated frames. Reading the CHUNK's own
+        mask rather than the template's is deliberate — it reflects what this scene actually
+        got, including per-scene anchors.
+        """
+        try:
+            tensors = self._latent_tensors(chunk)
+            masks = self._latent_masks(chunk, len(tensors))
+            if not masks or masks[0] is None:
+                return 0
+            return self._protected_prefix_frames(masks[0], self._tensor_frames(tensors[0]))
+        except Exception:
+            return 0
+
+    def _second_pass_schedule(self, alt_sigmas):
+        """Validate the pass-2 schedule. Returns (sigmas, reason); one of them is None.
+
+        There is nothing to derive here and nothing to cut. Pass 1 runs the main schedule in
+        full, exactly as written; pass 2 then runs THIS schedule in full, exactly as written.
+        Pass 2 therefore starts from a FINISHED clip, which is the ordinary img2img re-entry
+        (comfy's CONST scaling, x = s*noise + (1-s)*clean, valid precisely because the input
+        is clean). To make pass 1 shorter, shorten the main schedule.
+
+        A hand-typed schedule is the one input that can be malformed, and both ways it can
+        be are silent in the OUTPUT rather than loud at runtime, so they are caught here.
+        """
+        if not isinstance(alt_sigmas, torch.Tensor) or alt_sigmas.numel() < 2:
+            return None, ("no second-pass schedule — set one (comma-separated sigmas, high to "
+                          "low, ending at 0) or turn the second pass off")
+        vals = [float(v) for v in alt_sigmas.tolist()]
+        eps = 1e-4
+        if any(b > a + eps for a, b in zip(vals, vals[1:])):
+            return None, ("second-pass schedule must descend — "
+                          f"{', '.join(f'{v:g}' for v in vals)} goes back up, which walks the "
+                          f"trajectory backwards. List the sigmas high to low")
+        if vals[-1] > eps:
+            return None, (f"second-pass schedule ends at {vals[-1]:g}, not 0 — the scene would "
+                          f"come out partially denoised (noise artefacts). End it at 0")
+        if vals[0] <= eps:
+            return None, "second-pass schedule starts at 0 — there is nothing for it to denoise"
+        return alt_sigmas, None
+
+    def _second_pass_operate(self, latent, op, upsampler, vae):
+        """Apply the chosen latent-space operation between the two passes.
+
+        All of these are OPTIONS — "none" is the default and the whole feature is opt-in.
+        Everything here touches the VIDEO stream only: the audio stream sits alongside it in
+        the same nested latent and has no spatial axes to scale, and reshaping it is exactly
+        the class of change that has corrupted audio before.
+
+        - "sharpen": Lightricks' trained 2x LatentUpsampler forward, then area-downscale back
+          to the original size. No video-model calls at all, so it costs a fraction of one
+          step. It adds detail consistent with what is already there; it cannot fix structure
+          that is wrong (the same limit segmented detailing's 'sharpen' mode documents).
+          Pass 2 then re-denoises the sharpened latent, which is what makes it stick.
+        - "upscale_2x": the same upsampler, but the result is KEPT at 2x. Pass 2 therefore
+          runs at four times the pixels, and the scene decodes at double resolution. This is
+          the expensive one by a wide margin — it is here because it was asked for, not
+          because it is a good default.
+
+        Returns (latent, note). The latent is returned unchanged with a note when the op
+        cannot run, so a missing upsampler degrades to "second pass, no operation" rather
+        than failing the whole render.
+        """
+        if op in (None, "none", ""):
+            return latent, None
+        # Validate the name BEFORE touching the upsampler: an unrecognised op should cost
+        # nothing and say so, not pay for a full upsampler forward and then be discarded.
+        if op not in ("sharpen", "upscale_2x"):
+            return latent, f"second_pass_op={op} skipped: unknown operation"
+        if upsampler is None:
+            return latent, f"second_pass_op={op} skipped: no latent upsampler could be loaded"
+        try:
+            from . import detailing as _d
+        except ImportError:  # loaded as a top-level module (tests, direct import)
+            import detailing as _d
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        video = tensors[0]
+        h, w = int(video.shape[-2]), int(video.shape[-1])
+        try:
+            up = _d._run_upsampler(upsampler, video, vae)
+        except Exception as exc:  # noqa: BLE001
+            return latent, f"second_pass_op={op} skipped: upsampler failed ({exc})"
+        if op == "sharpen":
+            tensors[0] = _d._downscale_to(up, h, w)
+            note = f"second_pass_op(sharpen: 2x upsampler pass, resampled back to {h}x{w})"
+        else:  # "upscale_2x"
+            tensors[0] = up
+            note = (f"second_pass_op(upscale_2x: {h}x{w} -> {up.shape[-2]}x{up.shape[-1]} — "
+                    f"pass 2 runs at {(up.shape[-2] * up.shape[-1]) // max(1, h * w)}x the pixels)")
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        return result, note
+
+    def _restore_pinned_prefix(self, state, chunk):
+        """Put the i2v pin back on a latent that is about to be handed to a second pass.
+
+        _sample_chunk drops noise_mask from what it returns, so without this a second pass
+        would run UNPINNED and re-denoise the anchor frame, letting the reference drift. The
+        pinned region's values are copied back from the original chunk as well, since pass 2
+        re-noises everything it is handed, including frames that are supposed to be frozen.
+        """
+        mask = chunk.get("noise_mask")
+        pinned = self._anchor_pinned_frames(chunk)
+        if mask is None or pinned <= 0:
+            return state
+        try:
+            # A resolution-changing second_pass_op (upscale_2x) leaves the chunk's anchor and
+            # mask the wrong size. Rescaling them here would be inventing an anchor; the
+            # caller reports the lost pin instead.
+            if self._latent_tensors(state)[0].shape[-2:] != self._latent_tensors(chunk)[0].shape[-2:]:
+                return state
+        except Exception:
+            return state
+        result = self._clone_latent(state)
+        try:
+            src = self._latent_tensors(chunk)[0]
+            dst = self._latent_tensors(result)
+            if self._tensor_frames(dst[0]) >= pinned and self._tensor_frames(src) >= pinned:
+                dst[0][:, :, :pinned] = src[:, :, :pinned].to(
+                    device=dst[0].device, dtype=dst[0].dtype)
+                if self._is_nested(result.get("samples")):
+                    result["samples"] = comfy.nested_tensor.NestedTensor(dst)
+                else:
+                    result["samples"] = dst[0]
+        except Exception:
+            return state
+        result["noise_mask"] = self._clone_value(mask)
+        return result
+
+    def _cut_opening_latent(self, latent, drop):
+        """Cut the first `drop` latent frames off a FINISHED scene latent.
+
+        The i2v anchor is a pinned frame at position 0: it transfers identity, style and
+        composition at full strength all the way down the schedule, and it is also literally
+        the first frame of the clip, so every i2v scene opens on the exact reference still.
+        Cutting it (plus the settling-in stretch behind it, where the shot is still leaving
+        that still) afterwards keeps the transfer and removes the tell.
+
+        Nothing is regrown, so the scene simply comes out `drop` latent frames SHORTER than
+        the length that was asked for. That is the whole trade: every surviving frame was
+        generated as part of one continuous shot, with no invented ending and no joint.
+
+        Nothing downstream constrains the new size: LTXAV's video patchifier has temporal
+        patch size 1 (SymmetricPatchifier(1) -> no divisibility rule on latent frames), the
+        streams reach the transformer as independent tensors with no enforced video:audio
+        ratio, and VAE decode is (f-1)*scale+1 for any f >= 1.
+
+        What DOES matter is proportion. Audio timings come from the audio stream's own index
+        and video's from its own RoPE, so cropping the two by different amounts of TIME
+        desynchronises them silently — no error, just sound that drifts. Each extra stream's
+        kept length is therefore derived from the new VIDEO length directly, never by
+        subtracting a separately-rounded drop.
+
+        Returns (latent, dropped).
+        """
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        video = tensors[0]
+        frames = self._tensor_frames(video)
+        drop = max(0, min(int(drop), frames - 1))
+        if drop <= 0:
+            return result, 0
+        tensors[0] = video[:, :, drop:]
+        kept = frames - drop
+        for _idx in range(1, len(tensors)):
+            _t = tensors[_idx]
+            if _t is None:
+                continue
+            _n = self._tensor_frames(_t)
+            _keep = max(1, min(_n, int(round(_n * kept / max(1, frames)))))
+            if _keep < _n:
+                tensors[_idx] = _t[:, :, _n - _keep:]
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        # The pin belongs to a frame that no longer exists.
+        result.pop("noise_mask", None)
+        return result, drop
 
     def _output_connected(self, prompt, unique_id, output_index):
         """Return True if the given output slot index is wired to any downstream node."""
@@ -4285,6 +4572,132 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    # Wrapper keys used by context windows; core registers them under these names.
+    _CTX_WRAPPER_KEYS = ("ContextWindows_prepare_sampling", "ContextWindows_sampler_sample")
+
+    # Core's schedule identifiers put the words the other way round (comfy.context_windows
+    # ContextSchedules: "standard_uniform", "standard_static", "looped_uniform", "batched").
+    # This knob shipped with the readable-but-wrong spellings, so every schedule except
+    # "batched" raised ValueError out of get_matching_context_schedule and failed the whole
+    # render. The knob now offers core's own names; these aliases keep a project saved with
+    # the old ones working instead of failing at generation time.
+    _CTX_SCHEDULE_ALIASES = {
+        "uniform_standard": "standard_uniform",
+        "static_standard": "standard_static",
+        "uniform_looped": "looped_uniform",
+    }
+
+    def _install_context_windows(self, model, length, overlap, schedule, fuse,
+                                 freenoise, retain_first):
+        """Hand this scene's denoise to ComfyUI core's context-window sampler.
+
+        Nothing is ported: core owns the whole mechanism (comfy.context_windows), we only
+        build its handler and hang it on this scene's model_options, the same way the stock
+        LTXVContextWindows node does. Core picks it up inside comfy.samplers.calc_cond_batch,
+        which every FunPack sampler already goes through (they all call model(x, sigma, ...)
+        on the CFGGuider rather than apply_model directly), so no sampler change is needed.
+
+        Returns (remove_fn, latent_len, None), or (None, None, reason) when it cannot run.
+        Everything that can go wrong here is a mismatch with the installed core, and every
+        one of them used to surface as either the wrong explanation or a failed render, so
+        the reason is carried back and reported per scene rather than inferred.
+
+        The capability gate below is the important part: the handler class itself
+        has existed for a long time for unpacked video, but the packed AV latent needs
+        BaseModel.map_context_window_to_modalities (+ resize_cond_for_context_window) to
+        unpack the AV stream, map each video window onto its audio window and re-slice
+        keyframe_idxs / guide_attention_entries. Without those, enabling this on LTXAV would
+        window the packed tensor blindly and quietly wreck audio and guides — the same class
+        of packed-vs-unpacked mistake that killed DynamicConditioning. Refuse instead.
+        """
+        try:
+            import comfy.context_windows as _cw
+            import comfy.patcher_extension as _pe
+        except ImportError:
+            return None, None, ("this ComfyUI build has no context-window support at all "
+                                "(needs ComfyUI >= v0.29.0)")
+        base = getattr(model, "model", None)
+        if not hasattr(base, "map_context_window_to_modalities"):
+            return None, None, ("this ComfyUI build has no LTXAV context-window support "
+                                "(needs the core context-windows change, ComfyUI >= v0.29.0)")
+        # Real frames -> latent frames, exactly as core's LTXVContextWindows node does it.
+        latent_len = max(((int(length) - 1) // 8) + 1, 1)
+        latent_overlap = max(int(overlap) // 8, 0)
+        retain = "0" if retain_first else ""
+        # Resolve the names against CORE's vocabulary, not ours, and say what it accepts —
+        # these raise ValueError, which used to escape and fail the render outright.
+        _sched_name = self._CTX_SCHEDULE_ALIASES.get(str(schedule), str(schedule))
+        try:
+            _schedule = _cw.get_matching_context_schedule(_sched_name)
+        except ValueError:
+            _known = ", ".join(sorted(getattr(_cw, "CONTEXT_MAPPING", {}) or {}))
+            return None, None, (f"context_window_schedule={schedule!r} is not a schedule this "
+                                f"ComfyUI knows{f' — it accepts {_known}' if _known else ''}")
+        try:
+            _fuse = _cw.get_matching_fuse_method(str(fuse))
+        except ValueError:
+            _known = ", ".join(sorted(getattr(_cw, "FUSE_MAPPING", {}) or {}))
+            return None, None, (f"context_window_fuse={fuse!r} is not a blend this ComfyUI "
+                                f"knows{f' — it accepts {_known}' if _known else ''}")
+        kwargs = dict(
+            context_schedule=_schedule,
+            fuse_method=_fuse,
+            context_length=latent_len,
+            context_overlap=latent_overlap,
+            context_stride=1,
+            closed_loop=False,
+            dim=2,
+            freenoise=bool(freenoise),
+            cond_retain_index_list=retain,
+            latent_retain_index_list=retain,
+            split_conds_to_windows=False,
+        )
+        # Core's handler has gained and lost keywords over time (latent_retain_index_list is
+        # absent on some builds). Passing one it doesn't take raised TypeError and the whole
+        # feature was then reported as "core too old", which is a different and misleading
+        # thing. Drop the extras instead, and name the one knob that stops working.
+        _dropped = []
+        try:
+            import inspect as _inspect
+            _accepted = set(_inspect.signature(_cw.IndexListContextHandler).parameters)
+            if "kwargs" not in _accepted:
+                _dropped = [k for k in kwargs if k not in _accepted]
+                for k in _dropped:
+                    kwargs.pop(k)
+        except (TypeError, ValueError):
+            pass
+        try:
+            handler = _cw.IndexListContextHandler(**kwargs)
+        except TypeError as exc:
+            return None, None, (f"this ComfyUI's context-window handler takes different "
+                                f"arguments than expected ({exc})")
+        prev = model.model_options.get("context_handler")
+        had_prev = "context_handler" in model.model_options
+        model.model_options["context_handler"] = handler
+        _cw.create_prepare_sampling_wrapper(model)
+        if freenoise:
+            _cw.create_sampler_sample_wrapper(model)
+
+        def _remove():
+            if had_prev:
+                model.model_options["context_handler"] = prev
+            else:
+                model.model_options.pop("context_handler", None)
+            for wrapper_type, key in (
+                (_pe.WrappersMP.PREPARE_SAMPLING, self._CTX_WRAPPER_KEYS[0]),
+                (_pe.WrappersMP.SAMPLER_SAMPLE, self._CTX_WRAPPER_KEYS[1]),
+            ):
+                try:
+                    model.remove_wrappers_with_key(wrapper_type, key)
+                except Exception:
+                    pass
+
+        _note = None
+        if retain_first and "latent_retain_index_list" in _dropped:
+            _note = ("this ComfyUI's context-window handler has no latent_retain_index_list, "
+                     "so 'pin anchor in every window' applies to conditioning only")
+        return _remove, latent_len, _note
+
     def _build_plateau_cache_wrapper(self, model, threshold):
         """Plateau step-cache (MixCache/Chorus-family, adapted to LTX2.3's distilled schedule).
 
@@ -4369,6 +4782,19 @@ class FunPackLTXAVSceneChainSampler:
         orig_prepare_timestep = ltxv._prepare_timestep
         orig_prepare_pe = ltxv._prepare_positional_embeddings
         orig_process_output = ltxv._process_output
+        # These wrappers reach into LTXBaseModel internals, so a ComfyUI refactor can break
+        # one of them. Falling back silently is how a broken source-phase tag once passed as
+        # "Best-FaceID makes the clip open on the reference image" — report each failure once
+        # per install (not per step) so the cause is visible in the console immediately.
+        _warned: set = set()
+
+        def _warn_once(what, exc):
+            if what in _warned:
+                return
+            _warned.add(what)
+            print(f"[FunPackSceneChain] identity_transfer: {what} failed ({type(exc).__name__}: {exc}) "
+                  f"— identity conditioning is NOT being applied correctly this run. "
+                  f"This usually means a ComfyUI update changed the LTX model internals.")
 
         def process_input(self_ltxv, x, keyframe_idxs, denoise_mask, **kw):
             out = orig_process_input(x, keyframe_idxs, denoise_mask, **kw)
@@ -4397,7 +4823,8 @@ class FunPackLTXAVSceneChainSampler:
                 else:
                     xx, pix = vx, vco
                 return xx, pix, add
-            except Exception:
+            except Exception as e:
+                _warn_once("reference-token append (_process_input)", e)
                 self_ltxv._funpack_id_ref_len = 0
                 return out
 
@@ -4426,7 +4853,10 @@ class FunPackLTXAVSceneChainSampler:
                     v_pe = _rotate_overlap_freqs(v_pe, ref_len, seg_value)
                     return [(v_pe, cross_v), pe[1]]
                 return _rotate_overlap_freqs(pe, ref_len, seg_value)
-            except Exception:
+            except Exception as e:
+                # Untagged reference tokens share the target's frame-0 grid, so the model
+                # renders them AS frame 0 — the clip opens on the reference image.
+                _warn_once("source-phase RoPE tag (_prepare_positional_embeddings)", e)
                 return pe
 
         def process_output(self_ltxv, x, embedded_timestep, keyframe_idxs, **kw):
@@ -4453,8 +4883,8 @@ class FunPackLTXAVSceneChainSampler:
                         x = x[:, :x.shape[1] - ref_len]
                         if hasattr(embedded_timestep, "shape") and embedded_timestep.dim() >= 2 and embedded_timestep.shape[1] > 1:
                             embedded_timestep = embedded_timestep[:, : embedded_timestep.shape[1] - ref_len]
-                except Exception:
-                    pass
+                except Exception as e:
+                    _warn_once("reference-token trim (_process_output)", e)
             return orig_process_output(x, embedded_timestep, keyframe_idxs, **kw)
 
         ltxv._process_input = types.MethodType(process_input, ltxv)
@@ -4683,6 +5113,11 @@ class FunPackLTXAVSceneChainSampler:
                segmented_detailing=False, detail_targets="hands",
                detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
                detail_max_area=0.35, detail_denoise=0.85, detail_mode="repair",
+               context_windows=False, context_window_length=145, context_window_overlap=40,
+               context_window_schedule="standard_uniform", context_window_fuse="pyramid",
+               context_window_freenoise=True, context_window_retain_first=False,
+               cut_opening_frames=0,
+               second_pass=False, second_pass_op="none", second_pass_sigmas=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -4741,6 +5176,15 @@ class FunPackLTXAVSceneChainSampler:
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
                 plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
+                context_windows=context_windows, context_window_length=context_window_length,
+                context_window_overlap=context_window_overlap,
+                context_window_schedule=context_window_schedule,
+                context_window_fuse=context_window_fuse,
+                context_window_freenoise=context_window_freenoise,
+                context_window_retain_first=context_window_retain_first,
+                cut_opening_frames=cut_opening_frames,
+                second_pass=second_pass, second_pass_op=second_pass_op,
+                second_pass_sigmas=second_pass_sigmas,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -4854,7 +5298,17 @@ class FunPackLTXAVSceneChainSampler:
         if first_scene_seed is None:
             first_scene_seed = int(seed)
 
-        steps_per_scene = max(1, int(len(sigmas)) - 1)
+        # A second pass samples every scene twice, so its steps have to be in the total or
+        # the bar overflows on scene 1 and jumps backwards on scene 2 (each scene's offset
+        # is a multiple of steps_per_scene). The pass-2 schedule is one node input shared by
+        # every scene, so it can be measured once here — and validated the same way the loop
+        # will, so an unusable schedule doesn't inflate the total for a pass that gets skipped.
+        _pass2_steps = 0
+        if second_pass:
+            _sp_probe, _ = self._second_pass_schedule(second_pass_sigmas)
+            if _sp_probe is not None:
+                _pass2_steps = max(0, int(_sp_probe.numel()) - 1)
+        steps_per_scene = max(1, (int(len(sigmas)) - 1) + _pass2_steps)
         total_sampling_steps = scene_count * steps_per_scene
         pbar = None
         try:
@@ -4873,6 +5327,7 @@ class FunPackLTXAVSceneChainSampler:
         _identity_overlap_state: dict = {}
         _detail_upsampler_model = None  # lazy: resolved+loaded at the first detailed scene
         _detail_disabled_reason = None  # set on resolve/load failure: don't retry per scene
+        _ctx_unsupported_reported = False  # print the "core too old" line once, not per scene
 
         for scene_index, scene_cond in enumerate(scene_conditionings):
             scene_positive = [scene_cond]
@@ -4992,11 +5447,56 @@ class FunPackLTXAVSceneChainSampler:
             _v2a_handles = []
             _identity_overlap_handle = None
             _plateau_stats = None
+            _ctx_remove = None
             try:
+                # Context windows: core-owned, installed first so every FunPack wrapper below
+                # sits inside the per-window forward rather than around the whole clip.
+                if context_windows:
+                    _ctx_remove, _ctx_latent_len, _ctx_reason = self._install_context_windows(
+                        model, context_window_length, context_window_overlap,
+                        context_window_schedule, context_window_fuse,
+                        context_window_freenoise, context_window_retain_first)
+                    if _ctx_remove is None:
+                        # Every reason here is a mismatch with the installed core, so it is
+                        # the same for every scene — print it once, report it on each.
+                        if not _ctx_unsupported_reported:
+                            print(f"[FunPackSceneChain] context_windows requested but "
+                                  f"{_ctx_reason} — skipped.")
+                            _ctx_unsupported_reported = True
+                        run_mechanisms.append(f"context_windows(SKIPPED: {_ctx_reason})")
+                    else:
+                        if _ctx_reason:
+                            run_mechanisms.append(f"context_windows NOTE: {_ctx_reason}")
+                        # Core engages windowing only when the scene is longer than the window,
+                        # and logs that decision itself; say so here too so a scene that silently
+                        # sampled whole doesn't read as the feature being broken.
+                        _scene_latent_len = self._context_scene_latent_frames(chunk)
+                        if _scene_latent_len is not None and _scene_latent_len <= _ctx_latent_len:
+                            run_mechanisms.append(
+                                f"context_windows(inactive: scene {_scene_latent_len} <= window "
+                                f"{_ctx_latent_len} latent frames — raise num_frames_per_scene or "
+                                f"lower context_window_length)")
+                        else:
+                            run_mechanisms.append(
+                                f"context_windows({context_window_schedule},{context_window_fuse},"
+                                f"len={_ctx_latent_len},ovl={max(int(context_window_overlap) // 8, 0)}"
+                                f"{',freenoise' if context_window_freenoise else ''}"
+                                f"{',retain_first' if context_window_retain_first else ''})")
                 # Innermost wrapper (installed first): caches the raw base-model forward on the
                 # near-noise plateau so later plateau steps reuse it. All guidance wrappers below
                 # layer around it and still post-process each step's (cached-or-fresh) prediction.
-                if plateau_cache:
+                #
+                # MUTUALLY EXCLUSIVE with context windows: the cache is keyed by
+                # (input.shape, cond_or_uncond), and every window within one step calls the model
+                # with the SAME shape. Windows 2..N would therefore be handed window 1's cached
+                # prediction on every plateau step — one window's content bleeding across the whole
+                # clip. Context windows wins (it's a capability, the cache is a speed experiment);
+                # say so in the report rather than silently dropping one of two ticked boxes.
+                if plateau_cache and _ctx_remove is not None:
+                    run_mechanisms.append(
+                        "plateau_cache(SKIPPED: incompatible with context_windows — the per-step "
+                        "cache cannot tell two windows apart)")
+                elif plateau_cache:
                     _plateau_stats = self._build_plateau_cache_wrapper(model, plateau_cache_threshold)
                 # Loop temporal style (auto director's funpack_temporal_loop): Mobius latent
                 # roll. Installed BELOW the guidance wrappers (embed guidance / slider /
@@ -5101,14 +5601,129 @@ class FunPackLTXAVSceneChainSampler:
                             )
                             run_mechanisms.append(f"identity_transfer_arcface(id_strength={id_strength})")
                 _t_sample0 = _time.perf_counter()
-                sampled = self._sample_chunk(
-                    model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative, chunk,
+                _sample_kwargs = dict(
                     pbar=pbar, step_offset=scene_index * steps_per_scene,
                     alg_guide_tail_frames=(guide_tail if (alg_blur_guides and guide_tail > 0) else 0),
                     alg_guide_blur_strength=alg_guide_blur_strength,
                     alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
+                # cut_opening_frames: let the real, untouched i2v anchor condition the scene
+                # at full strength, then cut it out of the finished clip instead of weakening
+                # it on the way in (ALG blurs the anchor and loses character detail; overlap
+                # tokens approximate it and lose some too). Eligibility is decided here, while
+                # the pre-sampling chunk is still around; the cut itself is a post-process on
+                # the finished latent, below, and costs no sampling at all.
+                _cut_drop = 0
+                if int(cut_opening_frames) > 0:
+                    _cut_drop = self._expected_latent_frames(
+                        int(cut_opening_frames) + 1, time_scale) - 1
+                    if carried + soft_carried > 0:
+                        _reason = ("continuation scene — the opening is carried frames from the "
+                                   "previous scene, not an anchor, and cutting them would break "
+                                   "the join with it")
+                    elif guide_tail > 0 or audio_tail > 0:
+                        _reason = ("scene is carrying appended frames (mid_scene_guide / carried "
+                                   "i2v guides / JoyAI audio memory) that are stripped after "
+                                   "sampling — the audio crop is derived from the video length, "
+                                   "which those extra frames would make wrong")
+                    elif self._context_scene_latent_frames(chunk) is None:
+                        _reason = "scene latent could not be read"
+                    elif _cut_drop <= 0:
+                        _reason = (f"cut_opening_frames={cut_opening_frames} is under one latent "
+                                   f"frame at this VAE time scale")
+                    elif self._anchor_pinned_frames(chunk) <= 0:
+                        # No pinned prefix = a genuine t2v scene (no anchor image attached).
+                        # Cutting here would throw away real generated frames for nothing —
+                        # this is the "fake t2v" trick, it needs a real anchor to fake it WITH.
+                        _reason = ("scene has no pinned i2v anchor (t2v scene) — nothing to cut "
+                                   "out; attach an anchor image, or set cut_opening_frames to 0")
+                    else:
+                        _reason = None
+                    if _reason is not None:
+                        run_mechanisms.append(f"cut_opening_frames(SKIPPED: {_reason})")
+                        _cut_drop = 0
+                # Optional second pass. The shape is deliberately plain: pass 1 runs the
+                # main schedule IN FULL, exactly as written, then pass 2 runs its own
+                # schedule IN FULL, exactly as written. Nothing is cut short and nothing is
+                # derived — to make pass 1 shorter, shorten the main schedule. Pass 2 starts
+                # from a FINISHED clip, so it re-enters through comfy's ordinary CONST noise
+                # scaling, valid precisely because the input is clean. Total steps are simply
+                # the two schedules added up.
+                _sp_b = None
+                if second_pass:
+                    _sp_b, _sp_reason = self._second_pass_schedule(second_pass_sigmas)
+                    if _sp_b is None:
+                        run_mechanisms.append(f"second_pass(SKIPPED: {_sp_reason})")
+                _scene_label = (f"scene {scene_index + 1}/{scene_count}"
+                                if scene_count > 1 else "")
+                self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}"
+                                f"{'pass 1 of 2' if _sp_b is not None else 'sampling'}")
+                _full = self._sample_chunk(
+                    model, sampler, sigmas, scene_seed, cfg, scene_positive,
+                    scene_negative, chunk, **_sample_kwargs)
+                if _sp_b is None:
+                    sampled = _full
+                else:
+                    _sp_state = _full
+                    if second_pass_op not in (None, "none", ""):
+                        # The op runs on the FINISHED pass-1 clip, which is the only state
+                        # it makes sense on: sharpening a half-denoised latent sharpens the
+                        # noise in it. Shares segmented detailing's lazily-loaded upsampler.
+                        if _detail_upsampler_model is None and _detail_disabled_reason is None:
+                            try:
+                                try:
+                                    from . import detailing as _det
+                                except ImportError:
+                                    import detailing as _det
+                                _r = _det.resolve_upsampler_name(detail_upsampler)
+                                _detail_upsampler_model = _det.load_latent_upsampler(_r)
+                            except Exception as _exc:  # noqa: BLE001
+                                _detail_disabled_reason = str(_exc)
+                                # resolve_upsampler_name prints when it DOWNLOADS; nothing
+                                # printed when it can't, so a silent skip looked like the op
+                                # having run. Say it on the console too, once.
+                                print(f"[FunPackSceneChain] second_pass_op={second_pass_op} "
+                                      f"needs the latent upsampler and it could not be "
+                                      f"loaded: {_detail_disabled_reason} — the second pass "
+                                      f"still runs, without the operation.")
+                        _sp_state, _op_note = self._second_pass_operate(
+                            _sp_state, second_pass_op, _detail_upsampler_model, vae)
+                        if _op_note:
+                            # "no upsampler could be loaded" on its own doesn't say WHY —
+                            # missing huggingface_hub, a failed download, an unreadable file
+                            # are all different fixes. Carry the real reason through.
+                            if _detail_upsampler_model is None and _detail_disabled_reason:
+                                _op_note = f"{_op_note} ({_detail_disabled_reason})"
+                            run_mechanisms.append(_op_note)
+                    # A second pass must KEEP the i2v anchor pinned — otherwise pass 2
+                    # re-denoises the reference frame and the scene drifts away from the
+                    # image it was supposed to start from.
+                    _sp_before = _sp_state
+                    _sp_state = self._restore_pinned_prefix(_sp_state, chunk)
+                    if _sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0:
+                        # Only happens when the op changed the resolution — say so, because
+                        # an unpinned pass 2 can drift off the reference image.
+                        run_mechanisms.append(
+                            "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
+                            "because second_pass_op changed the latent resolution — pass 2 runs "
+                            "unpinned and may drift from the reference image.")
+                    _sp_kw = dict(_sample_kwargs)
+                    _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
+                    # Announced BEFORE it runs: the after-the-fact run_mechanisms line says
+                    # a second pass happened, which is no help while you are waiting on one.
+                    self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}pass 2 of 2")
+                    print(f"[FunPack AV] second pass starting"
+                          f"{' on ' + _scene_label if _scene_label else ''}: "
+                          f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}")
+                    sampled = self._sample_chunk(
+                        model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
+                        scene_negative, _sp_state, **_sp_kw)
+                    run_mechanisms.append(
+                        f"second_pass({int(sigmas.numel()) - 1} steps + "
+                        f"{int(_sp_b.numel()) - 1} steps = "
+                        f"{int(sigmas.numel()) + int(_sp_b.numel()) - 2} total, "
+                        f"pass 2 from {float(_sp_b[0].item()):g})")
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
                 if _plateau_stats is not None:
@@ -5118,6 +5733,11 @@ class FunPackLTXAVSceneChainSampler:
                         run_mechanisms.append(
                             f"plateau_cache(skipped {_reused}/{_total} plateau fwd, thr={plateau_cache_threshold})")
             finally:
+                # Nothing is sampling once this scene is out of the sampler — including on an
+                # interrupt, which is exactly when a stale "pass 2 of 2" would linger.
+                self._set_phase("")
+                if _ctx_remove is not None:
+                    _ctx_remove()
                 self._remove_v2a_scale(_v2a_handles)
                 self._strip_identity_overlap(_identity_overlap_handle)
                 if model.model_options.get("model_function_wrapper") is not _scene_base_wrapper:
@@ -5125,6 +5745,25 @@ class FunPackLTXAVSceneChainSampler:
                         model.model_options["model_function_wrapper"] = _scene_base_wrapper
                     else:
                         model.model_options.pop("model_function_wrapper", None)
+            if _cut_drop > 0:
+                # The finished clip, minus its opening. Nothing is regrown, so the scene is
+                # now shorter than the length that was asked for — say so in the report
+                # rather than leaving it to be inferred from the output.
+                _before_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
+                sampled, _dropped = self._cut_opening_latent(sampled, _cut_drop)
+                _after_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
+                _pinned_n = self._anchor_pinned_frames(chunk)
+                run_mechanisms.append(
+                    f"cut_opening_frames(dropped {_dropped} of {_pinned_n} pinned latent "
+                    f"frames — clip CROPPED to {_after_cut} of {_before_cut} latent frames, "
+                    f"~{int(cut_opening_frames)} real frames shorter)")
+                if _dropped < _pinned_n:
+                    # Part of the anchor is still visible — the one outcome this exists to
+                    # prevent, so name the fix.
+                    run_mechanisms.append(
+                        f"cut_opening_frames WARNING: {_pinned_n - _dropped} anchor latent "
+                        f"frame(s) still in the clip — raise cut_opening_frames to at least "
+                        f"{_pinned_n * max(1, int(time_scale))}")
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
@@ -5145,7 +5784,7 @@ class FunPackLTXAVSceneChainSampler:
                     if _detail_upsampler_model is None:
                         _resolved = _detailing.resolve_upsampler_name(detail_upsampler)
                         _detail_upsampler_model = _detailing.load_latent_upsampler(_resolved)
-                        print(f"[FunPackSceneChain] segmented detailing upsampler: {_resolved}")
+                        print(f"[FunPackSceneChain] latent upsampler loaded: {_resolved}")
                     _t_detail0 = _time.perf_counter()
                     sampled, _detail_note = _detailing.detail_refine_scene(
                         self, model, vae, sampler, scene_positive, scene_negative, sampled,
@@ -5439,7 +6078,14 @@ class FunPackLTXAVSceneChainSampler:
                             output_guidance=False, output_guidance_strength=0.02,
                             dynashift=False, dynashift_strength=0.3, dynashift_threshold=0.6,
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                            plateau_cache=False, plateau_cache_threshold=0.975):
+                            plateau_cache=False, plateau_cache_threshold=0.975,
+                            context_windows=False, context_window_length=145,
+                            context_window_overlap=40, context_window_schedule="standard_uniform",
+                            context_window_fuse="pyramid", context_window_freenoise=True,
+                            context_window_retain_first=False,
+                            cut_opening_frames=0,
+                            second_pass=False, second_pass_op="none",
+                            second_pass_sigmas=None):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -5493,6 +6139,15 @@ class FunPackLTXAVSceneChainSampler:
                 dynashift=dynashift, dynashift_strength=dynashift_strength,
                 dynashift_threshold=dynashift_threshold,
                 plateau_cache=plateau_cache, plateau_cache_threshold=plateau_cache_threshold,
+                context_windows=context_windows, context_window_length=context_window_length,
+                context_window_overlap=context_window_overlap,
+                context_window_schedule=context_window_schedule,
+                context_window_fuse=context_window_fuse,
+                context_window_freenoise=context_window_freenoise,
+                context_window_retain_first=context_window_retain_first,
+                cut_opening_frames=cut_opening_frames,
+                second_pass=second_pass, second_pass_op=second_pass_op,
+                second_pass_sigmas=second_pass_sigmas,
                 unique_id=None, prompt=None,
             )
             last = out

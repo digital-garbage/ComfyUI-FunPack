@@ -154,6 +154,47 @@ def test_v1_combo_and_force_input():
     assert ci["blocks"] == "SELECTEDDITBLOCKS"
 
 
+def test_multitype_widget_is_a_widget_not_a_required_socket():
+    """A V3 MultiType built around a widget input serializes comma-joined with a widgetType
+    hint — e.g. LTXVEmptyLatentAudio.frame_rate as ("FLOAT,INT", {"widgetType": "INT"}).
+    It is a field the user types into; treating it as a socket demanded a source that no
+    node produces and blocked generation."""
+    oi = dict(OI)
+    oi["LTXVEmptyLatentAudio"] = {
+        "input": {"required": {
+            "frames_number": ["INT", {"default": 97}],
+            "frame_rate": ["FLOAT,INT", {"widgetType": "INT", "default": 25, "min": 1}],
+            "batch_size": ["INT", {"default": 1}],
+            "audio_vae": ["VAE"],
+        }},
+        "output": ["LATENT"], "output_name": ["Latent"],
+        "display_name": "LTXV Empty Latent Audio",
+    }
+    desc = nodes.describe_node(oi, "LTXVEmptyLatentAudio")
+    widgets = {w["name"]: w for w in desc["inputs"]}
+    assert widgets["frame_rate"]["kind"] == "int"        # renders as the widget it is
+    assert widgets["frame_rate"]["default"] == 25
+    ci = {c["name"]: c["type"] for c in desc["connection_inputs"]}
+    assert ci == {"audio_vae": "VAE"}                    # frame_rate is NOT a socket
+    # ...and it still qualifies for the audio_encoder role (union widget isn't an input type)
+    assert "LTXVEmptyLatentAudio" in [c["class"] for c in nodes.candidates(oi, "audio_encoder")]
+
+
+def test_multitype_socket_stays_a_socket_and_matches_any_member():
+    """A MultiType with no widget member ("IMAGE,MASK") is a real socket — it must still be
+    offered as one, and fed by a producer of either member type."""
+    oi = {"ImageResizeMatch": {"input": {"required": {"image": ["IMAGE"],
+                                                      "match": ["IMAGE,MASK"]}},
+                               "output": ["IMAGE"], "display_name": "Resize to Match"}}
+    ci = {c["name"]: (c["type"], c["required"]) for c in nodes.describe_node(oi, "ImageResizeMatch")["connection_inputs"]}
+    assert ci["match"] == ("IMAGE,MASK", True)
+    assert nodes.type_accepts("IMAGE,MASK", "MASK")
+    assert nodes.type_accepts("IMAGE,MASK", "IMAGE")
+    assert not nodes.type_accepts("IMAGE,MASK", "LATENT")
+    assert nodes.widget_type_of("IMAGE,MASK", {}) is None
+    assert nodes.widget_type_of("FLOAT,INT", {}) == "FLOAT"   # no hint → first member wins
+
+
 def test_models_store_roundtrip(tmp_path, monkeypatch):
     from movie_editor.backend import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)
