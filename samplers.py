@@ -2586,6 +2586,10 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
                     "tooltip": "Where pass 2 re-enters, when no second_pass_sigmas schedule is connected. 0 (default) = carry straight on from the cut: nothing is added, total cost unchanged. A value ABOVE second_pass_sigma rewinds — the half-denoised latent is rebuilt at that higher sigma (exact for a mid-trajectory latent, not the naive img2img re-noise) and those steps run again, letting the model rework structure it has already committed to, at the cost of repeating them. BELOW the cut is refused: noise can be added back, never removed. Ignored when second_pass_sigmas is connected, since that schedule's own first sigma is the entry point.",
                 }),
+                "second_pass_op": (["none", "sharpen", "upscale_2x"], {
+                    "default": "none",
+                    "tooltip": "OPTIONAL latent-space operation applied between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls at all, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what is already there and CANNOT fix structure that is wrong (an extra finger stays an extra finger, just sharper) — the same limit segmented detailing's sharpen mode documents. 'upscale_2x': the same upsampler, but the result is KEPT at 2x, so pass 2 runs at four times the pixels and the scene decodes at double resolution. That is 3-5x the sampling cost of the second half and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor) — the scene report says so when it happens. Both use the same upsampler file as segmented detailing (detail_upsampler, 'auto' downloads the official one on first use). Video stream only; audio is never reshaped.",
+                }),
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
@@ -3231,6 +3235,61 @@ class FunPackLTXAVSceneChainSampler:
             return None, "pass 2 would have no step"
         return (first, second, cut_at, entry_at, abs(entry_at - cut_at) <= eps, ctx), None
 
+    def _second_pass_operate(self, latent, op, upsampler, vae):
+        """Apply the chosen latent-space operation between the two passes.
+
+        All of these are OPTIONS — "none" is the default and the whole feature is opt-in.
+        Everything here touches the VIDEO stream only: the audio stream sits alongside it in
+        the same nested latent and has no spatial axes to scale, and reshaping it is exactly
+        the class of change that has corrupted audio before.
+
+        - "sharpen": Lightricks' trained 2x LatentUpsampler forward, then area-downscale back
+          to the original size. No video-model calls at all, so it costs a fraction of one
+          step. It adds detail consistent with what is already there; it cannot fix structure
+          that is wrong (the same limit segmented detailing's 'sharpen' mode documents).
+          Pass 2 then re-denoises the sharpened latent, which is what makes it stick.
+        - "upscale_2x": the same upsampler, but the result is KEPT at 2x. Pass 2 therefore
+          runs at four times the pixels, and the scene decodes at double resolution. This is
+          the expensive one by a wide margin — it is here because it was asked for, not
+          because it is a good default.
+
+        Returns (latent, note). The latent is returned unchanged with a note when the op
+        cannot run, so a missing upsampler degrades to "second pass, no operation" rather
+        than failing the whole render.
+        """
+        if op in (None, "none", ""):
+            return latent, None
+        # Validate the name BEFORE touching the upsampler: an unrecognised op should cost
+        # nothing and say so, not pay for a full upsampler forward and then be discarded.
+        if op not in ("sharpen", "upscale_2x"):
+            return latent, f"second_pass_op={op} skipped: unknown operation"
+        if upsampler is None:
+            return latent, f"second_pass_op={op} skipped: no latent upsampler could be loaded"
+        try:
+            from . import detailing as _d
+        except ImportError:  # loaded as a top-level module (tests, direct import)
+            import detailing as _d
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        video = tensors[0]
+        h, w = int(video.shape[-2]), int(video.shape[-1])
+        try:
+            up = _d._run_upsampler(upsampler, video, vae)
+        except Exception as exc:  # noqa: BLE001
+            return latent, f"second_pass_op={op} skipped: upsampler failed ({exc})"
+        if op == "sharpen":
+            tensors[0] = _d._downscale_to(up, h, w)
+            note = f"second_pass_op(sharpen: 2x upsampler pass, resampled back to {h}x{w})"
+        else:  # "upscale_2x"
+            tensors[0] = up
+            note = (f"second_pass_op(upscale_2x: {h}x{w} -> {up.shape[-2]}x{up.shape[-1]} — "
+                    f"pass 2 runs at {(up.shape[-2] * up.shape[-1]) // max(1, h * w)}x the pixels)")
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        return result, note
+
     def _restore_pinned_prefix(self, state, chunk):
         """Put the i2v pin back on a latent that is about to be handed to a second pass.
 
@@ -3243,6 +3302,14 @@ class FunPackLTXAVSceneChainSampler:
         mask = chunk.get("noise_mask")
         pinned = self._anchor_pinned_frames(chunk)
         if mask is None or pinned <= 0:
+            return state
+        try:
+            # A resolution-changing second_pass_op (upscale_2x) leaves the chunk's anchor and
+            # mask the wrong size. Rescaling them here would be inventing an anchor; the
+            # caller reports the lost pin instead.
+            if self._latent_tensors(state)[0].shape[-2:] != self._latent_tensors(chunk)[0].shape[-2:]:
+                return state
+        except Exception:
             return state
         result = self._clone_latent(state)
         try:
@@ -5216,7 +5283,7 @@ class FunPackLTXAVSceneChainSampler:
                anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
                anchor_shift_fresh_audio=True,
                second_pass=False, second_pass_sigma=0.603,
-               second_pass_restart_sigma=0.0, second_pass_sigmas=None,
+               second_pass_restart_sigma=0.0, second_pass_op="none", second_pass_sigmas=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5288,7 +5355,7 @@ class FunPackLTXAVSceneChainSampler:
                 anchor_shift_fresh_audio=anchor_shift_fresh_audio,
                 second_pass=second_pass, second_pass_sigma=second_pass_sigma,
                 second_pass_restart_sigma=second_pass_restart_sigma,
-                second_pass_sigmas=second_pass_sigmas,
+                second_pass_op=second_pass_op, second_pass_sigmas=second_pass_sigmas,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -5881,15 +5948,45 @@ class FunPackLTXAVSceneChainSampler:
                             scene_negative, chunk,
                             schedule_context={"sigmas": sigmas, "offset": 0}, **_sample_kwargs)
                         _sp_state = _sp_p1
+                        if second_pass_op not in (None, "none", ""):
+                            # Operate BEFORE the re-noise: sharpening a latent that has just had
+                            # noise added back would sharpen the noise. Shares segmented
+                            # detailing's lazily-loaded upsampler — same model, same knob.
+                            if _detail_upsampler_model is None and _detail_disabled_reason is None:
+                                try:
+                                    try:
+                                        from . import detailing as _det
+                                    except ImportError:
+                                        import detailing as _det
+                                    _r = _det.resolve_upsampler_name(detail_upsampler)
+                                    _detail_upsampler_model = _det.load_latent_upsampler(_r)
+                                except Exception as _exc:  # noqa: BLE001
+                                    _detail_disabled_reason = str(_exc)
+                            _sp_state, _op_note = self._second_pass_operate(
+                                _sp_state, second_pass_op, _detail_upsampler_model, vae)
+                            if _op_note:
+                                run_mechanisms.append(_op_note)
+                            elif _detail_disabled_reason:
+                                run_mechanisms.append(
+                                    f"second_pass_op={second_pass_op} skipped: upsampler "
+                                    f"unavailable ({_detail_disabled_reason})")
                         if not _sp_resume:
                             # Rebuild the state at the higher entry sigma. Fresh field: reusing
                             # scene_seed would re-apply the exact noise pass 1 just resolved.
                             _sp_state = self._renoise_to_sigma(
-                                _sp_p1, _sp_cut, _sp_entry, scene_seed + 4242)
+                                _sp_state, _sp_cut, _sp_entry, scene_seed + 4242)
                         # Unlike anchor_shift, a plain second pass must KEEP the i2v anchor
                         # pinned — otherwise pass 2 re-denoises the reference frame and the
                         # scene drifts away from the image it was supposed to start from.
+                        _sp_before = _sp_state
                         _sp_state = self._restore_pinned_prefix(_sp_state, chunk)
+                        if (_sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0):
+                            # Only happens when the op changed the resolution — say so, because
+                            # an unpinned pass 2 can drift off the reference image.
+                            run_mechanisms.append(
+                                "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
+                                "because second_pass_op changed the latent resolution — pass 2 runs "
+                                "unpinned and may drift from the reference image.")
                         _sp_kw = dict(_sample_kwargs)
                         _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (_sp_a.numel() - 1)
                         _sp_kw["continue_from_state"] = True
@@ -6249,7 +6346,8 @@ class FunPackLTXAVSceneChainSampler:
                             anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
                             anchor_shift_fresh_audio=True,
                             second_pass=False, second_pass_sigma=0.603,
-                            second_pass_restart_sigma=0.0, second_pass_sigmas=None):
+                            second_pass_restart_sigma=0.0, second_pass_op="none",
+                            second_pass_sigmas=None):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
         Reuses sample() per entry with only the seed changed, so each entry is a clean generation."""
@@ -6316,7 +6414,7 @@ class FunPackLTXAVSceneChainSampler:
                 anchor_shift_fresh_audio=anchor_shift_fresh_audio,
                 second_pass=second_pass, second_pass_sigma=second_pass_sigma,
                 second_pass_restart_sigma=second_pass_restart_sigma,
-                second_pass_sigmas=second_pass_sigmas,
+                second_pass_op=second_pass_op, second_pass_sigmas=second_pass_sigmas,
                 unique_id=None, prompt=None,
             )
             last = out
