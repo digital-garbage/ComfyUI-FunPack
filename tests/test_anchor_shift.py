@@ -5,11 +5,17 @@ loses character detail; Best-FaceID overlap tokens approximate it and lose some 
 pinned at full strength for pass 1 and then removed from the clip entirely. So the invariants
 worth testing are about the shift itself:
 
+0. Pass 1 stops at anchor_shift_sigma — ALWAYS. That cut is the feature; no other setting
+   may quietly override it (an earlier fix let the restart sigma do exactly that, which
+   made the shift sigma inert without saying so).
 1. The schedule is cut into two passes that each still have a real step, or refused outright.
+1b. A restart above the cut re-noises the half-denoised latent back up to it correctly —
+   rebuilding x at the higher sigma, not re-noising it as if it were a finished image.
 2. The slide drops the head WITHOUT shortening the clip — no extra frames are ever generated.
 3. The pin is dropped with the frame it belonged to (pass 2 must run unpinned).
 4. Audio is reset when asked, since pass 1's audio was formed against frames that moved.
 """
+import math
 import sys
 import types
 from pathlib import Path
@@ -63,15 +69,137 @@ def test_continue_mode_stops_at_the_cut_and_resumes_from_that_state():
     assert resume is True
 
 
-def test_rewind_mode_runs_pass_one_to_completion_first():
-    """A re-noise to a HIGHER sigma is only meaningful on a clean latent, so rewind mode
-    must hand pass 2 a finished clip — not a mid-trajectory one."""
+def test_rewind_mode_still_stops_pass_one_at_the_cut():
+    """The cut sigma is the whole feature — rewind must NOT override it. Pass 1 stops
+    where the user asked, and the restart only decides where pass 2 re-enters."""
     first, second, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
         SCHEDULE, 0.725, 0.975)
     assert abs(cut_at - 0.725) < 1e-5 and abs(restart_at - 0.975) < 1e-5
-    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.975, 0.909, 0.725, 0.422, 0.0]
+    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.975, 0.909, 0.725]
     assert [round(v, 3) for v in second.tolist()] == [0.975, 0.909, 0.725, 0.422, 0.0]
-    assert resume is False  # clean input -> re-noising is correct here
+    # resume=False means the caller must re-noise 0.725 -> 0.975 before pass 2 runs.
+    assert resume is False
+
+
+def test_rewind_refuses_a_restart_below_the_cut():
+    """Pass 2 can be handed a NOISIER latent, never a cleaner one — there is no way to
+    remove noise from the state pass 1 stopped at."""
+    assert _node()._anchor_shift_split_sigmas(SCHEDULE, 0.909, 0.422) is None
+
+
+def test_restart_landing_on_the_cut_is_just_continue():
+    """A restart that snaps to the cut's own step has nothing to re-noise."""
+    _, _, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
+        SCHEDULE, 0.909, 0.909)
+    assert abs(cut_at - restart_at) < 1e-5
+    assert resume is True
+
+
+# ── the mid-trajectory re-noise ─────────────────────────────────────────────
+
+class _FakeNested(list):
+    """Minimal stand-in for comfy's NestedTensor: enough for _is_nested + unbind."""
+    is_nested = True
+
+    def unbind(self):
+        return list(self)
+
+
+@pytest.fixture
+def renoise_stubs():
+    """Deterministic noise (a constant 7.0) plus a usable NestedTensor.
+
+    Snapshot/restore for the same reason the fixture below does it: these comfy stubs are
+    shared module objects, and mutations left behind change other modules' results.
+    """
+    mod = sys.modules["comfy.sample"]
+    comfy_mod = sys.modules["comfy"]
+    nested_mod = sys.modules["comfy.nested_tensor"]
+    saved = (getattr(mod, "prepare_noise", None), getattr(comfy_mod, "sample", None),
+             nested_mod.NestedTensor, getattr(comfy_mod, "nested_tensor", None))
+
+    def prepare_noise(samples, seed, *a, **k):
+        if getattr(samples, "is_nested", False):
+            return _FakeNested([torch.full_like(t, 7.0) for t in samples.unbind()])
+        return torch.full_like(samples, 7.0)
+
+    mod.prepare_noise = prepare_noise
+    comfy_mod.sample = mod
+    comfy_mod.nested_tensor = nested_mod  # attribute access, not just sys.modules
+    nested_mod.NestedTensor = _FakeNested
+    yield
+    if saved[0] is None:
+        delattr(mod, "prepare_noise")
+    else:
+        mod.prepare_noise = saved[0]
+    if saved[1] is None:
+        delattr(comfy_mod, "sample")
+    else:
+        comfy_mod.sample = saved[1]
+    nested_mod.NestedTensor = saved[2]
+    if saved[3] is None:
+        delattr(comfy_mod, "nested_tensor")
+    else:
+        comfy_mod.nested_tensor = saved[3]
+
+
+def test_renoise_to_the_same_sigma_is_an_identity(renoise_stubs):
+    """b == a must add nothing: alpha=1, beta=0. This is what lets continue mode and
+    rewind mode be one formula instead of two special cases."""
+    latent = {"samples": torch.full((1, 4, 6, 2, 2), 3.0)}
+    out = _node()._anchor_shift_renoise(latent, 0.725, 0.725, seed=7)
+    assert torch.allclose(out["samples"], latent["samples"], atol=1e-6)
+
+
+def test_renoise_from_zero_matches_comfy_const_scaling(renoise_stubs):
+    """a == 0 (a finished latent) must reproduce comfy's own x = b*noise + (1-b)*x0, so
+    the formula strictly generalises the img2img re-noise rather than replacing it."""
+    b = 0.975
+    x0 = torch.full((1, 4, 6, 2, 2), 3.0)
+    out = _node()._anchor_shift_renoise({"samples": x0}, 0.0, b, seed=11)
+    expected = _const_noise_scaling(b, torch.full_like(x0, 7.0), x0)
+    assert torch.allclose(out["samples"], expected, atol=1e-6)
+
+
+def test_renoise_upward_rebuilds_the_state_at_the_higher_sigma(renoise_stubs):
+    """The bug this feature shipped with, fixed properly. Pass 1 stops at 0.603 and pass 2
+    restarts at 0.893: x0's coefficient must land on (1-b) EXACTLY and the noise term must
+    total b — anything else is the under-denoising from the first live run coming back."""
+    a, b = 0.603, 0.893
+    x0, eps = torch.full((1, 4, 6, 2, 2), 3.0), torch.full((1, 4, 6, 2, 2), -1.5)
+    x_a = x0 * (1.0 - a) + eps * a          # a genuine mid-trajectory latent
+    out = _node()._anchor_shift_renoise({"samples": x_a}, a, b, seed=3)
+
+    alpha = (1.0 - b) / (1.0 - a)
+    beta = math.sqrt(b * b - (a * alpha) ** 2)
+    assert abs(alpha * (1.0 - a) - (1.0 - b)) < 1e-9   # picture kept at full strength
+    assert abs((alpha * a) ** 2 + beta ** 2 - b * b) < 1e-9  # noise topped back up to b
+    assert torch.allclose(out["samples"], x_a * alpha + 7.0 * beta, atol=1e-6)
+    # And the naive path is measurably NOT this — the whole point of the fix.
+    assert not torch.allclose(out["samples"],
+                              _const_noise_scaling(b, torch.full_like(x_a, 7.0), x_a), atol=1e-3)
+
+
+def test_renoise_starts_a_reset_stream_from_scratch(renoise_stubs):
+    """A stream wiped by fresh_audio is not mid-trajectory — topping it up as if it were
+    would start it quieter than a from-scratch run does. It gets the full b*noise."""
+    b = 0.893
+    latent = {"samples": _FakeNested(
+        [torch.full((1, 4, 6, 2, 2), 2.0), torch.zeros(1, 4, 12)])}
+    out = _node()._anchor_shift_renoise(latent, 0.603, b, seed=5, reset_indices=(1,))
+    video, audio = out["samples"].unbind()
+    assert torch.allclose(audio, torch.full_like(audio, 7.0 * b), atol=1e-6)
+    # ...and the video stream still took the mid-trajectory path, not the a=0 one.
+    alpha = (1.0 - b) / (1.0 - 0.603)
+    expected = 2.0 * alpha + 7.0 * math.sqrt(b * b - (0.603 * alpha) ** 2)
+    assert torch.allclose(video, torch.full_like(video, expected), atol=1e-6)
+
+
+def test_renoise_never_mutates_its_input(renoise_stubs):
+    latent = {"samples": torch.full((1, 4, 6, 2, 2), 3.0)}
+    before = latent["samples"].clone()
+    _node()._anchor_shift_renoise(latent, 0.603, 0.893, seed=1)
+    assert torch.equal(latent["samples"], before)
 
 
 def test_split_refuses_when_a_pass_would_have_no_steps():

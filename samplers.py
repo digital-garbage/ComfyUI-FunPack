@@ -2484,11 +2484,11 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "anchor_shift": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "EXPERIMENTAL: let the i2v anchor condition the scene, then delete it from the clip. The anchor is a pinned latent frame at position 0 — it holds identity/style/composition all the way down the schedule, and it is also literally the first frame you see, so every i2v scene opens on the exact reference still. This splits the schedule: pass 1 runs down to anchor_shift_sigma with the anchor pinned as usual, then the first anchor_shift_frames frames are DROPPED and everything slides left (clip length unchanged — no extra frames are generated), then pass 2 finishes the schedule on the shifted latent with the pin gone. Pass 2 re-enters through comfy's CONST noise scaling, which puts the shifted latent back on the rectified-flow manifold — the reason this is two passes rather than a roll between steps. The whole experiment is WHERE to cut: above ~0.909 nothing has formed yet, so the anchor gets discarded before it has transferred anything; too low and pass 2 has no steps left to heal the seam. Off by default. UNVALIDATED LIVE.",
+                    "tooltip": "EXPERIMENTAL: let the i2v anchor condition the scene, then delete it from the clip. The anchor is a pinned latent frame at position 0 — it holds identity/style/composition all the way down the schedule, and it is also literally the first frame you see, so every i2v scene opens on the exact reference still. This splits the schedule: pass 1 runs down to anchor_shift_sigma with the anchor pinned as usual, then the first anchor_shift_frames frames are DROPPED and everything slides left (clip length unchanged — no extra frames are generated), then pass 2 finishes the schedule on the shifted latent with the pin gone. Pass 2 always re-enters at the exact latent state for its first sigma — resumed as-is, or re-noised up to anchor_shift_restart_sigma first — which keeps it on the rectified-flow manifold and is the reason this is two passes rather than a roll between steps. The whole experiment is WHERE to cut: above ~0.909 nothing has formed yet, so the anchor gets discarded before it has transferred anything; too low and pass 2 has no steps left to heal the seam. Off by default. Validated live in continue mode.",
                 }),
                 "anchor_shift_sigma": ("FLOAT", {
                     "default": 0.909, "min": 0.05, "max": 0.999, "step": 0.001,
-                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune. ONLY used in continue mode (anchor_shift_restart_sigma=0); rewind mode runs pass 1 over the whole schedule and ignores this, which the scene report will tell you. Pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
+                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune, and it applies in BOTH modes. Pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
                 }),
                 "anchor_shift_frames": ("INT", {
                     "default": 8, "min": 8, "max": 512, "step": 8,
@@ -2496,7 +2496,7 @@ class FunPackLTXAVSceneChainSampler:
                 }),
                 "anchor_shift_restart_sigma": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
-                    "tooltip": "Picks between the two modes. 0 (default) = CONTINUE: pass 1 stops at the shift sigma and pass 2 resumes from exactly that state, no re-noising. Total cost stays one full schedule. Any value above 0 = REWIND: pass 1 instead runs the WHOLE schedule to a finished clip, the shift is applied to that, and pass 2 re-noises it up to this sigma and re-denoises down — the standard img2img recipe, which is only valid on a finished latent, which is why pass 1 has to complete first. Rewind gives the model far more freedom to rebuild the regrown tail and blend the joint, and costs a full schedule PLUS the tail. Try rewind (around 0.9) if continue leaves a visible seam or a thin ending.",
+                    "tooltip": "Where pass 2 re-enters the schedule after the shift. Pass 1 always stops at anchor_shift_sigma either way — this only decides where the second half picks up. 0 (default) = CONTINUE: resume from exactly the state pass 1 handed over, nothing added, total cost stays one full schedule. A value ABOVE anchor_shift_sigma = REWIND: the shifted latent is re-noised from the cut back up to this sigma, then denoised down again, giving the model far more freedom to rebuild the regrown tail and blend the joint — at the cost of repeating those steps (and of partly overwriting what pass 1 established). The re-noise is exact for a mid-trajectory latent (it rebuilds x at the higher sigma from the latent it already has plus a matched top-up of fresh noise), NOT the naive img2img re-noise, which assumes a finished image and is what caused the under-denoising in the first live run. A value BELOW anchor_shift_sigma is refused: noise can be added back, never removed. Try rewind (a step or two above the cut) if continue leaves a visible seam or a thin ending.",
                 }),
                 "anchor_shift_tail": (["extend_last", "wrap", "empty"], {
                     "default": "extend_last",
@@ -3047,11 +3047,16 @@ class FunPackLTXAVSceneChainSampler:
     def _anchor_shift_split_sigmas(self, sigmas, shift_sigma, restart_sigma):
         """Cut the schedule into (pass 1, pass 2), or return None if it cannot be cut.
 
-        pass 1 runs from the top down to the first sigma at or below shift_sigma; pass 2
+        pass 1 ALWAYS runs from the top down to the first sigma at or below shift_sigma —
+        that cut is the whole point of the feature and nothing else may override it. pass 2
         starts at the first sigma at or below restart_sigma (restart_sigma <= 0 means
-        "continue from where pass 1 stopped") and runs to the end. Both need at least one
-        real step, so a threshold outside the schedule's range is refused rather than
-        silently producing a zero-step pass.
+        "continue from where pass 1 stopped") and runs to the end. When the restart sits
+        above the cut, the shifted latent is re-noised back up to it (see
+        _anchor_shift_renoise); `resume` says which of the two the caller must do.
+
+        Both passes need at least one real step, so a threshold outside the schedule's
+        range is refused rather than silently producing a zero-step pass. A restart BELOW
+        the cut is refused too — that would mean removing noise, which is not a thing.
         """
         if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 3:
             return None
@@ -3069,21 +3074,58 @@ class FunPackLTXAVSceneChainSampler:
             return None  # threshold above the first sigma, or not reached at all
         restart = float(restart_sigma)
         if restart <= 0:
-            # CONTINUE: pass 1 stops at the cut and pass 2 resumes from that exact state.
-            # Pass 2 must NOT re-noise (see _sample_chunk's continue_from_state).
-            first, second, resume = sigmas[:cut + 1], sigmas[cut:], True
-            start = cut
+            start = cut  # CONTINUE: pass 2 picks up exactly where pass 1 stopped.
         else:
-            # REWIND: pass 2 re-noises to a HIGHER sigma, which is only meaningful on a CLEAN
-            # latent — so pass 1 runs the whole schedule first and hands over a finished clip.
-            # Same shape as segmented detailing's stage-2 tail. Costs a full schedule + tail.
             start = _first_at_or_below(restart)
-            if start is None:
+            if start is None or start > cut:
+                # start > cut means the restart sigma is LOWER than the cut: pass 2 would
+                # claim the latent is cleaner than it is. Noise can be added back, never
+                # removed, so this is a misconfiguration, not a mode.
                 return None
-            first, second, resume = sigmas, sigmas[start:], False
+        # REWIND (start < cut) hands pass 2 a re-noised copy; CONTINUE (start == cut) hands
+        # over the state untouched. Either way pass 1 stopped at the cut the user asked for.
+        first, second, resume = sigmas[:cut + 1], sigmas[start:], start == cut
         if first.numel() < 2 or second.numel() < 2:
             return None
         return first, second, vals[cut], vals[start], resume
+
+    def _anchor_shift_renoise(self, latent, from_sigma, to_sigma, seed, reset_indices=()):
+        """Move a latent that sits mid-trajectory at `from_sigma` back up to `to_sigma`.
+
+        This model's CONST scaling means a latent at sigma s is x_s = s*eps + (1-s)*x0.
+        Given x_a we cannot recover x0 or eps separately — but we do not need to. A valid
+        x_b for b >= a is a linear mix of what we already have and fresh noise:
+
+            x_b = alpha*x_a + beta*n,  alpha = (1-b)/(1-a),  beta = sqrt(b^2 - (a*alpha)^2)
+
+        alpha reproduces x0's coefficient exactly and beta tops the noise term back up to
+        b, so the result sits on the manifold the model expects at b. Both endpoints fall
+        out of the same formula: b == a gives alpha=1, beta=0 (an exact resume, nothing
+        added) and a == 0 gives alpha=1-b, beta=b, which is comfy's own fresh-noise
+        scaling on a clean latent. beta has a real root only when b >= a — noise can be
+        added back but never removed, which is why the caller refuses a restart below the
+        cut.
+
+        Streams listed in `reset_indices` were wiped to zeros (fresh audio) and are NOT
+        mid-trajectory, so they re-enter at a=0 and get the full b*n a from-scratch run
+        would start from, rather than a partial top-up of a latent that no longer exists.
+        """
+        a, b = float(from_sigma), float(to_sigma)
+        result = self._clone_latent(latent)
+        tensors = self._latent_tensors(result)
+        noise = comfy.sample.prepare_noise(result["samples"], int(seed))
+        noises = list(noise.unbind()) if self._is_nested(noise) else [noise]
+        for i, t in enumerate(tensors):
+            a_i = 0.0 if i in tuple(reset_indices) else a
+            alpha = (1.0 - b) / (1.0 - a_i) if a_i < 1.0 else 0.0
+            beta = math.sqrt(max(0.0, b * b - (a_i * alpha) ** 2))
+            n = noises[i].to(device=t.device, dtype=t.dtype)
+            tensors[i] = t * alpha + n * beta
+        if self._is_nested(result.get("samples")):
+            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
+        else:
+            result["samples"] = tensors[0]
+        return result
 
     def _anchor_shift_latent(self, latent, drop, tail_mode, fresh_audio):
         """Slide the video stream left by `drop` latent frames and refill the freed tail.
@@ -5476,6 +5518,14 @@ class FunPackLTXAVSceneChainSampler:
                         # the "fake t2v" trick, it needs a real anchor to fake it WITH.
                         _reason = ("scene has no pinned i2v anchor (t2v scene) — nothing to shift; "
                                    "attach an anchor image, or leave anchor_shift off")
+                    elif 0 < float(anchor_shift_restart_sigma) < float(anchor_shift_sigma) - 1e-4:
+                        # Pass 2 would claim the latent is cleaner than pass 1 left it.
+                        # The re-noise can add noise back, never remove it.
+                        _reason = (f"anchor_shift_restart_sigma={anchor_shift_restart_sigma:g} is "
+                                   f"below anchor_shift_sigma={anchor_shift_sigma:g} — pass 2 can "
+                                   f"re-noise the shifted latent back UP to a higher sigma, but it "
+                                   f"cannot un-noise it down to a lower one. Use 0 to continue "
+                                   f"straight on from the cut, or a value at or above the cut")
                     else:
                         _shift_split = self._anchor_shift_split_sigmas(
                             sigmas, anchor_shift_sigma, anchor_shift_restart_sigma)
@@ -5490,13 +5540,22 @@ class FunPackLTXAVSceneChainSampler:
                         chunk, **_sample_kwargs)
                     _shifted, _dropped = self._anchor_shift_latent(
                         _pass1, _shift_drop, anchor_shift_tail, anchor_shift_fresh_audio)
-                    # Continue mode resumes from the handed-over state (no re-noise, so the
-                    # seed is irrelevant); rewind mode re-noises a finished clip, where fresh
-                    # noise is wanted — reusing scene_seed there would re-apply the exact field
-                    # pass 1 just resolved, against content that has since moved.
+                    if not _resume:
+                        # REWIND: put the shifted mid-trajectory latent back at the restart
+                        # sigma. A fresh noise field is wanted here — reusing scene_seed would
+                        # re-apply the exact field pass 1 just resolved, against content that
+                        # has since moved.
+                        _reset_streams = ((1,) if (anchor_shift_fresh_audio
+                                                   and len(self._latent_tensors(_shifted)) > 1)
+                                          else ())
+                        _shifted = self._anchor_shift_renoise(
+                            _shifted, _cut_at, _restart_at, scene_seed + 4242, _reset_streams)
+                    # Either way pass 2 is handed the exact x at its first sigma — as the
+                    # untouched hand-over (continue) or as the re-noised one (rewind) — so it
+                    # must never re-noise again. See _sample_chunk's continue_from_state.
                     _kw2 = dict(_sample_kwargs)
                     _kw2["step_offset"] = _sample_kwargs["step_offset"] + (_sig_a.numel() - 1)
-                    _kw2["continue_from_state"] = _resume
+                    _kw2["continue_from_state"] = True
                     sampled = self._sample_chunk(
                         model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
                         scene_negative, _shifted, **_kw2)
@@ -5507,15 +5566,6 @@ class FunPackLTXAVSceneChainSampler:
                         f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
                         f"tail={anchor_shift_tail}"
                         f"{', fresh audio' if anchor_shift_fresh_audio else ''})")
-                    if not _resume:
-                        # In rewind mode pass 1 runs the whole schedule, so anchor_shift_sigma
-                        # never gets used. A knob that silently does nothing reads as broken —
-                        # say so, and say what to set to make it matter again.
-                        run_mechanisms.append(
-                            f"anchor_shift NOTE: rewind mode ignores anchor_shift_sigma"
-                            f"={anchor_shift_sigma:g} (pass 1 runs the full schedule so the "
-                            f"re-noise has a clean latent). Set anchor_shift_restart_sigma=0 "
-                            f"for continue mode, where the shift sigma is the cut point.")
                     if _dropped < _pinned_n:
                         # Part of the anchor survives the slide and stays visible in the clip —
                         # the one outcome this feature exists to prevent, so name the fix.
