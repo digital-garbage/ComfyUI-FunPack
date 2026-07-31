@@ -139,32 +139,77 @@
       draw();
     }
 
-    async function watch(projectId, promptId, { onDone } = {}) {
-      stopPolling();
-      errorMsg = null;
-      progressWrap.hidden = false;
-      label.textContent = "Starting…";
-      bar.style.width = "0%";
-      // An interrupted job lands in ComfyUI's history as status_str "error" with no media —
-      // indistinguishable from a real failure at the API level. Remember that the user asked
-      // for it so the poll below reports "stopped", not "Generation failed".
-      let interrupted = false;
+    // Wire the Interrupt button for whatever run is being followed. Returns a getter for
+    // the "the user asked for this" flag, since an interrupted job is indistinguishable
+    // from a failed one at the API level and both callers below need to tell them apart.
+    function _armStopButton(onFlag) {
       stopBtn.disabled = false;
       stopBtn.textContent = "■ Interrupt";
       stopBtn.onclick = async () => {
-        interrupted = true;
+        onFlag(true);
         stopBtn.disabled = true;
         stopBtn.textContent = "Interrupting…";
         label.textContent = "Interrupting…";
         try { await API.interrupt(); }
         catch (e) {
           // The run may well still be going — say so instead of leaving a dead button.
-          interrupted = false;
+          onFlag(false);
           stopBtn.disabled = false;
           stopBtn.textContent = "■ Interrupt";
           label.textContent = "Could not interrupt: " + (e.message || e);
         }
       };
+    }
+
+    // Follow a run we cannot map to the loaded project — one queued from the Cutting Room,
+    // or from Easy Gen under a different project before a reload. There is no history to
+    // poll for a result here, so this just watches ComfyUI's queue via /api/active: enough
+    // to keep Generate blocked and offer Interrupt while the GPU is busy.
+    function monitor(promptId, note) {
+      return new Promise((resolve) => {
+        stopPolling();
+        errorMsg = null;
+        progressWrap.hidden = false;
+        label.textContent = note || "A generation is running…";
+        bar.style.width = "0%";
+        let interrupted = false;
+        _armStopButton((v) => { interrupted = v; });
+        const tick = async () => {
+          let act = null;
+          try { act = await API.active(); }
+          catch (_) { pollTimer = setTimeout(tick, 2000); return; }  // transient — keep watching
+          if (!act || !act.running || act.prompt_id !== promptId) {
+            stopPolling();
+            progressWrap.hidden = true;
+            resolve();
+            return;
+          }
+          if (!interrupted) {
+            try {
+              const pr = await API.progress();
+              if (pr.max > 0) {
+                bar.style.width = Math.min(100, Math.round((pr.value / pr.max) * 100)) + "%";
+                label.textContent = `${note || "A generation is running"} · ${pr.value}/${pr.max}`;
+              }
+            } catch (_) { /* transient */ }
+          }
+          pollTimer = setTimeout(tick, 2000);
+        };
+        tick();
+      });
+    }
+
+    async function watch(projectId, promptId, { onDone, note } = {}) {
+      stopPolling();
+      errorMsg = null;
+      progressWrap.hidden = false;
+      label.textContent = note || "Starting…";
+      bar.style.width = "0%";
+      // An interrupted job lands in ComfyUI's history as status_str "error" with no media —
+      // indistinguishable from a real failure at the API level. Remember that the user asked
+      // for it so the poll below reports "stopped", not "Generation failed".
+      let interrupted = false;
+      _armStopButton((v) => { interrupted = v; });
 
       progressTimer = setInterval(async () => {
         if (interrupted) return; // don't paint "Sampling…" over "Interrupting…"
@@ -221,6 +266,7 @@
       showEmpty,
       showError,
       watch,
+      monitor,
       stopPolling,
     };
   }
