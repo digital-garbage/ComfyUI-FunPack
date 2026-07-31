@@ -2576,15 +2576,7 @@ class FunPackLTXAVSceneChainSampler:
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
                 "second_pass": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Stop the schedule partway and finish the scene in a SECOND sampling pass. Independent of anchor_shift (which runs its own two passes — when anchor_shift acts on a scene this is skipped, with a note). On its own the split is behaviour-neutral at second_pass_restart_sigma=0: pass 2 resumes from exactly the state pass 1 handed over, no noise added, same total step count, so the output matches a single pass. It becomes useful when the second half is made DIFFERENT — re-entering higher up the schedule (second_pass_restart_sigma) to let the model rework what it has, or finishing on a different schedule entirely (the second_pass_sigmas input). The i2v anchor stays pinned across the split, so the scene does not drift off its reference. Cost is exactly the extra steps you add: at restart 0 with no second schedule it is free; re-entering higher costs the replayed steps. Off by default.",
-                }),
-                "second_pass_sigma": ("FLOAT", {
-                    "default": 0.603, "min": 0.001, "max": 0.999, "step": 0.001,
-                    "tooltip": "Where pass 1 stops. The schedule is walked and the last pass-1 step is the one whose NEXT sigma has crossed this value, so the cut always lands on a real schedule step — only the sigmas actually in your schedule are reachable. Both halves need at least one step, so a value outside the schedule's range is refused with a reason rather than silently ignored.",
-                }),
-                "second_pass_restart_sigma": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
-                    "tooltip": "Where pass 2 re-enters, when no second_pass_sigmas schedule is connected. 0 (default) = carry straight on from the cut: nothing is added, total cost unchanged. A value ABOVE second_pass_sigma rewinds — the half-denoised latent is rebuilt at that higher sigma (exact for a mid-trajectory latent, not the naive img2img re-noise) and those steps run again, letting the model rework structure it has already committed to, at the cost of repeating them. BELOW the cut is refused: noise can be added back, never removed. Ignored when second_pass_sigmas is connected, since that schedule's own first sigma is the entry point.",
+                    "tooltip": "Sample each scene in TWO passes. Pass 1 runs the main sigmas schedule in full, exactly as written; pass 2 then runs the second_pass_sigmas schedule in full, exactly as written, starting from pass 1's finished clip. Nothing is cut short and nothing is derived — to make pass 1 shorter, shorten the main schedule. Total steps are simply the two schedules added up (a 9-step main plus a 4-step second pass is 13). Pass 2 re-enters the way any img2img refine does, by re-noising the finished clip up to its first sigma, so that first sigma controls how much it is allowed to change: nearer 1.0 reworks the shot, low values only polish it. Requires a second_pass_sigmas schedule; without one the pass is skipped with a note. Independent of anchor_shift, which runs its own two passes for a different reason — when it acts on a scene, this is skipped.",
                 }),
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
@@ -2593,7 +2585,8 @@ class FunPackLTXAVSceneChainSampler:
                 # A connection socket, never a widget — safe at the end, and it must stay after
                 # every widget above (see the widgets_values note at the top of this block).
                 "second_pass_sigmas": ("SIGMAS", {
-                    "tooltip": "Optional SEPARATE schedule for pass 2. Wire any scheduler here and pass 2 runs that schedule end to end instead of continuing along the main one — so the second half can have a different step count, spacing or shift from the first (e.g. a short, fine tail schedule over a coarse first pass). Its FIRST sigma is where pass 2 re-enters, so it must start at or above second_pass_sigma (the state can be re-noised back up, never un-noised down); second_pass_restart_sigma is ignored when this is connected. The sampler is told this schedule is pass 2's real schedule, so its own phases (quality steps, final-correction window, AB2 ramp) are measured against it rather than against the main one.",
+                    "tooltip": "The schedule pass 2 runs — required for second_pass, and it is run EXACTLY as written, high to low, ending at 0. Wire any scheduler here, or type sigmas in the Editor. Pass 1 has already finished the main schedule by this point, so pass 2 starts from a clean clip and re-enters by re-noising it up to this schedule's FIRST sigma: that value is the strength dial (near 1.0 reworks the shot, low values only polish it), and the rest of the schedule sets how many steps it gets. A schedule that ascends, or that stops above 0, is refused with the reason — both would silently produce a distorted or under-denoised clip rather than fail loudly.",
+
                 }),
             },
             "hidden": {
@@ -3170,70 +3163,35 @@ class FunPackLTXAVSceneChainSampler:
         # which the sampler needs to keep its phase boundaries where the schedule put them.
         return first, second, vals[cut], vals[start], resume, start
 
-    def _second_pass_plan(self, sigmas, cut_sigma, restart_sigma, alt_sigmas=None):
-        """Plan a general two-pass run, optionally finishing on a DIFFERENT schedule.
+    def _second_pass_schedule(self, alt_sigmas):
+        """Validate the pass-2 schedule. Returns (sigmas, reason); one of them is None.
 
-        Returns (plan, reason). `plan` is None when the request cannot be honoured, and
-        `reason` then says why and what to change — never a silent no-op.
+        There is nothing to derive here and nothing to cut. Pass 1 runs the main schedule in
+        full, exactly as written; pass 2 then runs THIS schedule in full, exactly as written.
+        Pass 2 therefore starts from a FINISHED clip, which is the ordinary img2img re-entry
+        (comfy's CONST scaling, x = s*noise + (1-s)*clean, valid precisely because the input
+        is clean). "Continue from where pass 1 stopped" belongs to anchor_shift, which stops
+        mid-trajectory on purpose; it has no meaning here. To make pass 1 shorter, shorten
+        the main schedule.
 
-        plan = (pass1_sigmas, pass2_sigmas, cut_at, entry_at, resume, pass2_context)
-
-        Pass 1 always runs the top of `sigmas` down to the first sigma at or below
-        `cut_sigma` (same walk as anchor_shift: the last pre-cut step is the one whose NEXT
-        sigma crosses the threshold). Pass 2 is either a slice of the same schedule starting
-        at `restart_sigma` (0 = continue straight on from the cut), or — when `alt_sigmas` is
-        connected — that schedule in its entirety, entered at its own first sigma.
-
-        Either way pass 2 re-enters at a sigma at or above the cut, because _renoise_to_sigma
-        can add noise back but never remove it. `pass2_context` is what the sampler must be
-        told its real schedule is: the main schedule with an offset when pass 2 is a slice of
-        it, or the alternate schedule at offset 0 when pass 2 IS that whole schedule.
+        A hand-typed schedule is the one input that can be malformed, and both ways it can
+        be are silent in the OUTPUT rather than loud at runtime, so they are caught here.
         """
-        if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 3:
-            return None, "the main schedule needs at least 3 sigmas to be split"
-        vals = [float(v) for v in sigmas.tolist()]
-        eps = 1e-4  # SIGMAS are float32; see _anchor_shift_split_sigmas for why this matters
-
-        def _first_at_or_below(seq, s):
-            return next((i for i, v in enumerate(seq) if v <= s + eps), None)
-
-        cut = _first_at_or_below(vals, float(cut_sigma))
-        if cut is None or cut < 1:
-            return None, (f"second_pass_sigma={float(cut_sigma):g} is not reached by the schedule "
-                          f"with a step left before it — pass 1 would have no step to run")
-        first = sigmas[:cut + 1]
-        if first.numel() < 2:
-            return None, "pass 1 would have no step"
-        cut_at = vals[cut]
-
-        if isinstance(alt_sigmas, torch.Tensor) and alt_sigmas.numel() >= 2:
-            # Pass 2 runs its OWN schedule end to end. Its first sigma is where it re-enters,
-            # so that is what the state has to be rebuilt at.
-            second = alt_sigmas
-            entry_at = float(alt_sigmas[0].item())
-            ctx = {"sigmas": alt_sigmas, "offset": 0}
-            if entry_at < cut_at - eps:
-                return None, (f"second_pass_sigmas starts at {entry_at:g}, below "
-                              f"second_pass_sigma={cut_at:g} — pass 2 can be handed a noisier "
-                              f"latent than pass 1 left, never a cleaner one. Start the second "
-                              f"schedule at or above the cut, or lower second_pass_sigma")
-        else:
-            restart = float(restart_sigma)
-            if restart <= 0:
-                start = cut
-            else:
-                start = _first_at_or_below(vals, restart)
-                if start is None or start > cut:
-                    return None, (f"second_pass_restart_sigma={restart:g} is below "
-                                  f"second_pass_sigma={cut_at:g} — pass 2 can be handed a noisier "
-                                  f"latent than pass 1 left, never a cleaner one. Use 0 to carry "
-                                  f"straight on from the cut, or a value at or above it")
-            second = sigmas[start:]
-            entry_at = vals[start]
-            ctx = {"sigmas": sigmas, "offset": start}
-        if second.numel() < 2:
-            return None, "pass 2 would have no step"
-        return (first, second, cut_at, entry_at, abs(entry_at - cut_at) <= eps, ctx), None
+        if not isinstance(alt_sigmas, torch.Tensor) or alt_sigmas.numel() < 2:
+            return None, ("no second-pass schedule — set one (comma-separated sigmas, high to "
+                          "low, ending at 0) or turn the second pass off")
+        vals = [float(v) for v in alt_sigmas.tolist()]
+        eps = 1e-4
+        if any(b > a + eps for a, b in zip(vals, vals[1:])):
+            return None, ("second-pass schedule must descend — "
+                          f"{', '.join(f'{v:g}' for v in vals)} goes back up, which walks the "
+                          f"trajectory backwards. List the sigmas high to low")
+        if vals[-1] > eps:
+            return None, (f"second-pass schedule ends at {vals[-1]:g}, not 0 — the scene would "
+                          f"come out partially denoised (noise artefacts). End it at 0")
+        if vals[0] <= eps:
+            return None, "second-pass schedule starts at 0 — there is nothing for it to denoise"
+        return alt_sigmas, None
 
     def _second_pass_operate(self, latent, op, upsampler, vae):
         """Apply the chosen latent-space operation between the two passes.
@@ -5282,8 +5240,7 @@ class FunPackLTXAVSceneChainSampler:
                anchor_shift=False, anchor_shift_sigma=0.909, anchor_shift_frames=8,
                anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
                anchor_shift_fresh_audio=True,
-               second_pass=False, second_pass_sigma=0.603,
-               second_pass_restart_sigma=0.0, second_pass_op="none", second_pass_sigmas=None,
+               second_pass=False, second_pass_op="none", second_pass_sigmas=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5353,9 +5310,8 @@ class FunPackLTXAVSceneChainSampler:
                 anchor_shift_restart_sigma=anchor_shift_restart_sigma,
                 anchor_shift_tail=anchor_shift_tail,
                 anchor_shift_fresh_audio=anchor_shift_fresh_audio,
-                second_pass=second_pass, second_pass_sigma=second_pass_sigma,
-                second_pass_restart_sigma=second_pass_restart_sigma,
-                second_pass_op=second_pass_op, second_pass_sigmas=second_pass_sigmas,
+                second_pass=second_pass, second_pass_op=second_pass_op,
+                second_pass_sigmas=second_pass_sigmas,
             )
 
         max_scene_count = max(1, int(max_scenes))
@@ -5934,24 +5890,31 @@ class FunPackLTXAVSceneChainSampler:
                     # General second pass. Reaching this branch means anchor_shift did not act
                     # on this scene (it is either off, or was skipped with a reason above), so
                     # the two features never nest — they stay independent by construction.
-                    _sp_plan = None
+                    #
+                    # The shape is deliberately plain: pass 1 runs the main schedule IN FULL,
+                    # exactly as written, then pass 2 runs its own schedule IN FULL, exactly as
+                    # written. Nothing is cut and nothing is "continued from" — those belong to
+                    # anchor_shift, which stops mid-trajectory on purpose. To make pass 1
+                    # shorter, shorten the main schedule. Pass 2 therefore starts from a
+                    # FINISHED clip, so it re-enters through comfy's ordinary CONST noise
+                    # scaling (continue_from_state stays off) — valid precisely because the
+                    # input is clean. Total steps are simply the two schedules added up.
+                    _sp_b = None
                     if second_pass:
-                        _sp_plan, _sp_reason = self._second_pass_plan(
-                            sigmas, second_pass_sigma, second_pass_restart_sigma,
-                            second_pass_sigmas)
-                        if _sp_plan is None:
+                        _sp_b, _sp_reason = self._second_pass_schedule(second_pass_sigmas)
+                        if _sp_b is None:
                             run_mechanisms.append(f"second_pass(SKIPPED: {_sp_reason})")
-                    if _sp_plan is not None:
-                        _sp_a, _sp_b, _sp_cut, _sp_entry, _sp_resume, _sp_ctx = _sp_plan
-                        _sp_p1 = self._sample_chunk(
-                            model, sampler, _sp_a, scene_seed, cfg, scene_positive,
-                            scene_negative, chunk,
-                            schedule_context={"sigmas": sigmas, "offset": 0}, **_sample_kwargs)
-                        _sp_state = _sp_p1
+                    _full = self._sample_chunk(
+                        model, sampler, sigmas, scene_seed, cfg, scene_positive,
+                        scene_negative, chunk, **_sample_kwargs)
+                    if _sp_b is None:
+                        sampled = _full
+                    else:
+                        _sp_state = _full
                         if second_pass_op not in (None, "none", ""):
-                            # Operate BEFORE the re-noise: sharpening a latent that has just had
-                            # noise added back would sharpen the noise. Shares segmented
-                            # detailing's lazily-loaded upsampler — same model, same knob.
+                            # The op runs on the FINISHED pass-1 clip, which is the only state
+                            # it makes sense on: sharpening a half-denoised latent sharpens the
+                            # noise in it. Shares segmented detailing's lazily-loaded upsampler.
                             if _detail_upsampler_model is None and _detail_disabled_reason is None:
                                 try:
                                     try:
@@ -5970,17 +5933,12 @@ class FunPackLTXAVSceneChainSampler:
                                 run_mechanisms.append(
                                     f"second_pass_op={second_pass_op} skipped: upsampler "
                                     f"unavailable ({_detail_disabled_reason})")
-                        if not _sp_resume:
-                            # Rebuild the state at the higher entry sigma. Fresh field: reusing
-                            # scene_seed would re-apply the exact noise pass 1 just resolved.
-                            _sp_state = self._renoise_to_sigma(
-                                _sp_state, _sp_cut, _sp_entry, scene_seed + 4242)
                         # Unlike anchor_shift, a plain second pass must KEEP the i2v anchor
                         # pinned — otherwise pass 2 re-denoises the reference frame and the
                         # scene drifts away from the image it was supposed to start from.
                         _sp_before = _sp_state
                         _sp_state = self._restore_pinned_prefix(_sp_state, chunk)
-                        if (_sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0):
+                        if _sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0:
                             # Only happens when the op changed the resolution — say so, because
                             # an unpinned pass 2 can drift off the reference image.
                             run_mechanisms.append(
@@ -5988,23 +5946,15 @@ class FunPackLTXAVSceneChainSampler:
                                 "because second_pass_op changed the latent resolution — pass 2 runs "
                                 "unpinned and may drift from the reference image.")
                         _sp_kw = dict(_sample_kwargs)
-                        _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (_sp_a.numel() - 1)
-                        _sp_kw["continue_from_state"] = True
-                        _sp_kw["schedule_context"] = _sp_ctx
+                        _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
                         sampled = self._sample_chunk(
                             model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
                             scene_negative, _sp_state, **_sp_kw)
-                        _sp_alt = (isinstance(second_pass_sigmas, torch.Tensor)
-                                   and second_pass_sigmas.numel() >= 2)
                         run_mechanisms.append(
-                            f"second_pass({'continue' if _sp_resume else 'rewind'} "
-                            f"cut@{_sp_cut:g} entry@{_sp_entry:g}, "
-                            f"{_sp_a.numel() - 1}+{_sp_b.numel() - 1} steps"
-                            f"{', own schedule' if _sp_alt else ''})")
-                    else:
-                        sampled = self._sample_chunk(
-                            model, sampler, sigmas, scene_seed, cfg, scene_positive,
-                            scene_negative, chunk, **_sample_kwargs)
+                            f"second_pass({int(sigmas.numel()) - 1} steps + "
+                            f"{int(_sp_b.numel()) - 1} steps = "
+                            f"{int(sigmas.numel()) + int(_sp_b.numel()) - 2} total, "
+                            f"pass 2 from {float(_sp_b[0].item()):g})")
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
                 if _plateau_stats is not None:
@@ -6043,7 +5993,7 @@ class FunPackLTXAVSceneChainSampler:
                     if _detail_upsampler_model is None:
                         _resolved = _detailing.resolve_upsampler_name(detail_upsampler)
                         _detail_upsampler_model = _detailing.load_latent_upsampler(_resolved)
-                        print(f"[FunPackSceneChain] segmented detailing upsampler: {_resolved}")
+                        print(f"[FunPackSceneChain] latent upsampler loaded: {_resolved}")
                     _t_detail0 = _time.perf_counter()
                     sampled, _detail_note = _detailing.detail_refine_scene(
                         self, model, vae, sampler, scene_positive, scene_negative, sampled,
@@ -6345,8 +6295,7 @@ class FunPackLTXAVSceneChainSampler:
                             anchor_shift=False, anchor_shift_sigma=0.909, anchor_shift_frames=8,
                             anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
                             anchor_shift_fresh_audio=True,
-                            second_pass=False, second_pass_sigma=0.603,
-                            second_pass_restart_sigma=0.0, second_pass_op="none",
+                            second_pass=False, second_pass_op="none",
                             second_pass_sigmas=None):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
         (latent + preview + per-entry cond + manifest) under ComfyUI temp for rating in Studio.
@@ -6412,9 +6361,8 @@ class FunPackLTXAVSceneChainSampler:
                 anchor_shift_restart_sigma=anchor_shift_restart_sigma,
                 anchor_shift_tail=anchor_shift_tail,
                 anchor_shift_fresh_audio=anchor_shift_fresh_audio,
-                second_pass=second_pass, second_pass_sigma=second_pass_sigma,
-                second_pass_restart_sigma=second_pass_restart_sigma,
-                second_pass_op=second_pass_op, second_pass_sigmas=second_pass_sigmas,
+                second_pass=second_pass, second_pass_op=second_pass_op,
+                second_pass_sigmas=second_pass_sigmas,
                 unique_id=None, prompt=None,
             )
             last = out

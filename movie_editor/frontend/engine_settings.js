@@ -554,24 +554,17 @@
       else S.setStudioInputNow("studio_settings", next);
       syncSecondPassFromSchedule(updatedSamplers, quiet);
     }
-    // The second pass is driven by ONE thing here: the schedule. Typing one turns it on and
-    // pass 1 stops where that schedule starts; clearing it turns it off. The node's own
-    // enable/cut widgets still exist for graph users with no schedule wired, but exposing
-    // them alongside the schedule meant two controls saying the same thing in different
-    // words ("starts at" vs "re-enters at"), which is exactly what made it confusing.
+    // The second pass is driven by ONE thing: the schedule. Typing one turns it on; clearing
+    // it turns it off. There is no cut and no re-entry point to configure — pass 1 always runs
+    // the main schedule in full and pass 2 always runs this one in full.
     function syncSecondPassFromSchedule(samplers, quiet) {
       const raw = String(samplers?.low?.sigmas || "").replace(/;/g, ",");
       const vals = raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !isNaN(v));
       const set = quiet ? S.setSamplerInput : S.setSamplerInputNow;
-      // Two real sigmas minimum — one number is not a schedule.
-      if (vals.length >= 2 && vals[0] > 0 && vals[0] < 1) {
-        set("second_pass", true);
-        set("second_pass_sigma", vals[0]);   // cut == entry -> an exact hand-over, no re-noise
-      } else {
-        S.unsetSamplerInput("second_pass");
-        S.unsetSamplerInput("second_pass_sigma");
-      }
+      if (vals.length >= 2) set("second_pass", true);       // one number is not a schedule
+      else S.unsetSamplerInput("second_pass");
     }
+
     try {
       window.SamplerPanel.render(box, samplers,
         (s) => persistSamplers(s, true),

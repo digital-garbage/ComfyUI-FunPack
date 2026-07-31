@@ -347,13 +347,15 @@
     const spSig = textCtrl(s.low.sigmas, "e.g. 0.812, 0.6, 0.35, 0.15, 0.0", "sp-second-sig",
       (v) => { s.low.sigmas = v; mkSave(true)(); });
     row(container, "Second pass schedule", spSig);
-    hint(container, "Fill this in and the scene is sampled in two passes; leave it empty and it "
-                    + "isn't. Comma-separated floats. Pass 1 runs the main schedule down to the "
-                    + "FIRST sigma listed here, then pass 2 takes over and runs this schedule to "
-                    + "the end — so the second half can have its own step count and spacing. "
-                    + "Nothing is added at the hand-over, so with a schedule that simply continues "
-                    + "where the first left off the result matches a single pass; the cost is only "
-                    + "whatever extra steps you list.");
+hint(container, "Fill this in and each scene is sampled in two passes; leave it empty and "
+                    + "it isn't. Comma-separated floats, high to low, ending at 0. Pass 1 "
+                    + "runs the main Sigmas schedule above in full, then pass 2 runs THIS "
+                    + "one in full, so the total is simply the two added up (a 9-step main "
+                    + "plus a 4-step second pass is 13). Pass 2 starts from the finished "
+                    + "clip and re-noises it up to your first sigma, so that value is the "
+                    + "strength dial — near 1.0 reworks the shot, low values only polish "
+                    + "it — and the rest sets how many steps it gets. To make pass 1 "
+                    + "shorter, shorten the schedule above; nothing here cuts it short.");
   }
 
   window.SamplerPanel = { render, defaultSamplers, defaultPass };

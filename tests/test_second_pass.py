@@ -4,14 +4,15 @@ anchor_shift built the machinery (stop the schedule, hand the state over, re-ent
 this exposes it on its own so a scene can be finished differently from how it was started.
 The invariants that matter here are the ones a split can silently get wrong:
 
-1. Pass 1 stops on a REAL step of the user's schedule, found by walking it.
-2. Pass 2 re-enters at or above the cut — never below, because noise can be added back but
-   never removed (the same rule anchor_shift's rewind lives by).
-3. A connected second schedule replaces pass 2 wholesale, and its own first sigma becomes
-   the entry point, so the sampler's phases are measured against IT and not the main one.
-4. Nothing is ever a silent no-op: every refusal comes back with a reason naming the fix.
-5. The i2v anchor stays PINNED across the split — the opposite of anchor_shift, which
-   deletes the pin on purpose. Without this pass 2 re-denoises the reference frame.
+1. BOTH schedules run in full, exactly as written. Pass 1 is not cut short and pass 2 is
+   not derived from it — total steps are simply the two added up. (An earlier version cut
+   pass 1 at pass 2's first sigma, which is anchor_shift's behaviour and does not belong
+   here; it silently shortened the run and distorted the result.)
+2. A hand-typed schedule is the one malformed-able input, and both ways it can be wrong
+   are silent in the OUTPUT rather than loud at runtime, so they are refused up front.
+3. Nothing is ever a silent no-op: every refusal comes back with a reason naming the fix.
+4. The i2v anchor stays PINNED for pass 2 — the opposite of anchor_shift, which deletes
+   the pin on purpose. Without this pass 2 re-denoises the reference frame.
 """
 import sys
 import types
@@ -44,88 +45,50 @@ def _node():
     return samplers.FunPackLTXAVSceneChainSampler()
 
 
-def _plan(cut, restart=0.0, alt=None):
-    return _node()._second_pass_plan(SCHEDULE, cut, restart, alt)
+# ── the pass-2 schedule ─────────────────────────────────────────────────────
+
+def _sched(alt):
+    return _node()._second_pass_schedule(alt)
 
 
-# ── the split ───────────────────────────────────────────────────────────────
-
-def test_continue_splits_the_schedule_without_adding_a_step():
-    """restart 0 is behaviour-neutral: the two halves are the whole schedule, cut once, and
-    pass 2 resumes from the exact handed-over state (resume=True -> no re-noise)."""
-    plan, reason = _plan(0.603)
-    assert reason is None
-    first, second, cut_at, entry_at, resume, ctx = plan
-    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.955, 0.893, 0.812, 0.715, 0.603]
-    assert [round(v, 3) for v in second.tolist()] == [0.603, 0.482, 0.241, 0.121, 0.0]
-    assert abs(cut_at - 0.603) < 1e-5 and abs(entry_at - 0.603) < 1e-5
-    assert resume is True
-    # No step is run twice: 5 + 4 == the schedule's own 9.
-    assert (first.numel() - 1) + (second.numel() - 1) == SCHEDULE.numel() - 1
-    # Pass 2's phases must still be measured against the whole schedule.
-    assert ctx["sigmas"] is SCHEDULE and ctx["offset"] == 5
+def test_a_well_formed_schedule_is_taken_exactly_as_written():
+    """Nothing is derived, cut or continued. Pass 1 runs the main schedule in full and pass 2
+    runs this one in full, so on the user's 9-step main a 4-step second pass is 13 steps —
+    not a re-slicing of the main schedule."""
+    alt = torch.tensor([0.812, 0.6, 0.35, 0.15, 0.0])
+    out, reason = _sched(alt)
+    assert reason is None and out is alt
+    assert (SCHEDULE.numel() - 1) + (out.numel() - 1) == 13
 
 
-def test_rewind_re_enters_higher_and_replays_those_steps():
-    plan, reason = _plan(0.482, restart=0.812)
-    assert reason is None
-    first, second, cut_at, entry_at, resume, ctx = plan
-    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482]
-    assert [round(v, 3) for v in second.tolist()] == [0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0]
-    assert resume is False          # the caller must rebuild the state at 0.812 first
-    assert ctx["offset"] == 3
+def test_an_ascending_schedule_is_refused():
+    """Both malformed cases are silent in the OUTPUT rather than loud at runtime, so they
+    have to be caught before sampling. An ascending pair walks the trajectory backwards."""
+    out, reason = _sched(torch.tensor([0.812, 0.4, 0.55, 0.0]))
+    assert out is None and "must descend" in reason
 
 
-def test_restart_below_the_cut_is_refused_with_the_fix_named():
-    plan, reason = _plan(0.812, restart=0.482)
-    assert plan is None
-    assert "never a cleaner one" in reason and "second_pass_restart_sigma" in reason
+def test_a_schedule_that_stops_short_of_zero_is_refused():
+    """Stopping above 0 leaves the clip partially denoised — the noise-artefact symptom."""
+    out, reason = _sched(torch.tensor([0.812, 0.5, 0.25]))
+    assert out is None and "not 0" in reason
 
 
-def test_a_cut_outside_the_schedule_is_refused_not_ignored():
-    for cut in (1.0, 0.9999, 0.0005):
-        plan, reason = _plan(cut)
-        assert plan is None and reason, cut
+def test_equal_neighbouring_sigmas_are_not_treated_as_ascending():
+    out, reason = _sched(torch.tensor([0.812, 0.6, 0.6, 0.0]))
+    assert reason is None and out is not None
 
 
-# ── a separate schedule for pass 2 ──────────────────────────────────────────
-
-def test_a_connected_schedule_replaces_pass_two_wholesale():
-    """The point of the feature: the second half can have its own step count and spacing.
-    Its first sigma is the entry point, and the sampler must be told THAT is its schedule —
-    otherwise it measures its quality phase and correction window against the main one."""
-    alt = torch.tensor([0.715, 0.5, 0.3, 0.15, 0.0])
-    plan, reason = _plan(0.603, restart=0.0, alt=alt)
-    assert reason is None
-    first, second, cut_at, entry_at, resume, ctx = plan
-    assert second is alt
-    assert abs(entry_at - 0.715) < 1e-5      # the alt schedule's own first sigma
-    assert resume is False                   # 0.603 -> 0.715 needs the state rebuilt
-    assert ctx["sigmas"] is alt and ctx["offset"] == 0
-    # ...and pass 1 is unaffected by it.
-    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.955, 0.893, 0.812, 0.715, 0.603]
+def test_a_missing_or_degenerate_schedule_is_refused_with_a_reason():
+    """second_pass with nothing to run must say so, not silently sample once."""
+    for alt in (None, torch.tensor([]), torch.tensor([0.5]), "0.8, 0.0"):
+        out, reason = _sched(alt)
+        assert out is None and reason
 
 
-def test_a_connected_schedule_starting_at_the_cut_is_an_exact_handover():
-    alt = torch.tensor([0.603, 0.4, 0.2, 0.0])
-    plan, reason = _plan(0.603, alt=alt)
-    assert reason is None and plan[4] is True     # resume -> nothing added
-
-
-def test_a_connected_schedule_starting_below_the_cut_is_refused():
-    alt = torch.tensor([0.3, 0.15, 0.0])
-    plan, reason = _plan(0.603, alt=alt)
-    assert plan is None
-    assert "second_pass_sigmas starts at" in reason
-
-
-def test_a_degenerate_connected_schedule_falls_back_to_the_restart_sigma():
-    """A single-sigma (or empty) SIGMAS input is not a schedule — it must not be treated as
-    one, and the restart sigma still governs."""
-    for alt in (None, torch.tensor([0.5]), torch.tensor([])):
-        plan, reason = _plan(0.603, restart=0.812, alt=alt)
-        assert reason is None
-        assert plan[1].tolist()[0] == SCHEDULE[3].item()   # a slice of the MAIN schedule
+def test_a_schedule_starting_at_zero_is_refused():
+    out, reason = _sched(torch.tensor([0.0, 0.0]))
+    assert out is None and "nothing for it to denoise" in reason
 
 
 # ── the pin survives the split ──────────────────────────────────────────────
