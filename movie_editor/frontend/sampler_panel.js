@@ -352,9 +352,14 @@ hint(container, "Fill this in and each scene is sampled in two passes; leave it 
                     + "runs the main Sigmas schedule above in full, then pass 2 runs THIS "
                     + "one in full, so the total is simply the two added up (a 9-step main "
                     + "plus a 4-step second pass is 13). Pass 2 starts from the finished "
-                    + "clip and re-noises it up to your first sigma, so that value is the "
-                    + "strength dial — near 1.0 reworks the shot, low values only polish "
-                    + "it — and the rest sets how many steps it gets. To make pass 1 "
+                    + "clip: it is handed in as the latent and the sampler noises it to your "
+                    + "first sigma itself, exactly as any img2img does — no extra step in "
+                    + "between. That first sigma is therefore the strength dial, and it is "
+                    + "literal: at 0.8 pass 2 starts from 80% fresh noise over 20% of the "
+                    + "pass-1 picture and will rework the shot (and look soft if it has few "
+                    + "steps to resolve it); at 0.4 it is 40/60 and polishes; at 0.2 it is "
+                    + "nearly pure detail work. The rest of the list sets how many steps it "
+                    + "gets. To make pass 1 "
                     + "shorter, shorten the schedule above; nothing here cuts it short.");
   }
 
