@@ -204,7 +204,7 @@ def test_renoise_to_the_same_sigma_is_an_identity(renoise_stubs):
     """b == a must add nothing: alpha=1, beta=0. This is what lets continue mode and
     rewind mode be one formula instead of two special cases."""
     latent = {"samples": torch.full((1, 4, 6, 2, 2), 3.0)}
-    out = _node()._anchor_shift_renoise(latent, 0.725, 0.725, seed=7)
+    out = _node()._renoise_to_sigma(latent, 0.725, 0.725, seed=7)
     assert torch.allclose(out["samples"], latent["samples"], atol=1e-6)
 
 
@@ -213,7 +213,7 @@ def test_renoise_from_zero_matches_comfy_const_scaling(renoise_stubs):
     the formula strictly generalises the img2img re-noise rather than replacing it."""
     b = 0.975
     x0 = torch.full((1, 4, 6, 2, 2), 3.0)
-    out = _node()._anchor_shift_renoise({"samples": x0}, 0.0, b, seed=11)
+    out = _node()._renoise_to_sigma({"samples": x0}, 0.0, b, seed=11)
     expected = _const_noise_scaling(b, torch.full_like(x0, 7.0), x0)
     assert torch.allclose(out["samples"], expected, atol=1e-6)
 
@@ -225,7 +225,7 @@ def test_renoise_upward_rebuilds_the_state_at_the_higher_sigma(renoise_stubs):
     a, b = 0.603, 0.893
     x0, eps = torch.full((1, 4, 6, 2, 2), 3.0), torch.full((1, 4, 6, 2, 2), -1.5)
     x_a = x0 * (1.0 - a) + eps * a          # a genuine mid-trajectory latent
-    out = _node()._anchor_shift_renoise({"samples": x_a}, a, b, seed=3)
+    out = _node()._renoise_to_sigma({"samples": x_a}, a, b, seed=3)
 
     alpha = (1.0 - b) / (1.0 - a)
     beta = math.sqrt(b * b - (a * alpha) ** 2)
@@ -243,7 +243,7 @@ def test_renoise_starts_a_reset_stream_from_scratch(renoise_stubs):
     b = 0.893
     latent = {"samples": _FakeNested(
         [torch.full((1, 4, 6, 2, 2), 2.0), torch.zeros(1, 4, 12)])}
-    out = _node()._anchor_shift_renoise(latent, 0.603, b, seed=5, reset_indices=(1,))
+    out = _node()._renoise_to_sigma(latent, 0.603, b, seed=5, reset_indices=(1,))
     video, audio = out["samples"].unbind()
     assert torch.allclose(audio, torch.full_like(audio, 7.0 * b), atol=1e-6)
     # ...and the video stream still took the mid-trajectory path, not the a=0 one.
@@ -255,7 +255,7 @@ def test_renoise_starts_a_reset_stream_from_scratch(renoise_stubs):
 def test_renoise_never_mutates_its_input(renoise_stubs):
     latent = {"samples": torch.full((1, 4, 6, 2, 2), 3.0)}
     before = latent["samples"].clone()
-    _node()._anchor_shift_renoise(latent, 0.603, 0.893, seed=1)
+    _node()._renoise_to_sigma(latent, 0.603, 0.893, seed=1)
     assert torch.equal(latent["samples"], before)
 
 
