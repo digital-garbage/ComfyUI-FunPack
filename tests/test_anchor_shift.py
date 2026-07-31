@@ -55,7 +55,7 @@ def _latent(frames=10, audio=True):
 # ── schedule splitting ──────────────────────────────────────────────────────
 
 def test_continue_mode_stops_at_the_cut_and_resumes_from_that_state():
-    first, second, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
+    first, second, cut_at, restart_at, resume, start_idx = _node()._anchor_shift_split_sigmas(
         SCHEDULE, 0.909, 0.0)
     # float32: the schedule stores 0.909 as 0.90899997, so compare loosely.
     assert abs(cut_at - 0.909) < 1e-5 and abs(restart_at - 0.909) < 1e-5
@@ -72,7 +72,7 @@ def test_continue_mode_stops_at_the_cut_and_resumes_from_that_state():
 def test_rewind_mode_still_stops_pass_one_at_the_cut():
     """The cut sigma is the whole feature — rewind must NOT override it. Pass 1 stops
     where the user asked, and the restart only decides where pass 2 re-enters."""
-    first, second, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
+    first, second, cut_at, restart_at, resume, start_idx = _node()._anchor_shift_split_sigmas(
         SCHEDULE, 0.725, 0.975)
     assert abs(cut_at - 0.725) < 1e-5 and abs(restart_at - 0.975) < 1e-5
     assert [round(v, 3) for v in first.tolist()] == [1.0, 0.975, 0.909, 0.725]
@@ -89,10 +89,58 @@ def test_rewind_refuses_a_restart_below_the_cut():
 
 def test_restart_landing_on_the_cut_is_just_continue():
     """A restart that snaps to the cut's own step has nothing to re-noise."""
-    _, _, cut_at, restart_at, resume = _node()._anchor_shift_split_sigmas(
+    _, _, cut_at, restart_at, resume, _ = _node()._anchor_shift_split_sigmas(
         SCHEDULE, 0.909, 0.909)
     assert abs(cut_at - restart_at) < 1e-5
     assert resume is True
+
+
+# ── the sampler must still see the REAL schedule ────────────────────────────
+
+# The user's own 9-step schedule, used here because the boundary walk has to be right on
+# the schedule they actually run, not on the toy one above.
+USER_SCHEDULE = torch.tensor(
+    [1.0, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0])
+
+
+def test_cut_is_the_step_whose_next_sigma_crosses_the_threshold():
+    """Walk the real schedule: the last pre-shift step is the one whose NEXT sigma has
+    crossed the shift point. At shift 0.482 the steps at 1.000 and 0.955 both have a next
+    sigma still above it and proceed; the step at 0.603 has next=0.482, so it is the last."""
+    first, second, cut_at, restart_at, resume, start_idx = _node()._anchor_shift_split_sigmas(
+        USER_SCHEDULE, 0.482, 0.812)
+    assert [round(v, 3) for v in first.tolist()] == [1.0, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482]
+    assert abs(cut_at - 0.482) < 1e-5
+    # Pass 2 re-enters at 0.812, which is index 3 of the real schedule.
+    assert start_idx == 3
+    assert abs(restart_at - 0.812) < 1e-5
+    assert [round(v, 3) for v in second.tolist()] == [0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0]
+    assert resume is False
+
+
+def test_schedule_view_hands_the_sampler_the_whole_schedule():
+    """Without this the sampler measures its phases from the SLICE: the final-correction
+    window reopens at the end of pass 1, the AB2 ramp restarts, and the velocity-bias
+    ratio is taken against the slice's own first sigma instead of the schedule's."""
+    slice_ = USER_SCHEDULE[3:]
+    sched, offset = samplers._schedule_view(
+        slice_, {"sigmas": USER_SCHEDULE, "offset": 3})
+    assert sched is USER_SCHEDULE and offset == 3
+    # Concretely: 9 real steps, not the 6 the slice would have claimed.
+    assert len(sched) - 1 == 9 and len(slice_) - 1 == 6
+
+
+def test_schedule_view_falls_back_to_the_sigmas_it_was_given():
+    """Every normal single-call run passes no context — `sigmas` IS the whole schedule."""
+    for ctx in (None, {}, {"sigmas": None}, {"sigmas": torch.tensor([1.0])}, "nonsense"):
+        sched, offset = samplers._schedule_view(USER_SCHEDULE, ctx)
+        assert sched is USER_SCHEDULE and offset == 0
+
+
+def test_schedule_view_never_returns_a_negative_offset():
+    sched, offset = samplers._schedule_view(
+        USER_SCHEDULE, {"sigmas": USER_SCHEDULE, "offset": -5})
+    assert offset == 0
 
 
 # ── the mid-trajectory re-noise ─────────────────────────────────────────────

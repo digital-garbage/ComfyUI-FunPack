@@ -340,6 +340,24 @@ def _velocity_bias_key(refinement_key, target, x):
     return (key, f"{float(target):.2f}", shape)
 
 
+def _schedule_view(sigmas, schedule_context):
+    """The real schedule behind a possibly-partial `sigmas`, plus this run's step offset.
+
+    anchor_shift samples a scene as two sample_custom calls over slices of one schedule.
+    A sampler that measures its phases from `len(sigmas)` therefore re-derives them inside
+    each slice — the final-correction window reopens at the end of pass 1, the AB2 ramp
+    restarts, the velocity-bias ratio is taken against the slice's own first sigma. The
+    caller passes the whole schedule and where this slice starts in it; absent (any normal
+    single-call run) `sigmas` IS the whole schedule and the offset is 0.
+    """
+    if isinstance(schedule_context, dict):
+        full = schedule_context.get("sigmas")
+        if isinstance(full, torch.Tensor) and int(full.numel()) >= 2:
+            offset = max(0, int(schedule_context.get("offset", 0) or 0))
+            return full, offset
+    return sigmas, 0
+
+
 def _sigma_ratio(sigmas, sigma):
     try:
         start = float(sigmas[0].item())
@@ -1109,7 +1127,8 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           velocity_refinement_key,
                           rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
                           quality_sharpness=0.0, velocity_bias_source="mean",
-                          normalize_strength=0.0, normalize_start_sigma=0.9):
+                          normalize_strength=0.0, normalize_start_sigma=0.9,
+                          schedule_context=None):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
 
     Rectified-flow-correct port of the hybrid sampler so its features actually run on
@@ -1140,9 +1159,14 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
     eta_final = max(0.0, min(float(eta), float(eta_final)))
 
+    # See _schedule_view: `sigmas` may be one half of an anchor_shift split, and the quality
+    # phase / motion-pulse anchors below are positions in the SCHEDULE, not in this call.
+    sched, step_offset = _schedule_view(sigmas, schedule_context)
+    sched_steps = max(1, int(len(sched)) - 1)
+
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
-            sigmas, high_quality_pct, motion_pulse_mode, motion_pulse_start_pct,
+            sched, high_quality_pct, motion_pulse_mode, motion_pulse_start_pct,
             motion_pulse_count, motion_pulse_spacing_pct, motion_pulse_strength)
     motion_pulse_noise = max(0.0, float(motion_pulse_noise or 0.0))
     motion_step_noise = {
@@ -1150,14 +1174,13 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         for item in (motion_pulse_steps or []) if isinstance(item, dict)
     }
 
-    late_start = _get_late_start_index(total_steps, high_quality_pct)
-    quality_sigma_start = float(sigmas[late_start].item()) if late_start < sigmas.shape[0] else None
-    num_quality_steps = total_steps - late_start
+    late_start = _get_late_start_index(sched_steps, high_quality_pct)
+    quality_sigma_start = float(sched[late_start].item()) if late_start < sched.shape[0] else None
+    num_quality_steps = sched_steps - late_start
 
     s_in = x.new_ones([x.shape[0]])
     prev_denoised = None
     prev_h = None
-    quality_step_index = 0
     _kvlock_state = {}
 
     # Audio-safe sampling: on a packed LTXAV latent, keep ancestral noise + steering on the
@@ -1178,11 +1201,12 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
+        step_abs = i + step_offset  # position in the REAL schedule, not in this call's slice
         in_quality = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
-        velocity_target = _velocity_bias_target(sigmas, sigma)
+        velocity_target = _velocity_bias_target(sched, sigma)
 
         if not in_quality:
-            pulse = motion_step_noise.get(int(i), 0.0)
+            pulse = motion_step_noise.get(int(step_abs), 0.0)
             if pulse > 0.0:
                 x = _video_only(_apply_motion_pulse(x, sigma, sigma_next, pulse, noise_sampler), x, video_mask)
                 prev_denoised = None
@@ -1191,7 +1215,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
             x_pre = x
             x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
-                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                     sigma_ratio=_sigma_ratio(sched, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             x = _video_only(x, x_pre, video_mask)
 
@@ -1245,7 +1269,10 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             if num_quality_steps <= 1:
                 effective_blend = correction_blend
             else:
-                effective_blend = 0.0 if quality_step_index < (num_quality_steps // 2) else correction_blend
+                # Which quality step this is IN THE SCHEDULE — a per-call counter would
+                # restart the euler->Heun ramp inside each half of an anchor_shift split.
+                q_idx = max(0, step_abs - late_start)
+                effective_blend = 0.0 if q_idx < (num_quality_steps // 2) else correction_blend
             dt = sigma_next - sigma
             d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
             if effective_blend > 0.0:
@@ -1261,11 +1288,10 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             # Heun changed x with a corrected direction; invalidate AB2 history.
             prev_denoised = None
             prev_h = None
-            quality_step_index += 1
         else:
             # Early phase: ancestral RF euler (matches sample_euler_ancestral_RF), with
             # eta decay toward the quality boundary, using the AB2 denoised estimate.
-            effective_eta = _effective_eta(eta, eta_final, sigmas, sigma)
+            effective_eta = _effective_eta(eta, eta_final, sched, sigma)
             # Deterministic euler-RF step to sigma_next (this is what audio rides — no
             # ancestral re-noising). For single-stream video (mask None) it is only used
             # as the eta==0 fallback; the full ancestral result is kept for video.
@@ -1310,7 +1336,8 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    rescue_prompt_sig=None,
                                    eta_final=1.0,
                                    normalize_strength=0.0,
-                                   normalize_start_sigma=0.9):
+                                   normalize_start_sigma=0.9,
+                                   schedule_context=None):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral with order-2 denoised extrapolation for
@@ -1387,6 +1414,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             velocity_bias_source=velocity_bias_source,
             normalize_strength=normalize_strength,
             normalize_start_sigma=normalize_start_sigma,
+            schedule_context=schedule_context,
         )
 
     extra_args = {} if extra_args is None else extra_args
@@ -1758,7 +1786,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    alg_guide_tail_frames=0,
                                    alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
-                                   quality_sharpness=0.0):
+                                   quality_sharpness=0.0, schedule_context=None):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1808,10 +1836,18 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     if total_steps <= 0:
         return x
 
+    # `sigmas` is not always the schedule the user configured: anchor_shift runs a scene as
+    # two sample_custom calls, so this can be a FRAGMENT. Everything phase-relative below —
+    # where the final-correction window opens, how far along the AB2 ramp is, what the
+    # velocity-bias sigma ratio is measured against — has to be read off the REAL schedule,
+    # or enabling anchor_shift silently re-times all of it inside each half.
+    sched, step_offset = _schedule_view(sigmas, schedule_context)
+    sched_steps = max(1, int(len(sched)) - 1)
+
     order = max(1, min(2, int(order)))
     s_noise = max(0.0, min(0.5, float(s_noise)))
-    final_correction_steps = max(0, min(total_steps // 2, int(final_correction_steps)))
-    correction_start_idx = total_steps - final_correction_steps
+    final_correction_steps = max(0, min(sched_steps // 2, int(final_correction_steps)))
+    correction_start_idx = sched_steps - final_correction_steps
 
     _RESCUE_LOG["warned_no_memory"] = False
     _RESCUE_LOG["warned_no_prompt_match"] = False
@@ -1918,7 +1954,9 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         for i in comfy.utils.model_trange(total_steps, disable=disable):
             sigma = sigmas[i]
             sigma_next = sigmas[i + 1]
-            velocity_target = _velocity_bias_target(sigmas, sigma)
+            # Position in the REAL schedule, not in this call's slice of it.
+            step_abs = i + step_offset
+            velocity_target = _velocity_bias_target(sched, sigma)
 
             if alg_active:
                 model.latent_image = alg_latents[(
@@ -1929,7 +1967,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
                 x_pre = x
                 x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
-                                         sigma_ratio=_sigma_ratio(sigmas, sigma),
+                                         sigma_ratio=_sigma_ratio(sched, sigma),
                                          prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
                 x = _video_only(x, x_pre, video_mask)
 
@@ -1947,7 +1985,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
 
             # Restore high-frequency detail during the final Heun-correction steps (free,
             # video-only) — same unsharp mechanism as the Hybrid Euler 2S sampler.
-            if i >= correction_start_idx:
+            if step_abs >= correction_start_idx:
                 denoised = _video_only(_apply_quality_sharpness(denoised, prev_denoised, quality_sharpness), denoised, video_mask)
 
             # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
@@ -1976,8 +2014,8 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             # the schedule. Early/high-sigma steps stay near 1st-order euler (the denoised estimate
             # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
             # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
-            if ab2_ramp and total_steps > 1:
-                w = i / (total_steps - 1)  # 0 at first step -> 1 at last
+            if ab2_ramp and sched_steps > 1:
+                w = step_abs / (sched_steps - 1)  # 0 at first step -> 1 at last
                 denoised_eff = denoised + (denoised_eff - denoised) * w
 
             # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
@@ -1995,7 +2033,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
 
             dt = sigma_next - sigma  # negative: sigmas decrease
 
-            if i >= correction_start_idx:
+            if step_abs >= correction_start_idx:
                 # Heun predictor-corrector.
                 # Predictor: Euler step using the (multistep-corrected) denoised.
                 d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
@@ -2951,7 +2989,8 @@ class FunPackLTXAVSceneChainSampler:
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                      bounded_attention_enabled=False, continue_from_state=False):
+                      bounded_attention_enabled=False, continue_from_state=False,
+                      schedule_context=None):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
@@ -2982,6 +3021,13 @@ class FunPackLTXAVSceneChainSampler:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
             extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
             extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
+        # anchor_shift runs a scene as two calls over slices of one schedule. Tell the sampler
+        # what the real schedule is (and where this slice sits in it) so its phase boundaries
+        # stay where the user's schedule put them instead of being re-derived per slice — see
+        # _schedule_view. Always written, even as None, so it can never leak into a later chunk.
+        if isinstance(extra_options, dict) and sampler.sampler_function in (
+                sample_funpack_distilled_flow, sample_funpack_hybrid_euler_2s):
+            extra_options["schedule_context"] = schedule_context
 
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
@@ -3057,6 +3103,16 @@ class FunPackLTXAVSceneChainSampler:
         Both passes need at least one real step, so a threshold outside the schedule's
         range is refused rather than silently producing a zero-step pass. A restart BELOW
         the cut is refused too — that would mean removing noise, which is not a thing.
+
+        Everything here is read off the ACTUAL schedule, never off the typed floats: walk
+        the sigmas and the last pre-shift step is the one whose NEXT sigma has crossed the
+        threshold. On a 1.000, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0
+        schedule with shift 0.482, steps at 1.000 and 0.955 both have a next sigma still
+        above it and proceed; the step at 0.603 has next=0.482, so it is the last one and
+        the shift happens after it. `_first_at_or_below` is that walk in closed form — the
+        first index at or below the threshold IS the sigma the last pre-shift step lands on.
+        Returned cut/restart values are the schedule's own float32 entries, so the sigma
+        pass 2 re-enters at is exactly the one _anchor_shift_renoise rebuilds the state for.
         """
         if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 3:
             return None
@@ -3087,7 +3143,9 @@ class FunPackLTXAVSceneChainSampler:
         first, second, resume = sigmas[:cut + 1], sigmas[start:], start == cut
         if first.numel() < 2 or second.numel() < 2:
             return None
-        return first, second, vals[cut], vals[start], resume
+        # `start` goes back to the caller too: it is pass 2's offset into the real schedule,
+        # which the sampler needs to keep its phase boundaries where the schedule put them.
+        return first, second, vals[cut], vals[start], resume, start
 
     def _anchor_shift_renoise(self, latent, from_sigma, to_sigma, seed, reset_indices=()):
         """Move a latent that sits mid-trajectory at `from_sigma` back up to `to_sigma`.
@@ -5534,10 +5592,14 @@ class FunPackLTXAVSceneChainSampler:
                     if _shift_split is None:
                         run_mechanisms.append(f"anchor_shift(SKIPPED: {_reason})")
                 if _shift_split is not None:
-                    _sig_a, _sig_b, _cut_at, _restart_at, _resume = _shift_split
+                    _sig_a, _sig_b, _cut_at, _restart_at, _resume, _restart_idx = _shift_split
+                    # Both passes are slices of THIS schedule. Hand the sampler the real thing
+                    # plus where each slice starts, so the quality phase, final-correction
+                    # window, AB2 ramp, pulse anchors and eta decay stay where the schedule
+                    # puts them instead of being re-derived inside each half.
                     _pass1 = self._sample_chunk(
                         model, sampler, _sig_a, scene_seed, cfg, scene_positive, scene_negative,
-                        chunk, **_sample_kwargs)
+                        chunk, schedule_context={"sigmas": sigmas, "offset": 0}, **_sample_kwargs)
                     _shifted, _dropped = self._anchor_shift_latent(
                         _pass1, _shift_drop, anchor_shift_tail, anchor_shift_fresh_audio)
                     if not _resume:
@@ -5556,6 +5618,7 @@ class FunPackLTXAVSceneChainSampler:
                     _kw2 = dict(_sample_kwargs)
                     _kw2["step_offset"] = _sample_kwargs["step_offset"] + (_sig_a.numel() - 1)
                     _kw2["continue_from_state"] = True
+                    _kw2["schedule_context"] = {"sigmas": sigmas, "offset": _restart_idx}
                     sampled = self._sample_chunk(
                         model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
                         scene_negative, _shifted, **_kw2)
