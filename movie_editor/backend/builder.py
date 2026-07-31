@@ -63,6 +63,12 @@ CORE_LINKS: dict[str, dict[str, tuple[str, int]]] = {
     "cond":     {"positive": ("studio", 1), "negative": ("studio", 2), "frame_rate": ("fps", 0)},
     "sampler":  {"model": ("studio", 0), "positive": ("cond", 0), "negative": ("cond", 1),
                  "sampler": ("studio", 4), "sigmas": ("studio", 5),
+                 # Studio has always emitted a second schedule (low_pass_sigmas, output 7);
+                 # the Editor just never wired it. second_pass reads it as pass 2's schedule
+                 # and ignores it when empty, so this link costs nothing when the feature is
+                 # off. Only the SIGMAS is taken — pass 2 reuses the main sampler object, so
+                 # the low pass's sampler-type settings deliberately do not apply.
+                 "second_pass_sigmas": ("studio", 7),
                  "latent_template": ("concat", 0), "refinement_key_input": ("keyloader", 0),
                  "num_frames_per_scene": ("frames", 0)},
     "concat":   {"video_latent": ("studio", 12)},

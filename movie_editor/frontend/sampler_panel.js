@@ -335,9 +335,24 @@
       return () => quiet ? save(s) : saveNow(s);
     }
 
-    // Only the high-pass sampler is wired in the Movie Editor graph
-    // (studio outputs 4+5 → chain sampler; outputs 6+7 are not connected).
+    // The high-pass sampler is the one the Movie Editor graph runs (studio outputs 4+5).
     renderPass(container, "high", "Sampler", s.high, mkSave(true), mkSave(false));
+
+    // Second pass schedule. Studio's low-pass SIGMAS (output 7) is wired to the chain
+    // sampler's second_pass_sigmas, so this field alone is pass 2's schedule — deliberately
+    // NOT the whole low-pass sampler panel, because only its sigmas are connected: pass 2
+    // reuses the sampler configured above, and rendering its algorithm settings here would
+    // offer knobs that quietly do nothing.
+    sectionTag(container, "Second pass");
+    const spSig = textCtrl(s.low.sigmas, "e.g. 0.812, 0.6, 0.35, 0.15, 0.0", "sp-second-sig",
+      (v) => { s.low.sigmas = v; mkSave(true)(); });
+    row(container, "Second pass schedule", spSig);
+    hint(container, "Used when 'Enable second pass' is on below. Comma-separated floats — pass 2 "
+                    + "runs THIS schedule end to end instead of continuing along the main one, so "
+                    + "the second half can have its own step count and spacing. Its FIRST sigma is "
+                    + "where pass 2 re-enters, and it must be at or above the cut (the state can be "
+                    + "re-noised back up, never un-noised down). Leave empty to carry straight on "
+                    + "from the cut instead.");
   }
 
   window.SamplerPanel = { render, defaultSamplers, defaultPass };
