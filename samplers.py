@@ -5675,14 +5675,22 @@ class FunPackLTXAVSceneChainSampler:
                                 _detail_upsampler_model = _det.load_latent_upsampler(_r)
                             except Exception as _exc:  # noqa: BLE001
                                 _detail_disabled_reason = str(_exc)
+                                # resolve_upsampler_name prints when it DOWNLOADS; nothing
+                                # printed when it can't, so a silent skip looked like the op
+                                # having run. Say it on the console too, once.
+                                print(f"[FunPackSceneChain] second_pass_op={second_pass_op} "
+                                      f"needs the latent upsampler and it could not be "
+                                      f"loaded: {_detail_disabled_reason} — the second pass "
+                                      f"still runs, without the operation.")
                         _sp_state, _op_note = self._second_pass_operate(
                             _sp_state, second_pass_op, _detail_upsampler_model, vae)
                         if _op_note:
+                            # "no upsampler could be loaded" on its own doesn't say WHY —
+                            # missing huggingface_hub, a failed download, an unreadable file
+                            # are all different fixes. Carry the real reason through.
+                            if _detail_upsampler_model is None and _detail_disabled_reason:
+                                _op_note = f"{_op_note} ({_detail_disabled_reason})"
                             run_mechanisms.append(_op_note)
-                        elif _detail_disabled_reason:
-                            run_mechanisms.append(
-                                f"second_pass_op={second_pass_op} skipped: upsampler "
-                                f"unavailable ({_detail_disabled_reason})")
                     # A second pass must KEEP the i2v anchor pinned — otherwise pass 2
                     # re-denoises the reference frame and the scene drifts away from the
                     # image it was supposed to start from.
