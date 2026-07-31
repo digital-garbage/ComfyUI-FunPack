@@ -2,6 +2,7 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -67,6 +68,10 @@ def fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative, l
         "positive": positive,
         "negative": negative,
         "cfg": cfg,
+        "steps": max(0, int(sigmas.numel()) - 1),
+        # What the sampler is telling the UI it's doing, AS this call runs — the point of
+        # the label is that it is live, so reading it afterwards would prove nothing.
+        "phase": run_phase.current()["label"],
         "latent_image": _sample_snapshot(latent_image),
         "noise_mask": _sample_snapshot(noise_mask),
     })
@@ -90,6 +95,21 @@ comfy_sample_mod = types.ModuleType("comfy.sample")
 comfy_samplers_mod = types.ModuleType("comfy.samplers")
 comfy_utils_mod = types.ModuleType("comfy.utils")
 
+
+class FakeProgressBar:
+    """Records what the sampler declared as the run's total step count."""
+    last = None
+
+    def __init__(self, total):
+        self.total = int(total)
+        self.value = 0
+        FakeProgressBar.last = self
+
+    def update_absolute(self, value, total=None, preview=None):
+        self.value = int(value)
+
+
+comfy_utils_mod.ProgressBar = FakeProgressBar
 comfy_nested_mod.NestedTensor = FakeNestedTensor
 comfy_sample_mod.prepare_noise = fake_prepare_noise
 comfy_sample_mod.sample_custom = fake_sample_custom
@@ -111,7 +131,8 @@ sys.modules.setdefault("comfy.sample", comfy_sample_mod)
 sys.modules.setdefault("comfy.samplers", comfy_samplers_mod)
 sys.modules.setdefault("comfy.utils", comfy_utils_mod)
 
-from samplers import FunPackLTXAVSceneChainSampler
+import run_phase  # noqa: E402
+from samplers import FunPackLTXAVSceneChainSampler  # noqa: E402
 
 
 class FakeVAE:
@@ -738,3 +759,95 @@ def test_plateau_cache_keys_cond_and_uncond_separately():
     assert stats["computed"] == 2  # cond + uncond each computed once
     assert stats["reused"] == 2    # then each reused once
     assert calls["n"] == 2
+
+
+# ── second pass: the progress bar and the phase readout ─────────────────────
+
+@pytest.fixture
+def live_stubs():
+    """Force this file's comfy fakes onto whatever module objects are actually live.
+
+    The module-level `sys.modules.setdefault` above only wins when this file is imported
+    FIRST — under the full suite another test module has usually registered bare comfy
+    stubs already, so the fakes here are silently discarded and every sample()-calling test
+    in this file fails on the missing attribute. Snapshot/restore rather than leaving them
+    behind, so the next module's expectations are not the ones broken instead."""
+    targets = [
+        (sys.modules["comfy.sample"], "prepare_noise", fake_prepare_noise),
+        (sys.modules["comfy.sample"], "sample_custom", fake_sample_custom),
+        (sys.modules["comfy.utils"], "ProgressBar", FakeProgressBar),
+        (sys.modules["comfy.nested_tensor"], "NestedTensor", FakeNestedTensor),
+        (sys.modules["comfy"], "sample", sys.modules["comfy.sample"]),
+        (sys.modules["comfy"], "utils", sys.modules["comfy.utils"]),
+        (sys.modules["comfy"], "nested_tensor", sys.modules["comfy.nested_tensor"]),
+    ]
+    saved = [(mod, name, getattr(mod, name, _MISSING)) for mod, name, _ in targets]
+    for mod, name, value in targets:
+        setattr(mod, name, value)
+    yield
+    for mod, name, value in saved:
+        if value is _MISSING:
+            delattr(mod, name)
+        else:
+            setattr(mod, name, value)
+
+
+_MISSING = object()
+
+
+def _second_pass_run(scene_count=2, main=torch.tensor([1.0, 0.5, 0.0]),
+                     second=torch.tensor([0.4, 0.2, 0.0])):
+    sample_calls.clear()
+    run_phase.clear()
+    node = FunPackLTXAVSceneChainSampler()
+    return node.sample(
+        model=FakeModel(),
+        vae=FakeVAE(),
+        positive=[scene_cond(i) for i in range(scene_count)],
+        negative=[(torch.zeros(1, 2, 3), {})],
+        sampler=object(),
+        sigmas=main,
+        seed=10,
+        latent_template={"samples": torch.zeros(1, 2, 5, 3, 3)},
+        num_frames_per_scene=5,
+        frame_overlap=0,
+        cfg=1.5,
+        max_scenes=8,
+        second_pass=True,
+        second_pass_sigmas=second,
+    )
+
+
+def test_second_pass_progress_total_counts_both_passes(live_stubs):
+    """A second pass samples every scene twice. If its steps aren't in the total, the bar
+    overflows during scene 1 and then jumps BACKWARDS at scene 2, whose offset is a
+    multiple of the (too small) per-scene stride."""
+    _second_pass_run(scene_count=2)
+    # 2 main steps + 2 second-pass steps, per scene, over 2 scenes.
+    assert [c["steps"] for c in sample_calls] == [2, 2, 2, 2]
+    assert FakeProgressBar.last.total == 2 * (2 + 2)
+
+
+def test_progress_total_ignores_an_unusable_second_pass_schedule(live_stubs):
+    """The loop skips a malformed schedule with a note, so the total must not reserve steps
+    for a pass that never runs — the bar would stall short of the end."""
+    _second_pass_run(scene_count=2, second=torch.tensor([0.4, 0.2]))  # doesn't reach 0
+    assert [c["steps"] for c in sample_calls] == [2, 2]
+    assert FakeProgressBar.last.total == 2 * 2
+
+
+def test_second_pass_says_which_pass_is_running(live_stubs):
+    """The run report names the second pass only after the fact, which is no help while
+    you're waiting on one. The live label has to say it AS it happens."""
+    _second_pass_run(scene_count=2)
+    assert [c["phase"] for c in sample_calls] == [
+        "scene 1/2 · pass 1 of 2", "scene 1/2 · pass 2 of 2",
+        "scene 2/2 · pass 1 of 2", "scene 2/2 · pass 2 of 2",
+    ]
+    # ...and nothing is sampling once the node returns.
+    assert run_phase.current()["label"] == ""
+
+
+def test_phase_label_drops_the_scene_number_on_a_single_scene_run(live_stubs):
+    _second_pass_run(scene_count=1)
+    assert [c["phase"] for c in sample_calls] == ["pass 1 of 2", "pass 2 of 2"]

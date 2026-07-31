@@ -658,8 +658,24 @@ def reset_progress() -> None:
 
 
 def current_progress() -> dict:
+    """Sampler step counter, plus what the Chain Sampler says it is doing right now.
+
+    ComfyUI's progress channel is numbers only, so a chain that samples several scenes —
+    some of them twice, with a second pass — is one anonymous bar. The sampler publishes a
+    short phase label ("scene 2/3 · pass 2 of 2") that rides along here. Absent (an older
+    sampler, a non-FunPack job) it is simply an empty string and the UI shows the numbers
+    alone, exactly as before.
+    """
     _install_progress_hook()
-    return {"value": _progress["value"], "max": _progress["max"]}
+    label = ""
+    try:
+        # Top-level by name (never a relative import past this package — see
+        # _ensure_funpack_path). run_phase keeps its state on `sys` precisely so it does not
+        # matter whether the sampler's copy and this one are the same module object.
+        label = _funpack_attr("run_phase", "current")().get("label") or ""
+    except Exception:  # noqa: BLE001 — a readout must never break the progress poll
+        pass
+    return {"value": _progress["value"], "max": _progress["max"], "label": label}
 
 
 async def is_running(prompt_id: str) -> bool:

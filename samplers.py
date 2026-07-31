@@ -2501,9 +2501,9 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 40, "min": 0, "max": 512, "step": 8,
                     "tooltip": "How many real frames consecutive windows share. This is the ONLY thing carrying motion/appearance continuity across a window boundary, and it is also the only extra compute this feature costs (overlap/length = the redundant fraction). Too low and boundaries show as a seam or a motion hitch; too high and you pay for frames you already have.",
                 }),
-                "context_window_schedule": (["uniform_standard", "static_standard", "uniform_looped", "batched"], {
-                    "default": "uniform_standard",
-                    "tooltip": "How the windows are laid out across the scene, per step. 'uniform_standard' (default, core's own LTXV default) shifts the window grid between steps so boundaries land in different places each step and never bake in — the safest general choice. 'static_standard' keeps the same fixed cut points every step (cheapest, but a bad boundary stays bad). 'uniform_looped' wraps the last window into the first, for seamless looping content. 'batched' denoises disjoint chunks with no overlap logic (fastest, weakest continuity).",
+                "context_window_schedule": (["standard_uniform", "standard_static", "looped_uniform", "batched"], {
+                    "default": "standard_uniform",
+                    "tooltip": "How the windows are laid out across the scene, per step. These are ComfyUI core's own schedule names (comfy.context_windows). 'standard_uniform' (default, core's own LTXV default) shifts the window grid between steps so boundaries land in different places each step and never bake in — the safest general choice. 'standard_static' keeps the same fixed cut points every step (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the last window into the first, for seamless looping content. 'batched' denoises disjoint chunks with no overlap logic (fastest, weakest continuity). Projects saved with the old reversed spellings (uniform_standard / static_standard / uniform_looped) are still accepted and mapped onto these.",
                 }),
                 "context_window_fuse": (["pyramid", "relative", "flat", "overlap-linear"], {
                     "default": "pyramid",
@@ -2946,6 +2946,23 @@ class FunPackLTXAVSceneChainSampler:
             result["samples"] = blended_tensors[0]
         result.pop("noise_mask", None)
         return result
+
+    def _set_phase(self, label):
+        """Publish what is running right now for the editor's progress readout.
+
+        The ComfyUI progress channel is (value, max) only, so without this a multi-scene
+        chain — especially one sampling some scenes twice — is a single anonymous bar.
+        Best-effort in every direction: a missing module or a failed write must never
+        affect the render.
+        """
+        try:
+            try:
+                from . import run_phase as _rp
+            except ImportError:  # loaded as a top-level module (tests, direct import)
+                import run_phase as _rp
+            _rp.set_phase(label)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
@@ -4553,6 +4570,18 @@ class FunPackLTXAVSceneChainSampler:
     # Wrapper keys used by context windows; core registers them under these names.
     _CTX_WRAPPER_KEYS = ("ContextWindows_prepare_sampling", "ContextWindows_sampler_sample")
 
+    # Core's schedule identifiers put the words the other way round (comfy.context_windows
+    # ContextSchedules: "standard_uniform", "standard_static", "looped_uniform", "batched").
+    # This knob shipped with the readable-but-wrong spellings, so every schedule except
+    # "batched" raised ValueError out of get_matching_context_schedule and failed the whole
+    # render. The knob now offers core's own names; these aliases keep a project saved with
+    # the old ones working instead of failing at generation time.
+    _CTX_SCHEDULE_ALIASES = {
+        "uniform_standard": "standard_uniform",
+        "static_standard": "standard_static",
+        "uniform_looped": "looped_uniform",
+    }
+
     def _install_context_windows(self, model, length, overlap, schedule, fuse,
                                  freenoise, retain_first):
         """Hand this scene's denoise to ComfyUI core's context-window sampler.
@@ -4563,8 +4592,12 @@ class FunPackLTXAVSceneChainSampler:
         which every FunPack sampler already goes through (they all call model(x, sigma, ...)
         on the CFGGuider rather than apply_model directly), so no sampler change is needed.
 
-        Returns (remove_fn, latent_len) or None when the running ComfyUI core predates LTXAV
-        window support. That capability gate is the important part: the handler class itself
+        Returns (remove_fn, latent_len, None), or (None, None, reason) when it cannot run.
+        Everything that can go wrong here is a mismatch with the installed core, and every
+        one of them used to surface as either the wrong explanation or a failed render, so
+        the reason is carried back and reported per scene rather than inferred.
+
+        The capability gate below is the important part: the handler class itself
         has existed for a long time for unpacked video, but the packed AV latent needs
         BaseModel.map_context_window_to_modalities (+ resize_cond_for_context_window) to
         unpack the AV stream, map each video window onto its audio window and re-slice
@@ -4576,30 +4609,63 @@ class FunPackLTXAVSceneChainSampler:
             import comfy.context_windows as _cw
             import comfy.patcher_extension as _pe
         except ImportError:
-            return None
+            return None, None, ("this ComfyUI build has no context-window support at all "
+                                "(needs ComfyUI >= v0.29.0)")
         base = getattr(model, "model", None)
         if not hasattr(base, "map_context_window_to_modalities"):
-            return None
+            return None, None, ("this ComfyUI build has no LTXAV context-window support "
+                                "(needs the core context-windows change, ComfyUI >= v0.29.0)")
         # Real frames -> latent frames, exactly as core's LTXVContextWindows node does it.
         latent_len = max(((int(length) - 1) // 8) + 1, 1)
         latent_overlap = max(int(overlap) // 8, 0)
         retain = "0" if retain_first else ""
+        # Resolve the names against CORE's vocabulary, not ours, and say what it accepts —
+        # these raise ValueError, which used to escape and fail the render outright.
+        _sched_name = self._CTX_SCHEDULE_ALIASES.get(str(schedule), str(schedule))
         try:
-            handler = _cw.IndexListContextHandler(
-                context_schedule=_cw.get_matching_context_schedule(schedule),
-                fuse_method=_cw.get_matching_fuse_method(fuse),
-                context_length=latent_len,
-                context_overlap=latent_overlap,
-                context_stride=1,
-                closed_loop=False,
-                dim=2,
-                freenoise=bool(freenoise),
-                cond_retain_index_list=retain,
-                latent_retain_index_list=retain,
-                split_conds_to_windows=False,
-            )
-        except TypeError:
-            return None  # signature drifted from the one this was written against
+            _schedule = _cw.get_matching_context_schedule(_sched_name)
+        except ValueError:
+            _known = ", ".join(sorted(getattr(_cw, "CONTEXT_MAPPING", {}) or {}))
+            return None, None, (f"context_window_schedule={schedule!r} is not a schedule this "
+                                f"ComfyUI knows{f' — it accepts {_known}' if _known else ''}")
+        try:
+            _fuse = _cw.get_matching_fuse_method(str(fuse))
+        except ValueError:
+            _known = ", ".join(sorted(getattr(_cw, "FUSE_MAPPING", {}) or {}))
+            return None, None, (f"context_window_fuse={fuse!r} is not a blend this ComfyUI "
+                                f"knows{f' — it accepts {_known}' if _known else ''}")
+        kwargs = dict(
+            context_schedule=_schedule,
+            fuse_method=_fuse,
+            context_length=latent_len,
+            context_overlap=latent_overlap,
+            context_stride=1,
+            closed_loop=False,
+            dim=2,
+            freenoise=bool(freenoise),
+            cond_retain_index_list=retain,
+            latent_retain_index_list=retain,
+            split_conds_to_windows=False,
+        )
+        # Core's handler has gained and lost keywords over time (latent_retain_index_list is
+        # absent on some builds). Passing one it doesn't take raised TypeError and the whole
+        # feature was then reported as "core too old", which is a different and misleading
+        # thing. Drop the extras instead, and name the one knob that stops working.
+        _dropped = []
+        try:
+            import inspect as _inspect
+            _accepted = set(_inspect.signature(_cw.IndexListContextHandler).parameters)
+            if "kwargs" not in _accepted:
+                _dropped = [k for k in kwargs if k not in _accepted]
+                for k in _dropped:
+                    kwargs.pop(k)
+        except (TypeError, ValueError):
+            pass
+        try:
+            handler = _cw.IndexListContextHandler(**kwargs)
+        except TypeError as exc:
+            return None, None, (f"this ComfyUI's context-window handler takes different "
+                                f"arguments than expected ({exc})")
         prev = model.model_options.get("context_handler")
         had_prev = "context_handler" in model.model_options
         model.model_options["context_handler"] = handler
@@ -4621,7 +4687,11 @@ class FunPackLTXAVSceneChainSampler:
                 except Exception:
                     pass
 
-        return _remove, latent_len
+        _note = None
+        if retain_first and "latent_retain_index_list" in _dropped:
+            _note = ("this ComfyUI's context-window handler has no latent_retain_index_list, "
+                     "so 'pin anchor in every window' applies to conditioning only")
+        return _remove, latent_len, _note
 
     def _build_plateau_cache_wrapper(self, model, threshold):
         """Plateau step-cache (MixCache/Chorus-family, adapted to LTX2.3's distilled schedule).
@@ -5039,7 +5109,7 @@ class FunPackLTXAVSceneChainSampler:
                detail_upsampler="None", detail_strength=1.0, detail_threshold=0.35,
                detail_max_area=0.35, detail_denoise=0.85, detail_mode="repair",
                context_windows=False, context_window_length=145, context_window_overlap=40,
-               context_window_schedule="uniform_standard", context_window_fuse="pyramid",
+               context_window_schedule="standard_uniform", context_window_fuse="pyramid",
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
@@ -5223,7 +5293,17 @@ class FunPackLTXAVSceneChainSampler:
         if first_scene_seed is None:
             first_scene_seed = int(seed)
 
-        steps_per_scene = max(1, int(len(sigmas)) - 1)
+        # A second pass samples every scene twice, so its steps have to be in the total or
+        # the bar overflows on scene 1 and jumps backwards on scene 2 (each scene's offset
+        # is a multiple of steps_per_scene). The pass-2 schedule is one node input shared by
+        # every scene, so it can be measured once here — and validated the same way the loop
+        # will, so an unusable schedule doesn't inflate the total for a pass that gets skipped.
+        _pass2_steps = 0
+        if second_pass:
+            _sp_probe, _ = self._second_pass_schedule(second_pass_sigmas)
+            if _sp_probe is not None:
+                _pass2_steps = max(0, int(_sp_probe.numel()) - 1)
+        steps_per_scene = max(1, (int(len(sigmas)) - 1) + _pass2_steps)
         total_sampling_steps = scene_count * steps_per_scene
         pbar = None
         try:
@@ -5367,19 +5447,21 @@ class FunPackLTXAVSceneChainSampler:
                 # Context windows: core-owned, installed first so every FunPack wrapper below
                 # sits inside the per-window forward rather than around the whole clip.
                 if context_windows:
-                    _ctx = self._install_context_windows(
+                    _ctx_remove, _ctx_latent_len, _ctx_reason = self._install_context_windows(
                         model, context_window_length, context_window_overlap,
                         context_window_schedule, context_window_fuse,
                         context_window_freenoise, context_window_retain_first)
-                    if _ctx is None:
+                    if _ctx_remove is None:
+                        # Every reason here is a mismatch with the installed core, so it is
+                        # the same for every scene — print it once, report it on each.
                         if not _ctx_unsupported_reported:
-                            print("[FunPackSceneChain] context_windows requested but this ComfyUI "
-                                  "build has no LTXAV context-window support (needs the CORE-3 "
-                                  "context-windows change, ComfyUI >= v0.29.0) — skipped.")
+                            print(f"[FunPackSceneChain] context_windows requested but "
+                                  f"{_ctx_reason} — skipped.")
                             _ctx_unsupported_reported = True
-                        run_mechanisms.append("context_windows(SKIPPED: ComfyUI core too old)")
+                        run_mechanisms.append(f"context_windows(SKIPPED: {_ctx_reason})")
                     else:
-                        _ctx_remove, _ctx_latent_len = _ctx
+                        if _ctx_reason:
+                            run_mechanisms.append(f"context_windows NOTE: {_ctx_reason}")
                         # Core engages windowing only when the scene is longer than the window,
                         # and logs that decision itself; say so here too so a scene that silently
                         # sampled whole doesn't read as the feature being broken.
@@ -5568,6 +5650,10 @@ class FunPackLTXAVSceneChainSampler:
                     _sp_b, _sp_reason = self._second_pass_schedule(second_pass_sigmas)
                     if _sp_b is None:
                         run_mechanisms.append(f"second_pass(SKIPPED: {_sp_reason})")
+                _scene_label = (f"scene {scene_index + 1}/{scene_count}"
+                                if scene_count > 1 else "")
+                self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}"
+                                f"{'pass 1 of 2' if _sp_b is not None else 'sampling'}")
                 _full = self._sample_chunk(
                     model, sampler, sigmas, scene_seed, cfg, scene_positive,
                     scene_negative, chunk, **_sample_kwargs)
@@ -5611,6 +5697,12 @@ class FunPackLTXAVSceneChainSampler:
                             "unpinned and may drift from the reference image.")
                     _sp_kw = dict(_sample_kwargs)
                     _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
+                    # Announced BEFORE it runs: the after-the-fact run_mechanisms line says
+                    # a second pass happened, which is no help while you are waiting on one.
+                    self._set_phase(f"{_scene_label}{' · ' if _scene_label else ''}pass 2 of 2")
+                    print(f"[FunPack AV] second pass starting"
+                          f"{' on ' + _scene_label if _scene_label else ''}: "
+                          f"{int(_sp_b.numel()) - 1} steps from sigma {float(_sp_b[0].item()):g}")
                     sampled = self._sample_chunk(
                         model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
                         scene_negative, _sp_state, **_sp_kw)
@@ -5628,6 +5720,9 @@ class FunPackLTXAVSceneChainSampler:
                         run_mechanisms.append(
                             f"plateau_cache(skipped {_reused}/{_total} plateau fwd, thr={plateau_cache_threshold})")
             finally:
+                # Nothing is sampling once this scene is out of the sampler — including on an
+                # interrupt, which is exactly when a stale "pass 2 of 2" would linger.
+                self._set_phase("")
                 if _ctx_remove is not None:
                     _ctx_remove()
                 self._remove_v2a_scale(_v2a_handles)
@@ -5972,7 +6067,7 @@ class FunPackLTXAVSceneChainSampler:
                             alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                             plateau_cache=False, plateau_cache_threshold=0.975,
                             context_windows=False, context_window_length=145,
-                            context_window_overlap=40, context_window_schedule="uniform_standard",
+                            context_window_overlap=40, context_window_schedule="standard_uniform",
                             context_window_fuse="pyramid", context_window_freenoise=True,
                             context_window_retain_first=False,
                             cut_opening_frames=0,
