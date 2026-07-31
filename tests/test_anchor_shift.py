@@ -81,6 +81,15 @@ def test_rewind_mode_still_stops_pass_one_at_the_cut():
     assert resume is False
 
 
+def test_sigma_zero_is_refused_as_a_split_because_it_is_the_no_second_pass_mode():
+    """anchor_shift_sigma=0 must not produce a split — the cut IS the end of the schedule,
+    so there is no pass 2. The caller handles it as a post-process on the finished latent
+    ('generate the whole video, then cut the head off'); the splitter just declines."""
+    assert _node()._anchor_shift_split_sigmas(USER_SCHEDULE, 0.0, 0.0) is None
+    # The other end is genuinely unusable: a cut at the first sigma leaves pass 1 no step.
+    assert _node()._anchor_shift_split_sigmas(USER_SCHEDULE, 1.0, 0.0) is None
+
+
 def test_rewind_refuses_a_restart_below_the_cut():
     """Pass 2 can be handed a NOISIER latent, never a cleaner one — there is no way to
     remove noise from the state pass 1 stopped at."""

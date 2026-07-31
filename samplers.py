@@ -2525,8 +2525,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "EXPERIMENTAL: let the i2v anchor condition the scene, then delete it from the clip. The anchor is a pinned latent frame at position 0 — it holds identity/style/composition all the way down the schedule, and it is also literally the first frame you see, so every i2v scene opens on the exact reference still. This splits the schedule: pass 1 runs down to anchor_shift_sigma with the anchor pinned as usual, then the first anchor_shift_frames frames are DROPPED and everything slides left (clip length unchanged — no extra frames are generated), then pass 2 finishes the schedule on the shifted latent with the pin gone. Pass 2 always re-enters at the exact latent state for its first sigma — resumed as-is, or re-noised up to anchor_shift_restart_sigma first — which keeps it on the rectified-flow manifold and is the reason this is two passes rather than a roll between steps. The whole experiment is WHERE to cut: above ~0.909 nothing has formed yet, so the anchor gets discarded before it has transferred anything; too low and pass 2 has no steps left to heal the seam. Off by default. Validated live in continue mode.",
                 }),
                 "anchor_shift_sigma": ("FLOAT", {
-                    "default": 0.909, "min": 0.05, "max": 0.999, "step": 0.001,
-                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune, and it applies in BOTH modes. Pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
+                    "default": 0.909, "min": 0.0, "max": 0.999, "step": 0.001,
+                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune, and it applies in BOTH modes. SET IT TO 0 for no second pass at all: the whole schedule runs exactly as if anchor_shift were off (anchor pinned at full strength throughout), and the head is then cut off the finished clip. That is the cheapest form of this by far — zero extra sampling — and it pairs with anchor_shift_tail=crop as plain 'generate the video, then delete the opening'. It needs tail=crop or wrap, since with no second pass a refilled tail would never be denoised, and anchor_shift_fresh_audio is ignored (nothing would rewrite the audio). Above 0, pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
                 }),
                 "anchor_shift_frames": ("INT", {
                     "default": 8, "min": 8, "max": 512, "step": 8,
@@ -5586,6 +5586,7 @@ class FunPackLTXAVSceneChainSampler:
                 # delete it from the clip instead of weakening it (ALG blurs the anchor and
                 # loses character detail; overlap tokens approximate it and lose some too).
                 _shift_split = None
+                _shift_post_only = False   # sigma 0: whole schedule, then shift, no pass 2
                 if anchor_shift:
                     _shift_drop = self._expected_latent_frames(
                         int(anchor_shift_frames) + 1, time_scale) - 1
@@ -5608,6 +5609,28 @@ class FunPackLTXAVSceneChainSampler:
                         # the "fake t2v" trick, it needs a real anchor to fake it WITH.
                         _reason = ("scene has no pinned i2v anchor (t2v scene) — nothing to shift; "
                                    "attach an anchor image, or leave anchor_shift off")
+                    elif float(anchor_shift_sigma) <= 0.0:
+                        # NO SECOND PASS: "generate the whole video normally, then just cut the
+                        # beginning off." A cut at sigma 0 IS the end of the schedule, so pass 1
+                        # is the entire run and there is nothing left to denoise — the shift
+                        # becomes a post-process on the finished latent and costs nothing at all.
+                        if float(anchor_shift_restart_sigma) > 0:
+                            _reason = (f"anchor_shift_sigma=0 means no second pass at all (the "
+                                       f"whole schedule runs, then the head is cut), so there is "
+                                       f"nothing for anchor_shift_restart_sigma="
+                                       f"{anchor_shift_restart_sigma:g} to restart. Set it to 0, "
+                                       f"or raise anchor_shift_sigma above 0 to cut mid-schedule")
+                        elif anchor_shift_tail in ("extend_last", "empty"):
+                            # Nothing runs after the slide, so a refilled tail is never denoised:
+                            # extend_last would freeze the last frame for anchor_shift_frames and
+                            # empty would leave an empty latent on screen. crop and wrap are pure
+                            # rearrangements of already-finished content, so they are fine.
+                            _reason = (f"anchor_shift_tail={anchor_shift_tail} needs a second pass "
+                                       f"to regrow the tail, and anchor_shift_sigma=0 means there "
+                                       f"is none — the refilled tail would never be denoised. Use "
+                                       f"'crop' (clip just ends earlier) or 'wrap'")
+                        else:
+                            _shift_post_only = True
                     elif 0 < float(anchor_shift_restart_sigma) < float(anchor_shift_sigma) - 1e-4:
                         # Pass 2 would claim the latent is cleaner than pass 1 left it.
                         # The re-noise can add noise back, never remove it.
@@ -5620,8 +5643,10 @@ class FunPackLTXAVSceneChainSampler:
                         _shift_split = self._anchor_shift_split_sigmas(
                             sigmas, anchor_shift_sigma, anchor_shift_restart_sigma)
                         _reason = (f"schedule never reaches anchor_shift_sigma="
-                                   f"{anchor_shift_sigma} with a step left on both sides")
-                    if _shift_split is None:
+                                   f"{anchor_shift_sigma} with a step left on both sides — the cut "
+                                   f"needs a real step on each side of it. Use anchor_shift_sigma=0 "
+                                   f"to run the whole schedule and only cut the head off instead")
+                    if _shift_split is None and not _shift_post_only:
                         run_mechanisms.append(f"anchor_shift(SKIPPED: {_reason})")
                 if _shift_split is not None:
                     _sig_a, _sig_b, _cut_at, _restart_at, _resume, _restart_idx = _shift_split
@@ -5678,6 +5703,44 @@ class FunPackLTXAVSceneChainSampler:
                     if _dropped < _pinned_n:
                         # Part of the anchor survives the slide and stays visible in the clip —
                         # the one outcome this feature exists to prevent, so name the fix.
+                        run_mechanisms.append(
+                            f"anchor_shift WARNING: {_pinned_n - _dropped} anchor latent frame(s) "
+                            f"still in the clip — raise anchor_shift_frames to at least "
+                            f"{_pinned_n * max(1, int(time_scale))}")
+                elif _shift_post_only:
+                    # No second pass: sample the scene exactly as if anchor_shift were off — the
+                    # anchor stays pinned for the whole schedule, which is the point (full-strength
+                    # identity transfer) — then slide the head off the FINISHED latent. Zero extra
+                    # sampling, so this is the cheapest form of the trick by a wide margin.
+                    _full = self._sample_chunk(
+                        model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative,
+                        chunk, **_sample_kwargs)
+                    # fresh_audio is forced OFF here: it resets the audio for pass 2 to rewrite,
+                    # and with no pass 2 the reset would just leave the clip silent.
+                    sampled, _dropped = self._anchor_shift_latent(
+                        _full, _shift_drop, anchor_shift_tail, False)
+                    _pinned_n = self._anchor_pinned_frames(chunk)
+                    _tail_note = ""
+                    if anchor_shift_tail == "crop":
+                        try:
+                            _before = self._tensor_frames(self._latent_tensors(_full)[0])
+                            _after = self._tensor_frames(self._latent_tensors(sampled)[0])
+                            _tail_note = (f", CROPPED to {_after} of {_before} latent frames "
+                                          f"(~{int(anchor_shift_frames)} real frames shorter)")
+                        except Exception:
+                            _tail_note = ", CROPPED"
+                    run_mechanisms.append(
+                        f"anchor_shift(no second pass — full schedule then head cut, "
+                        f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
+                        f"tail={anchor_shift_tail}{_tail_note})")
+                    if anchor_shift_fresh_audio:
+                        # The audio was written against the finished picture and nothing will
+                        # rewrite it, so a reset here would just leave the clip silent.
+                        run_mechanisms.append(
+                            "anchor_shift NOTE: anchor_shift_fresh_audio is ignored with no second "
+                            "pass — resetting the audio with nothing left to regenerate it would "
+                            "produce a silent clip, so pass 1's audio is kept.")
+                    if _dropped < _pinned_n:
                         run_mechanisms.append(
                             f"anchor_shift WARNING: {_pinned_n - _dropped} anchor latent frame(s) "
                             f"still in the clip — raise anchor_shift_frames to at least "
