@@ -347,12 +347,13 @@
     const spSig = textCtrl(s.low.sigmas, "e.g. 0.812, 0.6, 0.35, 0.15, 0.0", "sp-second-sig",
       (v) => { s.low.sigmas = v; mkSave(true)(); });
     row(container, "Second pass schedule", spSig);
-    hint(container, "Used when 'Enable second pass' is on below. Comma-separated floats — pass 2 "
-                    + "runs THIS schedule end to end instead of continuing along the main one, so "
-                    + "the second half can have its own step count and spacing. Its FIRST sigma is "
-                    + "where pass 2 re-enters, and it must be at or above the cut (the state can be "
-                    + "re-noised back up, never un-noised down). Leave empty to carry straight on "
-                    + "from the cut instead.");
+    hint(container, "Fill this in and the scene is sampled in two passes; leave it empty and it "
+                    + "isn't. Comma-separated floats. Pass 1 runs the main schedule down to the "
+                    + "FIRST sigma listed here, then pass 2 takes over and runs this schedule to "
+                    + "the end — so the second half can have its own step count and spacing. "
+                    + "Nothing is added at the hand-over, so with a schedule that simply continues "
+                    + "where the first left off the result matches a single pass; the cost is only "
+                    + "whatever extra steps you list.");
   }
 
   window.SamplerPanel = { render, defaultSamplers, defaultPass };

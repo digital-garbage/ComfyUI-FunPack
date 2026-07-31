@@ -238,11 +238,7 @@
       hint: "What fills the freed end after the slide. 'extend_last' (default) repeats the final frame so pass 2 grows the new ending out of something continuous with it. 'wrap' puts the dropped head back at the end — continuous, but it re-shows the reference image at the END of the clip. 'empty' zeroes it and lets pass 2 generate freely — most freedom, most likely to drift from the rest of the shot. 'crop' regrows NOTHING: the scene simply ends 'Frames to drop' earlier and comes out SHORTER than the length you set. It is the only mode with no invented ending and no joint to blend — every surviving frame was generated as part of one continuous shot — so it removes the thin-ending failure the other three can produce, and makes a rewind restart much less necessary. Audio is cropped to match. Use it when the shot matters more than the exact duration; avoid it when a scene has to hit a specific length. The scene report states the new length." },
     { name: "anchor_shift_fresh_audio", label: "Regenerate audio in pass 2", kind: "bool", default: true, dependsOn: "anchor_shift",
       hint: "Reset the audio to an empty latent before pass 2 so it's written fresh against the shifted picture. On by default because pass 1's audio was formed against frames that no longer sit at those positions. Turn off only to A/B whether the carried audio actually sounds better." },
-    { name: "second_pass", label: "Enable second pass", kind: "bool", default: false,
-      hint: "Stop the schedule partway and finish the scene in a second sampling pass. Separate from Anchor shift, which runs its own two passes — when that acts on a scene this is skipped with a note. On its own, at restart sigma 0, the split is behaviour-neutral: pass 2 resumes from exactly the state pass 1 handed over, nothing added, same step count, same output. It earns its keep when the second half is made DIFFERENT — re-entering higher up the schedule so the model reworks what it has. The i2v anchor stays pinned across the split, so the scene doesn't drift off its reference image. Cost is exactly the extra steps you add: with no second-pass schedule set, it's free." },
-    { name: "second_pass_sigma", label: "Second pass starts at sigma", kind: "float", default: 0.603, min: 0.001, max: 0.999, step: 0.001, dependsOn: "second_pass",
-      hint: "Where pass 1 stops. The schedule is walked and the last pass-1 step is the one whose next sigma has crossed this value, so the cut always lands on a real step in your schedule — only sigmas actually in the schedule are reachable, and a value outside its range is refused with a reason rather than ignored." },
-    { name: "second_pass_op", label: "Between-pass operation", kind: "combo", choices: ["none", "sharpen", "upscale_2x"], default: "none", dependsOn: "second_pass",
+    { name: "second_pass_op", label: "Between-pass operation", kind: "combo", choices: ["none", "sharpen", "upscale_2x"], default: "none",
       hint: "OPTIONAL operation applied to the latent between the two passes — 'none' by default, nothing runs unless you pick one. 'sharpen': one forward of Lightricks' trained 2x latent upsampler, resampled straight back to the original size. No video-model calls, so it costs a fraction of a step; pass 2 then re-denoises the sharpened latent, which is what makes it stick. It adds detail consistent with what's already there and CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper). 'upscale_2x': the same upsampler, but kept at 2x — pass 2 runs at four times the pixels and the scene decodes at double resolution. That's 3-5x the cost of the second half, and it drops the i2v pin (the anchor and its mask are the old size, and rescaling them would be inventing an anchor), so the scene can drift from the reference image; the scene report says when that happens. Both use the same upsampler file as segmented detailing. Video only — audio is never reshaped." },
     { name: "context_windows", label: "Context windows (long scenes)", kind: "bool", default: false,
       hint: "EXPERIMENTAL: denoise a scene that's LONGER than the model's comfortable window as overlapping windows instead of one giant pass — ComfyUI core's own mechanism, audio-aware on LTX (it maps each video window to its audio window and re-slices anchors, guides and JoyAI memory per window). Engages only on scenes longer than the window length below; shorter scenes are untouched and pay nothing. Cost at the defaults (145/40) is about 1.45× the per-frame work, since each window re-does its 40-frame overlap — offset by attention getting cheaper the longer the scene is (quadratic in one pass, near-flat when windowed). Roughly break-even around 200 frames, a net win past ~300. Needs ComfyUI v0.29.0 or newer; on older builds it's skipped with a note in the scene report. UNVALIDATED LIVE." },
@@ -556,6 +552,25 @@
       const next = JSON.stringify({ ...cur, samplers: updatedSamplers });
       if (quiet) S.setStudioInput("studio_settings", next);
       else S.setStudioInputNow("studio_settings", next);
+      syncSecondPassFromSchedule(updatedSamplers, quiet);
+    }
+    // The second pass is driven by ONE thing here: the schedule. Typing one turns it on and
+    // pass 1 stops where that schedule starts; clearing it turns it off. The node's own
+    // enable/cut widgets still exist for graph users with no schedule wired, but exposing
+    // them alongside the schedule meant two controls saying the same thing in different
+    // words ("starts at" vs "re-enters at"), which is exactly what made it confusing.
+    function syncSecondPassFromSchedule(samplers, quiet) {
+      const raw = String(samplers?.low?.sigmas || "").replace(/;/g, ",");
+      const vals = raw.split(",").map((v) => parseFloat(v.trim())).filter((v) => !isNaN(v));
+      const set = quiet ? S.setSamplerInput : S.setSamplerInputNow;
+      // Two real sigmas minimum — one number is not a schedule.
+      if (vals.length >= 2 && vals[0] > 0 && vals[0] < 1) {
+        set("second_pass", true);
+        set("second_pass_sigma", vals[0]);   // cut == entry -> an exact hand-over, no re-noise
+      } else {
+        S.unsetSamplerInput("second_pass");
+        S.unsetSamplerInput("second_pass_sigma");
+      }
     }
     try {
       window.SamplerPanel.render(box, samplers,
@@ -568,11 +583,11 @@
     }
     // Second pass lives here rather than under Experimental: at its defaults the split is
     // behaviour-neutral (pass 2 resumes from exactly the state pass 1 handed over), so it
-    // is a sampler setting, not a gamble. Its pass-2 SCHEDULE is the "Second pass schedule"
-    // field in the panel above — which is why there is no separate re-entry sigma here: the
-    // first sigma of that schedule IS where pass 2 re-enters.
+    // is a sampler setting, not a gamble. The only control is the schedule field in the
+    // panel above — enable and cut are derived from it (see syncSecondPassFromSchedule);
+    // all that is left here is the optional between-pass operation.
     const g = group(pane, "Second pass");
-    renderKnobList(g, st, ["second_pass", "second_pass_sigma", "second_pass_op"]);
+    renderKnobList(g, st, ["second_pass_op"]);
   }
 
   function renderChainContinuity(pane, st) {
