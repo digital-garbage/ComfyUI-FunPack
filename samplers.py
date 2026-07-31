@@ -2536,9 +2536,9 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
                     "tooltip": "Where pass 2 re-enters the schedule after the shift. Pass 1 always stops at anchor_shift_sigma either way — this only decides where the second half picks up. 0 (default) = CONTINUE: resume from exactly the state pass 1 handed over, nothing added, total cost stays one full schedule. A value ABOVE anchor_shift_sigma = REWIND: the shifted latent is re-noised from the cut back up to this sigma, then denoised down again, giving the model far more freedom to rebuild the regrown tail and blend the joint — at the cost of repeating those steps (and of partly overwriting what pass 1 established). The re-noise is exact for a mid-trajectory latent (it rebuilds x at the higher sigma from the latent it already has plus a matched top-up of fresh noise), NOT the naive img2img re-noise, which assumes a finished image and is what caused the under-denoising in the first live run. A value BELOW anchor_shift_sigma is refused: noise can be added back, never removed. Try rewind (a step or two above the cut) if continue leaves a visible seam or a thin ending.",
                 }),
-                "anchor_shift_tail": (["extend_last", "wrap", "empty"], {
+                "anchor_shift_tail": (["extend_last", "wrap", "empty", "crop"], {
                     "default": "extend_last",
-                    "tooltip": "What the freed tail starts from after the slide. 'extend_last' (default) repeats the final frame, so pass 2 grows the new ending out of content that is already continuous with it. 'wrap' puts the dropped head back at the end (Mobius) — cheap and continuous, but it re-shows the reference image at the END of the clip, which is usually not what you want. 'empty' zeros the region and lets pass 2's noise scaling generate it from scratch — most freedom, most likely to drift from the rest of the shot.",
+                    "tooltip": "What the freed tail starts from after the slide. 'extend_last' (default) repeats the final frame, so pass 2 grows the new ending out of content that is already continuous with it. 'wrap' puts the dropped head back at the end (Mobius) — cheap and continuous, but it re-shows the reference image at the END of the clip, which is usually not what you want. 'empty' zeros the region and lets pass 2's noise scaling generate it from scratch — most freedom, most likely to drift from the rest of the shot. 'crop' regrows NOTHING: the clip simply ends anchor_shift_frames earlier, so the scene comes out shorter than the length you asked for. That is the only mode with no invented ending and no joint to blend — every frame that survives was generated as part of one continuous shot — so it removes the 'thin ending' failure the other three can produce, and it makes the extra freedom of a rewind restart much less necessary. Audio is cropped by the matching amount. Pick it when the shot mattering more than the exact duration is fine (the montage just gets a shorter clip); avoid it when a scene has to hit an exact length.",
                 }),
                 "anchor_shift_fresh_audio": ("BOOLEAN", {
                     "default": True,
@@ -3188,9 +3188,12 @@ class FunPackLTXAVSceneChainSampler:
     def _anchor_shift_latent(self, latent, drop, tail_mode, fresh_audio):
         """Slide the video stream left by `drop` latent frames and refill the freed tail.
 
-        The head frames (anchor + settling-in region) are dropped, not cropped: the clip
-        keeps its full length, so no extra frames are ever generated to pay for this. The
-        freed tail is what pass 2 will grow into; `tail_mode` picks what it starts from.
+        The head frames (anchor + settling-in region) are dropped. In the three refilling
+        modes the clip keeps its full length, so no extra frames are ever generated to pay
+        for this, and `tail_mode` picks what the freed tail starts from. In "crop" there is
+        no tail at all: the clip is simply that much shorter, which is the only mode where
+        pass 2 never has to invent an ending or blend a joint.
+
         Audio is optionally reset to an empty latent so pass 2 writes it fresh against the
         shifted picture instead of inheriting pass 1's audio, which was scored against
         frames that no longer exist at those positions.
@@ -3203,13 +3206,42 @@ class FunPackLTXAVSceneChainSampler:
         if drop <= 0:
             return result, 0
         head, body = video[:, :, :drop], video[:, :, drop:]
-        if tail_mode == "wrap":
-            tail = head  # Mobius: the dropped head reappears at the end
-        elif tail_mode == "extend_last":
-            tail = body[:, :, -1:].repeat(1, 1, drop, 1, 1)
-        else:  # "empty": zeros, so pass 2's noise scaling starts that region from noise
-            tail = torch.zeros_like(head)
-        tensors[0] = torch.cat([body, tail], dim=2)
+        if tail_mode == "crop":
+            # No regrown tail — the clip just gets shorter.
+            #
+            # Nothing downstream constrains the new size: LTXAV's video patchifier has
+            # temporal patch size 1 (SymmetricPatchifier(1) -> no divisibility rule on
+            # latent frames), the streams reach the transformer as independent tensors with
+            # no enforced video:audio ratio, and comfy re-packs and re-derives latent_shapes
+            # (and the denoise masks off them) from whatever latent it is handed on the next
+            # sample_custom call — so a shorter latent needs nothing rebuilt.
+            #
+            # What DOES matter is proportion. Audio timings come from the audio stream's own
+            # index and video's from its own RoPE, so cropping the two by different amounts
+            # of TIME desynchronises them silently — no error, just sound that drifts. Each
+            # extra stream's kept length is therefore derived from the new VIDEO length
+            # directly, not by subtracting a separately-rounded drop, so rounding cannot
+            # leave the streams describing clips of different durations.
+            tensors[0] = body
+            kept = frames - drop
+            for _idx in range(1, len(tensors)):
+                _t = tensors[_idx]
+                if _t is None:
+                    continue
+                _n = self._tensor_frames(_t)
+                _keep = max(1, min(_n, int(round(_n * kept / max(1, frames)))))
+                if _keep < _n:
+                    tensors[_idx] = _t[:, :, _n - _keep:]
+        else:
+            if tail_mode == "wrap":
+                tail = head  # Mobius: the dropped head reappears at the end
+            elif tail_mode == "extend_last":
+                tail = body[:, :, -1:].repeat(1, 1, drop, 1, 1)
+            else:  # "empty": zeros, so pass 2's noise scaling starts that region from noise
+                tail = torch.zeros_like(head)
+            tensors[0] = torch.cat([body, tail], dim=2)
+        # After any cropping: the reset writes zeros at whatever length the stream now has,
+        # which is what defines the clip's audio duration.
         if fresh_audio and len(tensors) > 1 and tensors[1] is not None:
             tensors[1] = torch.zeros_like(tensors[1])
         if self._is_nested(result.get("samples")):
@@ -5623,11 +5655,25 @@ class FunPackLTXAVSceneChainSampler:
                         model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
                         scene_negative, _shifted, **_kw2)
                     _pinned_n = self._anchor_pinned_frames(chunk)
+                    # tail=crop makes the scene SHORTER than the length that was asked for.
+                    # That is the mode's whole point, but it must never be something the user
+                    # has to infer from the output — say it in the report, in latent frames
+                    # and in the real frames they set.
+                    _tail_note = ""
+                    if anchor_shift_tail == "crop":
+                        try:
+                            _before = self._tensor_frames(self._latent_tensors(_pass1)[0])
+                            _after = self._tensor_frames(self._latent_tensors(sampled)[0])
+                            _tail_note = (f", CROPPED to {_after} of {_before} latent frames "
+                                          f"(~{int(anchor_shift_frames)} real frames shorter — "
+                                          f"no tail regrown)")
+                        except Exception:
+                            _tail_note = ", CROPPED (no tail regrown)"
                     run_mechanisms.append(
                         f"anchor_shift({'continue' if _resume else 'rewind'} "
                         f"cut@{_cut_at:g} restart@{_restart_at:g}, "
                         f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
-                        f"tail={anchor_shift_tail}"
+                        f"tail={anchor_shift_tail}{_tail_note}"
                         f"{', fresh audio' if anchor_shift_fresh_audio else ''})")
                     if _dropped < _pinned_n:
                         # Part of the anchor survives the slide and stays visible in the clip —

@@ -323,6 +323,63 @@ def test_source_latent_is_never_mutated():
     assert torch.equal(latent["samples"], before)
 
 
+# ── tail=crop: no regrown tail, the clip just gets shorter ──────────────────
+
+def _av_latent(video_frames=10, audio_frames=20):
+    """A packed-style AV latent: video [B,C,F,H,W] + audio [B,C,T] at its own rate."""
+    video = torch.arange(video_frames, dtype=torch.float32).view(
+        1, 1, video_frames, 1, 1).repeat(1, 4, 1, 2, 2)
+    audio = torch.arange(audio_frames, dtype=torch.float32).view(1, 1, audio_frames).repeat(1, 4, 1)
+    return {"samples": _FakeNested([video, audio]), "noise_mask": torch.zeros_like(video)}
+
+
+def test_crop_shortens_the_clip_instead_of_regrowing_a_tail(renoise_stubs):
+    shifted, dropped = _node()._anchor_shift_latent(_latent(frames=10), 3, "crop", False)
+    assert dropped == 3
+    # 10 - 3, not 10: nothing is invented at the end, which is the whole point of the mode.
+    assert shifted["samples"].shape[2] == 7
+    # And what survives is the ORIGINAL frames 3..9, untouched — no blend, no joint.
+    assert [int(v) for v in shifted["samples"][0, 0, :, 0, 0]] == [3, 4, 5, 6, 7, 8, 9]
+
+
+def test_crop_keeps_audio_and_video_describing_the_same_duration(renoise_stubs):
+    """Audio timing comes from the audio stream's own index and video's from its own RoPE,
+    so cropping them by different amounts of TIME desyncs the clip silently — no error,
+    just drifting sound. The kept lengths must stay in proportion."""
+    shifted, _ = _node()._anchor_shift_latent(_av_latent(10, 20), 3, "crop", False)
+    video, audio = shifted["samples"].unbind()
+    assert video.shape[2] == 7 and audio.shape[2] == 14      # 7/10 == 14/20
+    # Cropped from the HEAD, matching the video slide — the tail is what survives.
+    assert [int(v) for v in audio[0, 0]] == list(range(6, 20))
+
+
+def test_crop_keeps_proportion_when_the_rate_does_not_divide_evenly(renoise_stubs):
+    """The rounding trap: deriving audio's KEPT length from the new video length keeps the
+    two in proportion; subtracting a separately-rounded drop can leave them a frame apart."""
+    for v_frames, a_frames, drop in ((10, 15, 3), (9, 14, 4), (13, 7, 5), (10, 21, 7)):
+        shifted, _ = _node()._anchor_shift_latent(_av_latent(v_frames, a_frames), drop, "crop", False)
+        video, audio = shifted["samples"].unbind()
+        assert audio.shape[2] == max(1, round(a_frames * video.shape[2] / v_frames))
+        assert audio.shape[2] >= 1 and video.shape[2] >= 1
+
+
+def test_crop_still_resets_audio_when_asked_at_the_cropped_length(renoise_stubs):
+    """fresh_audio zeroes the stream AFTER the crop, so the reset length is the new
+    duration — zeroing first would leave the clip's audio length describing the old one."""
+    shifted, _ = _node()._anchor_shift_latent(_av_latent(10, 20), 4, "crop", True)
+    video, audio = shifted["samples"].unbind()
+    assert video.shape[2] == 6 and audio.shape[2] == 12
+    assert torch.count_nonzero(audio) == 0
+
+
+def test_the_other_tail_modes_still_keep_the_clip_length(renoise_stubs):
+    """crop is an OPTION — the three refilling modes must be untouched by it."""
+    for mode in ("extend_last", "wrap", "empty"):
+        shifted, _ = _node()._anchor_shift_latent(_av_latent(10, 20), 3, mode, False)
+        video, audio = shifted["samples"].unbind()
+        assert video.shape[2] == 10 and audio.shape[2] == 20, mode
+
+
 # ── the t2v guard ───────────────────────────────────────────────────────────
 
 def test_pinned_frames_counts_the_anchor_prefix():
