@@ -50,3 +50,15 @@ def test_a_bad_label_never_raises():
     run_phase.set_phase(12)
     assert run_phase.current()["label"] == "12"
     run_phase.clear()
+
+
+def test_the_bridge_reads_the_same_sys_key_without_importing_this_module():
+    """movie_editor's progress poll runs every 700ms on ComfyUI's event loop WHILE the
+    worker thread samples, so it reads the label straight off `sys` rather than importing
+    anything. That makes the key name a contract between two files — pin it."""
+    src = (ROOT / "movie_editor" / "backend" / "bridge.py").read_text()
+    assert run_phase._SYS_KEY == "_funpack_run_phase"
+    assert f'getattr(sys, "{run_phase._SYS_KEY}"' in src
+    # ...and the poll must not have grown an import back.
+    poll = src.split("def current_progress(")[1].split("\ndef ")[0]
+    assert "import_module" not in poll and "_funpack_attr" not in poll

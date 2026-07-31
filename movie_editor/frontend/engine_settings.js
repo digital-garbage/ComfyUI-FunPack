@@ -237,6 +237,7 @@
     { name: "context_window_overlap", label: "Window overlap (frames)", kind: "int", default: 40, min: 0, max: 512, step: 8, dependsOn: "context_windows",
       hint: "How many frames consecutive windows share. This is the only thing carrying motion and appearance across a window boundary, and also the only extra compute this costs. Too low shows as a seam or a motion hitch at the boundary; too high pays for frames you already have." },
     { name: "context_window_schedule", label: "Window schedule", kind: "combo", choices: ["standard_uniform", "standard_static", "looped_uniform", "batched"], default: "standard_uniform", dependsOn: "context_windows",
+      legacy: { uniform_standard: "standard_uniform", static_standard: "standard_static", uniform_looped: "looped_uniform" },
       hint: "How windows are laid out each step (ComfyUI core's own schedule names). 'standard_uniform' (default) shifts the grid between steps so boundaries never bake in — safest. 'standard_static' keeps fixed cut points (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the end into the start for looping content. 'batched' uses disjoint chunks with no overlap logic (fastest, weakest continuity)." },
     { name: "context_window_fuse", label: "Window blend", kind: "combo", choices: ["pyramid", "relative", "flat", "overlap-linear"], default: "pyramid", dependsOn: "context_windows",
       hint: "How overlapping windows are weighted when merged. 'pyramid' (default) fades each window toward its edges so seams go soft. 'flat' averages equally (can smear). Change this if boundaries look ghosted rather than merely misaligned." },
@@ -330,7 +331,11 @@
       }
     } else if (k.kind === "combo") {
       ctrl = el("select"); ctrl.dataset.k = "si-" + k.name;
-      (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === val) o.selected = true; ctrl.append(o); });
+      // A renamed choice: show what the stored value MEANS, and write the new name back, so
+      // the dropdown never quietly displays a different setting from the one that will run.
+      const shown = (k.legacy && k.legacy[val]) || val;
+      if (shown !== val) S.setSamplerInput(k.name, shown);
+      (k.choices || []).forEach((c) => { const o = el("option", null, c); o.value = c; if (c === shown) o.selected = true; ctrl.append(o); });
       ctrl.onchange = () => S.setSamplerInputNow(k.name, ctrl.value);
     } else if (k.kind === "text") {
       ctrl = el("input"); ctrl.type = "text";

@@ -23,6 +23,11 @@ of truth".
 """
 import sys
 
+# Part of this module's contract, not an implementation detail: movie_editor's bridge READS
+# THIS ATTRIBUTE DIRECTLY rather than importing this module. That poll runs every 700ms on
+# ComfyUI's event loop while the worker thread is sampling, so it must not touch the import
+# system or anything else that can block. Renaming this key means updating bridge.py too
+# (tests/test_run_phase.py pins the two together).
 _SYS_KEY = "_funpack_run_phase"
 
 

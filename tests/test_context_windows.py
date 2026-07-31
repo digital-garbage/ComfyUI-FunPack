@@ -208,16 +208,28 @@ def test_scene_latent_frame_count_reads_the_video_stream():
 
 # ── the names are core's, not ours ──────────────────────────────────────────
 
-def test_every_schedule_the_node_offers_is_one_core_knows(monkeypatch):
+def test_every_schedule_the_node_offers_actually_resolves(monkeypatch):
     """The bug in one line: the node offered spellings core has never had, so choosing any
-    of them raised ValueError out of the sampler and killed the render."""
+    of them raised ValueError out of the sampler and killed the render. Every name the combo
+    accepts must now reach a real core schedule — directly or through the alias map."""
     model, _ = _install_fake_core(monkeypatch)
     s = samplers.FunPackLTXAVSceneChainSampler()
     offered = s.INPUT_TYPES()["optional"]["context_window_schedule"][0]
-    assert set(offered) <= set(sys.modules["comfy.context_windows"].CONTEXT_MAPPING)
+    known = set(sys.modules["comfy.context_windows"].CONTEXT_MAPPING)
+    assert known <= set(offered)  # nothing core supports is missing from the knob
     for name in offered:
         model, _ = _install_fake_core(monkeypatch)
         assert _install(s, model, schedule=name)[0] is not None, name
+
+
+def test_the_legacy_names_stay_in_the_combo_list_not_only_in_the_alias_map():
+    """ComfyUI validates combo values at QUEUE time, before the node runs. Dropping the old
+    spellings from the list would reject a saved project outright and the alias would never
+    get a chance — which is a worse failure than the one being fixed."""
+    offered = samplers.FunPackLTXAVSceneChainSampler().INPUT_TYPES()[
+        "optional"]["context_window_schedule"][0]
+    for legacy in samplers.FunPackLTXAVSceneChainSampler._CTX_SCHEDULE_ALIASES:
+        assert legacy in offered, legacy
 
 
 def test_the_old_reversed_spellings_still_resolve(monkeypatch):

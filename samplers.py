@@ -2501,7 +2501,12 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 40, "min": 0, "max": 512, "step": 8,
                     "tooltip": "How many real frames consecutive windows share. This is the ONLY thing carrying motion/appearance continuity across a window boundary, and it is also the only extra compute this feature costs (overlap/length = the redundant fraction). Too low and boundaries show as a seam or a motion hitch; too high and you pay for frames you already have.",
                 }),
-                "context_window_schedule": (["standard_uniform", "standard_static", "looped_uniform", "batched"], {
+                # The three legacy spellings stay in the LIST, not just in the alias map:
+                # ComfyUI validates combo values at QUEUE time, before the node ever runs, so
+                # a project saved with the old name would be rejected outright and the alias
+                # would never get a chance. They resolve to core's names below.
+                "context_window_schedule": (["standard_uniform", "standard_static", "looped_uniform", "batched",
+                                             "uniform_standard", "static_standard", "uniform_looped"], {
                     "default": "standard_uniform",
                     "tooltip": "How the windows are laid out across the scene, per step. These are ComfyUI core's own schedule names (comfy.context_windows). 'standard_uniform' (default, core's own LTXV default) shifts the window grid between steps so boundaries land in different places each step and never bake in — the safest general choice. 'standard_static' keeps the same fixed cut points every step (cheapest, but a bad boundary stays bad). 'looped_uniform' wraps the last window into the first, for seamless looping content. 'batched' denoises disjoint chunks with no overlap logic (fastest, weakest continuity). Projects saved with the old reversed spellings (uniform_standard / static_standard / uniform_looped) are still accepted and mapped onto these.",
                 }),
