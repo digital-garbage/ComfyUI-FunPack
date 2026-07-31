@@ -340,24 +340,6 @@ def _velocity_bias_key(refinement_key, target, x):
     return (key, f"{float(target):.2f}", shape)
 
 
-def _schedule_view(sigmas, schedule_context):
-    """The real schedule behind a possibly-partial `sigmas`, plus this run's step offset.
-
-    anchor_shift samples a scene as two sample_custom calls over slices of one schedule.
-    A sampler that measures its phases from `len(sigmas)` therefore re-derives them inside
-    each slice — the final-correction window reopens at the end of pass 1, the AB2 ramp
-    restarts, the velocity-bias ratio is taken against the slice's own first sigma. The
-    caller passes the whole schedule and where this slice starts in it; absent (any normal
-    single-call run) `sigmas` IS the whole schedule and the offset is 0.
-    """
-    if isinstance(schedule_context, dict):
-        full = schedule_context.get("sigmas")
-        if isinstance(full, torch.Tensor) and int(full.numel()) >= 2:
-            offset = max(0, int(schedule_context.get("offset", 0) or 0))
-            return full, offset
-    return sigmas, 0
-
-
 def _sigma_ratio(sigmas, sigma):
     try:
         start = float(sigmas[0].item())
@@ -1127,8 +1109,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
                           velocity_refinement_key,
                           rescue_mode, rescue_threshold, rescue_strength, rescue_prompt_sig,
                           quality_sharpness=0.0, velocity_bias_source="mean",
-                          normalize_strength=0.0, normalize_start_sigma=0.9,
-                          schedule_context=None):
+                          normalize_strength=0.0, normalize_start_sigma=0.9):
     """Full-feature rectified-flow sampler for CONST models (LTXAV).
 
     Rectified-flow-correct port of the hybrid sampler so its features actually run on
@@ -1159,14 +1140,11 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     correction_blend = max(0.0, min(1.0, float(correction_blend)))
     eta_final = max(0.0, min(float(eta), float(eta_final)))
 
-    # See _schedule_view: `sigmas` may be one half of an anchor_shift split, and the quality
-    # phase / motion-pulse anchors below are positions in the SCHEDULE, not in this call.
-    sched, step_offset = _schedule_view(sigmas, schedule_context)
-    sched_steps = max(1, int(len(sched)) - 1)
+    sched_steps = max(1, int(len(sigmas)) - 1)
 
     if not motion_pulse_steps:
         _, _, motion_pulse_steps, motion_pulse_noise = _prepare_dynamic_sigmas(
-            sched, high_quality_pct, motion_pulse_mode, motion_pulse_start_pct,
+            sigmas, high_quality_pct, motion_pulse_mode, motion_pulse_start_pct,
             motion_pulse_count, motion_pulse_spacing_pct, motion_pulse_strength)
     motion_pulse_noise = max(0.0, float(motion_pulse_noise or 0.0))
     motion_step_noise = {
@@ -1175,7 +1153,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     }
 
     late_start = _get_late_start_index(sched_steps, high_quality_pct)
-    quality_sigma_start = float(sched[late_start].item()) if late_start < sched.shape[0] else None
+    quality_sigma_start = float(sigmas[late_start].item()) if late_start < sigmas.shape[0] else None
     num_quality_steps = sched_steps - late_start
 
     s_in = x.new_ones([x.shape[0]])
@@ -1201,12 +1179,11 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
     for i in comfy.utils.model_trange(total_steps, disable=disable):
         sigma = sigmas[i]
         sigma_next = sigmas[i + 1]
-        step_abs = i + step_offset  # position in the REAL schedule, not in this call's slice
         in_quality = quality_sigma_start is not None and float(sigma.item()) <= quality_sigma_start
-        velocity_target = _velocity_bias_target(sched, sigma)
+        velocity_target = _velocity_bias_target(sigmas, sigma)
 
         if not in_quality:
-            pulse = motion_step_noise.get(int(step_abs), 0.0)
+            pulse = motion_step_noise.get(int(i), 0.0)
             if pulse > 0.0:
                 x = _video_only(_apply_motion_pulse(x, sigma, sigma_next, pulse, noise_sampler), x, video_mask)
                 prev_denoised = None
@@ -1215,7 +1192,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         if _velocity_bias_enabled(velocity_bias_mode, "apply"):
             x_pre = x
             x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
-                                     sigma_ratio=_sigma_ratio(sched, sigma),
+                                     sigma_ratio=_sigma_ratio(sigmas, sigma),
                                      prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
             x = _video_only(x, x_pre, video_mask)
 
@@ -1269,9 +1246,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
             if num_quality_steps <= 1:
                 effective_blend = correction_blend
             else:
-                # Which quality step this is IN THE SCHEDULE — a per-call counter would
-                # restart the euler->Heun ramp inside each half of an anchor_shift split.
-                q_idx = max(0, step_abs - late_start)
+                q_idx = max(0, i - late_start)
                 effective_blend = 0.0 if q_idx < (num_quality_steps // 2) else correction_blend
             dt = sigma_next - sigma
             d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
@@ -1291,7 +1266,7 @@ def _sample_const_rf_full(model, x, sigmas, extra_args, callback, disable,
         else:
             # Early phase: ancestral RF euler (matches sample_euler_ancestral_RF), with
             # eta decay toward the quality boundary, using the AB2 denoised estimate.
-            effective_eta = _effective_eta(eta, eta_final, sched, sigma)
+            effective_eta = _effective_eta(eta, eta_final, sigmas, sigma)
             # Deterministic euler-RF step to sigma_next (this is what audio rides — no
             # ancestral re-noising). For single-stream video (mask None) it is only used
             # as the eta==0 fallback; the full ancestral result is kept for video.
@@ -1336,8 +1311,7 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
                                    rescue_prompt_sig=None,
                                    eta_final=1.0,
                                    normalize_strength=0.0,
-                                   normalize_start_sigma=0.9,
-                                   schedule_context=None):
+                                   normalize_start_sigma=0.9):
     """
     Hybrid sampler:
     - Early schedule: Euler ancestral with order-2 denoised extrapolation for
@@ -1414,7 +1388,6 @@ def sample_funpack_hybrid_euler_2s(model, x, sigmas, extra_args=None, callback=N
             velocity_bias_source=velocity_bias_source,
             normalize_strength=normalize_strength,
             normalize_start_sigma=normalize_start_sigma,
-            schedule_context=schedule_context,
         )
 
     extra_args = {} if extra_args is None else extra_args
@@ -1786,7 +1759,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
                                    alg_guide_tail_frames=0,
                                    alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
                                    mg_enabled=False, mg_strength=0.5, mg_decay=0.5, mg_sigma_threshold=0.975,
-                                   quality_sharpness=0.0, schedule_context=None):
+                                   quality_sharpness=0.0):
     """
     ODE sampler for distilled few-step video models (e.g. LTX2.3 distilled LoRA).
 
@@ -1836,13 +1809,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
     if total_steps <= 0:
         return x
 
-    # `sigmas` is not always the schedule the user configured: anchor_shift runs a scene as
-    # two sample_custom calls, so this can be a FRAGMENT. Everything phase-relative below —
-    # where the final-correction window opens, how far along the AB2 ramp is, what the
-    # velocity-bias sigma ratio is measured against — has to be read off the REAL schedule,
-    # or enabling anchor_shift silently re-times all of it inside each half.
-    sched, step_offset = _schedule_view(sigmas, schedule_context)
-    sched_steps = max(1, int(len(sched)) - 1)
+    sched_steps = max(1, int(len(sigmas)) - 1)
 
     order = max(1, min(2, int(order)))
     s_noise = max(0.0, min(0.5, float(s_noise)))
@@ -1954,9 +1921,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
         for i in comfy.utils.model_trange(total_steps, disable=disable):
             sigma = sigmas[i]
             sigma_next = sigmas[i + 1]
-            # Position in the REAL schedule, not in this call's slice of it.
-            step_abs = i + step_offset
-            velocity_target = _velocity_bias_target(sched, sigma)
+            velocity_target = _velocity_bias_target(sigmas, sigma)
 
             if alg_active:
                 model.latent_image = alg_latents[(
@@ -1967,7 +1932,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             if _velocity_bias_enabled(velocity_bias_mode, "apply"):
                 x_pre = x
                 x = _apply_velocity_bias(x, velocity_refinement_key, velocity_target, velocity_bias_strength,
-                                         sigma_ratio=_sigma_ratio(sched, sigma),
+                                         sigma_ratio=_sigma_ratio(sigmas, sigma),
                                          prompt_sig=rescue_prompt_sig, source=velocity_bias_source)
                 x = _video_only(x, x_pre, video_mask)
 
@@ -1985,7 +1950,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
 
             # Restore high-frequency detail during the final Heun-correction steps (free,
             # video-only) — same unsharp mechanism as the Hybrid Euler 2S sampler.
-            if step_abs >= correction_start_idx:
+            if i >= correction_start_idx:
                 denoised = _video_only(_apply_quality_sharpness(denoised, prev_denoised, quality_sharpness), denoised, video_mask)
 
             # Video-only latent normalization (opt-in, anti-overbake) — stacks on top of the ODE.
@@ -2015,7 +1980,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
             # is rough there and full AB2 overshoots); late/detail steps get full AB2. Reuses the
             # already-computed AB2 estimate, so no extra model evals. No-op at order=1.
             if ab2_ramp and sched_steps > 1:
-                w = step_abs / (sched_steps - 1)  # 0 at first step -> 1 at last
+                w = i / (sched_steps - 1)  # 0 at first step -> 1 at last
                 denoised_eff = denoised + (denoised_eff - denoised) * w
 
             # Audio rides plain 1st-order euler: keep the (ramped) AB2 estimate for video,
@@ -2033,7 +1998,7 @@ def sample_funpack_distilled_flow(model, x, sigmas, extra_args=None, callback=No
 
             dt = sigma_next - sigma  # negative: sigmas decrease
 
-            if step_abs >= correction_start_idx:
+            if i >= correction_start_idx:
                 # Heun predictor-corrector.
                 # Predictor: Euler step using the (multistep-corrected) denoised.
                 d1 = k_diffusion_sampling.to_d(x, sigma, denoised_eff)
@@ -2520,29 +2485,9 @@ class FunPackLTXAVSceneChainSampler:
                     "default": "repair",
                     "tooltip": "'repair' (default): upsample the crop, then re-denoise it through the video model for 3 extra steps — can genuinely fix wrong structure (bad anatomy) but costs real compute (~4x region area x 3 steps). 'sharpen': stop after the upsampler's own forward pass — no video-model calls at all, close to free — good for a region that's blurry/under-resolved but already correctly shaped; it CANNOT fix wrong structure (an extra finger stays an extra finger, just sharper), since a super-resolution net only adds detail consistent with what's already there.",
                 }),
-                "anchor_shift": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "EXPERIMENTAL: let the i2v anchor condition the scene, then delete it from the clip. The anchor is a pinned latent frame at position 0 — it holds identity/style/composition all the way down the schedule, and it is also literally the first frame you see, so every i2v scene opens on the exact reference still. This splits the schedule: pass 1 runs down to anchor_shift_sigma with the anchor pinned as usual, then the first anchor_shift_frames frames are DROPPED and everything slides left (clip length unchanged — no extra frames are generated), then pass 2 finishes the schedule on the shifted latent with the pin gone. Pass 2 always re-enters at the exact latent state for its first sigma — resumed as-is, or re-noised up to anchor_shift_restart_sigma first — which keeps it on the rectified-flow manifold and is the reason this is two passes rather than a roll between steps. The whole experiment is WHERE to cut: above ~0.909 nothing has formed yet, so the anchor gets discarded before it has transferred anything; too low and pass 2 has no steps left to heal the seam. Off by default. Validated live in continue mode.",
-                }),
-                "anchor_shift_sigma": ("FLOAT", {
-                    "default": 0.909, "min": 0.0, "max": 0.999, "step": 0.001,
-                    "tooltip": "Sigma at which pass 1 stops and the shift happens — the knob this whole feature exists to let you tune, and it applies in BOTH modes. SET IT TO 0 for no second pass at all: the whole schedule runs exactly as if anchor_shift were off (anchor pinned at full strength throughout), and the head is then cut off the finished clip. That is the cheapest form of this by far — zero extra sampling — and it pairs with anchor_shift_tail=crop as plain 'generate the video, then delete the opening'. It needs tail=crop or wrap, since with no second pass a refilled tail would never be denoised, and anchor_shift_fresh_audio is ignored (nothing would rewrite the audio). Above 0, pass 1 runs until the schedule first reaches a sigma at or below this. 0.909 is the step where structure actually starts forming on the LTX distilled schedule (1.0 and 0.975 are the near-pure-noise plateau and carry almost no signal), so it is the earliest cut where the anchor has plausibly transferred anything — but it is a starting guess, not a measured value. Higher = anchor released sooner, cheaper, more likely the reference never really landed. Lower = anchor held longer, more of pass 1's picture is thrown away by the shift and fewer steps remain to repair it. If the schedule never reaches this sigma, the pass is skipped with a note.",
-                }),
-                "anchor_shift_frames": ("INT", {
-                    "default": 8, "min": 8, "max": 512, "step": 8,
-                    "tooltip": "How many frames to drop off the front at the shift, in real frames (converted to latent frames with the VAE's own time scale). One latent frame — 8 real frames at the standard scale — removes just the anchor itself, which is usually NOT enough: the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). More also removes the settling-in region right after it, where the clip is still visibly 'leaving' the reference image; raise this if the opening still looks like it is departing from a still rather than already in motion. The clip does not get shorter: whatever is dropped here is regrown at the end by pass 2.",
-                }),
-                "anchor_shift_restart_sigma": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 0.999, "step": 0.001,
-                    "tooltip": "Where pass 2 re-enters the schedule after the shift. Pass 1 always stops at anchor_shift_sigma either way — this only decides where the second half picks up. 0 (default) = CONTINUE: resume from exactly the state pass 1 handed over, nothing added, total cost stays one full schedule. A value ABOVE anchor_shift_sigma = REWIND: the shifted latent is re-noised from the cut back up to this sigma, then denoised down again, giving the model far more freedom to rebuild the regrown tail and blend the joint — at the cost of repeating those steps (and of partly overwriting what pass 1 established). The re-noise is exact for a mid-trajectory latent (it rebuilds x at the higher sigma from the latent it already has plus a matched top-up of fresh noise), NOT the naive img2img re-noise, which assumes a finished image and is what caused the under-denoising in the first live run. A value BELOW anchor_shift_sigma is refused: noise can be added back, never removed. Try rewind (a step or two above the cut) if continue leaves a visible seam or a thin ending.",
-                }),
-                "anchor_shift_tail": (["extend_last", "wrap", "empty", "crop"], {
-                    "default": "extend_last",
-                    "tooltip": "What the freed tail starts from after the slide. 'extend_last' (default) repeats the final frame, so pass 2 grows the new ending out of content that is already continuous with it. 'wrap' puts the dropped head back at the end (Mobius) — cheap and continuous, but it re-shows the reference image at the END of the clip, which is usually not what you want. 'empty' zeros the region and lets pass 2's noise scaling generate it from scratch — most freedom, most likely to drift from the rest of the shot. 'crop' regrows NOTHING: the clip simply ends anchor_shift_frames earlier, so the scene comes out shorter than the length you asked for. That is the only mode with no invented ending and no joint to blend — every frame that survives was generated as part of one continuous shot — so it removes the 'thin ending' failure the other three can produce, and it makes the extra freedom of a rewind restart much less necessary. Audio is cropped by the matching amount. Pick it when the shot mattering more than the exact duration is fine (the montage just gets a shorter clip); avoid it when a scene has to hit an exact length.",
-                }),
-                "anchor_shift_fresh_audio": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Reset the audio stream to an empty latent before pass 2, so audio is generated fresh against the shifted picture. On by default because pass 1's audio was formed against frames that no longer sit at those positions — carrying it over means audio scored to a picture that moved. Turn off only to A/B whether the carried audio actually sounds better.",
+                "cut_opening_frames": ("INT", {
+                    "default": 0, "min": 0, "max": 512, "step": 8,
+                    "tooltip": "Let the i2v anchor do its work, then cut it out of the clip: generate the scene exactly as normal (anchor pinned at full strength the whole way, nothing weakened, no extra sampling), then drop this many frames off the FRONT of the finished clip. The anchor is a pinned latent frame at position 0 — it transfers identity, style and composition better than anything that softens it on the way in (ALG blurs it and loses character detail; Best-FaceID tokens approximate it and lose some too), but it is also literally the first frame you see, so every i2v scene opens on the exact reference still. Cutting it afterwards keeps the transfer and removes the tell: an i2v generation that reads as t2v. 0 (default) = off. The value is in REAL frames and is converted with the VAE's own time scale; one latent frame (8 real frames at the standard scale) removes just the anchor itself, which is usually NOT enough — the anchor is followed by a settling-in stretch where the shot is still leaving the reference still and little is happening yet, and on a prompt that asks for immediate action that dead time is exactly what you want gone (48 was the value that worked on a 768x768x305@30 i2v chain with a quick-cut prompt — a starting point for this pipeline, not a universal default). NOTHING IS REGROWN: the scene comes out that much SHORTER than the length you asked for, and the audio is cropped to match. That is the trade — every surviving frame was generated as part of one continuous shot, with no invented ending. Needs a pinned i2v anchor; skipped with the reason in the scene report on continuation scenes and on scenes carrying guide frames or JoyAI audio memory.",
                 }),
                 "context_windows": ("BOOLEAN", {
                     "default": False,
@@ -2576,7 +2521,7 @@ class FunPackLTXAVSceneChainSampler:
                 # builder's positional reference-workflow mapping (extract_widgets) stays aligned.
                 "second_pass": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Sample each scene in TWO passes. Pass 1 runs the main sigmas schedule in full, exactly as written; pass 2 then runs the second_pass_sigmas schedule in full, exactly as written, starting from pass 1's finished clip. Nothing is cut short and nothing is derived — to make pass 1 shorter, shorten the main schedule. Total steps are simply the two schedules added up (a 9-step main plus a 4-step second pass is 13). Pass 1's finished latent is simply handed to pass 2 as its latent_image and the sampler noises it to the schedule's first sigma itself, exactly as any img2img does — there is no extra step in between. That first sigma is therefore the strength dial, and it is literal (CONST scaling: x = s*noise + (1-s)*picture): at 0.8 pass 2 starts from 80% fresh noise over 20% of the pass-1 picture and reworks the shot, looking soft if the schedule has few steps to resolve it; at 0.4 it is 40/60 and polishes; at 0.2 it is nearly pure detail work. Requires a second_pass_sigmas schedule; without one the pass is skipped with a note. Independent of anchor_shift, which runs its own two passes for a different reason — when it acts on a scene, this is skipped.",
+                    "tooltip": "Sample each scene in TWO passes. Pass 1 runs the main sigmas schedule in full, exactly as written; pass 2 then runs the second_pass_sigmas schedule in full, exactly as written, starting from pass 1's finished clip. Nothing is cut short and nothing is derived — to make pass 1 shorter, shorten the main schedule. Total steps are simply the two schedules added up (a 9-step main plus a 4-step second pass is 13). Pass 1's finished latent is simply handed to pass 2 as its latent_image and the sampler noises it to the schedule's first sigma itself, exactly as any img2img does — there is no extra step in between. That first sigma is therefore the strength dial, and it is literal (CONST scaling: x = s*noise + (1-s)*picture): at 0.8 pass 2 starts from 80% fresh noise over 20% of the pass-1 picture and reworks the shot, looking soft if the schedule has few steps to resolve it; at 0.4 it is 40/60 and polishes; at 0.2 it is nearly pure detail work. Requires a second_pass_sigmas schedule; without one the pass is skipped with a note.",
                 }),
                 "second_pass_op": (["none", "sharpen", "upscale_2x"], {
                     "default": "none",
@@ -3005,22 +2950,14 @@ class FunPackLTXAVSceneChainSampler:
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
-                      bounded_attention_enabled=False, continue_from_state=False,
-                      schedule_context=None):
+                      bounded_attention_enabled=False):
         if sampler is None:
             raise ValueError("sampler input is required.")
         if not isinstance(sigmas, torch.Tensor):
             raise ValueError("sigmas input must be a SIGMAS tensor.")
         latent = self._clone_latent(latent)
         samples = latent["samples"]
-        # continue_from_state: `samples` is ALREADY the noisy x at sigmas[0] (a run resumed
-        # mid-trajectory), not a clean image. comfy's CONST scaling is
-        # x = s*noise + (1-s)*latent_image, which treats latent_image as CLEAN and re-noises
-        # it — on a mid-trajectory latent that scales the picture down by (1-s) and buries it
-        # under a fresh s of noise. Passing the state as BOTH terms makes the expression
-        # collapse to an identity (s*x + (1-s)*x == x), so sampling resumes from exactly the
-        # state we hand it. Only correct when the caller really is mid-trajectory.
-        noise = samples if continue_from_state else comfy.sample.prepare_noise(samples, int(seed))
+        noise = comfy.sample.prepare_noise(samples, int(seed))
 
         def _progress_cb(step, _denoised, _x, _total_steps):
             if pbar is not None:
@@ -3037,14 +2974,6 @@ class FunPackLTXAVSceneChainSampler:
             extra_options["alg_guide_tail_frames"] = int(alg_guide_tail_frames)
             extra_options["alg_guide_blur_strength"] = float(alg_guide_blur_strength)
             extra_options["alg_guide_blur_sigma_threshold"] = float(alg_guide_blur_sigma_threshold)
-        # anchor_shift runs a scene as two calls over slices of one schedule. Tell the sampler
-        # what the real schedule is (and where this slice sits in it) so its phase boundaries
-        # stay where the user's schedule put them instead of being re-derived per slice — see
-        # _schedule_view. Always written, even as None, so it can never leak into a later chunk.
-        if isinstance(extra_options, dict) and sampler.sampler_function in (
-                sample_funpack_distilled_flow, sample_funpack_hybrid_euler_2s):
-            extra_options["schedule_context"] = schedule_context
-
         # EXPERIMENTAL Bounded Attention: model-level attention hooks (sampler-agnostic, unlike
         # the toggles above which only work on Distilled Flow), so install/remove here rather
         # than via extra_options. Cheap to attempt (no-ops fast without the right metadata).
@@ -3063,30 +2992,19 @@ class FunPackLTXAVSceneChainSampler:
         return latent
 
     # ---------------------------------------------------------------------------
-    # anchor_shift — let the i2v anchor do its work, then delete it from the clip.
+    # cut_opening_frames — let the i2v anchor do its work, then cut it out of the clip.
     #
     # The anchor is a real, PINNED latent frame at temporal position 0: it constrains
     # identity/style/composition all the way down the schedule, and it is also literally
-    # the first frame you see. This runs the schedule in two passes so it can be the
-    # former without being the latter:
+    # the first frame you see. The scene is sampled exactly as normal — the anchor is
+    # never weakened, blurred or approximated — and the opening is then cut off the
+    # FINISHED latent, so it can be the former without being the latter. An i2v
+    # generation that reads as t2v, for no extra sampling at all.
     #
-    #   pass 1: sigma[0] .. shift_sigma, anchor pinned as usual -> a partly-formed clip
-    #           that has already absorbed the reference
-    #   shift : drop the first N latent frames (the anchor and its settling-in region),
-    #           slide everything left, refill the freed tail, drop the pin
-    #   pass 2: restart_sigma .. 0 on the shifted latent
-    #
-    # Why two passes rather than mutating x between steps inside the sampler: pass 2 goes
-    # back through comfy's CONST noise scaling (x = s*noise + (1-s)*latent), which puts the
-    # shifted latent back ON the rectified-flow manifold at the restart sigma. A raw
-    # in-flight roll skips that, and [[project_sigmas]] records that this model cannot
-    # recover from off-manifold latent states (the churn dead end). Same on-manifold
-    # re-entry recipe that segmented detailing's stage-2 tail already uses in production.
-    #
-    # Everything about WHEN and HOW MUCH is a knob: shift sigma, frames dropped, restart
-    # sigma, tail refill, audio. The sigma in particular is the whole experiment - too high
-    # and the anchor is discarded before it has transferred anything (nothing has formed
-    # above ~0.909), too low and pass 2 has too few steps left to heal the seam.
+    # Nothing is regrown to replace what is cut: the scene simply comes out that much
+    # shorter. Regrowing it was tried (slide the frames left, refill the freed tail,
+    # finish the schedule on the result) and the invented ending consistently came out
+    # with worse or missing movement, which is not worth paying steps for.
     # ---------------------------------------------------------------------------
 
     def _anchor_pinned_frames(self, chunk):
@@ -3106,63 +3024,6 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:
             return 0
 
-    def _anchor_shift_split_sigmas(self, sigmas, shift_sigma, restart_sigma):
-        """Cut the schedule into (pass 1, pass 2), or return None if it cannot be cut.
-
-        pass 1 ALWAYS runs from the top down to the first sigma at or below shift_sigma —
-        that cut is the whole point of the feature and nothing else may override it. pass 2
-        starts at the first sigma at or below restart_sigma (restart_sigma <= 0 means
-        "continue from where pass 1 stopped") and runs to the end. When the restart sits
-        above the cut, the shifted latent is re-noised back up to it (see
-        _renoise_to_sigma); `resume` says which of the two the caller must do.
-
-        Both passes need at least one real step, so a threshold outside the schedule's
-        range is refused rather than silently producing a zero-step pass. A restart BELOW
-        the cut is refused too — that would mean removing noise, which is not a thing.
-
-        Everything here is read off the ACTUAL schedule, never off the typed floats: walk
-        the sigmas and the last pre-shift step is the one whose NEXT sigma has crossed the
-        threshold. On a 1.000, 0.955, 0.893, 0.812, 0.715, 0.603, 0.482, 0.241, 0.121, 0.0
-        schedule with shift 0.482, steps at 1.000 and 0.955 both have a next sigma still
-        above it and proceed; the step at 0.603 has next=0.482, so it is the last one and
-        the shift happens after it. `_first_at_or_below` is that walk in closed form — the
-        first index at or below the threshold IS the sigma the last pre-shift step lands on.
-        Returned cut/restart values are the schedule's own float32 entries, so the sigma
-        pass 2 re-enters at is exactly the one _renoise_to_sigma rebuilds the state for.
-        """
-        if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 3:
-            return None
-        vals = [float(v) for v in sigmas.tolist()]
-        # SIGMAS are float32; a threshold typed as 0.725 is a float64 that sits just BELOW the
-        # float32 0.725 in the schedule, so a bare `v <= s` silently cuts one step later than
-        # the number the user entered. Match core's own tolerance convention (isclose rtol=1e-4).
-        eps = 1e-4
-
-        def _first_at_or_below(s):
-            return next((i for i, v in enumerate(vals) if v <= s + eps), None)
-
-        cut = _first_at_or_below(float(shift_sigma))
-        if cut is None or cut < 1:
-            return None  # threshold above the first sigma, or not reached at all
-        restart = float(restart_sigma)
-        if restart <= 0:
-            start = cut  # CONTINUE: pass 2 picks up exactly where pass 1 stopped.
-        else:
-            start = _first_at_or_below(restart)
-            if start is None or start > cut:
-                # start > cut means the restart sigma is LOWER than the cut: pass 2 would
-                # claim the latent is cleaner than it is. Noise can be added back, never
-                # removed, so this is a misconfiguration, not a mode.
-                return None
-        # REWIND (start < cut) hands pass 2 a re-noised copy; CONTINUE (start == cut) hands
-        # over the state untouched. Either way pass 1 stopped at the cut the user asked for.
-        first, second, resume = sigmas[:cut + 1], sigmas[start:], start == cut
-        if first.numel() < 2 or second.numel() < 2:
-            return None
-        # `start` goes back to the caller too: it is pass 2's offset into the real schedule,
-        # which the sampler needs to keep its phase boundaries where the schedule put them.
-        return first, second, vals[cut], vals[start], resume, start
-
     def _second_pass_schedule(self, alt_sigmas):
         """Validate the pass-2 schedule. Returns (sigmas, reason); one of them is None.
 
@@ -3170,9 +3031,7 @@ class FunPackLTXAVSceneChainSampler:
         full, exactly as written; pass 2 then runs THIS schedule in full, exactly as written.
         Pass 2 therefore starts from a FINISHED clip, which is the ordinary img2img re-entry
         (comfy's CONST scaling, x = s*noise + (1-s)*clean, valid precisely because the input
-        is clean). "Continue from where pass 1 stopped" belongs to anchor_shift, which stops
-        mid-trajectory on purpose; it has no meaning here. To make pass 1 shorter, shorten
-        the main schedule.
+        is clean). To make pass 1 shorter, shorten the main schedule.
 
         A hand-typed schedule is the one input that can be malformed, and both ways it can
         be are silent in the OUTPUT rather than loud at runtime, so they are caught here.
@@ -3252,10 +3111,9 @@ class FunPackLTXAVSceneChainSampler:
         """Put the i2v pin back on a latent that is about to be handed to a second pass.
 
         _sample_chunk drops noise_mask from what it returns, so without this a second pass
-        would run UNPINNED and re-denoise the anchor frame, letting the reference drift —
-        the opposite of anchor_shift, which deletes the pin on purpose. The pinned region's
-        values are copied back from the original chunk as well, because a rewind re-noise
-        adds noise everywhere, including to frames that are supposed to be frozen.
+        would run UNPINNED and re-denoise the anchor frame, letting the reference drift. The
+        pinned region's values are copied back from the original chunk as well, since pass 2
+        re-noises everything it is handed, including frames that are supposed to be frozen.
         """
         mask = chunk.get("noise_mask")
         pinned = self._anchor_pinned_frames(chunk)
@@ -3285,56 +3143,31 @@ class FunPackLTXAVSceneChainSampler:
         result["noise_mask"] = self._clone_value(mask)
         return result
 
-    def _renoise_to_sigma(self, latent, from_sigma, to_sigma, seed, reset_indices=()):
-        """Move a latent that sits mid-trajectory at `from_sigma` back up to `to_sigma`.
+    def _cut_opening_latent(self, latent, drop):
+        """Cut the first `drop` latent frames off a FINISHED scene latent.
 
-        This model's CONST scaling means a latent at sigma s is x_s = s*eps + (1-s)*x0.
-        Given x_a we cannot recover x0 or eps separately — but we do not need to. A valid
-        x_b for b >= a is a linear mix of what we already have and fresh noise:
+        The i2v anchor is a pinned frame at position 0: it transfers identity, style and
+        composition at full strength all the way down the schedule, and it is also literally
+        the first frame of the clip, so every i2v scene opens on the exact reference still.
+        Cutting it (plus the settling-in stretch behind it, where the shot is still leaving
+        that still) afterwards keeps the transfer and removes the tell.
 
-            x_b = alpha*x_a + beta*n,  alpha = (1-b)/(1-a),  beta = sqrt(b^2 - (a*alpha)^2)
+        Nothing is regrown, so the scene simply comes out `drop` latent frames SHORTER than
+        the length that was asked for. That is the whole trade: every surviving frame was
+        generated as part of one continuous shot, with no invented ending and no joint.
 
-        alpha reproduces x0's coefficient exactly and beta tops the noise term back up to
-        b, so the result sits on the manifold the model expects at b. Both endpoints fall
-        out of the same formula: b == a gives alpha=1, beta=0 (an exact resume, nothing
-        added) and a == 0 gives alpha=1-b, beta=b, which is comfy's own fresh-noise
-        scaling on a clean latent. beta has a real root only when b >= a — noise can be
-        added back but never removed, which is why the caller refuses a restart below the
-        cut.
+        Nothing downstream constrains the new size: LTXAV's video patchifier has temporal
+        patch size 1 (SymmetricPatchifier(1) -> no divisibility rule on latent frames), the
+        streams reach the transformer as independent tensors with no enforced video:audio
+        ratio, and VAE decode is (f-1)*scale+1 for any f >= 1.
 
-        Streams listed in `reset_indices` were wiped to zeros (fresh audio) and are NOT
-        mid-trajectory, so they re-enter at a=0 and get the full b*n a from-scratch run
-        would start from, rather than a partial top-up of a latent that no longer exists.
-        """
-        a, b = float(from_sigma), float(to_sigma)
-        result = self._clone_latent(latent)
-        tensors = self._latent_tensors(result)
-        noise = comfy.sample.prepare_noise(result["samples"], int(seed))
-        noises = list(noise.unbind()) if self._is_nested(noise) else [noise]
-        for i, t in enumerate(tensors):
-            a_i = 0.0 if i in tuple(reset_indices) else a
-            alpha = (1.0 - b) / (1.0 - a_i) if a_i < 1.0 else 0.0
-            beta = math.sqrt(max(0.0, b * b - (a_i * alpha) ** 2))
-            n = noises[i].to(device=t.device, dtype=t.dtype)
-            tensors[i] = t * alpha + n * beta
-        if self._is_nested(result.get("samples")):
-            result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
-        else:
-            result["samples"] = tensors[0]
-        return result
+        What DOES matter is proportion. Audio timings come from the audio stream's own index
+        and video's from its own RoPE, so cropping the two by different amounts of TIME
+        desynchronises them silently — no error, just sound that drifts. Each extra stream's
+        kept length is therefore derived from the new VIDEO length directly, never by
+        subtracting a separately-rounded drop.
 
-    def _anchor_shift_latent(self, latent, drop, tail_mode, fresh_audio):
-        """Slide the video stream left by `drop` latent frames and refill the freed tail.
-
-        The head frames (anchor + settling-in region) are dropped. In the three refilling
-        modes the clip keeps its full length, so no extra frames are ever generated to pay
-        for this, and `tail_mode` picks what the freed tail starts from. In "crop" there is
-        no tail at all: the clip is simply that much shorter, which is the only mode where
-        pass 2 never has to invent an ending or blend a joint.
-
-        Audio is optionally reset to an empty latent so pass 2 writes it fresh against the
-        shifted picture instead of inheriting pass 1's audio, which was scored against
-        frames that no longer exist at those positions.
+        Returns (latent, dropped).
         """
         result = self._clone_latent(latent)
         tensors = self._latent_tensors(result)
@@ -3343,50 +3176,21 @@ class FunPackLTXAVSceneChainSampler:
         drop = max(0, min(int(drop), frames - 1))
         if drop <= 0:
             return result, 0
-        head, body = video[:, :, :drop], video[:, :, drop:]
-        if tail_mode == "crop":
-            # No regrown tail — the clip just gets shorter.
-            #
-            # Nothing downstream constrains the new size: LTXAV's video patchifier has
-            # temporal patch size 1 (SymmetricPatchifier(1) -> no divisibility rule on
-            # latent frames), the streams reach the transformer as independent tensors with
-            # no enforced video:audio ratio, and comfy re-packs and re-derives latent_shapes
-            # (and the denoise masks off them) from whatever latent it is handed on the next
-            # sample_custom call — so a shorter latent needs nothing rebuilt.
-            #
-            # What DOES matter is proportion. Audio timings come from the audio stream's own
-            # index and video's from its own RoPE, so cropping the two by different amounts
-            # of TIME desynchronises them silently — no error, just sound that drifts. Each
-            # extra stream's kept length is therefore derived from the new VIDEO length
-            # directly, not by subtracting a separately-rounded drop, so rounding cannot
-            # leave the streams describing clips of different durations.
-            tensors[0] = body
-            kept = frames - drop
-            for _idx in range(1, len(tensors)):
-                _t = tensors[_idx]
-                if _t is None:
-                    continue
-                _n = self._tensor_frames(_t)
-                _keep = max(1, min(_n, int(round(_n * kept / max(1, frames)))))
-                if _keep < _n:
-                    tensors[_idx] = _t[:, :, _n - _keep:]
-        else:
-            if tail_mode == "wrap":
-                tail = head  # Mobius: the dropped head reappears at the end
-            elif tail_mode == "extend_last":
-                tail = body[:, :, -1:].repeat(1, 1, drop, 1, 1)
-            else:  # "empty": zeros, so pass 2's noise scaling starts that region from noise
-                tail = torch.zeros_like(head)
-            tensors[0] = torch.cat([body, tail], dim=2)
-        # After any cropping: the reset writes zeros at whatever length the stream now has,
-        # which is what defines the clip's audio duration.
-        if fresh_audio and len(tensors) > 1 and tensors[1] is not None:
-            tensors[1] = torch.zeros_like(tensors[1])
+        tensors[0] = video[:, :, drop:]
+        kept = frames - drop
+        for _idx in range(1, len(tensors)):
+            _t = tensors[_idx]
+            if _t is None:
+                continue
+            _n = self._tensor_frames(_t)
+            _keep = max(1, min(_n, int(round(_n * kept / max(1, frames)))))
+            if _keep < _n:
+                tensors[_idx] = _t[:, :, _n - _keep:]
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         else:
             result["samples"] = tensors[0]
-        # The pin belongs to a frame that no longer exists; pass 2 must run unpinned.
+        # The pin belongs to a frame that no longer exists.
         result.pop("noise_mask", None)
         return result, drop
 
@@ -5237,9 +5041,7 @@ class FunPackLTXAVSceneChainSampler:
                context_windows=False, context_window_length=145, context_window_overlap=40,
                context_window_schedule="uniform_standard", context_window_fuse="pyramid",
                context_window_freenoise=True, context_window_retain_first=False,
-               anchor_shift=False, anchor_shift_sigma=0.909, anchor_shift_frames=8,
-               anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
-               anchor_shift_fresh_audio=True,
+               cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
@@ -5305,11 +5107,7 @@ class FunPackLTXAVSceneChainSampler:
                 context_window_fuse=context_window_fuse,
                 context_window_freenoise=context_window_freenoise,
                 context_window_retain_first=context_window_retain_first,
-                anchor_shift=anchor_shift, anchor_shift_sigma=anchor_shift_sigma,
-                anchor_shift_frames=anchor_shift_frames,
-                anchor_shift_restart_sigma=anchor_shift_restart_sigma,
-                anchor_shift_tail=anchor_shift_tail,
-                anchor_shift_fresh_audio=anchor_shift_fresh_audio,
+                cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
             )
@@ -5723,238 +5521,104 @@ class FunPackLTXAVSceneChainSampler:
                     alg_guide_blur_sigma_threshold=alg_guide_blur_sigma_threshold,
                     bounded_attention_enabled=bounded_attention_enabled,
                 )
-                # anchor_shift: "fake t2v" — run with the real, untouched i2v anchor, then
-                # delete it from the clip instead of weakening it (ALG blurs the anchor and
-                # loses character detail; overlap tokens approximate it and lose some too).
-                _shift_split = None
-                _shift_post_only = False   # sigma 0: whole schedule, then shift, no pass 2
-                if anchor_shift:
-                    _shift_drop = self._expected_latent_frames(
-                        int(anchor_shift_frames) + 1, time_scale) - 1
+                # cut_opening_frames: let the real, untouched i2v anchor condition the scene
+                # at full strength, then cut it out of the finished clip instead of weakening
+                # it on the way in (ALG blurs the anchor and loses character detail; overlap
+                # tokens approximate it and lose some too). Eligibility is decided here, while
+                # the pre-sampling chunk is still around; the cut itself is a post-process on
+                # the finished latent, below, and costs no sampling at all.
+                _cut_drop = 0
+                if int(cut_opening_frames) > 0:
+                    _cut_drop = self._expected_latent_frames(
+                        int(cut_opening_frames) + 1, time_scale) - 1
                     if carried + soft_carried > 0:
-                        _reason = ("continuation scene — the head is carried frames from the "
-                                   "previous scene, not an anchor")
-                    elif guide_tail > 0:
-                        _reason = ("scene has appended guide frames at the tail (mid_scene_guide "
-                                   "/ carried i2v guides) — the slide would overwrite them")
-                    elif audio_tail > 0:
-                        _reason = ("scene has appended JoyAI audio memory — resetting the audio "
-                                   "stream would destroy the injected tail")
+                        _reason = ("continuation scene — the opening is carried frames from the "
+                                   "previous scene, not an anchor, and cutting them would break "
+                                   "the join with it")
+                    elif guide_tail > 0 or audio_tail > 0:
+                        _reason = ("scene is carrying appended frames (mid_scene_guide / carried "
+                                   "i2v guides / JoyAI audio memory) that are stripped after "
+                                   "sampling — the audio crop is derived from the video length, "
+                                   "which those extra frames would make wrong")
                     elif self._context_scene_latent_frames(chunk) is None:
                         _reason = "scene latent could not be read"
-                    elif _shift_drop <= 0:
-                        _reason = f"anchor_shift_frames={anchor_shift_frames} is under one latent frame"
+                    elif _cut_drop <= 0:
+                        _reason = (f"cut_opening_frames={cut_opening_frames} is under one latent "
+                                   f"frame at this VAE time scale")
                     elif self._anchor_pinned_frames(chunk) <= 0:
                         # No pinned prefix = a genuine t2v scene (no anchor image attached).
-                        # Shifting here would drop real generated frames for nothing — this is
-                        # the "fake t2v" trick, it needs a real anchor to fake it WITH.
-                        _reason = ("scene has no pinned i2v anchor (t2v scene) — nothing to shift; "
-                                   "attach an anchor image, or leave anchor_shift off")
-                    elif float(anchor_shift_sigma) <= 0.0:
-                        # NO SECOND PASS: "generate the whole video normally, then just cut the
-                        # beginning off." A cut at sigma 0 IS the end of the schedule, so pass 1
-                        # is the entire run and there is nothing left to denoise — the shift
-                        # becomes a post-process on the finished latent and costs nothing at all.
-                        if float(anchor_shift_restart_sigma) > 0:
-                            _reason = (f"anchor_shift_sigma=0 means no second pass at all (the "
-                                       f"whole schedule runs, then the head is cut), so there is "
-                                       f"nothing for anchor_shift_restart_sigma="
-                                       f"{anchor_shift_restart_sigma:g} to restart. Set it to 0, "
-                                       f"or raise anchor_shift_sigma above 0 to cut mid-schedule")
-                        elif anchor_shift_tail in ("extend_last", "empty"):
-                            # Nothing runs after the slide, so a refilled tail is never denoised:
-                            # extend_last would freeze the last frame for anchor_shift_frames and
-                            # empty would leave an empty latent on screen. crop and wrap are pure
-                            # rearrangements of already-finished content, so they are fine.
-                            _reason = (f"anchor_shift_tail={anchor_shift_tail} needs a second pass "
-                                       f"to regrow the tail, and anchor_shift_sigma=0 means there "
-                                       f"is none — the refilled tail would never be denoised. Use "
-                                       f"'crop' (clip just ends earlier) or 'wrap'")
-                        else:
-                            _shift_post_only = True
-                    elif 0 < float(anchor_shift_restart_sigma) < float(anchor_shift_sigma) - 1e-4:
-                        # Pass 2 would claim the latent is cleaner than pass 1 left it.
-                        # The re-noise can add noise back, never remove it.
-                        _reason = (f"anchor_shift_restart_sigma={anchor_shift_restart_sigma:g} is "
-                                   f"below anchor_shift_sigma={anchor_shift_sigma:g} — pass 2 can "
-                                   f"re-noise the shifted latent back UP to a higher sigma, but it "
-                                   f"cannot un-noise it down to a lower one. Use 0 to continue "
-                                   f"straight on from the cut, or a value at or above the cut")
+                        # Cutting here would throw away real generated frames for nothing —
+                        # this is the "fake t2v" trick, it needs a real anchor to fake it WITH.
+                        _reason = ("scene has no pinned i2v anchor (t2v scene) — nothing to cut "
+                                   "out; attach an anchor image, or set cut_opening_frames to 0")
                     else:
-                        _shift_split = self._anchor_shift_split_sigmas(
-                            sigmas, anchor_shift_sigma, anchor_shift_restart_sigma)
-                        _reason = (f"schedule never reaches anchor_shift_sigma="
-                                   f"{anchor_shift_sigma} with a step left on both sides — the cut "
-                                   f"needs a real step on each side of it. Use anchor_shift_sigma=0 "
-                                   f"to run the whole schedule and only cut the head off instead")
-                    if _shift_split is None and not _shift_post_only:
-                        run_mechanisms.append(f"anchor_shift(SKIPPED: {_reason})")
-                if _shift_split is not None:
-                    _sig_a, _sig_b, _cut_at, _restart_at, _resume, _restart_idx = _shift_split
-                    # Both passes are slices of THIS schedule. Hand the sampler the real thing
-                    # plus where each slice starts, so the quality phase, final-correction
-                    # window, AB2 ramp, pulse anchors and eta decay stay where the schedule
-                    # puts them instead of being re-derived inside each half.
-                    _pass1 = self._sample_chunk(
-                        model, sampler, _sig_a, scene_seed, cfg, scene_positive, scene_negative,
-                        chunk, schedule_context={"sigmas": sigmas, "offset": 0}, **_sample_kwargs)
-                    _shifted, _dropped = self._anchor_shift_latent(
-                        _pass1, _shift_drop, anchor_shift_tail, anchor_shift_fresh_audio)
-                    if not _resume:
-                        # REWIND: put the shifted mid-trajectory latent back at the restart
-                        # sigma. A fresh noise field is wanted here — reusing scene_seed would
-                        # re-apply the exact field pass 1 just resolved, against content that
-                        # has since moved.
-                        _reset_streams = ((1,) if (anchor_shift_fresh_audio
-                                                   and len(self._latent_tensors(_shifted)) > 1)
-                                          else ())
-                        _shifted = self._renoise_to_sigma(
-                            _shifted, _cut_at, _restart_at, scene_seed + 4242, _reset_streams)
-                    # Either way pass 2 is handed the exact x at its first sigma — as the
-                    # untouched hand-over (continue) or as the re-noised one (rewind) — so it
-                    # must never re-noise again. See _sample_chunk's continue_from_state.
-                    _kw2 = dict(_sample_kwargs)
-                    _kw2["step_offset"] = _sample_kwargs["step_offset"] + (_sig_a.numel() - 1)
-                    _kw2["continue_from_state"] = True
-                    _kw2["schedule_context"] = {"sigmas": sigmas, "offset": _restart_idx}
-                    sampled = self._sample_chunk(
-                        model, sampler, _sig_b, scene_seed + 4242, cfg, scene_positive,
-                        scene_negative, _shifted, **_kw2)
-                    _pinned_n = self._anchor_pinned_frames(chunk)
-                    # tail=crop makes the scene SHORTER than the length that was asked for.
-                    # That is the mode's whole point, but it must never be something the user
-                    # has to infer from the output — say it in the report, in latent frames
-                    # and in the real frames they set.
-                    _tail_note = ""
-                    if anchor_shift_tail == "crop":
-                        try:
-                            _before = self._tensor_frames(self._latent_tensors(_pass1)[0])
-                            _after = self._tensor_frames(self._latent_tensors(sampled)[0])
-                            _tail_note = (f", CROPPED to {_after} of {_before} latent frames "
-                                          f"(~{int(anchor_shift_frames)} real frames shorter — "
-                                          f"no tail regrown)")
-                        except Exception:
-                            _tail_note = ", CROPPED (no tail regrown)"
-                    run_mechanisms.append(
-                        f"anchor_shift({'continue' if _resume else 'rewind'} "
-                        f"cut@{_cut_at:g} restart@{_restart_at:g}, "
-                        f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
-                        f"tail={anchor_shift_tail}{_tail_note}"
-                        f"{', fresh audio' if anchor_shift_fresh_audio else ''})")
-                    if _dropped < _pinned_n:
-                        # Part of the anchor survives the slide and stays visible in the clip —
-                        # the one outcome this feature exists to prevent, so name the fix.
-                        run_mechanisms.append(
-                            f"anchor_shift WARNING: {_pinned_n - _dropped} anchor latent frame(s) "
-                            f"still in the clip — raise anchor_shift_frames to at least "
-                            f"{_pinned_n * max(1, int(time_scale))}")
-                elif _shift_post_only:
-                    # No second pass: sample the scene exactly as if anchor_shift were off — the
-                    # anchor stays pinned for the whole schedule, which is the point (full-strength
-                    # identity transfer) — then slide the head off the FINISHED latent. Zero extra
-                    # sampling, so this is the cheapest form of the trick by a wide margin.
-                    _full = self._sample_chunk(
-                        model, sampler, sigmas, scene_seed, cfg, scene_positive, scene_negative,
-                        chunk, **_sample_kwargs)
-                    # fresh_audio is forced OFF here: it resets the audio for pass 2 to rewrite,
-                    # and with no pass 2 the reset would just leave the clip silent.
-                    sampled, _dropped = self._anchor_shift_latent(
-                        _full, _shift_drop, anchor_shift_tail, False)
-                    _pinned_n = self._anchor_pinned_frames(chunk)
-                    _tail_note = ""
-                    if anchor_shift_tail == "crop":
-                        try:
-                            _before = self._tensor_frames(self._latent_tensors(_full)[0])
-                            _after = self._tensor_frames(self._latent_tensors(sampled)[0])
-                            _tail_note = (f", CROPPED to {_after} of {_before} latent frames "
-                                          f"(~{int(anchor_shift_frames)} real frames shorter)")
-                        except Exception:
-                            _tail_note = ", CROPPED"
-                    run_mechanisms.append(
-                        f"anchor_shift(no second pass — full schedule then head cut, "
-                        f"dropped {_dropped} of {_pinned_n} pinned latent frames, "
-                        f"tail={anchor_shift_tail}{_tail_note})")
-                    if anchor_shift_fresh_audio:
-                        # The audio was written against the finished picture and nothing will
-                        # rewrite it, so a reset here would just leave the clip silent.
-                        run_mechanisms.append(
-                            "anchor_shift NOTE: anchor_shift_fresh_audio is ignored with no second "
-                            "pass — resetting the audio with nothing left to regenerate it would "
-                            "produce a silent clip, so pass 1's audio is kept.")
-                    if _dropped < _pinned_n:
-                        run_mechanisms.append(
-                            f"anchor_shift WARNING: {_pinned_n - _dropped} anchor latent frame(s) "
-                            f"still in the clip — raise anchor_shift_frames to at least "
-                            f"{_pinned_n * max(1, int(time_scale))}")
-                else:
-                    # General second pass. Reaching this branch means anchor_shift did not act
-                    # on this scene (it is either off, or was skipped with a reason above), so
-                    # the two features never nest — they stay independent by construction.
-                    #
-                    # The shape is deliberately plain: pass 1 runs the main schedule IN FULL,
-                    # exactly as written, then pass 2 runs its own schedule IN FULL, exactly as
-                    # written. Nothing is cut and nothing is "continued from" — those belong to
-                    # anchor_shift, which stops mid-trajectory on purpose. To make pass 1
-                    # shorter, shorten the main schedule. Pass 2 therefore starts from a
-                    # FINISHED clip, so it re-enters through comfy's ordinary CONST noise
-                    # scaling (continue_from_state stays off) — valid precisely because the
-                    # input is clean. Total steps are simply the two schedules added up.
-                    _sp_b = None
-                    if second_pass:
-                        _sp_b, _sp_reason = self._second_pass_schedule(second_pass_sigmas)
-                        if _sp_b is None:
-                            run_mechanisms.append(f"second_pass(SKIPPED: {_sp_reason})")
-                    _full = self._sample_chunk(
-                        model, sampler, sigmas, scene_seed, cfg, scene_positive,
-                        scene_negative, chunk, **_sample_kwargs)
+                        _reason = None
+                    if _reason is not None:
+                        run_mechanisms.append(f"cut_opening_frames(SKIPPED: {_reason})")
+                        _cut_drop = 0
+                # Optional second pass. The shape is deliberately plain: pass 1 runs the
+                # main schedule IN FULL, exactly as written, then pass 2 runs its own
+                # schedule IN FULL, exactly as written. Nothing is cut short and nothing is
+                # derived — to make pass 1 shorter, shorten the main schedule. Pass 2 starts
+                # from a FINISHED clip, so it re-enters through comfy's ordinary CONST noise
+                # scaling, valid precisely because the input is clean. Total steps are simply
+                # the two schedules added up.
+                _sp_b = None
+                if second_pass:
+                    _sp_b, _sp_reason = self._second_pass_schedule(second_pass_sigmas)
                     if _sp_b is None:
-                        sampled = _full
-                    else:
-                        _sp_state = _full
-                        if second_pass_op not in (None, "none", ""):
-                            # The op runs on the FINISHED pass-1 clip, which is the only state
-                            # it makes sense on: sharpening a half-denoised latent sharpens the
-                            # noise in it. Shares segmented detailing's lazily-loaded upsampler.
-                            if _detail_upsampler_model is None and _detail_disabled_reason is None:
+                        run_mechanisms.append(f"second_pass(SKIPPED: {_sp_reason})")
+                _full = self._sample_chunk(
+                    model, sampler, sigmas, scene_seed, cfg, scene_positive,
+                    scene_negative, chunk, **_sample_kwargs)
+                if _sp_b is None:
+                    sampled = _full
+                else:
+                    _sp_state = _full
+                    if second_pass_op not in (None, "none", ""):
+                        # The op runs on the FINISHED pass-1 clip, which is the only state
+                        # it makes sense on: sharpening a half-denoised latent sharpens the
+                        # noise in it. Shares segmented detailing's lazily-loaded upsampler.
+                        if _detail_upsampler_model is None and _detail_disabled_reason is None:
+                            try:
                                 try:
-                                    try:
-                                        from . import detailing as _det
-                                    except ImportError:
-                                        import detailing as _det
-                                    _r = _det.resolve_upsampler_name(detail_upsampler)
-                                    _detail_upsampler_model = _det.load_latent_upsampler(_r)
-                                except Exception as _exc:  # noqa: BLE001
-                                    _detail_disabled_reason = str(_exc)
-                            _sp_state, _op_note = self._second_pass_operate(
-                                _sp_state, second_pass_op, _detail_upsampler_model, vae)
-                            if _op_note:
-                                run_mechanisms.append(_op_note)
-                            elif _detail_disabled_reason:
-                                run_mechanisms.append(
-                                    f"second_pass_op={second_pass_op} skipped: upsampler "
-                                    f"unavailable ({_detail_disabled_reason})")
-                        # Unlike anchor_shift, a plain second pass must KEEP the i2v anchor
-                        # pinned — otherwise pass 2 re-denoises the reference frame and the
-                        # scene drifts away from the image it was supposed to start from.
-                        _sp_before = _sp_state
-                        _sp_state = self._restore_pinned_prefix(_sp_state, chunk)
-                        if _sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0:
-                            # Only happens when the op changed the resolution — say so, because
-                            # an unpinned pass 2 can drift off the reference image.
+                                    from . import detailing as _det
+                                except ImportError:
+                                    import detailing as _det
+                                _r = _det.resolve_upsampler_name(detail_upsampler)
+                                _detail_upsampler_model = _det.load_latent_upsampler(_r)
+                            except Exception as _exc:  # noqa: BLE001
+                                _detail_disabled_reason = str(_exc)
+                        _sp_state, _op_note = self._second_pass_operate(
+                            _sp_state, second_pass_op, _detail_upsampler_model, vae)
+                        if _op_note:
+                            run_mechanisms.append(_op_note)
+                        elif _detail_disabled_reason:
                             run_mechanisms.append(
-                                "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
-                                "because second_pass_op changed the latent resolution — pass 2 runs "
-                                "unpinned and may drift from the reference image.")
-                        _sp_kw = dict(_sample_kwargs)
-                        _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
-                        sampled = self._sample_chunk(
-                            model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
-                            scene_negative, _sp_state, **_sp_kw)
+                                f"second_pass_op={second_pass_op} skipped: upsampler "
+                                f"unavailable ({_detail_disabled_reason})")
+                    # A second pass must KEEP the i2v anchor pinned — otherwise pass 2
+                    # re-denoises the reference frame and the scene drifts away from the
+                    # image it was supposed to start from.
+                    _sp_before = _sp_state
+                    _sp_state = self._restore_pinned_prefix(_sp_state, chunk)
+                    if _sp_state is _sp_before and self._anchor_pinned_frames(chunk) > 0:
+                        # Only happens when the op changed the resolution — say so, because
+                        # an unpinned pass 2 can drift off the reference image.
                         run_mechanisms.append(
-                            f"second_pass({int(sigmas.numel()) - 1} steps + "
-                            f"{int(_sp_b.numel()) - 1} steps = "
-                            f"{int(sigmas.numel()) + int(_sp_b.numel()) - 2} total, "
-                            f"pass 2 from {float(_sp_b[0].item()):g})")
+                            "second_pass NOTE: the i2v anchor could not stay pinned for pass 2 "
+                            "because second_pass_op changed the latent resolution — pass 2 runs "
+                            "unpinned and may drift from the reference image.")
+                    _sp_kw = dict(_sample_kwargs)
+                    _sp_kw["step_offset"] = _sample_kwargs["step_offset"] + (int(sigmas.numel()) - 1)
+                    sampled = self._sample_chunk(
+                        model, sampler, _sp_b, scene_seed + 4242, cfg, scene_positive,
+                        scene_negative, _sp_state, **_sp_kw)
+                    run_mechanisms.append(
+                        f"second_pass({int(sigmas.numel()) - 1} steps + "
+                        f"{int(_sp_b.numel()) - 1} steps = "
+                        f"{int(sigmas.numel()) + int(_sp_b.numel()) - 2} total, "
+                        f"pass 2 from {float(_sp_b[0].item()):g})")
                 _scene_sample_s = _time.perf_counter() - _t_sample0
                 _phase_sampling += _scene_sample_s
                 if _plateau_stats is not None:
@@ -5973,6 +5637,25 @@ class FunPackLTXAVSceneChainSampler:
                         model.model_options["model_function_wrapper"] = _scene_base_wrapper
                     else:
                         model.model_options.pop("model_function_wrapper", None)
+            if _cut_drop > 0:
+                # The finished clip, minus its opening. Nothing is regrown, so the scene is
+                # now shorter than the length that was asked for — say so in the report
+                # rather than leaving it to be inferred from the output.
+                _before_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
+                sampled, _dropped = self._cut_opening_latent(sampled, _cut_drop)
+                _after_cut = self._tensor_frames(self._latent_tensors(sampled)[0])
+                _pinned_n = self._anchor_pinned_frames(chunk)
+                run_mechanisms.append(
+                    f"cut_opening_frames(dropped {_dropped} of {_pinned_n} pinned latent "
+                    f"frames — clip CROPPED to {_after_cut} of {_before_cut} latent frames, "
+                    f"~{int(cut_opening_frames)} real frames shorter)")
+                if _dropped < _pinned_n:
+                    # Part of the anchor is still visible — the one outcome this exists to
+                    # prevent, so name the fix.
+                    run_mechanisms.append(
+                        f"cut_opening_frames WARNING: {_pinned_n - _dropped} anchor latent "
+                        f"frame(s) still in the clip — raise cut_opening_frames to at least "
+                        f"{_pinned_n * max(1, int(time_scale))}")
             if carried + soft_carried > 0:
                 sampled = self._crop_video_head(sampled, carried + soft_carried)
             if guide_tail > 0:
@@ -6292,9 +5975,7 @@ class FunPackLTXAVSceneChainSampler:
                             context_window_overlap=40, context_window_schedule="uniform_standard",
                             context_window_fuse="pyramid", context_window_freenoise=True,
                             context_window_retain_first=False,
-                            anchor_shift=False, anchor_shift_sigma=0.909, anchor_shift_frames=8,
-                            anchor_shift_restart_sigma=0.0, anchor_shift_tail="extend_last",
-                            anchor_shift_fresh_audio=True,
+                            cut_opening_frames=0,
                             second_pass=False, second_pass_op="none",
                             second_pass_sigmas=None):
         """Sample one chain per Studio-packed variant entry (seed + index), persisting each result
@@ -6356,11 +6037,7 @@ class FunPackLTXAVSceneChainSampler:
                 context_window_fuse=context_window_fuse,
                 context_window_freenoise=context_window_freenoise,
                 context_window_retain_first=context_window_retain_first,
-                anchor_shift=anchor_shift, anchor_shift_sigma=anchor_shift_sigma,
-                anchor_shift_frames=anchor_shift_frames,
-                anchor_shift_restart_sigma=anchor_shift_restart_sigma,
-                anchor_shift_tail=anchor_shift_tail,
-                anchor_shift_fresh_audio=anchor_shift_fresh_audio,
+                cut_opening_frames=cut_opening_frames,
                 second_pass=second_pass, second_pass_op=second_pass_op,
                 second_pass_sigmas=second_pass_sigmas,
                 unique_id=None, prompt=None,

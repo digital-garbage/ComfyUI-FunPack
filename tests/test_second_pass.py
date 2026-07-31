@@ -1,18 +1,16 @@
-"""second_pass — a general two-pass split on the Chain Sampler, independent of anchor_shift.
+"""second_pass — a general two-pass split on the Chain Sampler.
 
-anchor_shift built the machinery (stop the schedule, hand the state over, re-enter exactly);
-this exposes it on its own so a scene can be finished differently from how it was started.
-The invariants that matter here are the ones a split can silently get wrong:
+A scene can be finished differently from how it was started. The invariants that matter
+here are the ones a split can silently get wrong:
 
 1. BOTH schedules run in full, exactly as written. Pass 1 is not cut short and pass 2 is
    not derived from it — total steps are simply the two added up. (An earlier version cut
-   pass 1 at pass 2's first sigma, which is anchor_shift's behaviour and does not belong
-   here; it silently shortened the run and distorted the result.)
+   pass 1 at pass 2's first sigma; it silently shortened the run and distorted the result.)
 2. A hand-typed schedule is the one malformed-able input, and both ways it can be wrong
    are silent in the OUTPUT rather than loud at runtime, so they are refused up front.
 3. Nothing is ever a silent no-op: every refusal comes back with a reason naming the fix.
-4. The i2v anchor stays PINNED for pass 2 — the opposite of anchor_shift, which deletes
-   the pin on purpose. Without this pass 2 re-denoises the reference frame.
+4. The i2v anchor stays PINNED for pass 2 — without this pass 2 re-denoises the reference
+   frame and the scene drifts off the image it was supposed to start from.
 """
 import sys
 import types
@@ -95,13 +93,13 @@ def test_a_schedule_starting_at_zero_is_refused():
 
 def test_the_i2v_anchor_is_re_pinned_for_pass_two():
     """_sample_chunk drops noise_mask from what it returns, so without this pass 2 runs
-    unpinned and re-denoises the reference frame. anchor_shift wants that; this does not."""
+    unpinned and re-denoises the reference frame."""
     frames = 6
     clean = torch.arange(frames, dtype=torch.float32).view(1, 1, frames, 1, 1).repeat(1, 4, 1, 2, 2)
     mask = torch.ones_like(clean)
     mask[:, :, :1] = 0.0                       # one pinned anchor frame
     chunk = {"samples": clean, "noise_mask": mask}
-    # A "state" where the anchor frame has been polluted (as a rewind re-noise would).
+    # A "state" where the anchor frame has been polluted (as pass 2's re-noise would).
     state = {"samples": torch.full_like(clean, -99.0)}
 
     out = _node()._restore_pinned_prefix(state, chunk)

@@ -901,24 +901,41 @@ def _apply_bypass(graph, slots, slot_node_id, slot_def, report):
         nd = slot_def.get(s["id"]) or {}
         outs = node_outputs(nd)
         cis = connection_inputs(nd)
+        # Only the outputs something in the graph actually CONSUMES need a passthrough. A
+        # node can emit an output nothing here reads — LTXICLoRALoaderModelOnly returns a
+        # FLOAT (latent_downscale_factor) alongside its MODEL, and the editor's graph wires
+        # only the MODEL — and demanding a matching input for an output that feeds nothing
+        # would refuse a bypass that is completely unambiguous for every link that exists.
+        consumed = set()
+        for nid, ndata in graph.items():
+            if nid == sid:
+                continue
+            for val in (ndata.get("inputs") or {}).values():
+                if isinstance(val, list) and len(val) == 2 and val[0] == sid:
+                    consumed.add(val[1])
         passthrough = {}
-        ok = True
+        blocked = None
         for i, o in enumerate(outs):
+            if i not in consumed:
+                continue
             # A union-typed input ("IMAGE,MASK") can carry any of its members through.
             names = [ci["name"] for ci in cis if type_accepts(ci["type"], o["type"])]
             if len(names) != 1:
-                ok = False
+                blocked = (o, names)
                 break
             passthrough[i] = graph[sid]["inputs"].get(names[0])
-        if not ok:
+        if blocked is not None:
             # Silently leaving the node active would mean a user who explicitly bypassed it
             # (e.g. to skip an i2v preprocessing node) gets generation output as if they
             # hadn't — with no visible sign why. Block instead: bypass either does what was
             # asked or the run stops with a clear reason, never a silent no-op.
+            _o, _names = blocked
             msg = (
                 f"{s.get('node_class')}: bypass needs exactly one input matching each output's "
-                f"type to pass through — this node doesn't have one, so it can't be safely "
-                f"bypassed. Remove it or rewire it with a single matching input per output type.")
+                f"type to pass through, and its '{_o['name']}' output ({_o['type']}) has "
+                f"{'no matching input' if not _names else 'more than one'} — so it can't be "
+                f"safely bypassed. Remove it, give it a single matching input for that type, "
+                f"or leave that output unconnected.")
             report["unsatisfied"].append(msg)
             report["blocking"].append(msg)
             continue

@@ -64,6 +64,13 @@ OI = {
                                           "strength_model": ["FLOAT", {"default": 1.0}],
                                           "strength_clip": ["FLOAT", {"default": 1.0}]}},
                   "output": ["MODEL", "CLIP"], "output_name": ["MODEL", "CLIP"]},
+    # Real shape of LTXICLoRALoaderModelOnly: a MODEL passthrough plus a FLOAT the graph
+    # never reads. strength_model is a widget, so no connection input matches that FLOAT.
+    "LTXICLoRALoaderModelOnly": {
+        "input": {"required": {"model": ["MODEL"],
+                               "lora_name": [["x.safetensors"]],
+                               "strength_model": ["FLOAT", {"default": 1.0}]}},
+        "output": ["MODEL", "FLOAT"], "output_name": ["model", "latent_downscale_factor"]},
 }
 
 PARAMS = {"prompt": "scene one", "seed": 42, "num_frames_per_scene": 121, "frame_rate": 24}
@@ -372,6 +379,24 @@ def test_non_bypassed_lora_stays_in_graph():
     assert "slot_lora" in graph
     assert graph["studio"]["inputs"]["model"] == ["slot_lora", 0]
     assert graph["studio"]["inputs"]["clip"] == ["slot_lora", 1]
+
+
+def test_bypass_ignores_outputs_nothing_is_wired_to():
+    """LTXICLoRALoaderModelOnly emits a FLOAT (latent_downscale_factor) next to its MODEL,
+    and nothing in the editor's graph reads it. Demanding a matching input for an output
+    that feeds nothing refused a bypass that is unambiguous for every link that exists —
+    only CONSUMED outputs need a passthrough."""
+    models = {"full_control": True, "slots": [
+        {"id": "u", "node_class": "UnetLoader", "inputs": {"unet_name": "m.safetensors"}, "wires": {}},
+        {"id": "ic", "node_class": "LTXICLoRALoaderModelOnly", "bypassed": True,
+         "inputs": {"lora_name": "x.safetensors", "strength_model": 0.8, "model": ["slot_u", 0]},
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+    ]}
+    graph, report = builder.build(OI, models, PARAMS)
+    assert "slot_ic" not in graph
+    assert graph["studio"]["inputs"]["model"] == ["slot_u", 0]
+    assert not any("bypass" in b for b in report["blocking"])
+    assert any("LTXICLoRALoaderModelOnly bypassed" in w for w in report["wired"])
 
 
 def test_bypass_on_node_with_no_matching_input_blocks_generation():
