@@ -31,7 +31,6 @@ TEMPLATE_NONE = "-None-"
 REFINEMENT_KEY_NONE = "-None-"
 SCENE_NONE = "-None-"
 TEMPLATE_DB_VERSION = 1
-WILDCARD_RE = re.compile(r"\{([^{}]*\|[^{}]*)\}")
 SCENE_CATEGORIES = {
     "negative": {"bad", "blurry", "worst", "low", "noise", "deformed", "artifact", "ugly", "broken"},
     "action": {"walk", "walking", "run", "running", "turn", "turning", "dance", "dancing", "jump", "jumping", "move", "moving", "motion", "hold", "holding", "look", "looking", "smile", "smiling"},
@@ -1051,26 +1050,6 @@ def collect_template_payload(
     return template
 
 
-def resolve_wildcards(text, seed=0):
-    text = str(text or "")
-    if not text:
-        return text
-
-    rng = random.Random(int(seed)) if int(seed or 0) != 0 else random.Random()
-
-    def replace(match):
-        choices = [item.strip() for item in match.group(1).split("|")]
-        choices = [item for item in choices if item]
-        if not choices:
-            return match.group(0)
-        return rng.choice(choices)
-
-    previous = None
-    current = text
-    while previous != current:
-        previous = current
-        current = WILDCARD_RE.sub(replace, current)
-    return current
 
 
 
