@@ -1073,108 +1073,14 @@ def resolve_wildcards(text, seed=0):
     return current
 
 
-def prompt_key_for_refiner(prompt, mode):
-    del mode
-    return re.sub(r"\s+", " ", str(prompt or "").strip())
 
 
-def load_refiner_state(refinement_key, mode):
-    if not refinement_key:
-        return None, "No refinement key stored."
-    candidates = (
-        (refinement_state_path(refinement_key, "clip", prefix="refine_v2"), "V2 refiner state"),
-        (refinement_state_path(refinement_key, mode), "legacy refiner state"),
-    )
-    for path, label in candidates:
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                data = json.load(file)
-            if isinstance(data, dict):
-                data["_funpack_state_label"] = label
-            return data, f"{label} loaded for key '{refinement_key}'."
-        except (json.JSONDecodeError, OSError, ValueError):
-            return None, f"{label} for key '{refinement_key}' is unreadable."
-    return None, f"No refiner state found for key '{refinement_key}'."
 
 
-def choose_prompt_history(data, prompt, mode):
-    prompt_histories = data.get("prompt_histories", {}) if isinstance(data, dict) else {}
-    if not isinstance(prompt_histories, dict) or not prompt_histories:
-        return None, "", "No prompt histories in refiner state."
-
-    prompt_key = prompt_key_for_refiner(prompt, mode)
-    if prompt_key in prompt_histories and isinstance(prompt_histories[prompt_key], dict):
-        return prompt_histories[prompt_key], prompt_key, "Matched exact prompt history."
-
-    last_key = data.get("last_prompt_key") if isinstance(data, dict) else None
-    if isinstance(last_key, str) and isinstance(prompt_histories.get(last_key), dict):
-        return prompt_histories[last_key], last_key, "Used latest prompt history."
-
-    for key, history in prompt_histories.items():
-        if isinstance(history, dict):
-            return history, key, "Used first available prompt history."
-
-    return None, "", "No usable prompt history found."
 
 
-def best_history_conditioning(history):
-    if not isinstance(history, dict):
-        return None, "No prompt history selected."
-
-    liked = history.get("liked_reference_embeds")
-    if liked is not None and int(history.get("liked_reference_count", 0) or 0) > 0:
-        return liked, "Loaded liked-average conditioning."
-
-    best_entry = None
-    best_score = None
-    for entry in history.get("history", []):
-        if not isinstance(entry, dict) or entry.get("modified_embeds") is None:
-            continue
-        profile = normalize_refiner_rating(entry.get("rating_label", entry.get("rating", 0)))
-        score = (
-            int(profile.get("level", 0)),
-            float(profile.get("reward", 0.0)),
-            int(entry.get("iteration", 0)),
-        )
-        if best_score is None or score > best_score:
-            best_entry = entry
-            best_score = score
-    if best_entry is not None:
-        return best_entry.get("modified_embeds"), "Loaded best-rated history conditioning."
-
-    reference = history.get("reference_embeds") or history.get("source_conditioning_embeds")
-    if reference is not None:
-        return reference, "Loaded stored reference conditioning."
-
-    return None, "No conditioning data found in selected history."
 
 
-def conditioning_from_refiner(refinement_key, mode, prompt):
-    data, state_status = load_refiner_state(refinement_key, mode)
-    if data is None:
-        return None, state_status
-
-    history, _, history_status = choose_prompt_history(data, prompt, mode)
-    serialized, conditioning_status = best_history_conditioning(history)
-    if serialized is None and isinstance(data, dict):
-        global_state = data.get("global") if isinstance(data.get("global"), dict) else {}
-        if isinstance(global_state.get("liked_conditioning"), dict):
-            serialized = global_state.get("liked_conditioning")
-            conditioning_status = "Loaded V2 liked-average conditioning."
-        elif isinstance(data.get("last_run"), dict) and isinstance(data["last_run"].get("conditioning"), dict):
-            serialized = data["last_run"].get("conditioning")
-            conditioning_status = "Loaded V2 latest-run conditioning."
-    if serialized is None:
-        return None, f"{state_status} {history_status} {conditioning_status}"
-
-    try:
-        tensor = serializable_to_tensor(serialized)
-    except Exception as error:
-        return None, f"{state_status} {history_status} Failed to restore conditioning: {error}"
-
-    return [(tensor, {"pooled_output": None})], f"{state_status} {history_status} {conditioning_status}"
 
 
 def template_field_summary(template):
