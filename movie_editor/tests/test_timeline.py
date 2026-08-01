@@ -239,6 +239,34 @@ def test_guide_settings_default_off():
     assert gs["accumulate_prior"] is False
 
 
+def test_guide_entry_is_importable_and_round_trips():
+    """GuideEntry's class header was once overwritten by a neighbouring function,
+    leaving its body stranded as dead code after a `return`. Nothing caught it because
+    the guide stack defaults off, so no other test reaches the code that uses it."""
+    from movie_editor.backend.timeline import GuideEntry
+
+    g = GuideEntry.from_dict({"enabled": True, "source": "image", "media_ref": "img1"})
+    assert g.enabled is True and g.source == "image" and g.media_ref == "img1"
+    assert g.to_dict()["strength"] == 0.35
+
+
+def test_guide_stack_enabled_paths_do_not_raise():
+    """Both consumers of GuideEntry only run when the stack is switched on — the exact
+    configuration that used to raise NameError."""
+    p = _project(
+        guide_settings={"stack_enabled": True},
+        scenes=[
+            {"id": "s1", "text": "a", "source": {"type": "image", "media_ref": "img1"}},
+            {"id": "s2", "text": "b", "source": {"type": "mixed", "media_ref": "img2"},
+             "guides": [{"enabled": True, "source": "image", "media_ref": "img3"}]},
+        ],
+    )
+    payload = build_scene_guides_payload(p)
+    assert payload["stack_enabled"] is True
+    assert payload["scenes"][1][0]["media_ref"] == "img3"
+    assert "img3" in continuity_media_refs(p, p)
+
+
 def test_continuity_defaults_auto_on():
     cs = normalize_continuity_settings({})
     assert cs["auto_enabled"] is True
