@@ -1709,6 +1709,16 @@ if web is not None and PromptServer is not None:
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)
+        # A scene whose source mode wants an anchor but has none picked is skipped
+        # silently when anchors are assembled — it still renders, just without the
+        # anchor it was configured for. Report it rather than block: the run is valid,
+        # it just may not be the shot the user set up.
+        anchorless = pipeline_caps.scenes_missing_anchor_media(target, caps["chain_sampler"])
+        if anchorless:
+            report["unsatisfied"].append(
+                "No anchor image picked for scene(s) " + ", ".join(anchorless)
+                + " — they will generate without an i2v anchor."
+            )
         # Anchor-as-guide i2v bypass: force the user-declared node's widget(s) to the
         # configured state so the latent stays empty. Only honoured for runs the client
         # marked as carrying an anchor_guide scene.

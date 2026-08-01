@@ -214,6 +214,13 @@
     // anchor_guide uses its own picker (image + guide strength).
     if (eff === "image" || eff === "mixed") renderImageSource(st, root, body);
     if (eff === "anchor_guide") renderAnchorGuideSource(st, root, body);
+    // This mode wants an anchor and none is picked. The scene still generates — it is
+    // just skipped when anchors are assembled — so warn here, where the mode was set,
+    // rather than blocking the run.
+    if (PC()?.isMissingAnchorMedia(root, st)) {
+      body.append(el("div", "insp-hint warn",
+        `“${PC().sourceLabel(eff)}” uses an image, but none is picked — this scene will generate without an anchor.`));
+    }
   }
 
   function renderVideoSource(st, scene, parent, label) {

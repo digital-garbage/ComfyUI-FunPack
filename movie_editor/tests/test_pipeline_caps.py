@@ -45,3 +45,32 @@ def test_effective_source_fallback_without_chain():
 def test_effective_source_unchanged_with_chain():
     sc = _scene("carry")
     assert pipeline_caps.effective_source_type(sc, True) == "carry"
+
+
+def test_source_needs_anchor_media_by_mode():
+    assert pipeline_caps.source_needs_anchor_media(_scene("image"), True) is True
+    assert pipeline_caps.source_needs_anchor_media(_scene("mixed"), True) is True
+    assert pipeline_caps.source_needs_anchor_media(_scene("anchor_guide"), True) is True
+    assert pipeline_caps.source_needs_anchor_media(_scene("carry"), True) is False
+    assert pipeline_caps.source_needs_anchor_media(_scene("empty"), True) is False
+
+
+def test_scenes_missing_anchor_media_flags_only_the_unset_ones():
+    """A ref that IS set but has left the media bin is server-side
+    _missing_scene_anchor_media's job; this catches the ref never being set."""
+    p = Project(name="t")
+    ok = _scene("image", "img1"); ok.id = "s_ok"
+    bad = _scene("image"); bad.id = "s_bad"
+    carry = _scene("carry"); carry.id = "s_carry"
+    skipped = _scene("mixed"); skipped.id = "s_excluded"; skipped.excluded = True
+    p.scenes = [ok, bad, carry, skipped]
+    assert pipeline_caps.scenes_missing_anchor_media(p, True) == ["s_bad"]
+
+
+def test_scenes_missing_anchor_media_silent_without_chain_sampler():
+    """Without Chain Sampler an anchorless image scene degrades to t2v by design,
+    so warning about a missing anchor there would be noise."""
+    p = Project(name="t")
+    bad = _scene("image"); bad.id = "s_bad"
+    p.scenes = [bad]
+    assert pipeline_caps.scenes_missing_anchor_media(p, False) == []

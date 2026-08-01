@@ -46,6 +46,20 @@
     return usesChainSampler(st) ? "carry" : "image";
   }
 
+  // Mirrors pipeline_caps.source_needs_anchor_media on the backend. Keep the two in
+  // step: the backend decides what the run reports, this decides what the inspector
+  // warns about, and they should never disagree about the same scene.
+  const ANCHOR_MEDIA_SOURCES = new Set(["image", "mixed", "generated_frame", "v2v", "anchor_guide"]);
+
+  function sourceNeedsAnchorMedia(scene, st) {
+    return ANCHOR_MEDIA_SOURCES.has(effectiveSourceType(scene, st));
+  }
+
+  function isMissingAnchorMedia(scene, st) {
+    if (!scene || !scene.source || scene.source.media_ref) return false;
+    return sourceNeedsAnchorMedia(scene, st);
+  }
+
   function sourceLabel(type) {
     const map = {
       empty: "Empty · text-to-video",
@@ -66,6 +80,8 @@
     effectiveSourceType,
     isChainOnlySource,
     defaultSceneSourceType,
+    sourceNeedsAnchorMedia,
+    isMissingAnchorMedia,
     sourceLabel,
   };
 })();
