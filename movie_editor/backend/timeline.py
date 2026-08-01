@@ -706,30 +706,8 @@ def collapse_generative_units(project: Project) -> Project:
     return clone
 
 
-_TRIGGER_RE = None
-_TRIGGER_RE_BUILT = False
 
 
-def _leading_trigger_re():
-    """Regex matching a leading transition trigger (direct DB trigger or generic 'scene N'
-    label) at the start of a scene's text. Cached. None if nothing is available."""
-    global _TRIGGER_RE, _TRIGGER_RE_BUILT
-    if _TRIGGER_RE_BUILT:
-        return _TRIGGER_RE
-    _TRIGGER_RE_BUILT = True
-    import re
-    try:
-        try:
-            from templates import load_custom_transition_triggers
-        except ImportError:
-            from ...templates import load_custom_transition_triggers  # type: ignore
-        trigs = list(load_custom_transition_triggers().keys())
-    except Exception:
-        trigs = []
-    parts = [re.escape(t) for t in sorted(trigs, key=len, reverse=True)]
-    parts.append(r"scene\s+[-+]?\d+")  # built-in generic split label
-    _TRIGGER_RE = re.compile(r"^\s*(?:" + "|".join(parts) + r")\b", re.IGNORECASE)
-    return _TRIGGER_RE
 
 
 def build_combined_prompt(project: Project, include_excluded: bool = False,
