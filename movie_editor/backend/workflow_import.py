@@ -92,17 +92,6 @@ def _ui_input_links(nodes_raw: list) -> dict[tuple[Any, str], int]:
     return m
 
 
-def _ui_output_links(nodes_raw: list) -> dict[tuple[Any, int], list[int]]:
-    """Map (origin_node_id, output_slot) -> [link_id, ...]."""
-    m: dict[tuple[Any, int], list[int]] = {}
-    for node in nodes_raw or []:
-        nid = node.get("id")
-        for i, out in enumerate(node.get("outputs") or []):
-            for lid in out.get("links") or []:
-                if lid is None:
-                    continue
-                m.setdefault((nid, i), []).append(int(lid))
-    return m
 
 
 def _extract_slot_inputs(cls: str, widgets_values: Any, object_info: dict) -> dict[str, Any]:

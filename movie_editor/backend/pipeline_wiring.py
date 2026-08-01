@@ -218,16 +218,6 @@ def validate_models_wiring(models: Any) -> list[str]:
     return errors
 
 
-def default_slot_extras(role: str) -> dict[str, Any]:
-    """Default wires / input_sources for a newly added slot in guided mode."""
-    extras: dict[str, Any] = {}
-    wires = DEFAULT_WIRES_BY_ROLE.get(role)
-    if wires:
-        extras["wires"] = dict(wires)
-    srcs = DEFAULT_INPUT_SOURCES_BY_ROLE.get(role)
-    if srcs:
-        extras["input_sources"] = dict(srcs)
-    return extras
 
 
 def wiring_rules_payload() -> dict[str, Any]:

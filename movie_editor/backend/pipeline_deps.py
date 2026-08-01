@@ -354,8 +354,6 @@ def get_install_job(job_id: str) -> Optional[dict]:
     }
 
 
-def _job_snapshot(job: dict) -> dict:
-    return get_install_job(job["job_id"]) or {}
 
 
 async def _sleep_poll(job: dict) -> bool:
