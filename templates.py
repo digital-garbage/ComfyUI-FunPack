@@ -1005,18 +1005,8 @@ def now_iso():
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def json_safe(value):
-    try:
-        return json.loads(json.dumps(value))
-    except (TypeError, ValueError):
-        return copy.deepcopy(value)
 
 
-def maybe_store_string(template, field, value, update_only):
-    if isinstance(value, str) and value.strip():
-        template[field] = value
-    elif not update_only:
-        template.pop(field, None)
 
 
 
