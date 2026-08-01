@@ -1019,35 +1019,6 @@ def maybe_store_string(template, field, value, update_only):
         template.pop(field, None)
 
 
-def collect_template_payload(
-    mode,
-    activation_word="",
-    refinement_key="",
-    positive_prompt="",
-    negative_prompt="",
-    sigmas=None,
-    lora_stack=None,
-    update_only=False,
-    existing=None,
-):
-    template = dict(existing or {}) if update_only else {}
-    template["mode"] = mode if mode in {"ltx2", "wan"} else "ltx2"
-    maybe_store_string(template, "activation_word", activation_word, update_only)
-    maybe_store_string(template, "refinement_key", refinement_key, update_only)
-    maybe_store_string(template, "positive_prompt", positive_prompt, update_only)
-    maybe_store_string(template, "negative_prompt", negative_prompt, update_only)
-
-    if isinstance(sigmas, torch.Tensor):
-        template["sigmas"] = tensor_to_serializable(sigmas.detach().cpu())
-    elif not update_only:
-        template.pop("sigmas", None)
-
-    if isinstance(lora_stack, dict):
-        template["lora_stack"] = json_safe(lora_stack)
-    elif not update_only:
-        template.pop("lora_stack", None)
-
-    return template
 
 
 
@@ -1062,12 +1033,6 @@ def collect_template_payload(
 
 
 
-def template_field_summary(template):
-    fields = []
-    for field in ("positive_prompt", "negative_prompt", "activation_word", "refinement_key", "sigmas", "lora_stack"):
-        if field in template:
-            fields.append(field)
-    return ", ".join(fields) if fields else "none"
 
 
 @PromptServer.instance.routes.get("/funpack/templates")
