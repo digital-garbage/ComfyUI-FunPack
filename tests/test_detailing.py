@@ -235,7 +235,7 @@ def test_downscale_to_shape_and_content():
     video = torch.arange(2 * 3 * 4 * 8 * 8, dtype=torch.float32).reshape(2, 3, 4, 8, 8)
     down = detailing._downscale_to(video, 4, 4)
     assert down.shape == (2, 3, 4, 4, 4)
-    # Area downscale of a constant tensor is exact.
+    # The kernel is weight-normalised, so a constant tensor comes back exact.
     const = torch.full((1, 2, 2, 6, 6), 3.5)
     assert torch.allclose(detailing._downscale_to(const, 3, 3), torch.full((1, 2, 2, 3, 3), 3.5))
 

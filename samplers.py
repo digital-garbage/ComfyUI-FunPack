@@ -3082,9 +3082,9 @@ class FunPackLTXAVSceneChainSampler:
         the same nested latent and has no spatial axes to scale, and reshaping it is exactly
         the class of change that has corrupted audio before.
 
-        - "sharpen": Lightricks' trained 2x LatentUpsampler forward, then area-downscale back
-          to the original size. No video-model calls at all, so it costs a fraction of one
-          step. It adds detail consistent with what is already there; it cannot fix structure
+        - "sharpen": Lightricks' trained 2x LatentUpsampler forward, then an antialiased
+          bicubic downscale back to the original size. No video-model calls at all, so it
+          costs a fraction of one step. It adds detail consistent with what is already there; it cannot fix structure
           that is wrong (the same limit segmented detailing's 'sharpen' mode documents).
           Pass 2 then re-denoises the sharpened latent, which is what makes it stick.
         - "upscale_2x": the same upsampler, but the result is KEPT at 2x. Pass 2 therefore
