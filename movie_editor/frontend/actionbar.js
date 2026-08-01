@@ -40,6 +40,17 @@
     montageBtn.disabled = !hasProject() || busy(st);
     montageBtn.onclick = () => window.MontageDialog?.open();
     mount.append(montageBtn);
+
+    // Settings that are switched on but cannot do anything belong next to Generate,
+    // not buried in the pane that switched them on — you would only see it there if
+    // you already went looking.
+    const issue = window.PipelineCaps?.identityTransferIssue(st);
+    if (issue) {
+      const chip = el("button", "btn ghost compact action-warn", "⚠ " + issue.short);
+      chip.title = issue.detail + "\n\nClick to open Engine settings.";
+      chip.onclick = () => window.SettingsWindow?.open("engine");
+      mount.append(chip);
+    }
   }
 
   if (window.ViewBus) window.ViewBus.subscribeActionbar(render);

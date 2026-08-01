@@ -197,6 +197,9 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 4px 8px; font-size: 12px; }
 .btn.ghost:hover { color: var(--amber-2); background: var(--ink-3); }
 .btn.ghost.on { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
+/* "This is switched on but cannot do anything" chip, shown beside Generate. */
+.btn.action-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+.btn.action-warn:hover { color: var(--amber-2); border-color: var(--amber); }
 .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
 .btn.tiny { padding: 2px 7px; font-size: 12px; }
 

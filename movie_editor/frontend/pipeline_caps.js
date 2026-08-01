@@ -60,6 +60,43 @@
     return sourceNeedsAnchorMedia(scene, st);
   }
 
+  // Best-FaceID reads identity from an identity_pin-tagged guide, and ONLY the auto
+  // continuity builder ever applies that tag (backend timeline._identity_pin_guide).
+  // Every way of losing it is silent — the run succeeds carrying no identity at all —
+  // so the main window says so before you spend a generation finding out.
+  // Returns {short, detail} for a compact chip and a full-width strip respectively,
+  // or null when the setting will actually do something.
+  function identityTransferIssue(st) {
+    const p = st && st.project;
+    if (!p || !(p.sampler_inputs || {}).identity_transfer_enabled) return null;
+    if (!usesChainSampler(st)) return null;   // knob is inert without the Chain Sampler
+    const cs = p.continuity_settings || {};
+    const gs = p.guide_settings || {};
+    if (!cs.identity_pin_ref) {
+      return {
+        short: "Best-FaceID: no identity pin",
+        detail: "You have Best-FaceID enabled but no identity pin is set — it has no face to transfer. "
+          + "Set the identity pin in Settings → Engine → Continuity, or press 📌 on an image in the Media bin.",
+      };
+    }
+    if (gs.stack_enabled) {
+      return {
+        short: "Best-FaceID: pin not reaching sampler",
+        detail: "You have Best-FaceID enabled and an identity pin set, but the custom guide stack replaces "
+          + "the auto-continuity guides that carry the pin — so the pin never reaches the sampler. "
+          + "Turn the custom guide stack off in Settings → Engine → Continuity.",
+      };
+    }
+    if (cs.auto_enabled === false) {
+      return {
+        short: "Best-FaceID: pin not reaching sampler",
+        detail: "You have Best-FaceID enabled and an identity pin set, but auto continuity is off — the pin "
+          + "only travels with auto-continuity guides. Turn auto continuity on in Settings → Engine → Continuity.",
+      };
+    }
+    return null;
+  }
+
   function sourceLabel(type) {
     const map = {
       empty: "Empty · text-to-video",
@@ -82,6 +119,7 @@
     defaultSceneSourceType,
     sourceNeedsAnchorMedia,
     isMissingAnchorMedia,
+    identityTransferIssue,
     sourceLabel,
   };
 })();

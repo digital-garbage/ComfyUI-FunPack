@@ -15,6 +15,7 @@
   const uploadInput = document.getElementById("easy-upload-input");
   const galleryBtn = document.getElementById("easy-gallery-btn");
   const generateBtn = document.getElementById("easy-generate-btn");
+  const warnStrip = document.getElementById("easy-warn-strip");
   const advancedBtn = document.getElementById("easy-advanced-btn");
   const projectsBtn = document.getElementById("easy-projects-btn");
   const saveBtn = document.getElementById("easy-save-btn");
@@ -71,6 +72,12 @@
     const attached = source && source.type !== "empty" && source.media_ref;
     uploadBtn.textContent = attached ? "⬆ Uploaded ✕" : "⬆ Upload";
     preview.setUpload(attached ? API.mediaUrl(source.media_ref) : null, source?.type === "v2v" ? "video" : "image");
+
+    // A setting that is switched on but cannot do anything belongs on the main screen,
+    // above Generate — not only inside the pane that switched it on.
+    const issue = window.PipelineCaps?.identityTransferIssue(st);
+    warnStrip.textContent = issue ? issue.detail : "";
+    warnStrip.hidden = !issue;
 
     const pid = p ? p.id : null;
     if (pid !== lastProjectId) {

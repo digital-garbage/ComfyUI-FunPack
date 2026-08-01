@@ -120,6 +120,14 @@
       pid: st.project?.id,
       sel: st.selectedSceneIds?.length,
       gen: st.gen?.state,
+      // The Best-FaceID warning chip lives in this zone, so everything its message
+      // depends on has to be part of the fingerprint — otherwise setting the pin
+      // leaves a stale warning sitting next to Generate.
+      idOn: st.project?.sampler_inputs?.identity_transfer_enabled,
+      idPin: st.project?.continuity_settings?.identity_pin_ref,
+      idAuto: st.project?.continuity_settings?.auto_enabled,
+      idStack: st.project?.guide_settings?.stack_enabled,
+      sampler: st.project?.sampler_slot,
     });
   }
 

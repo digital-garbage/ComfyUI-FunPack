@@ -63,6 +63,15 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .easy-progress-stop:disabled { opacity: .6; cursor: default; }
 
+/* Full-width notice between the preview and the Generate row: a setting that is on
+   but cannot do anything should be readable without opening any panel. */
+.easy-warn-strip {
+  flex: none; padding: 9px 16px; font-size: 12.5px; line-height: 1.45;
+  color: var(--amber); border-top: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
+  background: color-mix(in srgb, var(--amber) 9%, transparent);
+}
+.easy-warn-strip[hidden] { display: none; }
+
 .easy-bar {
   flex: none; display: flex; align-items: flex-end; gap: 12px;
   padding: 14px 16px; border-top: 1px solid var(--line); background: var(--ink-1);
