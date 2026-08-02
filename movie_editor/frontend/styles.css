@@ -201,6 +201,10 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .btn.action-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); background: color-mix(in srgb, var(--amber) 10%, transparent); }
 .btn.action-warn:hover { color: var(--amber-2); border-color: var(--amber); }
 .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+/* Live elapsed counter on a transport button. Tabular figures keep the label from twitching
+   as the digits change; the seconds are zero-padded in JS so the string only ever grows at
+   the minute boundary, not once a second. */
+.btn.btn-timer { font-variant-numeric: tabular-nums; }
 .btn.tiny { padding: 2px 7px; font-size: 12px; }
 
 label.field { display: block; margin-bottom: 12px; }

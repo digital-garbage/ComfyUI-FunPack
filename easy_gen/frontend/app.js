@@ -49,10 +49,32 @@
   // reload. render() runs on every store notify (health poll, keystroke), so without this
   // it would re-enable Generate underneath a running generation.
   let generating = false;
+  // Live elapsed on the button, counted from the press to the finished video. The tick
+  // writes textContent directly rather than going through render(): render() runs on every
+  // store notify and would fight a once-a-second re-entry for no benefit.
+  let genStart = 0;
+  let genTick = null;
+  function genLabel() {
+    const s = Math.max(0, Math.floor((Date.now() - genStart) / 1000));
+    const pad = (v) => String(v).padStart(2, "0");
+    return `Generating (${s < 60 ? `${pad(s)}s` : `${Math.floor(s / 60)}m ${pad(s % 60)}s`})`;
+  }
   function setGenerating(on) {
     generating = on;
     generateBtn.disabled = on || !S.get().project;
-    generateBtn.textContent = on ? "Generating…" : "Generate";
+    if (genTick) { clearInterval(genTick); genTick = null; }
+    if (!on) {
+      genStart = 0;
+      generateBtn.textContent = "Generate";
+      generateBtn.classList.remove("btn-timer");
+      return;
+    }
+    // Re-entering setGenerating(true) while already running (re-attach after reload) must
+    // not restart the clock — the run it is timing did not restart.
+    if (!genStart) genStart = Date.now();
+    generateBtn.classList.add("btn-timer");
+    generateBtn.textContent = genLabel();
+    genTick = setInterval(() => { generateBtn.textContent = genLabel(); }, 1000);
   }
 
   let lastProjectId = null;
