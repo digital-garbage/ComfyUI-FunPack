@@ -406,6 +406,169 @@ def audio_ref_block(audio_vae, audio):
             {"kind": "audio", "ref_audio_t": int(z.shape[-1]), "audio_latent": z})
 
 
+# ── ref2va: one ordered spec, two consumers ──────────────────────────────────
+# A reference has to reach the model twice and in the SAME order both times:
+#   * as PRESENTATION — "<Picture 1>: <vision block>" spliced into the Qwen prompt, so
+#     the text encoder has seen it and the prompt can refer to "<Picture 1>";
+#   * as a LATENT BLOCK — packed into the DiT sequence, never denoised.
+# Those two encodes happen in different nodes (Studio owns the CLIP, the Chain Sampler
+# owns the VAE), so the ordered spec travels between them on the conditioning and both
+# sides walk it with the helpers below. Ordinals are 1-based per type, exactly as the
+# reference node numbers them, so a drift in order silently re-points "<Picture 2>".
+
+REF_KINDS = ("image", "audio", "video")
+
+
+def normalize_ref_spec(raw):
+    """Coerce a user/JSON reference list into an ordered list of {kind, filename, ...}.
+
+    Unknown kinds and entries without a filename are dropped rather than guessed at.
+    Returns [] for anything unusable, so callers can treat "no references" and "bad
+    references" the same way.
+    """
+    if isinstance(raw, str):
+        import json
+        try:
+            raw = json.loads(raw or "[]")
+        except Exception:
+            return []
+    if isinstance(raw, dict):
+        raw = raw.get("references") or raw.get("refs") or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out = []
+    for item in raw:
+        if isinstance(item, str):
+            item = {"kind": "image", "filename": item}
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or item.get("type") or "image").strip().lower()
+        filename = str(item.get("filename") or item.get("file") or "").strip()
+        if kind not in REF_KINDS or not filename:
+            continue
+        entry = {"kind": kind, "filename": filename}
+        if item.get("audio"):
+            entry["audio"] = str(item["audio"]).strip()
+        out.append(entry)
+    return out
+
+
+def load_input_image(filename):
+    """Load an image from ComfyUI's input directory as [1, H, W, 3] in 0..1."""
+    import os
+    try:
+        import folder_paths
+        import numpy as np
+        from PIL import Image
+    except ImportError:
+        return None
+    path = os.path.join(folder_paths.get_input_directory(), filename)
+    if not os.path.isfile(path):
+        return None
+    try:
+        img = Image.open(path).convert("RGB")
+        arr = np.array(img).astype("float32") / 255.0
+        return torch.from_numpy(arr)[None,]
+    except Exception:
+        return None
+
+
+def load_input_audio(filename):
+    """Load an audio file from ComfyUI's input directory as comfy's AUDIO dict."""
+    import os
+    try:
+        import folder_paths
+        import torchaudio
+    except ImportError:
+        return None
+    path = os.path.join(folder_paths.get_input_directory(), filename)
+    if not os.path.isfile(path):
+        return None
+    try:
+        waveform, sample_rate = torchaudio.load(path)
+        return {"waveform": waveform.unsqueeze(0), "sample_rate": int(sample_rate)}
+    except Exception:
+        return None
+
+
+def ref_items_from_spec(spec):
+    """Spec -> the tokenizer's `minimax_ref_items` (presentation only, no VAE needed).
+
+    Only images carry pixels into Qwen; audio contributes a bare "<Audio j>: " label
+    (the reference node does the same — audio never enters the text encoder). Entries
+    whose file will not load are dropped from BOTH lists by the caller pairing this
+    with :func:`ref_blocks_from_spec` over the same resolved spec.
+    """
+    items = []
+    for entry in spec:
+        kind = entry["kind"]
+        if kind == "image":
+            image = entry.get("image")
+            if image is None:
+                continue
+            items.append({"type": "image", "data": image})
+        elif kind == "audio":
+            items.append({"type": "audio"})
+        # video presentation needs 2 fps frame blocks with timestamps — not wired yet
+    return items
+
+
+def resolve_ref_spec(spec, load_image=None, load_audio=None):
+    """Load every reference's media once, dropping the ones that fail.
+
+    Returns (resolved, skipped) where `resolved` entries carry the loaded media under
+    "image"/"audio_data". Both the presentation and the latent blocks are built from
+    this single resolved list, so the two can never fall out of order.
+    """
+    load_image = load_image or load_input_image
+    load_audio = load_audio or load_input_audio
+    resolved, skipped = [], []
+    for entry in spec:
+        kind = entry["kind"]
+        if kind == "image":
+            image = load_image(entry["filename"])
+            if image is None:
+                skipped.append((entry["filename"], "image could not be loaded"))
+                continue
+            resolved.append({**entry, "image": image})
+        elif kind == "audio":
+            audio = load_audio(entry["filename"])
+            if audio is None:
+                skipped.append((entry["filename"], "audio could not be loaded"))
+                continue
+            resolved.append({**entry, "audio_data": audio})
+        else:
+            skipped.append((entry["filename"],
+                            "video references are not wired yet (needs 2 fps frame "
+                            "sampling and a video loader)"))
+    return resolved, skipped
+
+
+def ref_blocks_from_spec(resolved, vae, width, height, audio_vae=None):
+    """Resolved spec -> the DiT's `minimax_refs` blocks, in the same order.
+
+    `vae` encodes image references; `audio_vae` encodes audio ones. An audio reference
+    with no audio VAE connected cannot produce a block, so it is dropped AND returned in
+    `skipped` — the caller must say so out loud, because the presentation was already
+    baked at encode time and every later "<Audio j>" in the prompt now points one
+    reference earlier than the user wrote it.
+    """
+    blocks, skipped = [], []
+    for entry in resolved:
+        kind = entry["kind"]
+        if kind == "image":
+            _item, block = image_ref_block(vae, entry["image"], width, height)
+            blocks.append(block)
+        elif kind == "audio":
+            if audio_vae is None:
+                skipped.append((entry["filename"],
+                                "audio reference needs an audio_vae connected"))
+                continue
+            _item, block = audio_ref_block(audio_vae, entry["audio_data"])
+            blocks.append(block)
+    return blocks, skipped
+
+
 def token_tags_length(meta):
     """Length of the ``minimax_token_tags`` run this conditioning carries, or None.
 

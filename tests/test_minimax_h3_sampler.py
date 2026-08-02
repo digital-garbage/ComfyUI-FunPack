@@ -44,6 +44,11 @@ for _name, _attrs in (
         for _k, _v in _attrs.items():
             setattr(_mod, _k, _v)
         sys.modules[_name] = _mod
+# common_upscale is only reached by the reference-block helpers; whichever comfy.utils stub
+# won registration may not carry it, so fill it in with the resize semantics that matter here.
+if not hasattr(sys.modules["comfy.utils"], "common_upscale"):
+    sys.modules["comfy.utils"].common_upscale = lambda samples, width, height, method, crop: \
+        torch.zeros(samples.shape[0], samples.shape[1], height, width)
 _comfy = sys.modules["comfy"]
 for _sub in ("k_diffusion", "model_sampling", "nested_tensor", "sample", "samplers", "utils"):
     setattr(_comfy, _sub, sys.modules["comfy." + _sub])
@@ -260,3 +265,120 @@ def test_ltx_guides_still_take_the_ltx_path():
         positive=[[torch.zeros(1, 12, 4096), {}]], negative=[], vae=LTXVAE())
     assert tail == 0
     assert "minimax_keyframes" not in pos[0][1]
+
+
+# ── ref2va reference blocks ──────────────────────────────────────────────────
+# Studio bakes the presentation ("<Picture 1>: <vision block>") and records WHICH
+# references it presented, in order. The sampler owns the VAE and encodes exactly that
+# list. If the two orders diverge, "<Picture 2>" in the prompt points at a different
+# reference than the text encoder saw — a clean-looking video of the wrong subject.
+
+class RefVAE:
+    def encode(self, pixels):
+        return torch.zeros(1, 24, 1, pixels.shape[1] // 16, pixels.shape[2] // 16)
+
+
+class RefAudioVAE:
+    audio_sample_rate = 32000
+
+    def encode(self, waveform):
+        return torch.zeros(1, 32, 2, 5)
+
+
+@pytest.fixture
+def fake_media(monkeypatch):
+    import minimax_h3 as h3mod
+    monkeypatch.setattr(h3mod, "load_input_image",
+                        lambda f: None if f.startswith("missing") else torch.zeros(1, 256, 256, 3))
+    monkeypatch.setattr(h3mod, "load_input_audio",
+                        lambda f: {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000})
+
+
+def cond_with_refs(refs):
+    return [[torch.zeros(1, 12, 5120), {"funpack_h3_refs": refs, "funpack_scene_text": "shot 1"}]]
+
+
+def test_references_are_encoded_in_the_order_studio_presented_them(fake_media):
+    node = h3_node()
+    positive = cond_with_refs([
+        {"kind": "image", "filename": "face.png"},
+        {"kind": "audio", "filename": "voice.wav"},
+        {"kind": "image", "filename": "style.png"},
+    ])
+    out, count = node._apply_h3_references(
+        positive, av_latent(), RefVAE(), audio_vae=RefAudioVAE())
+
+    assert count == 3
+    blocks = out[0][1]["minimax_refs"]
+    assert [b["kind"] for b in blocks] == ["image", "audio", "image"]
+    assert out[0][1]["funpack_scene_text"] == "shot 1"      # scene metadata preserved
+
+
+def test_reference_blocks_are_sized_against_this_scenes_canvas(fake_media):
+    node = h3_node()
+    # av_latent's video is [1, 24, 37, 48, 84] -> a 1344x768 canvas at 16x downscale
+    out, _ = node._apply_h3_references(
+        cond_with_refs([{"kind": "image", "filename": "face.png"}]), av_latent(), RefVAE())
+    block = out[0][1]["minimax_refs"][0]
+    # the reference is 256x256, smaller than the canvas area, so it keeps its own size
+    assert block["latent_h"] * 16 == 256 and block["latent_w"] * 16 == 256
+
+
+def test_no_references_leaves_the_conditioning_untouched(fake_media):
+    node = h3_node()
+    positive = [[torch.zeros(1, 12, 5120), {}]]
+    out, count = node._apply_h3_references(positive, av_latent(), RefVAE())
+    assert count == 0 and out is positive
+
+
+def test_an_audio_reference_without_an_audio_vae_is_reported(fake_media, capsys):
+    node = h3_node()
+    out, count = node._apply_h3_references(
+        cond_with_refs([{"kind": "image", "filename": "a.png"},
+                        {"kind": "audio", "filename": "voice.wav"}]),
+        av_latent(), RefVAE(), audio_vae=None)
+    assert count == 1
+    assert [b["kind"] for b in out[0][1]["minimax_refs"]] == ["image"]
+    printed = capsys.readouterr().out
+    assert "audio_vae" in printed
+    # the renumbering consequence has to be stated, not left for the user to discover
+    assert "points one reference earlier" in printed
+
+
+def test_an_unloadable_reference_is_dropped_and_named(fake_media, capsys):
+    node = h3_node()
+    out, count = node._apply_h3_references(
+        cond_with_refs([{"kind": "image", "filename": "missing.png"},
+                        {"kind": "image", "filename": "ok.png"}]),
+        av_latent(), RefVAE())
+    assert count == 1
+    assert "missing.png" in capsys.readouterr().out
+
+
+def test_references_are_encoded_once_per_run_not_once_per_scene(fake_media):
+    """References ride through every step of every scene — re-encoding them per scene is
+    pure GPU waste, and a cache that outlived the run would violate the no-persistent-state
+    rule. Cached per run, cleared by sample()."""
+    node = h3_node()
+    node._h3_ref_cache = {}
+    encodes = []
+
+    class CountingVAE(RefVAE):
+        def encode(self, pixels):
+            encodes.append(tuple(pixels.shape))
+            return super().encode(pixels)
+
+    vae = CountingVAE()
+    positive = cond_with_refs([{"kind": "image", "filename": "face.png"}])
+    for _scene in range(4):
+        out, count = node._apply_h3_references(positive, av_latent(), vae)
+        assert count == 1
+        assert len(out[0][1]["minimax_refs"]) == 1
+    assert len(encodes) == 1
+
+    # a different canvas is a different encode, not a stale cache hit
+    node._apply_h3_references(positive, av_latent(video_t=37), vae)
+    assert len(encodes) == 1
+    smaller = {"samples": NT([torch.zeros(1, 24, 37, 32, 32), torch.zeros(1, 32, 2, 207)])}
+    node._apply_h3_references(positive, smaller, vae)
+    assert len(encodes) == 2

@@ -2348,6 +2348,9 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.25,
                     "tooltip": "JoyAI-Echo video->audio coupling. Scales the model's trained video-to-audio cross-attention so the carried audio tracks the new shot's visuals (JoyAI uses 2.0). 1.0 = native model behavior (no change, zero overhead); 0.0 = audio ignores video this run. Only applies when joyai_audio_memory is on.",
                 }),
+                "audio_vae": ("VAE", {
+                    "tooltip": "MiniMax H3 only: the audio VAE, needed to encode AUDIO reference media for ref2va (a voice or ambience clip the generation should sound like). Studio lists the references and bakes their <Audio j> labels into the prompt; this VAE turns them into the latent blocks the DiT packs. Image references need only the main vae and work without this. Ignored entirely on LTX.",
+                }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -4085,6 +4088,7 @@ class FunPackLTXAVSceneChainSampler:
     # length to place a last-frame pin, and nothing else in the guide path carries it.
     _h3_frame_count = 0
     _is_h3 = False
+    _h3_ref_cache: dict = {}
 
     def _append_h3_keyframe(self, guide_frame, apply_at, strength, positive, negative):
         """H3's equivalent of an LTX guide: a keyframe pin carried on the conditioning.
@@ -4122,6 +4126,61 @@ class FunPackLTXAVSceneChainSampler:
         positive = self._condition_with_values(positive, values)
         negative = self._condition_with_values(negative, values) if negative else negative
         return positive, negative, 0
+
+    def _apply_h3_references(self, positive, chunk, vae, audio_vae=None):
+        """Turn Studio's resolved ref2va order into the DiT's `minimax_refs` blocks.
+
+        Studio owns the CLIP, so it baked the presentation ("<Picture 1>: <vision block>")
+        and recorded WHICH references it presented, in order, as `funpack_h3_refs`. This
+        side owns the VAE, so it encodes exactly that list. The order is the contract: drop
+        or reorder an entry here and every later "<Picture i>" in the prompt points at a
+        different reference than the one the text encoder saw.
+
+        This is the native replacement for the LTX Best-FaceID path, not a port of it —
+        H3 packs reference blocks into the sequence itself, so there is nothing to project,
+        nothing to append to the text context and nothing to slice back off the output.
+        """
+        spec = self._conditioning_value(positive, "funpack_h3_refs")
+        if not spec:
+            return positive, 0
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+
+        video = self._latent_tensors(chunk)[0]
+        if video.dim() != 5:
+            print("[FunPackSceneChain] H3 references skipped — couldn't read a 5D video latent.")
+            return positive, 0
+        width = int(video.shape[4]) * h3mod.SPATIAL_DOWNSCALE
+        height = int(video.shape[3]) * h3mod.SPATIAL_DOWNSCALE
+
+        # Every scene in the chain gets the same references, and re-loading + re-VAE-encoding
+        # them per scene is pure waste. Cached per RUN only (cleared at the top of sample()),
+        # never across requests — the same rule the Studio encode cache follows.
+        cache_key = (str(spec), width, height, audio_vae is not None)
+        cached = self._h3_ref_cache.get(cache_key)
+        if cached is not None:
+            blocks = cached
+            if not blocks:
+                return positive, 0
+            return self._condition_with_values(positive, {"minimax_refs": blocks}), len(blocks)
+
+        resolved, load_skips = h3mod.resolve_ref_spec(h3mod.normalize_ref_spec(spec))
+        for filename, why in load_skips:
+            print(f"[FunPackSceneChain] H3 reference '{filename}' skipped — {why}.")
+        blocks, encode_skips = h3mod.ref_blocks_from_spec(
+            resolved, vae, width, height, audio_vae=audio_vae)
+        for filename, why in encode_skips:
+            print(f"[FunPackSceneChain] H3 reference '{filename}' skipped — {why}. The prompt's "
+                  f"reference numbering was already baked at encode time, so every later "
+                  f"<Audio j> now points one reference earlier than you wrote it.")
+        self._h3_ref_cache[cache_key] = blocks
+        if not blocks:
+            return positive, 0
+        print(f"[FunPackSceneChain] H3 ref2va: {len(blocks)} reference block(s) packed "
+              f"({', '.join(b['kind'] for b in blocks)}) at {width}x{height}.")
+        return self._condition_with_values(positive, {"minimax_refs": blocks}), len(blocks)
 
     def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae):
         """Append one guide latent frame with LTX guide attention at apply_at."""
@@ -5226,6 +5285,7 @@ class FunPackLTXAVSceneChainSampler:
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
+               audio_vae=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5237,6 +5297,9 @@ class FunPackLTXAVSceneChainSampler:
         # H3 disagree about which axis that is on the AUDIO stream and both are 4-D.
         self._is_h3 = self._set_stream_axes(model)
         self._h3_frame_count = int(num_frames_per_scene)
+        # Fresh per run: the encoded references must always trace back to the media that is
+        # live in THIS request (see [[feedback_no_persistent_state_caches]]).
+        self._h3_ref_cache = {}
         if self._is_h3:
             print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
                   "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
@@ -5497,6 +5560,7 @@ class FunPackLTXAVSceneChainSampler:
             scene_positive = [scene_cond]
             scene_negative = negative
 
+            h3_ref_count = 0
             provided_seed = self._scene_seed(scene_cond)
             if use_same_seed:
                 scene_seed = first_scene_seed
@@ -5600,6 +5664,16 @@ class FunPackLTXAVSceneChainSampler:
                     )
                 elif not custom_guides:
                     guide_tail = 0
+
+            # ref2va reference blocks. Applied after the chunk is final because the blocks are
+            # sized against this scene's canvas, and to every scene branch (fresh / anchored /
+            # continuation) because a reference identity is meant to hold across the whole
+            # chain, not just the opening shot.
+            if self._is_h3:
+                scene_positive, h3_ref_count = self._apply_h3_references(
+                    scene_positive, chunk, vae, audio_vae=audio_vae)
+                if h3_ref_count:
+                    run_mechanisms.append(f"h3_ref2va({h3_ref_count})")
 
             # Everything from here through sampling installs per-scene state on the SHARED
             # model (function wrappers, forward hooks). One snapshot + one finally guarantees

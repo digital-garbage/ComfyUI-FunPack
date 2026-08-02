@@ -14,12 +14,24 @@ exception, which is why they are worth having:
    cfg != 1.0.
 """
 import sys
+import types
 from pathlib import Path
 
 import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# minimax_h3 imports comfy lazily, inside the functions that need it, so the module itself
+# loads bare. Only the reference-block helpers reach for comfy.utils.common_upscale — stub
+# just that, with the real resize semantics the assertions care about (out shape = w x h).
+if "comfy.utils" not in sys.modules:
+    _comfy = sys.modules.setdefault("comfy", types.ModuleType("comfy"))
+    _utils = types.ModuleType("comfy.utils")
+    _utils.common_upscale = lambda samples, width, height, method, crop: torch.zeros(
+        samples.shape[0], samples.shape[1], height, width)
+    sys.modules["comfy.utils"] = _utils
+    _comfy.utils = _utils
 
 import minimax_h3 as h3
 
@@ -256,3 +268,105 @@ def test_attention_patch_targets_always_includes_comfys_module():
     targets = h3.attention_patch_targets()
     names = [getattr(t, "__name__", "") for t in targets]
     assert "comfy.ldm.modules.attention" in names or names == []
+
+
+# ── 5. ref2va: one ordered spec, two consumers ───────────────────────────────
+# A reference reaches the model twice — as presentation (Qwen sees "<Picture 1>: <block>")
+# and as a packed latent block — encoded in two different nodes. The ORDER is the contract:
+# drop or reorder one side and "<Picture 2>" in the prompt points at a different reference
+# than the text encoder saw, which produces a plausible video of the wrong subject.
+
+def test_normalize_ref_spec_keeps_order_and_drops_junk():
+    spec = h3.normalize_ref_spec([
+        "face.png",                                   # bare string -> image
+        {"kind": "audio", "filename": "voice.wav"},
+        {"kind": "image"},                            # no filename -> dropped
+        {"kind": "hologram", "filename": "x.png"},    # unknown kind -> dropped
+        {"type": "image", "file": "style.jpg"},       # alternate key names
+    ])
+    assert [(e["kind"], e["filename"]) for e in spec] == [
+        ("image", "face.png"), ("audio", "voice.wav"), ("image", "style.jpg")]
+
+
+def test_normalize_ref_spec_accepts_json_and_wrapper_dicts():
+    assert h3.normalize_ref_spec('[{"kind":"image","filename":"a.png"}]')[0]["filename"] == "a.png"
+    assert h3.normalize_ref_spec({"references": ["a.png"]})[0]["kind"] == "image"
+    assert h3.normalize_ref_spec("not json") == []
+    assert h3.normalize_ref_spec(None) == []
+
+
+def test_resolve_ref_spec_drops_unloadable_media_and_says_why():
+    spec = h3.normalize_ref_spec(["ok.png", "missing.png", {"kind": "audio", "filename": "v.wav"}])
+    images = {"ok.png": torch.zeros(1, 64, 64, 3)}
+    resolved, skipped = h3.resolve_ref_spec(
+        spec,
+        load_image=lambda f: images.get(f),
+        load_audio=lambda f: {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000},
+    )
+    assert [e["filename"] for e in resolved] == ["ok.png", "v.wav"]
+    assert [f for f, _ in skipped] == ["missing.png"]
+    assert "could not be loaded" in skipped[0][1]
+
+
+def test_video_references_are_reported_as_not_wired_rather_than_half_done():
+    spec = h3.normalize_ref_spec([{"kind": "video", "filename": "clip.mp4"}])
+    resolved, skipped = h3.resolve_ref_spec(spec, load_image=lambda f: None, load_audio=lambda f: None)
+    assert resolved == []
+    assert "not wired yet" in skipped[0][1]
+
+
+def test_presentation_and_blocks_walk_the_same_resolved_order():
+    """The invariant the whole design exists to hold."""
+    spec = h3.normalize_ref_spec(["a.png", {"kind": "audio", "filename": "v.wav"}, "b.png"])
+    resolved, _ = h3.resolve_ref_spec(
+        spec,
+        load_image=lambda f: torch.zeros(1, 64, 64, 3),
+        load_audio=lambda f: {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000},
+    )
+
+    items = h3.ref_items_from_spec(resolved)
+    # audio never enters Qwen as pixels — it contributes a bare "<Audio j>: " label
+    assert [i["type"] for i in items] == ["image", "audio", "image"]
+
+    class FakeVAE:
+        def encode(self, pixels):
+            return torch.zeros(1, 24, 1, pixels.shape[1] // 16, pixels.shape[2] // 16)
+
+    class FakeAudioVAE:
+        audio_sample_rate = 32000
+
+        def encode(self, waveform):
+            return torch.zeros(1, 32, 2, 5)
+
+    blocks, skipped = h3.ref_blocks_from_spec(resolved, FakeVAE(), 768, 768,
+                                              audio_vae=FakeAudioVAE())
+    assert skipped == []
+    assert [b["kind"] for b in blocks] == ["image", "audio", "image"]
+    assert [i["type"] for i in items] == [b["kind"] for b in blocks]   # same order, both sides
+
+
+def test_an_audio_reference_without_an_audio_vae_is_reported_not_silently_dropped():
+    resolved, _ = h3.resolve_ref_spec(
+        h3.normalize_ref_spec([{"kind": "audio", "filename": "v.wav"}]),
+        load_image=lambda f: None,
+        load_audio=lambda f: {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000},
+    )
+    blocks, skipped = h3.ref_blocks_from_spec(resolved, object(), 768, 768, audio_vae=None)
+    assert blocks == []
+    assert [f for f, _ in skipped] == ["v.wav"]
+    assert "audio_vae" in skipped[0][1]
+
+
+def test_image_ref_blocks_snap_to_32_and_never_upscale():
+    class FakeVAE:
+        def encode(self, pixels):
+            return torch.zeros(1, 24, 1, pixels.shape[1] // 16, pixels.shape[2] // 16)
+
+    # a reference much larger than the generation is scaled DOWN to its pixel area
+    _item, block = h3.image_ref_block(FakeVAE(), torch.zeros(1, 2048, 2048, 3), 768, 768)
+    assert block["latent_h"] * 16 % 32 == 0 and block["latent_w"] * 16 % 32 == 0
+    assert block["latent_h"] * 16 <= 2048
+
+    # a small reference is left at its own size, not blown up to the canvas
+    _item, small = h3.image_ref_block(FakeVAE(), torch.zeros(1, 128, 128, 3), 768, 768)
+    assert small["latent_h"] * 16 == 128
