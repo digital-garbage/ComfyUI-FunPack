@@ -4179,7 +4179,8 @@ class FunPackLTXAVSceneChainSampler:
         if not blocks:
             return positive, 0
         print(f"[FunPackSceneChain] H3 ref2va: {len(blocks)} reference block(s) packed "
-              f"({', '.join(b['kind'] for b in blocks)}) at {width}x{height}.")
+              f"({', '.join(b['kind'] for b in blocks)}) at {width}x{height}. Reference "
+              f"tokens ride every sampling step, so more/longer references cost time.")
         return self._condition_with_values(positive, {"minimax_refs": blocks}), len(blocks)
 
     def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae):

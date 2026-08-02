@@ -74,3 +74,63 @@ def test_scenes_missing_anchor_media_silent_without_chain_sampler():
     bad = _scene("image"); bad.id = "s_bad"
     p.scenes = [bad]
     assert pipeline_caps.scenes_missing_anchor_media(p, False) == []
+
+
+# ── MiniMax H3 family ─────────────────────────────────────────────────────────
+
+def test_family_is_explicit_and_falls_back_rather_than_guessing():
+    from movie_editor.backend import pipeline_wiring as pw
+    assert pw.family_of({"model_family": "minimax_h3"}) == "minimax_h3"
+    assert pw.family_of({"model_family": "MiniMax_H3"}) == "minimax_h3"
+    assert pw.family_of({"model_family": "hailuo-9000"}) == "ltxav"
+    assert pw.family_of({}) == "ltxav"
+    assert pw.family_of(None) == "ltxav"
+
+
+def test_h3_moves_the_audio_and_latent_ports_onto_different_nodes():
+    from movie_editor.backend import pipeline_wiring as pw
+    ltx = pw.allowed_port_ids("audio_vae", "VAE", family="ltxav")
+    h3 = pw.allowed_port_ids("audio_vae", "VAE", family="minimax_h3")
+    assert ltx == ["LTXVAudioVAEDecode.audio_vae"]
+    # H3 decodes with core's generic node, and the same VAE may also encode audio references
+    assert h3 == ["VAEDecodeAudio.vae", "FunPackLTXAVSceneChainSampler.audio_vae"]
+
+    # the empty latent no longer goes through Studio into Concat
+    assert pw.allowed_port_ids("empty_latent", "LATENT", family="ltxav") == ["FunPackStudio.latent"]
+    assert pw.allowed_port_ids("empty_latent", "LATENT", family="minimax_h3") == \
+        ["FunPackLTXAVSceneChainSampler.latent_template"]
+
+    # ... and there is no separate audio-encoder step at all
+    assert pw.allowed_port_ids("audio_encoder", "LATENT", family="minimax_h3") == \
+        ["FunPackLTXAVSceneChainSampler.latent_template"]  # falls through to the chain terminal
+
+
+def test_h3_requirements_drop_the_audio_latent_and_require_the_av_latent():
+    from movie_editor.backend import nodes
+    ltx = {r["id"]: r for r in nodes.pipeline_requirements("ltxav")}
+    h3 = {r["id"]: r for r in nodes.pipeline_requirements("minimax_h3")}
+    assert ltx["audio_latent"]["required"] is True
+    assert "audio_latent" not in h3                      # one node makes both streams
+    assert ltx["init_latent"]["required"] is False
+    assert h3["init_latent"]["required"] is True         # nothing else produces one
+    assert "MiniMax H3" in h3["init_latent"]["hint"]
+    # the shared requirements keep their ids so existing UI keys still resolve
+    assert set(h3) <= set(ltx)
+
+
+def test_h3_does_not_offer_ports_on_nodes_its_graph_never_emits():
+    from movie_editor.backend import nodes
+    oi = {
+        "LTXVConditioning": {"input": {"required": {"positive": ["CONDITIONING"]}}, "output": []},
+        "LTXVConcatAVLatent": {"input": {"required": {"audio_latent": ["LATENT"]}}, "output": []},
+        "LTXVAudioVAEDecode": {"input": {"required": {"audio_vae": ["VAE"]}}, "output": []},
+        "VAEDecodeAudio": {"input": {"required": {"vae": ["VAE"]}}, "output": []},
+    }
+    h3_ports = {p["id"] for p in nodes.pipeline_ports(oi, "minimax_h3")}
+    assert not any(p.startswith("LTXVConcatAVLatent.") for p in h3_ports)
+    assert not any(p.startswith("LTXVAudioVAEDecode.") for p in h3_ports)
+    assert "VAEDecodeAudio.vae" in h3_ports
+
+    ltx_ports = {p["id"] for p in nodes.pipeline_ports(oi, "ltxav")}
+    assert "LTXVAudioVAEDecode.audio_vae" in ltx_ports
+    assert "VAEDecodeAudio.vae" not in ltx_ports

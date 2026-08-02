@@ -128,6 +128,15 @@
       idAuto: st.project?.continuity_settings?.auto_enabled,
       idStack: st.project?.guide_settings?.stack_enabled,
       sampler: st.project?.sampler_slot,
+      // The MiniMax H3 "this setting can't run" chips live in the same zone, so every
+      // input they read belongs here too — switching the family or turning one of these
+      // off must clear its chip, not leave it sitting next to Generate.
+      family: st.models?.model_family,
+      h3Bounded: st.project?.sampler_inputs?.bounded_attention_enabled,
+      h3Detail: st.project?.sampler_inputs?.segmented_detailing,
+      h3V2a: st.project?.sampler_inputs?.v2a_grad_scale,
+      h3Pass2: st.project?.sampler_inputs?.second_pass,
+      h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
     });
   }
 

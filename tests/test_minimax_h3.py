@@ -308,13 +308,6 @@ def test_resolve_ref_spec_drops_unloadable_media_and_says_why():
     assert "could not be loaded" in skipped[0][1]
 
 
-def test_video_references_are_reported_as_not_wired_rather_than_half_done():
-    spec = h3.normalize_ref_spec([{"kind": "video", "filename": "clip.mp4"}])
-    resolved, skipped = h3.resolve_ref_spec(spec, load_image=lambda f: None, load_audio=lambda f: None)
-    assert resolved == []
-    assert "not wired yet" in skipped[0][1]
-
-
 def test_presentation_and_blocks_walk_the_same_resolved_order():
     """The invariant the whole design exists to hold."""
     spec = h3.normalize_ref_spec(["a.png", {"kind": "audio", "filename": "v.wav"}, "b.png"])
@@ -370,3 +363,106 @@ def test_image_ref_blocks_snap_to_32_and_never_upscale():
     # a small reference is left at its own size, not blown up to the canvas
     _item, small = h3.image_ref_block(FakeVAE(), torch.zeros(1, 128, 128, 3), 768, 768)
     assert small["latent_h"] * 16 == 128
+
+
+# ── 6. video references ──────────────────────────────────────────────────────
+# A reference video enters the model as TWO things: frames at 2 fps with timestamps for
+# Qwen, and a full-rate latent block for the DiT. Both come from one decode, so the clip
+# the text encoder described and the clip that was encoded are always the same frames.
+
+def test_video_frames_trim_down_to_the_grid_never_up():
+    assert h3.trim_video_to_grid(torch.zeros(40, 8, 8, 3)).shape[0] == 39
+    assert h3.trim_video_to_grid(torch.zeros(22, 8, 8, 3)).shape[0] == 22
+    assert h3.trim_video_to_grid(torch.zeros(5, 8, 8, 3)).shape[0] == 5
+    # below one whole grid step there is nothing usable — refused, not padded
+    assert h3.trim_video_to_grid(torch.zeros(4, 8, 8, 3)) is None
+    assert h3.trim_video_to_grid(torch.zeros(0, 8, 8, 3)) is None
+
+
+def test_the_presentation_is_every_twelfth_frame_with_half_second_stamps():
+    """Qwen sees the clip at 2 fps; the DiT sees all 24."""
+    frames, stamps = h3.video_presentation_frames(torch.zeros(39, 8, 8, 3))
+    assert frames.shape[0] == 4                       # ceil(39 / 12)
+    assert stamps == [0.0, 0.5, 1.0, 1.5]
+
+
+def test_a_video_reference_presents_its_soundtrack_label_before_the_clip():
+    """The <Audio j> label must precede its <Video k> — that pairing is how the model
+    learns the track belongs to that clip rather than to the target."""
+    resolved = [{"kind": "video", "filename": "a.mp4",
+                 "frames": torch.zeros(22, 64, 64, 3),
+                 "audio_data": {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000}}]
+    items = h3.ref_items_from_spec(resolved)
+    assert [i["type"] for i in items] == ["audio", "video"]
+    assert items[1]["timestamps"] == [0.0, 0.5]
+
+    # ... and a silent clip presents only the video
+    silent = [{"kind": "video", "filename": "b.mp4", "frames": torch.zeros(22, 64, 64, 3)}]
+    assert [i["type"] for i in h3.ref_items_from_spec(silent)] == ["video"]
+
+
+def test_a_video_reference_encodes_to_one_block_carrying_both_streams():
+    class FakeVAE:
+        def encode(self, pixels):
+            return torch.zeros(1, 24, 7, pixels.shape[1] // 16, pixels.shape[2] // 16)
+
+    class FakeAudioVAE:
+        audio_sample_rate = 32000
+
+        def encode(self, waveform):
+            return torch.zeros(1, 32, 2, 37)
+
+    resolved = [{"kind": "video", "filename": "a.mp4",
+                 "frames": torch.zeros(22, 512, 512, 3),
+                 "audio_data": {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000}}]
+    blocks, skipped = h3.ref_blocks_from_spec(resolved, FakeVAE(), 768, 768,
+                                              audio_vae=FakeAudioVAE())
+    assert skipped == []
+    assert len(blocks) == 1                    # two presentation items, ONE packed block
+    assert blocks[0]["kind"] == "video_audio"
+    assert blocks[0]["ref_audio_t"] == 37
+    assert blocks[0]["latent_t"] == 7
+
+
+def test_a_video_reference_survives_a_missing_audio_vae_without_its_soundtrack():
+    class FakeVAE:
+        def encode(self, pixels):
+            return torch.zeros(1, 24, 7, 4, 4)
+
+    resolved = [{"kind": "video", "filename": "a.mp4",
+                 "frames": torch.zeros(22, 512, 512, 3),
+                 "audio_data": {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000}}]
+    blocks, skipped = h3.ref_blocks_from_spec(resolved, FakeVAE(), 768, 768, audio_vae=None)
+    assert [b["kind"] for b in blocks] == ["video"]     # clip kept, muted
+    assert "WITHOUT its soundtrack" in skipped[0][1]
+
+
+def test_resolve_reports_a_video_that_would_not_decode():
+    spec = h3.normalize_ref_spec([{"kind": "video", "filename": "broken.mp4"}])
+    resolved, skipped = h3.resolve_ref_spec(spec, load_video=lambda f: None)
+    assert resolved == []
+    assert "ffmpeg" in skipped[0][1]
+
+
+def test_a_video_reference_carries_an_index_paired_soundtrack():
+    spec = h3.normalize_ref_spec([{"kind": "video", "filename": "a.mp4", "audio": "a.wav"}])
+    assert spec[0]["audio"] == "a.wav"
+    resolved, skipped = h3.resolve_ref_spec(
+        spec,
+        load_video=lambda f: torch.zeros(22, 64, 64, 3),
+        load_audio=lambda f: {"waveform": torch.zeros(1, 2, 800), "sample_rate": 32000},
+    )
+    assert skipped == []
+    assert resolved[0]["audio_data"] is not None
+
+    # a soundtrack that will not load does not take the clip down with it
+    resolved2, skipped2 = h3.resolve_ref_spec(
+        spec, load_video=lambda f: torch.zeros(22, 64, 64, 3), load_audio=lambda f: None)
+    assert len(resolved2) == 1 and "audio_data" not in resolved2[0]
+    assert "still used, silently" in skipped2[0][1]
+
+
+def test_an_audio_key_on_a_non_video_reference_is_ignored():
+    """Only a video clip has a soundtrack; a stray key must not invent one."""
+    spec = h3.normalize_ref_spec([{"kind": "image", "filename": "a.png", "audio": "a.wav"}])
+    assert "audio" not in spec[0]

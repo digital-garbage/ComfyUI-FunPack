@@ -447,7 +447,7 @@ def normalize_ref_spec(raw):
         if kind not in REF_KINDS or not filename:
             continue
         entry = {"kind": kind, "filename": filename}
-        if item.get("audio"):
+        if kind == "video" and item.get("audio"):
             entry["audio"] = str(item["audio"]).strip()
         out.append(entry)
     return out
@@ -491,6 +491,127 @@ def load_input_audio(filename):
         return None
 
 
+def load_input_video(filename, fps=FPS, max_seconds=15.0):
+    """Decode a video from ComfyUI's input directory to frames [T, H, W, 3] in 0..1.
+
+    ffmpeg, which FunPack already requires for preview/export, rather than a node
+    dependency — the reference pipeline wants frames at the model's own 24 fps and the
+    tokenizer wants every second frame of that, so decoding once here keeps both views
+    of the same clip consistent. Capped at `max_seconds` because reference tokens ride
+    through every sampling step: a long clip is a silent, permanent slowdown.
+    """
+    import os
+    import shutil
+    import subprocess
+    try:
+        import folder_paths
+        import numpy as np
+    except ImportError:
+        return None
+    path = os.path.join(folder_paths.get_input_directory(), filename)
+    if not os.path.isfile(path):
+        return None
+    ff = shutil.which("ffmpeg")
+    if ff is None:
+        return None
+    # rgb24 rawvideo on stdout: no temp files, no container parsing on our side. The
+    # scale filter pins the frame size so the byte stream is a flat T x H x W x 3 block.
+    probe = shutil.which("ffprobe")
+    width = height = None
+    if probe is not None:
+        try:
+            out = subprocess.run(
+                [probe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=width,height", "-of", "csv=p=0:s=x", path],
+                capture_output=True, text=True, timeout=30)
+            width, height = (int(v) for v in out.stdout.strip().split("x")[:2])
+        except Exception:
+            width = height = None
+    if not width or not height:
+        return None
+    # even dimensions keep the decode simple and match the model's 32-multiple canvas rule
+    width -= width % 2
+    height -= height % 2
+    try:
+        proc = subprocess.run(
+            [ff, "-v", "error", "-i", path, "-t", str(float(max_seconds)),
+             "-vf", f"fps={int(fps)},scale={width}:{height}",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+            capture_output=True, timeout=300)
+    except Exception:
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    frame_bytes = width * height * 3
+    count = len(proc.stdout) // frame_bytes
+    if count < 5:      # the model's floor: reference videos need at least 5 frames
+        return None
+    arr = np.frombuffer(proc.stdout[:count * frame_bytes], dtype=np.uint8)
+    arr = arr.reshape(count, height, width, 3).astype("float32") / 255.0
+    return torch.from_numpy(arr.copy())
+
+
+def trim_video_to_grid(frames):
+    """Trim reference video frames DOWN to the model's 17k+5 grid (never up).
+
+    Trims rather than pads because padding a reference invents motion that was never in
+    the source. Returns None when there is not a single whole grid step left, which is
+    the same floor the model enforces. Deliberately independent of the generation length:
+    Studio and the Chain Sampler both trim this way, so the clip the text encoder saw and
+    the clip that was encoded to latents are always the same frames.
+    """
+    n = int(frames.shape[0])
+    while n > 0 and n % FRAME_GRID != FRAME_BASE:
+        n -= 1
+    if n < FRAME_BASE:
+        return None
+    return frames[:n]
+
+
+def video_presentation_frames(frames):
+    """The 2 fps view Qwen sees, with its timestamps — the tokenizer's own sampling rate.
+
+    Returns (frames_at_2fps, timestamps_in_seconds). The tokenizer repeat-pads an odd
+    count into its 2-frame temporal patch, so an odd number here is fine.
+    """
+    step = max(1, FPS // 2)
+    idx = list(range(0, int(frames.shape[0]), step))
+    return frames[idx], [i / 2.0 for i in range(len(idx))]
+
+
+def video_ref_block(vae, frames, audio_vae=None, audio=None):
+    """Encode reference video frames (plus an optional soundtrack) into a ref2va block.
+
+    The block's audio rows pack immediately before its video rows and share a cursor
+    origin, which is what ties a soundtrack to its own clip rather than to the target.
+    """
+    h, w = int(frames.shape[1]), int(frames.shape[2])
+    cw, ch = adapt_canvas(w, h)
+    if w * h < cw * ch:
+        # never upscale a reference: keep its own size, snapped to the canvas multiple
+        snap = lambda v: max(CANVAS_MULTIPLE, int(round(v / CANVAS_MULTIPLE)) * CANVAS_MULTIPLE)
+        cw, ch = snap(w), snap(h)
+    import comfy.utils
+    samples = frames[..., :3].movedim(-1, 1)
+    samples = comfy.utils.common_upscale(samples, cw, ch, "lanczos", "disabled")
+    resized = samples.movedim(1, -1)
+
+    z = vae.encode(resized)
+    audio_latent, ref_audio_t = None, 0
+    if audio is not None and audio_vae is not None:
+        _item, audio_block = audio_ref_block(audio_vae, audio)
+        audio_latent = audio_block["audio_latent"]
+        ref_audio_t = audio_block["ref_audio_t"]
+
+    qwen_frames, timestamps = video_presentation_frames(resized)
+    item = {"type": "video", "data": qwen_frames, "timestamps": timestamps}
+    block = {"kind": "video_audio" if ref_audio_t else "video",
+             "latent_t": int(z.shape[2]), "latent_h": ch // SPATIAL_DOWNSCALE,
+             "latent_w": cw // SPATIAL_DOWNSCALE, "ref_audio_t": ref_audio_t,
+             "latent": z, "audio_latent": audio_latent}
+    return item, block
+
+
 def ref_items_from_spec(spec):
     """Spec -> the tokenizer's `minimax_ref_items` (presentation only, no VAE needed).
 
@@ -509,19 +630,29 @@ def ref_items_from_spec(spec):
             items.append({"type": "image", "data": image})
         elif kind == "audio":
             items.append({"type": "audio"})
-        # video presentation needs 2 fps frame blocks with timestamps — not wired yet
+        elif kind == "video":
+            frames = entry.get("frames")
+            if frames is None:
+                continue
+            # a soundtrack gets its own "<Audio j>" label, emitted BEFORE its "<Video k>",
+            # which is how the model learns the two belong to the same clip
+            if entry.get("audio_data") is not None:
+                items.append({"type": "audio"})
+            qwen_frames, timestamps = video_presentation_frames(frames)
+            items.append({"type": "video", "data": qwen_frames, "timestamps": timestamps})
     return items
 
 
-def resolve_ref_spec(spec, load_image=None, load_audio=None):
+def resolve_ref_spec(spec, load_image=None, load_audio=None, load_video=None):
     """Load every reference's media once, dropping the ones that fail.
 
     Returns (resolved, skipped) where `resolved` entries carry the loaded media under
-    "image"/"audio_data". Both the presentation and the latent blocks are built from
-    this single resolved list, so the two can never fall out of order.
+    "image" / "audio_data" / "frames". Both the presentation and the latent blocks are
+    built from this single resolved list, so the two can never fall out of order.
     """
     load_image = load_image or load_input_image
     load_audio = load_audio or load_input_audio
+    load_video = load_video or load_input_video
     resolved, skipped = [], []
     for entry in spec:
         kind = entry["kind"]
@@ -537,10 +668,29 @@ def resolve_ref_spec(spec, load_image=None, load_audio=None):
                 skipped.append((entry["filename"], "audio could not be loaded"))
                 continue
             resolved.append({**entry, "audio_data": audio})
-        else:
-            skipped.append((entry["filename"],
-                            "video references are not wired yet (needs 2 fps frame "
-                            "sampling and a video loader)"))
+        elif kind == "video":
+            frames = load_video(entry["filename"])
+            if frames is None:
+                skipped.append((entry["filename"],
+                                "video could not be decoded, or is shorter than 5 frames "
+                                "(~0.2s) — ffmpeg must be on PATH"))
+                continue
+            trimmed = trim_video_to_grid(frames)
+            if trimmed is None:
+                skipped.append((entry["filename"],
+                                "video is shorter than one 17-frame grid step (~0.9s at 24 fps)"))
+                continue
+            out = {**entry, "frames": trimmed}
+            # an index-paired soundtrack: the clip's own audio, not a standalone reference
+            if entry.get("audio"):
+                track = load_audio(entry["audio"])
+                if track is None:
+                    skipped.append((entry["audio"],
+                                    "soundtrack could not be loaded — the video reference "
+                                    "is still used, silently"))
+                else:
+                    out["audio_data"] = track
+            resolved.append(out)
     return resolved, skipped
 
 
@@ -565,6 +715,18 @@ def ref_blocks_from_spec(resolved, vae, width, height, audio_vae=None):
                                 "audio reference needs an audio_vae connected"))
                 continue
             _item, block = audio_ref_block(audio_vae, entry["audio_data"])
+            blocks.append(block)
+        elif kind == "video":
+            track = entry.get("audio_data")
+            if track is not None and audio_vae is None:
+                # the clip still goes in, just mute — better than dropping the whole
+                # reference over its soundtrack, and the caller reports it either way
+                skipped.append((entry["filename"],
+                                "video reference used WITHOUT its soundtrack — encoding "
+                                "the audio needs an audio_vae connected"))
+                track = None
+            _item, block = video_ref_block(vae, entry["frames"],
+                                           audio_vae=audio_vae, audio=track)
             blocks.append(block)
     return blocks, skipped
 

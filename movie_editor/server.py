@@ -1701,6 +1701,7 @@ if web is not None and PromptServer is not None:
                 "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
                 "variables": list(target.variables or []),
+                "h3_references": list(target.h3_references or []),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)
@@ -2259,11 +2260,13 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception:
             oi = None
+        fam = pipeline_wiring.family_of(nodes.load_models())
         return web.json_response({
-            "ports": nodes.pipeline_ports(oi),
+            "family": fam,
+            "ports": nodes.pipeline_ports(oi, fam),
             "core_producers": nodes.core_producers(oi),
-            "requirements": nodes.pipeline_requirements(),
-            "wiring": pipeline_wiring.wiring_rules_payload(),
+            "requirements": nodes.pipeline_requirements(fam),
+            "wiring": pipeline_wiring.wiring_rules_payload(fam),
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")

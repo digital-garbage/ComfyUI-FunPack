@@ -410,3 +410,105 @@ def test_bypass_on_node_with_no_matching_input_blocks_generation():
     assert "slot_v" in graph
     assert any("bypass needs exactly one input" in u for u in report["unsatisfied"])
     assert any("bypass needs exactly one input" in b for b in report["blocking"])
+
+
+# ── MiniMax H3 family ─────────────────────────────────────────────────────────
+# H3 keeps the core's SHAPE but three of its nodes do not apply. The graph has to be
+# built for the right family up front: a wrong node class here fails deep inside
+# ComfyUI at generation time, where the Models panel can no longer explain it.
+
+H3_OI = dict(OI)
+H3_OI["VAEDecodeAudio"] = {"input": {"required": {"samples": ["LATENT"], "vae": ["VAE"]}},
+                           "output": ["AUDIO"]}
+H3_OI["EmptyMiniMaxH3LatentAV"] = {
+    "input": {"required": {"width": ["INT", {"default": 1344}], "height": ["INT", {"default": 768}],
+                           "length": ["INT", {"default": 124}]}},
+    "output": ["LATENT"], "output_name": ["LATENT"]}
+
+H3_MODELS = {
+    "model_family": "minimax_h3",
+    "slots": [
+        {"id": "u", "role": "unet", "node_class": "UnetLoader", "label": "unet"},
+        {"id": "c", "role": "clip", "node_class": "ClipLoader", "label": "clip"},
+        {"id": "vv", "role": "video_vae", "node_class": "VaeLoader", "label": "video vae",
+         "wires": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"}},
+        {"id": "av", "role": "audio_vae", "node_class": "VaeLoader", "label": "audio vae",
+         "wires": {"VAE": "port:VAEDecodeAudio.vae"}},
+        {"id": "lat", "role": "empty_latent", "node_class": "EmptyMiniMaxH3LatentAV", "label": "av latent",
+         "wires": {"LATENT": "port:FunPackLTXAVSceneChainSampler.latent_template"}},
+    ],
+}
+
+
+def _classes(graph):
+    return {n["class_type"] for n in graph.values()}
+
+
+def test_h3_family_drops_the_ltx_only_core_nodes():
+    graph, report = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    classes = _classes(graph)
+    # LTXVConditioning stamps LTX's frame_rate onto conditioning — H3 has no such field
+    assert "LTXVConditioning" not in classes
+    # H3's own empty-latent node emits both streams, so there is nothing to concat
+    assert "LTXVConcatAVLatent" not in classes
+    # LTXVAudioVAEDecode reads an output_sample_rate H3's audio VAE does not define
+    assert "LTXVAudioVAEDecode" not in classes
+    assert "VAEDecodeAudio" in classes
+    # the shared half is untouched
+    assert {"FunPackStudio", "FunPackLTXAVSceneChainSampler", "LTXVSeparateAVLatent"} <= classes
+    assert not report["blocking"], report["blocking"]
+
+
+def test_h3_wires_studio_conditioning_straight_to_the_sampler():
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    sampler = graph["sampler"]["inputs"]
+    assert sampler["positive"] == ["studio", 1]
+    assert sampler["negative"] == ["studio", 2]
+    assert graph["audiodec"]["inputs"]["samples"] == ["separate", 1]
+
+
+def test_h3_latent_slot_feeds_the_sampler_directly():
+    graph, report = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    assert graph["sampler"]["inputs"]["latent_template"] == ["slot_lat", 0]
+    assert graph["audiodec"]["inputs"]["vae"] == ["slot_av", 0]
+    assert not report["blocking"], report["blocking"]
+
+
+def test_h3_without_an_av_latent_slot_blocks_instead_of_generating_a_broken_graph():
+    models = {"model_family": "minimax_h3",
+              "slots": [s for s in H3_MODELS["slots"] if s["id"] != "lat"]}
+    _graph, report = builder.build(H3_OI, models, {"prompt": "a shot"})
+    assert any("latent_template" in m for m in report["blocking"]), report
+
+
+def test_the_ltxav_graph_is_unchanged_by_the_family_split():
+    """The default family must emit exactly what it emitted before H3 existed."""
+    ltx_models = {"slots": [
+        {"id": "u", "role": "unet", "node_class": "UnetLoader",
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c", "role": "clip", "node_class": "ClipLoader",
+         "wires": {"CLIP": "port:FunPackStudio.clip"}},
+        {"id": "vv", "role": "video_vae", "node_class": "VaeLoader",
+         "wires": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"}},
+        {"id": "av", "role": "audio_vae", "node_class": "VaeLoader",
+         "wires": {"VAE": "port:LTXVAudioVAEDecode.audio_vae"}},
+        {"id": "al", "role": "audio_encoder", "node_class": "AudioEnc",
+         "wires": {"LATENT": "port:LTXVConcatAVLatent.audio_latent"}},
+    ]}
+    oi = dict(OI)
+    oi["AudioEnc"] = {"input": {"required": {"seconds": ["FLOAT", {"default": 5.0}]}},
+                      "output": ["LATENT"], "output_name": ["LATENT"]}
+    graph, report = builder.build(oi, ltx_models, {"prompt": "a shot"})
+    classes = _classes(graph)
+    assert {"LTXVConditioning", "LTXVConcatAVLatent", "LTXVAudioVAEDecode"} <= classes
+    assert "VAEDecodeAudio" not in classes
+    assert graph["sampler"]["inputs"]["positive"] == ["cond", 0]
+    assert graph["sampler"]["inputs"]["latent_template"] == ["concat", 0]
+    assert not report["blocking"], report["blocking"]
+
+
+def test_an_unknown_family_falls_back_to_ltxav_rather_than_emitting_nothing():
+    assert builder.family_of({"model_family": "hailuo-9000"}) == "ltxav"
+    assert builder.family_of({}) == "ltxav"
+    assert builder.family_of(None) == "ltxav"
+    assert builder.family_of({"model_family": "MiniMax_H3"}) == "minimax_h3"

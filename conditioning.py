@@ -6744,8 +6744,9 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         # "<Picture 1>: <vision block>" so the prompt can name it) and as latent blocks later,
         # in the SAME order. Studio owns the CLIP but not a VAE, so it resolves the ordered
         # spec, bakes the presentation, and hands the resolved order to the Chain Sampler,
-        # which owns the VAE and encodes exactly that list. Only images carry pixels into
-        # Qwen; audio contributes a bare "<Audio j>: " label, as in the reference node.
+        # which owns the VAE and encodes exactly that list. Images and video frames carry
+        # pixels into Qwen (video at 2 fps with timestamps); audio contributes a bare
+        # "<Audio j>: " label, and a clip's soundtrack label is emitted before its clip.
         resolved_refs, ref_items, ref_skips = [], [], []
         if h3 and h3_references:
             resolved_refs, ref_skips = h3mod.resolve_ref_spec(h3_references)

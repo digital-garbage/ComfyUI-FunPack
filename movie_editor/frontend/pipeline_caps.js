@@ -18,6 +18,15 @@
     return slot === "funpack";
   }
 
+  function modelFamily(st) {
+    const f = String(models(st).model_family || "ltxav").toLowerCase();
+    return f === "minimax_h3" ? "minimax_h3" : "ltxav";
+  }
+
+  function isH3(st) {
+    return modelFamily(st) === "minimax_h3";
+  }
+
   function caps(st) {
     const m = models(st);
     return {
@@ -25,7 +34,57 @@
       chain_sampler: usesChainSampler(st),
       disable_core: !!m.disable_core,
       imported_workflow: !!m.workflow_import,
+      family: modelFamily(st),
+      h3: isH3(st),
     };
+  }
+
+  // Sampler toggles that depend on an LTX transformer structure MiniMax H3 does not have.
+  // The Chain Sampler switches each of these off and says why on the console, but the user
+  // only sees that AFTER spending a generation — so the main window says it first.
+  // key -> why it cannot run on H3.
+  const H3_DEAD_SAMPLER_INPUTS = {
+    identity_transfer_enabled:
+      "Best-FaceID needs LTX cross-attention and its trained ArcFace projector; H3 has neither. "
+      + "Use reference media instead — H3 packs references into the sequence natively.",
+    bounded_attention_enabled:
+      "Bounded Attention masks text cross-attention; H3 puts text in the same self-attention "
+      + "stream as the video, where the mask would be far too large to hold.",
+    segmented_detailing:
+      "Segmented detailing uses Lightricks' latent upsampler, trained on LTX's 128-channel "
+      + "latent; H3's latent has 24 channels.",
+  };
+
+  // Same idea for non-boolean knobs whose neutral value means "off".
+  function h3DeadValueIssues(si) {
+    const out = [];
+    if (Math.abs(Number(si.v2a_grad_scale ?? 1) - 1) > 1e-6) {
+      out.push(["v2a_grad_scale",
+        "v2a_grad_scale scales LTXAV's video→audio cross-attention module; H3 has no separate "
+        + "video→audio attention, only joint rows."]);
+    }
+    if (si.second_pass && si.second_pass_op && si.second_pass_op !== "none") {
+      out.push(["second_pass_op",
+        "The second pass still runs on H3, but its latent op ('" + si.second_pass_op + "') uses the "
+        + "same LTX-only upsampler, so the op is skipped."]);
+    }
+    return out;
+  }
+
+  // Returns [{short, detail}] for settings that are ON but cannot do anything on H3.
+  function h3InertSettings(st) {
+    const p = st && st.project;
+    if (!p || !isH3(st) || !usesChainSampler(st)) return [];
+    const si = p.sampler_inputs || {};
+    const issues = [];
+    Object.keys(H3_DEAD_SAMPLER_INPUTS).forEach((key) => {
+      if (si[key]) issues.push([key, H3_DEAD_SAMPLER_INPUTS[key]]);
+    });
+    issues.push(...h3DeadValueIssues(si));
+    return issues.map(([key, detail]) => ({
+      short: "H3: " + key.replace(/_enabled$/, "").replace(/_/g, " ") + " can't run",
+      detail: detail + " Turn it off in Settings → Engine to stop it showing here.",
+    }));
   }
 
   function effectiveSourceType(scene, st) {
@@ -70,6 +129,7 @@
     const p = st && st.project;
     if (!p || !(p.sampler_inputs || {}).identity_transfer_enabled) return null;
     if (!usesChainSampler(st)) return null;   // knob is inert without the Chain Sampler
+    if (isH3(st)) return null;                // h3InertSettings already reports this one
     const cs = p.continuity_settings || {};
     const gs = p.guide_settings || {};
     if (!cs.identity_pin_ref) {
@@ -114,6 +174,9 @@
     usesFunpackStudio,
     usesChainSampler,
     caps,
+    modelFamily,
+    isH3,
+    h3InertSettings,
     effectiveSourceType,
     isChainOnlySource,
     defaultSceneSourceType,

@@ -410,6 +410,14 @@
         { id: "chain_decode", group: "Chain Sampler", title: "Decode", icon: "▣", badge: countChainView(p, "chain_decode") || null },
         { id: "chain_experimental", group: "Chain Sampler", title: "Experimental", icon: "⚗", badge: countChainView(p, "chain_experimental") || null },
       );
+      // ref2va is H3's own conditioning mode — there is no LTX equivalent, so the view
+      // only exists for the family that has it rather than sitting there greyed out.
+      if (PC?.isH3(st)) {
+        out.splice(out.findIndex((v) => v.id === "chain_timing"), 0, {
+          id: "chain_references", group: "Chain Sampler", title: "Reference media", icon: "◉",
+          badge: h3Refs(p).length || null,
+        });
+      }
     }
     return out;
   }
@@ -663,6 +671,138 @@
     }
   }
 
+  // ── MiniMax H3 reference media (ref2va) ────────────────────────────────────
+  // The order of this list is load-bearing, not cosmetic: Studio numbers the prompt
+  // labels ("<Picture 1>", "<Video 2>") from it and the Chain Sampler encodes the same
+  // list into packed blocks. Reordering here reorders both, together — which is exactly
+  // why reordering has to happen HERE and not in two places.
+  const H3_REF_KINDS = [
+    { key: "image", label: "Image", tag: "Picture", hint: "A face, a character, a style plate." },
+    { key: "video", label: "Video", tag: "Video", hint: "2–15s at 24 fps. Frames are decoded here; the model sees them at 2 fps." },
+    { key: "audio", label: "Audio", tag: "Audio", hint: "A voice or ambience the generation should sound like. Needs an audio VAE." },
+  ];
+
+  function h3Refs(p) {
+    return Array.isArray(p.h3_references) ? p.h3_references : [];
+  }
+
+  function patchH3Refs(list) {
+    S.patchProject({ h3_references: list });
+  }
+
+  // 1-based ordinal per TYPE, exactly how the tokenizer numbers them — so the label shown
+  // here is the label the user types in the prompt.
+  function h3RefLabels(refs) {
+    const counts = { image: 0, video: 0, audio: 0 };
+    return refs.map((r) => {
+      const kind = H3_REF_KINDS.find((k) => k.key === r.kind) || H3_REF_KINDS[0];
+      counts[kind.key] = (counts[kind.key] || 0) + 1;
+      return `<${kind.tag} ${counts[kind.key]}>`;
+    });
+  }
+
+  function renderChainReferences(pane, st) {
+    const p = st.project;
+    const refs = h3Refs(p);
+    const labels = h3RefLabels(refs);
+
+    pane.append(hintEl(
+      "MiniMax H3 packs reference media straight into the sequence — no projector, no extra "
+      + "tokens on the prompt. Refer to each one in your prompt by the tag shown beside it "
+      + "(e.g. \"the woman from <Picture 1> walks into frame\"). Order matters: it decides "
+      + "the numbering, so moving an entry renumbers the tags."));
+
+    const g = group(pane, "References");
+    if (!refs.length) {
+      g.append(hintEl("No references — the run is plain text-to-audio-video (or first-frame "
+        + "anchored, if a scene has an anchor image)."));
+    }
+
+    refs.forEach((ref, i) => {
+      const kind = H3_REF_KINDS.find((k) => k.key === ref.kind) || H3_REF_KINDS[0];
+      const row = el("div", "sw-row eng-field eng-stack");
+      const main = el("div", "sw-row-main");
+      main.append(el("div", "sw-row-title", `${labels[i]} · ${kind.label}`));
+      main.append(el("div", "sw-hint", kind.hint));
+      row.append(main);
+
+      const picker = window.MediaPicker.create({
+        value: ref.filename,
+        mediaBin: st.mediaBin,
+        noneLabel: "— pick from the media bin —",
+        onChange: (v) => {
+          const next = refs.slice();
+          next[i] = { ...ref, filename: v };
+          patchH3Refs(next);
+        },
+      });
+      row.append(picker);
+
+      // a video's own soundtrack: presented as "<Audio j>" immediately before its
+      // "<Video k>", which is what tells the model the two belong together
+      if (ref.kind === "video") {
+        const track = window.MediaPicker.create({
+          value: ref.audio || "",
+          mediaBin: st.mediaBin,
+          noneLabel: "— no soundtrack —",
+          onChange: (v) => {
+            const next = refs.slice();
+            next[i] = { ...ref, audio: v };
+            patchH3Refs(next);
+          },
+        });
+        row.append(track);
+      }
+
+      const tools = el("div", "sw-row-tools");
+      const up = el("button", "btn ghost tiny", "↑");
+      up.disabled = i === 0;
+      up.title = "Move earlier — this renumbers the tags.";
+      up.onclick = () => {
+        const next = refs.slice();
+        [next[i - 1], next[i]] = [next[i], next[i - 1]];
+        patchH3Refs(next);
+      };
+      const down = el("button", "btn ghost tiny", "↓");
+      down.disabled = i === refs.length - 1;
+      down.title = "Move later — this renumbers the tags.";
+      down.onclick = () => {
+        const next = refs.slice();
+        [next[i], next[i + 1]] = [next[i + 1], next[i]];
+        patchH3Refs(next);
+      };
+      const del = el("button", "btn ghost tiny", "✕");
+      del.title = "Remove this reference — the ones after it move up a number.";
+      del.onclick = () => patchH3Refs(refs.filter((_, j) => j !== i));
+      tools.append(up, down, del);
+      row.append(tools);
+      g.append(row);
+    });
+
+    const add = group(pane, "Add");
+    const addRow = el("div", "sw-row");
+    H3_REF_KINDS.forEach((k) => {
+      const b = el("button", "btn ghost tiny", "＋ " + k.label);
+      b.title = k.hint;
+      b.onclick = () => patchH3Refs(refs.concat([{ kind: k.key, filename: "" }]));
+      addRow.append(b);
+    });
+    add.append(addRow);
+
+    const unset = refs.filter((r) => !r.filename).length;
+    if (unset) {
+      pane.append(hintEl(`${unset} reference${unset > 1 ? "s have" : " has"} no file picked yet — `
+        + "those are skipped at generation, and everything after them renumbers."));
+    }
+    if (refs.some((r) => r.kind === "audio" || (r.kind === "video" && r.audio))) {
+      pane.append(hintEl("Audio references need an Audio VAE wired to the Chain Sampler's "
+        + "audio_vae input (Settings → Models). Without it the audio is dropped and the "
+        + "<Audio> numbering shifts."));
+    }
+    pane.append(hintEl("Reference tokens ride through every sampling step, so each one you add "
+      + "— and every extra second of a reference video — costs time on every step of every scene."));
+  }
+
   function renderChainTiming(pane, st) {
     const si = st.project.sampler_inputs || {};
     const g = group(pane, "Timing");
@@ -796,6 +936,7 @@
       case "studio_adjust": return renderStudioAdjust(pane, st);
       case "studio_sampler": return renderStudioSampler(pane, st);
       case "chain_continuity": return renderChainContinuity(pane, st);
+      case "chain_references": return renderChainReferences(pane, st);
       case "chain_timing": return renderChainTiming(pane, st);
       case "chain_guidance": return renderChainKnobsView(pane, st, "chain_guidance", "Guidance",
         EASY ? "Rating-dependent guidance (embed guidance, score slider, output guidance, taste retrieval, "

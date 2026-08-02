@@ -581,6 +581,12 @@ class Project:
     # shortcut-expand and the transition split (so they never affect scene cuts). Ordered list of
     # {"name": str, "value": str}. Shortcuts may reference variables; resolution is recursive.
     variables: list = field(default_factory=list)
+    # MiniMax H3 ref2va reference media, in the order the user listed it — that order is
+    # load-bearing: Studio bakes "<Picture i>" / "<Audio j>" / "<Video k>" labels from this
+    # list, and the Chain Sampler encodes the same list into packed blocks. Entries are
+    # {"kind": "image"|"audio"|"video", "filename": <media-bin file>, "audio": <optional
+    # soundtrack file, video only>}. Ignored by every other model family.
+    h3_references: list = field(default_factory=list)
     # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
     # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
     prompt_templates: list = field(default_factory=list)
@@ -648,6 +654,7 @@ class Project:
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
             variables=list(d.get("variables") or []),
+            h3_references=list(d.get("h3_references") or []),
             prompt_templates=list(d.get("prompt_templates") or []),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),

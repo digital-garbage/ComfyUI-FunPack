@@ -470,3 +470,20 @@ def test_build_render_filter_blank_canvas():
     assert "[0:v]format=yuv420p,setsar=1[vbase]" in filt
     assert "[aout]" in filt
     assert has_audio is True
+
+# ── MiniMax H3 reference media ────────────────────────────────────────────────
+
+def test_h3_references_round_trip_on_the_project():
+    """The ORDER is the contract — Studio numbers the prompt tags from this list and the
+    Chain Sampler encodes the same list, so persistence must not reorder or coerce it."""
+    from movie_editor.backend.timeline import Project
+    refs = [
+        {"kind": "image", "filename": "face.png"},
+        {"kind": "video", "filename": "walk.mp4", "audio": "walk.wav"},
+        {"kind": "audio", "filename": "voice.wav"},
+    ]
+    p = Project.from_dict({"h3_references": refs})
+    assert p.h3_references == refs
+    assert Project.from_dict(p.to_dict()).h3_references == refs
+    # absent on every project that predates the feature, never None
+    assert Project.from_dict({}).h3_references == []

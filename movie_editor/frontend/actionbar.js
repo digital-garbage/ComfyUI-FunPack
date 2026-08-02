@@ -97,13 +97,19 @@
     // Settings that are switched on but cannot do anything belong next to Generate,
     // not buried in the pane that switched them on — you would only see it there if
     // you already went looking.
-    const issue = window.PipelineCaps?.identityTransferIssue(st);
-    if (issue) {
+    const issues = [];
+    const idIssue = window.PipelineCaps?.identityTransferIssue(st);
+    if (idIssue) issues.push(idIssue);
+    // On MiniMax H3 several LTX-only sampler settings are switched off by the sampler
+    // itself. It says so on the console, but only once the run has already started —
+    // here it costs nothing to know beforehand.
+    issues.push(...(window.PipelineCaps?.h3InertSettings(st) || []));
+    issues.forEach((issue) => {
       const chip = el("button", "btn ghost compact action-warn", "⚠ " + issue.short);
       chip.title = issue.detail + "\n\nClick to open Engine settings.";
       chip.onclick = () => window.SettingsWindow?.open("engine");
       mount.append(chip);
-    }
+    });
   }
 
   if (window.ViewBus) window.ViewBus.subscribeActionbar(render);

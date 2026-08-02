@@ -97,9 +97,14 @@
 
     // A setting that is switched on but cannot do anything belongs on the main screen,
     // above Generate — not only inside the pane that switched it on.
-    const issue = window.PipelineCaps?.identityTransferIssue(st);
-    warnStrip.textContent = issue ? issue.detail : "";
-    warnStrip.hidden = !issue;
+    const warnings = [];
+    const idIssue = window.PipelineCaps?.identityTransferIssue(st);
+    if (idIssue) warnings.push(idIssue.detail);
+    // On MiniMax H3 the Chain Sampler switches several LTX-only settings off itself.
+    // It reports that on the console once the run has started; this says it beforehand.
+    (window.PipelineCaps?.h3InertSettings(st) || []).forEach((i) => warnings.push(i.detail));
+    warnStrip.textContent = warnings.join("  •  ");
+    warnStrip.hidden = !warnings.length;
 
     const pid = p ? p.id : null;
     if (pid !== lastProjectId) {

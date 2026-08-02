@@ -100,6 +100,84 @@ CORE_PRODUCERS: list[tuple[str, int, str]] = [  # (core_id, output_index, type)
     ("f2i", 0, "INT"),
 ]
 
+# ── model families ────────────────────────────────────────────────────────────
+# LTXAV above is the baseline. MiniMax H3 keeps the same SHAPE (Studio -> sampler ->
+# separate AV -> audio decode -> combine) but three nodes in it do not apply:
+#
+#   * LTXVConditioning stamps LTX's frame_rate onto the conditioning. H3 has no such
+#     conditioning field — its 24 fps is fixed in the model — so Studio wires straight
+#     to the sampler.
+#   * LTXVConcatAVLatent merges two separately-created empty latents. H3's own
+#     EmptyMiniMaxH3LatentAV emits BOTH streams already nested, so there is nothing to
+#     concat and the latent slot feeds the sampler directly.
+#   * LTXVAudioVAEDecode reads `audio_vae.first_stage_model.output_sample_rate`, which
+#     H3's audio VAE does not define — it would raise. Core's VAEDecodeAudio is generic.
+#
+# Anything not listed here is shared, so a fix to the core graph reaches both families.
+DEFAULT_FAMILY = "ltxav"
+
+FAMILIES: dict[str, dict] = {
+    "ltxav": {"label": "LTX-2 / LTXAV"},
+    "minimax_h3": {
+        "label": "MiniMax H3 (Hailuo)",
+        "drop": ("cond", "concat"),
+        "core": {"audiodec": "VAEDecodeAudio"},
+        "links": {
+            # positive/negative come straight from Studio, with no LTXVConditioning between
+            "sampler": {"positive": ("studio", 1), "negative": ("studio", 2)},
+            "audiodec": {"samples": ("separate", 1)},
+        },
+        # (core_id, input, type, required) replacements for the ports the dropped nodes owned
+        "open_ports": {
+            "drop": (("concat", "audio_latent"), ("audiodec", "audio_vae"), ("studio", "latent")),
+            "add": (
+                # one node makes the whole AV latent, so it feeds the sampler directly
+                ("sampler", "latent_template", "LATENT", True),
+                # VAEDecodeAudio names its VAE input `vae`, not `audio_vae`
+                ("audiodec", "vae", "VAE", True),
+                # optional: only needed to encode AUDIO ref2va references
+                ("sampler", "audio_vae", "VAE", False),
+            ),
+        },
+    },
+}
+
+
+def family_of(models_config: Optional[dict]) -> str:
+    """Which model family this project's graph is built for.
+
+    Explicit, never guessed from a checkpoint filename: the two families need different
+    node classes, and a wrong guess produces a graph that fails deep inside ComfyUI
+    instead of in the Models panel where it can be fixed.
+    """
+    fam = str((models_config or {}).get("model_family") or DEFAULT_FAMILY).strip().lower()
+    return fam if fam in FAMILIES else DEFAULT_FAMILY
+
+
+def family_core(family: str) -> tuple[dict, dict, list]:
+    """(CORE, CORE_LINKS, OPEN_PORTS) for `family`."""
+    spec = FAMILIES.get(family) or {}
+    dropped = set(spec.get("drop") or ())
+
+    core = {k: v for k, v in CORE.items() if k not in dropped}
+    core.update(spec.get("core") or {})
+
+    links: dict[str, dict] = {}
+    for cid, mapping in CORE_LINKS.items():
+        if cid in dropped:
+            continue
+        kept = {inp: src for inp, src in mapping.items() if src[0] not in dropped}
+        links[cid] = kept
+    for cid, mapping in (spec.get("links") or {}).items():
+        links.setdefault(cid, {}).update(mapping)
+
+    ports_spec = spec.get("open_ports") or {}
+    drop_ports = set(ports_spec.get("drop") or ())
+    ports = [p for p in OPEN_PORTS if (p[0], p[1]) not in drop_ports and p[0] not in dropped]
+    ports.extend(ports_spec.get("add") or ())
+    return core, links, ports
+
+
 CONTROL_VALUES = {"fixed", "randomize", "increment", "decrement"}
 # Type-appropriate empty values for widgets that declare no default.
 _WIDGET_EMPTY = {"STRING": "", "INT": 0, "FLOAT": 0.0, "BOOLEAN": False}
@@ -241,6 +319,10 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     num_frames_per_scene, frame_rate, width, height. `models_config`: {"slots":[...],
     "links":[...]}. `media`: optional {"filename": <comfy-input file>, "target": wire}."""
     object_info = object_info or {}
+    # Which model family's core graph to emit. Shadows the module tables for this whole
+    # build (including the closures below), so every reference downstream is family-aware.
+    family = family_of(models_config)
+    CORE, CORE_LINKS, OPEN_PORTS = family_core(family)
     ref_wv = _ref_widgets(load_reference())
     graph: dict[str, dict] = {}
     # `blocking` is the subset of problems that should stop generation (required inputs).
@@ -339,6 +421,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         _vars = params.get("variables")
         if isinstance(_vars, (list, dict)) and _vars:
             _rf["variables"] = _vars
+        # MiniMax H3 reference media (ref2va). Studio resolves and presents them; it records
+        # the resolved order on the conditioning so the Chain Sampler encodes the same list.
+        # Sent only for the family that can use it, so an LTX project's graph is unchanged.
+        _refs = params.get("h3_references")
+        if family == "minimax_h3" and isinstance(_refs, list) and _refs:
+            _rf["h3_references"] = _refs
         if _me_scene_ratings:
             _rf["movie_editor_scene_ratings"] = _me_scene_ratings
         _ss["refiner"] = _rf
@@ -435,7 +523,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             if sid and sid in graph:
                 graph[sid]["inputs"][m.get("input")] = val
 
-    port_to_core = _port_index(object_info)
+    port_to_core = _port_index(object_info, core=CORE)
 
     # 3e. media: inject a LoadImage for the chosen asset, wired to the chosen input(s).
     # scene.source.target provides a legacy explicit target; "timeline" input_sources
@@ -459,7 +547,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     for s in slots:
         sid = slot_node_id[s["id"]]
         nd = slot_def[s["id"]]
-        role_defaults = pipeline_wiring.DEFAULT_WIRES_BY_ROLE.get(s.get("role") or "", {})
+        role_defaults = pipeline_wiring._default_wires(family).get(s.get("role") or "", {})
         for out_name, target in (s.get("wires") or {}).items():
             if not target:
                 continue
@@ -505,7 +593,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         for inp, source in (ovs or {}).items():
             if not source:
                 continue
-            if locked and (cid, inp) not in pipeline_wiring.OPEN_CORE_INPUTS:
+            if locked and (cid, inp) not in pipeline_wiring.open_core_inputs(family):
                 continue
             src = _resolve_source(source, slot_node_id, slot_def, object_info)
             if src:
@@ -538,7 +626,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         for src in (ovs or {}).values():
             if isinstance(src, str) and src.startswith("out:"):
                 active_slots.add(src.split(":", 2)[1])
-    _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots)
+    _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots,
+              open_ports=OPEN_PORTS, core=CORE)
 
     # 5b. bypass: drop a slot's node from the graph and rewire its consumers straight to
     # whatever fed its matching-type input, so the node's effect is skipped without losing
@@ -548,7 +637,8 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # Cycle-guard: a default/auto wire that loops (e.g. an upscale node whose IMAGE both feeds the
     # export AND defaults back to Studio · source_image while it consumes the decoded frames) is
     # dropped here; an all-explicit loop is reported precisely. Never hand ComfyUI a cyclic graph.
-    _break_cycles(graph, report, protected_edges, _node_labels(slots, slot_node_id, object_info))
+    _break_cycles(graph, report, protected_edges,
+                  _node_labels(slots, slot_node_id, object_info, core=CORE))
 
     for msg in pipeline_wiring.validate_models_wiring(models_config):
         report["blocking"].append(msg)
@@ -582,6 +672,7 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
     destinations). Inputs default to the built-in wiring; `core_overrides` in models_config
     can redirect any of them (applied by build())."""
     object_info = object_info or {}
+    CORE, CORE_LINKS, OPEN_PORTS = family_core(family_of(models_config))
     overrides = (models_config or {}).get("core_overrides") or {}
     slots = (models_config or {}).get("slots", []) or []
     locked = pipeline_wiring.wiring_locked(models_config)
@@ -671,11 +762,11 @@ def core_graph(object_info: dict, models_config: dict | None = None) -> list[dic
     return nodes
 
 
-def _port_index(object_info: dict) -> dict[str, tuple[str, str]]:
+def _port_index(object_info: dict, core: Optional[dict] = None) -> dict[str, tuple[str, str]]:
     """Map pipeline-port id ('Class.input' / 'FunPackStudio.input') -> (core_id, input)."""
-    cls_to_core = {v: k for k, v in CORE.items()}
+    core = core if core is not None else CORE
     idx: dict[str, tuple[str, str]] = {}
-    for cid, cls in CORE.items():
+    for cid, cls in core.items():
         nd = object_info.get(cls)
         for ci in connection_inputs(nd or {}):
             idx[f"{cls}.{ci['name']}"] = (cid, ci["name"])
@@ -824,11 +915,11 @@ def _break_cycles(graph, report, protected, label):
             return
 
 
-def _node_labels(slots, slot_node_id, object_info):
+def _node_labels(slots, slot_node_id, object_info, core=None):
     """node_id -> human label ('Role / Name [NodeClass]') for report messages, so users
     don't see opaque ids like 'slot_5u09gm5'."""
     label = {}
-    for cid, cls in CORE.items():
+    for cid, cls in (core if core is not None else CORE).items():
         label[cid] = f"{(object_info.get(cls) or {}).get('display_name', cls)} [{cls}]"
     for s in slots:
         nid = slot_node_id.get(s["id"])
@@ -840,11 +931,12 @@ def _node_labels(slots, slot_node_id, object_info):
     return label
 
 
-def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report, active_slots=None):
-    label = _node_labels(slots, slot_node_id, object_info)
+def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, report,
+              active_slots=None, open_ports=None, core=None):
+    label = _node_labels(slots, slot_node_id, object_info, core=core)
     L = lambda nid: label.get(nid, nid)
 
-    targets = list(OPEN_PORTS)  # (core_id, input, type, required)
+    targets = list(open_ports if open_ports is not None else OPEN_PORTS)  # (core_id, input, type, required)
     for s in slots:  # slot connection inputs (e.g. image-proc vae/image/length)
         if active_slots is not None and s["id"] not in active_slots:
             continue  # inert slot (feeds nothing) — don't auto-wire or block on its inputs

@@ -909,10 +909,19 @@
       return sec;
     }
     if (pipelineLocked()) {
+      // The latent and audio path differ by family — H3 makes both streams in one node
+      // that feeds the sampler directly, so pointing at Studio · latent here would send
+      // the user to a port its graph does not even have.
+      const h3 = familyKey() === "minimax_h3";
       sec.append(el("div", "req-hint guided-hint",
-        "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+        (h3
+          ? "Guided wiring: the AV LATENT → Chain Sampler · latent_template (Empty MiniMax H3 "
+            + "AV Latent makes both streams). Audio VAE → VAE Decode Audio · vae, and optionally "
+            + "also Chain Sampler · audio_vae to encode audio references. "
+          : "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+            + "Audio latent → Concat · audio_latent only. ")
         + "IMAGE → Studio · source_image (Input Image Processing defaults to Timeline scene image). "
-        + "MODEL/CLIP may chain through LoRA. Audio latent → Concat · audio_latent only. "
+        + "MODEL/CLIP may chain through LoRA. "
         + "Enable Full control for manual rewiring."));
     }
     sec.append(el("div", "req-title", "Pipeline requirements"));
@@ -1175,6 +1184,57 @@
     }
     return card;
   }
+  // Which model family the built-in graph is built for. LTXAV and MiniMax H3 need
+  // different node classes (H3 has no LTXVConditioning, makes both latent streams in one
+  // node, and decodes audio with core's generic node), so this is asked, never guessed
+  // from a checkpoint filename — a wrong guess fails deep inside ComfyUI at generate time
+  // instead of here, where it can be fixed.
+  const FAMILIES = [
+    { key: "ltxav", label: "LTX-2 / LTXAV",
+      sub: "Gemma3 text encoder · 8k+1 frames · separate video and audio latents" },
+    { key: "minimax_h3", label: "MiniMax H3 (Hailuo)",
+      sub: "Qwen3-VL text encoder · 17k+5 frames at 24 fps · one AV latent node · ref2va references" },
+  ];
+
+  function familyKey() {
+    const f = String(config.model_family || "ltxav").toLowerCase();
+    return FAMILIES.some((x) => x.key === f) ? f : "ltxav";
+  }
+
+  function familySection() {
+    const sec = el("div", "links-section");
+    const head = el("div", "links-head");
+    head.append(el("span", "lib-sub", "Model family"));
+    sec.append(head);
+    sec.append(el("div", "links-hint",
+      "Which model the built-in pipeline is wired for. Changing it changes which nodes the "
+      + "graph uses, so re-check your loaders afterwards — the ports they wire into move."));
+    const row = el("div", "links-row");
+    FAMILIES.forEach((f) => {
+      const active = familyKey() === f.key;
+      const b = el("button", "btn ghost tiny" + (active ? " active" : ""), f.label);
+      b.title = f.sub;
+      b.onclick = async () => {
+        if (familyKey() === f.key) return;
+        config.model_family = f.key;
+        await persist();
+        // the family decides which core nodes exist and which ports loaders may wire
+        // into, so both have to be re-fetched before the panel redraws
+        try {
+          const pp = await API.pipelinePorts();
+          ports = pp.ports || ports;
+          requirements = pp.requirements || requirements;
+          wiringRules = pp.wiring || wiringRules;
+        } catch (_) {}
+        try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
+        render();
+      };
+      row.append(b);
+    });
+    sec.append(row);
+    return sec;
+  }
+
   function coreSection() {
     const sec = el("div", "links-section");
     const disabled = !!config.disable_core;
@@ -1209,9 +1269,14 @@
       return sec;
     }
     if (coreOpen) {
+      const h3core = familyKey() === "minimax_h3";
       const hint = pipelineLocked()
-        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). "
-          + "Wire video LATENT to Studio · latent (not Concat · video_latent — that link is internal). "
+        ? (h3core
+            ? "Fixed FunPack path (Studio → Chain Sampler → separate AV → decode). H3 has no "
+              + "conditioning node between Studio and the sampler. Wire the AV LATENT to "
+              + "Chain Sampler · latent_template. "
+            : "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). "
+              + "Wire video LATENT to Studio · latent (not Concat · video_latent — that link is internal). ")
           + "Wire IMAGE via Input Image Processing → Studio · source_image (Timeline default). "
           + "MODEL/CLIP may chain through patchers. Enable Full control to override core links."
         : "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it.";
@@ -1279,6 +1344,7 @@
       banner.textContent = `Imported workflow: ${config.workflow_import.name} (${config.workflow_import.node_count || config.slots.length} nodes) · built-in pipeline disabled`;
       pane.append(banner);
     }
+    pane.append(familySection());
     pane.append(requirementsPanel());
     pane.append(coreSection());
     if (!config.slots.length)

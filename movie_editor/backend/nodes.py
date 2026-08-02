@@ -132,6 +132,25 @@ ROLES: dict[str, dict] = {
 
 # Pipeline inputs that must be satisfied by configured slot nodes.
 # Each entry: id, type, label, required, role_hint (role key to suggest adding), hint.
+# MiniMax H3 replaces two of these: its own EmptyMiniMaxH3LatentAV emits the video AND
+# audio streams in one node, so there is no separate audio-latent step and the latent is
+# no longer optional (nothing else produces one). The audio VAE stays required — it decodes
+# the generated audio — and gains a second, optional job on H3 (encoding audio references).
+FAMILY_REQUIREMENTS: dict[str, dict] = {
+    "minimax_h3": {
+        "drop": ("audio_latent",),
+        "replace": {
+            "video_vae": {"hint": "Add the MiniMax H3 video VAE loader (24-channel, 16x spatial)."},
+            "audio_vae": {"hint": "Add the MiniMax H3 audio VAE loader (32 kHz stereo). Decodes the "
+                                  "generated audio, and encodes audio references for ref2va."},
+            "clip": {"hint": "Add the MiniMax H3 text encoder (Qwen3-VL-32B, truncated to 50 layers)."},
+            "init_latent": {"required": True, "label": "AV latent",
+                            "hint": "Add Empty MiniMax H3 AV Latent — it makes the video and audio "
+                                    "streams together and feeds the Chain Sampler directly."},
+        },
+    },
+}
+
 PIPELINE_REQUIREMENTS = [
     {"id": "model",        "type": "MODEL",  "label": "Diffusion model",  "required": True,
      "role_hint": "unet",       "hint": "Add a Unet / Diffusion Model loader (e.g. LTXVLoader)."},
@@ -340,6 +359,18 @@ CORE_PORT_NODES = [
     ("FunPackSaveRefinementLatent", "Save Refinement Latent"),
 ]
 
+# H3's core drops LTXVConditioning and Concat AV and decodes audio with core's generic node,
+# so offering the LTX-only ports here would invite wires into nodes the graph never emits.
+FAMILY_CORE_PORT_NODES: dict[str, list] = {
+    "minimax_h3": [
+        ("LTXVSeparateAVLatent", "Separate AV Latent"),
+        ("VAEDecodeAudio", "VAE Decode Audio"),
+        ("NormalizeAudioLoudness", "Normalize Audio"),
+        ("VHS_VideoCombine", "Video Combine"),
+        ("FunPackSaveRefinementLatent", "Save Refinement Latent"),
+    ],
+}
+
 
 def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list[dict]:
     """Pipeline connection points derived from a node's INPUT_TYPES (authoritative)."""
@@ -372,8 +403,18 @@ def ports_from_object_info(object_info: dict, cls: str, label: str) -> list[dict
     return ports
 
 
-def pipeline_requirements() -> list[dict]:
-    return PIPELINE_REQUIREMENTS
+def pipeline_requirements(family: str = "ltxav") -> list[dict]:
+    spec = FAMILY_REQUIREMENTS.get(str(family or "").lower())
+    if not spec:
+        return PIPELINE_REQUIREMENTS
+    dropped = set(spec.get("drop") or ())
+    replace = spec.get("replace") or {}
+    out = []
+    for req in PIPELINE_REQUIREMENTS:
+        if req["id"] in dropped:
+            continue
+        out.append({**req, **replace.get(req["id"], {})})
+    return out
 
 
 def core_producers(object_info: dict | None = None) -> list[dict]:
@@ -407,7 +448,7 @@ def core_producers(object_info: dict | None = None) -> list[dict]:
     return out
 
 
-def pipeline_ports(object_info: dict | None = None) -> list[dict]:
+def pipeline_ports(object_info: dict | None = None, family: str = "ltxav") -> list[dict]:
     """The fixed path's connection points loaders/nodes wire into. FunPack nodes derive from
     their INPUT_TYPES; LTXV core nodes derive from object_info. [] if nothing is loaded."""
     ports = []
@@ -424,7 +465,7 @@ def pipeline_ports(object_info: dict | None = None) -> list[dict]:
     except Exception:
         pass
     if object_info:
-        for cls, label in CORE_PORT_NODES:
+        for cls, label in FAMILY_CORE_PORT_NODES.get(str(family or "").lower(), CORE_PORT_NODES):
             ports += ports_from_object_info(object_info, cls, label)
     return ports
 

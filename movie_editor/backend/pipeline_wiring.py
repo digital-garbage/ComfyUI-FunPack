@@ -90,6 +90,102 @@ PORT_TO_OPEN_CORE: dict[str, tuple[str, str]] = {
 }
 
 
+# ── model families ────────────────────────────────────────────────────────────
+# The tables above describe the LTXAV core. MiniMax H3 drops LTXVConditioning and
+# LTXVConcatAVLatent and swaps the audio decode (see builder.FAMILIES), which moves
+# three wirable ports onto different nodes:
+#
+#   * the empty latent no longer goes through Studio into Concat — H3's own
+#     EmptyMiniMaxH3LatentAV emits both streams, so it feeds the sampler directly;
+#   * the audio VAE lands on core's VAEDecodeAudio.vae, and may ALSO feed the sampler
+#     to encode audio ref2va references;
+#   * there is no audio_encoder step at all.
+#
+# Everything not listed is inherited, so a rule added for LTXAV reaches H3 too.
+_H3_LATENT_PORT = "FunPackLTXAVSceneChainSampler.latent_template"
+
+FAMILY_WIRING: dict[str, dict] = {
+    "ltxav": {},
+    "minimax_h3": {
+        "role_targets": {
+            "audio_vae": [("VAE", None, "VAEDecodeAudio.vae"),
+                          ("VAE", None, "FunPackLTXAVSceneChainSampler.audio_vae")],
+            "audio_encoder": [],
+            "empty_latent": [("LATENT", None, _H3_LATENT_PORT)],
+            "video_latent": [("LATENT", None, _H3_LATENT_PORT)],
+            "image_processing": [("IMAGE", None, "FunPackStudio.source_image")],
+        },
+        "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT]},
+        "default_wires": {
+            "audio_vae": {"VAE": "port:VAEDecodeAudio.vae"},
+            "audio_encoder": {},
+            "empty_latent": {"LATENT": "port:" + _H3_LATENT_PORT},
+            "video_latent": {"LATENT": "port:" + _H3_LATENT_PORT},
+        },
+        "port_labels": {
+            _H3_LATENT_PORT: "Chain Sampler · latent_template (H3 AV latent)",
+            "VAEDecodeAudio.vae": "VAE Decode Audio · vae",
+            "FunPackLTXAVSceneChainSampler.audio_vae": "Chain Sampler · audio_vae (ref2va audio)",
+        },
+        "guided_hidden": (),   # nothing to hide: Concat is not in this family's core
+        "open_core": {
+            "FunPackStudio.model": ("studio", "model"),
+            "FunPackStudio.clip": ("studio", "clip"),
+            "FunPackStudio.source_image": ("studio", "source_image"),
+            "FunPackLTXAVSceneChainSampler.vae": ("sampler", "vae"),
+            _H3_LATENT_PORT: ("sampler", "latent_template"),
+            "FunPackLTXAVSceneChainSampler.audio_vae": ("sampler", "audio_vae"),
+            "VAEDecodeAudio.vae": ("audiodec", "vae"),
+        },
+    },
+}
+
+DEFAULT_FAMILY = "ltxav"
+
+
+def family_of(models: Any) -> str:
+    fam = str(models_dict(models).get("model_family") or DEFAULT_FAMILY).strip().lower()
+    return fam if fam in FAMILY_WIRING else DEFAULT_FAMILY
+
+
+def _role_targets(family: str) -> dict:
+    out = {k: list(v) for k, v in ROLE_WIRE_TARGETS.items()}
+    out.update({k: list(v) for k, v in (FAMILY_WIRING.get(family, {}).get("role_targets") or {}).items()})
+    return out
+
+
+def _chain_terminals(family: str) -> dict:
+    out = {k: list(v) for k, v in TYPE_CHAIN_TERMINALS.items()}
+    out.update({k: list(v) for k, v in (FAMILY_WIRING.get(family, {}).get("type_chain_terminals") or {}).items()})
+    return out
+
+
+def _default_wires(family: str) -> dict:
+    out = {k: dict(v) for k, v in DEFAULT_WIRES_BY_ROLE.items()}
+    out.update({k: dict(v) for k, v in (FAMILY_WIRING.get(family, {}).get("default_wires") or {}).items()})
+    return out
+
+
+def _port_labels(family: str) -> dict:
+    out = dict(PORT_LABELS)
+    out.update(FAMILY_WIRING.get(family, {}).get("port_labels") or {})
+    return out
+
+
+def _hidden_ports(family: str) -> frozenset:
+    spec = FAMILY_WIRING.get(family, {})
+    return frozenset(spec["guided_hidden"]) if "guided_hidden" in spec else GUIDED_HIDDEN_PORTS
+
+
+def _open_core(family: str) -> dict:
+    spec = FAMILY_WIRING.get(family, {}).get("open_core")
+    return dict(spec) if spec else dict(PORT_TO_OPEN_CORE)
+
+
+def open_core_inputs(family: str) -> frozenset:
+    return frozenset(_open_core(family).values())
+
+
 def models_dict(models: Any) -> dict:
     return models if isinstance(models, dict) else {}
 
@@ -104,9 +200,12 @@ def wiring_locked(models: Any) -> bool:
     return uses_builtin_core(m) and not bool(m.get("full_control"))
 
 
-def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None) -> list[str]:
+def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None,
+                     family: str = DEFAULT_FAMILY) -> list[str]:
+    role_targets = _role_targets(family)
+    terminals = _chain_terminals(family)
     out: list[str] = []
-    role_rules = ROLE_WIRE_TARGETS.get(role or "", [])
+    role_rules = role_targets.get(role or "", [])
     for t, name, port in role_rules:
         if t != out_type:
             continue
@@ -117,14 +216,14 @@ def allowed_port_ids(role: str, out_type: str, out_name: Optional[str] = None) -
     # (e.g. audio_encoder LATENT must stay on Concat · audio_latent, not Studio · latent).
     has_explicit = any(t == out_type for t, _, _ in role_rules)
     if not has_explicit:
-        for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
+        for port in terminals.get(out_type, []):
             if port not in out:
                 out.append(port)
     return out
 
 
-def port_label(port_id: str) -> str:
-    return PORT_LABELS.get(port_id, port_id.replace(".", " · "))
+def port_label(port_id: str, family: str = DEFAULT_FAMILY) -> str:
+    return _port_labels(family).get(port_id, port_id.replace(".", " · "))
 
 
 def validate_port_wire(
@@ -144,8 +243,9 @@ def validate_port_wire(
         return None  # slot-to-slot wiring stays free
     if not target.startswith("port:"):
         return f"Unknown wire target '{target}'."
+    family = family_of(models)
     port_id = target[5:]
-    if port_id in GUIDED_HIDDEN_PORTS:
+    if port_id in _hidden_ports(family):
         if port_id == "LTXVConcatAVLatent.video_latent":
             return (
                 f"{out_name} ({out_type}) cannot wire directly to Concat AV Latent · video_latent "
@@ -153,13 +253,13 @@ def validate_port_wire(
                 f"forwards Studio output to Concat automatically."
             )
         return (
-            f"{out_name} ({out_type}) cannot wire to {port_label(port_id)} in guided mode "
+            f"{out_name} ({out_type}) cannot wire to {port_label(port_id, family)} in guided mode "
             f"(internal core link). Enable Full control to override."
         )
-    allowed = allowed_port_ids(role, out_type, out_name)
+    allowed = allowed_port_ids(role, out_type, out_name, family=family)
     if not allowed and role in ("custom", "", None):
         # Legacy slots without a role: allow canonical built-in ports for this output type.
-        for rules in ROLE_WIRE_TARGETS.values():
+        for rules in _role_targets(family).values():
             for t, name, port in rules:
                 if t != out_type:
                     continue
@@ -167,7 +267,7 @@ def validate_port_wire(
                     continue
                 if port not in allowed:
                     allowed.append(port)
-        for port in TYPE_CHAIN_TERMINALS.get(out_type, []):
+        for port in _chain_terminals(family).get(out_type, []):
             if port not in allowed:
                 allowed.append(port)
     if not allowed:
@@ -176,10 +276,10 @@ def validate_port_wire(
             f"in guided mode — enable Full control in Models to wire it manually."
         )
     if port_id not in allowed:
-        labels = ", ".join(port_label(p) for p in allowed)
+        labels = ", ".join(port_label(p, family) for p in allowed)
         return (
             f"{out_name} ({out_type}) may only wire to {labels} in guided mode "
-            f"(not {port_label(port_id)}). Enable Full control to wire freely."
+            f"(not {port_label(port_id, family)}). Enable Full control to wire freely."
         )
     return None
 
@@ -189,6 +289,7 @@ def validate_models_wiring(models: Any) -> list[str]:
     m = models_dict(models)
     if not wiring_locked(m):
         return []
+    fam = family_of(m)
     errors: list[str] = []
     port_owners: dict[str, str] = {}
     for slot in m.get("slots") or []:
@@ -211,7 +312,7 @@ def validate_models_wiring(models: Any) -> list[str]:
                     prev = port_owners.get(t[5:])
                     if prev:
                         errors.append(
-                            f"{port_label(t[5:])} is already wired from {prev} — "
+                            f"{port_label(t[5:], fam)} is already wired from {prev} — "
                             f"only one source per built-in input in guided mode.")
                     else:
                         port_owners[t[5:]] = label
@@ -220,24 +321,28 @@ def validate_models_wiring(models: Any) -> list[str]:
 
 
 
-def wiring_rules_payload() -> dict[str, Any]:
-    """Static rules for the Models UI."""
+def wiring_rules_payload(family: str = DEFAULT_FAMILY) -> dict[str, Any]:
+    """Static rules for the Models UI, for one model family."""
+    family = family if family in FAMILY_WIRING else DEFAULT_FAMILY
+    labels = _port_labels(family)
     role_targets = {}
-    for role, rules in ROLE_WIRE_TARGETS.items():
+    for role, rules in _role_targets(family).items():
         role_targets[role] = [
-            {"type": t, "output_name": n, "port": p, "label": port_label(p)}
+            {"type": t, "output_name": n, "port": p,
+             "label": labels.get(p, p.replace(".", " · "))}
             for t, n, p in rules
         ]
     return {
+        "family": family,
         "role_targets": role_targets,
-        "type_chain_terminals": TYPE_CHAIN_TERMINALS,
-        "guided_hidden_ports": sorted(GUIDED_HIDDEN_PORTS),
-        "default_wires": DEFAULT_WIRES_BY_ROLE,
+        "type_chain_terminals": _chain_terminals(family),
+        "guided_hidden_ports": sorted(_hidden_ports(family)),
+        "default_wires": _default_wires(family),
         "default_input_sources": DEFAULT_INPUT_SOURCES_BY_ROLE,
-        "port_labels": PORT_LABELS,
+        "port_labels": labels,
         "open_core_ports": [
             {"core_id": cid, "input": inp, "port": port}
-            for port, (cid, inp) in PORT_TO_OPEN_CORE.items()
+            for port, (cid, inp) in _open_core(family).items()
         ],
     }
 
@@ -245,7 +350,7 @@ def wiring_rules_payload() -> dict[str, Any]:
 def _infer_output_type(slot: dict, out_name: str) -> str:
     """Best-effort type lookup; frontend validates with full spec."""
     role = slot.get("role") or ""
-    for t, name, _ in ROLE_WIRE_TARGETS.get(role, []):
+    for t, name, _ in ROLE_WIRE_TARGETS.get(role, []):  # type only; identical across families
         if name is None or name == out_name:
             return t
     # Common Comfy output names
