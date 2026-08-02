@@ -178,6 +178,73 @@
     }
   }
 
+  // The family decides which nodes and which model files the project needs, so it is the
+  // FIRST question — asking it after an install would have installed the wrong thing.
+  async function chooseFamily(key) {
+    if (!S.get().project) return;
+    const models = JSON.parse(JSON.stringify(S.get().models || { slots: [] }));
+    models.model_family = key;
+    await API.saveModels(S.get().project.id, models);
+    await S.loadModels();
+    let deps;
+    try { deps = await API.pipelineDeps(); } catch (_) { closeModal(); return; }
+    if (!deps?.needs_setup) { closeModal(); return; }
+    openModal(deps);
+  }
+
+  function familyStep(deps) {
+    const box = el("div", "pipe-setup-family");
+    box.append(el("div", "pipe-setup-manual-title", "Which model is this project for?"));
+    (deps.families || []).forEach((f) => {
+      const active = f.key === deps.family;
+      const b = el("button", "btn ghost pipe-setup-family-btn" + (active ? " active" : ""));
+      b.type = "button";
+      const title = el("div", "pipe-setup-family-title", f.label);
+      if (!f.released) title.append(el("span", "pipe-setup-sub", "not released yet"));
+      b.append(title);
+      b.append(el("div", "pipe-setup-sub", f.summary || ""));
+      b.onclick = () => chooseFamily(f.key);
+      box.append(b);
+    });
+    return box;
+  }
+
+  // What the chosen family still needs. For a family that is not out yet this is the
+  // whole point of the panel: say what is missing and why, instead of offering an
+  // install button that cannot possibly succeed.
+  function readinessBlock(r) {
+    const box = el("div", "pipe-setup-readiness");
+    if (r.note) box.append(el("div", "pipe-setup-hint", r.note));
+    if (r.source_url) {
+      const a = el("a", "pipe-setup-link", r.source_title || r.source_url);
+      a.href = r.source_url; a.target = "_blank"; a.rel = "noopener";
+      box.append(a);
+    }
+    const missing = r.missing_nodes || [];
+    if (missing.length) {
+      box.append(el("div", "pipe-setup-manual-title", "Nodes not in your ComfyUI yet:"));
+      const ul = el("ul", "pipe-setup-list");
+      missing.forEach((n) => {
+        const li = el("li", null, n.label);
+        li.append(el("span", "pipe-setup-sub", n.class + (n.why ? " — " + n.why : "")));
+        ul.append(li);
+      });
+      box.append(ul);
+    }
+    if ((r.models || []).length) {
+      box.append(el("div", "pipe-setup-manual-title",
+        r.released ? "Model files this pipeline uses:" : "Model files to download when they are published:"));
+      const ul = el("ul", "pipe-setup-list");
+      r.models.forEach((m) => {
+        const li = el("li", null, m.label);
+        li.append(el("span", "pipe-setup-sub", "models/" + m.folder + (m.hint ? " — " + m.hint : "")));
+        ul.append(li);
+      });
+      box.append(ul);
+    }
+    return box;
+  }
+
   function openModal(deps) {
     closeModal();
     overlay = el("div", "modal-overlay pipe-setup-overlay");
@@ -187,24 +254,34 @@
     modal.append(head);
 
     const content = el("div", "modal-content");
-    if (deps.needs_manager_install) {
+    content.append(familyStep(deps));
+    const r = deps.readiness;
+    const unreleased = r && !r.released;
+    if (unreleased || (r && (r.missing_nodes || []).length)) {
+      content.append(readinessBlock(r));
+    }
+    // Only talk about installing when there is something Manager can actually install.
+    // A family that is not released yet has nothing to fetch, and offering to fetch it
+    // would be a promise the button cannot keep.
+    const hasPacks = (deps.missing_packs || []).length > 0;
+    if (hasPacks && deps.needs_manager_install) {
       content.append(el("p", "pipe-setup-lead",
         "Nodes required for the built-in pipeline are missing. Install ComfyUI-Manager first, then we can fetch the rest."));
-    } else if (deps.needs_manager_restart) {
+    } else if (hasPacks && deps.needs_manager_restart) {
       content.append(el("p", "pipe-setup-lead",
         "ComfyUI-Manager is on disk but not running yet. Restart ComfyUI to load it, then install the missing node packs."));
-    } else {
+    } else if (hasPacks) {
       content.append(el("p", "pipe-setup-lead",
-        "Nodes required for the built-in pipeline are missing. Do you want to install them?"));
+        "Node packs required for the built-in pipeline are missing. Do you want to install them?"));
     }
-    if ((deps.missing_packs || []).length) {
+    if (hasPacks) {
       content.append(packList(deps));
     }
-    if (deps.needs_manager_install) {
+    if (hasPacks && deps.needs_manager_install) {
       content.append(el("div", "pipe-setup-hint",
         "ComfyUI-Manager handles downloads and updates for custom node packs."));
       content.append(manualBlock(deps));
-    } else if (!deps.manager_available) {
+    } else if (hasPacks && !deps.manager_available) {
       content.append(manualBlock(deps));
     }
     if ((deps.unmapped_classes || []).length) {
@@ -214,17 +291,19 @@
     modal.append(content);
 
     const foot = el("div", "pipe-setup-foot");
-    if (deps.needs_manager_install) {
+    if (!hasPacks) {
+      // nothing installable — the only useful action left is to close and come back
+    } else if (deps.needs_manager_install) {
       const mgrBtn = el("button", "btn primary", "Install ComfyUI-Manager");
       mgrBtn.type = "button";
       mgrBtn.onclick = () => startManagerInstall();
       foot.append(mgrBtn);
-    } else if (deps.needs_manager_restart) {
+    } else if (hasPacks && deps.needs_manager_restart) {
       const restartBtn = el("button", "btn primary", "Restart ComfyUI");
       restartBtn.type = "button";
       restartBtn.onclick = () => restartComfyOnly();
       foot.append(restartBtn);
-    } else if (deps.manager_available) {
+    } else if (hasPacks && deps.manager_available) {
       const installBtn = el("button", "btn primary", "Install missing nodes");
       installBtn.type = "button";
       installBtn.onclick = () => startInstall(deps);
@@ -267,5 +346,14 @@
     openModal(deps);
   }
 
-  window.PipelineSetup = { maybePrompt, close: closeModal };
+  // Opened on demand from Models → Model family, so the setup panel is reachable again
+  // after it has been dismissed once (the auto-prompt is one-shot per browser).
+  async function open() {
+    if (!S.get().project) return;
+    let deps;
+    try { deps = await API.pipelineDeps(); } catch (_) { return; }
+    openModal(deps);
+  }
+
+  window.PipelineSetup = { maybePrompt, open, close: closeModal };
 })();

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import config
-from .builder import CORE
+from .builder import CORE, family_core
 
 MANAGER_FOLDER = "ComfyUI-Manager"
 MANAGER_GIT_URL = "https://github.com/ComfyUI-Manager/ComfyUI-Manager"
@@ -51,6 +51,107 @@ PIPELINE_PACKS: list[dict[str, Any]] = [
 _PACK_BY_ID = {p["id"]: p for p in PIPELINE_PACKS}
 _ALL_MAPPED = frozenset().union(*(p["classes"] for p in PIPELINE_PACKS))
 
+
+# ── per-family setup: what a project needs before it can generate ─────────────
+# Declarative on purpose. MiniMax H3 is not released yet — its nodes are in an unmerged
+# ComfyUI PR and no weights exist — so the entries below are PLACEHOLDERS: they describe
+# what to look for and say plainly that it is not out. When it ships, the only thing that
+# changes here is the data (flip `released`, fill in the real filename hints); the setup
+# flow, the panel and the tests already work against it.
+#
+# `nodes` are slot node classes (not core graph nodes — those are covered by PIPELINE_PACKS).
+# `models` are files the user has to download; `folder` is the ComfyUI models/ subdirectory.
+FAMILY_SETUP: dict[str, dict[str, Any]] = {
+    "ltxav": {
+        "label": "LTX-2 / LTXAV",
+        "released": True,
+        "summary": "Lightricks LTX-2 / LTXAV. Gemma3 text encoder, separate video and audio latents.",
+        "nodes": [],
+        "models": [
+            {"role": "unet", "label": "LTX-2 diffusion model", "folder": "diffusion_models"},
+            {"role": "clip", "label": "Gemma3 text encoder", "folder": "text_encoders"},
+            {"role": "video_vae", "label": "LTX-2 video VAE", "folder": "vae"},
+            {"role": "audio_vae", "label": "LTX-2 audio VAE", "folder": "vae"},
+        ],
+    },
+    "minimax_h3": {
+        "label": "MiniMax H3 (Hailuo)",
+        "released": False,
+        "summary": "MiniMax H3. Qwen3-VL text encoder, one joint AV latent, 24 fps, "
+                   "native reference conditioning (ref2va).",
+        "not_released_note":
+            "MiniMax H3 is not available yet. Its nodes are in an unmerged ComfyUI pull "
+            "request and no weights have been published. You can select it now to set the "
+            "project up — the pipeline is already wired for it, and it will start working "
+            "as soon as ComfyUI ships the nodes and the weights appear in your models "
+            "folders. Nothing here needs another FunPack update.",
+        "source_url": "https://github.com/Comfy-Org/ComfyUI/pull/15224",
+        "source_title": "ComfyUI PR #15224 — MiniMax H3 support",
+        "nodes": [
+            {"class": "EmptyMiniMaxH3LatentAV", "label": "Empty MiniMax H3 AV Latent",
+             "role": "empty_latent",
+             "why": "Makes the joint video + audio latent that feeds the Chain Sampler."},
+            {"class": "MiniMaxH3SigmaShift", "label": "MiniMax H3 Sigma Shift",
+             "role": None, "optional": True,
+             "why": "Optional — sets the video/audio flow shifts (defaults 12.0 / 3.0)."},
+        ],
+        "models": [
+            {"role": "unet", "label": "MiniMax H3 diffusion model", "folder": "diffusion_models",
+             "hint": "single-stream packed AV DiT"},
+            {"role": "clip", "label": "Qwen3-VL-32B text encoder (50 layers)", "folder": "text_encoders",
+             "hint": "H3 consumes the unnormalized hidden state after layer 50"},
+            {"role": "video_vae", "label": "MiniMax H3 video VAE", "folder": "vae",
+             "hint": "24-channel latent, 16x spatial"},
+            {"role": "audio_vae", "label": "MiniMax H3 audio VAE", "folder": "vae",
+             "hint": "32 kHz stereo; also encodes audio references for ref2va"},
+        ],
+    },
+}
+
+DEFAULT_FAMILY = "ltxav"
+
+
+def family_setup(family: str | None) -> dict:
+    key = str(family or DEFAULT_FAMILY).strip().lower()
+    return FAMILY_SETUP.get(key) or FAMILY_SETUP[DEFAULT_FAMILY]
+
+
+def families_payload() -> list[dict]:
+    """The setup picker's options, in display order."""
+    return [
+        {"key": key, "label": spec["label"], "released": bool(spec.get("released")),
+         "summary": spec.get("summary", ""),
+         "note": spec.get("not_released_note"),
+         "source_url": spec.get("source_url"), "source_title": spec.get("source_title")}
+        for key, spec in FAMILY_SETUP.items()
+    ]
+
+
+def family_readiness(object_info: dict | None, family: str) -> dict:
+    """What this family still needs — nodes not installed, models not downloaded.
+
+    Model files cannot be checked from object_info alone (a loader lists them as combo
+    choices only once the node exists), so those are reported as EXPECTED rather than
+    missing: the honest statement is "here is what you will need", not a false negative.
+    """
+    oi = object_info or {}
+    spec = family_setup(family)
+    nodes = []
+    for n in spec.get("nodes", []):
+        nodes.append({**n, "installed": n["class"] in oi})
+    return {
+        "family": str(family or DEFAULT_FAMILY).lower(),
+        "label": spec["label"],
+        "released": bool(spec.get("released")),
+        "summary": spec.get("summary", ""),
+        "note": spec.get("not_released_note"),
+        "source_url": spec.get("source_url"),
+        "source_title": spec.get("source_title"),
+        "nodes": nodes,
+        "missing_nodes": [n for n in nodes if not n["installed"] and not n.get("optional")],
+        "models": spec.get("models", []),
+    }
+
 _install_jobs: dict[str, dict] = {}
 
 
@@ -75,17 +176,24 @@ def manager_dir_on_disk() -> bool:
     return d.is_dir() and ((d / ".git").exists() or (d / "__init__.py").exists())
 
 
-def required_core_classes() -> list[str]:
-    return sorted(set(CORE.values()))
+def required_core_classes(family: str | None = None) -> list[str]:
+    return sorted(set(_core_for(family).values()))
 
 
-def missing_core_classes(object_info: dict | None) -> list[str]:
+def _core_for(family: str | None) -> dict:
+    """The fixed-core node classes for `family` (H3 drops three of LTXAV's)."""
+    if not family:
+        return CORE
+    return family_core(str(family).strip().lower())[0]
+
+
+def missing_core_classes(object_info: dict | None, family: str | None = None) -> list[str]:
     oi = object_info or {}
-    return sorted(cls for cls in CORE.values() if cls not in oi)
+    return sorted(cls for cls in _core_for(family).values() if cls not in oi)
 
 
-def missing_packs(object_info: dict | None) -> list[dict]:
-    missing = set(missing_core_classes(object_info))
+def missing_packs(object_info: dict | None, family: str | None = None) -> list[dict]:
+    missing = set(missing_core_classes(object_info, family))
     out: list[dict] = []
     for pack in PIPELINE_PACKS:
         hit = pack["classes"] & missing
@@ -99,8 +207,8 @@ def missing_packs(object_info: dict | None) -> list[dict]:
     return out
 
 
-def unmapped_missing_classes(object_info: dict | None) -> list[str]:
-    missing = set(missing_core_classes(object_info))
+def unmapped_missing_classes(object_info: dict | None, family: str | None = None) -> list[str]:
+    missing = set(missing_core_classes(object_info, family))
     return sorted(missing - _ALL_MAPPED)
 
 
@@ -109,18 +217,25 @@ def status_payload(
     *,
     manager_available: bool,
     manager_on_disk: bool | None = None,
+    family: str | None = None,
 ) -> dict:
-    packs = missing_packs(object_info)
-    unmapped = unmapped_missing_classes(object_info)
+    packs = missing_packs(object_info, family)
+    unmapped = unmapped_missing_classes(object_info, family)
     on_disk = manager_dir_on_disk() if manager_on_disk is None else manager_on_disk
-    needs_setup = bool(packs)
-    needs_manager = needs_setup and not manager_available
+    readiness = family_readiness(object_info, family or DEFAULT_FAMILY)
+    # A family whose nodes are not out yet is a setup problem too — the modal has to open
+    # and say so, rather than reporting a clean pipeline that cannot actually generate.
+    needs_setup = bool(packs) or bool(readiness["missing_nodes"])
+    needs_manager = bool(packs) and not manager_available
     return {
+        "family": readiness["family"],
+        "families": families_payload(),
+        "readiness": readiness,
         "manager_available": manager_available,
         "manager_on_disk": on_disk,
         "needs_manager_install": needs_manager and not on_disk,
         "needs_manager_restart": needs_manager and on_disk,
-        "missing_classes": missing_core_classes(object_info),
+        "missing_classes": missing_core_classes(object_info, family),
         "missing_packs": packs,
         "unmapped_classes": unmapped,
         "needs_install": needs_setup,

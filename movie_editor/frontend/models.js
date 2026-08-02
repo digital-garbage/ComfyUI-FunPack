@@ -1231,6 +1231,11 @@
       };
       row.append(b);
     });
+    const setup = el("button", "btn ghost tiny", "Setup…");
+    setup.title = "What this model family needs — nodes and model files, including anything "
+      + "not released yet.";
+    setup.onclick = () => window.PipelineSetup?.open();
+    row.append(setup);
     sec.append(row);
     return sec;
   }

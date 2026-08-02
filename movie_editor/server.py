@@ -2208,6 +2208,7 @@ if web is not None and PromptServer is not None:
             oi,
             manager_available=mgr,
             manager_on_disk=pipeline_deps.manager_dir_on_disk(),
+            family=pipeline_wiring.family_of(nodes.load_models()),
         ))
 
     @routes.post(UI_PREFIX + "/api/pipeline-deps/install")
