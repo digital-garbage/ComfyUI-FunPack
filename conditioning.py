@@ -6729,7 +6729,16 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if not prompt_text:
             return None, {"pooled_output": None}, "prompt empty"
 
-        use_vision = reference_image is not None and self._gemma3_has_vision(clip)
+        # MiniMax H3's conditioning encoder is Qwen3-VL-32B, not LTX2.3's Gemma3, and it takes
+        # its reference images through a different kwarg (`images=[...]`, presented as
+        # "<Picture i>: <vision block>" before the prompt) — so the Gemma3 vision probe below
+        # returns False for it and the image would be silently dropped. Detect it first.
+        try:
+            from .minimax_h3 import is_h3_clip
+        except ImportError:
+            from minimax_h3 import is_h3_clip
+        h3 = is_h3_clip(clip)
+        use_vision = reference_image is not None and (h3 or self._gemma3_has_vision(clip))
         img_fp = self._image_fingerprint(reference_image) if use_vision else None
 
         # Per-call cache ONLY (the encode_cache dict is created fresh by the caller for this
@@ -6742,7 +6751,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             if cached is not None:
                 return cached
         try:
-            if use_vision:
+            if use_vision and h3:
+                print("[FunPackStudio] Processing input image with Qwen3-VL (MiniMax H3)...")
+                tokens = clip.tokenize(prompt_text, images=[reference_image])
+            elif use_vision:
                 print("[FunPackStudio] Processing input image with Gemma3 vision...")
                 tokens = clip.tokenize(prompt_text, image=reference_image, skip_template=False)
             else:
@@ -9730,6 +9742,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
     def _v2_apply_model_patches(self, model, global_state, axis_feedback, rating_profile, emphasis_ranges, strength):
         """Clone model and apply attn2 patch for layer-level direction injection + phrase emphasis."""
         if model is None:
+            return None
+        # MiniMax H3 has no cross-attention at all: text, audio and video are rows of ONE packed
+        # self-attention stream, so there is no attn2 for `set_model_attn2_patch` to hook. The
+        # patch would install and never fire. Say so instead of reporting a patch that is doing
+        # nothing — the conditioning-space steering (embed guidance, score slider, the direction
+        # applied to the tensor itself) still works on H3 and carries the same intent.
+        try:
+            from .minimax_h3 import is_h3_model
+        except ImportError:
+            from minimax_h3 import is_h3_model
+        if is_h3_model(model):
+            print("[FunPackStudio] MiniMax H3: skipping the attn2 K/V direction patch — H3 is a "
+                  "single packed self-attention stream with no cross-attention to hook. Learned "
+                  "directions still apply to the conditioning tensor itself.")
             return None
         axis_memory = global_state.get("axis_conditioning_memory", {})
         missing_axes = set(axis_feedback.get("missing_axes", []))
