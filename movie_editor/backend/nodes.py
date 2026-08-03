@@ -141,7 +141,14 @@ def _autogrow_element_type(opts: dict) -> str | None:
 
 def _autogrow_children(name: str, opts: dict) -> list[dict]:
     """Expand an autogrow input into its indexed sockets. Empty when the template can't be
-    read — the caller then falls back to the raw (unwireable) input so nothing regresses."""
+    read — the caller then falls back to the raw (unwireable) input so nothing regresses.
+
+    The socket id ComfyUI expects is the PARENT id, a dot, then the template name
+    ("ref_images.ref_image_0") — that dotted path is what it splits to rebuild the node's
+    list. Sending the bare name is rejected as a missing input, and any that slips past
+    validation reaches execute() as an unexpected keyword argument. `display` carries the
+    short name for the UI, which has no reason to show the plumbing.
+    """
     t = _autogrow_element_type(opts)
     names = _autogrow_names(opts)
     if not t or not names:
@@ -149,7 +156,7 @@ def _autogrow_children(name: str, opts: dict) -> list[dict]:
     return [
         # Always optional: the API graph carries only the indices that are actually wired,
         # and ComfyUI grows the schema to match, so an unwired index must never block.
-        {"name": nm, "type": _normalize_type(t), "required": False,
+        {"name": f"{name}.{nm}", "display": nm, "type": _normalize_type(t), "required": False,
          "autogrow": {"parent": name, "index": i}}
         for i, nm in enumerate(names)
     ]

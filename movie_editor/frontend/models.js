@@ -524,7 +524,7 @@
       sbox.append(el("div", "wire-title", "Input sources"));
       visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
         const row = el("div", "wire-row");
-        const lbl = el("span", "wire-out", `${ci.name} (${ci.type})`);
+        const lbl = el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`);
         if (ci.autogrow)
           lbl.title = `Entry ${ci.autogrow.index + 1} of the node's "${ci.autogrow.parent}" list — fill one and the next appears.`;
         row.append(lbl);
@@ -567,7 +567,7 @@
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
       visibleConnectionInputs(s2, c2?.connection_inputs).filter((ci) => typeAccepts(ci.type, type)).forEach((ci) =>
-        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.name}` }));
+        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.display || ci.name}` }));
       // Widget inputs can also receive a connection (ComfyUI converts a widget to an
       // input when wired) — e.g. EmptyLatentVideo.width/height. Offer them as targets.
       (c2?.inputs || []).filter((w) => _KIND2T[w.kind] === type).forEach((w) =>
@@ -586,9 +586,43 @@
   }
 
   // Autogrow list inputs (MiniMax H3's ref_images, ref_videos, …) reach us already expanded
-  // into one socket per index — ref_image0 … ref_image9. Showing all ten of each list would
-  // bury the node, so the list renders what's filled plus one empty slot and grows as it is
-  // used, the way ComfyUI's own canvas grows it.
+  // into one socket per index, addressed by their dotted path (ref_images.ref_image_0).
+  // Showing all ten of each list would bury the node, so the list renders what's filled plus
+  // one empty slot and grows as it is used, the way ComfyUI's own canvas grows it.
+  // Autogrow entries were first saved under the bare template name (ref_image_0) before the
+  // dotted socket id turned out to be what ComfyUI accepts. Rename them in place on load —
+  // the edge is the same edge, and leaving the old key in a config keeps failing the run.
+  function migrateAutogrowNames() {
+    let changed = false;
+    const canonical = (slot, name) => {
+      if (!name || name.includes(".")) return name;
+      const ci = ((specFor(slot) || {}).connection_inputs || [])
+        .find((c) => c.autogrow && c.display === name);
+      return ci ? ci.name : name;
+    };
+    (config.slots || []).forEach((slot) => {
+      const srcs = slot.input_sources || {};
+      Object.keys(srcs).forEach((k) => {
+        const nu = canonical(slot, k);
+        if (nu !== k) { srcs[nu] = srcs[k]; delete srcs[k]; changed = true; }
+      });
+    });
+    (config.slots || []).forEach((slot) => {
+      Object.entries(slot.wires || {}).forEach(([out, raw]) => {
+        const next = wireTargets(raw).map((t) => {
+          const parsed = _parseNodeTarget(t);
+          if (!parsed) return t;
+          const dest = slotById(parsed.slotId);
+          if (!dest) return t;
+          const nu = canonical(dest, parsed.input);
+          return nu === parsed.input ? t : `node:${parsed.slotId}:${nu}`;
+        });
+        if (next.some((t, i) => t !== wireTargets(raw)[i])) { slot.wires[out] = next; changed = true; }
+      });
+    });
+    return changed;
+  }
+
   function visibleConnectionInputs(slot, cis) {
     const lastFed = {};
     (cis || []).forEach((ci) => {
@@ -863,7 +897,7 @@
         sbox.append(el("div", "wire-title", "Input sources"));
         visibleConnectionInputs(draftSlot, curCand.connection_inputs).forEach((ci) => {
           const row = el("div", "wire-row");
-          row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
+          row.append(el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`));
           row.append(el("span", "wire-arrow", "←"));
           const sel = el("select", "wire-select");
           const cur = draft.input_sources[ci.name] || "";
@@ -1454,7 +1488,9 @@
     // Backfill numeric bounds/step (and combo choices) onto controls exposed before this
     // metadata was captured, so opening Models once upgrades existing projects. persist()
     // dispatches funpack-models-changed → the store reloads and the inspector re-renders.
-    if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
+    let dirty = refreshExposedChoices();
+    if (migrateAutogrowNames()) dirty = true;
+    if (dirty) { try { await persist(); } catch (_) {} }
   }
 
   function mount(body, ctx) {

@@ -539,6 +539,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         sid = slot_node_id[s["id"]]
         nd_s = slot_def[s["id"]]
         for ci_name, source in (s.get("input_sources") or {}).items():
+            ci_name = _canonical_input(nd_s, ci_name)
             if not source or source == "auto":
                 continue
             if source == "timeline":
@@ -633,6 +634,9 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: wire target '{t}' could not be resolved.")
                     continue
                 dnode, dinput = dst
+                # A wire authored into an autogrow entry names it the same way its own page
+                # does; canonicalise so both directions land on the dotted socket id.
+                dinput = _canonical_input(object_info.get((graph.get(dnode) or {}).get("class_type")), dinput)
                 if dnode not in graph:  # e.g. a core-port target while the built-in pipeline is disabled
                     report["unsatisfied"].append(f"{s.get('node_class')}.{out_name}: target '{t}' node is not in the graph (built-in pipeline disabled?).")
                     continue
@@ -846,6 +850,22 @@ def _resolve_source(source: str, slot_node_id: dict, slot_def: dict, object_info
         _, cid, oidx = source.split(":", 2)
         return (cid, int(oidx))
     return None
+
+
+def _canonical_input(node_def: Optional[dict], name: str) -> str:
+    """The socket id ComfyUI expects for `name` on this node.
+
+    Autogrow entries are addressed by their dotted path ("ref_images.ref_image_0"). An
+    editor config saved before that was known holds the bare template name, and sending
+    that reaches the node as an unexpected keyword argument — so map it back rather than
+    letting an old config keep failing the run.
+    """
+    if not node_def or "." in name:
+        return name
+    for ci in connection_inputs(node_def):
+        if ci.get("autogrow") and ci["name"].rsplit(".", 1)[-1] == name:
+            return ci["name"]
+    return name
 
 
 def _resolve_target(target: str, port_to_core, slot_node_id) -> Optional[tuple[str, str]]:

@@ -572,15 +572,16 @@ def test_autogrow_entries_are_wired_by_their_expanded_names():
     models = {"slots": [
         {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
         {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
-         "wires": {}, "input_sources": {"ref_image0": "out:li:IMAGE", "ref_image1": "timeline"}},
+         "wires": {},
+         "input_sources": {"ref_images.ref_image0": "out:li:IMAGE", "ref_images.ref_image1": "timeline"}},
     ]}
     graph, report = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
     ins = graph["slot_r"]["inputs"]
-    assert ins["ref_image0"] == ["slot_li", 0]
-    assert ins["ref_image1"] == ["media_load", 0]
-    assert "ref_images" not in ins                 # the template name is never sent
+    assert ins["ref_images.ref_image0"] == ["slot_li", 0]
+    assert ins["ref_images.ref_image1"] == ["media_load", 0]
+    assert "ref_images" not in ins                 # the template name itself is never sent
     # an unwired entry is simply absent — never blocking, never an empty placeholder
-    assert "ref_image2" not in ins and "ref_image3" not in ins
+    assert "ref_images.ref_image2" not in ins and "ref_images.ref_image3" not in ins
     assert not any("ref_image" in m for m in report["blocking"])
 
 
@@ -622,3 +623,19 @@ def test_a_core_combo_value_missing_on_this_machine_falls_back_instead_of_blocki
     graph, report = builder.build(oi, {"slots": []}, params)
     assert graph["sampler"]["inputs"]["identity_projector"] == "None"
     assert any("identity_projector" in m and "not installed" in m for m in report["unsatisfied"])
+
+
+def test_an_autogrow_entry_saved_under_its_bare_name_still_wires():
+    """Configs written before the dotted socket id was known hold "ref_image0". Sending that
+    is what produced "execute() got an unexpected keyword argument" — map it back instead of
+    letting an old config keep failing every run."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:r:ref_image1"}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_image0": "out:li:IMAGE"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, PARAMS)
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_images.ref_image0"] == ["slot_li", 0]   # via input_sources
+    assert ins["ref_images.ref_image1"] == ["slot_li", 0]   # via the mirrored wire
+    assert "ref_image0" not in ins and "ref_image1" not in ins

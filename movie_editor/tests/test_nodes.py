@@ -223,11 +223,15 @@ def test_autogrow_list_input_expands_into_wireable_sockets():
     desc = nodes.describe_node(_autogrow_oi(), "MiniMaxH3ReferenceToVideo")
     ci = {c["name"]: c for c in desc["connection_inputs"]}
     assert "ref_images" not in ci and "ref_audios" not in ci
-    assert [ci[n]["type"] for n in ("ref_image0", "ref_image1", "ref_image2")] == ["IMAGE"] * 3
-    assert ci["ref_image0"]["autogrow"] == {"parent": "ref_images", "index": 0}
+    # the socket id is the dotted path ComfyUI splits to rebuild the list — the bare name
+    # is rejected as missing, and reaches execute() as an unexpected keyword argument
+    names = ("ref_images.ref_image0", "ref_images.ref_image1", "ref_images.ref_image2")
+    assert [ci[n]["type"] for n in names] == ["IMAGE"] * 3
+    assert ci["ref_images.ref_image0"]["autogrow"] == {"parent": "ref_images", "index": 0}
+    assert ci["ref_images.ref_image0"]["display"] == "ref_image0"   # UI shows the short name
     # explicit-name templates keep their own names, in order
-    assert ci["ref_audio_a"]["type"] == "AUDIO"
-    assert ci["ref_audio_b"]["autogrow"] == {"parent": "ref_audios", "index": 1}
+    assert ci["ref_audios.ref_audio_a"]["type"] == "AUDIO"
+    assert ci["ref_audios.ref_audio_b"]["autogrow"] == {"parent": "ref_audios", "index": 1}
     # never required: only the wired indices are sent, so an empty one must not block
     assert not any(ci[n]["required"] for n in ci if n.startswith("ref_"))
     # the list wrapper is not a user widget either
