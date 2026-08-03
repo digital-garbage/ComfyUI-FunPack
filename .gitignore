@@ -18,3 +18,6 @@ refinements/
 
 # Large local research docs
 *.pdf
+
+# Never track saved ComfyUI workflow dumps — they carry whatever was typed in the graph.
+movie_editor/backend/reference/*.workflow.json

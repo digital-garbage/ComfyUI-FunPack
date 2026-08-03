@@ -48,13 +48,6 @@ CORE: dict[str, str] = {
     "f2i": "LTXFloatToInt",
 }
 
-# reference-workflow node id per core node (to seed widget values from the user's
-# real settings). Missing -> bare object_info / param defaults.
-REF_ID: dict[str, int] = {
-    "studio": 5299, "cond": 5147, "sampler": 5333, "concat": 4528, "separate": 4845,
-    "audiodec": 5021, "normaudio": 5314, "vhs": 5019, "saveref": 5328, "keyloader": 5303,
-    "pos": 5012, "neg": 5256, "frames": 4988, "fps": 4989, "f2i": 5145,
-}
 
 # core internal links: core_id -> {input_name: (src_core_id, output_index)}
 CORE_LINKS: dict[str, dict[str, tuple[str, int]]] = {
@@ -314,17 +307,23 @@ def _widget_choices(node_def: Optional[dict]) -> dict:
     return out
 
 
-# ── reference workflow ────────────────────────────────────────────────────────
+# ── core widget baseline ──────────────────────────────────────────────────────
 
 def load_reference() -> dict:
+    """Baseline widget values for the fixed core nodes, keyed by core id — the tuned
+    settings (sigma schedules, sampler config, container format) the editor starts from
+    before per-run params are applied.
+
+    Values only: no prompt text, and nothing user-typed. Every text field the run needs
+    arrives from the project at generate time, so none of it belongs in a checked-in file.
+    A missing/unreadable file just means each core node falls back to its object_info
+    defaults.
+    """
     try:
-        return json.loads((config.REFERENCE_DIR / "montage.workflow.json").read_text())
+        data = json.loads((config.REFERENCE_DIR / "core_widgets.json").read_text())
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
-
-
-def _ref_widgets(ref: dict) -> dict[int, Any]:
-    return {n.get("id"): n.get("widgets_values") for n in (ref.get("nodes") or [])}
 
 
 # ── graph assembly ────────────────────────────────────────────────────────────
@@ -352,7 +351,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # build (including the closures below), so every reference downstream is family-aware.
     family = family_of(models_config)
     CORE, CORE_LINKS, OPEN_PORTS = family_core(family)
-    ref_wv = _ref_widgets(load_reference())
+    ref_wv = load_reference()
     graph: dict[str, dict] = {}
     # `blocking` is the subset of problems that should stop generation (required inputs).
     report: dict[str, list] = {"wired": [], "auto_wired": [], "ambiguous": [], "unsatisfied": [], "blocking": []}
@@ -375,7 +374,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         for cid, cls in CORE.items():
             nd = object_info.get(cls)
             inputs = _widget_defaults(nd)
-            inputs.update(extract_widgets(nd, ref_wv.get(REF_ID.get(cid))))
+            inputs.update(extract_widgets(nd, ref_wv.get(cid)))
             for inp, (src, idx) in CORE_LINKS.get(cid, {}).items():
                 inputs[inp] = [src, idx]
                 protected_edges.add((cid, inp))

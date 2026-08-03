@@ -1,0 +1,74 @@
+{
+ "cond": [
+  25
+ ],
+ "f2i": [
+  0
+ ],
+ "fps": [
+  30
+ ],
+ "frames": [
+  241,
+  "fixed"
+ ],
+ "keyloader": [
+  "tf",
+  "tf",
+  true,
+  "",
+  "",
+  ""
+ ],
+ "neg": [
+  "underwater, diving, slow motion, still image, bad quality, subtitles, text, watermark, overlay, pc game, yelling, console game, childish, ugly, text, blur, logo, wordmark, static, low quality, noise, white noise, bleep, censoring, censor, bleeping, beep, beeping, newscast, interview, podcast, chinese, mutant, horror, 70's, film grain, comedy, stand-up "
+ ],
+ "normaudio": [
+  -30
+ ],
+ "pos": [
+  ""
+ ],
+ "sampler": [
+  898993421681879,
+  "randomize",
+  97,
+  16,
+  1,
+  8,
+  false,
+  true,
+  false,
+  0.25,
+  true,
+  0.01,
+  0,
+  0,
+  0.025,
+  0.05,
+  "relative"
+ ],
+ "saveref": [
+  "my_style_v1"
+ ],
+ "studio": [
+  "Wrong details|loved",
+  "{\"refinement_key\":\"\",\"overrides\":{\"refinement_key\":false,\"feedback_prompt\":false,\"user_intent_prompt\":false,\"negative_prompt\":false},\"scene_builder\":{\"mode\":\"Pass-through\",\"scene\":\"-None-\",\"scene_name\":\"\",\"aliases\":\"\",\"scene_positive\":\"\",\"scene_negative\":\"\"},\"refiner\":{\"mode\":\"Refine\",\"advisor_mode\":\"Off\",\"advisor_thinking\":false,\"prompt_repair\":false,\"im_feeling_lucky\":false,\"reset_session\":false,\"feedback_prompt\":\"\",\"user_intent_prompt_override\":\"\",\"negative_prompt\":\"\",\"temporal_style\":\"accelerate\",\"split_by_transitions\":true,\"split_transition_placement\":\"start\",\"reference_injection\":false,\"vision_conditioning\":false,\"value_guidance\":true,\"steer_mode\":\"both\",\"absolute_strength\":0.3,\"latent_value_guidance\":true,\"transition_contrast\":1.5,\"batch_variants\":1,\"batch_mode\":\"Interactive Guessing\",\"batch_learning\":true,\"guess_mode\":false,\"guess_direction\":\"up\",\"guess_range\":1.2,\"guess_freeze_seed\":false},\"advisor_llm\":{\"enabled\":false,\"model_path\":\"huihui-ai/Huihui-Qwen3-8B-abliterated-v2\",\"dtype\":\"bfloat16\"},\"loras\":[],\"loras_config\":{\"mode\":\"ltx2\",\"per_block\":false},\"samplers\":{\"high\":{\"type\":\"Normalizing\",\"sigmas\":\"1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0\",\"hybrid\":{\"eta\":1,\"eta_final\":1,\"normalize_strength\":1,\"normalize_start_sigma\":0.9,\"s_noise\":1,\"high_quality_pct\":0.5,\"correction_blend\":0.25,\"quality_sharpness\":0.3,\"motion_pulse_mode\":\"off\",\"motion_pulse_start_pct\":0.5,\"motion_pulse_count\":4,\"motion_pulse_spacing_pct\":0.22,\"motion_pulse_strength\":0.85,\"velocity_bias_mode\":\"capture\",\"velocity_bias_strength\":0.1,\"velocity_bias_source\":\"mean\",\"velocity_refinement_key\":\"\",\"rescue_mode\":false,\"rescue_threshold\":0.7,\"rescue_strength\":0.15,\"velocity_aspect_bucket\":\"any\",\"variability\":0},\"distilled\":{\"order\":1,\"final_correction_steps\":3,\"ab2_ramp\":false,\"normalize_strength\":0.5,\"normalize_start_sigma\":0.9,\"s_noise\":0,\"velocity_bias_mode\":\"capture\",\"velocity_bias_strength\":0.1,\"velocity_bias_source\":\"mean\",\"velocity_refinement_key\":\"\",\"rescue_mode\":false,\"rescue_threshold\":0.15,\"rescue_strength\":0.2},\"normalizing\":{\"normalize_strength\":0.5,\"normalize_start_sigma\":0.9,\"velocity_bias_mode\":\"capture_and_apply\",\"velocity_bias_strength\":0.1,\"velocity_bias_source\":\"mean\",\"velocity_refinement_key\":\"\",\"rescue_mode\":false,\"rescue_threshold\":0.15,\"rescue_strength\":0.2},\"ksampler_name\":\"ddim\"},\"low\":{\"type\":\"Distilled Flow\",\"sigmas\":\"0.909375, 0.725, 0.421875, 0.0\",\"hybrid\":{\"eta\":1,\"eta_final\":1,\"normalize_strength\":0,\"normalize_start_sigma\":0.9,\"s_noise\":1,\"high_quality_pct\":0.35,\"correction_blend\":1,\"quality_sharpness\":0,\"motion_pulse_mode\":\"off\",\"motion_pulse_start_pct\":0.3,\"motion_pulse_count\":2,\"motion_pulse_spacing_pct\":0.22,\"motion_pulse_strength\":0.85,\"velocity_bias_mode\":\"off\",\"velocity_bias_strength\":0,\"velocity_bias_source\":\"mean\",\"velocity_refinement_key\":\"default\",\"rescue_mode\":false,\"rescue_threshold\":0.15,\"rescue_strength\":0.2,\"velocity_aspect_bucket\":\"any\"},\"distilled\":{\"order\":1,\"final_correction_steps\":1,\"ab2_ramp\":false,\"normalize_strength\":0,\"normalize_start_sigma\":0.9,\"s_noise\":0,\"velocity_bias_mode\":\"off\",\"velocity_bias_strength\":0,\"velocity_bias_source\":\"mean\",\"velocity_refinement_key\":\"default\",\"rescue_mode\":false,\"rescue_threshold\":0.15,\"rescue_strength\":0.2},\"normalizing\":{\"normalize_strength\":0.5,\"normalize_start_sigma\":0.9,\"velocity_bias_mode\":\"off\",\"velocity_bias_strength\":0,\"velocity_bias_source\":\"mean\",\"velocity_refinement_key\":\"default\",\"rescue_mode\":false,\"rescue_threshold\":0.15,\"rescue_strength\":0.2},\"ksampler_name\":\"euler\"}}}",
+  "[]",
+  null,
+  "funpack_studio_open",
+  "funpack_studio_open",
+  "funpack_studio_batch"
+ ],
+ "vhs": {
+  "crf": 22,
+  "filename_prefix": "result_%date:MM-dd_hh-mm-ss%",
+  "format": "video/h265-mp4",
+  "frame_rate": 30,
+  "loop_count": 0,
+  "pingpong": false,
+  "pix_fmt": "yuv420p",
+  "save_metadata": false,
+  "save_output": false
+ }
+}
