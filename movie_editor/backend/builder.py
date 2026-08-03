@@ -118,7 +118,13 @@ FAMILIES: dict[str, dict] = {
         "links": {
             # positive/negative come straight from Studio, with no LTXVConditioning between
             "sampler": {"positive": ("studio", 1), "negative": ("studio", 2)},
-            "audiodec": {"samples": ("separate", 1)},
+            # Audio decodes from the sampler's own AV latent, NOT from a pre-separated audio
+            # tensor: ComfyUI's official H3 templates (video_minimax_h3_r2v / _i2v) feed the
+            # raw sampler latent to both VAEDecode and VAEDecodeAudio and let each VAE take
+            # its own stream, and vae_decode_audio hands `samples["samples"]` straight to
+            # vae.decode(). Unbinding first gives that VAE a different object than the
+            # reference graph does. `separate` stays in the graph for saveref's video latent.
+            "audiodec": {"samples": ("sampler", 0)},
         },
         # (core_id, input, type, required) replacements for the ports the dropped nodes owned
         "open_ports": {

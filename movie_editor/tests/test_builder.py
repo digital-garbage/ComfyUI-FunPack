@@ -464,7 +464,7 @@ def test_h3_wires_studio_conditioning_straight_to_the_sampler():
     sampler = graph["sampler"]["inputs"]
     assert sampler["positive"] == ["studio", 1]
     assert sampler["negative"] == ["studio", 2]
-    assert graph["audiodec"]["inputs"]["samples"] == ["separate", 1]
+    # audio decode source is asserted in its own test (it reads the sampler latent on H3)
 
 
 def test_h3_latent_slot_feeds_the_sampler_directly():
@@ -726,3 +726,16 @@ def test_no_installed_loader_for_the_socket_type_is_reported():
     graph, report = builder.build(oi, models, params)
     assert "frames" not in graph["slot_f"]["inputs"]
     assert any("no installed node can load a video reference" in m for m in report["unsatisfied"])
+
+
+def test_h3_audio_decodes_from_the_sampler_latent_not_a_separated_stream():
+    """ComfyUI's official H3 templates feed the raw sampler latent to BOTH decodes and let
+    each VAE take its own stream. Unbinding first hands the audio VAE a different object
+    than the reference graph does. LTX is unchanged — it keeps the separate step."""
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    assert graph["audiodec"]["inputs"]["samples"] == ["sampler", 0]
+    # `separate` stays: it still supplies the VIDEO latent to the refinement save.
+    assert graph["saveref"]["inputs"]["latent"] == ["separate", 0]
+
+    ltx, _ = builder.build(OI, {"slots": []}, PARAMS)
+    assert ltx["audiodec"]["inputs"]["samples"] == ["separate", 1]
