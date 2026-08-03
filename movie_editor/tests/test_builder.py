@@ -550,3 +550,75 @@ def test_an_unknown_family_falls_back_to_ltxav_rather_than_emitting_nothing():
     assert builder.family_of({}) == "ltxav"
     assert builder.family_of(None) == "ltxav"
     assert builder.family_of({"model_family": "MiniMax_H3"}) == "minimax_h3"
+
+
+# ── autogrow list inputs (MiniMax H3 reference nodes) ─────────────────────────
+
+REF_OI = dict(OI)
+REF_OI["MiniMaxH3ReferenceToVideo"] = {
+    "input": {"required": {
+        "clip": ["CLIP"],
+        "prompt": ["STRING", {"default": ""}],
+        "ref_images": ["COMFY_AUTOGROW_V3", {
+            "template": {"input": {"optional": {"ref_image": ["IMAGE", {}]}},
+                         "prefix": "ref_image", "min": 0, "max": 4}}],
+    }},
+    "output": ["CONDITIONING"], "output_name": ["conditioning"]}
+
+
+def test_autogrow_entries_are_wired_by_their_expanded_names():
+    """The API graph carries ref_image0/ref_image1, never the 'ref_images' wrapper — that
+    is the shape ComfyUI expands back into the node's list."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
+         "wires": {}, "input_sources": {"ref_image0": "out:li:IMAGE", "ref_image1": "timeline"}},
+    ]}
+    graph, report = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_image0"] == ["slot_li", 0]
+    assert ins["ref_image1"] == ["media_load", 0]
+    assert "ref_images" not in ins                 # the template name is never sent
+    # an unwired entry is simply absent — never blocking, never an empty placeholder
+    assert "ref_image2" not in ins and "ref_image3" not in ins
+    assert not any("ref_image" in m for m in report["blocking"])
+
+
+def test_a_single_image_producer_is_not_copied_into_every_autogrow_slot():
+    """Auto-wire fills a lone unambiguous input; for a LIST input that would duplicate one
+    reference across all ten indices. Autogrow entries are explicit-only."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {}},
+    ]}
+    graph, report = builder.build(REF_OI, models, PARAMS)
+    assert not [k for k in graph["slot_r"]["inputs"] if k.startswith("ref_image")]
+    assert not any("ref_image" in m for m in report["unsatisfied"] + report["ambiguous"])
+
+
+def test_a_node_widget_can_be_driven_by_the_project_prompt():
+    """A custom node with its own prompt field takes the run's prompt through a linked
+    input, instead of the user keeping two copies of the text in sync by hand."""
+    models = {"slots": [{"id": "r", "node_class": "MiniMaxH3ReferenceToVideo",
+                         "inputs": {"prompt": "stale text"}, "wires": {}}],
+              "links": [{"id": "l1", "source": "editor", "editor_key": "prompt",
+                         "members": [{"slotId": "r", "input": "prompt"}]}]}
+    graph, _ = builder.build(REF_OI, models, PARAMS)
+    assert graph["slot_r"]["inputs"]["prompt"] == "scene one"
+
+
+def test_a_core_combo_value_missing_on_this_machine_falls_back_instead_of_blocking():
+    """ComfyUI validates combo values against the LIVE list and rejects the whole prompt if
+    one is stale — so a projector/LoRA left selected on a machine that doesn't have the file
+    stopped every run, even with the feature switched off."""
+    oi = dict(OI)
+    sampler = {k: dict(v) for k, v in oi["FunPackLTXAVSceneChainSampler"].items()
+               if k in ("input",)}
+    sampler["input"] = {"required": dict(oi["FunPackLTXAVSceneChainSampler"]["input"]["required"])}
+    sampler["input"]["required"]["identity_projector"] = [["None"], {"default": "None"}]
+    oi["FunPackLTXAVSceneChainSampler"] = {**oi["FunPackLTXAVSceneChainSampler"], **sampler}
+    params = dict(PARAMS)
+    params["sampler_inputs"] = {"identity_projector": "Best_FaceID_v1.0_ArcFace_Projector.safetensors"}
+    graph, report = builder.build(oi, {"slots": []}, params)
+    assert graph["sampler"]["inputs"]["identity_projector"] == "None"
+    assert any("identity_projector" in m and "not installed" in m for m in report["unsatisfied"])

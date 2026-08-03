@@ -522,9 +522,12 @@
       slot.input_sources = slot.input_sources || {};
       const sbox = el("div", "wire-box");
       sbox.append(el("div", "wire-title", "Input sources"));
-      cand.connection_inputs.forEach((ci) => {
+      visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
         const row = el("div", "wire-row");
-        row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
+        const lbl = el("span", "wire-out", `${ci.name} (${ci.type})`);
+        if (ci.autogrow)
+          lbl.title = `Entry ${ci.autogrow.index + 1} of the node's "${ci.autogrow.parent}" list — fill one and the next appears.`;
+        row.append(lbl);
         row.append(el("span", "wire-arrow", "←"));
         const srcs = allowedSources(slot, ci);
         const sel = el("select", "wire-select");
@@ -563,7 +566,7 @@
     ports.filter((p) => typeAccepts(p.type, type)).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
-      (c2?.connection_inputs || []).filter((ci) => typeAccepts(ci.type, type)).forEach((ci) =>
+      visibleConnectionInputs(s2, c2?.connection_inputs).filter((ci) => typeAccepts(ci.type, type)).forEach((ci) =>
         out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.name}` }));
       // Widget inputs can also receive a connection (ComfyUI converts a widget to an
       // input when wired) — e.g. EmptyLatentVideo.width/height. Offer them as targets.
@@ -571,6 +574,30 @@
         out.push({ value: `node:${s2.id}:${w.name}`, label: `${slotFullLabel(s2)} · ${w.name} (widget)` }));
     });
     return out;
+  }
+
+  // Whether a connection input already has something feeding it — an explicitly chosen
+  // source, or an output wired in from another node.
+  function inputIsFed(slot, name) {
+    const src = (slot.input_sources || {})[name];
+    if (src && src !== "auto") return true;
+    return (config.slots || []).some((s2) => s2.id !== slot.id &&
+      Object.values(s2.wires || {}).some((tg) => wireTargets(tg).includes(`node:${slot.id}:${name}`)));
+  }
+
+  // Autogrow list inputs (MiniMax H3's ref_images, ref_videos, …) reach us already expanded
+  // into one socket per index — ref_image0 … ref_image9. Showing all ten of each list would
+  // bury the node, so the list renders what's filled plus one empty slot and grows as it is
+  // used, the way ComfyUI's own canvas grows it.
+  function visibleConnectionInputs(slot, cis) {
+    const lastFed = {};
+    (cis || []).forEach((ci) => {
+      const ag = ci.autogrow;
+      if (ag && inputIsFed(slot, ci.name))
+        lastFed[ag.parent] = Math.max(lastFed[ag.parent] == null ? -1 : lastFed[ag.parent], ag.index);
+    });
+    return (cis || []).filter((ci) => !ci.autogrow ||
+      ci.autogrow.index <= (lastFed[ci.autogrow.parent] == null ? -1 : lastFed[ci.autogrow.parent]) + 1);
   }
 
   // Available sources for a slot connection input of a given type.
@@ -800,7 +827,8 @@
     function renderDetail() {
       clear(detail);
       if (!curCand) return;
-      const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: {} };
+      // Shares the draft's input_sources so a filled autogrow entry reveals the next one.
+      const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: draft.input_sources };
 
       if ((curCand.inputs || []).length) {
         detail.append(el("div", "wire-title", "Values"));
@@ -833,7 +861,7 @@
       if ((curCand.connection_inputs || []).length) {
         const sbox = el("div", "wire-box");
         sbox.append(el("div", "wire-title", "Input sources"));
-        curCand.connection_inputs.forEach((ci) => {
+        visibleConnectionInputs(draftSlot, curCand.connection_inputs).forEach((ci) => {
           const row = el("div", "wire-row");
           row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
           row.append(el("span", "wire-arrow", "←"));
@@ -842,7 +870,10 @@
           allowedSources(draftSlot, ci).forEach((s) => {
             const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o);
           });
-          sel.onchange = () => { if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name]; };
+          sel.onchange = () => {
+            if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name];
+            if (ci.autogrow) renderDetail();  // filling a list entry reveals the next one
+          };
           row.append(sel);
           sbox.append(row);
         });
@@ -988,6 +1019,21 @@
   }
 
   // ── linked-inputs section ──────────────────────────────────────────────────────
+  // Project values a linked input can be driven by at generation time. `kinds` is the
+  // widget kinds each one can legitimately fill — the prompt bindings are what let a
+  // custom node's own text field (e.g. MiniMaxH3ReferenceToVideo.prompt) receive the
+  // same prompt the built-in encoder gets, instead of being typed twice.
+  const EDITOR_SOURCES = [
+    { key: "", label: "Manual value" },
+    { key: "prompt", label: "Project · Prompt (global)", kinds: ["string"] },
+    { key: "negative_prompt", label: "Project · Negative prompt", kinds: ["string"] },
+    { key: "seed", label: "Project · Seed", kinds: ["int", "float"] },
+    { key: "frame_rate", label: "Project · FPS", kinds: ["int", "float"] },
+    { key: "num_frames_per_scene", label: "Project · Frames", kinds: ["int", "float"] },
+    { key: "width", label: "Project · Width", kinds: ["int", "float"] },
+    { key: "height", label: "Project · Height", kinds: ["int", "float"] },
+  ];
+
   function linkExposeBtn(link) {
     const b = el("button", "eye-btn" + (link.exposed ? " on" : ""), "◉"); b.type = "button";
     b.title = link.exposed ? "Hide from main editor window" : "Show in main editor window";
@@ -1012,9 +1058,12 @@
     const srcRow = el("label", "field link-source");
     srcRow.append(el("span", null, "Driven by"));
     const srcSel = el("select");
-    [["", "Manual value"], ["frame_rate", "Project · FPS"], ["num_frames_per_scene", "Project · Frames"],
-     ["width", "Project · Width"], ["height", "Project · Height"]].forEach(([v, label]) => {
-      const o = new Option(label, v); if ((link.source === "editor" ? link.editor_key : "") === v) o.selected = true; srcSel.append(o);
+    const cur = link.source === "editor" ? link.editor_key : "";
+    EDITOR_SOURCES.forEach(({ key, label, kinds }) => {
+      // Only offer a project value a field of this kind can actually hold — feeding a
+      // number into a text field (or a prompt into a width) silently breaks generation.
+      if (key && kinds && link.kind && !kinds.includes(link.kind) && key !== cur) return;
+      const o = new Option(label, key); if (key === cur) o.selected = true; srcSel.append(o);
     });
     srcSel.onchange = async () => {
       if (srcSel.value) { link.source = "editor"; link.editor_key = srcSel.value; }
@@ -1025,7 +1074,8 @@
     card.append(srcRow);
 
     if (link.source === "editor") {
-      card.append(el("div", "link-bound", `Value comes from the project setting at generate.`));
+      const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
+      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`));
     } else {
       const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
       const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });

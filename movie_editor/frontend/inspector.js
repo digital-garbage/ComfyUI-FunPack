@@ -701,7 +701,9 @@
     if (!slotItems.length && !linkItems.length) return;
     const wrap = el("div", "insp-block");
     const tag = el("div", "insp-tag"); tag.textContent = "Exposed controls"; wrap.append(tag);
-    const SRC_LBL = { frame_rate: "Project FPS", num_frames_per_scene: "Project Frames", width: "Project Width", height: "Project Height" };
+    const SRC_LBL = { frame_rate: "Project FPS", num_frames_per_scene: "Project Frames",
+      width: "Project Width", height: "Project Height", prompt: "Project Prompt",
+      negative_prompt: "Project Negative prompt", seed: "Project Seed" };
     linkItems.forEach((l) => {
       if (l.source === "editor") {
         const note = el("div", "lib-sub"); note.textContent = `← ${SRC_LBL[l.editor_key] || l.editor_key}`;

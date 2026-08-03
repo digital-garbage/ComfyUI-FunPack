@@ -102,6 +102,59 @@ def _combo_default(opts: dict, choices: list | None = None):
         return d
     return choices[0] if choices else ""
 
+def _is_autogrow_type(t) -> bool:
+    """A V3 autogrow list input (COMFY_AUTOGROW_V3): not a socket itself, but a template
+    that ComfyUI expands into one real socket per index (ref_image0, ref_image1, …)."""
+    return isinstance(t, str) and "AUTOGROW" in t.upper()
+
+
+def _autogrow_names(opts: dict) -> list[str]:
+    """The socket names an autogrow input expands to. Two template flavours: a prefix with
+    a max count ("ref_image" x 10 -> ref_image0..ref_image9) or an explicit name list."""
+    tpl = opts.get("template")
+    if not isinstance(tpl, dict):
+        return []
+    names = tpl.get("names")
+    if isinstance(names, list):
+        return [str(n) for n in names]
+    prefix, mx = tpl.get("prefix"), tpl.get("max")
+    if isinstance(prefix, str) and isinstance(mx, int) and mx > 0:
+        return [f"{prefix}{i}" for i in range(mx)]
+    return []
+
+
+def _autogrow_element_type(opts: dict) -> str | None:
+    """The type of ONE element of an autogrow list — the template's single input, e.g. IMAGE
+    for ref_images. Widget-typed templates are forced to sockets by ComfyUI, so they count too."""
+    tpl = opts.get("template")
+    if not isinstance(tpl, dict):
+        return None
+    inp = tpl.get("input")
+    if not isinstance(inp, dict):
+        return None
+    for group in ("required", "optional"):
+        for spec in (inp.get(group) or {}).values():
+            if isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], str):
+                return spec[0]
+    return None
+
+
+def _autogrow_children(name: str, opts: dict) -> list[dict]:
+    """Expand an autogrow input into its indexed sockets. Empty when the template can't be
+    read — the caller then falls back to the raw (unwireable) input so nothing regresses."""
+    t = _autogrow_element_type(opts)
+    names = _autogrow_names(opts)
+    if not t or not names:
+        return []
+    return [
+        # Always optional: the API graph carries only the indices that are actually wired,
+        # and ComfyUI grows the schema to match, so an unwired index must never block.
+        {"name": nm, "type": _normalize_type(t), "required": False,
+         "autogrow": {"parent": name, "index": i}}
+        for i, nm in enumerate(names)
+    ]
+
+
 # ComfyUI V3 dynamic match types that are semantically IMAGE-compatible.
 _MATCHTYPE_ALIASES: dict[str, str] = {}  # populated on first lookup — patterns are prefix-matched
 
@@ -181,6 +234,12 @@ def _all_input_types(node_def: dict) -> list[str]:
         for spec in (inp.get(group) or {}).values():
             t = spec[0] if isinstance(spec, list) and spec else None
             opts = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if _is_autogrow_type(t):
+                # The node consumes the ELEMENT type (IMAGE), not the list wrapper.
+                el_t = _autogrow_element_type(opts)
+                if el_t:
+                    types.extend(link_types(el_t))
+                    continue
             if isinstance(t, str) and not widget_type_of(t, opts):
                 types.extend(link_types(t))
     return types
@@ -214,6 +273,15 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(t, str):
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if _is_autogrow_type(t):
+                # A list input (H3's ref_images/ref_videos/…): the parent name is never wired
+                # in the API graph — ComfyUI expands it into ref_image0, ref_image1, … and
+                # rebuilds the dict from whichever indices are present. Offer those sockets
+                # instead, so they can be sourced like any other input.
+                children = _autogrow_children(name, opts)
+                if children:
+                    out.extend(children)
+                    continue
             wt = widget_type_of(t, opts)
             if wt:
                 # A widget-typed input is a SOCKET (wireable) only when forceInput is set —

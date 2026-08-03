@@ -195,6 +195,63 @@ def test_multitype_socket_stays_a_socket_and_matches_any_member():
     assert nodes.widget_type_of("FLOAT,INT", {}) == "FLOAT"   # no hint → first member wins
 
 
+def _autogrow_oi():
+    """MiniMaxH3ReferenceToVideo-shaped node: V3 autogrow list inputs. ComfyUI serializes
+    them as one COMFY_AUTOGROW_V3 entry carrying the per-element template."""
+    return {"MiniMaxH3ReferenceToVideo": {
+        "input": {
+            "required": {
+                "clip": ["CLIP"],
+                "prompt": ["STRING", {"multiline": True}],
+                "ref_images": ["COMFY_AUTOGROW_V3", {
+                    "template": {"input": {"optional": {"ref_image": ["IMAGE", {}]}},
+                                 "prefix": "ref_image", "min": 0, "max": 3}}],
+                "ref_audios": ["COMFY_AUTOGROW_V3", {
+                    "template": {"input": {"optional": {"ref_audio": ["AUDIO", {}]}},
+                                 "names": ["ref_audio_a", "ref_audio_b"], "min": 0}}],
+            },
+        },
+        "output": ["CONDITIONING"], "display_name": "MiniMax H3 Reference To Video",
+    }}
+
+
+def test_autogrow_list_input_expands_into_wireable_sockets():
+    """An autogrow input is a TEMPLATE, not a socket — nothing can be wired to
+    'ref_images' itself. Expand it into the indexed sockets ComfyUI actually accepts
+    (ref_image0…), typed as the element type, or the timeline image and every IMAGE
+    producer are missing from the source picker."""
+    desc = nodes.describe_node(_autogrow_oi(), "MiniMaxH3ReferenceToVideo")
+    ci = {c["name"]: c for c in desc["connection_inputs"]}
+    assert "ref_images" not in ci and "ref_audios" not in ci
+    assert [ci[n]["type"] for n in ("ref_image0", "ref_image1", "ref_image2")] == ["IMAGE"] * 3
+    assert ci["ref_image0"]["autogrow"] == {"parent": "ref_images", "index": 0}
+    # explicit-name templates keep their own names, in order
+    assert ci["ref_audio_a"]["type"] == "AUDIO"
+    assert ci["ref_audio_b"]["autogrow"] == {"parent": "ref_audios", "index": 1}
+    # never required: only the wired indices are sent, so an empty one must not block
+    assert not any(ci[n]["required"] for n in ci if n.startswith("ref_"))
+    # the list wrapper is not a user widget either
+    assert {w["name"] for w in desc["inputs"]} == {"prompt"}
+
+
+def test_autogrow_element_type_drives_role_matching():
+    """Role matching reads a node's INPUT types; an autogrow list consumes its element
+    type (IMAGE), not the COMFY_AUTOGROW_V3 wrapper."""
+    oi = _autogrow_oi()
+    oi["MiniMaxH3ReferenceToVideo"]["output"] = ["IMAGE"]
+    # consumes IMAGE + emits IMAGE = a processor, not a pure source
+    assert "MiniMaxH3ReferenceToVideo" in [c["class"] for c in nodes.candidates(oi, "image_processing")]
+
+
+def test_unreadable_autogrow_template_falls_back_to_the_raw_input():
+    """A template we can't parse (future shape) must leave the input as it was — visible,
+    if unwireable — rather than dropping it from the node entirely."""
+    oi = {"Weird": {"input": {"required": {"refs": ["COMFY_AUTOGROW_V3", {"template": {}}]}},
+                    "output": ["CONDITIONING"], "display_name": "Weird"}}
+    ci = {c["name"]: c["type"] for c in nodes.describe_node(oi, "Weird")["connection_inputs"]}
+    assert ci == {"refs": "COMFY_AUTOGROW_V3"}
+
+
 def test_models_store_roundtrip(tmp_path, monkeypatch):
     from movie_editor.backend import config
     monkeypatch.setattr(config, "DATA_DIR", tmp_path)

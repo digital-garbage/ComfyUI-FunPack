@@ -418,6 +418,24 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             graph["keyloader"]["inputs"]["refinement_key"] = "-None-"
 
         # 2b. project-level widget overrides for the built-in FunPack nodes.
+        # A saved combo selection is checked against the LIVE list ComfyUI validates with:
+        # a projector / LoRA / model file that isn't on THIS machine makes ComfyUI reject
+        # the whole prompt ("Value not in list"), so nothing queues at all — even when the
+        # feature reading it is switched off. Fall back to the node's default and say so,
+        # rather than stalling the run on a setting that isn't in play.
+        def _live_value(cid: str, name: str, value):
+            nd_c = object_info.get((graph.get(cid) or {}).get("class_type"))
+            choices = _widget_choices(nd_c).get(name)
+            if not choices or isinstance(value, list) or value in choices:
+                return value
+            fallback = _widget_defaults(nd_c).get(name)
+            if fallback not in choices:
+                fallback = choices[0]
+            report["unsatisfied"].append(
+                f"{graph[cid]['class_type']}.{name}: '{value}' is not installed on this "
+                f"machine — using '{fallback}' instead.")
+            return fallback
+
         _me_scene_ratings = None
         for k, v in (params.get("studio_inputs") or {}).items():
             if str(k).startswith("_"):
@@ -425,7 +443,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     _me_scene_ratings = v
                 continue
             if k not in graph["studio"]["inputs"] or not isinstance(graph["studio"]["inputs"][k], list):
-                graph["studio"]["inputs"][k] = v
+                graph["studio"]["inputs"][k] = _live_value("studio", k, v)
 
         # split_by_transitions is NOT a top-level Studio input — Studio reads it from
         # studio_settings.refiner.split_by_transitions (default False = single-scene mode).
@@ -465,7 +483,7 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         graph["studio"]["inputs"]["studio_settings"] = json.dumps(_ss)
         for k, v in (params.get("sampler_inputs") or {}).items():
             if k not in graph["sampler"]["inputs"] or not isinstance(graph["sampler"]["inputs"][k], list):
-                graph["sampler"]["inputs"][k] = v
+                graph["sampler"]["inputs"][k] = _live_value("sampler", k, v)
 
     # The global editor outputs: a VHS_VideoCombine synthesized on demand when a slot output
     # is wired to global:video / global:audio. Lazily created so it only exists when used.
@@ -982,6 +1000,11 @@ def _autowire(graph, slots, slot_node_id, slot_def, object_info, producers, repo
             continue  # inert slot (feeds nothing) — don't auto-wire or block on its inputs
         nd = slot_def[s["id"]]
         for ci in connection_inputs(nd or {}):
+            # Autogrow list sockets (ref_image0, ref_image1, …) are explicit-only: a single
+            # IMAGE producer would otherwise be auto-wired into EVERY index, silently
+            # duplicating one reference ten times. An unwired index is simply absent.
+            if ci.get("autogrow"):
+                continue
             targets.append((slot_node_id[s["id"]], ci["name"], ci["type"], ci.get("required", False)))
 
     for node_id, inp, t, required in targets:
