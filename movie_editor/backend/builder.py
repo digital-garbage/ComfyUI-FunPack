@@ -470,12 +470,6 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         _vars = params.get("variables")
         if isinstance(_vars, (list, dict)) and _vars:
             _rf["variables"] = _vars
-        # MiniMax H3 reference media (ref2va). Studio resolves and presents them; it records
-        # the resolved order on the conditioning so the Chain Sampler encodes the same list.
-        # Sent only for the family that can use it, so an LTX project's graph is unchanged.
-        _refs = params.get("h3_references")
-        if family == "minimax_h3" and isinstance(_refs, list) and _refs:
-            _rf["h3_references"] = _refs
         if _me_scene_ratings:
             _rf["movie_editor_scene_ratings"] = _me_scene_ratings
         _ss["refiner"] = _rf
@@ -530,9 +524,33 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
             msg = f"Slot node '{cls}' is not installed in ComfyUI."
             report["unsatisfied"].append(msg); report["blocking"].append(msg)
 
+    # Media marked "R" in the bin, by id — one loader node per (media, loader class) so two
+    # sockets fed from the same reference share it instead of decoding it twice.
+    references = {str(r.get("id")): r for r in (params.get("references") or []) if r.get("id")}
+
+    def _reference_link(ref_id: str, want_type: Optional[str], where: str):
+        ref = references.get(ref_id)
+        if not ref or not ref.get("filename"):
+            report["unsatisfied"].append(
+                f"{where}: reference media '{ref_id}' is no longer in the media bin.")
+            return None
+        found = _reference_loader(object_info, ref.get("kind") or "image", want_type)
+        if not found:
+            report["unsatisfied"].append(
+                f"{where}: no installed node can load a {ref.get('kind')} reference "
+                f"into a {want_type} input.")
+            return None
+        cls, oidx, file_input = found
+        nid = f"ref_load_{ref_id}_{cls}"
+        graph.setdefault(nid, {"class_type": cls,
+                               "inputs": {**_widget_defaults(object_info.get(cls)),
+                                          file_input: ref["filename"]}})
+        return [nid, oidx]
+
     # 3b. explicit input sources: user-chosen source for a slot's connection input.
     # Runs before auto-wire so these pre-empt the uniqueness heuristic.
     # source values: "" / "auto" → skip; "timeline" → scene image (media_load);
+    #   "ref:<mediaId>" → media marked R in the bin;
     #   "out:<slotId>:<outName>" → another slot's named output;
     #   "core:<coreId>:<outIdx>" → a core primitive output.
     for s in slots:
@@ -549,6 +567,15 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
                     graph[sid]["inputs"][ci_name] = ["media_load", 0]
                     protected_edges.add((sid, ci_name))
                     report["wired"].append(f"timeline image -> {sid}.{ci_name}")
+                continue
+            if source.startswith("ref:"):
+                want = next((ci["type"] for ci in connection_inputs(nd_s or {})
+                             if ci["name"] == ci_name), None)
+                link = _reference_link(source[4:], want, f"{s.get('node_class')}.{ci_name}")
+                if link:
+                    graph[sid]["inputs"][ci_name] = link
+                    protected_edges.add((sid, ci_name))
+                    report["wired"].append(f"reference -> {sid}.{ci_name}")
                 continue
             src = _resolve_source(source, slot_node_id, slot_def, object_info)
             if src:
@@ -849,6 +876,34 @@ def _resolve_source(source: str, slot_node_id: dict, slot_def: dict, object_info
     if source.startswith("core:"):
         _, cid, oidx = source.split(":", 2)
         return (cid, int(oidx))
+    return None
+
+
+# Loaders that turn a marked ("R") media-bin file into a graph output, per media kind.
+# Ordered by preference; the first one INSTALLED whose output type the destination socket
+# accepts wins, so a video reference can feed either a VIDEO socket or a frames (IMAGE) one
+# depending on what the node actually asks for.
+REFERENCE_LOADERS: dict[str, list[tuple[str, str, str]]] = {
+    "image": [("LoadImage", "IMAGE", "image")],
+    "audio": [("LoadAudio", "AUDIO", "audio")],
+    "video": [("LoadVideo", "VIDEO", "file"), ("VHS_LoadVideo", "IMAGE", "video")],
+}
+
+
+def _reference_loader(object_info: dict, kind: str, want_type: Optional[str]):
+    """(class, output_index, filename_input) for loading a reference of `kind` into a socket
+    of `want_type`. None when nothing installed can bridge the two."""
+    for cls, out_type, file_input in REFERENCE_LOADERS.get(kind, []):
+        nd = object_info.get(cls)
+        if not nd:
+            continue
+        outs = node_outputs(nd)
+        for i, o in enumerate(outs):
+            if want_type and not type_accepts(want_type, o["type"]):
+                continue
+            if not want_type and o["type"] != out_type:
+                continue
+            return cls, i, file_input
     return None
 
 

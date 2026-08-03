@@ -150,6 +150,9 @@
       mediaPreview: st.mediaPreviewId,
       // Continuity pin renders on gallery cards (📌 button state + thumb badge).
       pin: st.project?.continuity_settings?.identity_pin_ref,
+      // Reference marks render the same way (R button + numbered badge), and their ORDER
+      // is the numbering — so the fingerprint has to follow the list, not just its length.
+      refs: (st.project?.references || []).join(","),
       shortcuts: st.shortcuts?.length,
       transitions: st.transitions?.length,
       nleEffects: st.nleEffects?.length,

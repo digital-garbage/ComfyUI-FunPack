@@ -587,6 +587,12 @@ class Project:
     # {"kind": "image"|"audio"|"video", "filename": <media-bin file>, "audio": <optional
     # soundtrack file, video only>}. Ignored by every other model family.
     h3_references: list = field(default_factory=list)
+    # Media marked "R" in the Media Bin / Easy Gen gallery: an ORDERED list of media-bin ids
+    # (mark order — R1, R2, R3 — which is what the badge shows). Each becomes a wireable
+    # source in Models & Pipeline, so any node input that takes an image / video / audio can
+    # be fed from marked media. Order is the only thing distinguishing one from another, so
+    # it is preserved on write and never re-sorted.
+    references: list = field(default_factory=list)
     # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
     # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
     prompt_templates: list = field(default_factory=list)
@@ -655,6 +661,7 @@ class Project:
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
             variables=list(d.get("variables") or []),
             h3_references=list(d.get("h3_references") or []),
+            references=[str(r) for r in (d.get("references") or []) if r],
             prompt_templates=list(d.get("prompt_templates") or []),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),

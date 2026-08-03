@@ -134,10 +134,14 @@
   function allowedSources(slot, ci) {
     const all = sources(slot, ci.type);
     if (!pipelineLocked()) return all;
+    // Guided wiring hides core internals, but marked media is user-supplied input, not
+    // pipeline plumbing — it stays offered in both modes.
     if (slot.role === "image_processing" && ci.name === "image" && typeAccepts(ci.type, "IMAGE")) {
-      return all.filter((s) => !s.value || s.value === "timeline" || s.value.startsWith("out:"));
+      return all.filter((s) => !s.value || s.value === "timeline"
+        || s.value.startsWith("out:") || s.value.startsWith("ref:"));
     }
-    return all.filter((s) => !s.value || s.value.startsWith("out:") || s.value === "timeline");
+    return all.filter((s) => !s.value || s.value.startsWith("out:")
+      || s.value === "timeline" || s.value.startsWith("ref:"));
   }
 
   // ── linked inputs (one control drives several node inputs) ────────────────────
@@ -634,11 +638,36 @@
       ci.autogrow.index <= (lastFed[ci.autogrow.parent] == null ? -1 : lastFed[ci.autogrow.parent]) + 1);
   }
 
+  // What a marked reference can feed, by media kind. A video reference can drive either a
+  // VIDEO socket or a frames (IMAGE) one — the builder picks a loader to match whichever
+  // the destination actually asks for.
+  const REF_KIND_TYPES = { image: ["IMAGE"], audio: ["AUDIO"], video: ["VIDEO", "IMAGE"] };
+  const REF_KIND_LABEL = { image: "image", audio: "audio", video: "video" };
+
+  // Media marked "R" in the Media Bin / gallery, in mark order — R1, R2, R3 — offered to any
+  // socket whose type that kind of media can fill.
+  function referenceSources(type) {
+    const st = window.Store?.get() || {};
+    const marks = st.project?.references || [];
+    const bin = st.mediaBin || [];
+    const out = [];
+    marks.forEach((id, i) => {
+      const m = bin.find((x) => x.id === id);
+      if (!m) return;
+      const kinds = REF_KIND_TYPES[m.kind] || [];
+      if (!kinds.some((t) => typeAccepts(type, t))) return;
+      out.push({ value: `ref:${id}`, label: `R${i + 1} · ${m.name} (${REF_KIND_LABEL[m.kind] || m.kind})` });
+    });
+    return out;
+  }
+
   // Available sources for a slot connection input of a given type.
-  // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>", "timeline" (IMAGE only).
+  // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>",
+  // "timeline" (IMAGE only), "ref:<mediaId>" (media marked R in the bin).
   function sources(slot, type) {
     const out = [{ value: "", label: "(auto-wire)" }];
     if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });
+    referenceSources(type).forEach((r) => out.push(r));
     coreProducers.filter((p) => typeAccepts(type, p.type)).forEach((p) =>
       out.push({ value: p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {

@@ -333,6 +333,13 @@ input[type=number] { font-family: var(--font-mono); }
 .media-act.media-pin.active { filter: none; background: var(--amber-soft); }
 .media-pin-badge { position: absolute; top: 3px; left: 3px; font-size: 10px; line-height: 1;
   padding: 2px 3px; border-radius: 4px; background: rgba(0, 0, 0, .55); pointer-events: none; }
+/* Reference mark. Reads as a letter, not an icon, so it sits beside the pin without
+   competing with it — and the badge carries the index, which is the load-bearing part. */
+.media-act.media-ref { font-weight: 700; }
+.media-act.media-ref.active { color: var(--ink-0); background: var(--amber); }
+.media-ref-badge { position: absolute; top: 3px; right: 3px; font-size: 9px; font-weight: 700;
+  line-height: 1; padding: 2px 4px; border-radius: 4px; color: var(--ink-0);
+  background: var(--amber); pointer-events: none; }
 .media-name-edit {
   flex: 1; min-width: 0; box-sizing: border-box; margin: 0; padding: 2px 4px; font-size: 10px;
   background: var(--ink-0); border: 1px solid var(--amber); border-radius: 4px; color: var(--text);

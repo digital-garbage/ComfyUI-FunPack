@@ -398,6 +398,32 @@ def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     return fn
 
 
+def _prepare_references(proj: Project) -> list[dict]:
+    """Marked ("R") media, in mark order, copied into ComfyUI's input folder.
+
+    Returns [{id, kind, name, filename, index}] for the builder, which injects a loader per
+    reference wherever one is wired. An id whose file has gone is dropped here and reported
+    by the builder against the socket that wanted it, rather than failing the whole run.
+    """
+    import os
+    try:
+        import folder_paths
+        indir = folder_paths.get_input_directory()
+    except Exception:
+        return []
+    out: list[dict] = []
+    for i, mid in enumerate(proj.references or []):
+        item = media.get(mid)
+        if not item:
+            continue
+        fn = _copy_scene_media(mid, indir)
+        if not fn:
+            continue
+        out.append({"id": mid, "kind": item.get("kind") or "image",
+                    "name": item.get("name") or mid, "filename": fn, "index": i + 1})
+    return out
+
+
 def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_available: bool = True) -> Optional[dict]:
     """Copy scene image assets into ComfyUI's input folder.
 
@@ -1701,7 +1727,10 @@ if web is not None and PromptServer is not None:
                 "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
                 "variables": list(target.variables or []),
-                "h3_references": list(target.h3_references or []),
+                # Reference media is wired to node inputs now (Media Bin "R" → Models &
+                # Pipeline), so the editor no longer drives Studio's built-in ref2va list.
+                # Project.h3_references stays readable for old project files; it is inert.
+                "references": _prepare_references(target),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)

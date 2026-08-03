@@ -639,3 +639,90 @@ def test_an_autogrow_entry_saved_under_its_bare_name_still_wires():
     assert ins["ref_images.ref_image0"] == ["slot_li", 0]   # via input_sources
     assert ins["ref_images.ref_image1"] == ["slot_li", 0]   # via the mirrored wire
     assert "ref_image0" not in ins and "ref_image1" not in ins
+
+
+# ── media marked "R" in the bin, wired to node inputs ─────────────────────────
+
+REF_OI["LoadAudio"] = {"input": {"required": {"audio": [["a.wav"]]}}, "output": ["AUDIO"],
+                       "output_name": ["AUDIO"]}
+REF_OI["LoadVideo"] = {"input": {"required": {"file": [["a.mp4"]]}}, "output": ["VIDEO"],
+                       "output_name": ["VIDEO"]}
+
+
+def _ref_params(*refs):
+    p = dict(PARAMS)
+    p["references"] = [dict(r, index=i + 1) for i, r in enumerate(refs)]
+    return p
+
+
+def test_a_marked_reference_injects_its_own_loader_and_wires_it():
+    models = {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref:m1"}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "image", "name": "face.png",
+                          "filename": "funpack_movie_m1.png"})
+    graph, report = builder.build(REF_OI, models, params)
+    load = next(n for n, d in graph.items() if d["class_type"] == "LoadImage" and n != "media_load")
+    assert graph[load]["inputs"]["image"] == "funpack_movie_m1.png"
+    assert graph["slot_r"]["inputs"]["ref_images.ref_image0"] == [load, 0]
+    assert not any("reference" in m for m in report["blocking"])
+
+
+def test_two_sockets_on_one_reference_share_a_single_loader():
+    """Decoding the same clip twice would cost real time on every run — and for a video
+    reference, that is an ffmpeg decode."""
+    models = {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref:m1", "ref_images.ref_image1": "ref:m1"}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "image", "name": "face.png",
+                          "filename": "funpack_movie_m1.png"})
+    graph, _ = builder.build(REF_OI, models, params)
+    loaders = [n for n, d in graph.items() if d["class_type"] == "LoadImage"]
+    assert len(loaders) == 1
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_images.ref_image0"] == ins["ref_images.ref_image1"] == [loaders[0], 0]
+
+
+def test_the_loader_matches_what_the_destination_socket_asks_for():
+    """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
+    loader is chosen by the socket's type, not by guessing from the file."""
+    oi = dict(REF_OI)
+    oi["AudioNode"] = {"input": {"required": {"clip": ["AUDIO"]}}, "output": ["CONDITIONING"]}
+    models = {"slots": [
+        {"id": "a", "node_class": "AudioNode", "inputs": {}, "wires": {},
+         "input_sources": {"clip": "ref:m2"}},
+    ]}
+    params = _ref_params({"id": "m2", "kind": "audio", "name": "voice.wav",
+                          "filename": "funpack_movie_m2.wav"})
+    graph, _ = builder.build(oi, models, params)
+    load = next(n for n, d in graph.items() if d["class_type"] == "LoadAudio")
+    assert graph[load]["inputs"]["audio"] == "funpack_movie_m2.wav"
+    assert graph["slot_a"]["inputs"]["clip"] == [load, 0]
+
+
+def test_a_reference_whose_file_is_gone_reports_instead_of_wiring_nothing():
+    models = {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref:missing"}},
+    ]}
+    graph, report = builder.build(REF_OI, models, _ref_params())
+    assert "ref_images.ref_image0" not in graph["slot_r"]["inputs"]
+    assert any("no longer in the media bin" in m for m in report["unsatisfied"])
+
+
+def test_no_installed_loader_for_the_socket_type_is_reported():
+    """A video reference aimed at an IMAGE socket needs a frames loader; with none
+    installed, say so rather than silently leaving the input unwired."""
+    oi = {k: v for k, v in REF_OI.items() if k not in ("LoadVideo",)}
+    oi["FramesNode"] = {"input": {"required": {"frames": ["IMAGE"]}}, "output": ["CONDITIONING"]}
+    models = {"slots": [
+        {"id": "f", "node_class": "FramesNode", "inputs": {}, "wires": {},
+         "input_sources": {"frames": "ref:m3"}},
+    ]}
+    params = _ref_params({"id": "m3", "kind": "video", "name": "clip.mp4",
+                          "filename": "funpack_movie_m3.mp4"})
+    graph, report = builder.build(oi, models, params)
+    assert "frames" not in graph["slot_f"]["inputs"]
+    assert any("no installed node can load a video reference" in m for m in report["unsatisfied"])
