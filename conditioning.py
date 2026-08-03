@@ -6141,6 +6141,53 @@ class FunPackVideoRefiner:
 
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 
+
+def _h3_reconcile_token_tags(conditioning, label=""):
+    """Keep MiniMax H3's `minimax_token_tags` aligned with the conditioning it rides on.
+
+    The DiT walks the tag vector position-by-position, so a conditioning whose token count
+    no longer matches its tags is an IndexError on the FIRST forward — reported as a bare
+    "list index out of range" with nothing pointing at the prompt or the conditioning.
+    Studio edits conditioning in many places, and H3 tokenizes reference images INTO the
+    same span (ref_image_size "match" scales them to the output resolution), so the count
+    moves when either the prompt or the resolution changes — which is what made this look
+    intermittent.
+
+    Grow the tags when tokens were appended, and drop them when they were removed or
+    replaced: a conditioning with no tags is handled by the DiT, one with WRONG tags is not.
+    Either way say so, because silently losing the tags changes how the DiT modulates the
+    text span. Non-H3 conditioning has no tags and passes straight through.
+    """
+    if not isinstance(conditioning, list):
+        return conditioning
+    try:
+        from .minimax_h3 import extend_token_tags, tags_match, token_tags_length
+    except ImportError:  # loaded as a top-level module (tests, direct import)
+        from minimax_h3 import extend_token_tags, tags_match, token_tags_length
+    out = []
+    for entry in conditioning:
+        if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                and isinstance(entry[1], dict) and hasattr(entry[0], "shape")):
+            out.append(entry)
+            continue
+        cond, meta = entry[0], entry[1]
+        if tags_match(cond, meta):
+            out.append(entry)
+            continue
+        have = token_tags_length(meta)
+        want = int(cond.shape[1])
+        if want > have:
+            meta = extend_token_tags(meta, want - have)
+            print(f"[FunPackStudio] MiniMax H3: {label} conditioning grew "
+                  f"{have} -> {want} tokens; extended minimax_token_tags to match.")
+        else:
+            meta = {k: v for k, v in meta.items() if k != "minimax_token_tags"}
+            print(f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
+                  f"minimax_token_tags describes {have} — dropping the stale tags. The DiT "
+                  f"falls back to its default modulation for the text span.")
+        out.append([cond, meta] + list(entry[2:]))
+    return out
+
 # Movie Editor sends this when the user did not rate before regenerating: apply session
 # memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
 # Must appear in V2_RATING_LABELS so ComfyUI /prompt validation accepts editor overrides.
@@ -14844,6 +14891,8 @@ class FunPackStudio:
             refinement_key=effective_refinement_key,
         )
 
+        cond = _h3_reconcile_token_tags(cond, "positive")
+        out_negative = _h3_reconcile_token_tags(out_negative, "negative")
         return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
 
     @staticmethod

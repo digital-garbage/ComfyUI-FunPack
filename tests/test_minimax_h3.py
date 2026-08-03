@@ -505,3 +505,40 @@ def test_an_audio_key_on_a_non_video_reference_is_ignored():
     """Only a video clip has a soundtrack; a stray key must not invent one."""
     spec = h3.normalize_ref_spec([{"kind": "image", "filename": "a.png", "audio": "a.wav"}])
     assert "audio" not in spec[0]
+
+
+# ── token tags stay aligned with the conditioning Studio hands on ─────────────
+
+def test_h3_token_tags_are_reconciled_before_studio_returns():
+    """A conditioning whose token count no longer matches minimax_token_tags is an
+    IndexError on the DiT's first forward, surfacing as a bare "list index out of range".
+    Studio edits conditioning in many places and H3 tokenizes reference images into the
+    same span, so the count moves with the prompt AND the output resolution."""
+    import torch
+    from conditioning import _h3_reconcile_token_tags
+
+    # grown: tokens were appended -> tags extend, tail takes the text tag (1)
+    grown = [[torch.zeros(1, 12, 8), {"minimax_token_tags": torch.zeros(10, dtype=torch.long)}]]
+    out = _h3_reconcile_token_tags(grown, "positive")
+    tags = out[0][1]["minimax_token_tags"].reshape(-1)
+    assert tags.shape[0] == 12
+    assert int(tags[-1]) == 1 and int(tags[0]) == 0
+
+    # shrunk: tags would describe positions that no longer exist -> drop them entirely,
+    # because WRONG tags crash where absent tags are handled
+    shrunk = [[torch.zeros(1, 6, 8), {"minimax_token_tags": torch.zeros(10, dtype=torch.long)}]]
+    out = _h3_reconcile_token_tags(shrunk, "positive")
+    assert "minimax_token_tags" not in out[0][1]
+
+    # already aligned -> untouched, same object
+    ok_meta = {"minimax_token_tags": torch.zeros(9, dtype=torch.long)}
+    ok = [[torch.zeros(1, 9, 8), ok_meta]]
+    assert _h3_reconcile_token_tags(ok, "positive")[0][1] is ok_meta
+
+
+def test_non_h3_conditioning_passes_through_untouched():
+    import torch
+    from conditioning import _h3_reconcile_token_tags
+    entry = [torch.zeros(1, 7, 8), {"pooled_output": None}]
+    assert _h3_reconcile_token_tags([entry], "positive")[0] is entry
+    assert _h3_reconcile_token_tags(None) is None
