@@ -137,6 +137,8 @@
       h3V2a: st.project?.sampler_inputs?.v2a_grad_scale,
       h3Pass2: st.project?.sampler_inputs?.second_pass,
       h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
+      // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.
+      h3Fps: st.project?.frame_rate,
     });
   }
 

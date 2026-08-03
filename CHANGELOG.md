@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Added
+- **MiniMax H3 is live.** H3 support was written against ComfyUI's pull request; the model
+  has since merged (ComfyUI v0.30.0) and the weights are published, so the pipeline setup
+  now offers it as a real, released family with the actual filenames to download. Nothing
+  about LTX-2 / LTXAV changes — a project picks a family, and both are first-class.
+- **i2v anchors work on H3.** LTX anchors an image by writing it into the starting latent;
+  H3 has no such path — its anchor is a condition row packed beside the text. A scene's
+  anchor image (and the Cutting Room's per-scene anchors) now becomes H3's own frame-0
+  keyframe pin, so image-to-video actually conditions instead of quietly generating from
+  noise. A first-frame anchor and a last-frame guide now coexist rather than overwriting
+  each other, which is exactly H3's first-and-last-frame mode.
+- **Reference images can be encoded at full detail** (Settings ▸ Engine ▸ References):
+  *Match output size* as before, or *Max detail (2048px)*, the reference pipeline's own
+  sizing. Reference rows ride through every sampling step, so max detail is not free.
+- **Frame geometry follows the model.** Frames per scene snap to the chosen family's grid
+  (LTX 8k+1, H3 17k+5) in both frontends and in the graph builder, and H3 renders at its
+  fixed 24 fps. Picking a model family brings the project onto its geometry and says so.
+
+### Fixed
+- **A video reference lost its soundtrack between Studio and the sampler.** Studio had
+  already announced the track to the text encoder as `<Audio 1>`, but the reference list it
+  handed on dropped the field — so no audio rows were packed for it and every later
+  `<Audio j>` in the prompt pointed one reference earlier than written.
+- **Easy Gen never knew it was on H3.** Its model config lives on the project rather than in
+  a separate slot, which the shared capability check did not read — so every H3-specific
+  warning silently reported LTX and never appeared.
+- **An off-grid scene length on H3 failed with arithmetic instead of an explanation.** The
+  length is now snapped to the model's grid, and a genuine template mismatch names the
+  latent node and the number it needs.
+- **The run says which H3 checkpoint its conditioning needs.** H3 ships as two DiTs —
+  `fl2va` (anchors/keyframes) and `ref2va` (reference media) — that load identically and
+  never reject each other's conditioning, so a mismatch only shows up as a poor generation.
+
 ## [3.4.1] - 2026-07-31
 
 ### Added

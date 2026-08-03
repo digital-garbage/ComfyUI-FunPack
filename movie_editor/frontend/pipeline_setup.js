@@ -8,6 +8,9 @@
   let overlay = null;
   let _pollTimer = null;
   let _activeJobId = null;
+  // Set when picking a family moved the project onto that model's frame grid / frame rate,
+  // so the modal can say what changed rather than leaving it to be noticed later.
+  let geometryNote = "";
 
   function dismissed() {
     try { return localStorage.getItem(LS_KEY) === "1"; } catch (_) { return false; }
@@ -186,6 +189,28 @@
     models.model_family = key;
     await API.saveModels(S.get().project.id, models);
     await S.loadModels();
+    // Frame geometry belongs to the model, not to taste: the new family may generate on a
+    // different frame grid (LTX 8k+1 / H3 17k+5) and at a fixed rate (H3 is always 24 fps).
+    // Bring the project onto them now, while the user is looking at the choice that caused
+    // it — the alternative is a run that fails, or plays back at the wrong speed, later.
+    const st = S.get();
+    const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
+    if (grid && st.project) {
+      const patch = {};
+      const frames = Number(st.project.num_frames_per_scene);
+      const snapped = window.PipelineCaps.snapFramesTo(frames, st, "round");
+      if (frames !== snapped) patch.num_frames_per_scene = snapped;
+      if (grid.fps && Number(st.project.frame_rate) !== grid.fps) patch.frame_rate = grid.fps;
+      if (Object.keys(patch).length) {
+        S.patchProject(patch);
+        // Shown in the modal below; if setup is already complete and the modal closes, the
+        // new values are visible in the inspector's Frames / FPS fields either way.
+        geometryNote = "Project moved onto this model's frame geometry: "
+          + (patch.num_frames_per_scene || frames) + " frames per scene"
+          + (patch.frame_rate ? " at " + patch.frame_rate + " fps" : "")
+          + " (grid " + grid.label + ").";
+      }
+    }
     let deps;
     try { deps = await API.pipelineDeps(); } catch (_) { closeModal(); return; }
     if (!deps?.needs_setup) { closeModal(); return; }
@@ -209,9 +234,9 @@
     return box;
   }
 
-  // What the chosen family still needs. For a family that is not out yet this is the
-  // whole point of the panel: say what is missing and why, instead of offering an
-  // install button that cannot possibly succeed.
+  // What the chosen family still needs, plus anything about it a user cannot read off
+  // their own graph — MiniMax H3's two interchangeable-looking diffusion checkpoints
+  // above all. Shown whenever there is something to say, not only when it is missing.
   function readinessBlock(r) {
     const box = el("div", "pipe-setup-readiness");
     if (r.note) box.append(el("div", "pipe-setup-hint", r.note));
@@ -246,6 +271,10 @@
   }
 
   function openModal(deps) {
+    // One-shot, and read AFTER closeModal(): reopening is how a family switch gets here, so
+    // clearing it on close would drop the very message that switch produced.
+    const geometryLine = geometryNote;
+    geometryNote = "";
     closeModal();
     overlay = el("div", "modal-overlay pipe-setup-overlay");
     const modal = el("div", "modal pipe-setup-modal");
@@ -255,9 +284,10 @@
 
     const content = el("div", "modal-content");
     content.append(familyStep(deps));
+    if (geometryLine) content.append(el("div", "pipe-setup-hint", geometryLine));
     const r = deps.readiness;
     const unreleased = r && !r.released;
-    if (unreleased || (r && (r.missing_nodes || []).length)) {
+    if (unreleased || (r && (r.note || (r.missing_nodes || []).length))) {
       content.append(readinessBlock(r));
     }
     // Only talk about installing when there is something Manager can actually install.

@@ -657,6 +657,35 @@ When you open a project using the **built-in pipeline**, the editor checks Comfy
 | **No, I'll use my own pipeline** | Sets `disable_core`; dismisses future prompts (localStorage) |
 | **Close** | Dismisses modal without installing |
 
+### Model family
+
+The first question in Pipeline setup, because it decides which nodes and model files the
+project needs. A project is built for **one** family; both are fully supported.
+
+| | LTX-2 / LTXAV | MiniMax H3 (Hailuo) |
+|---|---|---|
+| Text encoder | Gemma3 | Qwen3-VL-32B |
+| Latents | separate video + audio | one joint AV latent |
+| Frame grid | 8k+1, project fps | 17k+5, fixed 24 fps |
+| Image conditioning | i2v anchor written into the latent | frame-0 **keyframe pin** on the conditioning |
+| Reference media | Best-FaceID identity transfer | native **ref2va** `<Picture i>` / `<Video k>` / `<Audio j>` blocks |
+
+Choosing a family snaps the project's frames per scene onto that model's grid, and sets the
+frame rate when the model has a fixed one. Frames per scene and the AV latent node's
+`length` must agree — bind the node's `length` to **Project · Frames** in Models & Pipeline
+to keep them in step.
+
+**H3 ships two diffusion checkpoints** and they are not interchangeable, though both load
+without complaint: `minimax_h3_fl2va_*` for text-to-video and anchor/keyframe scenes,
+`minimax_h3_ref2va_*` for reference media. The run prints which mode its conditioning is in;
+using both at once in one scene means one of them is untrained conditioning. Text encoder
+and both VAEs are shared. Needs ComfyUI v0.30.0 or newer.
+
+**Inert on H3:** Best-FaceID identity transfer, Bounded Attention, segmented detailing, the
+second pass's latent op, and `v2a_grad_scale` all depend on LTX transformer structure H3
+does not have. The Chain Sampler switches them off and says why; the main window warns
+before the run.
+
 **Wrong:** Install stuck → **Cancel install**. Pip security policy errors → install packs manually in terminal. After Manager install, restart before pack install.
 
 ---

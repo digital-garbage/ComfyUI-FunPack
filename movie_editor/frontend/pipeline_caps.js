@@ -2,8 +2,12 @@
 (function () {
   const CHAIN_ONLY = new Set(["carry", "mixed", "generated_frame", "v2v", "anchor_guide"]);
 
+  // The Editor keeps the live model config at state.models (synced into project.models on
+  // commit); Easy Gen has no separate copy and keeps it on the project. Read both, or every
+  // family-dependent answer here silently reads as LTX in Easy Gen.
   function models(st) {
-    return (st && st.models) || {};
+    if (!st) return {};
+    return st.models || (st.project && st.project.models) || {};
   }
 
   function usesFunpackStudio(st) {
@@ -27,6 +31,49 @@
     return modelFamily(st) === "minimax_h3";
   }
 
+  // Frame geometry per family. LTX generates on an 8k+1 pixel-frame grid at whatever fps
+  // the project says; MiniMax H3 generates on a 17k+5 grid and ALWAYS at 24 fps (the rate
+  // is baked into the model, not a conditioning field). Both frontends snap through here so
+  // a project can never ask for a length the chosen model cannot produce.
+  const FRAME_GRIDS = {
+    ltxav: { step: 8, base: 1, fps: null, label: "8k+1" },
+    minimax_h3: { step: 17, base: 5, fps: 24, label: "17k+5" },
+  };
+
+  function frameGrid(st) {
+    return FRAME_GRIDS[modelFamily(st)] || FRAME_GRIDS.ltxav;
+  }
+
+  // round | floor | ceil onto the family's grid. Always >= one whole grid step.
+  function snapFramesTo(n, st, mode) {
+    const g = frameGrid(st);
+    const min = g.step + g.base;
+    const k = (Math.round(Number(n) || 0) - g.base) / g.step;
+    const rounded = mode === "floor" ? Math.floor(k) : mode === "ceil" ? Math.ceil(k) : Math.round(k);
+    return Math.max(min, rounded * g.step + g.base);
+  }
+
+  // H3 renders at a fixed 24 fps. The project's frame rate still drives the container the
+  // clip is muxed into, so anything else plays the generated frames at the wrong speed —
+  // the builder pins it, and this is what says so before the run.
+  function frameRateIssue(st) {
+    const p = st && st.project;
+    const g = frameGrid(st);
+    if (!p || !g.fps) return null;
+    const fps = Number(p.frame_rate);
+    if (!fps || Math.abs(fps - g.fps) < 0.01) return null;
+    return {
+      short: "H3: frame rate is fixed at " + g.fps,
+      detail: "This project is set to " + fps + " fps, but MiniMax H3 always generates at "
+        + g.fps + " fps — the rate is part of the model, not a setting. The render is muxed at "
+        + g.fps + " fps regardless, so set FPS to " + g.fps + " in the project settings to keep "
+        + "the timeline honest.",
+      // a project field, not an engine setting: the chip must not send the user to the
+      // Engine window, where there is no frame rate to change
+      target: "project",
+    };
+  }
+
   function caps(st) {
     const m = models(st);
     return {
@@ -36,6 +83,7 @@
       imported_workflow: !!m.workflow_import,
       family: modelFamily(st),
       h3: isH3(st),
+      frame_grid: frameGrid(st),
     };
   }
 
@@ -81,10 +129,13 @@
       if (si[key]) issues.push([key, H3_DEAD_SAMPLER_INPUTS[key]]);
     });
     issues.push(...h3DeadValueIssues(si));
-    return issues.map(([key, detail]) => ({
+    const out = issues.map(([key, detail]) => ({
       short: "H3: " + key.replace(/_enabled$/, "").replace(/_/g, " ") + " can't run",
       detail: detail + " Turn it off in Settings → Engine to stop it showing here.",
     }));
+    const fps = frameRateIssue(st);
+    if (fps) out.push(fps);
+    return out;
   }
 
   function effectiveSourceType(scene, st) {
@@ -176,6 +227,9 @@
     caps,
     modelFamily,
     isH3,
+    frameGrid,
+    snapFramesTo,
+    frameRateIssue,
     h3InertSettings,
     effectiveSourceType,
     isChainOnlySource,

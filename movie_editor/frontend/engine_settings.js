@@ -738,6 +738,26 @@
       });
       row.append(picker);
 
+      // How large this reference is encoded. "Match" scales it to the generation's pixel
+      // area; "Max" uses the reference pipeline's own 2048px short edge, which holds identity
+      // best and costs real time on EVERY sampling step of every scene.
+      if (ref.kind === "image") {
+        const size = el("select", "sw-input");
+        [["match", "Match output size"], ["max", "Max detail (2048px)"]].forEach(([v, label]) => {
+          const o = new Option(label, v);
+          if ((ref.size || "match") === v) o.selected = true;
+          size.append(o);
+        });
+        size.title = "Max keeps more identity detail, but reference rows ride through every "
+          + "sampling step — it can be several times slower.";
+        size.onchange = () => {
+          const next = refs.slice();
+          next[i] = { ...ref, size: size.value };
+          patchH3Refs(next);
+        };
+        row.append(size);
+      }
+
       // a video's own soundtrack: presented as "<Audio j>" immediately before its
       // "<Video k>", which is what tells the model the two belong together
       if (ref.kind === "video") {

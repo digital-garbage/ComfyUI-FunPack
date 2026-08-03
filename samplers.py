@@ -2685,9 +2685,21 @@ class FunPackLTXAVSceneChainSampler:
         video_frames = self._tensor_frames(self._latent_tensors(latent_template)[0])
         expected = self._expected_latent_frames(num_frames_per_scene, time_scale, vae=vae)
         if video_frames != expected:
+            detail = ""
+            if self._is_h3:
+                # By this point num_frames_per_scene is already snapped to 17k+5, so a
+                # mismatch means the latent node was built for a different length entirely.
+                try:
+                    from .minimax_h3 import FRAME_GRID, FRAME_BASE
+                except ImportError:
+                    from minimax_h3 import FRAME_GRID, FRAME_BASE
+                detail = (f" On MiniMax H3 the latent node's `length` must be the SAME "
+                          f"{FRAME_GRID}k+{FRAME_BASE} frame count as num_frames_per_scene "
+                          f"({num_frames_per_scene}) — set Empty MiniMax H3 AV Latent to that.")
             raise ValueError(
                 f"latent_template has {video_frames} video latent frames, expected {expected} "
                 f"from num_frames_per_scene={num_frames_per_scene} and time scale={time_scale}."
+                + detail
             )
         return video_frames
 
@@ -4089,6 +4101,64 @@ class FunPackLTXAVSceneChainSampler:
     _h3_frame_count = 0
     _is_h3 = False
     _h3_ref_cache: dict = {}
+    _h3_mode_noted = False
+
+    def _h3_add_keyframes(self, conditioning, pins, frame_count, aug=None):
+        """Merge keyframe pins into a conditioning, keeping any already attached.
+
+        H3's payload takes a LIST of pins (a first-frame anchor and a last-frame target can
+        coexist), so every producer here — the i2v anchor and the guide path — has to add to
+        the list rather than overwrite it. Pins are keyed by resolved frame index; writing the
+        same index twice replaces it, which is the only sane reading of two anchors on one
+        frame. ``minimax_visual_cond_noise_aug`` stays payload-wide as the DiT defines it, so
+        the last explicit strength written still wins — stated, not silently averaged.
+        """
+        if not conditioning or not pins:
+            return conditioning
+        existing = self._conditioning_value(conditioning, "minimax_keyframes") or []
+        merged = {int(p["resolved_frame_index"]): p for p in existing}
+        for pin in pins:
+            merged[int(pin["resolved_frame_index"])] = pin
+        values = {
+            "minimax_keyframes": [merged[k] for k in sorted(merged)],
+            "minimax_frame_count": int(frame_count),
+        }
+        if aug is not None:
+            values["minimax_visual_cond_noise_aug"] = float(aug)
+        return self._condition_with_values(conditioning, values)
+
+    def _apply_h3_anchor(self, positive, chunk, vae, image, strength=1.0):
+        """Pin an i2v anchor image as H3's frame-0 keyframe (the fl2va conditioning path).
+
+        LTX anchors an image by writing it into the starting latent (LTXVImgToVideoInplace)
+        and masking that frame out of denoising. H3 does not condition that way: the anchor
+        is a CONDITION ROW packed beside the text, never denoised and never rendered, and a
+        latent written frame-0 is just noise the model is free to overwrite. So on H3 the
+        same user intent — "this scene starts from this image" — becomes a keyframe pin.
+
+        Returns (positive, applied). The image is encoded at the scene's own canvas, read
+        off the chunk, so it matches whatever the latent template was built for.
+        """
+        if image is None:
+            return positive, False
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        try:
+            video = self._latent_tensors(chunk)[0]
+            if video.dim() != 5:
+                raise ValueError("video latent is not 5D")
+            width = int(video.shape[4]) * h3mod.SPATIAL_DOWNSCALE
+            height = int(video.shape[3]) * h3mod.SPATIAL_DOWNSCALE
+            pin = h3mod.encode_keyframe(vae, image, width, height, 0, crop="disabled")
+        except Exception as error:
+            print(f"[FunPackSceneChain] H3: i2v anchor skipped — could not encode it ({error}).")
+            return positive, False
+        aug = max(0.0, min(1.0, float(strength)))
+        positive = self._h3_add_keyframes(positive, [pin], self._h3_frame_count,
+                                          aug=None if aug >= 1.0 else aug)
+        return positive, True
 
     def _append_h3_keyframe(self, guide_frame, apply_at, strength, positive, negative):
         """H3's equivalent of an LTX guide: a keyframe pin carried on the conditioning.
@@ -4114,18 +4184,38 @@ class FunPackLTXAVSceneChainSampler:
                   f"image (ref2va) for mid-clip guidance instead.")
             return positive, negative, 0
 
-        keyframes = [{"resolved_frame_index": int(at), "latent": guide_frame}]
-        values = {"minimax_keyframes": keyframes, "minimax_frame_count": int(frame_count)}
+        pins = [{"resolved_frame_index": int(at), "latent": guide_frame}]
         # strength maps onto the DiT's condition noise augmentation: 1.0 pins the clean latent,
         # lower values mix noise into the condition rows. It is a single payload-wide value, so
         # with several pins in one scene the last one written wins — stated here rather than
         # silently averaged.
         aug = max(0.0, min(1.0, float(strength)))
-        if aug < 1.0:
-            values["minimax_visual_cond_noise_aug"] = aug
-        positive = self._condition_with_values(positive, values)
-        negative = self._condition_with_values(negative, values) if negative else negative
+        aug = None if aug >= 1.0 else aug
+        positive = self._h3_add_keyframes(positive, pins, frame_count, aug=aug)
+        negative = self._h3_add_keyframes(negative, pins, frame_count, aug=aug) if negative else negative
         return positive, negative, 0
+
+    def _report_h3_checkpoint_mode(self, positive):
+        """Say once per run which H3 checkpoint this run's conditioning actually needs.
+
+        H3 ships two DiTs (fl2va for keyframe pins, ref2va for reference blocks) and neither
+        rejects the other's conditioning — a mismatch costs quality, silently. Nothing in the
+        state dict identifies the variant, so the run reports the mode it is in and leaves
+        matching the file to the user.
+        """
+        if self._h3_mode_noted:
+            return
+        try:
+            from .minimax_h3 import checkpoint_mode_note
+        except ImportError:
+            from minimax_h3 import checkpoint_mode_note
+        note = checkpoint_mode_note(
+            bool(self._conditioning_value(positive, "minimax_keyframes")),
+            bool(self._conditioning_value(positive, "minimax_refs")),
+        )
+        self._h3_mode_noted = True
+        if note:
+            print(f"[FunPackSceneChain] H3: {note}")
 
     def _apply_h3_references(self, positive, chunk, vae, audio_vae=None):
         """Turn Studio's resolved ref2va order into the DiT's `minimax_refs` blocks.
@@ -4385,7 +4475,12 @@ class FunPackLTXAVSceneChainSampler:
         video_overlap frames, protected) and the anchor image is then written on top — since
         LTXVImgToVideoInplace only overwrites the single encoded image frame's worth of samples
         and preserves the rest of the incoming noise_mask, the anchor's own leading frame stays a
-        hard cut while the remaining carried frames keep the old scene's background/environment."""
+        hard cut while the remaining carried frames keep the old scene's background/environment.
+
+        On MiniMax H3 the latent is left alone: the anchor is applied as a keyframe pin on the
+        conditioning instead (_apply_h3_anchor), which is the only image conditioning that model
+        was trained on. The carried-overlap behaviour is identical either way, so a mixed scene
+        keeps its prior-scene context on both families."""
         filename = (anchor_meta or {}).get("filename")
         strength = float((anchor_meta or {}).get("strength", 1.0))
         image = self._load_image_tensor(filename) if filename else None
@@ -4397,6 +4492,8 @@ class FunPackLTXAVSceneChainSampler:
             base = self._build_continuation_chunk(latent_template, previous, video_overlap)
         else:
             base = self._clone_latent(latent_template)
+        if self._is_h3:
+            return base
         return self._apply_img2video_to_video_latent(vae, image, base, strength)
 
     def _identity_pin_filename(self, guide_list, scene_media_by_ref, identity_transfer_enabled):
@@ -5297,10 +5394,28 @@ class FunPackLTXAVSceneChainSampler:
         # its time axis needs to know before it touches a tensor, because LTXAV and MiniMax
         # H3 disagree about which axis that is on the AUDIO stream and both are 4-D.
         self._is_h3 = self._set_stream_axes(model)
+        if self._is_h3:
+            # H3 only generates on a 17k+5 pixel-frame grid. Empty MiniMax H3 AV Latent snaps
+            # its own `length` up silently, so an off-grid scene length produces a template
+            # that is LONGER than the count asked for here and the length check below fails
+            # with an arithmetic complaint that never mentions the grid. Snap to the same
+            # number the latent node would, so the two always agree. LTX is untouched: its
+            # grid is 8k+1 and the count comes from the VAE either way.
+            try:
+                from .minimax_h3 import align_frame_count
+            except ImportError:
+                from minimax_h3 import align_frame_count
+            _aligned = align_frame_count(num_frames_per_scene)
+            if _aligned != int(num_frames_per_scene):
+                print(f"[FunPackSceneChain] H3: num_frames_per_scene {int(num_frames_per_scene)} "
+                      f"-> {_aligned} (the model's 17k+5 frame grid at 24 fps). Every scene is "
+                      f"that much longer than requested.")
+            num_frames_per_scene = _aligned
         self._h3_frame_count = int(num_frames_per_scene)
         # Fresh per run: the encoded references must always trace back to the media that is
         # live in THIS request (see [[feedback_no_persistent_state_caches]]).
         self._h3_ref_cache = {}
+        self._h3_mode_noted = False
         if self._is_h3:
             print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
                   "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
@@ -5666,6 +5781,30 @@ class FunPackLTXAVSceneChainSampler:
                 elif not custom_guides:
                     guide_tail = 0
 
+            # H3 i2v anchor (fl2va). On LTX the anchor is already IN the chunk — either written
+            # by LTXVImgToVideoInplace above, or, for the opening scene, baked into the latent
+            # template by whatever produced it. H3 has no latent i2v path at all, so the anchor
+            # image becomes a frame-0 keyframe pin here, after the chunk is final (the pin is
+            # encoded at this scene's canvas) and for every branch that carries an anchor.
+            if self._is_h3:
+                _anchor_image, _anchor_strength = None, 1.0
+                _anchor_file = (anchor_meta or {}).get("filename")
+                if _anchor_file:
+                    _anchor_image = self._load_image_tensor(_anchor_file)
+                    _anchor_strength = float(anchor_meta.get("strength", 1.0))
+                elif output is None:
+                    # Studio owns source_image (it presents it to Qwen); it hands the pixels on
+                    # so this side can encode them. Opening scene only — later scenes continue
+                    # from the previous one unless they carry their own anchor.
+                    _studio_anchor = self._conditioning_value(scene_positive, "funpack_h3_anchor")
+                    if isinstance(_studio_anchor, dict):
+                        _anchor_image = _studio_anchor.get("image")
+                if _anchor_image is not None:
+                    scene_positive, _pinned = self._apply_h3_anchor(
+                        scene_positive, chunk, vae, _anchor_image, _anchor_strength)
+                    if _pinned:
+                        run_mechanisms.append(f"h3_keyframe_anchor(strength={_anchor_strength:g})")
+
             # ref2va reference blocks. Applied after the chunk is final because the blocks are
             # sized against this scene's canvas, and to every scene branch (fresh / anchored /
             # continuation) because a reference identity is meant to hold across the whole
@@ -5675,6 +5814,7 @@ class FunPackLTXAVSceneChainSampler:
                     scene_positive, chunk, vae, audio_vae=audio_vae)
                 if h3_ref_count:
                     run_mechanisms.append(f"h3_ref2va({h3_ref_count})")
+                self._report_h3_checkpoint_mode(scene_positive)
 
             # Everything from here through sampling installs per-scene state on the SHARED
             # model (function wrappers, forward hooks). One snapshot + one finally guarantees

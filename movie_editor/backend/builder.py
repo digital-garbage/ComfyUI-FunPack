@@ -143,6 +143,35 @@ FAMILIES: dict[str, dict] = {
 }
 
 
+# Pixel-frame grid and generation frame rate per family. LTX: 8k+1 at the project's fps.
+# MiniMax H3: 17k+5 at a fixed 24 fps (both are properties of the model, not settings).
+# The frontends snap to the same numbers (PipelineCaps.frameGrid); this is the authority,
+# so a project built by an older UI — or by the API directly — still gets a valid graph.
+FAMILY_FRAME_GRID: dict[str, dict] = {
+    "ltxav": {"step": 8, "base": 1, "fps": None},
+    "minimax_h3": {"step": 17, "base": 5, "fps": 24},
+}
+
+
+def family_frames(family: str, frames) -> int:
+    """`frames` snapped UP to `family`'s pixel-frame grid (never below one whole step)."""
+    grid = FAMILY_FRAME_GRID.get(family) or FAMILY_FRAME_GRID[DEFAULT_FAMILY]
+    try:
+        n = int(frames)
+    except (TypeError, ValueError):
+        return grid["step"] + grid["base"]
+    n = max(grid["step"] + grid["base"], n)
+    while (n - grid["base"]) % grid["step"] != 0:
+        n += 1
+    return n
+
+
+def family_frame_rate(family: str, frame_rate):
+    """The frame rate the graph must use — the model's own when it has a fixed one."""
+    grid = FAMILY_FRAME_GRID.get(family) or FAMILY_FRAME_GRID[DEFAULT_FAMILY]
+    return grid["fps"] if grid["fps"] is not None else frame_rate
+
+
 def family_of(models_config: Optional[dict]) -> str:
     """Which model family this project's graph is built for.
 
@@ -357,9 +386,12 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         if params.get("negative_prompt") is not None:
             graph["neg"]["inputs"]["value"] = params["negative_prompt"]
         if params.get("num_frames_per_scene") is not None:
-            graph["frames"]["inputs"]["value"] = params["num_frames_per_scene"]
+            graph["frames"]["inputs"]["value"] = family_frames(family, params["num_frames_per_scene"])
         if params.get("frame_rate") is not None:
-            graph["fps"]["inputs"]["value"] = params["frame_rate"]
+            # H3 generates at a fixed 24 fps. The project's rate still drives the container
+            # the clip is muxed into, so anything else plays the generated frames at the
+            # wrong speed — pin it here rather than render something that looks fast/slow.
+            graph["fps"]["inputs"]["value"] = family_frame_rate(family, params["frame_rate"])
         if params.get("seed") is not None:
             graph["sampler"]["inputs"]["seed"] = params["seed"]
         if params.get("max_scenes") is not None:
@@ -513,7 +545,15 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
     # An "editor"-sourced link pulls its value from a project setting (params) instead.
     for link in (models_config or {}).get("links") or []:
         if link.get("source") == "editor":
-            val = params.get(link.get("editor_key"))
+            key = link.get("editor_key")
+            val = params.get(key)
+            # A latent node driven by "Project · Frames" has to receive the SAME number the
+            # sampler is given, or the two disagree about the scene length and the run dies
+            # on the mismatch. Same for a fixed-rate family's fps.
+            if val is not None and key == "num_frames_per_scene":
+                val = family_frames(family, val)
+            elif val is not None and key == "frame_rate":
+                val = family_frame_rate(family, val)
         else:
             val = link.get("value")
         if val is None:

@@ -423,9 +423,30 @@
     name.oninput = () => S.patchProjectQuiet({ name: name.value });
     body.append(field("Project name", name));
 
+    // Frames snap to the model family's grid on blur (LTX 8k+1, MiniMax H3 17k+5). Typing is
+    // left alone — snapping mid-keystroke fights the user — but the value that reaches the
+    // project is always one the model can actually generate.
+    const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st) : null;
     const row1 = el("div", "fields-row");
-    row1.append(numberField("Frames / scene", p.num_frames_per_scene, (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames"));
-    row1.append(numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps"));
+    const framesField = numberField("Frames / scene", p.num_frames_per_scene,
+      (v) => S.patchProjectQuiet({ num_frames_per_scene: v }), "pj-frames");
+    const framesInput = framesField.querySelector("input");
+    if (framesInput) {
+      if (grid) framesInput.title = "Snaps to the model's " + grid.label + " frame grid.";
+      framesInput.onchange = () => {
+        const snapped = S.snapFrames(parseInt(framesInput.value || "0", 10));
+        framesInput.value = snapped;
+        S.patchProjectQuiet({ num_frames_per_scene: snapped });
+      };
+    }
+    row1.append(framesField);
+    const fpsField = numberField("FPS", p.frame_rate, (v) => S.patchProjectQuiet({ frame_rate: v }), "pj-fps");
+    if (grid && grid.fps) {
+      const fpsInput = fpsField.querySelector("input");
+      if (fpsInput) fpsInput.title = "MiniMax H3 always generates at " + grid.fps
+        + " fps — the render is muxed at that rate whatever this says.";
+    }
+    row1.append(fpsField);
     body.append(row1);
     const row2 = el("div", "fields-row");
     row2.append(numberField("Width", p.width != null ? p.width : 768, (v) => S.patchProjectQuiet({ width: v }), "pj-w"));

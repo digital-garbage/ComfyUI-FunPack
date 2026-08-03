@@ -382,3 +382,100 @@ def test_references_are_encoded_once_per_run_not_once_per_scene(fake_media):
     smaller = {"samples": NT([torch.zeros(1, 24, 37, 32, 32), torch.zeros(1, 32, 2, 207)])}
     node._apply_h3_references(positive, smaller, vae)
     assert len(encodes) == 2
+
+
+# ── i2v anchors become keyframe pins ─────────────────────────────────────────
+# LTX anchors an image by writing it into the starting latent (LTXVImgToVideoInplace) and
+# masking that frame out. H3 has no latent i2v path at all — an anchor written into the
+# latent is just noise the model may overwrite — so the same intent has to become a
+# frame-0 keyframe pin. Both families must keep their own path.
+
+def test_an_anchor_image_becomes_a_frame_zero_keyframe_pin():
+    node = h3_node(frame_count=124)
+    positive = [[torch.zeros(1, 12, 5120), {"funpack_scene_text": "shot 1"}]]
+    out, applied = node._apply_h3_anchor(
+        positive, av_latent(), RefVAE(), torch.zeros(1, 256, 256, 3), strength=1.0)
+
+    assert applied is True
+    meta = out[0][1]
+    assert [kf["resolved_frame_index"] for kf in meta["minimax_keyframes"]] == [0]
+    assert meta["minimax_frame_count"] == 124
+    assert "minimax_visual_cond_noise_aug" not in meta      # full-strength pin stays clean
+    assert meta["funpack_scene_text"] == "shot 1"
+
+
+def test_a_weakened_anchor_maps_onto_condition_noise_augmentation():
+    node = h3_node()
+    out, applied = node._apply_h3_anchor(
+        [[torch.zeros(1, 12, 5120), {}]], av_latent(), RefVAE(),
+        torch.zeros(1, 256, 256, 3), strength=0.6)
+    assert applied is True
+    assert out[0][1]["minimax_visual_cond_noise_aug"] == pytest.approx(0.6)
+
+
+def test_an_anchor_and_a_last_frame_guide_coexist_instead_of_overwriting():
+    """H3's payload takes a LIST of pins — the anchor must not erase the guide, or vice
+    versa. This is exactly the fl2va first-AND-last-frame case."""
+    node = h3_node(frame_count=124)
+    positive = [[torch.zeros(1, 12, 5120), {}]]
+    positive, _neg, _tail = node._append_h3_keyframe(
+        torch.ones(1, 24, 1, 48, 84), apply_at=-1, strength=1.0,
+        positive=positive, negative=[])
+    positive, applied = node._apply_h3_anchor(
+        positive, av_latent(), RefVAE(), torch.zeros(1, 256, 256, 3))
+
+    assert applied is True
+    assert [kf["resolved_frame_index"] for kf in positive[0][1]["minimax_keyframes"]] == [0, 123]
+
+
+def test_a_mixed_anchor_chunk_leaves_the_h3_latent_alone():
+    """On LTX the anchor is written into the chunk; on H3 the chunk must come back
+    untouched (the pin does the work) — otherwise the latent carries an anchor the model
+    was never trained to read, on top of the pin."""
+    node = h3_node()
+    template = av_latent()
+    calls = []
+    node._apply_img2video_to_video_latent = lambda *a, **k: calls.append(a) or template
+    node._load_image_tensor = lambda f: torch.zeros(1, 256, 256, 3)
+
+    chunk = node._build_mixed_anchor_chunk(
+        RefVAE(), {"filename": "anchor.png", "strength": 1.0}, template, None, 0)
+    assert calls == []                       # the LTX node is never invoked on H3
+    assert chunk["samples"].unbind()[0].shape == template["samples"].unbind()[0].shape
+
+
+def test_ltx_anchors_still_go_through_img2video_inplace():
+    node = FunPackLTXAVSceneChainSampler()
+    assert node._is_h3 is False
+    template = {"samples": torch.zeros(1, 128, 16, 4, 4)}
+    calls = []
+    node._load_image_tensor = lambda f: torch.zeros(1, 256, 256, 3)
+    node._apply_img2video_to_video_latent = lambda vae, image, base, strength: (
+        calls.append(strength) or base)
+    node._build_mixed_anchor_chunk(
+        LTXVAE(), {"filename": "anchor.png", "strength": 0.9}, template, None, 0)
+    assert calls == [0.9]
+
+
+# ── the two checkpoints ──────────────────────────────────────────────────────
+
+def test_the_run_names_the_checkpoint_its_conditioning_needs(capsys):
+    node = h3_node()
+    node._h3_mode_noted = False
+    node._report_h3_checkpoint_mode([[torch.zeros(1, 12, 5120), {"minimax_refs": [{"kind": "image"}]}]])
+    out = capsys.readouterr().out
+    assert "ref2va" in out
+    # once per run, not once per scene
+    node._report_h3_checkpoint_mode([[torch.zeros(1, 12, 5120), {"minimax_refs": [{"kind": "image"}]}]])
+    assert capsys.readouterr().out == ""
+
+
+def test_mixing_pins_and_references_is_called_out(capsys):
+    node = h3_node()
+    node._h3_mode_noted = False
+    node._report_h3_checkpoint_mode([[torch.zeros(1, 12, 5120), {
+        "minimax_keyframes": [{"resolved_frame_index": 0}],
+        "minimax_refs": [{"kind": "image"}],
+    }]])
+    out = capsys.readouterr().out
+    assert "BOTH" in out and "fl2va" in out and "ref2va" in out

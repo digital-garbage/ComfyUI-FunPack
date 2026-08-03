@@ -6800,10 +6800,24 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         if resolved_refs:
             # The resolved order travels with the conditioning: the sampler must encode these
             # exact references, in this exact order, or "<Picture 2>" points at the wrong one.
+            # Every field that shaped the presentation travels with it — a video's soundtrack
+            # ("audio") especially: Studio already emitted its "<Audio j>" label, so a sampler
+            # that doesn't know about the track packs no audio rows for it and shifts every
+            # later audio ordinal by one.
             meta = dict(meta)
-            meta["funpack_h3_refs"] = [{"kind": r["kind"], "filename": r["filename"]}
-                                       for r in resolved_refs]
+            meta["funpack_h3_refs"] = [
+                {k: v for k, v in r.items() if k in ("kind", "filename", "audio", "size")}
+                for r in resolved_refs
+            ]
             vision_tag = f" +{len(resolved_refs)} ref"
+        elif h3 and use_vision:
+            # fl2va: Studio owns the CLIP and has just presented this image to Qwen, but the
+            # anchor also has to reach the DiT as a frame-0 keyframe pin — and that needs the
+            # VAE, which lives on the Chain Sampler. Hand the pixels over so the sampler can
+            # encode them at the scene's canvas. On LTX this never happens: there the anchor
+            # is written into the latent by the graph, not carried on the conditioning.
+            meta = dict(meta)
+            meta["funpack_h3_anchor"] = {"image": reference_image}
         if use_vision:
             print(f"[FunPackStudio] Vision encoding done — {self._get_conditioning_seq_len(cond)} positions")
         result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions{vision_tag}")

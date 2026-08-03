@@ -56,9 +56,20 @@
       const out = el("div", "sw-rows");
       out.append(field("Width", numberInput(p.width, (v) => commit((pr) => pr.width = v), { min: 64, step: 16 })));
       out.append(field("Height", numberInput(p.height, (v) => commit((pr) => pr.height = v), { min: 64, step: 16 })));
-      out.append(field("Frames", numberInput(p.num_frames_per_scene, (v) => commit((pr) => pr.num_frames_per_scene = v), { min: 9, step: 8 }),
-        "Length of the generated clip, in frames."));
-      out.append(field("Frame rate", numberInput(p.frame_rate, (v) => commit((pr) => pr.frame_rate = v), { min: 1 })));
+      // Frame geometry is per model family: LTX generates on an 8k+1 grid at the project's
+      // fps, MiniMax H3 on a 17k+5 grid at a fixed 24 fps. Off-grid lengths fail the run
+      // outright on H3, so the input snaps to the family's grid rather than warning after.
+      const grid = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(st)
+        : { step: 8, base: 1, fps: null, label: "8k+1" };
+      const snapTo = (v) => (window.PipelineCaps?.snapFramesTo
+        ? window.PipelineCaps.snapFramesTo(v, st, "round")
+        : Math.max(9, Math.round((v - 1) / 8) * 8 + 1));
+      out.append(field("Frames",
+        numberInput(p.num_frames_per_scene, (v) => commit((pr) => pr.num_frames_per_scene = snapTo(v)),
+                    { min: grid.step + grid.base, step: grid.step }),
+        "Length of the generated clip, in frames — snapped to this model's " + grid.label + " grid."));
+      out.append(field("Frame rate", numberInput(p.frame_rate, (v) => commit((pr) => pr.frame_rate = v), { min: 1 }),
+        grid.fps ? "MiniMax H3 always generates at " + grid.fps + " fps; the render is muxed at that rate." : null));
       wrap.append(out);
 
       wrap.append(el("div", "sw-rows-label", "Prompt"));

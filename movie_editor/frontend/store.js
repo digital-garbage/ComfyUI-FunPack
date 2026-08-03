@@ -1685,17 +1685,20 @@
     return (p.overlay_tracks || []).some((ov) => (ov.duration_sec || 0) > 0);
   }
 
-  // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
-  function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
-  function snapFramesFloor(n) {
-    n = Math.round(n);
-    if (n < 9) return 9;
-    return Math.floor((n - 1) / 8) * 8 + 1;
+  // Valid frame counts are per model family — LTX 8k+1, MiniMax H3 17k+5 — so the grid comes
+  // from PipelineCaps rather than being hardcoded here. Off-grid lengths do not fail softly:
+  // the H3 latent node snaps its own length up while the sampler expects the number the
+  // project asked for, and the run dies on the mismatch.
+  function _snap(n, mode) {
+    if (window.PipelineCaps?.snapFramesTo) return window.PipelineCaps.snapFramesTo(n, state, mode);
+    n = Math.round(Number(n) || 0);
+    const k = (n - 1) / 8;
+    const r = mode === "floor" ? Math.floor(k) : mode === "ceil" ? Math.ceil(k) : Math.round(k);
+    return Math.max(9, r * 8 + 1);
   }
-  function snapFramesCeil(n) {
-    n = Math.round(n);
-    return Math.max(9, Math.ceil((n - 1) / 8) * 8 + 1);
-  }
+  function snapFrames(n) { return _snap(n, "round"); }
+  function snapFramesFloor(n) { return _snap(n, "floor"); }
+  function snapFramesCeil(n) { return _snap(n, "ceil"); }
 
   function _framesFromDuration(durationSec, fps, curFrames) {
     const raw = Math.max(1, durationSec) * fps;
@@ -1705,7 +1708,9 @@
     else if (raw > cur + 0.01) frames = snapFramesCeil(raw);
     else frames = cur;
     if (frames === cur && Math.abs(durationSec - cur / fps) > 0.02) {
-      frames = raw < cur ? Math.max(9, cur - 8) : cur + 8;
+      // one whole grid step in the direction the drag went (8 frames on LTX, 17 on H3)
+      const step = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(state).step : 8;
+      frames = raw < cur ? snapFramesFloor(cur - step) : cur + step;
     }
     return frames;
   }

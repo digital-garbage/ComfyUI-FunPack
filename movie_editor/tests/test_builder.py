@@ -507,6 +507,44 @@ def test_the_ltxav_graph_is_unchanged_by_the_family_split():
     assert not report["blocking"], report["blocking"]
 
 
+# ── frame geometry is a property of the model, not a setting ──────────────────
+# LTX: 8k+1 frames at the project's fps. H3: 17k+5 frames at a fixed 24 fps. An off-grid
+# length on H3 is not a rounding nuisance — the latent node snaps its own length up while
+# the sampler is told the raw number, and the run dies on the mismatch.
+
+def test_h3_frame_counts_snap_to_the_17k_plus_5_grid():
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot", "num_frames_per_scene": 121})
+    assert graph["frames"]["inputs"]["value"] == 124
+    # a value already on the grid is left exactly as it is
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot", "num_frames_per_scene": 124})
+    assert graph["frames"]["inputs"]["value"] == 124
+
+
+def test_h3_renders_at_the_models_own_frame_rate():
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot", "frame_rate": 30})
+    assert graph["fps"]["inputs"]["value"] == 24
+
+
+def test_ltx_frame_geometry_is_untouched():
+    graph, _ = builder.build(OI, {"slots": []},
+                             {"prompt": "a shot", "num_frames_per_scene": 121, "frame_rate": 30})
+    assert graph["frames"]["inputs"]["value"] == 121   # already 8k+1
+    assert graph["fps"]["inputs"]["value"] == 30       # LTX has no fixed rate
+    graph, _ = builder.build(OI, {"slots": []}, {"prompt": "a shot", "num_frames_per_scene": 100})
+    assert graph["frames"]["inputs"]["value"] == 105   # snapped up to 8k+1
+
+
+def test_a_latent_node_driven_by_project_frames_gets_the_same_snapped_number():
+    """A slot widget bound to "Project · Frames" must not receive the raw value while the
+    sampler receives the snapped one — that disagreement is the mismatch itself."""
+    models = dict(H3_MODELS)
+    models["links"] = [{"id": "l1", "source": "editor", "editor_key": "num_frames_per_scene",
+                        "members": [{"slotId": "lat", "input": "length"}]}]
+    graph, _ = builder.build(H3_OI, models, {"prompt": "a shot", "num_frames_per_scene": 121})
+    assert graph["slot_lat"]["inputs"]["length"] == 124
+    assert graph["frames"]["inputs"]["value"] == 124
+
+
 def test_an_unknown_family_falls_back_to_ltxav_rather_than_emitting_nothing():
     assert builder.family_of({"model_family": "hailuo-9000"}) == "ltxav"
     assert builder.family_of({}) == "ltxav"

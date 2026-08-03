@@ -106,8 +106,15 @@
     issues.push(...(window.PipelineCaps?.h3InertSettings(st) || []));
     issues.forEach((issue) => {
       const chip = el("button", "btn ghost compact action-warn", "⚠ " + issue.short);
-      chip.title = issue.detail + "\n\nClick to open Engine settings.";
-      chip.onclick = () => window.SettingsWindow?.open("engine");
+      // most of these are engine settings; a few (frame rate) are project fields, and
+      // sending the user to the Engine window for those would be a dead end
+      const toProject = issue.target === "project";
+      chip.title = issue.detail + (toProject
+        ? "\n\nClick to open the project settings."
+        : "\n\nClick to open Engine settings.");
+      chip.onclick = toProject
+        ? () => S.selectScene(null)
+        : () => window.SettingsWindow?.open("engine");
       mount.append(chip);
     });
   }

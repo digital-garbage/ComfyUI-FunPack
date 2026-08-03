@@ -1,8 +1,10 @@
 """MiniMax-H3 adapter — the one place that knows how H3 differs from LTXAV.
 
-FunPack was built against LTX2.3/LTXAV. H3 (Comfy-Org/ComfyUI#15224) is close
-enough that most of the stack works untouched, and different in four ways that
-break silently if nobody accounts for them:
+FunPack was built against LTX2.3/LTXAV, and supports BOTH families side by side:
+nothing here changes an LTX run, and every entry point answers "not H3" when the
+model in hand is an LTX one. H3 (merged as ComfyUI 57500fc5, PR #15224, shipped
+in ComfyUI v0.30.0) is close enough that most of the stack works untouched, and
+different in four ways that break silently if nobody accounts for them:
 
 1. **Audio latent axis.** LTXAV's audio latent is ``[B, C, T, freq]`` — time on
    dim 2, the same axis as the video latent's frames, which is why the Chain
@@ -26,8 +28,17 @@ break silently if nobody accounts for them:
    alone that makes every CFG generation crash; :func:`install_batch_split`
    splits the batch back apart around the model call.
 
-Nothing here imports the H3 core modules at module scope — the PR is not in
-ComfyUI master yet, so every entry point degrades to "not H3" when it is absent.
+Nothing here imports the H3 core modules at module scope: an older ComfyUI (or an
+LTX-only install) has none of them, and every entry point has to degrade to "not
+H3" rather than raise on import.
+
+WEIGHTS COME IN TWO CHECKPOINTS, and they are not interchangeable:
+``minimax_h3_fl2va_*`` is the t2v / first-last-frame model (keyframe pins) and
+``minimax_h3_ref2va_*`` is the reference model (reference blocks). Both load
+through the same detection and produce a structurally valid graph either way, so
+nothing crashes when the wrong one is loaded — it just conditions badly. The DiT
+state dict carries no variant marker, so :func:`checkpoint_mode_note` reports
+which mode a run is actually using and lets the user match the file.
 """
 from __future__ import annotations
 
@@ -47,8 +58,16 @@ SPATIAL_DOWNSCALE = 16
 VIDEO_LATENT_CHANNELS = 24
 AUDIO_LATENT_CHANNELS = 32
 CANVAS_MULTIPLE = 32         # width/height must be a multiple of this
+REF_IMAGE_SHORT_EDGE = 2048  # the reference pipeline's own "max" sizing
 DEFAULT_SHIFT_VIDEO = 12.0
 DEFAULT_SHIFT_AUDIO = 3.0
+
+# transformer_options keys MiniMaxH3SigmaShift sets. The DiT inverts the VIDEO shift to
+# its base grid to derive the audio timestep AND the audio velocity slope, so a schedule
+# built on a different shift has to say so here or the audio stream is integrated against
+# the wrong clock. Absent, the DiT falls back to its own 12.0 / 3.0.
+SHIFT_VIDEO_OPTION = "minimax_h3_sigma_shift_video"
+SHIFT_AUDIO_OPTION = "minimax_h3_sigma_shift_audio"
 
 # Audio rows are [B, 32, stereo, T]: time is the LAST axis, not dim 2.
 AUDIO_TIME_DIM = -1
@@ -277,11 +296,13 @@ def _split_cond_batch(value, index, batch):
 def install_batch_split(model):
     """Run the H3 DiT one sample at a time when comfy hands it a batched forward.
 
-    ``MiniMaxH3Model._forward`` raises on ``x.shape[0] != 1``. comfy batches the
-    positive and negative conds into a single forward whenever ``cfg != 1.0``, so
-    without this every CFG>1 generation dies on the first step. Splitting here
-    costs exactly what CFG already costs (one forward per cond) and keeps the
-    ``cfg`` knob live instead of pinning it to 1.0.
+    ``MiniMaxH3Model._forward`` raises on ``x.shape[0] != 1``. In practice comfy does
+    NOT batch the positive and negative conds together on H3 — each carries its own
+    ``minimax_payload`` (different token tags, different packed layout), and an unequal
+    ``CONDConstant`` blocks the concat — so the cfg>1 path survives on its own. What
+    does reach the DiT batched is a latent whose batch size is >1 (several videos in one
+    request). Splitting here keeps that working at exactly the cost the batch already
+    implies, and stays correct if comfy's batching rules change.
 
     Returns the previous ``model_function_wrapper`` so the caller can restore it.
     """
@@ -354,6 +375,29 @@ def set_refs(conditioning, ref_blocks):
     return _set_values(conditioning, {"minimax_refs": list(ref_blocks)})
 
 
+def checkpoint_mode_note(has_keyframes: bool, has_refs: bool):
+    """One line naming the checkpoint this run's conditioning actually needs, or None.
+
+    H3 ships as two separate DiTs — ``minimax_h3_fl2va_*`` (t2v / first-last frame) and
+    ``minimax_h3_ref2va_*`` (references). Both load through the same detection and neither
+    rejects the other's conditioning, so the only failure signal is a bad generation. There
+    is no variant marker in the state dict to check against, so the run says what it is
+    doing and leaves matching the file to the user.
+    """
+    if has_keyframes and has_refs:
+        return ("this run uses BOTH keyframe pins and reference blocks, which live in "
+                "DIFFERENT checkpoints (fl2va pins / ref2va references) — whichever model "
+                "is loaded, one of the two is untrained conditioning. Drop the anchor image "
+                "or the references, or run them as separate scenes.")
+    if has_keyframes:
+        return ("keyframe pin conditioning (fl2va) — this needs a minimax_h3_fl2va_* "
+                "checkpoint; ref2va weights will read it, but were not trained on it.")
+    if has_refs:
+        return ("reference conditioning (ref2va) — this needs a minimax_h3_ref2va_* "
+                "checkpoint; fl2va weights will read it, but were not trained on it.")
+    return None
+
+
 def keyframe_indices_supported(frame_index, frame_count):
     """H3's packed layout only places a pin at the FIRST or LAST pixel frame.
 
@@ -372,17 +416,28 @@ def encode_keyframe(vae, image, width, height, frame_index, crop="disabled"):
     canvas (it defines the geometry), a last-frame follower is cover-cropped.
     """
     import comfy.utils
-    samples = image[..., :3].movedim(-1, 1)
+    # one frame only: a pin is a single condition frame, and an IMAGE batch here would
+    # otherwise encode into a latent with a batch dimension the packed layout cannot place.
+    samples = image[:1, ..., :3].movedim(-1, 1)
     samples = comfy.utils.common_upscale(samples, int(width), int(height), "lanczos", crop)
     pixels = samples.movedim(1, -1)
     return {"resolved_frame_index": int(frame_index), "latent": vae.encode(pixels)}
 
 
-def image_ref_block(vae, image, width, height):
-    """Encode a pixel image into a ref2va IMAGE block (identity / style reference)."""
+def image_ref_block(vae, image, width, height, size_mode="match"):
+    """Encode a pixel image into a ref2va IMAGE block (identity / style reference).
+
+    `size_mode` mirrors the reference node's own control: "match" scales the reference
+    (down only, keeping aspect) to the generation's pixel area; "max" uses the reference
+    pipeline's 2048px short edge for the best identity fidelity. Reference rows ride
+    through every sampling step, so "max" costs real time on every step of every scene.
+    """
     import comfy.utils
     h, w = int(image.shape[1]), int(image.shape[2])
-    scale = min(1.0, math.sqrt((int(width) * int(height)) / max(1, w * h)))
+    if str(size_mode).lower() == "max":
+        scale = min(1.0, REF_IMAGE_SHORT_EDGE / max(1, min(w, h)))
+    else:
+        scale = min(1.0, math.sqrt((int(width) * int(height)) / max(1, w * h)))
     snap = lambda v: max(CANVAS_MULTIPLE, int(round(v / CANVAS_MULTIPLE)) * CANVAS_MULTIPLE)
     tw, th = snap(w * scale), snap(h * scale)
     samples = image[:1, ..., :3].movedim(-1, 1)
@@ -449,6 +504,9 @@ def normalize_ref_spec(raw):
         entry = {"kind": kind, "filename": filename}
         if kind == "video" and item.get("audio"):
             entry["audio"] = str(item["audio"]).strip()
+        if kind == "image":
+            size = str(item.get("size") or "match").strip().lower()
+            entry["size"] = size if size in ("match", "max") else "match"
         out.append(entry)
     return out
 
@@ -702,12 +760,18 @@ def ref_blocks_from_spec(resolved, vae, width, height, audio_vae=None):
     `skipped` — the caller must say so out loud, because the presentation was already
     baked at encode time and every later "<Audio j>" in the prompt now points one
     reference earlier than the user wrote it.
+
+    Reference videos are capped by :func:`load_input_video`'s own `max_seconds`, NOT by
+    the generation's length (which the reference node uses): the presentation is baked by
+    Studio, which never sees a frame count, so a sampler-side cap would silently show Qwen
+    more of the clip than the packed rows contain.
     """
     blocks, skipped = [], []
     for entry in resolved:
         kind = entry["kind"]
         if kind == "image":
-            _item, block = image_ref_block(vae, entry["image"], width, height)
+            _item, block = image_ref_block(vae, entry["image"], width, height,
+                                           size_mode=entry.get("size", "match"))
             blocks.append(block)
         elif kind == "audio":
             if audio_vae is None:

@@ -365,6 +365,45 @@ def test_image_ref_blocks_snap_to_32_and_never_upscale():
     assert small["latent_h"] * 16 == 128
 
 
+def test_max_sizing_uses_the_reference_pipelines_2048_short_edge():
+    """The reference node's other sizing mode: identity fidelity over speed."""
+    class FakeVAE:
+        def encode(self, pixels):
+            return torch.zeros(1, 24, 1, pixels.shape[1] // 16, pixels.shape[2] // 16)
+
+    big = torch.zeros(1, 3000, 4000, 3)
+    _item, matched = h3.image_ref_block(FakeVAE(), big, 768, 768, size_mode="match")
+    _item, maxed = h3.image_ref_block(FakeVAE(), big, 768, 768, size_mode="max")
+    assert maxed["latent_h"] * 16 == h3.REF_IMAGE_SHORT_EDGE       # short edge pinned to 2048
+    assert maxed["latent_h"] > matched["latent_h"]
+    # never upscaled, whatever the mode
+    _item, small = h3.image_ref_block(FakeVAE(), torch.zeros(1, 128, 128, 3), 768, 768, size_mode="max")
+    assert small["latent_h"] * 16 == 128
+
+
+def test_the_size_mode_survives_normalization_and_defaults_to_match():
+    spec = h3.normalize_ref_spec([
+        {"kind": "image", "filename": "a.png", "size": "max"},
+        {"kind": "image", "filename": "b.png"},
+        {"kind": "image", "filename": "c.png", "size": "nonsense"},
+        {"kind": "audio", "filename": "v.wav"},
+    ])
+    assert [e.get("size") for e in spec] == ["max", "match", "match", None]
+
+
+# ── the two checkpoints ──────────────────────────────────────────────────────
+# fl2va (pins) and ref2va (references) are separate weights that load identically and
+# never reject each other's conditioning. Nothing in the state dict says which is which,
+# so the only honest thing is to report the mode the run is in.
+
+def test_checkpoint_note_names_the_variant_each_mode_needs():
+    assert "fl2va" in h3.checkpoint_mode_note(True, False)
+    assert "ref2va" in h3.checkpoint_mode_note(False, True)
+    assert h3.checkpoint_mode_note(False, False) is None
+    both = h3.checkpoint_mode_note(True, True)
+    assert "BOTH" in both and "fl2va" in both and "ref2va" in both
+
+
 # ── 6. video references ──────────────────────────────────────────────────────
 # A reference video enters the model as TWO things: frames at 2 fps with timestamps for
 # Qwen, and a full-rate latent block for the DiT. Both come from one decode, so the clip
