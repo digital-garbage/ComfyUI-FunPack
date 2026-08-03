@@ -14,7 +14,18 @@ const TABS = ["Session", "Shortcuts", "Split markers", "Refiner", "Advisor", "Lo
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
-const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+// Fallback only — the real list is whatever THIS ComfyUI has. The backend passes the name
+// straight to comfy.samplers.sampler_object(), so a hardcoded set hides samplers it can
+// already run (res_multistep, which ComfyUI's own MiniMax H3 templates use, was missing).
+const KSAMPLER_NAMES_FALLBACK = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+let KSAMPLER_NAMES = KSAMPLER_NAMES_FALLBACK;
+api.fetchApi("/object_info/KSampler")
+  .then((r) => r.json())
+  .then((defs) => {
+    const names = defs?.KSampler?.input?.required?.sampler_name?.[0];
+    if (Array.isArray(names) && names.length) KSAMPLER_NAMES = names;
+  })
+  .catch(() => {});
 
 let activePanel = null;
 let studioShortcutData = null;
@@ -1435,7 +1446,11 @@ function openPanel(node) {
         }
       } else if (cfg.type === "KSampler") {
         body.append(sectionTitle("KSampler settings"));
-        const ksSelect = selectEl(KSAMPLER_NAMES, cfg.ksampler_name || "euler");
+        // Keep a saved name that isn't in the live list (older/newer ComfyUI) selectable
+        // rather than silently swapping it for the first option.
+        const _ksCur = cfg.ksampler_name || "euler";
+        const ksSelect = selectEl(
+          KSAMPLER_NAMES.includes(_ksCur) ? KSAMPLER_NAMES : KSAMPLER_NAMES.concat([_ksCur]), _ksCur);
         ksSelect.addEventListener("change", () => { cfg.ksampler_name = ksSelect.value; });
         body.append(row("sampler name", ksSelect));
       }

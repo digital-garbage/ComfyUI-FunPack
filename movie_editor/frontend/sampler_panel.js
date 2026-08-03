@@ -13,7 +13,29 @@
   const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
   const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
   const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
-  const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+  // Fallback only. The real list is whatever THIS ComfyUI has — read from the live
+  // KSampler node spec, because a hardcoded set silently hides samplers the backend can
+  // already run (it passes the name straight to comfy.samplers.sampler_object). That is
+  // how res_multistep — the one ComfyUI's own MiniMax H3 templates use — went missing.
+  const KSAMPLER_NAMES_FALLBACK = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+  let _ksamplerNames = null;
+  let _ksamplerPending = null;
+
+  function ksamplerNames(onLoaded) {
+    if (_ksamplerNames) return _ksamplerNames;
+    if (!_ksamplerPending && window.MovieEditorAPI?.nodeSpec) {
+      _ksamplerPending = window.MovieEditorAPI.nodeSpec("KSampler")
+        .then((spec) => {
+          const w = (spec?.inputs || []).find((i) => i.name === "sampler_name");
+          if (w && (w.choices || []).length) {
+            _ksamplerNames = w.choices;
+            if (onLoaded) onLoaded();
+          }
+        })
+        .catch(() => {});
+    }
+    return KSAMPLER_NAMES_FALLBACK;
+  }
 
   function defaultHybrid() {
     return {
@@ -300,8 +322,11 @@
 
     } else if (cfg.type === "KSampler") {
       sectionTag(container, "KSampler");
+      // saveNow re-renders, which is how the list refreshes once the live names land.
+      const names = ksamplerNames(saveNow);
+      const cur = cfg.ksampler_name || "euler";
       row(container, "sampler name",
-        selCtrl(KSAMPLER_NAMES, cfg.ksampler_name || "euler", dk + "-ks",
+        selCtrl(names.includes(cur) ? names : names.concat([cur]), cur, dk + "-ks",
           (v) => { cfg.ksampler_name = v; save(); }));
     }
   }
