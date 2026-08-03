@@ -1,9 +1,10 @@
 import sys
-import types
 from pathlib import Path
 
 import pytest
 import torch
+
+import _comfy_stubs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -86,16 +87,6 @@ def _sample_snapshot(value):
     return value.detach().clone()
 
 
-comfy_mod = types.ModuleType("comfy")
-comfy_kd_mod = types.ModuleType("comfy.k_diffusion")
-comfy_kd_sampling_mod = types.ModuleType("comfy.k_diffusion.sampling")
-comfy_model_sampling_mod = types.ModuleType("comfy.model_sampling")
-comfy_nested_mod = types.ModuleType("comfy.nested_tensor")
-comfy_sample_mod = types.ModuleType("comfy.sample")
-comfy_samplers_mod = types.ModuleType("comfy.samplers")
-comfy_utils_mod = types.ModuleType("comfy.utils")
-
-
 class FakeProgressBar:
     """Records what the sampler declared as the run's total step count."""
     last = None
@@ -109,27 +100,36 @@ class FakeProgressBar:
         self.value = int(value)
 
 
-comfy_utils_mod.ProgressBar = FakeProgressBar
-comfy_nested_mod.NestedTensor = FakeNestedTensor
-comfy_sample_mod.prepare_noise = fake_prepare_noise
-comfy_sample_mod.sample_custom = fake_sample_custom
+# These fakes ARE the test: a full sample() run is driven through them. They attach to the
+# shared comfy stubs conftest built rather than registering modules of their own — the old
+# `sys.modules.setdefault(...)` lost the race whenever another test module imported first,
+# and every test here then died on a missing attribute in a full-suite run while passing
+# alone. Only this file and test_minimax_h3_sampler.py touch the sampling entry points, and
+# that one installs inert lambdas, so owning them for the session is safe.
+_comfy_stubs.install_module("comfy.utils", ProgressBar=FakeProgressBar)
+_comfy_stubs.install_module("comfy.nested_tensor", NestedTensor=FakeNestedTensor)
+_comfy_stubs.install_module("comfy.sample",
+                        prepare_noise=fake_prepare_noise, sample_custom=fake_sample_custom)
 
-comfy_mod.k_diffusion = comfy_kd_mod
-comfy_kd_mod.sampling = comfy_kd_sampling_mod
-comfy_mod.model_sampling = comfy_model_sampling_mod
-comfy_mod.nested_tensor = comfy_nested_mod
-comfy_mod.sample = comfy_sample_mod
-comfy_mod.samplers = comfy_samplers_mod
-comfy_mod.utils = comfy_utils_mod
 
-sys.modules.setdefault("comfy", comfy_mod)
-sys.modules.setdefault("comfy.k_diffusion", comfy_kd_mod)
-sys.modules.setdefault("comfy.k_diffusion.sampling", comfy_kd_sampling_mod)
-sys.modules.setdefault("comfy.model_sampling", comfy_model_sampling_mod)
-sys.modules.setdefault("comfy.nested_tensor", comfy_nested_mod)
-sys.modules.setdefault("comfy.sample", comfy_sample_mod)
-sys.modules.setdefault("comfy.samplers", comfy_samplers_mod)
-sys.modules.setdefault("comfy.utils", comfy_utils_mod)
+@pytest.fixture(autouse=True)
+def _own_comfy_stubs(monkeypatch):
+    """Re-pin this file's fakes around every test.
+
+    Module-level installation is not enough: several other test modules assign
+    `comfy.nested_tensor.NestedTensor = object` on the same shared module at COLLECTION
+    time, so whichever is collected last wins and a run() here builds `object()` latents.
+    Re-pinning per test makes these assertions about the sampler instead of about
+    collection order."""
+    monkeypatch.setattr(sys.modules["comfy.nested_tensor"], "NestedTensor",
+                        FakeNestedTensor, raising=False)
+    monkeypatch.setattr(sys.modules["comfy.utils"], "ProgressBar",
+                        FakeProgressBar, raising=False)
+    monkeypatch.setattr(sys.modules["comfy.sample"], "prepare_noise",
+                        fake_prepare_noise, raising=False)
+    monkeypatch.setattr(sys.modules["comfy.sample"], "sample_custom",
+                        fake_sample_custom, raising=False)
+
 
 import run_phase  # noqa: E402
 from samplers import FunPackLTXAVSceneChainSampler  # noqa: E402

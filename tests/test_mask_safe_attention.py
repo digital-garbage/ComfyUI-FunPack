@@ -13,37 +13,34 @@ import sys
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import _comfy_stubs
 
-# Minimal comfy stubs so `import samplers` works without a full ComfyUI env.
-for _name in (
-    "comfy", "comfy.k_diffusion", "comfy.k_diffusion.sampling",
-    "comfy.model_sampling", "comfy.nested_tensor", "comfy.sample",
-    "comfy.samplers", "comfy.utils",
-):
-    sys.modules.setdefault(_name, types.ModuleType(_name))
-sys.modules["comfy.nested_tensor"].NestedTensor = object
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import samplers  # noqa: E402
 
 
 def _install_attn_module(*, backend="xformers", with_pytorch_sentinel=True):
-    """Register a fake comfy.ldm.modules.attention with selectable active backend."""
-    am = types.ModuleType("comfy.ldm.modules.attention")
+    """Point comfy.ldm.modules.attention at a fake with a selectable active backend.
 
+    Installed through _comfy_stubs.install_module so the PARENT attribute moves too. Registering
+    only the sys.modules entry is not enough: `import comfy.ldm.modules.attention as _am`
+    (what samplers.py does) resolves through `comfy.ldm.modules.attention` the attribute, so
+    a stub left behind by another test module kept winning here and the install under test
+    bailed out at its first guard.
+    """
     def attention_xformers(*a, **kw):
         return "xformers"
 
     def attention_pytorch(*a, **kw):
         return "pytorch"
 
-    am.attention_xformers = attention_xformers
-    am.attention_pytorch = attention_pytorch
-    am.optimized_attention = attention_xformers if backend == "xformers" else attention_pytorch
-    for parent in ("comfy", "comfy.ldm", "comfy.ldm.modules", "comfy.ldm.modules.attention"):
-        sys.modules.setdefault(parent, types.ModuleType(parent))
-    sys.modules["comfy.ldm.modules.attention"] = am
-    return am
+    return _comfy_stubs.install_module(
+        "comfy.ldm.modules.attention",
+        attention_xformers=attention_xformers,
+        attention_pytorch=attention_pytorch,
+        optimized_attention=attention_xformers if backend == "xformers" else attention_pytorch,
+    )
 
 
 def _fake_model():
