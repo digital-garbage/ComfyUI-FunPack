@@ -3025,6 +3025,60 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:  # noqa: BLE001
             pass
 
+    def _current_phase_label(self):
+        """The progress label this chunk is running under ("scene 2/3 · pass 1 of 2"), for
+        error messages. Best-effort like _set_phase — never let a readout break a render."""
+        try:
+            try:
+                from . import run_phase as _rp
+            except ImportError:
+                import run_phase as _rp
+            return str((_rp.current() or {}).get("label") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _assert_finite_sample(self, sampled):
+        """Stop the run the moment a chunk comes back with NaN/Inf in it.
+
+        Nothing downstream notices: the blend spreads it into every previously finished
+        scene, the VAE decodes it, and the first thing that objects is ffmpeg's AAC encoder
+        with a message naming nothing that produced it ("Input contains (near) NaN/+-Inf") —
+        after the whole montage has been paid for. The video half is worse: NaN through
+        `astype(np.uint8)` is undefined but silent, so it degrades without complaining.
+
+        A non-finite latent is unrecoverable, so this raises rather than warns. One
+        isfinite() per chunk against a multi-second sample is not a cost worth weighing.
+        """
+        try:
+            tensors = self._latent_tensors({"samples": sampled})
+        except Exception:  # noqa: BLE001 — never fail the run over the check itself
+            return
+        names = ("video", "audio")
+        bad = []
+        for i, t in enumerate(tensors):
+            if not isinstance(t, torch.Tensor):
+                continue
+            finite = torch.isfinite(t)
+            if bool(finite.all()):
+                continue
+            n_bad = int((~finite).sum().item())
+            label = names[i] if i < len(names) else f"stream {i}"
+            bad.append(f"{label} ({n_bad}/{t.numel()} values, dtype={t.dtype})")
+        if not bad:
+            return
+        where = self._current_phase_label() or "this chunk"
+        raise RuntimeError(
+            f"[FunPackSceneChain] {where}: the sampler returned a non-finite latent — "
+            f"{'; '.join(bad)}. Sampling itself ran to completion, so this is corrupt "
+            f"MATH, not a wiring or memory problem. Usual causes, in the order worth "
+            f"testing: a LoRA that does not match this checkpoint (ComfyUI logs the keys "
+            f"it could not apply at load — check the log), a base checkpoint whose layout "
+            f"the loader mis-inferred (third-party repacks of quantised weights are the "
+            f"common case), or a VAE/model dtype the model cannot hold. Stopping here "
+            f"rather than blending this into the finished scenes and failing later in "
+            f"ffmpeg with nothing to point at."
+        )
+
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
@@ -3065,6 +3119,7 @@ class FunPackLTXAVSceneChainSampler:
             )
         finally:
             self._remove_bounded_attention(_ba_handles)
+        self._assert_finite_sample(sampled)
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
         return latent
