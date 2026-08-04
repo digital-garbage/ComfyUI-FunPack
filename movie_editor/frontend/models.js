@@ -131,6 +131,26 @@
     }
   }
 
+  // Overrides are saved per CORE ID, not per node class, so a family switch that replaces a
+  // node leaves the old node's input names sitting on the new one — audiodec.audio_vae
+  // (LTXVAudioVAEDecode) surviving onto VAEDecodeAudio, which calls its VAE input `vae`. The
+  // panel below lists the NEW node's inputs, so the leftover is invisible here; the builder
+  // refuses to emit it, but it should not linger in the saved project either.
+  function dropOverridesForMissingInputs() {
+    if (!config.core_overrides) return;
+    const byId = new Map((coreNodes || []).map((n) => [n.id, n]));
+    for (const cid of Object.keys(config.core_overrides)) {
+      const node = byId.get(cid);
+      if (!node) continue;          // not a core node this family has an opinion about
+      const names = new Set((node.inputs || []).map((i) => i.name));
+      if (!names.size) continue;    // node spec unavailable — leave it alone
+      for (const inp of Object.keys(config.core_overrides[cid] || {})) {
+        if (!names.has(inp)) delete config.core_overrides[cid][inp];
+      }
+      if (!Object.keys(config.core_overrides[cid] || {}).length) delete config.core_overrides[cid];
+    }
+  }
+
   function allowedSources(slot, ci) {
     const all = sources(slot, ci.type);
     if (!pipelineLocked()) return all;
@@ -1340,6 +1360,10 @@
           wiringRules = pp.wiring || wiringRules;
         } catch (_) {}
         try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
+        // Only now — the prune needs the NEW family's core nodes to know which inputs exist.
+        const before = JSON.stringify(config.core_overrides || {});
+        dropOverridesForMissingInputs();
+        if (JSON.stringify(config.core_overrides || {}) !== before) await persist();
         render();
       };
       row.append(b);

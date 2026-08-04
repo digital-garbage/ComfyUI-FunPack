@@ -481,6 +481,34 @@ def test_h3_without_an_av_latent_slot_blocks_instead_of_generating_a_broken_grap
     assert any("latent_template" in m for m in report["blocking"]), report
 
 
+# A core override is saved per core ID, not per node class, so switching family leaves the
+# replaced node's input names behind on its successor. The panel lists the NEW node's inputs,
+# so the leftover is invisible; emitting it hands ComfyUI a kwarg the node never declared and
+# the run dies inside it ("VAEDecodeAudio.execute() got an unexpected keyword argument
+# 'audio_vae'"). Guided mode filtered these out as a side effect; full control did not.
+
+def test_a_core_override_from_another_family_is_not_emitted():
+    models = dict(H3_MODELS)
+    models["full_control"] = True            # guided mode filtered this one out by accident
+    models["core_overrides"] = {"audiodec": {"audio_vae": "out:av:VAE"}}
+    graph, report = builder.build(H3_OI, models, {"prompt": "a shot"})
+
+    assert "audio_vae" not in graph["audiodec"]["inputs"]
+    assert graph["audiodec"]["inputs"]["vae"] == ["slot_av", 0]   # the real wire is untouched
+    assert any("has no input 'audio_vae'" in u for u in report["unsatisfied"]), report
+    assert not report["blocking"], report["blocking"]   # a leftover is not a reason to refuse
+
+
+def test_a_valid_core_override_still_applies_under_full_control():
+    models = dict(H3_MODELS)
+    models["full_control"] = True
+    models["core_overrides"] = {"audiodec": {"vae": "out:vv:VAE"}}
+    graph, report = builder.build(H3_OI, models, {"prompt": "a shot"})
+
+    assert graph["audiodec"]["inputs"]["vae"] == ["slot_vv", 0]
+    assert not report["blocking"], report["blocking"]
+
+
 def test_the_ltxav_graph_is_unchanged_by_the_family_split():
     """The default family must emit exactly what it emitted before H3 existed."""
     ltx_models = {"slots": [

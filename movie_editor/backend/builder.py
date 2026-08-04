@@ -684,8 +684,22 @@ def build(object_info: dict, models_config: dict, params: dict, media: dict | No
         if cid not in graph:
             continue
         locked = pipeline_wiring.wiring_locked(models_config)
+        # Inputs the class at this core id actually declares. An override is saved per core
+        # ID, not per class, so switching model family leaves the OLD node's input names
+        # behind on the NEW node — audiodec's audio_vae (LTXVAudioVAEDecode) survives onto
+        # VAEDecodeAudio, whose VAE input is called `vae`. Nothing shows it: the Models panel
+        # lists the new node's inputs, so the stale key is invisible right up until ComfyUI
+        # is handed a kwarg the node never declared and the run dies inside it
+        # ("VAEDecodeAudio.execute() got an unexpected keyword argument 'audio_vae'").
+        # Guided mode happened to filter these out; full control applied them.
+        core_inputs = {ci["name"] for ci in connection_inputs(object_info.get(CORE.get(cid)) or {})}
         for inp, source in (ovs or {}).items():
             if not source:
+                continue
+            if core_inputs and inp not in core_inputs:
+                report["unsatisfied"].append(
+                    f"core override {cid}.{inp}: {CORE.get(cid)} has no input '{inp}' "
+                    f"— left over from another model family, ignored.")
                 continue
             if locked and (cid, inp) not in pipeline_wiring.open_core_inputs(family):
                 continue
