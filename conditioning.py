@@ -14537,6 +14537,12 @@ class FunPackConditioningAdjust:
         return (new_conditioning, status)
 
 
+# The KSampler pass's schedule dropdown holds ComfyUI's scheduler names plus this one extra
+# entry, which means "don't compute anything, run the sigmas typed in the Sigmas field".
+# Both frontends offer it under the same string — keep them in sync if it ever changes.
+KSAMPLER_USER_SIGMAS = "use_user_sigmas"
+
+
 class FunPackStudio:
     """Single node combining Refinement Key, Refiner V2, Scene Builder,
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
@@ -14889,6 +14895,9 @@ class FunPackStudio:
         high_sampler, high_sigmas, low_sampler, low_sigmas = self._build_samplers(
             settings.get("samplers", {}), prompt_sig=prompt_sig,
             refinement_key=effective_refinement_key,
+            # Needed for the KSampler pass's steps/schedule: calculate_sigmas reads the
+            # model's model_sampling, so the schedule follows whatever model is loaded.
+            model=out_model,
         )
 
         cond = _h3_reconcile_token_tags(cond, "positive")
@@ -14906,7 +14915,7 @@ class FunPackStudio:
         return None
 
     @classmethod
-    def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key=""):
+    def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key="", model=None):
         sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
         sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
 
@@ -14954,6 +14963,36 @@ class FunPackStudio:
                 sampler_name = str(cfg.get("ksampler_name", "euler") or "euler")
                 sampler = _cs.sampler_object(sampler_name)
                 out_sigmas = sigmas_raw
+                # A stock KSampler carries no schedule of its own — the SAMPLER object is
+                # just the step function — so with the Sigmas field empty this pass used to
+                # hand the chain sampler nothing at all. steps + schedule build one the way
+                # ComfyUI's BasicScheduler does. The schedule is the switch between the two
+                # sources, deliberately: KSAMPLER_USER_SIGMAS reads the typed Sigmas field,
+                # anything else COMPUTES and the typed list is ignored for this pass — so a
+                # hand-written schedule can be parked in the field and switched back to
+                # without retyping it.
+                steps = int(cfg.get("ksampler_steps", 0) or 0)
+                scheduler = str(cfg.get("ksampler_scheduler", KSAMPLER_USER_SIGMAS)
+                                or KSAMPLER_USER_SIGMAS)
+                if scheduler != KSAMPLER_USER_SIGMAS:
+                    if model is None or steps <= 0:
+                        print(f"[FunPackStudio] KSampler schedule '{scheduler}' needs steps > 0 "
+                              f"and a model — falling back to the typed sigmas field.")
+                    else:
+                        try:
+                            out_sigmas = _cs.calculate_sigmas(
+                                model.get_model_object("model_sampling"), scheduler, steps
+                            ).cpu()
+                            if sigmas_raw is not None:
+                                print(f"[FunPackStudio] KSampler: schedule '{scheduler}' "
+                                      f"({steps} steps) in use — the typed sigmas field is "
+                                      f"ignored until the schedule is set back to "
+                                      f"'{KSAMPLER_USER_SIGMAS}'.")
+                        except Exception as e:
+                            # Keep the sampler: a bad scheduler name should cost the
+                            # schedule, not the whole pass.
+                            print(f"[FunPackStudio] KSampler schedule build failed "
+                                  f"({scheduler}, {steps} steps): {e}")
             else:  # Hybrid Euler 2S (default)
                 try:
                     from .samplers import FunPackHybridEuler2SSampler
@@ -14999,9 +15038,9 @@ class FunPackStudio:
             return None, sigmas_raw
 
     @classmethod
-    def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key=""):
+    def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key="", model=None):
         if not isinstance(samplers_cfg, dict):
             samplers_cfg = {}
-        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key)
-        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key)
+        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
+        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
         return high_sampler, high_sigmas, low_sampler, low_sigmas
