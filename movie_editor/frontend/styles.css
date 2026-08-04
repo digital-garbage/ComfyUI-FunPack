@@ -121,7 +121,8 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .log-panel[hidden] { display: none; }  /* explicit display:flex above would otherwise beat the hidden attribute */
 .log-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid var(--line);
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
-.log-actions { display: flex; gap: 6px; }
+.log-actions { display: flex; gap: 6px; align-items: center; }
+.log-freeze-indicator { font-family: var(--font-mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
 .log-body { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: var(--muted); background: #060606; }
 
