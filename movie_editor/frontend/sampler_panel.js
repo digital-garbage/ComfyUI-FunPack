@@ -13,7 +13,47 @@
   const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
   const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
   const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
-  const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+  // Fallback only. The real list is whatever THIS ComfyUI has — read from the live
+  // KSampler node spec, because a hardcoded set silently hides samplers the backend can
+  // already run (it passes the name straight to comfy.samplers.sampler_object). That is
+  // how res_multistep — the one ComfyUI's own MiniMax H3 templates use — went missing.
+  const KSAMPLER_NAMES_FALLBACK = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+  // Same story for the schedulers: the backend hands the name to comfy.samplers.calculate_sigmas.
+  const KSAMPLER_SCHEDULERS_FALLBACK = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta", "linear_quadratic", "kl_optimal"];
+  // Not a ComfyUI scheduler — the entry that means "run the Sigmas field as typed". First in the
+  // list AND the default, so a hand-written schedule can sit in the field untouched while the
+  // dropdown switches between it and a computed one. Mirrors conditioning.KSAMPLER_USER_SIGMAS.
+  const KSAMPLER_USER_SIGMAS = "use_user_sigmas";
+  let _ksamplerNames = null;
+  let _ksamplerSchedulers = null;
+  let _ksamplerPending = null;
+
+  // One fetch feeds both lists; whichever renders first kicks it off.
+  function loadKsamplerSpec(onLoaded) {
+    if (_ksamplerPending || !window.MovieEditorAPI?.nodeSpec) return;
+    _ksamplerPending = window.MovieEditorAPI.nodeSpec("KSampler")
+      .then((spec) => {
+        const choices = (name) => ((spec?.inputs || []).find((i) => i.name === name)?.choices) || [];
+        const names = choices("sampler_name");
+        const scheds = choices("scheduler");
+        if (names.length) _ksamplerNames = names;
+        if (scheds.length) _ksamplerSchedulers = scheds;
+        if ((names.length || scheds.length) && onLoaded) onLoaded();
+      })
+      .catch(() => {});
+  }
+
+  function ksamplerNames(onLoaded) {
+    if (_ksamplerNames) return _ksamplerNames;
+    loadKsamplerSpec(onLoaded);
+    return KSAMPLER_NAMES_FALLBACK;
+  }
+
+  function ksamplerSchedulers(onLoaded) {
+    if (_ksamplerSchedulers) return [KSAMPLER_USER_SIGMAS].concat(_ksamplerSchedulers);
+    loadKsamplerSpec(onLoaded);
+    return [KSAMPLER_USER_SIGMAS].concat(KSAMPLER_SCHEDULERS_FALLBACK);
+  }
 
   function defaultHybrid() {
     return {
@@ -43,7 +83,7 @@
     return {
       type: type || "Hybrid Euler 2S", sigmas: "",
       hybrid: defaultHybrid(), distilled: defaultDistilled(),
-      ksampler_name: "euler",
+      ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: KSAMPLER_USER_SIGMAS,
     };
   }
 
@@ -300,9 +340,31 @@
 
     } else if (cfg.type === "KSampler") {
       sectionTag(container, "KSampler");
+      // saveNow re-renders, which is how the list refreshes once the live names land.
+      const names = ksamplerNames(saveNow);
+      const cur = cfg.ksampler_name || "euler";
       row(container, "sampler name",
-        selCtrl(KSAMPLER_NAMES, cfg.ksampler_name || "euler", dk + "-ks",
+        selCtrl(names.includes(cur) ? names : names.concat([cur]), cur, dk + "-ks",
           (v) => { cfg.ksampler_name = v; save(); }));
+
+      const scheds = ksamplerSchedulers(saveNow);
+      const schedCur = cfg.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
+      row(container, "schedule",
+        selCtrl(scheds.includes(schedCur) ? scheds : scheds.concat([schedCur]), schedCur, dk + "-kssch",
+          (v) => { cfg.ksampler_scheduler = v; saveNow(); }));
+      hint(container, "A KSampler is only the step function — it carries no schedule. '"
+                    + KSAMPLER_USER_SIGMAS + "' runs the Sigmas field above exactly as typed; any "
+                    + "other entry COMPUTES the schedule from steps, the way ComfyUI's own "
+                    + "scheduler does, and the Sigmas field is ignored until you switch back — so "
+                    + "you can leave your hand-written schedule parked there.");
+
+      if (schedCur !== KSAMPLER_USER_SIGMAS) {
+        const steps = cfg.ksampler_steps === undefined ? 8 : cfg.ksampler_steps;
+        row(container, "steps",
+          intCtrl(steps, 1, 200, dk + "-kss",
+            (v) => { cfg.ksampler_steps = v; save(); }));
+        hint(container, "8 suits the distilled LTX model; a non-distilled one wants 20-30.");
+      }
     }
   }
 

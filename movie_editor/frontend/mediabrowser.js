@@ -332,6 +332,28 @@
         thumb.append(badge);
       }
     }
+    // Reference mark. Unlike the single continuity pin, any number of items can carry one,
+    // and their ORDER is the numbering the badge shows (R1, R2, …) — that order is what
+    // distinguishes two references of the same kind when wiring them to node inputs.
+    if (st.project && m.kind !== "other") {
+      const refs = st.project.references || [];
+      const idx = refs.indexOf(m.id);
+      const isRef = idx >= 0;
+      const refBtn = el("button", "media-act media-ref" + (isRef ? " active" : ""), "R");
+      refBtn.title = isRef
+        ? `Reference R${idx + 1} — click to unmark`
+        : "Mark as a reference — wireable into node inputs in Models & Pipeline";
+      refBtn.onclick = (e) => {
+        e.stopPropagation();
+        S.patchProject({ references: isRef ? refs.filter((r) => r !== m.id) : [...refs, m.id] });
+      };
+      actions.append(refBtn);
+      if (isRef) {
+        const badge = el("span", "media-ref-badge", `R${idx + 1}`);
+        badge.title = `Reference ${idx + 1} of ${refs.length}`;
+        thumb.append(badge);
+      }
+    }
     if (m.kind === "image" || m.kind === "video") {
       const exp = el("button", "media-act media-exp", "⤓");
       exp.title = "Export to disk";
@@ -399,8 +421,33 @@
 
     if (total > 0) wrap.append(_mediaFilterSortControls(st, shown, total));
 
-    if ((mediaSelectMode && selN > 0) || exportId) {
+    const refIds = (st.project?.references || []).filter((id) => bin.some((m) => m.id === id));
+    const selRefN = mediaSelectMode ? refIds.filter((id) => mediaSelected.has(id)).length : 0;
+    if ((mediaSelectMode && selN > 0) || exportId || refIds.length) {
       const actions = el("div", "media-bin-actions");
+      if (mediaSelectMode && selN > 0) {
+        // Marking a whole selection at once — the point of turning select mode on for
+        // references. Appends in the order shown, so the R numbering is predictable.
+        const unmarked = items.filter((m) => mediaSelected.has(m.id) && m.kind !== "other"
+          && !refIds.includes(m.id));
+        if (unmarked.length) {
+          const mark = el("button", "btn ghost tiny", `Mark as reference (${unmarked.length})`);
+          mark.title = "Add these to the reference list, in the order shown";
+          mark.onclick = () => S.patchProject({ references: [...refIds, ...unmarked.map((m) => m.id)] });
+          actions.append(mark);
+        }
+      }
+      if (refIds.length) {
+        const n = selRefN || refIds.length;
+        const clear = el("button", "btn ghost tiny", `Clear ${selRefN ? "selected " : ""}references (${n})`);
+        clear.title = selRefN
+          ? "Remove the R mark from the selected items"
+          : "Remove the R mark from every item in the bin";
+        clear.onclick = () => S.patchProject({
+          references: selRefN ? refIds.filter((id) => !mediaSelected.has(id)) : [],
+        });
+        actions.append(clear);
+      }
       if (exportId) {
         const expBtn = el("button", "btn ghost tiny", "⤓ Export");
         expBtn.title = "Save this image or video to your computer";

@@ -63,6 +63,15 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .easy-progress-stop:disabled { opacity: .6; cursor: default; }
 
+/* Full-width notice between the preview and the Generate row: a setting that is on
+   but cannot do anything should be readable without opening any panel. */
+.easy-warn-strip {
+  flex: none; padding: 9px 16px; font-size: 12.5px; line-height: 1.45;
+  color: var(--amber); border-top: 1px solid color-mix(in srgb, var(--amber) 45%, var(--line));
+  background: color-mix(in srgb, var(--amber) 9%, transparent);
+}
+.easy-warn-strip[hidden] { display: none; }
+
 .easy-bar {
   flex: none; display: flex; align-items: flex-end; gap: 12px;
   padding: 14px 16px; border-top: 1px solid var(--line); background: var(--ink-1);
@@ -119,3 +128,13 @@ a.brand:hover .brand-sub { color: var(--amber-2); }
 .gal-pin-btn.active { filter: none; background: var(--amber-soft); border-color: var(--amber); }
 .gal-pin-badge { position: absolute; top: 4px; left: 4px; z-index: 2; font-size: 10.5px;
   background: rgba(10, 9, 7, .72); border-radius: 4px; padding: 1px 4px; line-height: 1.4; }
+/* Reference mark — sits under the pin so both are reachable on the same tile. */
+.gal-ref-btn { position: absolute; top: 30px; right: 4px; z-index: 2; width: 22px; height: 22px;
+  border-radius: 6px; background: rgba(10, 9, 7, .72); border: 1px solid var(--line);
+  color: var(--muted); font-size: 11px; font-weight: 700; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; padding: 0; }
+.gal-ref-btn:hover { color: var(--amber); border-color: var(--amber); }
+.gal-ref-btn.active { background: var(--amber); border-color: var(--amber); color: var(--ink-0); }
+.gal-ref-badge { position: absolute; bottom: 4px; left: 4px; z-index: 2; font-size: 10px;
+  font-weight: 700; color: var(--ink-0); background: var(--amber); border-radius: 4px;
+  padding: 1px 5px; line-height: 1.4; }

@@ -2348,6 +2348,9 @@ class FunPackLTXAVSceneChainSampler:
                     "default": 1.0, "min": 0.0, "max": 4.0, "step": 0.25,
                     "tooltip": "JoyAI-Echo video->audio coupling. Scales the model's trained video-to-audio cross-attention so the carried audio tracks the new shot's visuals (JoyAI uses 2.0). 1.0 = native model behavior (no change, zero overhead); 0.0 = audio ignores video this run. Only applies when joyai_audio_memory is on.",
                 }),
+                "audio_vae": ("VAE", {
+                    "tooltip": "MiniMax H3 only: the audio VAE, needed to encode AUDIO reference media for ref2va (a voice or ambience clip the generation should sound like). Studio lists the references and bakes their <Audio j> labels into the prompt; this VAE turns them into the latent blocks the DiT packs. Image references need only the main vae and work without this. Ignored entirely on LTX.",
+                }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -2588,10 +2591,32 @@ class FunPackLTXAVSceneChainSampler:
             raise ValueError("latent_template must be a LATENT dict with samples.")
         return {key: self._clone_value(value) for key, value in latent.items()}
 
-    def _tensor_frames(self, tensor):
+    # Time axis per latent stream, in comfy's pack order (video first). LTXAV puts time
+    # on dim 2 for BOTH streams (its audio latent is [B, C, T, freq]); MiniMax H3 puts the
+    # STEREO CHANNEL there and time last ([B, 32, 2, T]), so slicing an H3 audio stream on
+    # dim 2 empties it instead of trimming its tail. Both are 4-D, so the tensor cannot
+    # tell you which — it is set per run from the model family in sample().
+    _time_dims = (2, 2, 2, 2)
+
+    def _stream_dim(self, stream=0):
+        dims = self._time_dims
+        idx = max(0, int(stream))
+        return dims[idx] if idx < len(dims) else dims[-1]
+
+    def _set_stream_axes(self, model):
+        """Record each stream's time axis for this run. Returns True when H3 was detected."""
+        try:
+            from .minimax_h3 import is_h3_model, stream_time_dims
+        except ImportError:
+            from minimax_h3 import is_h3_model, stream_time_dims
+        h3 = bool(is_h3_model(model))
+        self._time_dims = tuple(stream_time_dims(4, h3))
+        return h3
+
+    def _tensor_frames(self, tensor, stream=0):
         if not isinstance(tensor, torch.Tensor) or tensor.dim() < 3:
             raise ValueError("Scene chain latents must have a time dimension at index 2.")
-        return int(tensor.shape[2])
+        return int(tensor.shape[self._stream_dim(stream)])
 
     def _context_scene_latent_frames(self, chunk):
         """Video latent frames in this scene's chunk, or None if it can't be read.
@@ -2637,22 +2662,50 @@ class FunPackLTXAVSceneChainSampler:
                 return 1
         return 1
 
-    def _expected_latent_frames(self, pixel_frames, time_scale):
+    def _expected_latent_frames(self, pixel_frames, time_scale, vae=None):
+        """Pixel frames -> video latent frames.
+
+        The uniform ((n - 1) // time_scale) + 1 is LTXAV's 8k+1 grid. It is not universal:
+        MiniMax H3 is 17k+5 -> 5k+2, and its VAE reports downscale_index_formula[0] = 4
+        (the INDEX map, not the count map), so the uniform form silently under-counts by
+        about a fifth. When the VAE exposes its own count map we ask it instead — which
+        reproduces LTXAV's answer exactly, so nothing changes for existing projects.
+        """
+        if vae is not None:
+            try:
+                from .minimax_h3 import latent_frames_from_vae
+            except ImportError:
+                from minimax_h3 import latent_frames_from_vae
+            counted = latent_frames_from_vae(vae, pixel_frames)
+            if counted is not None:
+                return counted
         return ((max(1, int(pixel_frames)) - 1) // max(1, int(time_scale))) + 1
 
-    def _validate_template_length(self, latent_template, num_frames_per_scene, time_scale):
+    def _validate_template_length(self, latent_template, num_frames_per_scene, time_scale, vae=None):
         video_frames = self._tensor_frames(self._latent_tensors(latent_template)[0])
-        expected = self._expected_latent_frames(num_frames_per_scene, time_scale)
+        expected = self._expected_latent_frames(num_frames_per_scene, time_scale, vae=vae)
         if video_frames != expected:
+            detail = ""
+            if self._is_h3:
+                # By this point num_frames_per_scene is already snapped to 17k+5, so a
+                # mismatch means the latent node was built for a different length entirely.
+                try:
+                    from .minimax_h3 import FRAME_GRID, FRAME_BASE
+                except ImportError:
+                    from minimax_h3 import FRAME_GRID, FRAME_BASE
+                detail = (f" On MiniMax H3 the latent node's `length` must be the SAME "
+                          f"{FRAME_GRID}k+{FRAME_BASE} frame count as num_frames_per_scene "
+                          f"({num_frames_per_scene}) — set Empty MiniMax H3 AV Latent to that.")
             raise ValueError(
                 f"latent_template has {video_frames} video latent frames, expected {expected} "
                 f"from num_frames_per_scene={num_frames_per_scene} and time scale={time_scale}."
+                + detail
             )
         return video_frames
 
-    def _overlap_frames(self, latent_template, frame_overlap, time_scale):
+    def _overlap_frames(self, latent_template, frame_overlap, time_scale, vae=None):
         video_frames = self._tensor_frames(self._latent_tensors(latent_template)[0])
-        overlap = self._expected_latent_frames(frame_overlap + 1, time_scale) - 1
+        overlap = self._expected_latent_frames(frame_overlap + 1, time_scale, vae=vae) - 1
         if frame_overlap <= 0:
             overlap = 0
         if overlap >= video_frames:
@@ -2666,27 +2719,26 @@ class FunPackLTXAVSceneChainSampler:
         overlap = int(round(video_overlap * ratio))
         return max(1, min(tensor_frames - 1, overlap))
 
-    def _replace_start(self, target, source_tail, overlap):
+    def _replace_start(self, target, source_tail, overlap, stream=0):
         if overlap <= 0:
             return target
         target = target.clone()
         source_tail = source_tail.to(device=target.device, dtype=target.dtype)
-        target[:, :, :overlap] = source_tail
-        return target
+        return self._set_time_slice(target, 0, overlap, source_tail, stream=stream)
 
-    def _tail(self, tensor, overlap):
+    def _tail(self, tensor, overlap, stream=0):
         if overlap <= 0:
-            return tensor[:, :, :0]
-        return tensor[:, :, -overlap:]
+            return self._time_slice(tensor, 0, 0, stream=stream)
+        return self._time_slice(tensor, -overlap, None, stream=stream)
 
-    def _time_slice(self, tensor, start, end):
+    def _time_slice(self, tensor, start, end, stream=0):
         slices = [slice(None)] * tensor.dim()
-        slices[2] = slice(start, end)
+        slices[self._stream_dim(stream) % tensor.dim()] = slice(start, end)
         return tensor[tuple(slices)]
 
-    def _set_time_slice(self, tensor, start, end, value):
+    def _set_time_slice(self, tensor, start, end, value, stream=0):
         slices = [slice(None)] * tensor.dim()
-        slices[2] = slice(start, end)
+        slices[self._stream_dim(stream) % tensor.dim()] = slice(start, end)
         tensor[tuple(slices)] = value
         return tensor
 
@@ -2706,10 +2758,10 @@ class FunPackLTXAVSceneChainSampler:
             expand_shape[dim] = target.shape[dim]
         return mask.expand(expand_shape)
 
-    def _make_mask_tensor(self, tensor, overlap):
+    def _make_mask_tensor(self, tensor, overlap, stream=0):
         mask = torch.ones_like(tensor)
         if overlap > 0:
-            mask[:, :, :overlap] = 0
+            self._set_time_slice(mask, 0, overlap, 0, stream=stream)
         return mask
 
     def _protected_prefix_frames(self, template_mask, tensor_frames):
@@ -2736,11 +2788,11 @@ class FunPackLTXAVSceneChainSampler:
         out_tensors = []
         mask_tensors = []
         for index, tensor in enumerate(chunk_tensors):
-            tensor_frames = self._tensor_frames(tensor)
+            tensor_frames = self._tensor_frames(tensor, stream=index)
             overlap = video_overlap if index == 0 else self._derived_overlap(video_overlap, video_frames, tensor_frames)
-            prev_tail = self._tail(previous_tensors[index], overlap)
-            out_tensor = self._replace_start(tensor, prev_tail, overlap)
-            mask_tensor = self._make_mask_tensor(tensor, overlap)
+            prev_tail = self._tail(previous_tensors[index], overlap, stream=index)
+            out_tensor = self._replace_start(tensor, prev_tail, overlap, stream=index)
+            mask_tensor = self._make_mask_tensor(tensor, overlap, stream=index)
             out_tensors.append(out_tensor)
             mask_tensors.append(mask_tensor)
 
@@ -2870,7 +2922,7 @@ class FunPackLTXAVSceneChainSampler:
         tensors = self._latent_tensors(result)
         if len(tensors) < 2 or tensors[1] is None:
             return latent
-        tensors[1] = tensors[1][:, :, :-count]
+        tensors[1] = self._time_slice(tensors[1], 0, -count, stream=1)
         if self._is_nested(result.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(tensors)
         return result
@@ -2907,16 +2959,18 @@ class FunPackLTXAVSceneChainSampler:
         mag = (1.0 - t) * a_norm + t * b_norm            # magnitude interpolated linearly
         return (direction * mag).to(out_dtype)
 
-    def _blend_tensors(self, left, right, overlap, use_slerp=True):
+    def _blend_tensors(self, left, right, overlap, use_slerp=True, stream=0):
+        dim = self._stream_dim(stream) % left.dim()
         if overlap <= 0:
-            return torch.cat([left, right], dim=2)
-        if left.shape[:2] != right.shape[:2] or left.shape[3:] != right.shape[3:]:
+            return torch.cat([left, right], dim=dim)
+        if [s for d, s in enumerate(left.shape) if d != dim] != \
+                [s for d, s in enumerate(right.shape) if d != dim]:
             raise ValueError("Cannot blend scene latents with different non-time dimensions.")
         right = right.to(left.device, left.dtype)
-        left_ov = left[:, :, -overlap:]
-        right_ov = right[:, :, :overlap]
+        left_ov = self._time_slice(left, -overlap, None, stream=stream)
+        right_ov = self._time_slice(right, 0, overlap, stream=stream)
         shape = [1] * left.dim()
-        shape[2] = overlap
+        shape[dim] = overlap
         if use_slerp:
             # Smoothstep ramp 0->1 (eases in/out so less dwell at the 50/50 ghost point), then
             # slerp so the crossfade preserves latent magnitude instead of washing out.
@@ -2927,7 +2981,8 @@ class FunPackLTXAVSceneChainSampler:
             # Audio (and any non-video stream) keeps the original linear crossfade untouched.
             alpha = torch.linspace(1.0, 0.0, overlap + 2, device=left.device, dtype=left.dtype)[1:-1].reshape(shape)
             blended = alpha * left_ov + (1.0 - alpha) * right_ov
-        return torch.cat([left[:, :, :-overlap], blended, right[:, :, overlap:]], dim=2)
+        return torch.cat([self._time_slice(left, 0, -overlap, stream=stream), blended,
+                          self._time_slice(right, overlap, None, stream=stream)], dim=dim)
 
     def _blend_latents(self, previous, current, video_overlap):
         result = self._clone_latent(previous)
@@ -2939,11 +2994,12 @@ class FunPackLTXAVSceneChainSampler:
         video_frames = self._tensor_frames(current_tensors[0])
         blended_tensors = []
         for index, tensor in enumerate(current_tensors):
-            tensor_frames = self._tensor_frames(tensor)
+            tensor_frames = self._tensor_frames(tensor, stream=index)
             overlap = video_overlap if index == 0 else self._derived_overlap(video_overlap, video_frames, tensor_frames)
             # index 0 is the video latent -> slerp+smoothstep; any further stream (audio) stays
             # on the untouched linear crossfade (audio-safety: never reshape audio nonlinearly).
-            blended_tensors.append(self._blend_tensors(previous_tensors[index], tensor, overlap, use_slerp=(index == 0)))
+            blended_tensors.append(self._blend_tensors(previous_tensors[index], tensor, overlap,
+                                                      use_slerp=(index == 0), stream=index))
 
         if self._is_nested(previous.get("samples")):
             result["samples"] = comfy.nested_tensor.NestedTensor(blended_tensors)
@@ -2969,6 +3025,111 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:  # noqa: BLE001
             pass
 
+    def _current_phase_label(self):
+        """The progress label this chunk is running under ("scene 2/3 · pass 1 of 2"), for
+        error messages. Best-effort like _set_phase — never let a readout break a render."""
+        try:
+            try:
+                from . import run_phase as _rp
+            except ImportError:
+                import run_phase as _rp
+            return str((_rp.current() or {}).get("label") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _nonfinite_report(self, samples):
+        """['video (12/1000 values, dtype=...)'] for each stream carrying NaN/Inf. Empty when
+        clean, and empty when the latent is not readable — the check must never be the thing
+        that kills a render."""
+        try:
+            tensors = self._latent_tensors({"samples": samples})
+        except Exception:  # noqa: BLE001
+            return []
+        names = ("video", "audio")
+        bad = []
+        for i, t in enumerate(tensors):
+            if not isinstance(t, torch.Tensor):
+                continue
+            finite = torch.isfinite(t)
+            if bool(finite.all()):
+                continue
+            n_bad = int((~finite).sum().item())
+            label = names[i] if i < len(names) else f"stream {i}"
+            bad.append(f"{label} ({n_bad}/{t.numel()} values, dtype={t.dtype})")
+        return bad
+
+    def _assert_finite_inputs(self, samples, sigmas):
+        """Check what the chunk is ABOUT TO be sampled from, so a corrupt run says whether the
+        damage arrived or was produced here.
+
+        Without this the output check alone cannot tell "the model computed garbage" from "the
+        model was handed garbage and faithfully propagated it" — and those have disjoint
+        suspect lists. The schedule is checked too because it is hand-typed: our own solvers
+        divide by sigma (er = sigma_next / sigma), so an INTERIOR zero or a repeat is an
+        instant Inf that then poisons every value in the tensor. A trailing zero is fine — it
+        is only ever the target of the last step, never a divisor.
+        """
+        where = self._current_phase_label() or "this chunk"
+        bad = self._nonfinite_report(samples)
+        if bad:
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the latent handed to the sampler is ALREADY "
+                f"non-finite before any sampling — {'; '.join(bad)}. The model has not run "
+                f"yet, so this is not the checkpoint, the LoRA or the sampler. Look at what "
+                f"produced this latent: the empty-latent node, the i2v anchor encode, or (on "
+                f"a later scene) the previous scene's output."
+            )
+        if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 2:
+            return
+        s = sigmas.detach().float().reshape(-1).cpu()
+        if not bool(torch.isfinite(s).all()):
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the sigma schedule contains NaN/Inf "
+                f"({[float(v) for v in s]}). Fix the schedule — nothing downstream can."
+            )
+        interior = s[:-1]
+        if bool((interior <= 0).any()):
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the sigma schedule has a zero or negative "
+                f"value before its last entry ({[float(v) for v in s]}). Every value except "
+                f"the final one is divided by, so this produces Inf on that step and NaN "
+                f"everywhere after it. Only the LAST sigma may be 0."
+            )
+        if bool((s[1:] >= s[:-1]).any()):
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the sigma schedule is not strictly "
+                f"descending ({[float(v) for v in s]}). A repeated value makes a zero-length "
+                f"step the solvers divide by; an ascending one integrates backwards."
+            )
+
+    def _assert_finite_sample(self, sampled):
+        """Stop the run the moment a chunk comes back with NaN/Inf in it.
+
+        Nothing downstream notices: the blend spreads it into every previously finished
+        scene, the VAE decodes it, and the first thing that objects is ffmpeg's AAC encoder
+        with a message naming nothing that produced it ("Input contains (near) NaN/+-Inf") —
+        after the whole montage has been paid for. The video half is worse: NaN through
+        `astype(np.uint8)` is undefined but silent, so it degrades without complaining.
+
+        A non-finite latent is unrecoverable, so this raises rather than warns. One
+        isfinite() per chunk against a multi-second sample is not a cost worth weighing.
+        """
+        bad = self._nonfinite_report(sampled)
+        if not bad:
+            return
+        where = self._current_phase_label() or "this chunk"
+        raise RuntimeError(
+            f"[FunPackSceneChain] {where}: the sampler returned a non-finite latent — "
+            f"{'; '.join(bad)}. Its inputs were checked and were clean, so this was produced "
+            f"HERE, by the model or the sampler math. Usual causes, in the order worth "
+            f"testing: a LoRA that does not match this checkpoint (ComfyUI logs the keys "
+            f"it could not apply at load — check the log), a base checkpoint whose layout "
+            f"the loader mis-inferred (third-party repacks of quantised weights are the "
+            f"common case), or a VAE/model dtype the model cannot hold. Stopping here "
+            f"rather than blending this into the finished scenes and failing later in "
+            f"ffmpeg with nothing to point at."
+        )
+
     def _sample_chunk(self, model, sampler, sigmas, seed, cfg, positive, negative, latent,
                       pbar=None, step_offset=0, alg_guide_tail_frames=0,
                       alg_guide_blur_strength=2.0, alg_guide_blur_sigma_threshold=0.975,
@@ -2979,6 +3140,7 @@ class FunPackLTXAVSceneChainSampler:
             raise ValueError("sigmas input must be a SIGMAS tensor.")
         latent = self._clone_latent(latent)
         samples = latent["samples"]
+        self._assert_finite_inputs(samples, sigmas)
         noise = comfy.sample.prepare_noise(samples, int(seed))
 
         def _progress_cb(step, _denoised, _x, _total_steps):
@@ -3009,6 +3171,7 @@ class FunPackLTXAVSceneChainSampler:
             )
         finally:
             self._remove_bounded_attention(_ba_handles)
+        self._assert_finite_sample(sampled)
         latent["samples"] = sampled
         latent.pop("noise_mask", None)
         return latent
@@ -3082,9 +3245,9 @@ class FunPackLTXAVSceneChainSampler:
         the same nested latent and has no spatial axes to scale, and reshaping it is exactly
         the class of change that has corrupted audio before.
 
-        - "sharpen": Lightricks' trained 2x LatentUpsampler forward, then area-downscale back
-          to the original size. No video-model calls at all, so it costs a fraction of one
-          step. It adds detail consistent with what is already there; it cannot fix structure
+        - "sharpen": Lightricks' trained 2x LatentUpsampler forward, then an antialiased
+          bicubic downscale back to the original size. No video-model calls at all, so it
+          costs a fraction of one step. It adds detail consistent with what is already there; it cannot fix structure
           that is wrong (the same limit segmented detailing's 'sharpen' mode documents).
           Pass 2 then re-denoises the sharpened latent, which is what makes it stick.
         - "upscale_2x": the same upsampler, but the result is KEPT at 2x. Pass 2 therefore
@@ -4040,8 +4203,189 @@ class FunPackLTXAVSceneChainSampler:
             return 0, True
         return 1 + (at - 1) * time_scale, False
 
+    # Set per run from num_frames_per_scene; H3's keyframe layout needs the scene's PIXEL
+    # length to place a last-frame pin, and nothing else in the guide path carries it.
+    _h3_frame_count = 0
+    _is_h3 = False
+    _h3_ref_cache: dict = {}
+    _h3_mode_noted = False
+
+    def _h3_add_keyframes(self, conditioning, pins, frame_count, aug=None):
+        """Merge keyframe pins into a conditioning, keeping any already attached.
+
+        H3's payload takes a LIST of pins (a first-frame anchor and a last-frame target can
+        coexist), so every producer here — the i2v anchor and the guide path — has to add to
+        the list rather than overwrite it. Pins are keyed by resolved frame index; writing the
+        same index twice replaces it, which is the only sane reading of two anchors on one
+        frame. ``minimax_visual_cond_noise_aug`` stays payload-wide as the DiT defines it, so
+        the last explicit strength written still wins — stated, not silently averaged.
+        """
+        if not conditioning or not pins:
+            return conditioning
+        existing = self._conditioning_value(conditioning, "minimax_keyframes") or []
+        merged = {int(p["resolved_frame_index"]): p for p in existing}
+        for pin in pins:
+            merged[int(pin["resolved_frame_index"])] = pin
+        values = {
+            "minimax_keyframes": [merged[k] for k in sorted(merged)],
+            "minimax_frame_count": int(frame_count),
+        }
+        if aug is not None:
+            values["minimax_visual_cond_noise_aug"] = float(aug)
+        return self._condition_with_values(conditioning, values)
+
+    def _apply_h3_anchor(self, positive, chunk, vae, image, strength=1.0):
+        """Pin an i2v anchor image as H3's frame-0 keyframe (the fl2va conditioning path).
+
+        LTX anchors an image by writing it into the starting latent (LTXVImgToVideoInplace)
+        and masking that frame out of denoising. H3 does not condition that way: the anchor
+        is a CONDITION ROW packed beside the text, never denoised and never rendered, and a
+        latent written frame-0 is just noise the model is free to overwrite. So on H3 the
+        same user intent — "this scene starts from this image" — becomes a keyframe pin.
+
+        Returns (positive, applied). The image is encoded at the scene's own canvas, read
+        off the chunk, so it matches whatever the latent template was built for.
+        """
+        if image is None:
+            return positive, False
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        try:
+            video = self._latent_tensors(chunk)[0]
+            if video.dim() != 5:
+                raise ValueError("video latent is not 5D")
+            width = int(video.shape[4]) * h3mod.SPATIAL_DOWNSCALE
+            height = int(video.shape[3]) * h3mod.SPATIAL_DOWNSCALE
+            pin = h3mod.encode_keyframe(vae, image, width, height, 0, crop="disabled")
+        except Exception as error:
+            print(f"[FunPackSceneChain] H3: i2v anchor skipped — could not encode it ({error}).")
+            return positive, False
+        aug = max(0.0, min(1.0, float(strength)))
+        positive = self._h3_add_keyframes(positive, [pin], self._h3_frame_count,
+                                          aug=None if aug >= 1.0 else aug)
+        return positive, True
+
+    def _append_h3_keyframe(self, guide_frame, apply_at, strength, positive, negative):
+        """H3's equivalent of an LTX guide: a keyframe pin carried on the conditioning.
+
+        LTX appends the guide as an extra latent frame and masks it out afterwards. H3 packs
+        condition rows into the sequence itself — they are never denoised and never rendered,
+        so there is no latent to append and no tail to crop (the returned tail is 0).
+
+        The layout only accepts a pin at the FIRST or LAST pixel frame; ``PackedLayout`` raises
+        for anything else. A mid-clip request is refused here, loudly, rather than crashing
+        several seconds into the sample.
+        """
+        try:
+            from .minimax_h3 import keyframe_indices_supported
+        except ImportError:
+            from minimax_h3 import keyframe_indices_supported
+
+        frame_count = max(1, int(self._h3_frame_count))
+        at = self._resolve_frame_index(frame_count, int(apply_at))
+        if not keyframe_indices_supported(at, frame_count):
+            print(f"[FunPackSceneChain] H3: guide at pixel frame {at} skipped — the packed layout "
+                  f"pins only the first (0) or last ({frame_count - 1}) frame. Use a reference "
+                  f"image (ref2va) for mid-clip guidance instead.")
+            return positive, negative, 0
+
+        pins = [{"resolved_frame_index": int(at), "latent": guide_frame}]
+        # strength maps onto the DiT's condition noise augmentation: 1.0 pins the clean latent,
+        # lower values mix noise into the condition rows. It is a single payload-wide value, so
+        # with several pins in one scene the last one written wins — stated here rather than
+        # silently averaged.
+        aug = max(0.0, min(1.0, float(strength)))
+        aug = None if aug >= 1.0 else aug
+        positive = self._h3_add_keyframes(positive, pins, frame_count, aug=aug)
+        negative = self._h3_add_keyframes(negative, pins, frame_count, aug=aug) if negative else negative
+        return positive, negative, 0
+
+    def _report_h3_checkpoint_mode(self, positive):
+        """Say once per run which H3 checkpoint this run's conditioning actually needs.
+
+        H3 ships two DiTs (fl2va for keyframe pins, ref2va for reference blocks) and neither
+        rejects the other's conditioning — a mismatch costs quality, silently. Nothing in the
+        state dict identifies the variant, so the run reports the mode it is in and leaves
+        matching the file to the user.
+        """
+        if self._h3_mode_noted:
+            return
+        try:
+            from .minimax_h3 import checkpoint_mode_note
+        except ImportError:
+            from minimax_h3 import checkpoint_mode_note
+        note = checkpoint_mode_note(
+            bool(self._conditioning_value(positive, "minimax_keyframes")),
+            bool(self._conditioning_value(positive, "minimax_refs")),
+        )
+        self._h3_mode_noted = True
+        if note:
+            print(f"[FunPackSceneChain] H3: {note}")
+
+    def _apply_h3_references(self, positive, chunk, vae, audio_vae=None):
+        """Turn Studio's resolved ref2va order into the DiT's `minimax_refs` blocks.
+
+        Studio owns the CLIP, so it baked the presentation ("<Picture 1>: <vision block>")
+        and recorded WHICH references it presented, in order, as `funpack_h3_refs`. This
+        side owns the VAE, so it encodes exactly that list. The order is the contract: drop
+        or reorder an entry here and every later "<Picture i>" in the prompt points at a
+        different reference than the one the text encoder saw.
+
+        This is the native replacement for the LTX Best-FaceID path, not a port of it —
+        H3 packs reference blocks into the sequence itself, so there is nothing to project,
+        nothing to append to the text context and nothing to slice back off the output.
+        """
+        spec = self._conditioning_value(positive, "funpack_h3_refs")
+        if not spec:
+            return positive, 0
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+
+        video = self._latent_tensors(chunk)[0]
+        if video.dim() != 5:
+            print("[FunPackSceneChain] H3 references skipped — couldn't read a 5D video latent.")
+            return positive, 0
+        width = int(video.shape[4]) * h3mod.SPATIAL_DOWNSCALE
+        height = int(video.shape[3]) * h3mod.SPATIAL_DOWNSCALE
+
+        # Every scene in the chain gets the same references, and re-loading + re-VAE-encoding
+        # them per scene is pure waste. Cached per RUN only (cleared at the top of sample()),
+        # never across requests — the same rule the Studio encode cache follows.
+        cache_key = (str(spec), width, height, audio_vae is not None)
+        cached = self._h3_ref_cache.get(cache_key)
+        if cached is not None:
+            blocks = cached
+            if not blocks:
+                return positive, 0
+            return self._condition_with_values(positive, {"minimax_refs": blocks}), len(blocks)
+
+        resolved, load_skips = h3mod.resolve_ref_spec(h3mod.normalize_ref_spec(spec))
+        for filename, why in load_skips:
+            print(f"[FunPackSceneChain] H3 reference '{filename}' skipped — {why}.")
+        blocks, encode_skips = h3mod.ref_blocks_from_spec(
+            resolved, vae, width, height, audio_vae=audio_vae)
+        for filename, why in encode_skips:
+            print(f"[FunPackSceneChain] H3 reference '{filename}' skipped — {why}. The prompt's "
+                  f"reference numbering was already baked at encode time, so every later "
+                  f"<Audio j> now points one reference earlier than you wrote it.")
+        self._h3_ref_cache[cache_key] = blocks
+        if not blocks:
+            return positive, 0
+        print(f"[FunPackSceneChain] H3 ref2va: {len(blocks)} reference block(s) packed "
+              f"({', '.join(b['kind'] for b in blocks)}) at {width}x{height}. Reference "
+              f"tokens ride every sampling step, so more/longer references cost time.")
+        return self._condition_with_values(positive, {"minimax_refs": blocks}), len(blocks)
+
     def _append_guide_latent(self, chunk, guide_frame, apply_at, strength, positive, negative, vae):
         """Append one guide latent frame with LTX guide attention at apply_at."""
+        if self._is_h3:
+            positive, negative, tail = self._append_h3_keyframe(
+                guide_frame, apply_at, strength, positive, negative)
+            return chunk, positive, negative, tail
         try:
             from comfy_extras.nodes_lt import LTXVAddGuide, _append_guide_attention_entry
         except ImportError:
@@ -4238,7 +4582,12 @@ class FunPackLTXAVSceneChainSampler:
         video_overlap frames, protected) and the anchor image is then written on top — since
         LTXVImgToVideoInplace only overwrites the single encoded image frame's worth of samples
         and preserves the rest of the incoming noise_mask, the anchor's own leading frame stays a
-        hard cut while the remaining carried frames keep the old scene's background/environment."""
+        hard cut while the remaining carried frames keep the old scene's background/environment.
+
+        On MiniMax H3 the latent is left alone: the anchor is applied as a keyframe pin on the
+        conditioning instead (_apply_h3_anchor), which is the only image conditioning that model
+        was trained on. The carried-overlap behaviour is identical either way, so a mixed scene
+        keeps its prior-scene context on both families."""
         filename = (anchor_meta or {}).get("filename")
         strength = float((anchor_meta or {}).get("strength", 1.0))
         image = self._load_image_tensor(filename) if filename else None
@@ -4250,6 +4599,8 @@ class FunPackLTXAVSceneChainSampler:
             base = self._build_continuation_chunk(latent_template, previous, video_overlap)
         else:
             base = self._clone_latent(latent_template)
+        if self._is_h3:
+            return base
         return self._apply_img2video_to_video_latent(vae, image, base, strength)
 
     def _identity_pin_filename(self, guide_list, scene_media_by_ref, identity_transfer_enabled):
@@ -4483,7 +4834,7 @@ class FunPackLTXAVSceneChainSampler:
         tensors = self._latent_tensors(sampled)
         if len(tensors) < 2 or tensors[1] is None:
             return None
-        F = self._tensor_frames(tensors[1])
+        F = self._tensor_frames(tensors[1], stream=1)
         if F <= 0:
             return None
         if select == "first":
@@ -4492,7 +4843,7 @@ class FunPackLTXAVSceneChainSampler:
             idx = int(torch.randint(0, F, (1,)).item())
         else:
             idx = F // 2
-        return self._time_slice(tensors[1], idx, idx + 1).detach()
+        return self._time_slice(tensors[1], idx, idx + 1, stream=1).detach()
 
     def _append_joyai_audio_memory(self, chunk, audio_frames):
         """Pin every banked prior-shot AUDIO latent frame into the current chunk's audio stream as a
@@ -4514,19 +4865,21 @@ class FunPackLTXAVSceneChainSampler:
                 masks[i] = torch.ones_like(rtensors[i])
         audio = rtensors[1]
         amask = masks[1]
+        adim = self._stream_dim(1) % audio.dim()
         appended = 0
         for af in frames:
             af = af.to(device=audio.device, dtype=audio.dtype)
-            # Only append shape-compatible frames (channels + spatial dims must match the stream).
-            if af.shape[1] != audio.shape[1] or af.shape[3:] != audio.shape[3:]:
+            # Only append shape-compatible frames: every axis except the stream's own time
+            # axis must match (on H3 that axis is the last one, not dim 2).
+            if [s for d, s in enumerate(af.shape) if d != adim] != \
+                    [s for d, s in enumerate(audio.shape) if d != adim]:
                 continue
-            clean = torch.zeros(
-                amask.shape[0], amask.shape[1], af.shape[2], *amask.shape[3:],
-                device=amask.device, dtype=amask.dtype,
-            )
-            audio = torch.cat([audio, af], dim=2)
-            amask = torch.cat([amask, clean], dim=2)
-            appended += int(af.shape[2])
+            clean_shape = list(amask.shape)
+            clean_shape[adim] = int(af.shape[adim])
+            clean = torch.zeros(clean_shape, device=amask.device, dtype=amask.dtype)
+            audio = torch.cat([audio, af], dim=adim)
+            amask = torch.cat([amask, clean], dim=adim)
+            appended += int(af.shape[adim])
         if appended == 0:
             return chunk, 0
         rtensors[1] = audio
@@ -5066,6 +5419,25 @@ class FunPackLTXAVSceneChainSampler:
             except Exception:
                 pass
 
+    def _decode_tile_latent(self, vae, decode_tile_size):
+        """`decode_tile_size` is in PIXELS; decode_tiled wants latent units.
+
+        The divisor is the VAE's own spatial downscale (LTX 32, H3 16), not the 8 the old
+        hardcode assumed — on H3 that made every tile a quarter of the requested area, which
+        is slower and can trip the model's internal tiling. Falls back to 8 so a VAE that
+        doesn't report a ratio behaves exactly as before.
+        """
+        ratio = 8
+        try:
+            r = getattr(vae, "downscale_ratio", None)
+            if isinstance(r, (list, tuple)) and len(r) >= 2:
+                ratio = int(r[1])
+            elif isinstance(r, (int, float)) and r:
+                ratio = int(r)
+        except Exception:
+            ratio = 8
+        return max(1, int(decode_tile_size) // max(1, ratio))
+
     def _vae_with_decode_noise(self, vae, timestep, scale, seed):
         """Return a shallow copy of the VAE stamped with LTX decode-time noise settings so its
         internal decoder restores fine detail/grain. Never mutates the shared input VAE. Mirrors
@@ -5118,11 +5490,81 @@ class FunPackLTXAVSceneChainSampler:
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
+               audio_vae=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
         if negative is None:
             negative = []
+
+        # Which model family is this? Everything downstream that slices a latent stream on
+        # its time axis needs to know before it touches a tensor, because LTXAV and MiniMax
+        # H3 disagree about which axis that is on the AUDIO stream and both are 4-D.
+        self._is_h3 = self._set_stream_axes(model)
+        if self._is_h3:
+            # H3 only generates on a 17k+5 pixel-frame grid. Empty MiniMax H3 AV Latent snaps
+            # its own `length` up silently, so an off-grid scene length produces a template
+            # that is LONGER than the count asked for here and the length check below fails
+            # with an arithmetic complaint that never mentions the grid. Snap to the same
+            # number the latent node would, so the two always agree. LTX is untouched: its
+            # grid is 8k+1 and the count comes from the VAE either way.
+            try:
+                from .minimax_h3 import align_frame_count
+            except ImportError:
+                from minimax_h3 import align_frame_count
+            _aligned = align_frame_count(num_frames_per_scene)
+            if _aligned != int(num_frames_per_scene):
+                print(f"[FunPackSceneChain] H3: num_frames_per_scene {int(num_frames_per_scene)} "
+                      f"-> {_aligned} (the model's 17k+5 frame grid at 24 fps). Every scene is "
+                      f"that much longer than requested.")
+            num_frames_per_scene = _aligned
+        self._h3_frame_count = int(num_frames_per_scene)
+        # Fresh per run: the encoded references must always trace back to the media that is
+        # live in THIS request (see [[feedback_no_persistent_state_caches]]).
+        self._h3_ref_cache = {}
+        self._h3_mode_noted = False
+        if self._is_h3:
+            print("[FunPackSceneChain] MiniMax H3 detected — audio stream time axis is the last "
+                  "dim, frame grid is 17k+5, conditioning is a single packed self-attention "
+                  "stream (no cross-attention).")
+            # Say what cannot run BEFORE sampling starts. Each of these depends on an LTX
+            # transformer structure H3 does not have, so left alone they would install
+            # cleanly, never fire, and be indistinguishable from "on but not helping".
+            _dead = []
+            if bounded_attention_enabled:
+                _dead.append("bounded_attention (needs text cross-attention; H3 packs text into "
+                             "the same self-attention stream, and an S x S mask over that "
+                             "sequence is not affordable)")
+            if identity_transfer_enabled:
+                _dead.append("identity_transfer / Best-FaceID (the ArcFace projector is trained "
+                             "against LTX's 4096-wide cross-attention context, and the overlap "
+                             "tokens need LTX's patchifier; H3's native ref2va reference blocks "
+                             "are the equivalent and are not wired yet)")
+            # Gated on joyai_audio_memory, not on the value alone: v2a_grad_scale is that
+            # feature's coupling knob and is never installed without it (see the call site),
+            # so reporting a left-over value as an H3 limitation blames the model for a knob
+            # that would be equally inert on LTX.
+            if (joyai_audio_memory and v2a_grad_scale is not None
+                    and abs(float(v2a_grad_scale) - 1.0) > 1e-6):
+                _dead.append("v2a_grad_scale (hooks LTXAV's video_to_audio_attn submodule; H3 "
+                             "has no separate video->audio cross-attention to scale)")
+            if segmented_detailing:
+                _dead.append("segmented_detailing (Lightricks' latent upsampler is trained on "
+                             "LTX's 128-channel latent, not H3's 24-channel one)")
+            if second_pass and str(second_pass_op or "none").lower() in ("sharpen", "upscale_2x"):
+                _dead.append(f"second_pass_op='{second_pass_op}' (same LTX-only latent upsampler; "
+                             "the second pass itself still runs, just without the latent op)")
+            for _line in _dead:
+                print(f"[FunPackSceneChain] H3: {_line} — SKIPPED.")
+            # Turn them off for real rather than letting each one discover its own missing
+            # LTX attribute mid-scene: several would raise rather than no-op, and a scene
+            # that dies three minutes in is worse than a knob that says why it is inert.
+            bounded_attention_enabled = False
+            identity_transfer_enabled = False
+            segmented_detailing = False
+            v2a_grad_scale = 1.0
+            if second_pass and str(second_pass_op or "none").lower() != "none":
+                second_pass_op = "none"
 
         # Defensively strip any enhancement block hooks left on the shared diffusion
         # model by a previous run (build_enhancements only removes them on scene
@@ -5146,6 +5588,19 @@ class FunPackLTXAVSceneChainSampler:
         # attention to SDPA when that exact combo is detected (no-op otherwise). Threaded via
         # transformer_options so it reaches every scene's model forward.
         _funpack_install_mask_safe_attention(model)
+
+        # H3's DiT refuses a batched forward (`MiniMax H3 supports batch size 1`), and comfy
+        # batches the positive and negative conds together whenever cfg != 1.0 — so without
+        # this every guided H3 generation dies on step 1. Splitting the batch around the model
+        # call costs exactly what CFG already costs and keeps the cfg knob live. Installed as
+        # the run's BASE wrapper so every per-scene wrapper chains on top of it.
+        if self._is_h3:
+            try:
+                from .minimax_h3 import install_batch_split
+            except ImportError:
+                from minimax_h3 import install_batch_split
+            _h3_prev, _h3_wrapper = install_batch_split(model)
+            _tag_scene_wrapper(_h3_wrapper, _h3_prev)
 
         # Decode-time noise (folded in from LTXV's Set VAE Decoder Noise per the boundary law:
         # the Chain Sampler owns IMAGES decode, so this lives here, not on a separate node).
@@ -5191,8 +5646,8 @@ class FunPackLTXAVSceneChainSampler:
         scene_conditionings = positive[:max_scene_count]
         scene_count = len(scene_conditionings)
         time_scale = self._time_scale(vae)
-        video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale)
-        video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale)
+        video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale, vae=vae)
+        video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale, vae=vae)
 
         output = None
         report_lines = []
@@ -5333,6 +5788,7 @@ class FunPackLTXAVSceneChainSampler:
             scene_positive = [scene_cond]
             scene_negative = negative
 
+            h3_ref_count = 0
             provided_seed = self._scene_seed(scene_cond)
             if use_same_seed:
                 scene_seed = first_scene_seed
@@ -5436,6 +5892,41 @@ class FunPackLTXAVSceneChainSampler:
                     )
                 elif not custom_guides:
                     guide_tail = 0
+
+            # H3 i2v anchor (fl2va). On LTX the anchor is already IN the chunk — either written
+            # by LTXVImgToVideoInplace above, or, for the opening scene, baked into the latent
+            # template by whatever produced it. H3 has no latent i2v path at all, so the anchor
+            # image becomes a frame-0 keyframe pin here, after the chunk is final (the pin is
+            # encoded at this scene's canvas) and for every branch that carries an anchor.
+            if self._is_h3:
+                _anchor_image, _anchor_strength = None, 1.0
+                _anchor_file = (anchor_meta or {}).get("filename")
+                if _anchor_file:
+                    _anchor_image = self._load_image_tensor(_anchor_file)
+                    _anchor_strength = float(anchor_meta.get("strength", 1.0))
+                elif output is None:
+                    # Studio owns source_image (it presents it to Qwen); it hands the pixels on
+                    # so this side can encode them. Opening scene only — later scenes continue
+                    # from the previous one unless they carry their own anchor.
+                    _studio_anchor = self._conditioning_value(scene_positive, "funpack_h3_anchor")
+                    if isinstance(_studio_anchor, dict):
+                        _anchor_image = _studio_anchor.get("image")
+                if _anchor_image is not None:
+                    scene_positive, _pinned = self._apply_h3_anchor(
+                        scene_positive, chunk, vae, _anchor_image, _anchor_strength)
+                    if _pinned:
+                        run_mechanisms.append(f"h3_keyframe_anchor(strength={_anchor_strength:g})")
+
+            # ref2va reference blocks. Applied after the chunk is final because the blocks are
+            # sized against this scene's canvas, and to every scene branch (fresh / anchored /
+            # continuation) because a reference identity is meant to hold across the whole
+            # chain, not just the opening shot.
+            if self._is_h3:
+                scene_positive, h3_ref_count = self._apply_h3_references(
+                    scene_positive, chunk, vae, audio_vae=audio_vae)
+                if h3_ref_count:
+                    run_mechanisms.append(f"h3_ref2va({h3_ref_count})")
+                self._report_h3_checkpoint_mode(scene_positive)
 
             # Everything from here through sampling installs per-scene state on the SHARED
             # model (function wrappers, forward hooks). One snapshot + one finally guarantees
@@ -5860,7 +6351,8 @@ class FunPackLTXAVSceneChainSampler:
             video_tensor = self._latent_tensors(output)[0]
             if decode_tile_size > 0:
                 try:
-                    decoded = vae.decode_tiled(video_tensor, tile_x=decode_tile_size // 8, tile_y=decode_tile_size // 8)
+                    _tile = self._decode_tile_latent(vae, decode_tile_size)
+                    decoded = vae.decode_tiled(video_tensor, tile_x=_tile, tile_y=_tile)
                 except Exception:
                     decoded = vae.decode(video_tensor)
             else:
@@ -6055,7 +6547,8 @@ class FunPackLTXAVSceneChainSampler:
         video_tensor = self._latent_tensors(latent)[0]
         try:
             if decode_tile_size > 0:
-                decoded = vae.decode_tiled(video_tensor, tile_x=decode_tile_size // 8, tile_y=decode_tile_size // 8)
+                _tile = self._decode_tile_latent(vae, decode_tile_size)
+                decoded = vae.decode_tiled(video_tensor, tile_x=_tile, tile_y=_tile)
             else:
                 decoded = vae.decode(video_tensor)
         except Exception:

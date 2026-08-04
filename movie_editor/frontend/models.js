@@ -131,13 +131,37 @@
     }
   }
 
+  // Overrides are saved per CORE ID, not per node class, so a family switch that replaces a
+  // node leaves the old node's input names sitting on the new one — audiodec.audio_vae
+  // (LTXVAudioVAEDecode) surviving onto VAEDecodeAudio, which calls its VAE input `vae`. The
+  // panel below lists the NEW node's inputs, so the leftover is invisible here; the builder
+  // refuses to emit it, but it should not linger in the saved project either.
+  function dropOverridesForMissingInputs() {
+    if (!config.core_overrides) return;
+    const byId = new Map((coreNodes || []).map((n) => [n.id, n]));
+    for (const cid of Object.keys(config.core_overrides)) {
+      const node = byId.get(cid);
+      if (!node) continue;          // not a core node this family has an opinion about
+      const names = new Set((node.inputs || []).map((i) => i.name));
+      if (!names.size) continue;    // node spec unavailable — leave it alone
+      for (const inp of Object.keys(config.core_overrides[cid] || {})) {
+        if (!names.has(inp)) delete config.core_overrides[cid][inp];
+      }
+      if (!Object.keys(config.core_overrides[cid] || {}).length) delete config.core_overrides[cid];
+    }
+  }
+
   function allowedSources(slot, ci) {
     const all = sources(slot, ci.type);
     if (!pipelineLocked()) return all;
+    // Guided wiring hides core internals, but marked media is user-supplied input, not
+    // pipeline plumbing — it stays offered in both modes.
     if (slot.role === "image_processing" && ci.name === "image" && typeAccepts(ci.type, "IMAGE")) {
-      return all.filter((s) => !s.value || s.value === "timeline" || s.value.startsWith("out:"));
+      return all.filter((s) => !s.value || s.value === "timeline"
+        || s.value.startsWith("out:") || s.value.startsWith("ref:"));
     }
-    return all.filter((s) => !s.value || s.value.startsWith("out:") || s.value === "timeline");
+    return all.filter((s) => !s.value || s.value.startsWith("out:")
+      || s.value === "timeline" || s.value.startsWith("ref:"));
   }
 
   // ── linked inputs (one control drives several node inputs) ────────────────────
@@ -522,9 +546,12 @@
       slot.input_sources = slot.input_sources || {};
       const sbox = el("div", "wire-box");
       sbox.append(el("div", "wire-title", "Input sources"));
-      cand.connection_inputs.forEach((ci) => {
+      visibleConnectionInputs(slot, cand.connection_inputs).forEach((ci) => {
         const row = el("div", "wire-row");
-        row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
+        const lbl = el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`);
+        if (ci.autogrow)
+          lbl.title = `Entry ${ci.autogrow.index + 1} of the node's "${ci.autogrow.parent}" list — fill one and the next appears.`;
+        row.append(lbl);
         row.append(el("span", "wire-arrow", "←"));
         const srcs = allowedSources(slot, ci);
         const sel = el("select", "wire-select");
@@ -563,8 +590,8 @@
     ports.filter((p) => typeAccepts(p.type, type)).forEach((p) => out.push({ value: "port:" + p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
       const c2 = specFor(s2);
-      (c2?.connection_inputs || []).filter((ci) => typeAccepts(ci.type, type)).forEach((ci) =>
-        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.name}` }));
+      visibleConnectionInputs(s2, c2?.connection_inputs).filter((ci) => typeAccepts(ci.type, type)).forEach((ci) =>
+        out.push({ value: `node:${s2.id}:${ci.name}`, label: `${slotFullLabel(s2)} · ${ci.display || ci.name}` }));
       // Widget inputs can also receive a connection (ComfyUI converts a widget to an
       // input when wired) — e.g. EmptyLatentVideo.width/height. Offer them as targets.
       (c2?.inputs || []).filter((w) => _KIND2T[w.kind] === type).forEach((w) =>
@@ -573,11 +600,94 @@
     return out;
   }
 
+  // Whether a connection input already has something feeding it — an explicitly chosen
+  // source, or an output wired in from another node.
+  function inputIsFed(slot, name) {
+    const src = (slot.input_sources || {})[name];
+    if (src && src !== "auto") return true;
+    return (config.slots || []).some((s2) => s2.id !== slot.id &&
+      Object.values(s2.wires || {}).some((tg) => wireTargets(tg).includes(`node:${slot.id}:${name}`)));
+  }
+
+  // Autogrow list inputs (MiniMax H3's ref_images, ref_videos, …) reach us already expanded
+  // into one socket per index, addressed by their dotted path (ref_images.ref_image_0).
+  // Showing all ten of each list would bury the node, so the list renders what's filled plus
+  // one empty slot and grows as it is used, the way ComfyUI's own canvas grows it.
+  // Autogrow entries were first saved under the bare template name (ref_image_0) before the
+  // dotted socket id turned out to be what ComfyUI accepts. Rename them in place on load —
+  // the edge is the same edge, and leaving the old key in a config keeps failing the run.
+  function migrateAutogrowNames() {
+    let changed = false;
+    const canonical = (slot, name) => {
+      if (!name || name.includes(".")) return name;
+      const ci = ((specFor(slot) || {}).connection_inputs || [])
+        .find((c) => c.autogrow && c.display === name);
+      return ci ? ci.name : name;
+    };
+    (config.slots || []).forEach((slot) => {
+      const srcs = slot.input_sources || {};
+      Object.keys(srcs).forEach((k) => {
+        const nu = canonical(slot, k);
+        if (nu !== k) { srcs[nu] = srcs[k]; delete srcs[k]; changed = true; }
+      });
+    });
+    (config.slots || []).forEach((slot) => {
+      Object.entries(slot.wires || {}).forEach(([out, raw]) => {
+        const next = wireTargets(raw).map((t) => {
+          const parsed = _parseNodeTarget(t);
+          if (!parsed) return t;
+          const dest = slotById(parsed.slotId);
+          if (!dest) return t;
+          const nu = canonical(dest, parsed.input);
+          return nu === parsed.input ? t : `node:${parsed.slotId}:${nu}`;
+        });
+        if (next.some((t, i) => t !== wireTargets(raw)[i])) { slot.wires[out] = next; changed = true; }
+      });
+    });
+    return changed;
+  }
+
+  function visibleConnectionInputs(slot, cis) {
+    const lastFed = {};
+    (cis || []).forEach((ci) => {
+      const ag = ci.autogrow;
+      if (ag && inputIsFed(slot, ci.name))
+        lastFed[ag.parent] = Math.max(lastFed[ag.parent] == null ? -1 : lastFed[ag.parent], ag.index);
+    });
+    return (cis || []).filter((ci) => !ci.autogrow ||
+      ci.autogrow.index <= (lastFed[ci.autogrow.parent] == null ? -1 : lastFed[ci.autogrow.parent]) + 1);
+  }
+
+  // What a marked reference can feed, by media kind. A video reference can drive either a
+  // VIDEO socket or a frames (IMAGE) one — the builder picks a loader to match whichever
+  // the destination actually asks for.
+  const REF_KIND_TYPES = { image: ["IMAGE"], audio: ["AUDIO"], video: ["VIDEO", "IMAGE"] };
+  const REF_KIND_LABEL = { image: "image", audio: "audio", video: "video" };
+
+  // Media marked "R" in the Media Bin / gallery, in mark order — R1, R2, R3 — offered to any
+  // socket whose type that kind of media can fill.
+  function referenceSources(type) {
+    const st = window.Store?.get() || {};
+    const marks = st.project?.references || [];
+    const bin = st.mediaBin || [];
+    const out = [];
+    marks.forEach((id, i) => {
+      const m = bin.find((x) => x.id === id);
+      if (!m) return;
+      const kinds = REF_KIND_TYPES[m.kind] || [];
+      if (!kinds.some((t) => typeAccepts(type, t))) return;
+      out.push({ value: `ref:${id}`, label: `R${i + 1} · ${m.name} (${REF_KIND_LABEL[m.kind] || m.kind})` });
+    });
+    return out;
+  }
+
   // Available sources for a slot connection input of a given type.
-  // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>", "timeline" (IMAGE only).
+  // Source IDs: "" = auto, "out:<slotId>:<outName>", "core:<coreId>:<outIdx>",
+  // "timeline" (IMAGE only), "ref:<mediaId>" (media marked R in the bin).
   function sources(slot, type) {
     const out = [{ value: "", label: "(auto-wire)" }];
     if (typeAccepts(type, "IMAGE")) out.push({ value: "timeline", label: "Timeline (scene image)" });
+    referenceSources(type).forEach((r) => out.push(r));
     coreProducers.filter((p) => typeAccepts(type, p.type)).forEach((p) =>
       out.push({ value: p.id, label: p.label }));
     config.slots.filter((s) => s.id !== slot.id).forEach((s2) => {
@@ -800,7 +910,8 @@
     function renderDetail() {
       clear(detail);
       if (!curCand) return;
-      const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: {} };
+      // Shares the draft's input_sources so a filled autogrow entry reveals the next one.
+      const draftSlot = { id: "__draft__", role: roleFinal, wires: {}, input_sources: draft.input_sources };
 
       if ((curCand.inputs || []).length) {
         detail.append(el("div", "wire-title", "Values"));
@@ -833,16 +944,19 @@
       if ((curCand.connection_inputs || []).length) {
         const sbox = el("div", "wire-box");
         sbox.append(el("div", "wire-title", "Input sources"));
-        curCand.connection_inputs.forEach((ci) => {
+        visibleConnectionInputs(draftSlot, curCand.connection_inputs).forEach((ci) => {
           const row = el("div", "wire-row");
-          row.append(el("span", "wire-out", `${ci.name} (${ci.type})`));
+          row.append(el("span", "wire-out", `${ci.display || ci.name} (${ci.type})`));
           row.append(el("span", "wire-arrow", "←"));
           const sel = el("select", "wire-select");
           const cur = draft.input_sources[ci.name] || "";
           allowedSources(draftSlot, ci).forEach((s) => {
             const o = el("option", null, s.label); o.value = s.value; if (s.value === cur) o.selected = true; sel.append(o);
           });
-          sel.onchange = () => { if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name]; };
+          sel.onchange = () => {
+            if (sel.value) draft.input_sources[ci.name] = sel.value; else delete draft.input_sources[ci.name];
+            if (ci.autogrow) renderDetail();  // filling a list entry reveals the next one
+          };
           row.append(sel);
           sbox.append(row);
         });
@@ -909,10 +1023,19 @@
       return sec;
     }
     if (pipelineLocked()) {
+      // The latent and audio path differ by family — H3 makes both streams in one node
+      // that feeds the sampler directly, so pointing at Studio · latent here would send
+      // the user to a port its graph does not even have.
+      const h3 = familyKey() === "minimax_h3";
       sec.append(el("div", "req-hint guided-hint",
-        "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+        (h3
+          ? "Guided wiring: the AV LATENT → Chain Sampler · latent_template (Empty MiniMax H3 "
+            + "AV Latent makes both streams). Audio VAE → VAE Decode Audio · vae, and optionally "
+            + "also Chain Sampler · audio_vae to encode audio references. "
+          : "Guided wiring: LATENT → Studio · latent (core forwards to Concat · video_latent). "
+            + "Audio latent → Concat · audio_latent only. ")
         + "IMAGE → Studio · source_image (Input Image Processing defaults to Timeline scene image). "
-        + "MODEL/CLIP may chain through LoRA. Audio latent → Concat · audio_latent only. "
+        + "MODEL/CLIP may chain through LoRA. "
         + "Enable Full control for manual rewiring."));
     }
     sec.append(el("div", "req-title", "Pipeline requirements"));
@@ -979,6 +1102,21 @@
   }
 
   // ── linked-inputs section ──────────────────────────────────────────────────────
+  // Project values a linked input can be driven by at generation time. `kinds` is the
+  // widget kinds each one can legitimately fill — the prompt bindings are what let a
+  // custom node's own text field (e.g. MiniMaxH3ReferenceToVideo.prompt) receive the
+  // same prompt the built-in encoder gets, instead of being typed twice.
+  const EDITOR_SOURCES = [
+    { key: "", label: "Manual value" },
+    { key: "prompt", label: "Project · Prompt (global)", kinds: ["string"] },
+    { key: "negative_prompt", label: "Project · Negative prompt", kinds: ["string"] },
+    { key: "seed", label: "Project · Seed", kinds: ["int", "float"] },
+    { key: "frame_rate", label: "Project · FPS", kinds: ["int", "float"] },
+    { key: "num_frames_per_scene", label: "Project · Frames", kinds: ["int", "float"] },
+    { key: "width", label: "Project · Width", kinds: ["int", "float"] },
+    { key: "height", label: "Project · Height", kinds: ["int", "float"] },
+  ];
+
   function linkExposeBtn(link) {
     const b = el("button", "eye-btn" + (link.exposed ? " on" : ""), "◉"); b.type = "button";
     b.title = link.exposed ? "Hide from main editor window" : "Show in main editor window";
@@ -1003,9 +1141,12 @@
     const srcRow = el("label", "field link-source");
     srcRow.append(el("span", null, "Driven by"));
     const srcSel = el("select");
-    [["", "Manual value"], ["frame_rate", "Project · FPS"], ["num_frames_per_scene", "Project · Frames"],
-     ["width", "Project · Width"], ["height", "Project · Height"]].forEach(([v, label]) => {
-      const o = new Option(label, v); if ((link.source === "editor" ? link.editor_key : "") === v) o.selected = true; srcSel.append(o);
+    const cur = link.source === "editor" ? link.editor_key : "";
+    EDITOR_SOURCES.forEach(({ key, label, kinds }) => {
+      // Only offer a project value a field of this kind can actually hold — feeding a
+      // number into a text field (or a prompt into a width) silently breaks generation.
+      if (key && kinds && link.kind && !kinds.includes(link.kind) && key !== cur) return;
+      const o = new Option(label, key); if (key === cur) o.selected = true; srcSel.append(o);
     });
     srcSel.onchange = async () => {
       if (srcSel.value) { link.source = "editor"; link.editor_key = srcSel.value; }
@@ -1016,7 +1157,8 @@
     card.append(srcRow);
 
     if (link.source === "editor") {
-      card.append(el("div", "link-bound", `Value comes from the project setting at generate.`));
+      const srcLbl = (EDITOR_SOURCES.find((s) => s.key === link.editor_key) || {}).label || link.editor_key;
+      card.append(el("div", "link-bound", `Value comes from ${srcLbl} at generate — the fields below are ignored.`));
     } else {
       const spec = { name: "shared value", kind: link.kind, choices: link.choices, required: false };
       const vf = widgetField(spec, link.value, async (v) => { applyLinkValue(link, v); await persist(); });
@@ -1175,6 +1317,66 @@
     }
     return card;
   }
+  // Which model family the built-in graph is built for. LTXAV and MiniMax H3 need
+  // different node classes (H3 has no LTXVConditioning, makes both latent streams in one
+  // node, and decodes audio with core's generic node), so this is asked, never guessed
+  // from a checkpoint filename — a wrong guess fails deep inside ComfyUI at generate time
+  // instead of here, where it can be fixed.
+  const FAMILIES = [
+    { key: "ltxav", label: "LTX-2 / LTXAV",
+      sub: "Gemma3 text encoder · 8k+1 frames · separate video and audio latents" },
+    { key: "minimax_h3", label: "MiniMax H3 (Hailuo)",
+      sub: "Qwen3-VL text encoder · 17k+5 frames at 24 fps · one AV latent node · ref2va references" },
+  ];
+
+  function familyKey() {
+    const f = String(config.model_family || "ltxav").toLowerCase();
+    return FAMILIES.some((x) => x.key === f) ? f : "ltxav";
+  }
+
+  function familySection() {
+    const sec = el("div", "links-section");
+    const head = el("div", "links-head");
+    head.append(el("span", "lib-sub", "Model family"));
+    sec.append(head);
+    sec.append(el("div", "links-hint",
+      "Which model the built-in pipeline is wired for. Changing it changes which nodes the "
+      + "graph uses, so re-check your loaders afterwards — the ports they wire into move."));
+    const row = el("div", "links-row");
+    FAMILIES.forEach((f) => {
+      const active = familyKey() === f.key;
+      const b = el("button", "btn ghost tiny" + (active ? " active" : ""), f.label);
+      b.title = f.sub;
+      b.onclick = async () => {
+        if (familyKey() === f.key) return;
+        config.model_family = f.key;
+        await persist();
+        // the family decides which core nodes exist and which ports loaders may wire
+        // into, so both have to be re-fetched before the panel redraws
+        try {
+          const pp = await API.pipelinePorts();
+          ports = pp.ports || ports;
+          requirements = pp.requirements || requirements;
+          wiringRules = pp.wiring || wiringRules;
+        } catch (_) {}
+        try { coreNodes = (await API.coreGraph(window.Store?.get().project?.id)).nodes || coreNodes; } catch (_) {}
+        // Only now — the prune needs the NEW family's core nodes to know which inputs exist.
+        const before = JSON.stringify(config.core_overrides || {});
+        dropOverridesForMissingInputs();
+        if (JSON.stringify(config.core_overrides || {}) !== before) await persist();
+        render();
+      };
+      row.append(b);
+    });
+    const setup = el("button", "btn ghost tiny", "Setup…");
+    setup.title = "What this model family needs — nodes and model files, including anything "
+      + "not released yet.";
+    setup.onclick = () => window.PipelineSetup?.open();
+    row.append(setup);
+    sec.append(row);
+    return sec;
+  }
+
   function coreSection() {
     const sec = el("div", "links-section");
     const disabled = !!config.disable_core;
@@ -1209,9 +1411,14 @@
       return sec;
     }
     if (coreOpen) {
+      const h3core = familyKey() === "minimax_h3";
       const hint = pipelineLocked()
-        ? "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). "
-          + "Wire video LATENT to Studio · latent (not Concat · video_latent — that link is internal). "
+        ? (h3core
+            ? "Fixed FunPack path (Studio → Chain Sampler → separate AV → decode). H3 has no "
+              + "conditioning node between Studio and the sampler. Wire the AV LATENT to "
+              + "Chain Sampler · latent_template. "
+            : "Fixed FunPack path (Studio → Conditioning → Chain Sampler → decode). "
+              + "Wire video LATENT to Studio · latent (not Concat · video_latent — that link is internal). ")
           + "Wire IMAGE via Input Image Processing → Studio · source_image (Timeline default). "
           + "MODEL/CLIP may chain through patchers. Enable Full control to override core links."
         : "The fixed FunPack nodes and their wiring. Each input defaults to its built-in source — pick another to re-wire it.";
@@ -1279,6 +1486,7 @@
       banner.textContent = `Imported workflow: ${config.workflow_import.name} (${config.workflow_import.node_count || config.slots.length} nodes) · built-in pipeline disabled`;
       pane.append(banner);
     }
+    pane.append(familySection());
     pane.append(requirementsPanel());
     pane.append(coreSection());
     if (!config.slots.length)
@@ -1333,7 +1541,9 @@
     // Backfill numeric bounds/step (and combo choices) onto controls exposed before this
     // metadata was captured, so opening Models once upgrades existing projects. persist()
     // dispatches funpack-models-changed → the store reloads and the inspector re-renders.
-    if (refreshExposedChoices()) { try { await persist(); } catch (_) {} }
+    let dirty = refreshExposedChoices();
+    if (migrateAutogrowNames()) dirty = true;
+    if (dirty) { try { await persist(); } catch (_) {} }
   }
 
   function mount(body, ctx) {

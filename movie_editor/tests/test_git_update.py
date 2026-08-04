@@ -116,3 +116,56 @@ def test_checkout_switches_branch(monkeypatch):
     result = git_update.checkout("cutting_edge", pull_after=False)
     assert result["branch"] == "cutting_edge"
     assert result["before_branch"] == "dev"
+
+
+def _rewritten_upstream(cherry_stdout, *, reset_ok=True):
+    """A checkout whose branch diverged because upstream history was rewritten."""
+    def fake_run(*args, **kwargs):
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return _proc(stdout="dev\n")
+        if args == ("rev-parse", "--short", "HEAD"):
+            return _proc(stdout="old1234\n")
+        if args == ("status", "--porcelain"):
+            return _proc(stdout="")
+        if args == ("fetch", "--prune", "origin"):
+            return _proc()
+        if args == ("pull", "--ff-only", "origin", "dev"):
+            return _proc(code=1, stderr="fatal: Not possible to fast-forward, aborting.")
+        if args == ("cherry", "origin/dev", "dev"):
+            return _proc(stdout=cherry_stdout)
+        if args == ("reset", "--hard", "origin/dev"):
+            return _proc() if reset_ok else _proc(code=1, stderr="reset failed")
+        return _proc(code=1, stderr="unexpected")
+    return fake_run
+
+
+def test_pull_realigns_after_upstream_history_rewrite(monkeypatch):
+    """History was rewritten upstream, so every local commit has a new hash and no
+    fast-forward exists. `git cherry` marks them "-" (content already upstream), which
+    means a reset loses nothing — update instead of dead-ending the user in git."""
+    monkeypatch.setattr(git_update, "_run_git", _rewritten_upstream("- aaa111\n- bbb222\n"))
+    res = git_update.pull("dev")
+    assert res["realigned"] is True
+    assert res["updated"] is False        # same short hash from the stub; the reset ran
+    assert "rewritten" in res["output"] and "No local commits were lost" in res["output"]
+
+
+def test_pull_refuses_to_realign_over_real_local_work(monkeypatch):
+    """A "+" from `git cherry` is a local commit whose content is NOT upstream. Resetting
+    would destroy it, so the update has to stop and say so."""
+    monkeypatch.setattr(git_update, "_run_git", _rewritten_upstream("- aaa111\n+ ccc333\n"))
+    with pytest.raises(git_update.GitUpdateError) as e:
+        git_update.pull("dev")
+    assert "1 local commit" in str(e.value)
+    assert "discard" in str(e.value)
+
+
+def test_pull_keeps_the_original_error_when_it_cannot_prove_safety(monkeypatch):
+    """`git cherry` itself failing is not evidence of safety — keep the plain failure."""
+    def fake_run(*args, **kwargs):
+        if args == ("cherry", "origin/dev", "dev"):
+            return _proc(code=1, stderr="unknown revision")
+        return _rewritten_upstream("")(*args, **kwargs)
+    monkeypatch.setattr(git_update, "_run_git", fake_run)
+    with pytest.raises(git_update.GitUpdateError):
+        git_update.pull("dev")

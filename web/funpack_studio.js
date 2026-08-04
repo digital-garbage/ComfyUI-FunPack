@@ -14,7 +14,27 @@ const TABS = ["Session", "Shortcuts", "Split markers", "Refiner", "Advisor", "Lo
 const SAMPLER_TYPES = ["Hybrid Euler 2S", "Distilled Flow", "KSampler"];
 const MOTION_PULSE_MODES = ["off", "balanced", "aggressive", "custom"];
 const VELOCITY_BIAS_MODES = ["off", "capture", "apply", "capture_and_apply"];
-const KSAMPLER_NAMES = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+// Fallback only — the real list is whatever THIS ComfyUI has. The backend passes the name
+// straight to comfy.samplers.sampler_object(), so a hardcoded set hides samplers it can
+// already run (res_multistep, which ComfyUI's own MiniMax H3 templates use, was missing).
+const KSAMPLER_NAMES_FALLBACK = ["euler", "euler_ancestral", "dpm_2", "dpm_2_ancestral", "dpmpp_2m", "dpmpp_sde", "ddim", "uni_pc"];
+// Same story for the schedulers: the backend hands the name to comfy.samplers.calculate_sigmas.
+const KSAMPLER_SCHEDULERS_FALLBACK = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta", "linear_quadratic", "kl_optimal"];
+// Not a ComfyUI scheduler — the entry that means "run the Sigmas field as typed". Kept as the
+// first option AND the default so a hand-written schedule can sit in the field untouched while
+// the dropdown switches between it and a computed one. Mirrors conditioning.KSAMPLER_USER_SIGMAS.
+const KSAMPLER_USER_SIGMAS = "use_user_sigmas";
+let KSAMPLER_NAMES = KSAMPLER_NAMES_FALLBACK;
+let KSAMPLER_SCHEDULERS = [KSAMPLER_USER_SIGMAS].concat(KSAMPLER_SCHEDULERS_FALLBACK);
+api.fetchApi("/object_info/KSampler")
+  .then((r) => r.json())
+  .then((defs) => {
+    const names = defs?.KSampler?.input?.required?.sampler_name?.[0];
+    if (Array.isArray(names) && names.length) KSAMPLER_NAMES = names;
+    const scheds = defs?.KSampler?.input?.required?.scheduler?.[0];
+    if (Array.isArray(scheds) && scheds.length) KSAMPLER_SCHEDULERS = [KSAMPLER_USER_SIGMAS].concat(scheds);
+  })
+  .catch(() => {});
 
 let activePanel = null;
 let studioShortcutData = null;
@@ -70,8 +90,8 @@ function defaultSettings() {
     loras: [],
     loras_config: { mode: "ltx2", per_block: false },
     samplers: {
-      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
-      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler" },
+      high: { type: "Hybrid Euler 2S", sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas" },
+      low:  { type: "Distilled Flow",  sigmas: "", hybrid: { eta: 1.0, eta_final: 1.0, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 1.0, high_quality_pct: 0.35, correction_blend: 1.0, quality_sharpness: 0.0, motion_pulse_mode: "off", motion_pulse_start_pct: 0.3, motion_pulse_count: 2, motion_pulse_spacing_pct: 0.22, motion_pulse_strength: 0.85, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, distilled: { order: 2, final_correction_steps: 1, ab2_ramp: false, normalize_strength: 0.0, normalize_start_sigma: 0.9, s_noise: 0.0, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, normalizing: { normalize_strength: 0.5, normalize_start_sigma: 0.9, velocity_bias_mode: "off", velocity_bias_strength: 0.0, velocity_bias_source: "mean", velocity_refinement_key: "default", rescue_mode: false, rescue_threshold: 0.15, rescue_strength: 0.2 }, ksampler_name: "euler", ksampler_steps: 8, ksampler_scheduler: "use_user_sigmas" },
     },
   };
 }
@@ -1435,9 +1455,32 @@ function openPanel(node) {
         }
       } else if (cfg.type === "KSampler") {
         body.append(sectionTitle("KSampler settings"));
-        const ksSelect = selectEl(KSAMPLER_NAMES, cfg.ksampler_name || "euler");
+        // Keep a saved name that isn't in the live list (older/newer ComfyUI) selectable
+        // rather than silently swapping it for the first option.
+        const _ksCur = cfg.ksampler_name || "euler";
+        const ksSelect = selectEl(
+          KSAMPLER_NAMES.includes(_ksCur) ? KSAMPLER_NAMES : KSAMPLER_NAMES.concat([_ksCur]), _ksCur);
         ksSelect.addEventListener("change", () => { cfg.ksampler_name = ksSelect.value; });
         body.append(row("sampler name", ksSelect));
+
+        if (cfg.ksampler_scheduler === undefined) cfg.ksampler_scheduler = KSAMPLER_USER_SIGMAS;
+        const _schedCur = cfg.ksampler_scheduler || KSAMPLER_USER_SIGMAS;
+        const ksSched = selectEl(
+          KSAMPLER_SCHEDULERS.includes(_schedCur) ? KSAMPLER_SCHEDULERS : KSAMPLER_SCHEDULERS.concat([_schedCur]), _schedCur);
+        ksSched.addEventListener("change", () => { cfg.ksampler_scheduler = ksSched.value; renderSampler(); });
+        body.append(row("schedule", ksSched));
+        body.append(el("div", "funpack-studio-hint",
+          "A KSampler is only the step function — it carries no schedule. '" + KSAMPLER_USER_SIGMAS
+          + "' runs the Sigmas field above exactly as typed; any other entry COMPUTES the schedule from steps, the way ComfyUI's own scheduler does, and the Sigmas field is ignored until you switch back — so you can leave your hand-written schedule parked there."));
+
+        if (_schedCur !== KSAMPLER_USER_SIGMAS) {
+          if (cfg.ksampler_steps === undefined) cfg.ksampler_steps = 8;
+          const ksSteps = numInput(cfg.ksampler_steps, 1, 200, 1);
+          ksSteps.addEventListener("input", () => { cfg.ksampler_steps = parseInt(ksSteps.value) || 0; });
+          body.append(row("steps", ksSteps));
+          body.append(el("div", "funpack-studio-hint",
+            "8 suits the distilled LTX model; a non-distilled one wants 20-30."));
+        }
       }
     }
 

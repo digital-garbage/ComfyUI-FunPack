@@ -383,10 +383,25 @@ def _run_upsampler(upsampler, video_crop, vae, debug=False):
 
 
 def _downscale_to(video, h, w):
-    """Area-downscale [B, C, F, H, W] spatially to (h, w); frames independent."""
+    """Antialiased-bicubic downscale of [B, C, F, H, W] to (h, w); frames independent.
+
+    This was mode="area" — for the exact-2x ratio both callers actually hit, that is a 2x2
+    box filter, and a box is a bad resampling filter in BOTH directions at once: its
+    passband droops long before Nyquist, so real detail comes back soft, and its stopband
+    leaks badly, so the high-frequency detail the upsampler just invented folds back as
+    aliasing instead of being discarded cleanly. Soft AND speckled is exactly what a box
+    gives you, and it is what "sharpen leaves smearing and artifacts" looks like.
+
+    Antialiased bicubic has a much flatter passband and a far cleaner stopband; the price
+    is mild ringing at hard edges. Constant input still comes back exact (the kernel is
+    weight-normalised), so this stays energy-preserving in the DC sense the callers rely on.
+    """
     b, c, f, hh, ww = video.shape
+    if (hh, ww) == (h, w):
+        # Same size in, same size out: resampling here would only cost a needless blur.
+        return video
     x = video.permute(0, 2, 1, 3, 4).reshape(b * f, c, hh, ww)
-    x = F.interpolate(x.float(), size=(h, w), mode="area")
+    x = F.interpolate(x.float(), size=(h, w), mode="bicubic", antialias=True, align_corners=False)
     return x.reshape(b, f, c, h, w).permute(0, 2, 1, 3, 4).to(dtype=video.dtype)
 
 

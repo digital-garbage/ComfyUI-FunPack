@@ -73,6 +73,17 @@ def _ahead_behind(branch: str) -> tuple[int, int]:
         return 0, 0
 
 
+def _unique_local_commits(branch: str) -> list[str]:
+    """Local commits with no patch-equivalent upstream — i.e. real work that a reset
+    would destroy. `git cherry` marks those "+" and marks "-" the ones whose CONTENT is
+    already upstream under a different hash, which is exactly what a rewritten history
+    leaves behind."""
+    proc = _run_git("cherry", f"origin/{branch}", branch)
+    if proc.returncode != 0:
+        return ["<unknown>"]  # can't prove it's safe → treat as if there were local work
+    return [ln[2:].strip() for ln in (proc.stdout or "").splitlines() if ln.startswith("+")]
+
+
 def _list_branches() -> list[str]:
     proc = _run_git("branch", "-a", "--format=%(refname:short)")
     if proc.returncode != 0:
@@ -133,16 +144,34 @@ def pull(branch: str | None = None) -> dict:
         if co.returncode != 0:
             raise GitUpdateError((co.stderr or co.stdout or "git checkout failed").strip())
     pull_proc = _run_git("pull", "--ff-only", "origin", branch)
+    realigned = False
     if pull_proc.returncode != 0:
         msg = (pull_proc.stderr or pull_proc.stdout or "git pull failed").strip()
-        raise GitUpdateError(msg)
+        # A fast-forward is impossible once upstream history has been rewritten: every
+        # local commit is a different hash, so git reports the branches as diverged even
+        # though the content matches. Only realign when nothing would actually be lost —
+        # a clean tree (checked above) and no local commit whose content is missing
+        # upstream. Anything else keeps the original error and the user's work.
+        unique = _unique_local_commits(branch)
+        if unique:
+            raise GitUpdateError(
+                f"{msg}\n\nThis checkout has {len(unique)} local commit(s) that are not on "
+                f"origin/{branch}. Push or move them first — updating would discard them.")
+        reset = _run_git("reset", "--hard", f"origin/{branch}")
+        if reset.returncode != 0:
+            raise GitUpdateError(msg)
+        realigned = True
     after = _current_commit()
     return {
         "branch": branch,
         "before": before,
         "after": after,
         "updated": before != after,
-        "output": (pull_proc.stdout or "").strip(),
+        # Surfaced so the update reads as what it was, not a silent jump to another commit.
+        "realigned": realigned,
+        "output": ((pull_proc.stdout or "").strip() if not realigned
+                   else f"Upstream history was rewritten — realigned to origin/{branch}. "
+                        "No local commits were lost."),
     }
 
 

@@ -38,6 +38,40 @@
     refreshPins();
   }
 
+  // Reference marks — the same project list the Editor's Media Bin writes. Any number of
+  // items can carry one and their ORDER is the numbering shown, so they can be told apart
+  // when wired to node inputs in Models & Pipeline.
+  const refEls = []; // { id, btn, badge } per cell in the open grid
+  let clearBtn = null;
+
+  function refs() {
+    return (S.get().project || {}).references || [];
+  }
+
+  function refreshRefs() {
+    const list = refs();
+    refEls.forEach(({ id, btn, badge }) => {
+      const idx = list.indexOf(id);
+      btn.classList.toggle("active", idx >= 0);
+      btn.title = idx >= 0
+        ? `Reference R${idx + 1} — click to unmark`
+        : "Mark as a reference — wireable into node inputs in Models & Pipeline";
+      badge.textContent = idx >= 0 ? `R${idx + 1}` : "";
+      badge.hidden = idx < 0;
+    });
+    if (clearBtn) {
+      clearBtn.hidden = !list.length;
+      clearBtn.textContent = `Clear references (${list.length})`;
+    }
+  }
+
+  function toggleRef(m) {
+    const list = refs();
+    const isRef = list.includes(m.id);
+    S.patchProject({ references: isRef ? list.filter((r) => r !== m.id) : [...list, m.id] });
+    refreshRefs();
+  }
+
   function cellFor(m) {
     const cell = el("div", "gal-cell");
     cell.title = m.name || m.id;
@@ -62,6 +96,14 @@
       thumb.append(badge);
       pinEls.push({ id: m.id, btn, badge });
     }
+    const refBtn = el("button", "gal-ref-btn", "R");
+    refBtn.type = "button";
+    refBtn.onclick = (e) => { e.stopPropagation(); toggleRef(m); };
+    thumb.append(refBtn);
+    const refBadge = el("span", "gal-ref-badge");
+    refBadge.hidden = true;
+    thumb.append(refBadge);
+    refEls.push({ id: m.id, btn: refBtn, badge: refBadge });
     cell.append(thumb);
     cell.append(el("div", "gal-name", m.name || m.id));
     cell.onclick = async () => {
@@ -76,13 +118,19 @@
     if (!S.get().project) return;
     close();
     pinEls.length = 0;
+    refEls.length = 0;
     overlay = el("div", "modal-overlay");
     const box = el("div", "modal modal-wide");
     const head = el("div", "modal-head");
     head.append(el("div", "modal-title", "Gallery — choose an anchor"));
+    clearBtn = el("button", "btn ghost tiny", "Clear references (0)");
+    clearBtn.type = "button";
+    clearBtn.title = "Remove the R mark from every item";
+    clearBtn.hidden = true;
+    clearBtn.onclick = () => { S.patchProject({ references: [] }); refreshRefs(); };
     const x = el("button", "btn ghost tiny", "✕");
     x.onclick = close;
-    head.append(el("div", "modal-head-right"), x);
+    head.append(el("div", "modal-head-right"), clearBtn, x);
     box.append(head);
 
     const content = el("div", "modal-content gal-grid");
@@ -106,6 +154,7 @@
       }
       items.forEach((m) => content.append(cellFor(m)));
       refreshPins();
+      refreshRefs();
     } catch (e) {
       clear(content);
       content.append(el("div", "sw-hint", "Could not load media: " + (e.message || e)));

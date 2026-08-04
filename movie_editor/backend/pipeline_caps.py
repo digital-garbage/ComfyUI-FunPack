@@ -38,10 +38,6 @@ def capabilities(project: Any, models: Optional[dict] = None) -> dict[str, bool]
     }
 
 
-# Source modes that only make sense with FunPack Chain Sampler in the graph.
-_CHAIN_ONLY_SOURCES = frozenset({"carry", "mixed", "generated_frame"})
-
-
 def effective_source_type(scene: Scene, chain_available: bool) -> str:
     """Runtime source mode for generation/media prep.
 
@@ -58,11 +54,36 @@ def effective_source_type(scene: Scene, chain_available: bool) -> str:
     return "empty"
 
 
+# Source modes whose whole point is a media-bin asset. A scene set to one of these
+# with nothing picked still generates — the anchor is simply absent — so this is a
+# warning, not a block.
+_ANCHOR_MEDIA_SOURCES = ("image", "mixed", "generated_frame", "v2v", "anchor_guide")
+
+
 def source_needs_anchor_media(scene: Scene, chain_available: bool) -> bool:
     """True when generation expects a media-bin asset for this scene's source."""
-    st = effective_source_type(scene, chain_available)
-    return st in ("image", "mixed", "generated_frame", "v2v", "anchor_guide")
+    return effective_source_type(scene, chain_available) in _ANCHOR_MEDIA_SOURCES
 
 
-def is_chain_only_source_type(st: str) -> bool:
-    return st in _CHAIN_ONLY_SOURCES or st == "v2v"
+def scenes_missing_anchor_media(project, chain_available: bool) -> list[str]:
+    """Scene ids whose source mode wants an anchor but has none selected.
+
+    Distinct from server-side _missing_scene_anchor_media, which catches a ref that
+    IS set but has fallen out of the media bin. This catches the ref never being set
+    at all — that scene is skipped silently when anchors are assembled, so without
+    this the user just gets a shot that quietly ignored its own source setting.
+    """
+    missing: list[str] = []
+    for sc in getattr(project, "scenes", None) or []:
+        if getattr(sc, "excluded", False):
+            continue
+        src = getattr(sc, "source", None)
+        if not src or getattr(src, "media_ref", None):
+            continue
+        if source_needs_anchor_media(sc, chain_available):
+            missing.append(sc.id)
+    return missing
+
+
+
+

@@ -234,20 +234,8 @@ def continuity_media_refs(full: Project, target: Project) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
-def scene_anchor_media_refs(target: Project) -> list[str]:
-    """Media-bin ids required as i2v anchors on generative scenes."""
-    refs: list[str] = []
-    for sc in target.scenes:
-        if sc.excluded or is_video_clip(sc):
-            continue
-        src = sc.source
-        if not src:
-            continue
-        stype = source_type(sc)
-        ref = src.media_ref
-        if ref and stype in ("image", "generated_frame", "mixed", "anchor_guide"):
-            refs.append(ref)
-    return list(dict.fromkeys(refs))
+@dataclass
+class GuideEntry:
     """Optional per-scene guide (only used when project guide_settings.stack_enabled)."""
     enabled: bool = True
     source: str = "template"   # "template" | "scene" | "image"
@@ -272,6 +260,22 @@ def scene_anchor_media_refs(target: Project) -> list[str]:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def scene_anchor_media_refs(target: Project) -> list[str]:
+    """Media-bin ids required as i2v anchors on generative scenes."""
+    refs: list[str] = []
+    for sc in target.scenes:
+        if sc.excluded or is_video_clip(sc):
+            continue
+        src = sc.source
+        if not src:
+            continue
+        stype = source_type(sc)
+        ref = src.media_ref
+        if ref and stype in ("image", "generated_frame", "mixed", "anchor_guide"):
+            refs.append(ref)
+    return list(dict.fromkeys(refs))
 
 
 def is_mixed_source(scene: Scene) -> bool:
@@ -577,6 +581,18 @@ class Project:
     # shortcut-expand and the transition split (so they never affect scene cuts). Ordered list of
     # {"name": str, "value": str}. Shortcuts may reference variables; resolution is recursive.
     variables: list = field(default_factory=list)
+    # MiniMax H3 ref2va reference media, in the order the user listed it — that order is
+    # load-bearing: Studio bakes "<Picture i>" / "<Audio j>" / "<Video k>" labels from this
+    # list, and the Chain Sampler encodes the same list into packed blocks. Entries are
+    # {"kind": "image"|"audio"|"video", "filename": <media-bin file>, "audio": <optional
+    # soundtrack file, video only>}. Ignored by every other model family.
+    h3_references: list = field(default_factory=list)
+    # Media marked "R" in the Media Bin / Easy Gen gallery: an ORDERED list of media-bin ids
+    # (mark order — R1, R2, R3 — which is what the badge shows). Each becomes a wireable
+    # source in Models & Pipeline, so any node input that takes an image / video / audio can
+    # be fed from marked media. Order is the only thing distinguishing one from another, so
+    # it is preserved on write and never re-sorted.
+    references: list = field(default_factory=list)
     # Saved global-prompt templates: [{"name": str, "prompt": str, "variables": [...]}]. Selecting
     # one in the Composer applies its prompt + variables; loaded with the project (no Load button).
     prompt_templates: list = field(default_factory=list)
@@ -644,6 +660,8 @@ class Project:
             studio_inputs=dict(d.get("studio_inputs") or {}),
             sampler_inputs=dict(d.get("sampler_inputs") or {}),
             variables=list(d.get("variables") or []),
+            h3_references=list(d.get("h3_references") or []),
+            references=[str(r) for r in (d.get("references") or []) if r],
             prompt_templates=list(d.get("prompt_templates") or []),
             refinement_key=str(d.get("refinement_key") or "default"),
             keep_original_audio=bool(d.get("keep_original_audio", True)),
@@ -706,30 +724,8 @@ def collapse_generative_units(project: Project) -> Project:
     return clone
 
 
-_TRIGGER_RE = None
-_TRIGGER_RE_BUILT = False
 
 
-def _leading_trigger_re():
-    """Regex matching a leading transition trigger (direct DB trigger or generic 'scene N'
-    label) at the start of a scene's text. Cached. None if nothing is available."""
-    global _TRIGGER_RE, _TRIGGER_RE_BUILT
-    if _TRIGGER_RE_BUILT:
-        return _TRIGGER_RE
-    _TRIGGER_RE_BUILT = True
-    import re
-    try:
-        try:
-            from templates import load_custom_transition_triggers
-        except ImportError:
-            from ...templates import load_custom_transition_triggers  # type: ignore
-        trigs = list(load_custom_transition_triggers().keys())
-    except Exception:
-        trigs = []
-    parts = [re.escape(t) for t in sorted(trigs, key=len, reverse=True)]
-    parts.append(r"scene\s+[-+]?\d+")  # built-in generic split label
-    _TRIGGER_RE = re.compile(r"^\s*(?:" + "|".join(parts) + r")\b", re.IGNORECASE)
-    return _TRIGGER_RE
 
 
 def build_combined_prompt(project: Project, include_excluded: bool = False,

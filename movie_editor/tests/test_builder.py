@@ -410,3 +410,360 @@ def test_bypass_on_node_with_no_matching_input_blocks_generation():
     assert "slot_v" in graph
     assert any("bypass needs exactly one input" in u for u in report["unsatisfied"])
     assert any("bypass needs exactly one input" in b for b in report["blocking"])
+
+
+# ── MiniMax H3 family ─────────────────────────────────────────────────────────
+# H3 keeps the core's SHAPE but three of its nodes do not apply. The graph has to be
+# built for the right family up front: a wrong node class here fails deep inside
+# ComfyUI at generation time, where the Models panel can no longer explain it.
+
+H3_OI = dict(OI)
+H3_OI["VAEDecodeAudio"] = {"input": {"required": {"samples": ["LATENT"], "vae": ["VAE"]}},
+                           "output": ["AUDIO"]}
+H3_OI["EmptyMiniMaxH3LatentAV"] = {
+    "input": {"required": {"width": ["INT", {"default": 1344}], "height": ["INT", {"default": 768}],
+                           "length": ["INT", {"default": 124}]}},
+    "output": ["LATENT"], "output_name": ["LATENT"]}
+
+H3_MODELS = {
+    "model_family": "minimax_h3",
+    "slots": [
+        {"id": "u", "role": "unet", "node_class": "UnetLoader", "label": "unet"},
+        {"id": "c", "role": "clip", "node_class": "ClipLoader", "label": "clip"},
+        {"id": "vv", "role": "video_vae", "node_class": "VaeLoader", "label": "video vae",
+         "wires": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"}},
+        {"id": "av", "role": "audio_vae", "node_class": "VaeLoader", "label": "audio vae",
+         "wires": {"VAE": "port:VAEDecodeAudio.vae"}},
+        {"id": "lat", "role": "empty_latent", "node_class": "EmptyMiniMaxH3LatentAV", "label": "av latent",
+         "wires": {"LATENT": "port:FunPackLTXAVSceneChainSampler.latent_template"}},
+    ],
+}
+
+
+def _classes(graph):
+    return {n["class_type"] for n in graph.values()}
+
+
+def test_h3_family_drops_the_ltx_only_core_nodes():
+    graph, report = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    classes = _classes(graph)
+    # LTXVConditioning stamps LTX's frame_rate onto conditioning — H3 has no such field
+    assert "LTXVConditioning" not in classes
+    # H3's own empty-latent node emits both streams, so there is nothing to concat
+    assert "LTXVConcatAVLatent" not in classes
+    # LTXVAudioVAEDecode reads an output_sample_rate H3's audio VAE does not define
+    assert "LTXVAudioVAEDecode" not in classes
+    assert "VAEDecodeAudio" in classes
+    # the shared half is untouched
+    assert {"FunPackStudio", "FunPackLTXAVSceneChainSampler", "LTXVSeparateAVLatent"} <= classes
+    assert not report["blocking"], report["blocking"]
+
+
+def test_h3_wires_studio_conditioning_straight_to_the_sampler():
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    sampler = graph["sampler"]["inputs"]
+    assert sampler["positive"] == ["studio", 1]
+    assert sampler["negative"] == ["studio", 2]
+    # audio decode source is asserted in its own test (it reads the sampler latent on H3)
+
+
+def test_h3_latent_slot_feeds_the_sampler_directly():
+    graph, report = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    assert graph["sampler"]["inputs"]["latent_template"] == ["slot_lat", 0]
+    assert graph["audiodec"]["inputs"]["vae"] == ["slot_av", 0]
+    assert not report["blocking"], report["blocking"]
+
+
+def test_h3_without_an_av_latent_slot_blocks_instead_of_generating_a_broken_graph():
+    models = {"model_family": "minimax_h3",
+              "slots": [s for s in H3_MODELS["slots"] if s["id"] != "lat"]}
+    _graph, report = builder.build(H3_OI, models, {"prompt": "a shot"})
+    assert any("latent_template" in m for m in report["blocking"]), report
+
+
+# A core override is saved per core ID, not per node class, so switching family leaves the
+# replaced node's input names behind on its successor. The panel lists the NEW node's inputs,
+# so the leftover is invisible; emitting it hands ComfyUI a kwarg the node never declared and
+# the run dies inside it ("VAEDecodeAudio.execute() got an unexpected keyword argument
+# 'audio_vae'"). Guided mode filtered these out as a side effect; full control did not.
+
+def test_a_core_override_from_another_family_is_not_emitted():
+    models = dict(H3_MODELS)
+    models["full_control"] = True            # guided mode filtered this one out by accident
+    models["core_overrides"] = {"audiodec": {"audio_vae": "out:av:VAE"}}
+    graph, report = builder.build(H3_OI, models, {"prompt": "a shot"})
+
+    assert "audio_vae" not in graph["audiodec"]["inputs"]
+    assert graph["audiodec"]["inputs"]["vae"] == ["slot_av", 0]   # the real wire is untouched
+    assert any("has no input 'audio_vae'" in u for u in report["unsatisfied"]), report
+    assert not report["blocking"], report["blocking"]   # a leftover is not a reason to refuse
+
+
+def test_a_valid_core_override_still_applies_under_full_control():
+    models = dict(H3_MODELS)
+    models["full_control"] = True
+    models["core_overrides"] = {"audiodec": {"vae": "out:vv:VAE"}}
+    graph, report = builder.build(H3_OI, models, {"prompt": "a shot"})
+
+    assert graph["audiodec"]["inputs"]["vae"] == ["slot_vv", 0]
+    assert not report["blocking"], report["blocking"]
+
+
+def test_the_ltxav_graph_is_unchanged_by_the_family_split():
+    """The default family must emit exactly what it emitted before H3 existed."""
+    ltx_models = {"slots": [
+        {"id": "u", "role": "unet", "node_class": "UnetLoader",
+         "wires": {"MODEL": "port:FunPackStudio.model"}},
+        {"id": "c", "role": "clip", "node_class": "ClipLoader",
+         "wires": {"CLIP": "port:FunPackStudio.clip"}},
+        {"id": "vv", "role": "video_vae", "node_class": "VaeLoader",
+         "wires": {"VAE": "port:FunPackLTXAVSceneChainSampler.vae"}},
+        {"id": "av", "role": "audio_vae", "node_class": "VaeLoader",
+         "wires": {"VAE": "port:LTXVAudioVAEDecode.audio_vae"}},
+        {"id": "al", "role": "audio_encoder", "node_class": "AudioEnc",
+         "wires": {"LATENT": "port:LTXVConcatAVLatent.audio_latent"}},
+    ]}
+    oi = dict(OI)
+    oi["AudioEnc"] = {"input": {"required": {"seconds": ["FLOAT", {"default": 5.0}]}},
+                      "output": ["LATENT"], "output_name": ["LATENT"]}
+    graph, report = builder.build(oi, ltx_models, {"prompt": "a shot"})
+    classes = _classes(graph)
+    assert {"LTXVConditioning", "LTXVConcatAVLatent", "LTXVAudioVAEDecode"} <= classes
+    assert "VAEDecodeAudio" not in classes
+    assert graph["sampler"]["inputs"]["positive"] == ["cond", 0]
+    assert graph["sampler"]["inputs"]["latent_template"] == ["concat", 0]
+    assert not report["blocking"], report["blocking"]
+
+
+# ── frame geometry is a property of the model, not a setting ──────────────────
+# LTX: 8k+1 frames at the project's fps. H3: 17k+5 frames at a fixed 24 fps. An off-grid
+# length on H3 is not a rounding nuisance — the latent node snaps its own length up while
+# the sampler is told the raw number, and the run dies on the mismatch.
+
+def test_h3_frame_counts_snap_to_the_17k_plus_5_grid():
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot", "num_frames_per_scene": 121})
+    assert graph["frames"]["inputs"]["value"] == 124
+    # a value already on the grid is left exactly as it is
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot", "num_frames_per_scene": 124})
+    assert graph["frames"]["inputs"]["value"] == 124
+
+
+def test_h3_renders_at_the_models_own_frame_rate():
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot", "frame_rate": 30})
+    assert graph["fps"]["inputs"]["value"] == 24
+
+
+def test_ltx_frame_geometry_is_untouched():
+    graph, _ = builder.build(OI, {"slots": []},
+                             {"prompt": "a shot", "num_frames_per_scene": 121, "frame_rate": 30})
+    assert graph["frames"]["inputs"]["value"] == 121   # already 8k+1
+    assert graph["fps"]["inputs"]["value"] == 30       # LTX has no fixed rate
+    graph, _ = builder.build(OI, {"slots": []}, {"prompt": "a shot", "num_frames_per_scene": 100})
+    assert graph["frames"]["inputs"]["value"] == 105   # snapped up to 8k+1
+
+
+def test_a_latent_node_driven_by_project_frames_gets_the_same_snapped_number():
+    """A slot widget bound to "Project · Frames" must not receive the raw value while the
+    sampler receives the snapped one — that disagreement is the mismatch itself."""
+    models = dict(H3_MODELS)
+    models["links"] = [{"id": "l1", "source": "editor", "editor_key": "num_frames_per_scene",
+                        "members": [{"slotId": "lat", "input": "length"}]}]
+    graph, _ = builder.build(H3_OI, models, {"prompt": "a shot", "num_frames_per_scene": 121})
+    assert graph["slot_lat"]["inputs"]["length"] == 124
+    assert graph["frames"]["inputs"]["value"] == 124
+
+
+def test_an_unknown_family_falls_back_to_ltxav_rather_than_emitting_nothing():
+    assert builder.family_of({"model_family": "hailuo-9000"}) == "ltxav"
+    assert builder.family_of({}) == "ltxav"
+    assert builder.family_of(None) == "ltxav"
+    assert builder.family_of({"model_family": "MiniMax_H3"}) == "minimax_h3"
+
+
+# ── autogrow list inputs (MiniMax H3 reference nodes) ─────────────────────────
+
+REF_OI = dict(OI)
+REF_OI["MiniMaxH3ReferenceToVideo"] = {
+    "input": {"required": {
+        "clip": ["CLIP"],
+        "prompt": ["STRING", {"default": ""}],
+        "ref_images": ["COMFY_AUTOGROW_V3", {
+            "template": {"input": {"optional": {"ref_image": ["IMAGE", {}]}},
+                         "prefix": "ref_image", "min": 0, "max": 4}}],
+    }},
+    "output": ["CONDITIONING"], "output_name": ["conditioning"]}
+
+
+def test_autogrow_entries_are_wired_by_their_expanded_names():
+    """The API graph carries ref_image0/ref_image1, never the 'ref_images' wrapper — that
+    is the shape ComfyUI expands back into the node's list."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {"prompt": "hi"},
+         "wires": {},
+         "input_sources": {"ref_images.ref_image0": "out:li:IMAGE", "ref_images.ref_image1": "timeline"}},
+    ]}
+    graph, report = builder.build(REF_OI, models, PARAMS, media={"filename": "scene.png"})
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_images.ref_image0"] == ["slot_li", 0]
+    assert ins["ref_images.ref_image1"] == ["media_load", 0]
+    assert "ref_images" not in ins                 # the template name itself is never sent
+    # an unwired entry is simply absent — never blocking, never an empty placeholder
+    assert "ref_images.ref_image2" not in ins and "ref_images.ref_image3" not in ins
+    assert not any("ref_image" in m for m in report["blocking"])
+
+
+def test_a_single_image_producer_is_not_copied_into_every_autogrow_slot():
+    """Auto-wire fills a lone unambiguous input; for a LIST input that would duplicate one
+    reference across all ten indices. Autogrow entries are explicit-only."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {}},
+    ]}
+    graph, report = builder.build(REF_OI, models, PARAMS)
+    assert not [k for k in graph["slot_r"]["inputs"] if k.startswith("ref_image")]
+    assert not any("ref_image" in m for m in report["unsatisfied"] + report["ambiguous"])
+
+
+def test_a_node_widget_can_be_driven_by_the_project_prompt():
+    """A custom node with its own prompt field takes the run's prompt through a linked
+    input, instead of the user keeping two copies of the text in sync by hand."""
+    models = {"slots": [{"id": "r", "node_class": "MiniMaxH3ReferenceToVideo",
+                         "inputs": {"prompt": "stale text"}, "wires": {}}],
+              "links": [{"id": "l1", "source": "editor", "editor_key": "prompt",
+                         "members": [{"slotId": "r", "input": "prompt"}]}]}
+    graph, _ = builder.build(REF_OI, models, PARAMS)
+    assert graph["slot_r"]["inputs"]["prompt"] == "scene one"
+
+
+def test_a_core_combo_value_missing_on_this_machine_falls_back_instead_of_blocking():
+    """ComfyUI validates combo values against the LIVE list and rejects the whole prompt if
+    one is stale — so a projector/LoRA left selected on a machine that doesn't have the file
+    stopped every run, even with the feature switched off."""
+    oi = dict(OI)
+    sampler = {k: dict(v) for k, v in oi["FunPackLTXAVSceneChainSampler"].items()
+               if k in ("input",)}
+    sampler["input"] = {"required": dict(oi["FunPackLTXAVSceneChainSampler"]["input"]["required"])}
+    sampler["input"]["required"]["identity_projector"] = [["None"], {"default": "None"}]
+    oi["FunPackLTXAVSceneChainSampler"] = {**oi["FunPackLTXAVSceneChainSampler"], **sampler}
+    params = dict(PARAMS)
+    params["sampler_inputs"] = {"identity_projector": "Best_FaceID_v1.0_ArcFace_Projector.safetensors"}
+    graph, report = builder.build(oi, {"slots": []}, params)
+    assert graph["sampler"]["inputs"]["identity_projector"] == "None"
+    assert any("identity_projector" in m and "not installed" in m for m in report["unsatisfied"])
+
+
+def test_an_autogrow_entry_saved_under_its_bare_name_still_wires():
+    """Configs written before the dotted socket id was known hold "ref_image0". Sending that
+    is what produced "execute() got an unexpected keyword argument" — map it back instead of
+    letting an old config keep failing every run."""
+    models = {"slots": [
+        {"id": "li", "node_class": "LoadImage", "inputs": {}, "wires": {"IMAGE": "node:r:ref_image1"}},
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_image0": "out:li:IMAGE"}},
+    ]}
+    graph, _ = builder.build(REF_OI, models, PARAMS)
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_images.ref_image0"] == ["slot_li", 0]   # via input_sources
+    assert ins["ref_images.ref_image1"] == ["slot_li", 0]   # via the mirrored wire
+    assert "ref_image0" not in ins and "ref_image1" not in ins
+
+
+# ── media marked "R" in the bin, wired to node inputs ─────────────────────────
+
+REF_OI["LoadAudio"] = {"input": {"required": {"audio": [["a.wav"]]}}, "output": ["AUDIO"],
+                       "output_name": ["AUDIO"]}
+REF_OI["LoadVideo"] = {"input": {"required": {"file": [["a.mp4"]]}}, "output": ["VIDEO"],
+                       "output_name": ["VIDEO"]}
+
+
+def _ref_params(*refs):
+    p = dict(PARAMS)
+    p["references"] = [dict(r, index=i + 1) for i, r in enumerate(refs)]
+    return p
+
+
+def test_a_marked_reference_injects_its_own_loader_and_wires_it():
+    models = {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref:m1"}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "image", "name": "face.png",
+                          "filename": "funpack_movie_m1.png"})
+    graph, report = builder.build(REF_OI, models, params)
+    load = next(n for n, d in graph.items() if d["class_type"] == "LoadImage" and n != "media_load")
+    assert graph[load]["inputs"]["image"] == "funpack_movie_m1.png"
+    assert graph["slot_r"]["inputs"]["ref_images.ref_image0"] == [load, 0]
+    assert not any("reference" in m for m in report["blocking"])
+
+
+def test_two_sockets_on_one_reference_share_a_single_loader():
+    """Decoding the same clip twice would cost real time on every run — and for a video
+    reference, that is an ffmpeg decode."""
+    models = {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref:m1", "ref_images.ref_image1": "ref:m1"}},
+    ]}
+    params = _ref_params({"id": "m1", "kind": "image", "name": "face.png",
+                          "filename": "funpack_movie_m1.png"})
+    graph, _ = builder.build(REF_OI, models, params)
+    loaders = [n for n, d in graph.items() if d["class_type"] == "LoadImage"]
+    assert len(loaders) == 1
+    ins = graph["slot_r"]["inputs"]
+    assert ins["ref_images.ref_image0"] == ins["ref_images.ref_image1"] == [loaders[0], 0]
+
+
+def test_the_loader_matches_what_the_destination_socket_asks_for():
+    """An audio reference feeding an AUDIO socket needs LoadAudio, not LoadImage — the
+    loader is chosen by the socket's type, not by guessing from the file."""
+    oi = dict(REF_OI)
+    oi["AudioNode"] = {"input": {"required": {"clip": ["AUDIO"]}}, "output": ["CONDITIONING"]}
+    models = {"slots": [
+        {"id": "a", "node_class": "AudioNode", "inputs": {}, "wires": {},
+         "input_sources": {"clip": "ref:m2"}},
+    ]}
+    params = _ref_params({"id": "m2", "kind": "audio", "name": "voice.wav",
+                          "filename": "funpack_movie_m2.wav"})
+    graph, _ = builder.build(oi, models, params)
+    load = next(n for n, d in graph.items() if d["class_type"] == "LoadAudio")
+    assert graph[load]["inputs"]["audio"] == "funpack_movie_m2.wav"
+    assert graph["slot_a"]["inputs"]["clip"] == [load, 0]
+
+
+def test_a_reference_whose_file_is_gone_reports_instead_of_wiring_nothing():
+    models = {"slots": [
+        {"id": "r", "node_class": "MiniMaxH3ReferenceToVideo", "inputs": {}, "wires": {},
+         "input_sources": {"ref_images.ref_image0": "ref:missing"}},
+    ]}
+    graph, report = builder.build(REF_OI, models, _ref_params())
+    assert "ref_images.ref_image0" not in graph["slot_r"]["inputs"]
+    assert any("no longer in the media bin" in m for m in report["unsatisfied"])
+
+
+def test_no_installed_loader_for_the_socket_type_is_reported():
+    """A video reference aimed at an IMAGE socket needs a frames loader; with none
+    installed, say so rather than silently leaving the input unwired."""
+    oi = {k: v for k, v in REF_OI.items() if k not in ("LoadVideo",)}
+    oi["FramesNode"] = {"input": {"required": {"frames": ["IMAGE"]}}, "output": ["CONDITIONING"]}
+    models = {"slots": [
+        {"id": "f", "node_class": "FramesNode", "inputs": {}, "wires": {},
+         "input_sources": {"frames": "ref:m3"}},
+    ]}
+    params = _ref_params({"id": "m3", "kind": "video", "name": "clip.mp4",
+                          "filename": "funpack_movie_m3.mp4"})
+    graph, report = builder.build(oi, models, params)
+    assert "frames" not in graph["slot_f"]["inputs"]
+    assert any("no installed node can load a video reference" in m for m in report["unsatisfied"])
+
+
+def test_h3_audio_decodes_from_the_sampler_latent_not_a_separated_stream():
+    """ComfyUI's official H3 templates feed the raw sampler latent to BOTH decodes and let
+    each VAE take its own stream. Unbinding first hands the audio VAE a different object
+    than the reference graph does. LTX is unchanged — it keeps the separate step."""
+    graph, _ = builder.build(H3_OI, H3_MODELS, {"prompt": "a shot"})
+    assert graph["audiodec"]["inputs"]["samples"] == ["sampler", 0]
+    # `separate` stays: it still supplies the VIDEO latent to the refinement save.
+    assert graph["saveref"]["inputs"]["latent"] == ["separate", 0]
+
+    ltx, _ = builder.build(OI, {"slots": []}, PARAMS)
+    assert ltx["audiodec"]["inputs"]["samples"] == ["separate", 1]

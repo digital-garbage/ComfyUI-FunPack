@@ -121,7 +121,8 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .log-panel[hidden] { display: none; }  /* explicit display:flex above would otherwise beat the hidden attribute */
 .log-head { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-bottom: 1px solid var(--line);
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
-.log-actions { display: flex; gap: 6px; }
+.log-actions { display: flex; gap: 6px; align-items: center; }
+.log-freeze-indicator { font-family: var(--font-mono); font-size: 10px; color: var(--faint); white-space: nowrap; }
 .log-body { flex: 1; margin: 0; padding: 8px 10px; overflow: auto; white-space: pre-wrap; word-break: break-word;
   font-family: var(--font-mono); font-size: 11px; line-height: 1.45; color: var(--muted); background: #060606; }
 
@@ -197,7 +198,14 @@ button, input, select, textarea { font-family: inherit; color: var(--text); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); padding: 4px 8px; font-size: 12px; }
 .btn.ghost:hover { color: var(--amber-2); background: var(--ink-3); }
 .btn.ghost.on { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
+/* "This is switched on but cannot do anything" chip, shown beside Generate. */
+.btn.action-warn { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 45%, var(--line)); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+.btn.action-warn:hover { color: var(--amber-2); border-color: var(--amber); }
 .btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+/* Live elapsed counter on a transport button. Tabular figures keep the label from twitching
+   as the digits change; the seconds are zero-padded in JS so the string only ever grows at
+   the minute boundary, not once a second. */
+.btn.btn-timer { font-variant-numeric: tabular-nums; }
 .btn.tiny { padding: 2px 7px; font-size: 12px; }
 
 label.field { display: block; margin-bottom: 12px; }
@@ -326,6 +334,13 @@ input[type=number] { font-family: var(--font-mono); }
 .media-act.media-pin.active { filter: none; background: var(--amber-soft); }
 .media-pin-badge { position: absolute; top: 3px; left: 3px; font-size: 10px; line-height: 1;
   padding: 2px 3px; border-radius: 4px; background: rgba(0, 0, 0, .55); pointer-events: none; }
+/* Reference mark. Reads as a letter, not an icon, so it sits beside the pin without
+   competing with it — and the badge carries the index, which is the load-bearing part. */
+.media-act.media-ref { font-weight: 700; }
+.media-act.media-ref.active { color: var(--ink-0); background: var(--amber); }
+.media-ref-badge { position: absolute; top: 3px; right: 3px; font-size: 9px; font-weight: 700;
+  line-height: 1; padding: 2px 4px; border-radius: 4px; color: var(--ink-0);
+  background: var(--amber); pointer-events: none; }
 .media-name-edit {
   flex: 1; min-width: 0; box-sizing: border-box; margin: 0; padding: 2px 4px; font-size: 10px;
   background: var(--ink-0); border: 1px solid var(--amber); border-radius: 4px; color: var(--text);
@@ -1328,6 +1343,20 @@ label.field.linked input, label.field.linked select { opacity: .6; }
 .pipe-setup-manual-title { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .pipe-setup-foot { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
 .pipe-setup-hint { margin: 0 0 10px; font-size: 12px; color: var(--muted); line-height: 1.45; }
+/* Model family picker — the first question in setup, since it decides which nodes and
+   which model files everything after it looks for. */
+.pipe-setup-family { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.pipe-setup-family-btn { display: block; width: 100%; text-align: left; padding: 10px 12px;
+  border-radius: 8px; line-height: 1.4; }
+.pipe-setup-family-btn.active { border-color: var(--accent); background: var(--accent-soft, rgba(255,170,60,.10)); }
+.pipe-setup-family-title { font-size: 13px; color: var(--text); display: flex; align-items: baseline;
+  gap: 8px; flex-wrap: wrap; }
+.pipe-setup-family-title .pipe-setup-sub { display: inline; margin-top: 0; font-family: inherit;
+  text-transform: uppercase; letter-spacing: .04em; font-size: 10px; }
+.pipe-setup-family-btn .pipe-setup-sub { font-family: inherit; font-size: 11px; color: var(--muted); }
+.pipe-setup-readiness { margin: 0 0 14px; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--panel-2, rgba(255,255,255,.02)); }
+.pipe-setup-link { display: inline-block; margin-bottom: 10px; font-size: 12px; }
 .restart-card .restart-cancel { margin-top: 4px; }
 
 /* restart overlay */

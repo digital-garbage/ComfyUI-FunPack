@@ -80,3 +80,72 @@ def test_custom_nodes_dir_uses_folder_paths(tmp_path, monkeypatch):
     fp = type("FP", (), {"get_folder_paths": staticmethod(lambda _: [str(cn)])})()
     monkeypatch.setitem(__import__("sys").modules, "folder_paths", fp)
     assert pipeline_deps.custom_nodes_dir() == cn
+
+
+# ── per-family setup ──────────────────────────────────────────────────────────
+# Both families are real, selectable pipelines. H3 shipped in ComfyUI v0.30.0 with weights
+# on Comfy-Org/MiniMax-H3, and it ships as TWO diffusion checkpoints (fl2va / ref2va) that
+# load interchangeably but condition differently — the setup panel is the only place that
+# can warn about that before a generation is spent, so these pin that it says so.
+
+def test_both_families_are_offered_and_released():
+    from movie_editor.backend import pipeline_deps as pd
+    fams = {f["key"]: f for f in pd.families_payload()}
+    assert set(fams) == {"ltxav", "minimax_h3"}
+    assert fams["ltxav"]["released"] is True
+    assert fams["minimax_h3"]["released"] is True
+    # the two-checkpoint split is the one thing a user cannot discover from the graph
+    note = fams["minimax_h3"]["note"]
+    assert "fl2va" in note and "ref2va" in note
+    assert "MiniMax-H3" in fams["minimax_h3"]["source_url"]
+    assert fams["ltxav"]["note"] is None
+
+
+def test_h3_readiness_lists_the_nodes_and_model_files_it_needs():
+    from movie_editor.backend import pipeline_deps as pd
+    r = pd.family_readiness({}, "minimax_h3")
+    assert r["released"] is True
+    # the AV latent node is required; the sigma-shift node is optional and must not block
+    missing = {n["class"] for n in r["missing_nodes"]}
+    assert missing == {"EmptyMiniMaxH3LatentAV"}
+    assert {m["role"] for m in r["models"]} == {"unet", "clip", "video_vae", "audio_vae"}
+    assert all(m["folder"] for m in r["models"])
+    # the hints name real files, including both diffusion variants
+    unet_hint = next(m["hint"] for m in r["models"] if m["role"] == "unet")
+    assert "minimax_h3_fl2va" in unet_hint and "minimax_h3_ref2va" in unet_hint
+
+    # on an older ComfyUI without the node, it is listed as missing — no code change
+    r2 = pd.family_readiness({"EmptyMiniMaxH3LatentAV": {}}, "minimax_h3")
+    assert r2["missing_nodes"] == []
+
+
+def test_a_family_missing_its_own_nodes_still_counts_as_needing_setup():
+    """Otherwise the modal never opens and the project looks ready when it cannot generate."""
+    from movie_editor.backend import pipeline_deps as pd
+    full_oi = {cls: {} for cls in pd.required_core_classes("minimax_h3")}
+    s = pd.status_payload(full_oi, manager_available=True, family="minimax_h3")
+    assert s["missing_packs"] == []          # nothing for Manager to install
+    assert s["needs_setup"] is True          # ... but the H3 latent node is not installed
+    assert s["family"] == "minimax_h3"
+
+    # with the H3 node present too, setup is genuinely done
+    s2 = pd.status_payload({**full_oi, "EmptyMiniMaxH3LatentAV": {}},
+                           manager_available=True, family="minimax_h3")
+    assert s2["needs_setup"] is False
+
+
+def test_h3_does_not_ask_for_the_ltx_only_core_packs():
+    """H3's core drops LTXVConditioning / Concat / LTXVAudioVAEDecode, so a user on H3
+    must not be told to install a pack for nodes their graph never emits."""
+    from movie_editor.backend import pipeline_deps as pd
+    oi = {cls: {} for cls in pd.required_core_classes("minimax_h3")}
+    assert pd.missing_core_classes(oi, "minimax_h3") == []
+    # the same object_info is NOT enough for LTXAV
+    ltx_missing = pd.missing_core_classes(oi, "ltxav")
+    assert "LTXVConditioning" in ltx_missing and "LTXVConcatAVLatent" in ltx_missing
+
+
+def test_family_lookup_falls_back_instead_of_raising():
+    from movie_editor.backend import pipeline_deps as pd
+    assert pd.family_setup("hailuo-9000")["label"] == pd.family_setup("ltxav")["label"]
+    assert pd.family_setup(None)["label"] == pd.family_setup("ltxav")["label"]

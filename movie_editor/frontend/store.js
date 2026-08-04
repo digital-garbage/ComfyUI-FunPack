@@ -1685,17 +1685,20 @@
     return (p.overlay_tracks || []).some((ov) => (ov.duration_sec || 0) > 0);
   }
 
-  // LTX-valid frame counts are 8k+1 (so (frames-1) % 8 === 0); snap to the nearest.
-  function snapFrames(n) { return Math.max(9, Math.round((Math.round(n) - 1) / 8) * 8 + 1); }
-  function snapFramesFloor(n) {
-    n = Math.round(n);
-    if (n < 9) return 9;
-    return Math.floor((n - 1) / 8) * 8 + 1;
+  // Valid frame counts are per model family — LTX 8k+1, MiniMax H3 17k+5 — so the grid comes
+  // from PipelineCaps rather than being hardcoded here. Off-grid lengths do not fail softly:
+  // the H3 latent node snaps its own length up while the sampler expects the number the
+  // project asked for, and the run dies on the mismatch.
+  function _snap(n, mode) {
+    if (window.PipelineCaps?.snapFramesTo) return window.PipelineCaps.snapFramesTo(n, state, mode);
+    n = Math.round(Number(n) || 0);
+    const k = (n - 1) / 8;
+    const r = mode === "floor" ? Math.floor(k) : mode === "ceil" ? Math.ceil(k) : Math.round(k);
+    return Math.max(9, r * 8 + 1);
   }
-  function snapFramesCeil(n) {
-    n = Math.round(n);
-    return Math.max(9, Math.ceil((n - 1) / 8) * 8 + 1);
-  }
+  function snapFrames(n) { return _snap(n, "round"); }
+  function snapFramesFloor(n) { return _snap(n, "floor"); }
+  function snapFramesCeil(n) { return _snap(n, "ceil"); }
 
   function _framesFromDuration(durationSec, fps, curFrames) {
     const raw = Math.max(1, durationSec) * fps;
@@ -1705,7 +1708,9 @@
     else if (raw > cur + 0.01) frames = snapFramesCeil(raw);
     else frames = cur;
     if (frames === cur && Math.abs(durationSec - cur / fps) > 0.02) {
-      frames = raw < cur ? Math.max(9, cur - 8) : cur + 8;
+      // one whole grid step in the direction the drag went (8 frames on LTX, 17 on H3)
+      const step = window.PipelineCaps?.frameGrid ? window.PipelineCaps.frameGrid(state).step : 8;
+      frames = raw < cur ? snapFramesFloor(cur - step) : cur + step;
     }
     return frames;
   }
@@ -2825,6 +2830,12 @@
   let pollTimer = null;
   let progressTimer = null;
   let pollStart = 0;
+  // Wall clock for the WHOLE operation the user started, as distinct from pollStart, which
+  // restarts on every run of a multi-run montage. The transport buttons count from the press
+  // to the finished video, so this has to span every run that one press kicked off.
+  let genWallStart = 0;
+  let genWallSource = null;
+  let genWallApprox = false;
   let _interrupted = false;
   // Prompt text captured when a run was queued — applied to sceneRenders on completion.
   const _queuedRenderPrompts = {};
@@ -2861,28 +2872,33 @@
     // drains — not just for the one prompt that happened to be running at reload.
     let cur = act;
     let lastPromptId = null;
-    while (cur && cur.running && cur.prompt_id && cur.prompt_id !== lastPromptId && !_interrupted) {
-      lastPromptId = cur.prompt_id;
-      pollStart = Date.now();
-      const sceneIds = (cur.scene_ids && cur.scene_ids.length)
-        ? cur.scene_ids
-        : (cur.only_scene ? [cur.only_scene] : []);
-      const more = cur.pending > 0 ? ` · ${cur.pending} run(s) queued` : "";
-      set({ gen: { state: "running", promptId: cur.prompt_id, media: [], msg: `Generation running (reconnected after reload)…${more}` } });
-      if (state.project && cur.pid && state.project.id === cur.pid && sceneIds.length) {
-        // Full re-attach: poll history and place the output on the run's scenes when done.
-        _markGenInFlight(sceneIds);
-        try { await _pollPromise(cur.prompt_id, sceneIds, "Generation running (reconnected)"); }
-        finally { _clearGenInFlight(sceneIds); }
-      } else {
-        // No matching project loaded (or single-scene run on another project): we can't map
-        // the output, but still surface Interrupt and clear busy when it stops.
-        await _monitorActive(cur.prompt_id);
+    // Re-attaching means we never saw the press, so the button's clock can only count from
+    // here. Flagged approximate so it reads "1m 4s+" rather than claiming a total it can't know.
+    _genClockStart("all", true);
+    try {
+      while (cur && cur.running && cur.prompt_id && cur.prompt_id !== lastPromptId && !_interrupted) {
+        lastPromptId = cur.prompt_id;
+        pollStart = Date.now();
+        const sceneIds = (cur.scene_ids && cur.scene_ids.length)
+          ? cur.scene_ids
+          : (cur.only_scene ? [cur.only_scene] : []);
+        const more = cur.pending > 0 ? ` · ${cur.pending} run(s) queued` : "";
+        set({ gen: { state: "running", promptId: cur.prompt_id, media: [], msg: `Generation running (reconnected after reload)…${more}` } });
+        if (state.project && cur.pid && state.project.id === cur.pid && sceneIds.length) {
+          // Full re-attach: poll history and place the output on the run's scenes when done.
+          _markGenInFlight(sceneIds);
+          try { await _pollPromise(cur.prompt_id, sceneIds, "Generation running (reconnected)"); }
+          finally { _clearGenInFlight(sceneIds); }
+        } else {
+          // No matching project loaded (or single-scene run on another project): we can't map
+          // the output, but still surface Interrupt and clear busy when it stops.
+          await _monitorActive(cur.prompt_id);
+        }
+        if (_interrupted) break;
+        // Another queued run may now be executing — re-attach to it.
+        try { cur = await API.active(); } catch (_) { cur = null; }
       }
-      if (_interrupted) break;
-      // Another queued run may now be executing — re-attach to it.
-      try { cur = await API.active(); } catch (_) { cur = null; }
-    }
+    } finally { _genClockStop(); }
     return true;
   }
 
@@ -2915,6 +2931,24 @@
   function _elapsed() {
     const s = Math.floor((Date.now() - pollStart) / 1000);
     return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
+
+  // A nested call (generate -> generateMontage) must keep the ORIGINAL press time, so the
+  // first start wins and later ones are no-ops until the clock is stopped.
+  function _genClockStart(source, approx) {
+    if (genWallStart) return;
+    genWallStart = Date.now();
+    genWallSource = source;
+    genWallApprox = !!approx;
+  }
+  function _genClockStop() { genWallStart = 0; genWallSource = null; genWallApprox = false; }
+
+  // Read by the transport buttons on their own 1s tick. Deliberately NOT part of `state`:
+  // a value that changes every second would churn every view fingerprint that hashed it,
+  // rebuilding whole zones once a second for a number that one button owns.
+  function genElapsed() {
+    if (!genWallStart) return null;
+    return { ms: Date.now() - genWallStart, source: genWallSource, approx: genWallApprox };
   }
 
   // Split the active scenes into generation runs. Each anchored scene (empty / image /
@@ -3494,6 +3528,22 @@
         msg: `${runs.length} run(s) generated for ${n} selected scene${n > 1 ? "s" : ""}.`,
       },
     });
+  }
+
+  // The clock is wrapped around the PUBLIC entry points rather than set inside them: every
+  // one of these has several early-return error paths, and a `finally` here cannot miss one.
+  // `await` (not `return fn()`) is what makes the finally wait for the whole montage.
+  async function _clockedGenerate(onlyScene) {
+    _genClockStart(onlyScene ? "scene" : "all");
+    try { return await generate(onlyScene); } finally { _genClockStop(); }
+  }
+  async function _clockedMontage() {
+    _genClockStart("all");
+    try { return await generateMontage(); } finally { _genClockStop(); }
+  }
+  async function _clockedSelected() {
+    _genClockStart("selected");
+    try { return await generateSelected(); } finally { _genClockStop(); }
   }
 
   // Local timestamp for unique export filenames: YYYYMMDD-HHMMSS.
@@ -4190,7 +4240,7 @@
     isOverlayAudioTrack, isSeparatedAudioTrack,
     resizeScene, setSceneGapAfter, splitScene, autoMontage, hasPlayableRender, snapFrames, snapFramesFloor, snapFramesCeil, sceneEffFrames, sceneEffFps, setSourceTrim, trimSceneLeft, slipScene,
     applyEnginePreset, ENGINE_PRESETS, undo, redo,
-    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate, generateMontage, generateSelected, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
+    refreshPreview, syncFromPreview, applyGlobalPromptQuiet, scheduleGlobalPromptApply, globalPromptApplyPending, buildGlobalPromptFromTimeline, syncGlobalPromptFromTimeline, generate: _clockedGenerate, generateMontage: _clockedMontage, generateSelected: _clockedSelected, genElapsed, selectedSceneCount, renderFinal, exportSelected, saveSelectedToMediaBin, clipSaveableToMediaBin, interrupt, loadModels, loadImageTargets, setModelInput, setModelBypass, setModelLink, clearNotice,
     projectVariables, setProjectVariables, promptTemplates, savePromptTemplate, deletePromptTemplate, applyPromptTemplate,
     setConditioningSlot, setSamplerSlot, setSamplerInput, setSamplerInputNow, unsetSamplerInput, setStudioInput, setStudioInputNow,
     loadMedia, uploadMedia, deleteMedia, deleteMediaMany, renameMedia, previewMedia, clearMediaPreview, assignMediaToScene, exportMediaAsset,

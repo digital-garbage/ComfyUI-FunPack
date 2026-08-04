@@ -236,12 +236,22 @@ def test_awful_lora_feedback_reduces_before_missing_axis_boosts():
     assert suggestion["model_weight"] < 1.0
 
 
+# Ratings that deliberately do NOT train phrase memory, by profile key rather than by
+# label text — the label list grows (the "|loved" variants, the control sentinels) and a
+# hardcoded exclusion list silently starts asserting the wrong thing about the new ones.
+#   forget / continue / fresh_prompt — control actions, not ratings at all
+#   wrong_appearance                 — a character-consistency signal, handled by the
+#                                      appearance anchor, never by phrase categories
+NON_LEARNING_RATING_KEYS = {"forget", "wrong_appearance", "continue", "fresh_prompt"}
+
+
 def test_category_weights_are_recorded_for_every_learning_rating():
     refiner = FunPackVideoRefinerV2()
     learning_labels = [
         label for label in V2_RATING_LABELS
-        if label not in {"-Just forget it-", "Wrong appearance"}
+        if normalize_refiner_v2_rating(label).get("key") not in NON_LEARNING_RATING_KEYS
     ]
+    assert len(learning_labels) > 10   # the filter must not quietly empty the loop
 
     for label in learning_labels:
         entry, _, _ = train_phrase(refiner, f"running test {label}", label)
@@ -1781,8 +1791,11 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
     state_path = tmp_path / "state.json"
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
+    # `scene <N>` is the canonical split delimiter (split_scenes): a real transition trigger
+    # from the user's DB, or this generic label. Word-numbers ("scene ten") and bare prose
+    # ("cut to") deliberately do NOT cut — an incidental phrase must never split a prompt.
     cond, status, _, _, encoded_prompts, _, _ = refiner.refine_v2(
-        "a woman in a red dress, scene ten she runs, cut to she stops",
+        "a woman in a red dress, scene 1 she runs, scene 2 she stops",
         FakeClip(),
         "Perfect",
         "transition-test",
@@ -1792,9 +1805,15 @@ def test_split_by_transitions_shows_scenes_in_encoded_prompts(tmp_path):
     assert len(cond) == 2
     assert cond[0][1]["funpack_scene_index"] == 0
     assert cond[0][1]["funpack_scene_count"] == 2
+    # the leading run is the anchor and folds into every scene; each scene keeps its own text
     assert "a woman in a red dress" in cond[0][1]["funpack_scene_text"]
-    assert "scene ten she runs" in cond[0][1]["funpack_scene_text"]
+    assert "a woman in a red dress" in cond[1][1]["funpack_scene_text"]
+    assert "she runs" in cond[0][1]["funpack_scene_text"]
     assert "she stops" in cond[1][1]["funpack_scene_text"]
+    assert "she stops" not in cond[0][1]["funpack_scene_text"]
+    # the delimiter is a boundary, never content — encoding it would pollute the prompt
+    assert "scene 1" not in cond[0][1]["funpack_scene_text"]
+    assert "scene 2" not in cond[1][1]["funpack_scene_text"]
     assert "Scene chain mode" in status
     assert "Transition split" in status
     assert "Detected scenes" in encoded_prompts
@@ -2049,7 +2068,7 @@ def test_split_by_transitions_attaches_scene_seeds(tmp_path):
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
     cond, _, _, _, _, _, _ = refiner.refine_v2(
-        "anchor, scene one she walks, cut to she turns",
+        "anchor, scene 1 she walks, scene 2 she turns",
         FakeClip(),
         "Perfect",
         "split-seed-test",
@@ -2068,7 +2087,7 @@ def test_split_by_transitions_uses_provided_scene_seeds(tmp_path):
     refiner._v2_state_path = lambda refinement_key: str(state_path)
 
     cond, _, _, _, _, _, _ = refiner.refine_v2(
-        "anchor, scene one she walks, cut to she turns",
+        "anchor, scene 1 she walks, scene 2 she turns",
         FakeClip(),
         "Perfect",
         "split-seed-test",

@@ -120,6 +120,25 @@
       pid: st.project?.id,
       sel: st.selectedSceneIds?.length,
       gen: st.gen?.state,
+      // The Best-FaceID warning chip lives in this zone, so everything its message
+      // depends on has to be part of the fingerprint — otherwise setting the pin
+      // leaves a stale warning sitting next to Generate.
+      idOn: st.project?.sampler_inputs?.identity_transfer_enabled,
+      idPin: st.project?.continuity_settings?.identity_pin_ref,
+      idAuto: st.project?.continuity_settings?.auto_enabled,
+      idStack: st.project?.guide_settings?.stack_enabled,
+      sampler: st.project?.sampler_slot,
+      // The MiniMax H3 "this setting can't run" chips live in the same zone, so every
+      // input they read belongs here too — switching the family or turning one of these
+      // off must clear its chip, not leave it sitting next to Generate.
+      family: st.models?.model_family,
+      h3Bounded: st.project?.sampler_inputs?.bounded_attention_enabled,
+      h3Detail: st.project?.sampler_inputs?.segmented_detailing,
+      h3V2a: st.project?.sampler_inputs?.v2a_grad_scale,
+      h3Pass2: st.project?.sampler_inputs?.second_pass,
+      h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
+      // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.
+      h3Fps: st.project?.frame_rate,
     });
   }
 
@@ -131,6 +150,9 @@
       mediaPreview: st.mediaPreviewId,
       // Continuity pin renders on gallery cards (📌 button state + thumb badge).
       pin: st.project?.continuity_settings?.identity_pin_ref,
+      // Reference marks render the same way (R button + numbered badge), and their ORDER
+      // is the numbering — so the fingerprint has to follow the list, not just its length.
+      refs: (st.project?.references || []).join(","),
       shortcuts: st.shortcuts?.length,
       transitions: st.transitions?.length,
       nleEffects: st.nleEffects?.length,

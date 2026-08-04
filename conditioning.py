@@ -6141,6 +6141,53 @@ class FunPackVideoRefiner:
 
 FunPackGemmaEmbeddingRefiner = FunPackVideoRefiner
 
+
+def _h3_reconcile_token_tags(conditioning, label=""):
+    """Keep MiniMax H3's `minimax_token_tags` aligned with the conditioning it rides on.
+
+    The DiT walks the tag vector position-by-position, so a conditioning whose token count
+    no longer matches its tags is an IndexError on the FIRST forward — reported as a bare
+    "list index out of range" with nothing pointing at the prompt or the conditioning.
+    Studio edits conditioning in many places, and H3 tokenizes reference images INTO the
+    same span (ref_image_size "match" scales them to the output resolution), so the count
+    moves when either the prompt or the resolution changes — which is what made this look
+    intermittent.
+
+    Grow the tags when tokens were appended, and drop them when they were removed or
+    replaced: a conditioning with no tags is handled by the DiT, one with WRONG tags is not.
+    Either way say so, because silently losing the tags changes how the DiT modulates the
+    text span. Non-H3 conditioning has no tags and passes straight through.
+    """
+    if not isinstance(conditioning, list):
+        return conditioning
+    try:
+        from .minimax_h3 import extend_token_tags, tags_match, token_tags_length
+    except ImportError:  # loaded as a top-level module (tests, direct import)
+        from minimax_h3 import extend_token_tags, tags_match, token_tags_length
+    out = []
+    for entry in conditioning:
+        if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
+                and isinstance(entry[1], dict) and hasattr(entry[0], "shape")):
+            out.append(entry)
+            continue
+        cond, meta = entry[0], entry[1]
+        if tags_match(cond, meta):
+            out.append(entry)
+            continue
+        have = token_tags_length(meta)
+        want = int(cond.shape[1])
+        if want > have:
+            meta = extend_token_tags(meta, want - have)
+            print(f"[FunPackStudio] MiniMax H3: {label} conditioning grew "
+                  f"{have} -> {want} tokens; extended minimax_token_tags to match.")
+        else:
+            meta = {k: v for k, v in meta.items() if k != "minimax_token_tags"}
+            print(f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
+                  f"minimax_token_tags describes {have} — dropping the stale tags. The DiT "
+                  f"falls back to its default modulation for the text span.")
+        out.append([cond, meta] + list(entry[2:]))
+    return out
+
 # Movie Editor sends this when the user did not rate before regenerating: apply session
 # memory / repairs but do not learn from a synthetic rating (unlike "-Just forget it-").
 # Must appear in V2_RATING_LABELS so ComfyUI /prompt validation accepts editor overrides.
@@ -6722,27 +6769,66 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except Exception:
             return None
 
-    def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None, reference_image=None):
+    def _v2_encode_prompt(self, clip, prompt_text, encode_cache=None, reference_image=None,
+                          h3_references=None):
         if clip is None:
             return None, {"pooled_output": None}, "CLIP missing"
         prompt_text = str(prompt_text or "").strip()
         if not prompt_text:
             return None, {"pooled_output": None}, "prompt empty"
 
-        use_vision = reference_image is not None and self._gemma3_has_vision(clip)
+        # MiniMax H3's conditioning encoder is Qwen3-VL-32B, not LTX2.3's Gemma3, and it takes
+        # its reference images through a different kwarg (`images=[...]`, presented as
+        # "<Picture i>: <vision block>" before the prompt) — so the Gemma3 vision probe below
+        # returns False for it and the image would be silently dropped. Detect it first.
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        h3 = h3mod.is_h3_clip(clip)
+
+        # ref2va: references have to reach the model twice — as presentation here (Qwen sees
+        # "<Picture 1>: <vision block>" so the prompt can name it) and as latent blocks later,
+        # in the SAME order. Studio owns the CLIP but not a VAE, so it resolves the ordered
+        # spec, bakes the presentation, and hands the resolved order to the Chain Sampler,
+        # which owns the VAE and encodes exactly that list. Images and video frames carry
+        # pixels into Qwen (video at 2 fps with timestamps); audio contributes a bare
+        # "<Audio j>: " label, and a clip's soundtrack label is emitted before its clip.
+        resolved_refs, ref_items, ref_skips = [], [], []
+        if h3 and h3_references:
+            resolved_refs, ref_skips = h3mod.resolve_ref_spec(h3_references)
+            ref_items = h3mod.ref_items_from_spec(resolved_refs)
+            for filename, why in ref_skips:
+                print(f"[FunPackStudio] H3 reference '{filename}' skipped — {why}.")
+
+        use_vision = reference_image is not None and (h3 or self._gemma3_has_vision(clip))
         img_fp = self._image_fingerprint(reference_image) if use_vision else None
 
         # Per-call cache ONLY (the encode_cache dict is created fresh by the caller for this
         # one sample() invocation and never escapes it) — no cross-request/process-lifetime
         # caching here. The conditioning the model sees must always trace back to what's live
         # in the current request, never to anything reused from a past one.
-        cache_key = (id(clip), prompt_text, img_fp)
+        cache_key = (id(clip), prompt_text, img_fp,
+                     tuple((r["kind"], r["filename"]) for r in resolved_refs))
         if isinstance(encode_cache, dict):
             cached = encode_cache.get(cache_key)
             if cached is not None:
                 return cached
         try:
-            if use_vision:
+            if h3 and ref_items:
+                # ref2va takes over the presentation: a first-frame anchor and free-floating
+                # references are different conditioning modes and cannot share one prompt.
+                if use_vision:
+                    print("[FunPackStudio] H3: reference media present — source_image is NOT "
+                          "used as a first-frame anchor for this encode (ref2va and fl2va are "
+                          "separate conditioning modes). Add it as a reference to include it.")
+                    use_vision = False
+                print(f"[FunPackStudio] Encoding {len(ref_items)} H3 reference(s) with Qwen3-VL...")
+                tokens = clip.tokenize(prompt_text, minimax_ref_items=ref_items)
+            elif use_vision and h3:
+                print("[FunPackStudio] Processing input image with Qwen3-VL (MiniMax H3)...")
+                tokens = clip.tokenize(prompt_text, images=[reference_image])
+            elif use_vision:
                 print("[FunPackStudio] Processing input image with Gemma3 vision...")
                 tokens = clip.tokenize(prompt_text, image=reference_image, skip_template=False)
             else:
@@ -6758,6 +6844,27 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 print("[FunPackStudio] Vision encoding returned invalid conditioning")
             return None, {"pooled_output": None}, "encode returned invalid conditioning"
         vision_tag = " +vision" if use_vision else ""
+        if resolved_refs:
+            # The resolved order travels with the conditioning: the sampler must encode these
+            # exact references, in this exact order, or "<Picture 2>" points at the wrong one.
+            # Every field that shaped the presentation travels with it — a video's soundtrack
+            # ("audio") especially: Studio already emitted its "<Audio j>" label, so a sampler
+            # that doesn't know about the track packs no audio rows for it and shifts every
+            # later audio ordinal by one.
+            meta = dict(meta)
+            meta["funpack_h3_refs"] = [
+                {k: v for k, v in r.items() if k in ("kind", "filename", "audio", "size")}
+                for r in resolved_refs
+            ]
+            vision_tag = f" +{len(resolved_refs)} ref"
+        elif h3 and use_vision:
+            # fl2va: Studio owns the CLIP and has just presented this image to Qwen, but the
+            # anchor also has to reach the DiT as a frame-0 keyframe pin — and that needs the
+            # VAE, which lives on the Chain Sampler. Hand the pixels over so the sampler can
+            # encode them at the scene's canvas. On LTX this never happens: there the anchor
+            # is written into the latent by the graph, not carried on the conditioning.
+            meta = dict(meta)
+            meta["funpack_h3_anchor"] = {"image": reference_image}
         if use_vision:
             print(f"[FunPackStudio] Vision encoding done — {self._get_conditioning_seq_len(cond)} positions")
         result = (cond, meta, f"encoded {self._get_conditioning_seq_len(cond)} positions{vision_tag}")
@@ -6774,10 +6881,12 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             return f"Gemma3 tokenizer loaded: {source}"
         return "Gemma3 tokenizer loaded"
 
-    def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None, reference_image=None):
+    def _v2_conditioning_source(self, clip, prompt_text, positive_conditioning, encode_cache=None,
+                                reference_image=None, h3_references=None):
         if clip is not None:
             cond, meta, encode_status = self._v2_encode_prompt(
-                clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image
+                clip, prompt_text, encode_cache=encode_cache, reference_image=reference_image,
+                h3_references=h3_references,
             )
             return cond, meta, encode_status, "CLIP-owned"
 
@@ -9731,6 +9840,20 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         """Clone model and apply attn2 patch for layer-level direction injection + phrase emphasis."""
         if model is None:
             return None
+        # MiniMax H3 has no cross-attention at all: text, audio and video are rows of ONE packed
+        # self-attention stream, so there is no attn2 for `set_model_attn2_patch` to hook. The
+        # patch would install and never fire. Say so instead of reporting a patch that is doing
+        # nothing — the conditioning-space steering (embed guidance, score slider, the direction
+        # applied to the tensor itself) still works on H3 and carries the same intent.
+        try:
+            from .minimax_h3 import is_h3_model
+        except ImportError:
+            from minimax_h3 import is_h3_model
+        if is_h3_model(model):
+            print("[FunPackStudio] MiniMax H3: skipping the attn2 K/V direction patch — H3 is a "
+                  "single packed self-attention stream with no cross-attention to hook. Learned "
+                  "directions still apply to the conditioning tensor itself.")
+            return None
         axis_memory = global_state.get("axis_conditioning_memory", {})
         missing_axes = set(axis_feedback.get("missing_axes", []))
         satisfied_axes = set(axis_feedback.get("satisfied_axes", []))
@@ -11767,7 +11890,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                   _seed=None, _seed_source="fresh seed", _scene_seeds=None, _velocity_keys=None,
                   batch_variants=1, guess_mode=False, guess_direction="up", guess_range=1.0,
                   guess_freeze_seed=True, movie_editor_scene_ratings=None, scene_segments=None,
-                  variables=None):
+                  variables=None, h3_references=None):
         seed = int(_seed) if _seed is not None else random.randint(1, 0xffffffffffffffff)
         # Project-scoped `$name` variables, resolved DEAD LAST (after shortcut-expand + split)
         # so they can never affect scene-cut detection. Empty/None = no-op.
@@ -11776,6 +11899,14 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
         except ImportError:
             from templates import resolve_variables as _resolve_variables
         _prompt_variables = variables or None
+        # MiniMax H3 ref2va reference media, in the order the user listed it. No other model
+        # family has the tokenizer kwarg it feeds, so it is inert when unset or on LTX.
+        # minimax_h3.resolve_ref_spec explains why the ORDER is load-bearing.
+        try:
+            from .minimax_h3 import normalize_ref_spec as _normalize_ref_spec
+        except ImportError:
+            from minimax_h3 import normalize_ref_spec as _normalize_ref_spec
+        _h3_references = _normalize_ref_spec(h3_references) or None
         encode_cache = {}
         linked_refinement_key = str(refinement_key_input or "").strip()
         if linked_refinement_key:
@@ -12209,6 +12340,7 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             positive_conditioning,
             encode_cache=encode_cache,
             reference_image=source_image,
+            h3_references=_h3_references,
         )
         fallback_graph = render_refinement_loss_graph(refinement_key, "v2", "clip", 0, 0.0, [])
         if not isinstance(cond, torch.Tensor):
@@ -12954,7 +13086,8 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             entry = cache.get(exp_i)
             if entry is None:
                 cond_i, meta_i, _, _ = self._v2_conditioning_source(
-                    clip, exp_i, None, encode_cache=encode_cache, reference_image=source_image)
+                    clip, exp_i, None, encode_cache=encode_cache, reference_image=source_image,
+                    h3_references=_h3_references)
                 if not isinstance(cond_i, torch.Tensor):
                     entry = base_entry  # encode failed -> fall back to the base conditioning
                 else:
@@ -14404,6 +14537,12 @@ class FunPackConditioningAdjust:
         return (new_conditioning, status)
 
 
+# The KSampler pass's schedule dropdown holds ComfyUI's scheduler names plus this one extra
+# entry, which means "don't compute anything, run the sigmas typed in the Sigmas field".
+# Both frontends offer it under the same string — keep them in sync if it ever changes.
+KSAMPLER_USER_SIGMAS = "use_user_sigmas"
+
+
 class FunPackStudio:
     """Single node combining Refinement Key, Refiner V2, Scene Builder,
     Advisor LLM, LoRA management, and Conditioning Adjust under one UI."""
@@ -14721,6 +14860,7 @@ class FunPackStudio:
             movie_editor_scene_ratings=_me_scene_ratings,
             scene_segments=(rf.get("scenes") if isinstance(rf.get("scenes"), dict) else None),
             variables=(rf.get("variables") if isinstance(rf.get("variables"), (list, dict)) else None),
+            h3_references=rf.get("h3_references"),
         )
 
         # --- Conditioning Adjust ---
@@ -14755,8 +14895,13 @@ class FunPackStudio:
         high_sampler, high_sigmas, low_sampler, low_sigmas = self._build_samplers(
             settings.get("samplers", {}), prompt_sig=prompt_sig,
             refinement_key=effective_refinement_key,
+            # Needed for the KSampler pass's steps/schedule: calculate_sigmas reads the
+            # model's model_sampling, so the schedule follows whatever model is loaded.
+            model=out_model,
         )
 
+        cond = _h3_reconcile_token_tags(cond, "positive")
+        out_negative = _h3_reconcile_token_tags(out_negative, "negative")
         return (out_model, cond, out_negative, seed, high_sampler, high_sigmas, low_sampler, low_sigmas, loss_graph, status, training_info, encoded_prompts, video_latent)
 
     @staticmethod
@@ -14770,7 +14915,7 @@ class FunPackStudio:
         return None
 
     @classmethod
-    def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key=""):
+    def _build_one_sampler(cls, cfg, prompt_sig=None, refinement_key="", model=None):
         sampler_type = str(cfg.get("type", "Hybrid Euler 2S") or "Hybrid Euler 2S")
         sigmas_raw = cls._parse_sigmas(cfg.get("sigmas", ""))
 
@@ -14818,6 +14963,36 @@ class FunPackStudio:
                 sampler_name = str(cfg.get("ksampler_name", "euler") or "euler")
                 sampler = _cs.sampler_object(sampler_name)
                 out_sigmas = sigmas_raw
+                # A stock KSampler carries no schedule of its own — the SAMPLER object is
+                # just the step function — so with the Sigmas field empty this pass used to
+                # hand the chain sampler nothing at all. steps + schedule build one the way
+                # ComfyUI's BasicScheduler does. The schedule is the switch between the two
+                # sources, deliberately: KSAMPLER_USER_SIGMAS reads the typed Sigmas field,
+                # anything else COMPUTES and the typed list is ignored for this pass — so a
+                # hand-written schedule can be parked in the field and switched back to
+                # without retyping it.
+                steps = int(cfg.get("ksampler_steps", 0) or 0)
+                scheduler = str(cfg.get("ksampler_scheduler", KSAMPLER_USER_SIGMAS)
+                                or KSAMPLER_USER_SIGMAS)
+                if scheduler != KSAMPLER_USER_SIGMAS:
+                    if model is None or steps <= 0:
+                        print(f"[FunPackStudio] KSampler schedule '{scheduler}' needs steps > 0 "
+                              f"and a model — falling back to the typed sigmas field.")
+                    else:
+                        try:
+                            out_sigmas = _cs.calculate_sigmas(
+                                model.get_model_object("model_sampling"), scheduler, steps
+                            ).cpu()
+                            if sigmas_raw is not None:
+                                print(f"[FunPackStudio] KSampler: schedule '{scheduler}' "
+                                      f"({steps} steps) in use — the typed sigmas field is "
+                                      f"ignored until the schedule is set back to "
+                                      f"'{KSAMPLER_USER_SIGMAS}'.")
+                        except Exception as e:
+                            # Keep the sampler: a bad scheduler name should cost the
+                            # schedule, not the whole pass.
+                            print(f"[FunPackStudio] KSampler schedule build failed "
+                                  f"({scheduler}, {steps} steps): {e}")
             else:  # Hybrid Euler 2S (default)
                 try:
                     from .samplers import FunPackHybridEuler2SSampler
@@ -14863,9 +15038,9 @@ class FunPackStudio:
             return None, sigmas_raw
 
     @classmethod
-    def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key=""):
+    def _build_samplers(cls, samplers_cfg, prompt_sig=None, refinement_key="", model=None):
         if not isinstance(samplers_cfg, dict):
             samplers_cfg = {}
-        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key)
-        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key)
+        high_sampler, high_sigmas = cls._build_one_sampler(samplers_cfg.get("high", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
+        low_sampler, low_sigmas = cls._build_one_sampler(samplers_cfg.get("low", {}), prompt_sig=prompt_sig, refinement_key=refinement_key, model=model)
         return high_sampler, high_sigmas, low_sampler, low_sigmas

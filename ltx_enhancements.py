@@ -1072,7 +1072,15 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
       - hidden state injection (inject_tensor), sigma-gated
     All in one pass through the block.
     """
-    import comfy.ldm.modules.attention as attn_mod
+    # LTX reaches attention through the module (`comfy.ldm.modules.attention.optimized_attention(...)`),
+    # so rebinding that one symbol is enough. MiniMax H3 does `from ... import optimized_attention`
+    # at module load, which snapshots the function — rebinding the source module would leave H3
+    # running unpatched while every log line claimed the patch was on. Rebind every module that
+    # holds its own reference.
+    try:
+        from .minimax_h3 import attention_patch_targets
+    except ImportError:
+        from minimax_h3 import attention_patch_targets
 
     do_temperature = temp_scale is not None and abs(temp_scale - 1.0) > 0.001
     do_capture = capture_buf is not None
@@ -1090,15 +1098,24 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
         # --- Attention patch (temperature + attn capture/inject + K/V capture/inject) ---
         if do_attn_patch:
             s = temp_scale if do_temperature else 1.0
-            orig_attn = attn_mod.optimized_attention
-            orig_attn_masked = attn_mod.optimized_attention_masked
+            targets = attention_patch_targets()
+            # (module, name, original) for every symbol we take over, so the restore is exact
+            saved = [(m, name, getattr(m, name))
+                     for m in targets
+                     for name in ("optimized_attention", "optimized_attention_masked")
+                     if hasattr(m, name)]
 
             def _attn_body(q, k, v, orig_fn, extra_args, extra_kwargs):
                 v_use = v
                 k_use = k
                 sigma = sigma_state[0] if sigma_state is not None else 0.0
+                # H3 hands q/k/v in already-reshaped [1, heads, S, head_dim] (skip_reshape=True),
+                # so `v.shape[1]` is the HEAD count, not a token position. Temperature is layout
+                # agnostic and still applies; anything that indexes by token position would be
+                # matching against heads and silently banking/injecting garbage, so it sits out.
+                positional_ok = not bool(extra_kwargs.get("skip_reshape"))
                 # --- BachVid K/V inject: lerp toward blessed identity at matched positions ---
-                if do_kv_inject and kv_sigma_gate[0] <= sigma <= kv_sigma_gate[1]:
+                if positional_ok and do_kv_inject and kv_sigma_gate[0] <= sigma <= kv_sigma_gate[1]:
                     try:
                         scale_mul = float(kvlock_scale[0]) if kvlock_scale is not None else 1.0
                         alpha = max(0.0, min(0.6, kv_inject_strength * scale_mul))
@@ -1113,7 +1130,7 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
                                 v_use = v.lerp(v_id.unsqueeze(0).expand_as(v), alpha)
                     except Exception:
                         k_use, v_use = k, v
-                if do_attn_inject and attn_inject.shape[0] == v.shape[1]:
+                if positional_ok and do_attn_inject and attn_inject.shape[0] == v.shape[1]:
                     if attn_sigma_gate[0] <= sigma <= attn_sigma_gate[1]:
                         imp = attn_inject.to(device=v.device, dtype=torch.float32)
                         imp = imp / imp.mean().clamp(min=1e-6)
@@ -1121,7 +1138,7 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
                         v_use = v_use * scale.unsqueeze(0).unsqueeze(-1)
                 result = orig_fn(q * s, k_use * s, v_use, *extra_args, **extra_kwargs)
                 # --- BachVid K/V capture: batch-mean K/V at this position, last-in-window wins ---
-                if do_kv_capture and kv_sigma_gate[0] <= sigma <= kv_sigma_gate[1]:
+                if positional_ok and do_kv_capture and kv_sigma_gate[0] <= sigma <= kv_sigma_gate[1]:
                     try:
                         kv_capture_buf[block_idx] = {
                             "k": k.detach().float().mean(dim=0).half().cpu(),
@@ -1129,7 +1146,7 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
                         }
                     except Exception:
                         pass
-                if do_attn_capture:
+                if positional_ok and do_attn_capture:
                     try:
                         imp_cap = result.detach().float().norm(dim=-1).mean(dim=0).cpu()
                         if block_idx in attn_capture_buf:
@@ -1140,19 +1157,24 @@ def _build_block_replacement(block_idx, temp_scale, capture_buf, inject_tensor, 
                         pass
                 return result
 
-            def _scaled(q, k, v, heads, *a, **kw):
-                return _attn_body(q, k, v, lambda q_, k_, v_, *a_, **kw_: orig_attn(q_, k_, v_, heads, *a_, **kw_), a, kw)
+            def _make_plain(original):
+                def _scaled(q, k, v, heads, *a, **kw):
+                    return _attn_body(q, k, v, lambda q_, k_, v_, *a_, **kw_: original(q_, k_, v_, heads, *a_, **kw_), a, kw)
+                return _scaled
 
-            def _scaled_masked(q, k, v, heads, mask, *a, **kw):
-                return _attn_body(q, k, v, lambda q_, k_, v_, *a_, **kw_: orig_attn_masked(q_, k_, v_, heads, mask, *a_, **kw_), a, kw)
+            def _make_masked(original):
+                def _scaled_masked(q, k, v, heads, mask, *a, **kw):
+                    return _attn_body(q, k, v, lambda q_, k_, v_, *a_, **kw_: original(q_, k_, v_, heads, mask, *a_, **kw_), a, kw)
+                return _scaled_masked
 
-            attn_mod.optimized_attention = _scaled
-            attn_mod.optimized_attention_masked = _scaled_masked
+            for module, name, original in saved:
+                setattr(module, name,
+                        _make_masked(original) if name.endswith("_masked") else _make_plain(original))
             try:
                 out = extra["original_block"](args)
             finally:
-                attn_mod.optimized_attention = orig_attn
-                attn_mod.optimized_attention_masked = orig_attn_masked
+                for module, name, original in saved:
+                    setattr(module, name, original)
         else:
             out = extra["original_block"](args)
 

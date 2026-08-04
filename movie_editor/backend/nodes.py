@@ -102,6 +102,66 @@ def _combo_default(opts: dict, choices: list | None = None):
         return d
     return choices[0] if choices else ""
 
+def _is_autogrow_type(t) -> bool:
+    """A V3 autogrow list input (COMFY_AUTOGROW_V3): not a socket itself, but a template
+    that ComfyUI expands into one real socket per index (ref_image0, ref_image1, …)."""
+    return isinstance(t, str) and "AUTOGROW" in t.upper()
+
+
+def _autogrow_names(opts: dict) -> list[str]:
+    """The socket names an autogrow input expands to. Two template flavours: a prefix with
+    a max count ("ref_image" x 10 -> ref_image0..ref_image9) or an explicit name list."""
+    tpl = opts.get("template")
+    if not isinstance(tpl, dict):
+        return []
+    names = tpl.get("names")
+    if isinstance(names, list):
+        return [str(n) for n in names]
+    prefix, mx = tpl.get("prefix"), tpl.get("max")
+    if isinstance(prefix, str) and isinstance(mx, int) and mx > 0:
+        return [f"{prefix}{i}" for i in range(mx)]
+    return []
+
+
+def _autogrow_element_type(opts: dict) -> str | None:
+    """The type of ONE element of an autogrow list — the template's single input, e.g. IMAGE
+    for ref_images. Widget-typed templates are forced to sockets by ComfyUI, so they count too."""
+    tpl = opts.get("template")
+    if not isinstance(tpl, dict):
+        return None
+    inp = tpl.get("input")
+    if not isinstance(inp, dict):
+        return None
+    for group in ("required", "optional"):
+        for spec in (inp.get(group) or {}).values():
+            if isinstance(spec, (list, tuple)) and spec and isinstance(spec[0], str):
+                return spec[0]
+    return None
+
+
+def _autogrow_children(name: str, opts: dict) -> list[dict]:
+    """Expand an autogrow input into its indexed sockets. Empty when the template can't be
+    read — the caller then falls back to the raw (unwireable) input so nothing regresses.
+
+    The socket id ComfyUI expects is the PARENT id, a dot, then the template name
+    ("ref_images.ref_image_0") — that dotted path is what it splits to rebuild the node's
+    list. Sending the bare name is rejected as a missing input, and any that slips past
+    validation reaches execute() as an unexpected keyword argument. `display` carries the
+    short name for the UI, which has no reason to show the plumbing.
+    """
+    t = _autogrow_element_type(opts)
+    names = _autogrow_names(opts)
+    if not t or not names:
+        return []
+    return [
+        # Always optional: the API graph carries only the indices that are actually wired,
+        # and ComfyUI grows the schema to match, so an unwired index must never block.
+        {"name": f"{name}.{nm}", "display": nm, "type": _normalize_type(t), "required": False,
+         "autogrow": {"parent": name, "index": i}}
+        for i, nm in enumerate(names)
+    ]
+
+
 # ComfyUI V3 dynamic match types that are semantically IMAGE-compatible.
 _MATCHTYPE_ALIASES: dict[str, str] = {}  # populated on first lookup — patterns are prefix-matched
 
@@ -132,6 +192,25 @@ ROLES: dict[str, dict] = {
 
 # Pipeline inputs that must be satisfied by configured slot nodes.
 # Each entry: id, type, label, required, role_hint (role key to suggest adding), hint.
+# MiniMax H3 replaces two of these: its own EmptyMiniMaxH3LatentAV emits the video AND
+# audio streams in one node, so there is no separate audio-latent step and the latent is
+# no longer optional (nothing else produces one). The audio VAE stays required — it decodes
+# the generated audio — and gains a second, optional job on H3 (encoding audio references).
+FAMILY_REQUIREMENTS: dict[str, dict] = {
+    "minimax_h3": {
+        "drop": ("audio_latent",),
+        "replace": {
+            "video_vae": {"hint": "Add the MiniMax H3 video VAE loader (24-channel, 16x spatial)."},
+            "audio_vae": {"hint": "Add the MiniMax H3 audio VAE loader (32 kHz stereo). Decodes the "
+                                  "generated audio, and encodes audio references for ref2va."},
+            "clip": {"hint": "Add the MiniMax H3 text encoder (Qwen3-VL-32B, truncated to 50 layers)."},
+            "init_latent": {"required": True, "label": "AV latent",
+                            "hint": "Add Empty MiniMax H3 AV Latent — it makes the video and audio "
+                                    "streams together and feeds the Chain Sampler directly."},
+        },
+    },
+}
+
 PIPELINE_REQUIREMENTS = [
     {"id": "model",        "type": "MODEL",  "label": "Diffusion model",  "required": True,
      "role_hint": "unet",       "hint": "Add a Unet / Diffusion Model loader (e.g. LTXVLoader)."},
@@ -162,6 +241,12 @@ def _all_input_types(node_def: dict) -> list[str]:
         for spec in (inp.get(group) or {}).values():
             t = spec[0] if isinstance(spec, list) and spec else None
             opts = spec[1] if isinstance(spec, list) and len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if _is_autogrow_type(t):
+                # The node consumes the ELEMENT type (IMAGE), not the list wrapper.
+                el_t = _autogrow_element_type(opts)
+                if el_t:
+                    types.extend(link_types(el_t))
+                    continue
             if isinstance(t, str) and not widget_type_of(t, opts):
                 types.extend(link_types(t))
     return types
@@ -195,6 +280,15 @@ def connection_inputs(node_def: dict) -> list[dict]:
             if not isinstance(t, str):
                 continue
             opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            if _is_autogrow_type(t):
+                # A list input (H3's ref_images/ref_videos/…): the parent name is never wired
+                # in the API graph — ComfyUI expands it into ref_image0, ref_image1, … and
+                # rebuilds the dict from whichever indices are present. Offer those sockets
+                # instead, so they can be sourced like any other input.
+                children = _autogrow_children(name, opts)
+                if children:
+                    out.extend(children)
+                    continue
             wt = widget_type_of(t, opts)
             if wt:
                 # A widget-typed input is a SOCKET (wireable) only when forceInput is set —
@@ -340,6 +434,18 @@ CORE_PORT_NODES = [
     ("FunPackSaveRefinementLatent", "Save Refinement Latent"),
 ]
 
+# H3's core drops LTXVConditioning and Concat AV and decodes audio with core's generic node,
+# so offering the LTX-only ports here would invite wires into nodes the graph never emits.
+FAMILY_CORE_PORT_NODES: dict[str, list] = {
+    "minimax_h3": [
+        ("LTXVSeparateAVLatent", "Separate AV Latent"),
+        ("VAEDecodeAudio", "VAE Decode Audio"),
+        ("NormalizeAudioLoudness", "Normalize Audio"),
+        ("VHS_VideoCombine", "Video Combine"),
+        ("FunPackSaveRefinementLatent", "Save Refinement Latent"),
+    ],
+}
+
 
 def ports_from_input_types(label: str, node_key: str, input_types: dict) -> list[dict]:
     """Pipeline connection points derived from a node's INPUT_TYPES (authoritative)."""
@@ -372,8 +478,18 @@ def ports_from_object_info(object_info: dict, cls: str, label: str) -> list[dict
     return ports
 
 
-def pipeline_requirements() -> list[dict]:
-    return PIPELINE_REQUIREMENTS
+def pipeline_requirements(family: str = "ltxav") -> list[dict]:
+    spec = FAMILY_REQUIREMENTS.get(str(family or "").lower())
+    if not spec:
+        return PIPELINE_REQUIREMENTS
+    dropped = set(spec.get("drop") or ())
+    replace = spec.get("replace") or {}
+    out = []
+    for req in PIPELINE_REQUIREMENTS:
+        if req["id"] in dropped:
+            continue
+        out.append({**req, **replace.get(req["id"], {})})
+    return out
 
 
 def core_producers(object_info: dict | None = None) -> list[dict]:
@@ -407,7 +523,7 @@ def core_producers(object_info: dict | None = None) -> list[dict]:
     return out
 
 
-def pipeline_ports(object_info: dict | None = None) -> list[dict]:
+def pipeline_ports(object_info: dict | None = None, family: str = "ltxav") -> list[dict]:
     """The fixed path's connection points loaders/nodes wire into. FunPack nodes derive from
     their INPUT_TYPES; LTXV core nodes derive from object_info. [] if nothing is loaded."""
     ports = []
@@ -424,7 +540,7 @@ def pipeline_ports(object_info: dict | None = None) -> list[dict]:
     except Exception:
         pass
     if object_info:
-        for cls, label in CORE_PORT_NODES:
+        for cls, label in FAMILY_CORE_PORT_NODES.get(str(family or "").lower(), CORE_PORT_NODES):
             ports += ports_from_object_info(object_info, cls, label)
     return ports
 

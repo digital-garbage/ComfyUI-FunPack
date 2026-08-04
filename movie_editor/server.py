@@ -398,6 +398,32 @@ def _copy_scene_media(ref: str, indir: str) -> Optional[str]:
     return fn
 
 
+def _prepare_references(proj: Project) -> list[dict]:
+    """Marked ("R") media, in mark order, copied into ComfyUI's input folder.
+
+    Returns [{id, kind, name, filename, index}] for the builder, which injects a loader per
+    reference wherever one is wired. An id whose file has gone is dropped here and reported
+    by the builder against the socket that wanted it, rather than failing the whole run.
+    """
+    import os
+    try:
+        import folder_paths
+        indir = folder_paths.get_input_directory()
+    except Exception:
+        return []
+    out: list[dict] = []
+    for i, mid in enumerate(proj.references or []):
+        item = media.get(mid)
+        if not item:
+            continue
+        fn = _copy_scene_media(mid, indir)
+        if not fn:
+            continue
+        out.append({"id": mid, "kind": item.get("kind") or "image",
+                    "name": item.get("name") or mid, "filename": fn, "index": i + 1})
+    return out
+
+
 def _prepare_media(proj: Project, extra_refs: Optional[list] = None, *, chain_available: bool = True) -> Optional[dict]:
     """Copy scene image assets into ComfyUI's input folder.
 
@@ -1235,7 +1261,7 @@ if web is not None and PromptServer is not None:
             "ok": True,
             "comfy_url": config.comfy_base_url(),
             "template_exists": config.TEMPLATE_PATH.is_file(),
-            "reference_loaded": bool(builder.load_reference().get("nodes")),
+            "reference_loaded": bool(builder.load_reference()),
             "configured_slots": len(nodes.load_models().get("slots", [])),
         })
 
@@ -1701,6 +1727,10 @@ if web is not None and PromptServer is not None:
                 "scene_segments": build_generation_scene_segments(target),
                 "sampler_inputs": sampler_inputs,
                 "variables": list(target.variables or []),
+                # Reference media is wired to node inputs now (Media Bin "R" → Models &
+                # Pipeline), so the editor no longer drives Studio's built-in ref2va list.
+                # Project.h3_references stays readable for old project files; it is inert.
+                "references": _prepare_references(target),
                 "reset_session": reset_session,
                 "refinement_key": (target.refinement_key or "default"),
             }, media=(media_pack or {}).get("primary") if media_pack else None)
@@ -1709,6 +1739,16 @@ if web is not None and PromptServer is not None:
         if report["blocking"]:
             detail = "Generation blocked — " + "; ".join(report["blocking"])
             return web.json_response({"detail": detail, "report": report}, status=400)
+        # A scene whose source mode wants an anchor but has none picked is skipped
+        # silently when anchors are assembled — it still renders, just without the
+        # anchor it was configured for. Report it rather than block: the run is valid,
+        # it just may not be the shot the user set up.
+        anchorless = pipeline_caps.scenes_missing_anchor_media(target, caps["chain_sampler"])
+        if anchorless:
+            report["unsatisfied"].append(
+                "No anchor image picked for scene(s) " + ", ".join(anchorless)
+                + " — they will generate without an i2v anchor."
+            )
         # Anchor-as-guide i2v bypass: force the user-declared node's widget(s) to the
         # configured state so the latent stays empty. Only honoured for runs the client
         # marked as carrying an anchor_guide scene.
@@ -2197,6 +2237,7 @@ if web is not None and PromptServer is not None:
             oi,
             manager_available=mgr,
             manager_on_disk=pipeline_deps.manager_dir_on_disk(),
+            family=pipeline_wiring.family_of(nodes.load_models()),
         ))
 
     @routes.post(UI_PREFIX + "/api/pipeline-deps/install")
@@ -2249,11 +2290,13 @@ if web is not None and PromptServer is not None:
             oi = await bridge.object_info()
         except Exception:
             oi = None
+        fam = pipeline_wiring.family_of(nodes.load_models())
         return web.json_response({
-            "ports": nodes.pipeline_ports(oi),
+            "family": fam,
+            "ports": nodes.pipeline_ports(oi, fam),
             "core_producers": nodes.core_producers(oi),
-            "requirements": nodes.pipeline_requirements(),
-            "wiring": pipeline_wiring.wiring_rules_payload(),
+            "requirements": nodes.pipeline_requirements(fam),
+            "wiring": pipeline_wiring.wiring_rules_payload(fam),
         })
 
     @routes.get(UI_PREFIX + "/api/image-targets")
