@@ -3037,6 +3037,71 @@ class FunPackLTXAVSceneChainSampler:
         except Exception:  # noqa: BLE001
             return ""
 
+    def _nonfinite_report(self, samples):
+        """['video (12/1000 values, dtype=...)'] for each stream carrying NaN/Inf. Empty when
+        clean, and empty when the latent is not readable — the check must never be the thing
+        that kills a render."""
+        try:
+            tensors = self._latent_tensors({"samples": samples})
+        except Exception:  # noqa: BLE001
+            return []
+        names = ("video", "audio")
+        bad = []
+        for i, t in enumerate(tensors):
+            if not isinstance(t, torch.Tensor):
+                continue
+            finite = torch.isfinite(t)
+            if bool(finite.all()):
+                continue
+            n_bad = int((~finite).sum().item())
+            label = names[i] if i < len(names) else f"stream {i}"
+            bad.append(f"{label} ({n_bad}/{t.numel()} values, dtype={t.dtype})")
+        return bad
+
+    def _assert_finite_inputs(self, samples, sigmas):
+        """Check what the chunk is ABOUT TO be sampled from, so a corrupt run says whether the
+        damage arrived or was produced here.
+
+        Without this the output check alone cannot tell "the model computed garbage" from "the
+        model was handed garbage and faithfully propagated it" — and those have disjoint
+        suspect lists. The schedule is checked too because it is hand-typed: our own solvers
+        divide by sigma (er = sigma_next / sigma), so an INTERIOR zero or a repeat is an
+        instant Inf that then poisons every value in the tensor. A trailing zero is fine — it
+        is only ever the target of the last step, never a divisor.
+        """
+        where = self._current_phase_label() or "this chunk"
+        bad = self._nonfinite_report(samples)
+        if bad:
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the latent handed to the sampler is ALREADY "
+                f"non-finite before any sampling — {'; '.join(bad)}. The model has not run "
+                f"yet, so this is not the checkpoint, the LoRA or the sampler. Look at what "
+                f"produced this latent: the empty-latent node, the i2v anchor encode, or (on "
+                f"a later scene) the previous scene's output."
+            )
+        if not isinstance(sigmas, torch.Tensor) or sigmas.numel() < 2:
+            return
+        s = sigmas.detach().float().reshape(-1).cpu()
+        if not bool(torch.isfinite(s).all()):
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the sigma schedule contains NaN/Inf "
+                f"({[float(v) for v in s]}). Fix the schedule — nothing downstream can."
+            )
+        interior = s[:-1]
+        if bool((interior <= 0).any()):
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the sigma schedule has a zero or negative "
+                f"value before its last entry ({[float(v) for v in s]}). Every value except "
+                f"the final one is divided by, so this produces Inf on that step and NaN "
+                f"everywhere after it. Only the LAST sigma may be 0."
+            )
+        if bool((s[1:] >= s[:-1]).any()):
+            raise RuntimeError(
+                f"[FunPackSceneChain] {where}: the sigma schedule is not strictly "
+                f"descending ({[float(v) for v in s]}). A repeated value makes a zero-length "
+                f"step the solvers divide by; an ascending one integrates backwards."
+            )
+
     def _assert_finite_sample(self, sampled):
         """Stop the run the moment a chunk comes back with NaN/Inf in it.
 
@@ -3049,28 +3114,14 @@ class FunPackLTXAVSceneChainSampler:
         A non-finite latent is unrecoverable, so this raises rather than warns. One
         isfinite() per chunk against a multi-second sample is not a cost worth weighing.
         """
-        try:
-            tensors = self._latent_tensors({"samples": sampled})
-        except Exception:  # noqa: BLE001 — never fail the run over the check itself
-            return
-        names = ("video", "audio")
-        bad = []
-        for i, t in enumerate(tensors):
-            if not isinstance(t, torch.Tensor):
-                continue
-            finite = torch.isfinite(t)
-            if bool(finite.all()):
-                continue
-            n_bad = int((~finite).sum().item())
-            label = names[i] if i < len(names) else f"stream {i}"
-            bad.append(f"{label} ({n_bad}/{t.numel()} values, dtype={t.dtype})")
+        bad = self._nonfinite_report(sampled)
         if not bad:
             return
         where = self._current_phase_label() or "this chunk"
         raise RuntimeError(
             f"[FunPackSceneChain] {where}: the sampler returned a non-finite latent — "
-            f"{'; '.join(bad)}. Sampling itself ran to completion, so this is corrupt "
-            f"MATH, not a wiring or memory problem. Usual causes, in the order worth "
+            f"{'; '.join(bad)}. Its inputs were checked and were clean, so this was produced "
+            f"HERE, by the model or the sampler math. Usual causes, in the order worth "
             f"testing: a LoRA that does not match this checkpoint (ComfyUI logs the keys "
             f"it could not apply at load — check the log), a base checkpoint whose layout "
             f"the loader mis-inferred (third-party repacks of quantised weights are the "
@@ -3089,6 +3140,7 @@ class FunPackLTXAVSceneChainSampler:
             raise ValueError("sigmas input must be a SIGMAS tensor.")
         latent = self._clone_latent(latent)
         samples = latent["samples"]
+        self._assert_finite_inputs(samples, sigmas)
         noise = comfy.sample.prepare_noise(samples, int(seed))
 
         def _progress_cb(step, _denoised, _x, _total_steps):
@@ -5488,7 +5540,12 @@ class FunPackLTXAVSceneChainSampler:
                              "against LTX's 4096-wide cross-attention context, and the overlap "
                              "tokens need LTX's patchifier; H3's native ref2va reference blocks "
                              "are the equivalent and are not wired yet)")
-            if v2a_grad_scale is not None and abs(float(v2a_grad_scale) - 1.0) > 1e-6:
+            # Gated on joyai_audio_memory, not on the value alone: v2a_grad_scale is that
+            # feature's coupling knob and is never installed without it (see the call site),
+            # so reporting a left-over value as an H3 limitation blames the model for a knob
+            # that would be equally inert on LTX.
+            if (joyai_audio_memory and v2a_grad_scale is not None
+                    and abs(float(v2a_grad_scale) - 1.0) > 1e-6):
                 _dead.append("v2a_grad_scale (hooks LTXAV's video_to_audio_attn submodule; H3 "
                              "has no separate video->audio cross-attention to scale)")
             if segmented_detailing:

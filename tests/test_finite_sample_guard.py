@@ -60,3 +60,58 @@ def test_the_check_never_fails_the_run_on_its_own(node):
     """A latent shape the helper cannot read is not a reason to kill a good render."""
     node._assert_finite_sample("not a tensor")
     node._assert_finite_sample(None)
+
+
+# ── inputs ────────────────────────────────────────────────────────────────────
+# The output check alone cannot tell "the model computed garbage" from "the model was handed
+# garbage and propagated it faithfully", and those have disjoint suspect lists.
+
+def _sigmas(*vals):
+    return torch.tensor(list(vals), dtype=torch.float32)
+
+
+def test_clean_inputs_pass(node):
+    node._assert_finite_inputs(torch.zeros(1, 4, 2, 8, 8), _sigmas(1.0, 0.5, 0.0))
+
+
+def test_a_latent_that_arrives_nan_blames_its_producer_not_the_model(node):
+    x = torch.zeros(1, 4, 2, 8, 8)
+    x[0, 0, 0, 0, 0] = float("nan")
+    with pytest.raises(RuntimeError) as e:
+        node._assert_finite_inputs(x, _sigmas(1.0, 0.0))
+    msg = str(e.value)
+    assert "ALREADY" in msg
+    assert "has not run yet" in msg
+    # It names the model-side suspects only to RULE THEM OUT, and points at the producer.
+    assert "not the checkpoint, the LoRA or the sampler" in msg
+    assert "empty-latent node" in msg
+
+
+def test_nan_in_the_schedule_is_named_as_the_schedule(node):
+    with pytest.raises(RuntimeError) as e:
+        node._assert_finite_inputs(torch.zeros(1, 4), _sigmas(1.0, float("nan"), 0.0))
+    assert "sigma schedule contains NaN" in str(e.value)
+
+
+def test_an_interior_zero_sigma_is_caught_before_it_divides(node):
+    """Our solvers divide by sigma, so a 0 anywhere but the end is an instant Inf."""
+    with pytest.raises(RuntimeError) as e:
+        node._assert_finite_inputs(torch.zeros(1, 4), _sigmas(1.0, 0.0, 0.5, 0.0))
+    assert "before its last entry" in str(e.value)
+
+
+def test_a_trailing_zero_is_fine(node):
+    """The last sigma is only ever a target, never a divisor — the normal schedule shape."""
+    node._assert_finite_inputs(torch.zeros(1, 4), _sigmas(1.0, 0.6, 0.3, 0.0))
+
+
+def test_a_repeated_sigma_is_caught(node):
+    with pytest.raises(RuntimeError) as e:
+        node._assert_finite_inputs(torch.zeros(1, 4), _sigmas(1.0, 0.5, 0.5, 0.0))
+    assert "strictly descending" in str(e.value)
+
+
+def test_an_ascending_schedule_is_caught(node):
+    with pytest.raises(RuntimeError) as e:
+        node._assert_finite_inputs(torch.zeros(1, 4), _sigmas(0.3, 0.9, 0.0))
+    assert "strictly descending" in str(e.value)
