@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-08-04
+
+A second model family. FunPack was built around LTX-2 / LTXAV and now supports MiniMax H3
+as a first-class alternative: a project picks a family, and everything downstream — which
+nodes the graph emits, which model files the setup asks for, which sampler settings are
+even applicable, what a valid scene length is — follows from that choice. Nothing about
+LTX-2 changes.
+
 ### Added
 - **MiniMax H3 is live.** H3 support was written against ComfyUI's pull request; the model
   has since merged (ComfyUI v0.30.0) and the weights are published, so the pipeline setup
@@ -19,8 +27,79 @@
 - **Frame geometry follows the model.** Frames per scene snap to the chosen family's grid
   (LTX 8k+1, H3 17k+5) in both frontends and in the graph builder, and H3 renders at its
   fixed 24 fps. Picking a model family brings the project onto its geometry and says so.
+- **The model family is the first question in Pipeline setup**, not something to find in
+  Models afterwards — it decides which nodes the graph emits and which files to download,
+  so everything else follows from it. Reachable later via Models ▸ Model family ▸ Setup…
+- **Reference media is marked in the Media Bin and wired like any other input.** Any image,
+  video or audio takes an `R` mark beside the identity pin, mark order is the numbering the
+  prompt uses, and each marked item appears as an input source in Models & Pipeline for
+  every socket its kind can fill. At generation the files are copied into ComfyUI's input
+  folder and one loader per reference is injected, chosen by what the destination socket
+  asks for. Replaces the Reference media tab: references are wired now, not configured.
+- **Reference video clips work,** decoded once at 24 fps into both views the model needs —
+  the 2 fps timestamped frames the text encoder sees and the full-rate latent block the DiT
+  packs — with the clip's own soundtrack riding along as its `<Audio j>` label. Capped at
+  15s, because reference tokens ride every sampling step.
+- **The KSampler pass can build its own schedule** from `steps` + a scheduler, the way
+  ComfyUI's own scheduler does. A SAMPLER object is only the step function, so this pass
+  previously had no schedule at all unless you typed a sigma list by hand. The schedule
+  dropdown is the switch between the two: `use_user_sigmas` (the default) runs the Sigmas
+  field as typed, anything else computes — so a hand-written schedule can stay parked in
+  the field and be switched back to without retyping it.
+- **A live elapsed timer on the Generate buttons** — "▶ Generating (44s)" — counting from
+  the press, in both frontends. After a reload it re-attaches to the running generation and
+  says it is counting from the reconnect rather than claiming a total it never saw.
+- **A non-finite latent now stops the run where it happened.** A chunk that samples to
+  completion and returns NaN/Inf used to sail through everything and surface as an ffmpeg
+  AAC error naming nothing that produced it, after the whole montage had been paid for —
+  and the video half never complained at all. The sampler now checks both the incoming
+  latent and the returned one and says which it was, with the scene label, the stream, how
+  many values, and the causes worth testing in order. The hand-typed sigma schedule is
+  checked too: an interior zero or a repeated value is an instant Inf, since the solvers
+  divide by sigma.
+- **A node's own prompt field can be driven by the project prompt** — the linked-input
+  "Driven by" list gained Prompt / Negative prompt / Seed, filtered to the widget kinds
+  each can legitimately fill.
+- **Warnings arrive before a generation is spent, not after.** Beside Generate: when
+  Best-FaceID identity transfer cannot do anything, when a scene's source mode wants an
+  anchor image but none is picked, and when a sampler setting is inert on the chosen model.
+
+### Changed
+- **The sampler-name list comes from ComfyUI** instead of a hardcoded eight written before
+  the rest existed — that had been hiding 36 samplers, including `res_multistep`, which is
+  what ComfyUI's own MiniMax H3 templates use. A saved name missing from the live list
+  stays selectable rather than being swapped for the first option.
 
 ### Fixed
+- **The log panel no longer eats your selection.** It rewrote its whole body every 1.5s,
+  which drops whatever you had highlighted — copying three lines out of a running log was a
+  race against the next tick. Updates are now withheld while a selection is held, an idle
+  log doesn't touch the DOM at all, and there is a ⏸ Pause toggle plus copy-just-the-
+  selection.
+- **A core override left behind by a model-family switch is no longer emitted.** Overrides
+  are saved per core id, not per node class, so switching family left the replaced node's
+  input names on its successor — invisible in the Models panel, fatal at generation
+  (`VAEDecodeAudio.execute() got an unexpected keyword argument 'audio_vae'`). The builder
+  refuses to write an input the class does not declare, and the family switch prunes them.
+- **H3 token tags are reconciled with the conditioning Studio hands on.** The token count
+  moves with both the prompt and the resolution, and a mismatch was a bare "list index out
+  of range" at step 0 — which is why it looked intermittent and why editing either one made
+  it come and go.
+- **H3 decodes audio from the sampler latent,** matching ComfyUI's own reference graphs
+  rather than handing the audio VAE a different object than they do.
+- **Autogrow list entries are addressed by their dotted socket id** (`ref_images.ref_image_0`).
+  The bare name is rejected by validation, or slips through and arrives at `execute()` as an
+  unexpected keyword. Configs saved under the old name are renamed in place on load.
+- **A saved model file that isn't on this machine no longer blocks the whole prompt.** An
+  ArcFace projector name with `models/loras` empty made ComfyUI reject everything, even with
+  Best-FaceID switched off; editor-supplied values now fall back to the node's default with
+  a visible note.
+- **The i2v guide stack works again** — a lost dataclass had left it dead.
+- **The between-pass sharpen no longer smears** through a box filter on the way back down.
+- **The in-app updater survives an upstream history rewrite.** `git pull --ff-only` cannot
+  cross one, so the update dead-ended in a git hint; it now asks whether any local commit's
+  content is actually missing upstream, realigns when nothing can be lost, and refuses with
+  a count when there is real local work.
 - **A video reference lost its soundtrack between Studio and the sampler.** Studio had
   already announced the track to the text encoder as `<Audio 1>`, but the reference list it
   handed on dropped the field — so no audio rows were packed for it and every later
@@ -34,6 +113,14 @@
 - **The run says which H3 checkpoint its conditioning needs.** H3 ships as two DiTs —
   `fl2va` (anchors/keyframes) and `ref2va` (reference media) — that load identically and
   never reject each other's conditioning, so a mismatch only shows up as a poor generation.
+
+### Maintenance
+- **The 22 chronic test failures were stub collisions, not redundant tests.** Every one was
+  a real test of a live feature: 18 failed only in a full-suite run because each module
+  built its own partial `comfy` stub and the first to import won. The package tree is now
+  built once and shared. The suite is green and every file passes alone and in reverse order.
+- Dead code removed: the orphaned wildcard engine, refiner-state template cluster, unused
+  template payload/summary helpers, and unreferenced movie_editor backend helpers.
 
 ## [3.4.1] - 2026-07-31
 
