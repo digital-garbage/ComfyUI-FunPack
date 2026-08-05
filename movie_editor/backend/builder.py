@@ -136,6 +136,10 @@ FAMILIES: dict[str, dict] = {
                 ("audiodec", "vae", "VAE", True),
                 # optional: only needed to encode AUDIO ref2va references
                 ("sampler", "audio_vae", "VAE", False),
+                # optional: a MiniMax H3 Image to Video node emits its first/last frame pins
+                # on its CONDITIONING output, which this pipeline otherwise drops (the
+                # sampler's positive comes from Studio). Wiring it here keeps the pins.
+                ("sampler", "h3_keyframes", "CONDITIONING", False),
             ),
         },
     },

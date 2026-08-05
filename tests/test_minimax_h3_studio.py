@@ -113,3 +113,46 @@ def test_the_reference_size_mode_reaches_the_sampler(h3_media):
         H3Clip(), "a shot",
         h3_references=[{"kind": "image", "filename": "face.png", "size": "max"}])
     assert meta["funpack_h3_refs"][0]["size"] == "max"
+
+
+# ── the multi-scene split must not drop the visual conditioning ──────────────
+# The Movie Editor always runs split_by_transitions, and the per-scene conditionings REPLACE
+# the single entry Studio built. Anything that lived on that entry — the anchor, the resolved
+# references — has to be re-established per scene or it never reaches the sampler at all.
+
+def test_the_anchor_survives_the_multi_scene_split_on_the_opening_scene():
+    node = FunPackVideoRefinerV2()
+    clip = H3Clip()
+    scenes = node._v2_transition_scene_conditionings(
+        clip, ["a room", "a street", "a roof"], reference_image=IMAGE)
+
+    assert [m["funpack_scene_index"] for _c, m in scenes] == [0, 1, 2]
+    # scene 0 carries the pin AND was encoded with the image in front of Qwen
+    assert scenes[0][1]["funpack_h3_anchor"]["image"] is IMAGE
+    assert clip.tokenize_kwargs[0]["images"] == [IMAGE]
+    # later scenes continue from the previous scene's output, so no anchor and no vision
+    assert all("funpack_h3_anchor" not in m for _c, m in scenes[1:])
+    assert all(not kw.get("images") for kw in clip.tokenize_kwargs[1:])
+
+
+def test_references_survive_the_split_on_every_scene(h3_media):
+    """A reference identity holds across the whole chain, and <Picture 1> only resolves in a
+    scene whose own encode presented it."""
+    node = FunPackVideoRefinerV2()
+    clip = H3Clip()
+    scenes = node._v2_transition_scene_conditionings(
+        clip, ["a room", "a street"],
+        h3_references=[{"kind": "image", "filename": "face.png"}])
+
+    assert all([r["filename"] for r in m["funpack_h3_refs"]] == ["face.png"] for _c, m in scenes)
+    assert all(kw.get("minimax_ref_items") for kw in clip.tokenize_kwargs)
+
+
+def test_an_ltx_split_is_left_alone():
+    """On LTX the anchor reaches the model through the latent. Adding Gemma3 vision to scene 0
+    here would change what every existing multi-scene LTX project generates."""
+    node = FunPackVideoRefinerV2()
+    node._gemma3_has_vision = lambda clip: True
+    scenes = node._v2_transition_scene_conditionings(LTXClip(), ["a room", "a street"],
+                                                     reference_image=IMAGE)
+    assert all("funpack_h3_anchor" not in m for _c, m in scenes)

@@ -6938,13 +6938,37 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             scene_effects.append(effect)
         return scene_texts, scene_effects
 
-    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None):
+    def _v2_transition_scene_conditionings(self, clip, scene_texts, scene_effects=None, encode_cache=None,
+                                           reference_image=None, h3_references=None):
+        """Per-scene conditionings for the Chain Sampler, one entry per scene.
+
+        These REPLACE the single-entry conditioning built above, so anything that lived on
+        that entry has to be re-established here or it never reaches the sampler. That is
+        why the visual conditioning travels in:
+
+        * ``reference_image`` — the i2v anchor, H3 only. Scene 0 only, matching how the chain
+          reads it (later scenes continue from the previous scene's output unless they carry
+          their own anchor). It has to be re-encoded, not copied: on H3 the anchor is presented
+          to Qwen inside the tokenize call, so a scene encoded without it is textually blind to
+          the image no matter what metadata is attached afterwards. LTX is left alone — there
+          the anchor reaches the model through the latent, and adding Gemma3 vision to scene 0
+          would change what every existing multi-scene LTX project generates.
+        * ``h3_references`` — ref2va reference media. EVERY scene: a reference identity holds
+          across the whole chain, and the ``<Picture i>`` ordinals in a scene's prompt only
+          resolve if that scene's own encode presented them.
+        """
         if clip is None:
             return None
         scene_texts = list(scene_texts or [])
         if not scene_texts:
             return None
         scene_effects = list(scene_effects or [])
+
+        try:
+            from . import minimax_h3 as h3mod
+        except ImportError:
+            import minimax_h3 as h3mod
+        anchor_image = reference_image if h3mod.is_h3_clip(clip) else None
 
         conditionings = []
         scene_count = len(scene_texts)
@@ -6953,7 +6977,11 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
             seen_count = seen_texts.get(scene_text, 0)
             seen_texts[scene_text] = seen_count + 1
             encode_text = f"Returning to an earlier scene: {scene_text}" if seen_count > 0 else scene_text
-            cond, meta, _ = self._v2_encode_prompt(clip, encode_text, encode_cache=encode_cache)
+            scene_image = anchor_image if scene_index == 0 else None
+            cond, meta, _ = self._v2_encode_prompt(
+                clip, encode_text, encode_cache=encode_cache,
+                reference_image=scene_image, h3_references=h3_references,
+            )
             if not isinstance(cond, torch.Tensor):
                 return None
             scene_meta = dict(meta) if isinstance(meta, dict) else {"pooled_output": None}
@@ -12866,6 +12894,10 @@ class FunPackVideoRefinerV2(FunPackVideoRefiner):
                 if scene_texts:
                     scene_conditionings = self._v2_transition_scene_conditionings(
                         clip, scene_texts, scene_effects=split_scene_effects, encode_cache=encode_cache,
+                        # The per-scene entries replace `output_conditioning` wholesale, so H3's
+                        # visual conditioning has to be re-established here or the anchor image
+                        # and the ref2va references never reach the sampler at all.
+                        reference_image=source_image, h3_references=_h3_references,
                     )
                     if scene_conditionings is not None:
                         output_conditioning = self._v2_apply_scene_seed_metadata(

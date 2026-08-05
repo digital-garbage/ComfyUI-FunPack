@@ -2351,6 +2351,9 @@ class FunPackLTXAVSceneChainSampler:
                 "audio_vae": ("VAE", {
                     "tooltip": "MiniMax H3 only: the audio VAE, needed to encode AUDIO reference media for ref2va (a voice or ambience clip the generation should sound like). Studio lists the references and bakes their <Audio j> labels into the prompt; this VAE turns them into the latent blocks the DiT packs. Image references need only the main vae and work without this. Ignored entirely on LTX.",
                 }),
+                "h3_keyframes": ("CONDITIONING", {
+                    "tooltip": "MiniMax H3 only: the CONDITIONING output of a MiniMax H3 Image to Video node, wired here purely so its first_frame / last_frame pins survive. That node's conditioning is otherwise discarded (the sampler's positive comes from Studio), which silently drops the image. Only the keyframe pins are read — the prompt encoded by that node is ignored, so write your prompt in Studio as usual. A first-frame pin lands on scene 1, a last-frame pin on the last scene's final frame. Ignored entirely on LTX.",
+                }),
                 "refinement_key_input": ("STRING", {
                     "default": "",
                     "multiline": False,
@@ -4267,6 +4270,59 @@ class FunPackLTXAVSceneChainSampler:
                                           aug=None if aug >= 1.0 else aug)
         return positive, True
 
+    def _h3_external_pins(self, conditioning):
+        """Rescue the keyframe pins from a MiniMax H3 Image to Video node's conditioning.
+
+        That node encodes first_frame/last_frame into `minimax_keyframes` and hands them out
+        on its CONDITIONING output — which this pipeline drops, because the sampler's positive
+        comes from Studio. Wiring the node's conditioning into `h3_keyframes` lets the pins
+        travel anyway. Only the pins are taken; the node's own prompt encode is not used.
+
+        Returns ``{"first": [...], "last": [...], "aug": float|None}``. The node writes a
+        first_frame at index 0 and a last_frame at ITS frame_count - 1, which is a per-node
+        length that need not match this run's scene length — so pins are classified here and
+        re-indexed against the scene they land on, never trusted as absolute positions.
+        """
+        pins = self._conditioning_value(conditioning, "minimax_keyframes") or []
+        if not pins:
+            return None
+        source_count = self._conditioning_value(conditioning, "minimax_frame_count")
+        first, last = [], []
+        for pin in pins:
+            try:
+                index = int(pin["resolved_frame_index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            (first if index == 0 else last).append(pin)
+        if not first and not last:
+            return None
+        aug = self._conditioning_value(conditioning, "minimax_visual_cond_noise_aug")
+        return {
+            "first": first,
+            "last": last,
+            "aug": float(aug) if aug is not None else None,
+            "source_count": int(source_count) if source_count else None,
+        }
+
+    def _apply_h3_external_pins(self, positive, pins, scene_index, scene_count):
+        """Place rescued pins on the scene they belong to: first on the opening scene, last
+        on the closing one. A one-scene run gets both, which is the plain single-clip case.
+
+        Returns (positive, applied_labels)."""
+        frame_count = max(1, int(self._h3_frame_count))
+        placed, labels = [], []
+        if scene_index == 0 and pins["first"]:
+            placed.extend({**p, "resolved_frame_index": 0} for p in pins["first"])
+            labels.append("first")
+        if scene_index == scene_count - 1 and pins["last"]:
+            # re-indexed onto THIS scene's last frame — the source node's frame_count is its
+            # own, and a pin at a stale index would land mid-clip, where the layout refuses it
+            placed.extend({**p, "resolved_frame_index": frame_count - 1} for p in pins["last"])
+            labels.append("last")
+        if not placed:
+            return positive, []
+        return self._h3_add_keyframes(positive, placed, frame_count, aug=pins["aug"]), labels
+
     def _append_h3_keyframe(self, guide_frame, apply_at, strength, positive, negative):
         """H3's equivalent of an LTX guide: a keyframe pin carried on the conditioning.
 
@@ -5490,7 +5546,7 @@ class FunPackLTXAVSceneChainSampler:
                context_window_freenoise=True, context_window_retain_first=False,
                cut_opening_frames=0,
                second_pass=False, second_pass_op="none", second_pass_sigmas=None,
-               audio_vae=None,
+               audio_vae=None, h3_keyframes=None,
                unique_id=None, prompt=None):
         if not isinstance(positive, list) or not positive:
             raise ValueError("positive conditioning must contain at least one scene entry.")
@@ -5645,6 +5701,13 @@ class FunPackLTXAVSceneChainSampler:
         max_scene_count = max(1, int(max_scenes))
         scene_conditionings = positive[:max_scene_count]
         scene_count = len(scene_conditionings)
+        # Keyframe pins wired in from a MiniMax H3 Image to Video node, read once for the run.
+        _h3_wired_pins = self._h3_external_pins(h3_keyframes) if self._is_h3 else None
+        if h3_keyframes and not self._is_h3:
+            print("[FunPackSceneChain] h3_keyframes is wired but this model is not MiniMax H3 — ignored.")
+        elif h3_keyframes and _h3_wired_pins is None:
+            print("[FunPackSceneChain] h3_keyframes is wired but carries no keyframe pins — the "
+                  "source node had no first_frame/last_frame image.")
         time_scale = self._time_scale(vae)
         video_frames = self._validate_template_length(latent_template, num_frames_per_scene, time_scale, vae=vae)
         video_overlap = self._overlap_frames(latent_template, frame_overlap, time_scale, vae=vae)
@@ -5916,6 +5979,14 @@ class FunPackLTXAVSceneChainSampler:
                         scene_positive, chunk, vae, _anchor_image, _anchor_strength)
                     if _pinned:
                         run_mechanisms.append(f"h3_keyframe_anchor(strength={_anchor_strength:g})")
+                # Pins rescued from a wired MiniMax H3 Image to Video node. Applied AFTER the
+                # anchor so an explicitly wired first_frame wins the frame-0 slot — the user
+                # drew that wire, the anchor is inferred from the timeline.
+                if _h3_wired_pins:
+                    scene_positive, _pin_labels = self._apply_h3_external_pins(
+                        scene_positive, _h3_wired_pins, scene_index, scene_count)
+                    if _pin_labels:
+                        run_mechanisms.append(f"h3_wired_keyframes({'+'.join(_pin_labels)})")
 
             # ref2va reference blocks. Applied after the chunk is final because the blocks are
             # sized against this scene's canvas, and to every scene branch (fresh / anchored /

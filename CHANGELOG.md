@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Fixed
+- **H3 image conditioning actually reaches the model.** Two independent breaks, both silent,
+  both ending with a generation that ignored the input image entirely and left the prompt to
+  carry the whole shot. The Movie Editor always splits a run into per-scene conditionings,
+  and that split re-encoded every scene *without* the anchor image or the ref2va references —
+  so neither the keyframe pin nor the `<Picture i>` presentation ever reached the sampler,
+  even for a single-scene project. The split now carries the anchor onto the opening scene
+  and the references onto every scene. LTX projects are untouched: there the anchor travels
+  in the latent, and adding vision to scene 1 would change existing output.
+- **A wired `MiniMax H3 Image to Video` node no longer throws its image away.** That node
+  carries its first/last frame pins on its CONDITIONING output, which this pipeline dropped
+  because the sampler's positive comes from Studio. New optional **Chain Sampler ·
+  h3_keyframes** input (auto-wired for H3 projects) salvages the pins — first frame onto the
+  opening scene, last frame re-indexed onto the closing scene's own final frame.
+
+### Changed
+- **Guide strengths span the full 0..1 range.** Mid-scene guide, identity pin, prior-scene
+  guide, the per-guide strength field, and the JoyAI memory floor were clamped to 0.25–0.5.
+  That band is the measured audio-safe sweet spot, not a physical limit; it stays in the
+  tooltips and out of the code.
+- The H3 `v2a_grad_scale` warning chip is gone. The knob does nothing without JoyAI audio
+  memory on any model, so flagging it as an H3 limitation blamed the wrong thing.
+
 ## [3.5.0] - 2026-08-04
 
 A second model family. FunPack was built around LTX-2 / LTXAV and now supports MiniMax H3

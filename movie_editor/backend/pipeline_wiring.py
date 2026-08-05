@@ -103,6 +103,10 @@ PORT_TO_OPEN_CORE: dict[str, tuple[str, str]] = {
 #
 # Everything not listed is inherited, so a rule added for LTXAV reaches H3 too.
 _H3_LATENT_PORT = "FunPackLTXAVSceneChainSampler.latent_template"
+# A MiniMax H3 Image to Video node in the latent role also emits CONDITIONING carrying its
+# first_frame / last_frame pins. Studio owns the sampler's positive, so that conditioning has
+# nowhere to go and the image is silently lost; this port is where the pins are salvaged.
+_H3_KEYFRAME_PORT = "FunPackLTXAVSceneChainSampler.h3_keyframes"
 
 FAMILY_WIRING: dict[str, dict] = {
     "ltxav": {},
@@ -111,19 +115,27 @@ FAMILY_WIRING: dict[str, dict] = {
             "audio_vae": [("VAE", None, "VAEDecodeAudio.vae"),
                           ("VAE", None, "FunPackLTXAVSceneChainSampler.audio_vae")],
             "audio_encoder": [],
-            "empty_latent": [("LATENT", None, _H3_LATENT_PORT)],
-            "video_latent": [("LATENT", None, _H3_LATENT_PORT)],
+            "empty_latent": [("LATENT", None, _H3_LATENT_PORT),
+                             ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
+            "video_latent": [("LATENT", None, _H3_LATENT_PORT),
+                             ("CONDITIONING", None, _H3_KEYFRAME_PORT)],
             "image_processing": [("IMAGE", None, "FunPackStudio.source_image")],
         },
-        "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT]},
+        "type_chain_terminals": {"LATENT": [_H3_LATENT_PORT],
+                                 "CONDITIONING": [_H3_KEYFRAME_PORT]},
         "default_wires": {
             "audio_vae": {"VAE": "port:VAEDecodeAudio.vae"},
             "audio_encoder": {},
-            "empty_latent": {"LATENT": "port:" + _H3_LATENT_PORT},
-            "video_latent": {"LATENT": "port:" + _H3_LATENT_PORT},
+            # both outputs of the H3 latent node are wired by default: the AV latent, and the
+            # keyframe pins that come with it when the node has a first/last frame image
+            "empty_latent": {"LATENT": "port:" + _H3_LATENT_PORT,
+                             "CONDITIONING": "port:" + _H3_KEYFRAME_PORT},
+            "video_latent": {"LATENT": "port:" + _H3_LATENT_PORT,
+                             "CONDITIONING": "port:" + _H3_KEYFRAME_PORT},
         },
         "port_labels": {
             _H3_LATENT_PORT: "Chain Sampler · latent_template (H3 AV latent)",
+            _H3_KEYFRAME_PORT: "Chain Sampler · h3_keyframes (first/last frame pins)",
             "VAEDecodeAudio.vae": "VAE Decode Audio · vae",
             "FunPackLTXAVSceneChainSampler.audio_vae": "Chain Sampler · audio_vae (ref2va audio)",
         },
@@ -134,6 +146,7 @@ FAMILY_WIRING: dict[str, dict] = {
             "FunPackStudio.source_image": ("studio", "source_image"),
             "FunPackLTXAVSceneChainSampler.vae": ("sampler", "vae"),
             _H3_LATENT_PORT: ("sampler", "latent_template"),
+            _H3_KEYFRAME_PORT: ("sampler", "h3_keyframes"),
             "FunPackLTXAVSceneChainSampler.audio_vae": ("sampler", "audio_vae"),
             "VAEDecodeAudio.vae": ("audiodec", "vae"),
         },

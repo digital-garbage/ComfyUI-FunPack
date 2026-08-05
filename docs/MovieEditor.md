@@ -681,8 +681,24 @@ without complaint: `minimax_h3_fl2va_*` for text-to-video and anchor/keyframe sc
 using both at once in one scene means one of them is untrained conditioning. Text encoder
 and both VAEs are shared. Needs ComfyUI v0.30.0 or newer.
 
-**Inert on H3:** Best-FaceID identity transfer, Bounded Attention, segmented detailing, the
-and the second pass's latent op all depend on LTX transformer structure H3 does not have.
+**Getting an image into an H3 scene — two routes, both supported:**
+
+1. **Timeline image → `Studio · source_image`** (the default wiring for an image_processing
+   loader). Studio presents it to Qwen and hands the pixels to the Chain Sampler, which pins
+   it as the opening scene's frame-0 keyframe. This is the route the Editor's own image
+   scenes use.
+2. **A `MiniMax H3 Image to Video` node's `first_frame` / `last_frame`.** That node emits its
+   pins on its **CONDITIONING** output — which used to go nowhere, because the sampler's
+   positive comes from Studio, so the image was silently discarded. Wire that output to
+   **Chain Sampler · h3_keyframes** (auto-wired for new projects) and the pins survive: a
+   first_frame lands on scene 1, a last_frame on the last scene's final frame. Only the pins
+   are read — write the prompt in Studio as usual.
+
+The run prints `h3_keyframe_anchor(...)` or `h3_wired_keyframes(...)` in its scene mechanics.
+If neither appears, the model never saw the image.
+
+**Inert on H3:** Best-FaceID identity transfer, Bounded Attention, segmented detailing, and
+the second pass's latent op all depend on LTX transformer structure H3 does not have.
 The Chain Sampler switches them off and says why; the main window warns before the run.
 
 **Wrong:** Install stuck → **Cancel install**. Pip security policy errors → install packs manually in terminal. After Manager install, restart before pack install.
