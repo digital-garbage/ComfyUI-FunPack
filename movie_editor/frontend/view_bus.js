@@ -130,10 +130,16 @@
       sampler: st.project?.sampler_slot,
       // The MiniMax H3 "this setting can't run" chips live in the same zone, so every
       // input they read belongs here too — switching the family or turning one of these
-      // off must clear its chip, not leave it sitting next to Generate.
-      family: st.models?.model_family,
+      // off must clear its chip, not leave it sitting next to Generate. That includes
+      // the models config every chip is gated on, read the same way PipelineCaps reads
+      // it (state.models in the Editor, project.models otherwise).
+      family: (st.models || st.project?.models)?.model_family,
+      core: (st.models || st.project?.models)?.disable_core,
       h3Bounded: st.project?.sampler_inputs?.bounded_attention_enabled,
       h3Detail: st.project?.sampler_inputs?.segmented_detailing,
+      // v2a_grad_scale only warns while joyai_audio_memory is on, so the toggle is part
+      // of the chip's message — without it, switching JoyAI off leaves the chip stranded.
+      h3Joyai: st.project?.sampler_inputs?.joyai_audio_memory,
       h3V2a: st.project?.sampler_inputs?.v2a_grad_scale,
       h3Pass2: st.project?.sampler_inputs?.second_pass,
       h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
