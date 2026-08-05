@@ -108,7 +108,7 @@ def _identity_pin_guide(media_ref: str, strength: float, *, is_pin: bool = True)
         "media_ref": media_ref,
         "frame_idx": 0,
         "apply_at": 0,
-        "strength": max(0.25, min(0.5, float(strength))),
+        "strength": max(0.0, min(1.0, float(strength))),
     }
     if is_pin:
         # Marks this entry (not prior-scene/mid-scene/template guides) as the one eligible
@@ -128,14 +128,14 @@ def _prior_scene_guide(prior: Scene, strength: float) -> Optional[dict]:
         "source": "template",
         "frame_idx": 0,
         "apply_at": 0,
-        "strength": max(0.25, min(0.5, float(strength))),
+        "strength": max(0.0, min(1.0, float(strength))),
     }
 
 
 def _decayed_strength(base: float, scene_index: int, decay: float) -> float:
     if scene_index <= 0 or decay >= 0.999:
         return base
-    return max(0.25, min(0.5, base * (decay ** scene_index)))
+    return max(0.0, min(1.0, base * (decay ** scene_index)))
 
 
 def build_auto_continuity_guides(full: Project, target: Project) -> Optional[dict]:
@@ -294,8 +294,9 @@ def anchor_guide_strength(scene: Scene) -> float:
 
 
 def _self_image_guide(media_ref: str, strength: float) -> dict:
-    """A frame-0 guide from the scene's OWN image (anchor_guide mode). Unlike the
-    continuity identity-pin guide, the strength is the user's choice (full 0..1)."""
+    """A frame-0 guide from the scene's OWN image (anchor_guide mode). Same full 0..1
+    range as every other guide strength — the measured audio-safe band is 0.25-0.35,
+    but that is advice, not a clamp."""
     return {
         "enabled": True,
         "source": "image",

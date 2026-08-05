@@ -2270,8 +2270,8 @@ class FunPackLTXAVSceneChainSampler:
                     "tooltip": "Experimental: append the middle frame of the previous scene as a guide for the current scene via LTX guide attention. Helps maintain character positioning across scenes.",
                 }),
                 "mid_scene_guide_strength": ("FLOAT", {
-                    "default": 0.25, "min": 0.25, "max": 0.5, "step": 0.05,
-                    "tooltip": "Guide attention strength for mid-scene anchor. 0.25 is the minimum — below that audio degrades and character appearance drifts. Above 0.35 causes spatial conflicts when scene composition shifts.",
+                    "default": 0.25, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "tooltip": "Guide attention strength for mid-scene anchor. Full 0..1 range. 0.25-0.35 is the measured sweet spot: below 0.25 audio degrades and character appearance drifts, above 0.35 spatial conflicts appear when scene composition shifts. Outside that band is yours to explore — 0 disables the guide's pull entirely.",
                 }),
                 "embed_guidance": ("BOOLEAN", {
                     "default": False,
@@ -4818,7 +4818,7 @@ class FunPackLTXAVSceneChainSampler:
         if not chunk_tensors:
             return chunk, positive, negative, 0
         F_chunk = self._tensor_frames(chunk_tensors[0])
-        s = max(0.25, float(strength))  # same audio-safe floor as mid_scene_guide
+        s = max(0.0, float(strength))  # the user's value stands; 0.25-0.35 is the audio-safe band
         tail = 0
         for i, gf in enumerate(frames):
             apply_at = min(max(0, F_chunk - 1), i)  # prefix context: distinct early positions

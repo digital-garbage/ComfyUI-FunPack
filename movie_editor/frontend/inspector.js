@@ -546,7 +546,7 @@
       const ai = el("input"); ai.type = "number"; ai.value = g.apply_at != null ? g.apply_at : 0; ai.title = "apply_at";
       ai.dataset.k = `guide-${idx}-apply`;
       ai.oninput = () => { guides[idx] = { ...g, apply_at: parseInt(ai.value || "0", 10) }; persist(guides, true); };
-      const si = el("input"); si.type = "number"; si.min = "0.25"; si.max = "0.5"; si.step = "0.05";
+      const si = el("input"); si.type = "number"; si.min = "0"; si.max = "1"; si.step = "0.05";
       si.value = g.strength != null ? g.strength : 0.35; si.title = "Strength";
       si.dataset.k = `guide-${idx}-strength`;
       si.oninput = () => { guides[idx] = { ...g, strength: parseFloat(si.value || "0.35") }; persist(guides, true); };

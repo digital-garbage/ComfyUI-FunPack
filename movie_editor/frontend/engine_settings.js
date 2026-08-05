@@ -182,7 +182,7 @@
     { name: "decode_timestep",       label: "Decode timestep",       kind: "float", default: 0.05,  min: 0, max: 1,   step: 0.01 },
     { name: "decode_tile_size",      label: "Decode tile size",      kind: "int",   default: 0,     min: 0, max: 4096, step: 64 },
     { name: "mid_scene_guide",       label: "Mid-scene guide",       kind: "bool",  default: false },
-    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.25, max: 0.5, step: 0.05, dependsOn: "mid_scene_guide" },
+    { name: "mid_scene_guide_strength", label: "Guide strength",   kind: "float", default: 0.25,  min: 0.0, max: 1.0, step: 0.05, dependsOn: "mid_scene_guide" },
     { name: "joyai_memory",          label: "JoyAI-Echo memory",     kind: "bool",  default: false },
     { name: "joyai_memory_size",     label: "Memory size",           kind: "int",   default: 7,     min: 1, max: 32, step: 1, dependsOn: "joyai_memory" },
     { name: "joyai_fix_frames",      label: "Pinned anchors",        kind: "int",   default: 3,     min: 0, max: 16, step: 1, dependsOn: "joyai_memory" },
@@ -636,9 +636,9 @@
       i.oninput = () => patchContinuitySettings({ [key]: parseFloat(i.value || "0") });
       gAdv.append(field(label, i));
     };
-    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.25, 0.5, 0.05);
-    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.25, 0.5, 0.05);
-    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.25, 0.5, 0.05);
+    num("Pin strength", cs.identity_pin_strength, "identity_pin_strength", 0.0, 1.0, 0.05);
+    num("Prior guide strength", cs.prior_scene_strength, "prior_scene_strength", 0.0, 1.0, 0.05);
+    num("Mid-scene strength", cs.mid_scene_guide_strength, "mid_scene_guide_strength", 0.0, 1.0, 0.05);
     num("Guide decay / scene", cs.guide_decay, "guide_decay", 0.5, 1, 0.05);
 
     const gMan = group(pane, "Manual");
