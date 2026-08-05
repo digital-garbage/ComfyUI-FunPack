@@ -106,14 +106,6 @@
   // Same idea for non-boolean knobs whose neutral value means "off".
   function h3DeadValueIssues(si) {
     const out = [];
-    // Only when joyai_audio_memory is on: v2a_grad_scale is that feature's coupling knob and
-    // does nothing without it on ANY model, so flagging a left-over value as an H3 limitation
-    // blames the wrong thing — it would be equally inert on LTX.
-    if (si.joyai_audio_memory && Math.abs(Number(si.v2a_grad_scale ?? 1) - 1) > 1e-6) {
-      out.push(["v2a_grad_scale",
-        "v2a_grad_scale scales LTXAV's video→audio cross-attention module; H3 has no separate "
-        + "video→audio attention, only joint rows."]);
-    }
     if (si.second_pass && si.second_pass_op && si.second_pass_op !== "none") {
       out.push(["second_pass_op",
         "The second pass still runs on H3, but its latent op ('" + si.second_pass_op + "') uses the "

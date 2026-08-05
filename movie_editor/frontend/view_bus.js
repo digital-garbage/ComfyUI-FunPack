@@ -137,10 +137,6 @@
       core: (st.models || st.project?.models)?.disable_core,
       h3Bounded: st.project?.sampler_inputs?.bounded_attention_enabled,
       h3Detail: st.project?.sampler_inputs?.segmented_detailing,
-      // v2a_grad_scale only warns while joyai_audio_memory is on, so the toggle is part
-      // of the chip's message — without it, switching JoyAI off leaves the chip stranded.
-      h3Joyai: st.project?.sampler_inputs?.joyai_audio_memory,
-      h3V2a: st.project?.sampler_inputs?.v2a_grad_scale,
       h3Pass2: st.project?.sampler_inputs?.second_pass,
       h3Pass2Op: st.project?.sampler_inputs?.second_pass_op,
       // ... including the project's frame rate, which the H3 fixed-24-fps chip reads.

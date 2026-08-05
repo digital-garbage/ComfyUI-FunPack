@@ -682,9 +682,8 @@ using both at once in one scene means one of them is untrained conditioning. Tex
 and both VAEs are shared. Needs ComfyUI v0.30.0 or newer.
 
 **Inert on H3:** Best-FaceID identity transfer, Bounded Attention, segmented detailing, the
-second pass's latent op, and `v2a_grad_scale` all depend on LTX transformer structure H3
-does not have. The Chain Sampler switches them off and says why; the main window warns
-before the run.
+and the second pass's latent op all depend on LTX transformer structure H3 does not have.
+The Chain Sampler switches them off and says why; the main window warns before the run.
 
 **Wrong:** Install stuck → **Cancel install**. Pip security policy errors → install packs manually in terminal. After Manager install, restart before pack install.
 
