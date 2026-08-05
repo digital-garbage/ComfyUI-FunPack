@@ -6153,17 +6153,20 @@ def _h3_reconcile_token_tags(conditioning, label=""):
     moves when either the prompt or the resolution changes — which is what made this look
     intermittent.
 
-    Grow the tags when tokens were appended, and drop them when they were removed or
-    replaced: a conditioning with no tags is handled by the DiT, one with WRONG tags is not.
-    Either way say so, because silently losing the tags changes how the DiT modulates the
-    text span. Non-H3 conditioning has no tags and passes straight through.
+    Grow the tags when tokens were appended, trim them when there are more tags than tokens.
+    Both keep position i meaning position i, which is all the DiT asks of them. Trimming
+    matters most on image prompts: the tags are built from the tokenizer's INPUT sequence and
+    the conditioning is what came back, so a vision block normally leaves one tag spare —
+    and dropping the whole vector there would throw away the modality-0 marks that tell the
+    DiT those positions are an image, not text. Say so either way. Non-H3 conditioning has
+    no tags and passes straight through.
     """
     if not isinstance(conditioning, list):
         return conditioning
     try:
-        from .minimax_h3 import extend_token_tags, tags_match, token_tags_length
+        from .minimax_h3 import extend_token_tags, tags_match, token_tags_length, trim_token_tags
     except ImportError:  # loaded as a top-level module (tests, direct import)
-        from minimax_h3 import extend_token_tags, tags_match, token_tags_length
+        from minimax_h3 import extend_token_tags, tags_match, token_tags_length, trim_token_tags
     out = []
     for entry in conditioning:
         if not (isinstance(entry, (list, tuple)) and len(entry) >= 2
@@ -6181,10 +6184,10 @@ def _h3_reconcile_token_tags(conditioning, label=""):
             print(f"[FunPackStudio] MiniMax H3: {label} conditioning grew "
                   f"{have} -> {want} tokens; extended minimax_token_tags to match.")
         else:
-            meta = {k: v for k, v in meta.items() if k != "minimax_token_tags"}
+            meta = trim_token_tags(meta, want)
             print(f"[FunPackStudio] MiniMax H3: {label} conditioning is {want} tokens but "
-                  f"minimax_token_tags describes {have} — dropping the stale tags. The DiT "
-                  f"falls back to its default modulation for the text span.")
+                  f"minimax_token_tags describes {have} — trimmed the {have - want} spare "
+                  f"tag(s) off the tail. Modality marks for the kept positions are unchanged.")
         out.append([cond, meta] + list(entry[2:]))
     return out
 

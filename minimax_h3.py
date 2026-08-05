@@ -826,6 +826,24 @@ def tags_match(cond, meta) -> bool:
         return False
 
 
+def trim_token_tags(meta, want):
+    """Cut the tag vector down to `want` positions, keeping the head aligned.
+
+    Tags are built from the tokenizer's INPUT sequence (`embeds.shape[1]` in comfy's
+    MiniMaxQwen3VL.forward) while the conditioning is what the encoder returned, so an
+    image prompt normally comes back one tag long — the vision block's expansion does not
+    survive the encode 1:1. Position i still means position i in both, so trimming the tail
+    is exact; the alternative (dropping the tags) would throw away the vision span's
+    modality-0 marks and hand the image tokens to the DiT's text modulation.
+    """
+    n = token_tags_length(meta)
+    if n is None or want < 0 or want >= n:
+        return meta
+    out = dict(meta)
+    out["minimax_token_tags"] = meta["minimax_token_tags"].reshape(-1)[:int(want)]
+    return out
+
+
 def extend_token_tags(meta, added_tokens, tag=1):
     """Grow the tag vector by `added_tokens` positions so appended tokens stay legal.
 
