@@ -275,6 +275,186 @@ def test_the_chain_sampler_exposes_the_toggle_and_defaults_it_off():
     assert spec[1]["default"] is False
 
 
+# ── wrapping a sampler we do not own ─────────────────────────────────────────
+
+class FakeSampler:
+    """Stands in for a KSAMPLER from KSamplerSelect."""
+    def __init__(self, fn, extra_options=None):
+        self.sampler_function = fn
+        self.extra_options = extra_options or {}
+        self.inpaint_options = {}
+
+
+class RecordingDenoiser:
+    """A model_k stand-in: records (x, sigma) per call and returns a fixed x0."""
+    def __init__(self, x0):
+        self.x0 = x0
+        self.calls = []
+        self.inner_model = "sentinel"      # samplers reach through for this
+
+    def __call__(self, x, sigma, **kwargs):
+        self.calls.append((x.clone(), float(sigma.flatten()[0])))
+        return self.x0.clone()
+
+
+def _proxy(inner, factors, video_dims, audio_dims, sigmas):
+    from samplers import _AudioClockDenoiser
+
+    return _AudioClockDenoiser(inner, _clock(factors, video_dims, audio_dims), sigmas)
+
+
+def test_the_proxy_corrects_the_prediction_not_the_step():
+    """The in-loop version scales the displacement; from outside, the only lever is the
+    denoised value. Scaling the audio part of (x - denoised) is the same correction, because
+    the euler update is x*r + denoised*(1-r) — so this has to match exactly."""
+    from samplers import _audio_clock_step
+
+    x = torch.tensor([[[10.0, 10.0]]])          # [video, audio]
+    x0 = torch.tensor([[[0.0, 0.0]]])
+    sigmas = torch.tensor([1.0, 0.5, 0.0])
+    proxy = _proxy(RecordingDenoiser(x0), [0.4, 0.4], 1, 1, sigmas)
+    corrected = proxy(x, torch.tensor([1.0]))
+
+    r = 0.5 / 1.0                                # sigma_next / sigma
+    got = x * r + corrected * (1 - r)            # what an euler sampler will do
+    want = _audio_clock_step(x * r + x0 * (1 - r), x, _clock([0.4], 1, 1), 0)
+    assert torch.allclose(got, want, atol=1e-6)
+
+
+def test_the_proxy_walks_the_schedule_one_step_per_call():
+    x = torch.zeros((1, 1, 2))
+    sigmas = torch.tensor([1.0, 0.7, 0.3, 0.0])
+    inner = RecordingDenoiser(torch.ones((1, 1, 2)))
+    proxy = _proxy(inner, [0.2, 0.5, 0.9], 1, 1, sigmas)
+    seen = [proxy(x, torch.tensor([float(s)]))[0, 0, 1].item() for s in (1.0, 0.7, 0.3)]
+    # audio component of (denoised - x) scaled by that step's factor
+    assert seen == pytest.approx([0.2, 0.5, 0.9])
+
+
+def test_the_proxy_stands_down_on_a_sampler_that_evaluates_twice_per_step():
+    """A Heun corrector call lands at sigmas[i+1] — the same signature as the next step's
+    predictor. Rather than guess, the proxy must detect the mismatch and stop correcting."""
+    x = torch.zeros((1, 1, 2))
+    sigmas = torch.tensor([1.0, 0.5, 0.0])
+    proxy = _proxy(RecordingDenoiser(torch.ones((1, 1, 2))), [0.3, 0.3], 1, 1, sigmas)
+    first = proxy(x, torch.tensor([1.0]))                 # predictor of step 0 — corrected
+    assert first[0, 0, 1].item() == pytest.approx(0.3)
+    mid = proxy(x, torch.tensor([0.75]))                  # an off-schedule eval
+    assert mid[0, 0, 1].item() == pytest.approx(1.0)      # uncorrected
+    after = proxy(x, torch.tensor([0.5]))                 # and it stays off
+    assert after[0, 0, 1].item() == pytest.approx(1.0)
+
+
+def test_the_proxy_is_transparent_for_everything_else():
+    """Samplers read and write attributes on the denoiser (latent_image, inner_model);
+    the proxy must not hide them or the sampler breaks."""
+    inner = RecordingDenoiser(torch.zeros((1, 1, 2)))
+    proxy = _proxy(inner, [0.5], 1, 1, torch.tensor([1.0, 0.0]))
+    assert proxy.inner_model == "sentinel"
+    proxy.latent_image = "written-through"
+    assert inner.latent_image == "written-through"
+
+
+def test_wrapping_preserves_the_samplers_own_options():
+    from samplers import _audio_clock_wrap_sampler
+
+    original = FakeSampler(lambda *a, **k: None, extra_options={"eta": 0.5})
+    wrapped = _audio_clock_wrap_sampler(original)
+    assert wrapped.extra_options == {"eta": 0.5}
+    assert wrapped.sampler_function is not original.sampler_function
+
+
+def test_a_sampler_with_nothing_to_wrap_is_declined():
+    """Not every SAMPLER is KSAMPLER-shaped; guessing at internals is worse than declining."""
+    from samplers import _audio_clock_wrap_sampler
+
+    assert _audio_clock_wrap_sampler(object()) is None
+
+
+def test_the_wrapped_sampler_runs_the_original_untouched_off_h3():
+    """Off H3 the setup declines, and the original sampler must then see the REAL model
+    object, not a proxy wrapped around it."""
+    from samplers import _audio_clock_wrap_sampler
+
+    seen = {}
+
+    def fake_sampler_fn(model, x, sigmas, extra_args=None, callback=None, disable=None, **kw):
+        seen["model"] = model
+        return x
+
+    inner = RecordingDenoiser(torch.zeros((1, 1, 2)))
+    wrapped = _audio_clock_wrap_sampler(FakeSampler(fake_sampler_fn))
+    out = wrapped.sampler_function(inner, torch.zeros((1, 1, 2)), torch.tensor([1.0, 0.0]))
+    assert seen["model"] is inner          # no proxy inserted
+    assert out.shape == (1, 1, 2)
+
+
+def test_a_perfect_predictor_lands_the_audio_exactly_when_euler_steps_it():
+    """End-to-end against a real euler loop, with an analytically known answer.
+
+    Rectified flow is LINEAR along the true path, so a perfect x0 predictor integrated on the
+    RIGHT grid must land exactly on x0 — any residue is the schedule error this feature
+    removes. This reproduces the measured 85% -> 0% at 4 steps that the tooltip quotes, and
+    is the one assertion that would catch the correction being silently inverted or dropped.
+    """
+    shift_v, shift_a = DEFAULT_SHIFT_VIDEO, DEFAULT_SHIFT_AUDIO
+    x0 = torch.tensor([[[3.0, -2.0]]])                  # [video, audio]
+    eps = torch.tensor([[[0.5, 1.5]]])
+    span = float((eps - x0)[0, 0, 1].abs())
+
+    steps = 4
+    ts = [1.0 - i / steps for i in range(steps + 1)]
+    sigmas = torch.tensor([shift_v * t / (1.0 + (shift_v - 1.0) * t) for t in ts])
+
+    def model(x, sigma):
+        """comfy's denoised = x - sigma_v * model_output, audio pre-scaled by the slope."""
+        sv = float(sigma)
+        v = eps - x0
+        out = torch.empty_like(x)
+        out[..., 0] = v[..., 0]
+        out[..., 1] = time_shift_slope(sv, shift_v, shift_a) * v[..., 1]
+        return x - sv * out
+
+    def start():
+        sv = float(sigmas[0])
+        sa = time_shift_sigma(sv, shift_v, shift_a)
+        x = torch.empty_like(x0)
+        x[..., 0] = (1 - sv) * x0[..., 0] + sv * eps[..., 0]
+        x[..., 1] = (1 - sa) * x0[..., 1] + sa * eps[..., 1]
+        return x
+
+    def euler(corrected):
+        from samplers import _AudioClockDenoiser
+
+        x = start()
+        proxy = _AudioClockDenoiser(
+            model, (audio_clock_factors(sigmas, shift_v, shift_a), torch.tensor([[[1.0, 0.0]]])),
+            sigmas) if corrected else None
+        for i in range(len(sigmas) - 1):
+            sigma, sigma_next = sigmas[i], sigmas[i + 1]
+            denoised = proxy(x, sigma) if corrected else model(x, sigma)
+            x = x + (x - denoised) / sigma * (sigma_next - sigma)
+        return x
+
+    off, on = euler(False), euler(True)
+    # video is a plain flow on its own grid — right either way
+    assert abs(float(off[0, 0, 0]) - float(x0[0, 0, 0])) < 1e-5
+    assert abs(float(on[0, 0, 0]) - float(x0[0, 0, 0])) < 1e-5
+    # audio: badly wrong without the clock, exact with it
+    assert float((off[0, 0, 1] - x0[0, 0, 1]).abs()) / span > 0.5
+    assert float((on[0, 0, 1] - x0[0, 0, 1]).abs()) / span < 1e-5
+
+
+def test_the_documented_sampler_buckets_do_not_overlap():
+    """The tooltip promises euler is exact and the multistep family is not. If a name ever
+    lands in both lists the guidance the user reads is self-contradictory."""
+    from samplers import _AUDIO_CLOCK_EXACT_ON, _AUDIO_CLOCK_HARMED
+
+    assert not set(_AUDIO_CLOCK_EXACT_ON) & set(_AUDIO_CLOCK_HARMED)
+    assert "sample_euler" in _AUDIO_CLOCK_EXACT_ON
+    assert "sample_res_multistep" in _AUDIO_CLOCK_HARMED
+
+
 def test_the_toggle_stays_behind_the_second_pass_sigmas_socket():
     """The builder maps a reference workflow's widget values positionally, so a new WIDGET
     has to be appended after the last widget but before the trailing SIGMAS socket — which

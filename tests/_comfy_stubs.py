@@ -120,7 +120,15 @@ def _install_comfy():
     install_module("comfy.k_diffusion")
     install_module("comfy.k_diffusion.sampling")
     install_module("comfy.model_sampling")
-    install_module("comfy.samplers")
+    # KSAMPLER carries the same three attributes the real one does — FunPack builds one to
+    # wrap a foreign sampler (the H3 audio clock), and the fields are what get read back.
+    class _KSAMPLER:
+        def __init__(self, sampler_function, extra_options={}, inpaint_options={}):
+            self.sampler_function = sampler_function
+            self.extra_options = extra_options
+            self.inpaint_options = inpaint_options
+
+    install_module("comfy.samplers", KSAMPLER=_KSAMPLER)
     install_module("comfy.ldm")
     install_module("comfy.ldm.modules")
     install_module("comfy.ldm.modules.attention")
